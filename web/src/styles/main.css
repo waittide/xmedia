@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  background-color: var(--ctp-shell);
+  color: var(--ctp-text);
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", system-ui, -apple-system, sans-serif;
+}
+
+.media-shadow {
+  box-shadow:
+    0 10px 25px -5px rgb(0 0 0 / 0.2),
+    0 4px 10px -4px rgb(0 0 0 / 0.12),
+    inset 0 1px 1px rgb(255 255 255 / 0.14);
+}
+
+:root[data-theme="dark"] .media-shadow {
+  box-shadow:
+    0 14px 30px -6px rgb(0 0 0 / 0.55),
+    0 4px 12px -3px rgb(0 0 0 / 0.38),
+    inset 0 1px 1px rgb(255 255 255 / 0.08);
+}
+
+.card-soft {
+  border: 1px solid color-mix(in srgb, var(--ctp-surface0) 75%, transparent);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--ctp-surface1) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--ctp-surface1);
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
