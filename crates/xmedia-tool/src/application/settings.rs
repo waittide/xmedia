@@ -69,7 +69,11 @@ impl ToolSettingsService {
     ) -> DomainResult<ManagedRoot> {
         let root = ManagedRoot::new(name, PathBuf::from(path.trim()), default_kind)?;
         let mut settings = self.repo.load().await?;
-        if let Some(existing) = settings.roots.iter().find(|r| r.path == root.path) {
+        if let Some(existing) = settings
+            .roots
+            .iter()
+            .find(|r| r.path == root.path && r.default_kind == root.default_kind)
+        {
             return Ok(existing.clone());
         }
         settings.roots.push(root.clone());

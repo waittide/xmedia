@@ -1,46 +1,82 @@
 import { computed } from 'vue'
 import { useThemeStore } from '@/stores/theme'
+import type { MediaKind } from '@/types/api'
+
+interface DomainSpecificLabels {
+  missingCover: string
+  missingSummary: string
+  missingTagBlock: string
+  emptyRootsTitle: string
+  emptyRootsDesc: string
+  searchPlaceholder: string
+}
 
 const MESSAGES = {
   'zh-CN': {
     brand: 'xmedia-tool',
     brandSub: '原文件刮削与整理工作台',
-    allDomains: '全部领域',
     domains: {
       book: '图书',
       comic: '漫画',
       music: '音乐',
       video: '影视',
     },
+    domainLabels: {
+      book: {
+        missingCover: '缺少图书封面',
+        missingSummary: '缺少内容简介',
+        missingTagBlock: '缺少出版社 / 标签',
+        emptyRootsTitle: '尚未配置图书根目录',
+        emptyRootsDesc: '请点击下方按钮为「图书」领域添加专属本地目录白名单，各领域目录彼此完全独立。',
+        searchPlaceholder: '搜索当前目录图书文件名、书名或作者…',
+      },
+      comic: {
+        missingCover: '缺少漫画封面',
+        missingSummary: '缺少漫画简介',
+        missingTagBlock: '缺少 ComicInfo.xml',
+        emptyRootsTitle: '尚未配置漫画根目录',
+        emptyRootsDesc: '请点击下方按钮为「漫画」领域添加专属本地目录白名单，各领域目录彼此完全独立。',
+        searchPlaceholder: '搜索当前目录漫画文件名、系列名或作者…',
+      },
+      music: {
+        missingCover: '缺少内嵌封面',
+        missingSummary: '缺少歌词 (.lrc / 内嵌)',
+        missingTagBlock: '缺少专辑标签',
+        emptyRootsTitle: '尚未配置音乐根目录',
+        emptyRootsDesc: '请点击下方按钮为「音乐」领域添加专属本地目录白名单，各领域目录彼此完全独立。',
+        searchPlaceholder: '搜索当前目录音频文件名、曲名、歌手或专辑…',
+      },
+      video: {
+        missingCover: '缺少影视海报',
+        missingSummary: '缺少剧情简介',
+        missingTagBlock: '缺少 NFO 文件',
+        emptyRootsTitle: '尚未配置影视根目录',
+        emptyRootsDesc: '请点击下方按钮为「影视」领域添加专属本地目录白名单，各领域目录彼此完全独立。',
+        searchPlaceholder: '搜索当前目录视频文件名、片名或剧集名…',
+      },
+    } satisfies Record<MediaKind, DomainSpecificLabels>,
     filters: {
       title: '完整度筛选',
       all: '全部文件',
       incomplete: '待补齐项',
-      missingCover: '缺少封面 / 海报',
-      missingSummary: '缺少简介 / 歌词',
-      missingTagBlock: '缺少标签 / NFO',
     },
     roots: {
-      title: '白名单根目录',
-      add: '添加根目录',
-      empty: '尚未配置媒体根目录',
-      emptyDesc: '在设置中添加本地目录白名单（或通过启动参数 --root 指定）后即可直接浏览与整理原文件。',
+      title: '当前领域根目录',
+      add: '添加当前领域目录',
       foldersTitle: '当前子目录',
+      parentDir: '.. 返回上级目录',
     },
     cards: {
       totalFiles: '当前目录文件',
       completeFiles: '元信息已齐全',
-      missingCover: '缺少封面 / 海报',
-      missingLyricsOrNfo: '缺少歌词 / 简介',
     },
     actions: {
-      searchPlaceholder: '过滤当前目录文件名、标题、作者或歌手…',
       selectAll: '全选',
       clearSelect: '取消选择',
       onlineScrape: '在线刮削',
       batchRename: '批量重命名',
       refresh: '刷新',
-      settings: '工作台设置',
+      settings: '设置',
       save: '原子写入原文件',
       saving: '正在写入…',
       saved: '已写入原文件',
@@ -59,36 +95,62 @@ const MESSAGES = {
   'en-US': {
     brand: 'xmedia-tool',
     brandSub: 'Source File Scraper & Tag Workbench',
-    allDomains: 'All',
     domains: {
       book: 'Books',
       comic: 'Comics',
       music: 'Music',
       video: 'Video',
     },
+    domainLabels: {
+      book: {
+        missingCover: 'Missing Cover',
+        missingSummary: 'Missing Description',
+        missingTagBlock: 'Missing Publisher / Tags',
+        emptyRootsTitle: 'No Book Root Configured',
+        emptyRootsDesc: 'Add a dedicated directory for Books. Each media domain manages its own isolated roots.',
+        searchPlaceholder: 'Filter books by filename, title or author…',
+      },
+      comic: {
+        missingCover: 'Missing Cover',
+        missingSummary: 'Missing Summary',
+        missingTagBlock: 'Missing ComicInfo.xml',
+        emptyRootsTitle: 'No Comic Root Configured',
+        emptyRootsDesc: 'Add a dedicated directory for Comics. Each media domain manages its own isolated roots.',
+        searchPlaceholder: 'Filter comics by filename, series or writer…',
+      },
+      music: {
+        missingCover: 'Missing Cover Art',
+        missingSummary: 'Missing Lyrics',
+        missingTagBlock: 'Missing Album Tag',
+        emptyRootsTitle: 'No Music Root Configured',
+        emptyRootsDesc: 'Add a dedicated directory for Music. Each media domain manages its own isolated roots.',
+        searchPlaceholder: 'Filter tracks by filename, title, artist or album…',
+      },
+      video: {
+        missingCover: 'Missing Poster',
+        missingSummary: 'Missing Plot',
+        missingTagBlock: 'Missing .nfo File',
+        emptyRootsTitle: 'No Video Root Configured',
+        emptyRootsDesc: 'Add a dedicated directory for Video. Each media domain manages its own isolated roots.',
+        searchPlaceholder: 'Filter videos by filename, movie or show title…',
+      },
+    } satisfies Record<MediaKind, DomainSpecificLabels>,
     filters: {
       title: 'Completeness',
       all: 'All Files',
       incomplete: 'Incomplete',
-      missingCover: 'Missing Cover',
-      missingSummary: 'Missing Lyrics / Plot',
-      missingTagBlock: 'Missing Tags / NFO',
     },
     roots: {
-      title: 'Managed Roots',
-      add: 'Add Root',
-      empty: 'No Root Directories Configured',
-      emptyDesc: 'Add a whitelisted directory in Settings (or pass --root on startup) to inspect and scrape source files.',
+      title: 'Domain Roots',
+      add: 'Add Domain Root',
       foldersTitle: 'Subfolders',
+      parentDir: '.. Parent Directory',
     },
     cards: {
       totalFiles: 'Files in Folder',
       completeFiles: 'Complete Metadata',
-      missingCover: 'Missing Artwork',
-      missingLyricsOrNfo: 'Missing Lyrics / Plot',
     },
     actions: {
-      searchPlaceholder: 'Filter files by name, title, artist or author…',
       selectAll: 'Select All',
       clearSelect: 'Clear',
       onlineScrape: 'Online Scrape',

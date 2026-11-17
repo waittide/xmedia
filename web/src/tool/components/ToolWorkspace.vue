@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuArrowUp,
@@ -29,13 +30,13 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import ThemePopover from '@/components/ThemePopover.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl, toolApi } from '../api'
 import { formatBytes, useToolText } from '../i18n'
 import type {
   DirectorySnapshot,
+  ManagedRootDto,
   MediaFileDetail,
   MediaFileEntry,
   PublicSettingsDto,
@@ -44,26 +45,43 @@ import type {
 import BatchRenameModal from './BatchRenameModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
-import ToolSettingsModal from './ToolSettingsModal.vue'
+import ToolSettingsModal, { type ToolSettingsTab } from './ToolSettingsModal.vue'
 
 defineProps<{
   status: ToolStatusDto | null
 }>()
 
+const { t } = useI18n()
 const themeStore = useThemeStore()
 const txt = useToolText()
 
-type DomainTabValue = 'all' | MediaKind
 type CompletenessFilter = 'all' | 'incomplete' | 'missing_cover' | 'missing_summary' | 'missing_tag'
+
+const VALID_DOMAINS: MediaKind[] = ['book', 'comic', 'music', 'video']
+
+function loadSavedDomain(): MediaKind {
+  const saved = localStorage.getItem('xmedia_tool.active_domain') as MediaKind | null
+  if (saved && VALID_DOMAINS.includes(saved)) {
+    return saved
+  }
+  return 'book'
+}
 
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
 const mobileMenuOpen = ref(false)
-const activeDomain = ref<DomainTabValue>('all')
+const activeDomain = ref<MediaKind>(loadSavedDomain())
 const completenessFilter = ref<CompletenessFilter>('all')
 const searchQuery = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
 
 const settings = ref<PublicSettingsDto | null>(null)
+const domainNavMemory = ref<Record<MediaKind, { rootId: string; relPath: string }>>({
+  book: { rootId: '', relPath: '' },
+  comic: { rootId: '', relPath: '' },
+  music: { rootId: '', relPath: '' },
+  video: { rootId: '', relPath: '' },
+})
+
 const activeRootId = ref<string>('')
 const currentRelPath = ref<string>('')
 const snapshot = ref<DirectorySnapshot | null>(null)
@@ -77,19 +95,31 @@ const loadingInspector = ref(false)
 const artworkVersion = ref(1)
 
 const settingsModalOpen = ref(false)
-const settingsInitialTab = ref<'roots' | 'scrapers' | 'templates'>('roots')
+const settingsInitialTab = ref<ToolSettingsTab>('appearance')
 const scrapeModalOpen = ref(false)
 const renameModalOpen = ref(false)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
-const domainTabs = computed<Array<{ value: DomainTabValue; label: string; icon: Component }>>(() => [
-  { value: 'all', label: txt.value.allDomains, icon: LuLayers },
+const domainTabs = computed<Array<{ value: MediaKind; label: string; icon: Component }>>(() => [
   { value: 'book', label: txt.value.domains.book, icon: LuBookOpen },
   { value: 'comic', label: txt.value.domains.comic, icon: LuLayers },
   { value: 'music', label: txt.value.domains.music, icon: LuDisc3 },
   { value: 'video', label: txt.value.domains.video, icon: LuClapperboard },
 ])
+
+const domainLabels = computed(() => txt.value.domainLabels[activeDomain.value])
+
+// Strictly isolated roots per domain
+const domainRoots = computed<ManagedRootDto[]>(() =>
+  (settings.value?.roots ?? []).filter((r) => r.default_kind === activeDomain.value),
+)
+
+const themeModeTooltip = computed(() => {
+  if (themeStore.themeMode === 'light') return `${t('theme.modeTitle')}: ${t('theme.light')}`
+  if (themeStore.themeMode === 'dark') return `${t('theme.modeTitle')}: ${t('theme.dark')}`
+  return `${t('theme.modeTitle')}: ${t('theme.system')}`
+})
 
 function isEntryComplete(e: MediaFileEntry): boolean {
   const c = e.completeness
@@ -185,29 +215,76 @@ function cycleThemeMode(): void {
   themeStore.setThemeMode(order[(idx + 1) % order.length]!)
 }
 
+function syncDomainStateToMemory(dom: MediaKind, rootId: string, relPath: string): void {
+  domainNavMemory.value = {
+    ...domainNavMemory.value,
+    [dom]: { rootId, relPath },
+  }
+}
+
+async function activateDomainWorkspace(dom: MediaKind): Promise<void> {
+  const roots = (settings.value?.roots ?? []).filter((r) => r.default_kind === dom)
+  selectedPaths.value = new Set()
+  inspectingPath.value = null
+  activeDetail.value = null
+  completenessFilter.value = 'all'
+  searchQuery.value = ''
+  dirError.value = null
+
+  if (roots.length === 0) {
+    activeRootId.value = ''
+    currentRelPath.value = ''
+    snapshot.value = null
+    return
+  }
+
+  const mem = domainNavMemory.value[dom]
+  const matchedRoot = roots.find((r) => r.id === mem.rootId) ?? roots[0]!
+  const targetRel = matchedRoot.id === mem.rootId ? mem.relPath : ''
+  activeRootId.value = matchedRoot.id
+  currentRelPath.value = targetRel
+  await loadDirectory(matchedRoot.id, targetRel)
+}
+
+async function switchDomain(next: MediaKind): Promise<void> {
+  if (activeDomain.value === next) {
+    mobileMenuOpen.value = false
+    return
+  }
+  activeDomain.value = next
+  mobileMenuOpen.value = false
+  localStorage.setItem('xmedia_tool.active_domain', next)
+  await activateDomainWorkspace(next)
+}
+
 async function loadInitial(): Promise<void> {
   const s = await toolApi.getSettings()
   settings.value = s
-  if (s.roots.length > 0) {
-    const first = s.roots[0]!
-    activeRootId.value = first.id
-    if (first.default_kind) {
-      activeDomain.value = first.default_kind
+
+  // If current domain has no roots yet, auto-pick the first domain that has configured roots
+  const currentHasRoots = s.roots.some((r) => r.default_kind === activeDomain.value)
+  if (!currentHasRoots) {
+    const firstWithRoot = VALID_DOMAINS.find((d) => s.roots.some((r) => r.default_kind === d))
+    if (firstWithRoot) {
+      activeDomain.value = firstWithRoot
+      localStorage.setItem('xmedia_tool.active_domain', firstWithRoot)
     }
-    await loadDirectory(first.id, '')
   }
+  await activateDomainWorkspace(activeDomain.value)
 }
 
 async function loadDirectory(rootId: string, relPath: string): Promise<void> {
   if (!rootId) return
+  const reqDomain = activeDomain.value
   loadingDir.value = true
   dirError.value = null
   selectedPaths.value = new Set()
   try {
-    const domainFilter = activeDomain.value === 'all' ? null : activeDomain.value
-    const snap = await toolApi.browse(rootId, relPath, domainFilter)
+    const snap = await toolApi.browse(rootId, relPath, reqDomain)
+    if (activeDomain.value !== reqDomain) return
     snapshot.value = snap
     currentRelPath.value = snap.current_rel_path
+    syncDomainStateToMemory(reqDomain, rootId, snap.current_rel_path)
     if (
       inspectingPath.value &&
       !snap.files.some((f) => f.rel_path === inspectingPath.value)
@@ -216,9 +293,13 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
       activeDetail.value = null
     }
   } catch (err) {
-    dirError.value = err instanceof Error ? err.message : String(err)
+    if (activeDomain.value === reqDomain) {
+      dirError.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
-    loadingDir.value = false
+    if (activeDomain.value === reqDomain) {
+      loadingDir.value = false
+    }
   }
 }
 
@@ -229,10 +310,6 @@ async function selectRoot(rootId: string): Promise<void> {
   activeDetail.value = null
   inspectingPath.value = null
   mobileMenuOpen.value = false
-  const rootObj = settings.value?.roots.find((r) => r.id === rootId)
-  if (rootObj?.default_kind) {
-    activeDomain.value = rootObj.default_kind
-  }
   await loadDirectory(rootId, '')
 }
 
@@ -241,12 +318,6 @@ async function enterFolder(relPath: string): Promise<void> {
   await loadDirectory(activeRootId.value, relPath)
 }
 
-watch(activeDomain, () => {
-  if (activeRootId.value) {
-    void loadDirectory(activeRootId.value, currentRelPath.value)
-  }
-})
-
 async function inspectEntry(entry: MediaFileEntry): Promise<void> {
   inspectingPath.value = entry.rel_path
   loadingInspector.value = true
@@ -254,7 +325,7 @@ async function inspectEntry(entry: MediaFileEntry): Promise<void> {
     activeDetail.value = await toolApi.inspectFile(
       entry.root_id,
       entry.rel_path,
-      entry.media_kind,
+      activeDomain.value,
     )
   } catch (err) {
     dirError.value = err instanceof Error ? err.message : String(err)
@@ -310,25 +381,26 @@ async function openScrapeForEntry(entry?: MediaFileEntry): Promise<void> {
   }
 }
 
-function handleSettingsUpdated(next: PublicSettingsDto): void {
-  settings.value = next
-  if (!activeRootId.value && next.roots.length > 0) {
-    activeRootId.value = next.roots[0]!.id
-    void loadDirectory(activeRootId.value, '')
-  } else if (
-    activeRootId.value &&
-    !next.roots.some((r) => r.id === activeRootId.value)
-  ) {
-    activeRootId.value = next.roots[0]?.id ?? ''
-    snapshot.value = null
-    activeDetail.value = null
-    if (activeRootId.value) {
+watch(
+  () => domainRoots.value,
+  (roots) => {
+    if (roots.length === 0) {
+      activeRootId.value = ''
+      snapshot.value = null
+      activeDetail.value = null
+      inspectingPath.value = null
+    } else if (!activeRootId.value || !roots.some((r) => r.id === activeRootId.value)) {
+      activeRootId.value = roots[0]!.id
       void loadDirectory(activeRootId.value, '')
     }
-  }
+  },
+)
+
+function handleSettingsUpdated(next: PublicSettingsDto): void {
+  settings.value = next
 }
 
-function openSettingsTab(tab: 'roots' | 'scrapers' | 'templates'): void {
+function openSettingsTab(tab: ToolSettingsTab): void {
   settingsInitialTab.value = tab
   settingsModalOpen.value = true
 }
@@ -354,7 +426,7 @@ onBeforeUnmount(() => {
   <div
     class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--ctp-shell)] text-[var(--ctp-text)]"
   >
-    <!-- Full-Width Top Bar (Exact xmedia Visual Language) -->
+    <!-- Full-Width Top Bar (Aligned with xmedia TopBar) -->
     <header
       class="flex h-16 shrink-0 items-center justify-between gap-3 bg-[var(--ctp-shell)] px-4 select-none sm:px-5"
     >
@@ -381,7 +453,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- Unified 4-Domain Capsule Switcher -->
+        <!-- Strictly Separated 4-Domain Capsule Switcher -->
         <div
           class="ml-1 hidden items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/70 p-1 md:flex"
         >
@@ -395,7 +467,7 @@ onBeforeUnmount(() => {
                 ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-xs'
                 : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
             "
-            @click="activeDomain = tab.value"
+            @click="switchDomain(tab.value)"
           >
             <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
             <span>{{ tab.label }}</span>
@@ -412,7 +484,7 @@ onBeforeUnmount(() => {
           ref="searchInputRef"
           v-model="searchQuery"
           type="text"
-          :placeholder="txt.actions.searchPlaceholder"
+          :placeholder="domainLabels.searchPlaceholder"
           class="h-10 w-full rounded-full border border-[var(--ctp-surface0)]/90 bg-[var(--ctp-mantle)]/70 pr-14 pl-10 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none transition focus:border-[var(--ctp-accent)] focus:bg-[var(--ctp-canvas)]"
         />
         <kbd
@@ -431,10 +503,8 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- Right: Language & Catppuccin Palette Popover + Theme Mode + Settings -->
+      <!-- Right: 3-State Theme Mode Toggle + Settings Button (Language & Palette live inside Settings) -->
       <div class="flex shrink-0 items-center gap-1.5">
-        <ThemePopover show-language />
-
         <button
           type="button"
           class="flex h-9 w-9 items-center justify-center rounded-xl transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
@@ -443,6 +513,7 @@ onBeforeUnmount(() => {
               ? 'bg-[var(--ctp-surface0)]/55 text-[var(--ctp-text)]'
               : 'text-[var(--ctp-subtext1)]'
           "
+          :title="themeModeTooltip"
           @click="cycleThemeMode"
         >
           <LuMonitor v-if="themeStore.themeMode === 'system'" class="h-[18px] w-[18px]" />
@@ -453,7 +524,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/80 px-3 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
-          @click="openSettingsTab('roots')"
+          @click="openSettingsTab('appearance')"
         >
           <LuSettings class="h-4 w-4 text-[var(--ctp-accent)]" />
           <span class="hidden sm:inline">{{ txt.actions.settings }}</span>
@@ -461,7 +532,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <!-- Middle Body: Collapsible Sidebar + Flush Rounded Main Canvas -->
+    <!-- Middle Body: Collapsible Domain Sidebar + Flush Rounded Main Canvas -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
       <div
         v-if="mobileMenuOpen"
@@ -469,7 +540,7 @@ onBeforeUnmount(() => {
         @click="mobileMenuOpen = false"
       />
 
-      <!-- Sidebar -->
+      <!-- Domain-Specific Sidebar -->
       <aside
         class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col border-r border-[var(--ctp-surface0)]/65 bg-[var(--ctp-shell)] transition-all duration-200 select-none md:static md:border-r-0"
         :class="[
@@ -477,7 +548,7 @@ onBeforeUnmount(() => {
           collapsed ? 'md:w-16' : 'md:w-60',
         ]"
       >
-        <!-- Mobile Domain Switcher -->
+        <!-- Mobile 4-Domain Switcher Grid -->
         <div
           class="grid grid-cols-2 gap-1.5 border-b border-[var(--ctp-surface0)]/60 px-3 py-2.5 md:hidden"
         >
@@ -491,7 +562,7 @@ onBeforeUnmount(() => {
                 ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
                 : 'bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)]'
             "
-            @click="activeDomain = tab.value; mobileMenuOpen = false"
+            @click="switchDomain(tab.value)"
           >
             <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
             <span class="truncate">{{ tab.label }}</span>
@@ -499,7 +570,7 @@ onBeforeUnmount(() => {
         </div>
 
         <nav class="flex-1 space-y-4 overflow-y-auto px-3 pt-1 pb-4">
-          <!-- Completeness Filters -->
+          <!-- Domain Completeness Filters -->
           <div class="space-y-0.5">
             <div
               v-if="!isCompact"
@@ -511,9 +582,9 @@ onBeforeUnmount(() => {
               v-for="item in [
                 { id: 'all' as CompletenessFilter, label: txt.filters.all, count: stats.total, icon: LuLayers },
                 { id: 'incomplete' as CompletenessFilter, label: txt.filters.incomplete, count: stats.incomplete, icon: LuAlertCircle },
-                { id: 'missing_cover' as CompletenessFilter, label: txt.filters.missingCover, count: stats.missingCover, icon: LuImage },
-                { id: 'missing_summary' as CompletenessFilter, label: txt.filters.missingSummary, count: stats.missingSummary, icon: LuFileText },
-                { id: 'missing_tag' as CompletenessFilter, label: txt.filters.missingTagBlock, count: stats.missingTag, icon: LuSparkles },
+                { id: 'missing_cover' as CompletenessFilter, label: domainLabels.missingCover, count: stats.missingCover, icon: LuImage },
+                { id: 'missing_summary' as CompletenessFilter, label: domainLabels.missingSummary, count: stats.missingSummary, icon: LuFileText },
+                { id: 'missing_tag' as CompletenessFilter, label: domainLabels.missingTagBlock, count: stats.missingTag, icon: LuSparkles },
               ]"
               :key="item.id"
               type="button"
@@ -535,7 +606,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <!-- Managed Roots -->
+          <!-- Isolated Domain Roots -->
           <div class="space-y-1">
             <div
               v-if="!isCompact"
@@ -553,7 +624,7 @@ onBeforeUnmount(() => {
             </div>
 
             <button
-              v-for="r in settings?.roots ?? []"
+              v-for="r in domainRoots"
               :key="r.id"
               type="button"
               class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium transition"
@@ -571,7 +642,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <!-- Subfolders in Current Directory -->
+          <!-- Subfolders in Current Domain Root -->
           <div
             v-if="!isCompact && snapshot && (snapshot.parent_rel_path !== null || snapshot.folders.length > 0)"
             class="space-y-1"
@@ -589,7 +660,7 @@ onBeforeUnmount(() => {
               @click="enterFolder(snapshot.parent_rel_path)"
             >
               <LuArrowUp class="h-3.5 w-3.5 shrink-0" />
-              <span class="truncate">.. 返回上级目录</span>
+              <span class="truncate">{{ txt.roots.parentDir }}</span>
             </button>
 
             <button
@@ -613,11 +684,10 @@ onBeforeUnmount(() => {
       <main
         class="flex min-w-0 flex-1 overflow-hidden border-t border-[var(--ctp-surface0)]/65 bg-[var(--ctp-canvas)] md:rounded-tl-3xl md:border-l"
       >
-        <!-- Left/Center Directory & File Workbench -->
         <div class="flex min-w-0 flex-1 flex-col overflow-y-auto p-4 sm:p-6">
-          <!-- Empty Roots Onboarding -->
+          <!-- Domain-Specific Empty Roots Onboarding -->
           <div
-            v-if="settings && settings.roots.length === 0"
+            v-if="settings && domainRoots.length === 0"
             class="m-auto flex max-w-md flex-col items-center rounded-3xl border border-dashed border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/40 p-8 text-center"
           >
             <div
@@ -625,9 +695,11 @@ onBeforeUnmount(() => {
             >
               <LuFolderOpen class="h-7 w-7" />
             </div>
-            <h2 class="text-base font-bold text-[var(--ctp-text)]">{{ txt.roots.empty }}</h2>
+            <h2 class="text-base font-bold text-[var(--ctp-text)]">
+              {{ domainLabels.emptyRootsTitle }}
+            </h2>
             <p class="mt-1.5 text-xs leading-relaxed text-[var(--ctp-subtext0)]">
-              {{ txt.roots.emptyDesc }}
+              {{ domainLabels.emptyRootsDesc }}
             </p>
             <button
               type="button"
@@ -640,7 +712,7 @@ onBeforeUnmount(() => {
           </div>
 
           <template v-else>
-            <!-- Top 4 Stat Cards (Consistent with xmedia Domain Homepages) -->
+            <!-- Top 4 Domain Stat Cards -->
             <div class="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
               <button
                 type="button"
@@ -656,7 +728,10 @@ onBeforeUnmount(() => {
                 <div
                   class="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
                 >
-                  <LuLayers class="h-5 w-5" />
+                  <LuBookOpen v-if="activeDomain === 'book'" class="h-5 w-5" />
+                  <LuLayers v-else-if="activeDomain === 'comic'" class="h-5 w-5" />
+                  <LuDisc3 v-else-if="activeDomain === 'music'" class="h-5 w-5" />
+                  <LuClapperboard v-else class="h-5 w-5" />
                 </div>
               </button>
 
@@ -684,7 +759,9 @@ onBeforeUnmount(() => {
                 @click="completenessFilter = 'missing_cover'"
               >
                 <div>
-                  <div class="text-xs text-[var(--ctp-subtext0)]">{{ txt.cards.missingCover }}</div>
+                  <div class="text-xs text-[var(--ctp-subtext0)]">
+                    {{ domainLabels.missingCover }}
+                  </div>
                   <div class="mt-1 text-2xl font-bold tracking-tight text-amber-500">
                     {{ stats.missingCover }}
                   </div>
@@ -703,7 +780,7 @@ onBeforeUnmount(() => {
               >
                 <div>
                   <div class="text-xs text-[var(--ctp-subtext0)]">
-                    {{ txt.cards.missingLyricsOrNfo }}
+                    {{ domainLabels.missingSummary }}
                   </div>
                   <div class="mt-1 text-2xl font-bold tracking-tight text-[var(--ctp-accent)]">
                     {{ stats.missingSummary }}
@@ -721,7 +798,6 @@ onBeforeUnmount(() => {
             <div
               class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/45 px-4 py-2.5"
             >
-              <!-- Breadcrumb -->
               <div class="flex min-w-0 flex-wrap items-center gap-1 text-xs">
                 <template v-for="(bc, idx) in breadcrumbs" :key="bc.relPath || '__root__'">
                   <LuChevronRight
@@ -743,7 +819,6 @@ onBeforeUnmount(() => {
                 </template>
               </div>
 
-              <!-- Actions -->
               <div class="flex flex-wrap items-center gap-2">
                 <AppCheckbox
                   v-if="filteredFiles.length > 0"
@@ -794,7 +869,7 @@ onBeforeUnmount(() => {
               {{ dirError }}
             </div>
 
-            <!-- Inline Subfolder Cards (if present) -->
+            <!-- Subfolder Cards -->
             <div
               v-if="snapshot && snapshot.folders.length > 0"
               class="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4"
@@ -812,13 +887,13 @@ onBeforeUnmount(() => {
                     {{ folder.name }}
                   </div>
                   <div class="text-[11px] text-[var(--ctp-subtext0)]">
-                    {{ folder.media_file_count }} 个媒体文件
+                    {{ folder.media_file_count }} 个文件
                   </div>
                 </div>
               </button>
             </div>
 
-            <!-- Media Files List -->
+            <!-- Domain Media Files List -->
             <div
               v-if="loadingDir && !snapshot"
               class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
@@ -829,7 +904,7 @@ onBeforeUnmount(() => {
               v-else-if="filteredFiles.length === 0"
               class="rounded-3xl border border-dashed border-[var(--ctp-surface0)] py-16 text-center text-xs text-[var(--ctp-subtext0)]"
             >
-              当前目录与筛选条件下暂无匹配的媒体原文件
+              当前目录与筛选条件下暂无匹配的{{ txt.domains[activeDomain] }}文件
             </div>
             <div v-else class="space-y-1.5">
               <div
@@ -947,9 +1022,13 @@ onBeforeUnmount(() => {
                         ? file.completeness.has_nfo_or_tag_block
                           ? 'NFO✓'
                           : '无NFO'
-                        : file.completeness.has_nfo_or_tag_block
-                          ? '元数据✓'
-                          : '待完善'
+                        : file.media_kind === 'comic'
+                          ? file.completeness.has_nfo_or_tag_block
+                            ? 'ComicInfo✓'
+                            : '无XML'
+                          : file.completeness.has_nfo_or_tag_block
+                            ? '元数据✓'
+                            : '待完善'
                     }}
                   </span>
                 </div>
@@ -1016,6 +1095,7 @@ onBeforeUnmount(() => {
     <ToolSettingsModal
       :open="settingsModalOpen"
       :settings="settings"
+      :active-domain="activeDomain"
       :initial-tab="settingsInitialTab"
       @close="settingsModalOpen = false"
       @updated="handleSettingsUpdated"

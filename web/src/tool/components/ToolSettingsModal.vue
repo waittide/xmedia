@@ -1,24 +1,47 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuCheck,
+  LuFileSignature,
   LuFolderPlus,
   LuKey,
+  LuLibrary,
+  LuMonitor,
+  LuMoon,
+  LuPalette,
   LuRefreshCw,
+  LuRotateCw,
   LuSave,
   LuSettings,
+  LuSlidersHorizontal,
+  LuSun,
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu'
+import {
+  CATPPUCCIN_ACCENTS,
+  CATPPUCCIN_ACCENT_HEX,
+  DARK_PALETTE_PRESETS,
+  LIGHT_PALETTE_PRESETS,
+  normalizeHex,
+  type CatppuccinAccent,
+  type CustomPaletteTokens,
+} from '@/theme/catppuccin'
+import AppColorPicker from '@/components/ui/AppColorPicker.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
-import type { MediaKind } from '@/types/api'
+import { useThemeStore } from '@/stores/theme'
+import type { LocaleCode, MediaKind } from '@/types/api'
 import { toolApi } from '../api'
-import type { PublicSettingsDto, RenameTemplatesDto } from '../types'
+import type { ManagedRootDto, PublicSettingsDto, RenameTemplatesDto } from '../types'
+
+export type ToolSettingsTab = 'appearance' | 'roots' | 'scrapers' | 'templates'
 
 const props = defineProps<{
   open: boolean
   settings: PublicSettingsDto | null
-  initialTab?: 'roots' | 'scrapers' | 'templates'
+  activeDomain: MediaKind
+  initialTab?: ToolSettingsTab
 }>()
 
 const emit = defineEmits<{
@@ -26,11 +49,15 @@ const emit = defineEmits<{
   updated: [settings: PublicSettingsDto]
 }>()
 
-const activeTab = ref<'roots' | 'scrapers' | 'templates'>('roots')
+const { t } = useI18n()
+const themeStore = useThemeStore()
+
+const activeTab = ref<ToolSettingsTab>('appearance')
 
 const newRootName = ref('')
 const newRootPath = ref('')
-const newRootKind = ref<string>('all')
+const newRootKind = ref<MediaKind>('book')
+const rootFilterKind = ref<'all' | MediaKind>('all')
 const addingRoot = ref(false)
 
 const tmdbKeyInput = ref('')
@@ -40,7 +67,7 @@ const scrapeLocale = ref('zh-CN')
 
 const templates = ref<RenameTemplatesDto>({
   book: '{author} - {title}',
-  comic: '{series} - Ch.{number} - {title}',
+  comic: '{series} - #{number} {title}',
   music: '{track} - {artist} - {title}',
   video_movie: '{title} ({year})',
   video_episode: '{show} - S{season}E{episode} - {title}',
@@ -50,26 +77,71 @@ const saving = ref(false)
 const savedBanner = ref(false)
 const errorMsg = ref<string | null>(null)
 
-const rootKindOptions = [
-  { value: 'all', label: '自动识别全部四域文件' },
-  { value: 'book', label: '默认图书 (Book)' },
-  { value: 'comic', label: '默认漫画 (Comic)' },
-  { value: 'music', label: '默认音乐 (Music)' },
-  { value: 'video', label: '默认影视 (Video)' },
+const uiLocaleOptions: { code: LocaleCode; nativeLabel: string; subLabel: string }[] = [
+  { code: 'zh-CN', nativeLabel: '简体中文', subLabel: 'Simplified Chinese' },
+  { code: 'en-US', nativeLabel: 'English', subLabel: 'English (US)' },
 ]
 
-const localeOptions = [
+const customTokenFields: { key: keyof CustomPaletteTokens; labelKey: string }[] = [
+  { key: 'canvas', labelKey: 'theme.tokenCanvas' },
+  { key: 'shell', labelKey: 'theme.tokenShell' },
+  { key: 'surface', labelKey: 'theme.tokenSurface' },
+  { key: 'text', labelKey: 'theme.tokenText' },
+  { key: 'subtext', labelKey: 'theme.tokenSubtext' },
+]
+
+const rootKindOptions = [
+  { value: 'book', label: '图书 (Book)' },
+  { value: 'comic', label: '漫画 (Comic)' },
+  { value: 'music', label: '音乐 (Music)' },
+  { value: 'video', label: '影视 (Video)' },
+]
+
+const domainBadgeLabels: Record<MediaKind, string> = {
+  book: '图书',
+  comic: '漫画',
+  music: '音乐',
+  video: '影视',
+}
+
+const scrapeLocaleOptions = [
   { value: 'zh-CN', label: '简体中文 (zh-CN)' },
   { value: 'zh-TW', label: '繁體中文 (zh-TW)' },
   { value: 'ja-JP', label: '日本語 (ja-JP)' },
   { value: 'en-US', label: 'English (en-US)' },
 ]
 
+const filteredRoots = computed<ManagedRootDto[]>(() => {
+  const all = props.settings?.roots ?? []
+  if (rootFilterKind.value === 'all') return all
+  return all.filter((r) => r.default_kind === rootFilterKind.value)
+})
+
+function accentHex(acc: CatppuccinAccent): string {
+  return CATPPUCCIN_ACCENT_HEX[themeStore.isDark ? 'dark' : 'light'][acc]
+}
+
+function onCustomTokenInput(
+  mode: 'light' | 'dark',
+  key: keyof CustomPaletteTokens,
+  raw: string,
+  fallback: string,
+): void {
+  const clean = normalizeHex(raw, fallback)
+  themeStore.updateCustomPalette(mode, { [key]: clean })
+}
+
+function onCustomAccentInput(raw: string): void {
+  const clean = normalizeHex(raw, themeStore.customAccent)
+  themeStore.setCustomAccentHex(clean)
+}
+
 watch(
-  () => [props.open, props.settings, props.initialTab] as const,
-  ([isOpen, s, tab]) => {
+  () => [props.open, props.settings, props.initialTab, props.activeDomain] as const,
+  ([isOpen, s, tab, dom]) => {
     if (!isOpen) return
     if (tab) activeTab.value = tab
+    newRootKind.value = dom
     errorMsg.value = null
     savedBanner.value = false
     tmdbKeyInput.value = ''
@@ -87,9 +159,7 @@ async function handleAddRoot(): Promise<void> {
   addingRoot.value = true
   errorMsg.value = null
   try {
-    const defaultKind =
-      newRootKind.value === 'all' ? null : (newRootKind.value as MediaKind)
-    await toolApi.addRoot(newRootName.value.trim(), newRootPath.value.trim(), defaultKind)
+    await toolApi.addRoot(newRootName.value.trim(), newRootPath.value.trim(), newRootKind.value)
     newRootName.value = ''
     newRootPath.value = ''
     const next = await toolApi.getSettings()
@@ -161,7 +231,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
       @click.self="emit('close')"
     >
       <div
-        class="flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
+        class="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
       >
         <!-- Header -->
         <div
@@ -181,10 +251,23 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
         </div>
 
         <!-- Tabs -->
-        <div class="flex shrink-0 gap-1 border-b border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/40 px-5 py-2.5">
+        <div class="flex shrink-0 flex-wrap gap-1 border-b border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/40 px-5 py-2.5">
           <button
             type="button"
-            class="rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
+            class="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
+            :class="
+              activeTab === 'appearance'
+                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60'
+            "
+            @click="activeTab = 'appearance'"
+          >
+            <LuPalette class="h-3.5 w-3.5" />
+            <span>{{ t('settings.navAppearance') }}</span>
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
             :class="
               activeTab === 'roots'
                 ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
@@ -192,11 +275,12 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             "
             @click="activeTab = 'roots'"
           >
-            白名单目录管理
+            <LuLibrary class="h-3.5 w-3.5" />
+            <span>分域目录管理</span>
           </button>
           <button
             type="button"
-            class="rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
+            class="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
             :class="
               activeTab === 'scrapers'
                 ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
@@ -204,11 +288,12 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             "
             @click="activeTab = 'scrapers'"
           >
-            刮削源密钥与代理
+            <LuKey class="h-3.5 w-3.5" />
+            <span>刮削源密钥与代理</span>
           </button>
           <button
             type="button"
-            class="rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
+            class="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
             :class="
               activeTab === 'templates'
                 ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
@@ -216,7 +301,8 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             "
             @click="activeTab = 'templates'"
           >
-            默认重命名模板
+            <LuFileSignature class="h-3.5 w-3.5" />
+            <span>默认重命名模板</span>
           </button>
         </div>
 
@@ -229,66 +315,443 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             {{ errorMsg }}
           </div>
 
-          <!-- TAB 1: ROOTS -->
-          <div v-if="activeTab === 'roots'" class="space-y-4">
+          <!-- TAB 1: APPEARANCE & LANGUAGE (Aligned with xmedia SettingsView) -->
+          <div v-if="activeTab === 'appearance'" class="space-y-4">
+            <!-- Language -->
+            <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-5">
+              <h3 class="text-sm font-bold">{{ t('theme.languageTitle') }}</h3>
+              <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.languageDesc') }}</p>
+
+              <div class="mt-3.5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <button
+                  v-for="loc in uiLocaleOptions"
+                  :key="loc.code"
+                  type="button"
+                  class="flex items-center justify-between rounded-xl border px-4 py-3 text-left transition"
+                  :class="
+                    themeStore.locale === loc.code
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] hover:border-[var(--ctp-surface1)]'
+                  "
+                  @click="themeStore.setLocale(loc.code)"
+                >
+                  <div>
+                    <p class="text-xs font-semibold text-[var(--ctp-text)]">{{ loc.nativeLabel }}</p>
+                    <p class="text-[11px] text-[var(--ctp-subtext0)]">{{ loc.subLabel }}</p>
+                  </div>
+                  <LuCheck
+                    v-if="themeStore.locale === loc.code"
+                    class="h-4 w-4 text-[var(--ctp-accent)]"
+                  />
+                </button>
+              </div>
+            </section>
+
+            <!-- Theme Mode -->
+            <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-5">
+              <div class="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h3 class="text-sm font-bold">{{ t('theme.modeTitle') }}</h3>
+                  <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.modeDesc') }}</p>
+                </div>
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
+                  @click="themeStore.resetPalettesToDefault()"
+                >
+                  <LuRotateCw class="h-3.5 w-3.5" />
+                  <span>{{ t('theme.resetDefaults') }}</span>
+                </button>
+              </div>
+
+              <div class="mt-3.5 grid grid-cols-3 gap-3">
+                <button
+                  type="button"
+                  class="flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition"
+                  :class="
+                    themeStore.themeMode === 'system'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
+                  "
+                  @click="themeStore.setThemeMode('system')"
+                >
+                  <LuMonitor class="h-4 w-4" />
+                  <span>{{ t('theme.system') }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition"
+                  :class="
+                    themeStore.themeMode === 'light'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
+                  "
+                  @click="themeStore.setThemeMode('light')"
+                >
+                  <LuSun class="h-4 w-4" />
+                  <span>{{ t('theme.light') }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition"
+                  :class="
+                    themeStore.themeMode === 'dark'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
+                  "
+                  @click="themeStore.setThemeMode('dark')"
+                >
+                  <LuMoon class="h-4 w-4" />
+                  <span>{{ t('theme.dark') }}</span>
+                </button>
+              </div>
+            </section>
+
+            <!-- Light Palette Presets -->
+            <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-5">
+              <h3 class="text-sm font-bold">{{ t('theme.lightPaletteTitle') }}</h3>
+              <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.lightPaletteDesc') }}</p>
+
+              <div class="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <button
+                  v-for="preset in LIGHT_PALETTE_PRESETS"
+                  :key="preset.id"
+                  type="button"
+                  class="flex items-center justify-between rounded-xl border px-3.5 py-2.5 text-left text-xs font-semibold transition"
+                  :class="
+                    themeStore.lightPreset === preset.id
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
+                  "
+                  @click="themeStore.setLightPreset(preset.id)"
+                >
+                  <div class="flex min-w-0 items-center gap-2">
+                    <span class="flex -space-x-1">
+                      <span
+                        class="h-3.5 w-3.5 rounded-full border border-black/15"
+                        :style="{ backgroundColor: preset.tokens.canvas }"
+                      />
+                      <span
+                        class="h-3.5 w-3.5 rounded-full border border-black/15"
+                        :style="{ backgroundColor: preset.tokens.shell }"
+                      />
+                      <span
+                        class="h-3.5 w-3.5 rounded-full border border-black/15"
+                        :style="{ backgroundColor: preset.defaultAccent }"
+                      />
+                    </span>
+                    <span class="truncate">{{ t(`theme.presets.${preset.id}`) }}</span>
+                  </div>
+                  <LuCheck v-if="themeStore.lightPreset === preset.id" class="h-4 w-4 shrink-0" />
+                </button>
+
+                <button
+                  type="button"
+                  class="flex items-center justify-between rounded-xl border px-3.5 py-2.5 text-left text-xs font-semibold transition"
+                  :class="
+                    themeStore.lightPreset === 'custom'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
+                  "
+                  @click="
+                    themeStore.lightPreset === 'custom'
+                      ? undefined
+                      : themeStore.seedCustomFromActivePreset('light')
+                  "
+                >
+                  <span class="flex items-center gap-2">
+                    <LuSlidersHorizontal class="h-3.5 w-3.5 shrink-0" />
+                    <span>{{ t('theme.customPalette') }}</span>
+                  </span>
+                  <LuCheck v-if="themeStore.lightPreset === 'custom'" class="h-4 w-4 shrink-0" />
+                </button>
+              </div>
+
+              <div
+                v-if="themeStore.lightPreset === 'custom'"
+                class="mt-3.5 grid grid-cols-2 gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3.5 sm:grid-cols-5"
+              >
+                <div v-for="f in customTokenFields" :key="`light-${f.key}`">
+                  <label class="mb-1 block truncate text-[11px] font-medium text-[var(--ctp-subtext0)]">
+                    {{ t(f.labelKey) }}
+                  </label>
+                  <div class="flex items-center gap-1.5">
+                    <AppColorPicker
+                      :model-value="themeStore.customLight[f.key]"
+                      @update:model-value="themeStore.updateCustomPalette('light', { [f.key]: $event })"
+                    />
+                    <input
+                      type="text"
+                      :value="themeStore.customLight[f.key]"
+                      maxlength="7"
+                      class="h-8 w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 font-mono text-xs outline-none focus:border-[var(--ctp-accent)]"
+                      @change="onCustomTokenInput('light', f.key, ($event.target as HTMLInputElement).value, themeStore.customLight[f.key])"
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Dark Palette Presets -->
+            <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-5">
+              <h3 class="text-sm font-bold">{{ t('theme.darkPaletteTitle') }}</h3>
+              <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.darkPaletteDesc') }}</p>
+
+              <div class="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <button
+                  v-for="preset in DARK_PALETTE_PRESETS"
+                  :key="preset.id"
+                  type="button"
+                  class="flex items-center justify-between rounded-xl border px-3.5 py-2.5 text-left text-xs font-semibold transition"
+                  :class="
+                    themeStore.darkPreset === preset.id
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
+                  "
+                  @click="themeStore.setDarkPreset(preset.id)"
+                >
+                  <div class="flex min-w-0 items-center gap-2">
+                    <span class="flex -space-x-1">
+                      <span
+                        class="h-3.5 w-3.5 rounded-full border border-white/20"
+                        :style="{ backgroundColor: preset.tokens.canvas }"
+                      />
+                      <span
+                        class="h-3.5 w-3.5 rounded-full border border-white/20"
+                        :style="{ backgroundColor: preset.tokens.shell }"
+                      />
+                      <span
+                        class="h-3.5 w-3.5 rounded-full border border-white/20"
+                        :style="{ backgroundColor: preset.defaultAccent }"
+                      />
+                    </span>
+                    <span class="truncate">{{ t(`theme.presets.${preset.id}`) }}</span>
+                  </div>
+                  <LuCheck v-if="themeStore.darkPreset === preset.id" class="h-4 w-4 shrink-0" />
+                </button>
+
+                <button
+                  type="button"
+                  class="flex items-center justify-between rounded-xl border px-3.5 py-2.5 text-left text-xs font-semibold transition"
+                  :class="
+                    themeStore.darkPreset === 'custom'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
+                  "
+                  @click="
+                    themeStore.darkPreset === 'custom'
+                      ? undefined
+                      : themeStore.seedCustomFromActivePreset('dark')
+                  "
+                >
+                  <span class="flex items-center gap-2">
+                    <LuSlidersHorizontal class="h-3.5 w-3.5 shrink-0" />
+                    <span>{{ t('theme.customPalette') }}</span>
+                  </span>
+                  <LuCheck v-if="themeStore.darkPreset === 'custom'" class="h-4 w-4 shrink-0" />
+                </button>
+              </div>
+
+              <div
+                v-if="themeStore.darkPreset === 'custom'"
+                class="mt-3.5 grid grid-cols-2 gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3.5 sm:grid-cols-5"
+              >
+                <div v-for="f in customTokenFields" :key="`dark-${f.key}`">
+                  <label class="mb-1 block truncate text-[11px] font-medium text-[var(--ctp-subtext0)]">
+                    {{ t(f.labelKey) }}
+                  </label>
+                  <div class="flex items-center gap-1.5">
+                    <AppColorPicker
+                      :model-value="themeStore.customDark[f.key]"
+                      @update:model-value="themeStore.updateCustomPalette('dark', { [f.key]: $event })"
+                    />
+                    <input
+                      type="text"
+                      :value="themeStore.customDark[f.key]"
+                      maxlength="7"
+                      class="h-8 w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 font-mono text-xs outline-none focus:border-[var(--ctp-accent)]"
+                      @change="onCustomTokenInput('dark', f.key, ($event.target as HTMLInputElement).value, themeStore.customDark[f.key])"
+                    />
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- Accent Color -->
+            <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-5">
+              <h3 class="text-sm font-bold">{{ t('theme.accentTitle') }}</h3>
+              <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.accentDesc') }}</p>
+
+              <div class="mt-3.5 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                <button
+                  type="button"
+                  class="rounded-xl border px-3.5 py-2 text-xs font-semibold transition"
+                  :class="
+                    themeStore.accentMode === 'preset'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
+                  "
+                  @click="themeStore.setAccentMode('preset')"
+                >
+                  {{ t('theme.accentModePreset') }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-xl border px-3.5 py-2 text-xs font-semibold transition"
+                  :class="
+                    themeStore.accentMode === 'catppuccin'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
+                  "
+                  @click="themeStore.setAccentMode('catppuccin')"
+                >
+                  {{ t('theme.accentModeCatppuccin') }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-xl border px-3.5 py-2 text-xs font-semibold transition"
+                  :class="
+                    themeStore.accentMode === 'custom'
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
+                  "
+                  @click="themeStore.setAccentMode('custom')"
+                >
+                  {{ t('theme.accentModeCustom') }}
+                </button>
+              </div>
+
+              <div
+                v-if="themeStore.accentMode === 'catppuccin'"
+                class="mt-3.5 flex flex-wrap gap-2.5"
+              >
+                <button
+                  v-for="acc in CATPPUCCIN_ACCENTS"
+                  :key="acc"
+                  type="button"
+                  class="flex h-7 w-7 items-center justify-center rounded-full transition hover:scale-110"
+                  :style="{ backgroundColor: accentHex(acc) }"
+                  :title="t(`theme.accents.${acc}`)"
+                  @click="themeStore.setCatppuccinAccent(acc)"
+                >
+                  <LuCheck
+                    v-if="themeStore.accent === acc"
+                    class="h-3.5 w-3.5"
+                    :style="{ color: themeStore.isDark ? '#11111b' : '#ffffff' }"
+                  />
+                </button>
+              </div>
+
+              <div
+                v-else-if="themeStore.accentMode === 'custom'"
+                class="mt-3.5 flex items-center gap-2.5"
+              >
+                <AppColorPicker
+                  :model-value="themeStore.customAccent"
+                  @update:model-value="themeStore.setCustomAccentHex($event)"
+                />
+                <input
+                  type="text"
+                  :value="themeStore.customAccent"
+                  maxlength="7"
+                  class="h-9 w-36 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 font-mono text-xs outline-none focus:border-[var(--ctp-accent)]"
+                  @change="onCustomAccentInput(($event.target as HTMLInputElement).value)"
+                />
+              </div>
+            </section>
+          </div>
+
+          <!-- TAB 2: DOMAIN-ISOLATED ROOTS -->
+          <div v-else-if="activeTab === 'roots'" class="space-y-4">
             <form
               class="space-y-3 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/40 p-4"
               @submit.prevent="handleAddRoot"
             >
-              <div class="text-xs font-semibold text-[var(--ctp-text)]">新增受控媒体根目录</div>
+              <div class="flex items-center justify-between gap-2">
+                <div class="text-xs font-semibold text-[var(--ctp-text)]">
+                  新增专属领域媒体根目录
+                </div>
+                <span class="text-[11px] text-[var(--ctp-subtext0)]">
+                  图书、漫画、音乐、影视目录彼此独立隔离
+                </span>
+              </div>
               <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-12">
+                <div class="sm:col-span-3">
+                  <AppSelect v-model="newRootKind" :options="rootKindOptions" />
+                </div>
                 <input
                   v-model="newRootName"
                   type="text"
-                  placeholder="显示别名（可选，默认取目录名）"
-                  class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-4"
+                  placeholder="显示别名（可选，默认目录名）"
+                  class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-3"
                 />
                 <input
                   v-model="newRootPath"
                   type="text"
                   placeholder="服务器本地绝对路径，如 /data/media/music"
-                  class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-8"
+                  class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-6"
                 />
               </div>
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <div class="w-60">
-                  <AppSelect v-model="newRootKind" :options="rootKindOptions" />
-                </div>
+              <div class="flex justify-end">
                 <button
                   type="submit"
                   :disabled="!newRootPath.trim() || addingRoot"
                   class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95 disabled:opacity-50"
                 >
                   <LuFolderPlus class="h-3.5 w-3.5" />
-                  <span>添加根目录</span>
+                  <span>添加到「{{ domainBadgeLabels[newRootKind] }}」领域</span>
                 </button>
               </div>
             </form>
 
-            <div class="space-y-2">
-              <div class="text-xs font-semibold text-[var(--ctp-subtext0)]">
-                已登记根目录 ({{ settings?.roots.length ?? 0 }})
+            <div class="space-y-2.5">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="text-xs font-semibold text-[var(--ctp-subtext0)]">
+                  已登记根目录 ({{ filteredRoots.length }})
+                </div>
+                <div class="flex items-center gap-1 rounded-xl bg-[var(--ctp-mantle)] p-1">
+                  <button
+                    v-for="f in [
+                      { id: 'all' as const, label: '全部' },
+                      { id: 'book' as const, label: '图书' },
+                      { id: 'comic' as const, label: '漫画' },
+                      { id: 'music' as const, label: '音乐' },
+                      { id: 'video' as const, label: '影视' },
+                    ]"
+                    :key="f.id"
+                    type="button"
+                    class="rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
+                    :class="
+                      rootFilterKind === f.id
+                        ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                        : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                    "
+                    @click="rootFilterKind = f.id"
+                  >
+                    {{ f.label }}
+                  </button>
+                </div>
               </div>
+
               <div
-                v-if="!settings || settings.roots.length === 0"
+                v-if="filteredRoots.length === 0"
                 class="rounded-2xl border border-dashed border-[var(--ctp-surface0)] py-8 text-center text-xs text-[var(--ctp-subtext0)]"
               >
-                暂无根目录，请在上方添加本地文件夹路径
+                当前筛选下暂无根目录，请在上方添加对应领域的本地文件夹路径
               </div>
               <div
-                v-for="r in settings?.roots ?? []"
+                v-for="r in filteredRoots"
                 :key="r.id"
                 class="flex items-center justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 px-4 py-3"
               >
                 <div class="min-w-0">
                   <div class="flex items-center gap-2">
-                    <span class="text-xs font-bold text-[var(--ctp-text)]">{{ r.name }}</span>
                     <span
-                      v-if="r.default_kind"
-                      class="rounded-md bg-[var(--ctp-accent-soft)] px-1.5 py-0.5 text-[10px] font-semibold uppercase text-[var(--ctp-accent)]"
+                      class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-bold text-[var(--ctp-accent)]"
                     >
-                      {{ r.default_kind }}
+                      {{ r.default_kind ? domainBadgeLabels[r.default_kind] : '未绑定领域' }}
                     </span>
+                    <span class="text-xs font-bold text-[var(--ctp-text)]">{{ r.name }}</span>
                   </div>
                   <div class="mt-0.5 truncate font-mono text-[11px] text-[var(--ctp-subtext0)]">
                     {{ r.path }}
@@ -306,9 +769,9 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             </div>
           </div>
 
-          <!-- TAB 2: SCRAPERS & PROXY -->
+          <!-- TAB 3: SCRAPERS & PROXY -->
           <div v-else-if="activeTab === 'scrapers'" class="space-y-4">
-            <div class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-4 space-y-3">
+            <div class="space-y-3 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-4">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2 text-xs font-bold text-[var(--ctp-text)]">
                   <LuKey class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
@@ -339,7 +802,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               />
             </div>
 
-            <div class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-4 space-y-3">
+            <div class="space-y-3 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-4">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2 text-xs font-bold text-[var(--ctp-text)]">
                   <LuKey class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
@@ -386,12 +849,12 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
                 <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">
                   默认刮削语言偏好
                 </span>
-                <AppSelect v-model="scrapeLocale" :options="localeOptions" />
+                <AppSelect v-model="scrapeLocale" :options="scrapeLocaleOptions" />
               </div>
             </div>
           </div>
 
-          <!-- TAB 3: RENAME TEMPLATES -->
+          <!-- TAB 4: RENAME TEMPLATES -->
           <div v-else class="space-y-3">
             <label class="block">
               <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">图书模板 ({author}, {title}, {year})</span>
@@ -445,7 +908,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             设置已保存
           </span>
           <span v-else class="text-[11px] text-[var(--ctp-subtext0)]">
-            MusicBrainz、LRCLIB、OpenLibrary 与 Bangumi 默认免密钥即开即用
+            Apple Music、MusicBrainz、LRCLIB、OpenLibrary 与 Bangumi 默认免密钥即开即用
           </span>
 
           <div class="flex items-center gap-2">
@@ -457,7 +920,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               关闭
             </button>
             <button
-              v-if="activeTab !== 'roots'"
+              v-if="activeTab === 'scrapers' || activeTab === 'templates'"
               type="button"
               :disabled="saving"
               class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
