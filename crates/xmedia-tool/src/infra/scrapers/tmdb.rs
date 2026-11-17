@@ -7,6 +7,7 @@ use crate::domain::config::ProviderCredentials;
 use crate::domain::ports::ScraperProviderPort;
 use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
+    score_candidate_relevance,
 };
 use crate::infra::scrapers::http_client::build_http_client;
 
@@ -31,6 +32,8 @@ pub(crate) struct TmdbSearchHit {
     pub first_air_date: Option<String>,
     #[serde(default)]
     pub poster_path: Option<String>,
+    #[serde(default)]
+    pub vote_count: u32,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -424,12 +427,27 @@ impl ScraperProviderPort for TmdbProvider {
             (Some(s), None) => Some((s, 1)),
             _ => None,
         };
-        Ok(body
+        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = body
             .results
             .into_iter()
             .take(15)
-            .map(|h| map_tmdb_hit_to_candidate(h, target, season_ep))
-            .collect())
+            .enumerate()
+            .map(|(idx, h)| {
+                let votes = h.vote_count;
+                let cand = map_tmdb_hit_to_candidate(h, target, season_ep);
+                let rel = score_candidate_relevance(
+                    &query.keyword,
+                    query.year,
+                    &cand.title,
+                    cand.subtitle.as_deref(),
+                    cand.year,
+                    votes,
+                );
+                (rel, idx, cand)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        Ok(scored.into_iter().map(|(_, _, c)| c).collect())
     }
 
     async fn fetch_detail(

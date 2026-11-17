@@ -6,6 +6,7 @@ use crate::domain::config::ProviderCredentials;
 use crate::domain::ports::ScraperProviderPort;
 use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
+    score_candidate_relevance,
 };
 use crate::infra::scrapers::http_client::build_http_client;
 
@@ -37,6 +38,8 @@ pub(crate) struct BgmImages {
 pub(crate) struct BgmRating {
     #[serde(default)]
     pub score: Option<f32>,
+    #[serde(default)]
+    pub total: u32,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -419,11 +422,26 @@ impl ScraperProviderPort for BangumiProvider {
             (Some(s), None) => Some((s, 1)),
             _ => None,
         };
-        Ok(body
+        let mut scored: Vec<(i32, usize, ScrapeCandidate)> = body
             .data
             .into_iter()
-            .map(|s| map_bgm_to_candidate(s, query.target, season_ep))
-            .collect())
+            .enumerate()
+            .map(|(idx, s)| {
+                let votes = s.rating.as_ref().map(|r| r.total).unwrap_or(0);
+                let cand = map_bgm_to_candidate(s, query.target, season_ep);
+                let rel = score_candidate_relevance(
+                    &query.keyword,
+                    query.year,
+                    &cand.title,
+                    cand.subtitle.as_deref(),
+                    cand.year,
+                    votes,
+                );
+                (rel, idx, cand)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        Ok(scored.into_iter().map(|(_, _, c)| c).collect())
     }
 
     async fn fetch_detail(

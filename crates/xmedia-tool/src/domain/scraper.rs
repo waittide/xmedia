@@ -361,6 +361,85 @@ pub fn merge_scraped_by_priority(
     }
 }
 
+fn normalize_title_for_match(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+/// Scores how closely a candidate's primary/original title and year match the user's search query,
+/// boosting exact canonical works above spin-off shorts (`～...～`, `OVA`, `ミニ`, `小剧场`).
+pub fn score_candidate_relevance(
+    keyword: &str,
+    year_hint: Option<i32>,
+    primary_title: &str,
+    alt_title: Option<&str>,
+    cand_year: Option<i32>,
+    popularity_votes: u32,
+) -> i32 {
+    let kw_trim = keyword.trim().to_lowercase();
+    let kw_norm = normalize_title_for_match(keyword);
+    if kw_norm.is_empty() {
+        return 0;
+    }
+
+    let pri_trim = primary_title.trim().to_lowercase();
+    let pri_norm = normalize_title_for_match(primary_title);
+    let alt_trim = alt_title
+        .map(|s| s.trim().to_lowercase())
+        .unwrap_or_default();
+    let alt_norm = alt_title.map(normalize_title_for_match).unwrap_or_default();
+
+    let mut score = 0i32;
+
+    if pri_trim == kw_trim || (!alt_trim.is_empty() && alt_trim == kw_trim) {
+        score += 1200;
+    } else if pri_norm == kw_norm || (!alt_norm.is_empty() && alt_norm == kw_norm) {
+        score += 950;
+    } else if pri_norm.starts_with(&kw_norm)
+        || (!alt_norm.is_empty() && alt_norm.starts_with(&kw_norm))
+    {
+        let extra_chars = pri_norm
+            .chars()
+            .count()
+            .saturating_sub(kw_norm.chars().count()) as i32;
+        score += (420 - extra_chars * 18).max(80);
+    } else if pri_norm.contains(&kw_norm) || (!alt_norm.is_empty() && alt_norm.contains(&kw_norm)) {
+        score += 120;
+    }
+
+    // Penalize spin-offs / mini specials when the user did not search for them explicitly
+    let spinoff_markers = [
+        "～",
+        "~",
+        "ミニ",
+        "小剧场",
+        "总集篇",
+        "ova",
+        "oad",
+        "特典",
+        "sp",
+    ];
+    for marker in spinoff_markers {
+        if (pri_trim.contains(marker) || alt_trim.contains(marker)) && !kw_trim.contains(marker) {
+            score -= 260;
+            break;
+        }
+    }
+
+    if let (Some(want_y), Some(got_y)) = (year_hint, cand_year) {
+        if want_y == got_y {
+            score += 280;
+        } else if (want_y - got_y).abs() == 1 {
+            score += 90;
+        }
+    }
+
+    score += (popularity_votes.min(15_000) / 50) as i32;
+    score
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FieldSourceBadge, ScrapeTargetKind, ScrapedMetadata, merge_scraped_by_priority};

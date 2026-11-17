@@ -133,8 +133,17 @@ export const toolApi = {
     })
   },
 
-  browse(rootId: string, relPath: string, kind: MediaKind | null): Promise<DirectorySnapshot> {
-    const q = new URLSearchParams({ root_id: rootId, path: relPath })
+  browse(
+    rootId: string,
+    relPath: string,
+    kind: MediaKind | null,
+    recursive = true,
+  ): Promise<DirectorySnapshot> {
+    const q = new URLSearchParams({
+      root_id: rootId,
+      path: relPath,
+      recursive: recursive ? 'true' : 'false',
+    })
     if (kind) q.set('kind', kind)
     return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`)
   },
@@ -164,7 +173,7 @@ export const toolApi = {
     rootId: string,
     relPath: string,
     file: File,
-    slot: 'cover' | 'poster' | 'fanart',
+    slot: 'cover' | 'poster' | 'fanart' | 'thumb',
     kind: MediaKind,
   ): Promise<MediaFileDetail> {
     const fd = new FormData()
@@ -184,6 +193,7 @@ export const toolApi = {
     paths: string[],
     template: string | null,
     kind: MediaKind | null,
+    episodeTemplate?: string | null,
   ): Promise<RenamePlanItem[]> {
     return toolRequest<RenamePlanItem[]>('/files/rename/preview', {
       method: 'POST',
@@ -191,6 +201,7 @@ export const toolApi = {
         root_id: rootId,
         paths,
         template: template || undefined,
+        episode_template: episodeTemplate || undefined,
         kind: kind || undefined,
       }),
     })

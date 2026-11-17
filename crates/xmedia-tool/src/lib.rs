@@ -398,6 +398,7 @@ mod tests {
                 root_id,
                 &["raw_song.wav".to_string()],
                 Some("{track:2} - {artist} - {title}"),
+                None,
                 Some(MediaKind::Music),
             )
             .await
@@ -538,6 +539,7 @@ mod tests {
             .preview_rename(
                 root_id,
                 &["raw_ep.mkv".to_string()],
+                None,
                 None,
                 Some(MediaKind::Video),
             )
@@ -732,5 +734,50 @@ mod tests {
         assert!(season_nfo_str.contains("<seasonnumber>1</seasonnumber>"));
         assert!(season_nfo_str.contains("第一季剧情简介。"));
         assert!(ep_nfo_str.contains("第一集剧情简介。"));
+
+        // 3. Recursive browse at root reports both subfolders with accurate recursive file counts AND all nested media files
+        let snap = app
+            .workbench
+            .browse_directory(root_id, "", Some(MediaKind::Video), true)
+            .await
+            .unwrap();
+        assert_eq!(snap.files.len(), 2);
+        let frieren_folder = snap
+            .folders
+            .iter()
+            .find(|f| f.name == "葬送的芙莉莲 (2023)")
+            .unwrap();
+        assert_eq!(frieren_folder.media_file_count, 1);
+
+        // 4. Re-scraping an already archived episode into a corrected series name cleanly removes the vacated ghost folder
+        let rescrape_detail = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "葬送的芙莉莲 (2023)/Season 01/葬送的芙莉莲 - S01E01 - 冒险的终点.mkv",
+                MediaKind::Video,
+                ScrapedMetadata {
+                    provider_id: "tmdb".into(),
+                    external_id: "209867".into(),
+                    target: Some(ScrapeTargetKind::TvShow),
+                    series_or_album: Some("Frieren Beyond Journey's End".into()),
+                    title: Some("The Journey's End".into()),
+                    disc_or_season_number: Some(1),
+                    track_or_episode_number: Some(1),
+                    year: Some(2023),
+                    cover_url: Some(format!("http://{addr}/show_poster.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rescrape_detail.entry.rel_path,
+            "Frieren Beyond Journey's End (2023)/Season 01/Frieren Beyond Journey's End - S01E01 - The Journey's End.mkv"
+        );
+        // Old show folder and its orphan `tvshow.nfo`/`season.nfo`/`poster.png` are completely reclaimed
+        assert!(!show_dir.exists());
     }
 }

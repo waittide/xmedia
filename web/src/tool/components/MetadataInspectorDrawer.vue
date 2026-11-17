@@ -6,6 +6,7 @@ import {
   LuClapperboard,
   LuCopy,
   LuDisc3,
+  LuFileSignature,
   LuFileText,
   LuImage,
   LuLayers,
@@ -38,7 +39,7 @@ const saveFeedback = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 const uploadingArtwork = ref(false)
 const coverInputRef = ref<HTMLInputElement | null>(null)
-const pendingSlot = ref<'cover' | 'poster' | 'fanart'>('cover')
+const pendingSlot = ref<'cover' | 'poster' | 'fanart' | 'thumb'>('cover')
 const lyricsTab = ref<'embedded' | 'sidecar'>('embedded')
 
 // Book form
@@ -201,7 +202,7 @@ const directionOptions = [
   { value: 'webtoon', label: '条漫竖滑 (Webtoon)' },
 ]
 
-function triggerArtworkUpload(slot: 'cover' | 'poster' | 'fanart'): void {
+function triggerArtworkUpload(slot: 'cover' | 'poster' | 'fanart' | 'thumb'): void {
   pendingSlot.value = slot
   coverInputRef.value?.click()
 }
@@ -248,7 +249,7 @@ function parseOptInt(raw: string, fallbackZero = 0): number | undefined {
   return Number.isFinite(n) ? n : undefined
 }
 
-async function saveMetadata(): Promise<void> {
+async function saveMetadata(syncArchivePath = false): Promise<void> {
   if (!canSaveMetadata.value || saving.value) return
   saving.value = true
   errorMsg.value = null
@@ -334,13 +335,35 @@ async function saveMetadata(): Promise<void> {
       }
     }
 
-    const updated = await toolApi.writeMetadata(
+    let updated = await toolApi.writeMetadata(
       props.detail.entry.root_id,
       props.detail.entry.rel_path,
       envelope,
     )
+
+    if (syncArchivePath) {
+      const plans = await toolApi.previewRename(
+        updated.entry.root_id,
+        [updated.entry.rel_path],
+        null,
+        updated.entry.media_kind,
+      )
+      const plan = plans[0]
+      if (plan && !plan.unchanged) {
+        if (plan.conflict) {
+          throw new Error(`无法归档路径：${plan.conflict}`)
+        }
+        await toolApi.executeRename(updated.entry.root_id, [plan])
+        updated = await toolApi.inspectFile(
+          updated.entry.root_id,
+          plan.to_rel_path,
+          updated.entry.media_kind,
+        )
+      }
+    }
+
     emit('updated', updated, false)
-    saveFeedback.value = txt.value.actions.saved
+    saveFeedback.value = syncArchivePath ? '已保存并同步归档目录' : txt.value.actions.saved
     setTimeout(() => {
       saveFeedback.value = null
     }, 2200)
@@ -544,6 +567,16 @@ async function saveMetadata(): Promise<void> {
               >
                 <LuUpload class="h-3.5 w-3.5" />
                 <span>{{ txt.actions.uploadFanart }}</span>
+              </button>
+              <button
+                v-if="videoIsEpisode"
+                type="button"
+                :disabled="uploadingArtwork"
+                class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+                @click="triggerArtworkUpload('thumb')"
+              >
+                <LuImage class="h-3.5 w-3.5" />
+                <span>单集剧照</span>
               </button>
             </template>
           </div>
@@ -1050,7 +1083,7 @@ async function saveMetadata(): Promise<void> {
 
     <!-- Bottom Sticky Save Bar -->
     <div
-      class="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--ctp-surface0)]/70 bg-[var(--ctp-canvas)]/85 px-4 py-3"
+      class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--ctp-surface0)]/70 bg-[var(--ctp-canvas)]/85 px-4 py-3"
     >
       <span
         v-if="saveFeedback"
@@ -1060,19 +1093,32 @@ async function saveMetadata(): Promise<void> {
         <span>{{ saveFeedback }}</span>
       </span>
       <span v-else class="text-[11px] text-[var(--ctp-subtext0)]">
-        采用临时文件 + 原子重命名安全落盘
+        原子落盘 · 支持同步归档路径
       </span>
 
-      <button
-        type="button"
-        :disabled="!canSaveMetadata || saving"
-        class="inline-flex items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
-        @click="saveMetadata"
-      >
-        <LuRefreshCw v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-        <LuSave v-else class="h-3.5 w-3.5" />
-        <span>{{ saving ? txt.actions.saving : txt.actions.save }}</span>
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          :disabled="!canSaveMetadata || saving"
+          class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3 py-2 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+          title="保存元信息并按默认模板同步重命名文件名与所属目录"
+          @click="saveMetadata(true)"
+        >
+          <LuFileSignature class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+          <span>保存并归档路径</span>
+        </button>
+
+        <button
+          type="button"
+          :disabled="!canSaveMetadata || saving"
+          class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
+          @click="saveMetadata(false)"
+        >
+          <LuRefreshCw v-if="saving" class="h-3.5 w-3.5 animate-spin" />
+          <LuSave v-else class="h-3.5 w-3.5" />
+          <span>{{ saving ? txt.actions.saving : txt.actions.save }}</span>
+        </button>
+      </div>
     </div>
   </aside>
 </template>

@@ -4,6 +4,7 @@ import {
   LuArrowDown,
   LuArrowUp,
   LuCheck,
+  LuChevronLeft,
   LuChevronRight,
   LuExternalLink,
   LuImage,
@@ -13,6 +14,7 @@ import {
   LuSearch,
   LuSparkles,
   LuX,
+  LuZap,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { toolApi } from '../api'
@@ -20,11 +22,13 @@ import { mergeScrapedClientSide } from '../merger'
 import type {
   FieldSourceBadge,
   MediaFileDetail,
+  MediaFileEntry,
   MergedScrapedResult,
   ProviderBriefDto,
   ProviderStatusDto,
   PublicSettingsDto,
   ScrapeCandidate,
+  ScrapeQuery,
   ScrapeTargetKind,
   ScrapedMetadata,
 } from '../types'
@@ -33,11 +37,15 @@ const props = defineProps<{
   open: boolean
   detail: MediaFileDetail | null
   settings: PublicSettingsDto | null
+  queue?: MediaFileEntry[]
+  queueIndex?: number
 }>()
 
 const emit = defineEmits<{
   close: []
   applied: [detail: MediaFileDetail]
+  batchApplied: [lastDetail: MediaFileDetail | null]
+  selectQueueIndex: [index: number]
   openSettings: []
   settingsUpdated: [settings: PublicSettingsDto]
 }>()
@@ -50,6 +58,7 @@ const keyword = ref('')
 const artistOrAuthor = ref('')
 const albumOrSeries = ref('')
 const isbn = ref('')
+const yearInput = ref('')
 const season = ref('')
 const episode = ref('')
 
@@ -67,7 +76,15 @@ const loadingProviderId = ref<string | null>(null)
 const applyCover = ref(true)
 const writeSidecarLrc = ref(true)
 const applying = ref(false)
+const batchProgress = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
+
+const queueList = computed<MediaFileEntry[]>(() => props.queue ?? [])
+const currentQueueIdx = computed<number>(() => props.queueIndex ?? 0)
+const hasQueue = computed<boolean>(() => queueList.value.length > 1)
+const hasNextInQueue = computed<boolean>(
+  () => hasQueue.value && currentQueueIdx.value < queueList.value.length - 1,
+)
 
 const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>(() => {
   const kind = props.detail?.entry.media_kind
@@ -226,6 +243,50 @@ function stripChapterSuffix(raw: string): string {
     .trim()
 }
 
+function stripYearAndNoiseSuffix(raw: string): string {
+  return raw
+    .replace(/\s*[\(\[](?:19\d{2}|20\d{2})[\)\]]\s*$/, '')
+    .trim()
+}
+
+function buildAutoQueryFromDetail(d: MediaFileDetail): ScrapeQuery {
+  const m = d.metadata
+  if (m.kind === 'music') {
+    return {
+      target: 'music_track',
+      keyword: m.data.title || d.entry.display_title,
+      artist_or_author: m.data.artist || undefined,
+      album_or_series: m.data.album || undefined,
+      year: m.data.year ?? undefined,
+    }
+  }
+  if (m.kind === 'video') {
+    const rawKw = (m.data.is_episode && m.data.show_title) || m.data.title || d.entry.display_title
+    return {
+      target: m.data.is_episode ? 'tv_show' : 'movie',
+      keyword: stripYearAndNoiseSuffix(rawKw),
+      year: m.data.year ?? undefined,
+      season: m.data.season_number ?? undefined,
+      episode: m.data.episode_number ?? undefined,
+    }
+  }
+  if (m.kind === 'comic') {
+    const fallbackClean = stripChapterSuffix(m.data.title || d.entry.display_title)
+    return {
+      target: 'comic',
+      keyword: m.data.series || fallbackClean || m.data.title || d.entry.display_title,
+      artist_or_author: m.data.writers[0] || undefined,
+      year: m.data.year ?? undefined,
+    }
+  }
+  return {
+    target: 'book',
+    keyword: m.data.title || d.entry.display_title,
+    artist_or_author: m.data.authors[0] || undefined,
+    isbn: m.data.isbn || undefined,
+  }
+}
+
 function seedFromDetail(d: MediaFileDetail): void {
   errorMsg.value = null
   candidates.value = []
@@ -233,30 +294,22 @@ function seedFromDetail(d: MediaFileDetail): void {
   detailsByProvider.value = {}
   activeSourceTab.value = 'merged'
   previewMode.value = 'merged'
+  artistOrAuthor.value = ''
+  albumOrSeries.value = ''
+  isbn.value = ''
+  yearInput.value = ''
+  season.value = ''
+  episode.value = ''
 
-  const m = d.metadata
-  if (m.kind === 'music') {
-    targetKind.value = 'music_track'
-    keyword.value = m.data.title || d.entry.display_title
-    artistOrAuthor.value = m.data.artist || ''
-    albumOrSeries.value = m.data.album || ''
-  } else if (m.kind === 'video') {
-    targetKind.value = m.data.is_episode ? 'tv_show' : 'movie'
-    keyword.value =
-      (m.data.is_episode && m.data.show_title) || m.data.title || d.entry.display_title
-    season.value = m.data.season_number !== null ? String(m.data.season_number) : ''
-    episode.value = m.data.episode_number !== null ? String(m.data.episode_number) : ''
-  } else if (m.kind === 'comic') {
-    targetKind.value = 'comic'
-    const fallbackClean = stripChapterSuffix(m.data.title || d.entry.display_title)
-    keyword.value = m.data.series || fallbackClean || m.data.title || d.entry.display_title
-    artistOrAuthor.value = m.data.writers[0] ?? ''
-  } else if (m.kind === 'book') {
-    targetKind.value = 'book'
-    keyword.value = m.data.title || d.entry.display_title
-    artistOrAuthor.value = m.data.authors[0] ?? ''
-    isbn.value = m.data.isbn ?? ''
-  }
+  const q = buildAutoQueryFromDetail(d)
+  targetKind.value = q.target ?? 'book'
+  keyword.value = q.keyword
+  artistOrAuthor.value = q.artist_or_author ?? ''
+  albumOrSeries.value = q.album_or_series ?? ''
+  isbn.value = q.isbn ?? ''
+  yearInput.value = q.year ? String(q.year) : ''
+  season.value = q.season ? String(q.season) : ''
+  episode.value = q.episode ? String(q.episode) : ''
 }
 
 watch(
@@ -363,6 +416,7 @@ async function runSearch(): Promise<void> {
       artist_or_author: artistOrAuthor.value.trim() || undefined,
       album_or_series: albumOrSeries.value.trim() || undefined,
       isbn: isbn.value.trim() || undefined,
+      year: yearInput.value.trim() ? Number.parseInt(yearInput.value, 10) : undefined,
       season: season.value.trim() ? Number.parseInt(season.value, 10) : undefined,
       episode: episode.value.trim() ? Number.parseInt(episode.value, 10) : undefined,
     })
@@ -376,22 +430,50 @@ async function runSearch(): Promise<void> {
   }
 }
 
+function buildEffectiveExternalId(rawExtId: string, target: ScrapeTargetKind): string {
+  const baseId = rawExtId.split(':')[0] ?? rawExtId
+  if (target !== 'tv_show') return baseId
+  const s = season.value.trim() ? Number.parseInt(season.value, 10) : 0
+  const e = episode.value.trim() ? Number.parseInt(episode.value, 10) : 0
+  if (e > 0) {
+    return `${baseId}:S${s > 0 ? s : 1}E${e}`
+  }
+  return baseId
+}
+
+let seTimer: ReturnType<typeof setTimeout> | null = null
+watch([season, episode], () => {
+  if (!props.open || targetKind.value !== 'tv_show') return
+  if (Object.keys(selectedByProvider.value).length === 0) return
+  if (seTimer) clearTimeout(seTimer)
+  seTimer = setTimeout(async () => {
+    for (const cand of Object.values(selectedByProvider.value)) {
+      if (cand.target === 'tv_show') {
+        await selectCandidateForProvider(cand)
+      }
+    }
+  }, 350)
+})
+
 function switchSourceTab(tabId: string): void {
   activeSourceTab.value = tabId
-  if (tabId === 'merged') {
-    previewMode.value = 'merged'
-  }
+  previewMode.value = tabId === 'merged' ? 'merged' : 'single'
 }
 
 async function selectCandidateForProvider(cand: ScrapeCandidate): Promise<void> {
+  const effectiveExtId = buildEffectiveExternalId(cand.external_id, cand.target)
+  const updatedCand: ScrapeCandidate = {
+    ...cand,
+    external_id: effectiveExtId,
+  }
   selectedByProvider.value = {
     ...selectedByProvider.value,
-    [cand.provider_id]: cand,
+    [cand.provider_id]: updatedCand,
   }
   loadingProviderId.value = cand.provider_id
   errorMsg.value = null
   try {
-    const detail = await toolApi.getScraperDetail(cand.provider_id, cand.external_id, cand.target)
+    const detail = await toolApi.getScraperDetail(cand.provider_id, effectiveExtId, cand.target)
     detailsByProvider.value = {
       ...detailsByProvider.value,
       [cand.provider_id]: detail,
@@ -403,8 +485,9 @@ async function selectCandidateForProvider(cand: ScrapeCandidate): Promise<void> 
   }
 }
 
-async function applyMetadata(): Promise<void> {
-  const targetMeta = effectiveView.value?.metadata
+async function applyMetadata(mode: 'merged' | 'single' = 'merged'): Promise<void> {
+  const targetMeta =
+    mode === 'single' ? activeSingleProviderDetail.value : mergedResult.value?.metadata
   if (!props.detail || !targetMeta || applying.value) return
   applying.value = true
   errorMsg.value = null
@@ -418,10 +501,54 @@ async function applyMetadata(): Promise<void> {
       writeSidecarLrc.value,
     )
     emit('applied', updated)
-    emit('close')
+    if (hasNextInQueue.value) {
+      emit('selectQueueIndex', currentQueueIdx.value + 1)
+    } else {
+      emit('close')
+    }
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
+    applying.value = false
+  }
+}
+
+async function runBatchAutoScrape(): Promise<void> {
+  if (applying.value || queueList.value.length === 0) return
+  applying.value = true
+  errorMsg.value = null
+  let lastUpdated: MediaFileDetail | null = null
+
+  try {
+    const slice = queueList.value.slice(currentQueueIdx.value)
+    for (let i = 0; i < slice.length; i += 1) {
+      const entry = slice[i]!
+      batchProgress.value = `正在自动刮削 (${currentQueueIdx.value + i + 1} / ${queueList.value.length})：${entry.file_name}`
+      try {
+        const d = await toolApi.inspectFile(entry.root_id, entry.rel_path, entry.media_kind)
+        const q = buildAutoQueryFromDetail(d)
+        const agg = await toolApi.aggregateScrapers({
+          ...q,
+          providers: enabledProviderIds.value,
+        })
+        if (agg.merged.metadata.title) {
+          lastUpdated = await toolApi.applyScrapedMetadata(
+            entry.root_id,
+            entry.rel_path,
+            entry.media_kind,
+            agg.merged.metadata,
+            applyCover.value,
+            writeSidecarLrc.value,
+          )
+        }
+      } catch {
+        // Continue remaining files in queue even if a single item fails
+      }
+    }
+    emit('batchApplied', lastUpdated)
+    emit('close')
+  } finally {
+    batchProgress.value = null
     applying.value = false
   }
 }
@@ -439,24 +566,66 @@ async function applyMetadata(): Promise<void> {
       >
         <!-- Header -->
         <div
-          class="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--ctp-surface0)]/80 px-5 py-4"
+          class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-[var(--ctp-surface0)]/80 px-5 py-3.5"
         >
-          <div class="min-w-0">
-            <div class="flex items-center gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="flex flex-wrap items-center gap-2">
               <LuSparkles class="h-4 w-4 text-[var(--ctp-accent)]" />
               <h2 class="text-sm font-bold text-[var(--ctp-text)]">多源优先级互补在线刮削</h2>
+              <span
+                v-if="hasQueue"
+                class="rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-0.5 font-mono text-[11px] font-bold text-[var(--ctp-accent)]"
+              >
+                队列 {{ currentQueueIdx + 1 }} / {{ queueList.length }}
+              </span>
             </div>
             <p class="mt-0.5 truncate text-xs text-[var(--ctp-subtext0)]">
-              目标文件：{{ detail.entry.file_name }}
+              {{ batchProgress ?? `目标文件：${detail.entry.rel_path}` }}
             </p>
           </div>
-          <button
-            type="button"
-            class="flex h-8 w-8 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
-            @click="emit('close')"
-          >
-            <LuX class="h-4 w-4" />
-          </button>
+
+          <div class="flex items-center gap-1.5">
+            <template v-if="hasQueue">
+              <button
+                type="button"
+                :disabled="applying || currentQueueIdx <= 0"
+                class="inline-flex h-8 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)] disabled:opacity-40"
+                title="切换到队列上一项"
+                @click="emit('selectQueueIndex', currentQueueIdx - 1)"
+              >
+                <LuChevronLeft class="h-3.5 w-3.5" />
+                <span>上一项</span>
+              </button>
+              <button
+                type="button"
+                :disabled="applying || !hasNextInQueue"
+                class="inline-flex h-8 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)] disabled:opacity-40"
+                title="跳过当前项，查看下一项"
+                @click="emit('selectQueueIndex', currentQueueIdx + 1)"
+              >
+                <span>跳过</span>
+                <LuChevronRight class="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                :disabled="applying"
+                class="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-3 text-xs font-semibold text-[var(--ctp-accent)] transition hover:opacity-90 disabled:opacity-50"
+                title="对剩余队列按各源首选聚合结果自动完成刮削写入"
+                @click="runBatchAutoScrape"
+              >
+                <LuZap class="h-3.5 w-3.5" />
+                <span>一键自动刮削剩余 ({{ queueList.length - currentQueueIdx }})</span>
+              </button>
+            </template>
+
+            <button
+              type="button"
+              class="flex h-8 w-8 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
+              @click="emit('close')"
+            >
+              <LuX class="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         <!-- Target Tabs + Ordered Provider Pills + Query Bar -->
@@ -518,7 +687,12 @@ async function applyMetadata(): Promise<void> {
               v-model="keyword"
               type="text"
               placeholder="标题 / 关键词…"
-              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-5"
+              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+              :class="
+                detail.entry.media_kind === 'video' && targetKind === 'movie'
+                  ? 'sm:col-span-8'
+                  : 'sm:col-span-4'
+              "
             />
             <input
               v-if="detail.entry.media_kind !== 'video'"
@@ -532,13 +706,31 @@ async function applyMetadata(): Promise<void> {
               v-model="isbn"
               type="text"
               placeholder="ISBN (可选)…"
-              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-2"
+              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-3"
             />
             <input
               v-if="detail.entry.media_kind === 'music'"
               v-model="albumOrSeries"
               type="text"
               placeholder="专辑 (可选)…"
+              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-3"
+            />
+            <input
+              v-if="detail.entry.media_kind === 'comic'"
+              v-model="yearInput"
+              type="number"
+              min="1800"
+              max="2100"
+              placeholder="年份 (可选)"
+              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-3"
+            />
+            <input
+              v-if="detail.entry.media_kind === 'video'"
+              v-model="yearInput"
+              type="number"
+              min="1880"
+              max="2100"
+              placeholder="年份"
               class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-2"
             />
             <template v-if="detail.entry.media_kind === 'video' && targetKind === 'tv_show'">
@@ -554,7 +746,7 @@ async function applyMetadata(): Promise<void> {
                 type="number"
                 min="0"
                 placeholder="集 E"
-                class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-3"
+                class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] sm:col-span-2"
               />
             </template>
             <button
@@ -1277,23 +1469,44 @@ async function applyMetadata(): Promise<void> {
             />
           </div>
 
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              class="rounded-xl px-4 py-2 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/65"
+              class="rounded-xl px-3.5 py-2 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/65"
               @click="emit('close')"
             >
               取消
             </button>
+
+            <button
+              v-if="activeSourceTab !== 'merged' && previewMode === 'single' && activeSingleProviderDetail"
+              type="button"
+              :disabled="applying"
+              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+              @click="applyMetadata('single')"
+            >
+              <span>仅写入此单源</span>
+            </button>
+
             <button
               type="button"
-              :disabled="!effectiveView || applying"
+              :disabled="!mergedResult || applying"
               class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
-              @click="applyMetadata"
+              @click="applyMetadata('merged')"
             >
               <LuRefreshCw v-if="applying" class="h-3.5 w-3.5 animate-spin" />
               <LuExternalLink v-else class="h-3.5 w-3.5" />
-              <span>{{ applying ? '正在写入原文件…' : '应用聚合结果并写入原文件' }}</span>
+              <span>
+                {{
+                  applying
+                    ? batchProgress
+                      ? '正在批量刮削…'
+                      : '正在写入原文件…'
+                    : hasNextInQueue
+                      ? `应用聚合结果并继续 (${currentQueueIdx + 1}/${queueList.length})`
+                      : '应用聚合结果并写入原文件'
+                }}
+              </span>
             </button>
           </div>
         </div>

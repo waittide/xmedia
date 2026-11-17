@@ -17,6 +17,7 @@ import {
   LuHardDrive,
   LuImage,
   LuLayers,
+  LuList,
   LuMonitor,
   LuMoon,
   LuPanelLeftClose,
@@ -67,7 +68,12 @@ function loadSavedDomain(): MediaKind {
   return 'book'
 }
 
+type BrowseViewMode = 'flat' | 'folders'
+
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
+const viewMode = ref<BrowseViewMode>(
+  localStorage.getItem('xmedia_tool.view_mode') === 'folders' ? 'folders' : 'flat',
+)
 const mobileMenuOpen = ref(false)
 const activeDomain = ref<MediaKind>(loadSavedDomain())
 const completenessFilter = ref<CompletenessFilter>('all')
@@ -97,6 +103,8 @@ const artworkVersion = ref(1)
 const settingsModalOpen = ref(false)
 const settingsInitialTab = ref<ToolSettingsTab>('appearance')
 const scrapeModalOpen = ref(false)
+const scrapeQueue = ref<MediaFileEntry[]>([])
+const scrapeQueueIndex = ref(0)
 const renameModalOpen = ref(false)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
@@ -148,10 +156,39 @@ const stats = computed(() => {
   }
 })
 
+function parentRelOf(relPath: string): string {
+  const idx = relPath.lastIndexOf('/')
+  return idx === -1 ? '' : relPath.slice(0, idx)
+}
+
+function relativeDirBadge(relPath: string): string | null {
+  const parent = parentRelOf(relPath)
+  const cur = currentRelPath.value
+  if (!parent || parent === cur) return null
+  if (cur && parent.startsWith(`${cur}/`)) {
+    return parent.slice(cur.length + 1)
+  }
+  return parent
+}
+
+function setViewMode(next: BrowseViewMode): void {
+  viewMode.value = next
+  localStorage.setItem('xmedia_tool.view_mode', next)
+}
+
+const hasActiveSearchOrFilter = computed<boolean>(
+  () => Boolean(searchQuery.value.trim()) || completenessFilter.value !== 'all',
+)
+
 const filteredFiles = computed<MediaFileEntry[]>(() => {
   const base = snapshot.value?.files ?? []
   const q = searchQuery.value.trim().toLowerCase()
+  const showRecursive = viewMode.value === 'flat' || hasActiveSearchOrFilter.value
+
   return base.filter((f) => {
+    if (!showRecursive && parentRelOf(f.rel_path) !== currentRelPath.value) {
+      return false
+    }
     if (completenessFilter.value === 'incomplete' && isEntryComplete(f)) return false
     if (completenessFilter.value === 'missing_cover' && f.completeness.has_cover) return false
     if (completenessFilter.value === 'missing_summary' && f.completeness.has_summary_or_lyrics)
@@ -160,7 +197,7 @@ const filteredFiles = computed<MediaFileEntry[]>(() => {
       return false
 
     if (q) {
-      const hay = `${f.file_name} ${f.display_title} ${f.display_subtitle}`.toLowerCase()
+      const hay = `${f.rel_path} ${f.file_name} ${f.display_title} ${f.display_subtitle}`.toLowerCase()
       if (!hay.includes(q)) return false
     }
     return true
@@ -313,8 +350,11 @@ async function selectRoot(rootId: string): Promise<void> {
   await loadDirectory(rootId, '')
 }
 
-async function enterFolder(relPath: string): Promise<void> {
+async function enterFolder(relPath: string, forceFoldersView = false): Promise<void> {
   mobileMenuOpen.value = false
+  if (forceFoldersView) {
+    setViewMode('folders')
+  }
   await loadDirectory(activeRootId.value, relPath)
 }
 
@@ -352,13 +392,14 @@ function toggleSelectAllFiltered(): void {
   }
 }
 
-function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): void {
-  activeDetail.value = updated
-  inspectingPath.value = updated.entry.rel_path
+async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): Promise<void> {
+  const prevRel = activeDetail.value?.entry.rel_path
   if (bumpArt) {
     artworkVersion.value += 1
   }
-  if (snapshot.value) {
+  if (prevRel && prevRel !== updated.entry.rel_path && activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  } else if (snapshot.value) {
     snapshot.value = {
       ...snapshot.value,
       files: snapshot.value.files.map((f) =>
@@ -366,25 +407,57 @@ function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): void {
       ),
     }
   }
+  activeDetail.value = updated
+  inspectingPath.value = updated.entry.rel_path
 }
 
 async function handleScrapeApplied(updated: MediaFileDetail): Promise<void> {
-  const prevRel = activeDetail.value?.entry.rel_path
+  await handleDetailUpdated(updated, true)
+}
+
+async function handleBatchScrapeApplied(lastDetail: MediaFileDetail | null): Promise<void> {
   artworkVersion.value += 1
-  if (prevRel && prevRel !== updated.entry.rel_path && activeRootId.value) {
+  if (activeRootId.value) {
     await loadDirectory(activeRootId.value, currentRelPath.value)
   }
-  handleDetailUpdated(updated, false)
+  if (lastDetail) {
+    activeDetail.value = lastDetail
+    inspectingPath.value = lastDetail.entry.rel_path
+  }
+}
+
+async function handleSelectScrapeQueueIndex(nextIdx: number): Promise<void> {
+  const target = scrapeQueue.value[nextIdx]
+  if (!target) return
+  scrapeQueueIndex.value = nextIdx
+  await inspectEntry(target)
 }
 
 async function openScrapeForEntry(entry?: MediaFileEntry): Promise<void> {
-  if (entry && activeDetail.value?.entry.rel_path !== entry.rel_path) {
-    await inspectEntry(entry)
-  } else if (!activeDetail.value && filteredFiles.value.length > 0) {
-    const firstSelected =
-      filteredFiles.value.find((f) => selectedPaths.value.has(f.rel_path)) ??
-      filteredFiles.value[0]!
-    await inspectEntry(firstSelected)
+  if (entry) {
+    scrapeQueue.value = [entry]
+    scrapeQueueIndex.value = 0
+    if (activeDetail.value?.entry.rel_path !== entry.rel_path) {
+      await inspectEntry(entry)
+    }
+    if (activeDetail.value) {
+      scrapeModalOpen.value = true
+    }
+    return
+  }
+
+  const queue =
+    selectedPaths.value.size > 0
+      ? filteredFiles.value.filter((f) => selectedPaths.value.has(f.rel_path))
+      : activeDetail.value
+        ? [activeDetail.value.entry]
+        : [...filteredFiles.value]
+
+  if (queue.length === 0) return
+  scrapeQueue.value = queue
+  scrapeQueueIndex.value = 0
+  if (activeDetail.value?.entry.rel_path !== queue[0]!.rel_path) {
+    await inspectEntry(queue[0]!)
   }
   if (activeDetail.value) {
     scrapeModalOpen.value = true
@@ -830,6 +903,40 @@ onBeforeUnmount(() => {
               </div>
 
               <div class="flex flex-wrap items-center gap-2">
+                <!-- View Mode Switcher: Flat All-Media vs Folder Hierarchy -->
+                <div
+                  class="flex items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-canvas)] p-0.5"
+                >
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
+                    :class="
+                      viewMode === 'flat'
+                        ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                        : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                    "
+                    title="平铺展示当前目录及所有子目录内的媒体文件"
+                    @click="setViewMode('flat')"
+                  >
+                    <LuList class="h-3.5 w-3.5" />
+                    <span>全部媒体</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
+                    :class="
+                      viewMode === 'folders'
+                        ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                        : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                    "
+                    title="按文件夹目录层级逐级浏览"
+                    @click="setViewMode('folders')"
+                  >
+                    <LuFolder class="h-3.5 w-3.5" />
+                    <span>文件夹</span>
+                  </button>
+                </div>
+
                 <AppCheckbox
                   v-if="filteredFiles.length > 0"
                   :model-value="allFilteredSelected"
@@ -848,7 +955,13 @@ onBeforeUnmount(() => {
                   @click="openScrapeForEntry()"
                 >
                   <LuSparkles class="h-3.5 w-3.5" />
-                  <span>{{ txt.actions.onlineScrape }}</span>
+                  <span>
+                    {{
+                      selectedPaths.size > 1
+                        ? `队列刮削 (${selectedPaths.size})`
+                        : txt.actions.onlineScrape
+                    }}
+                  </span>
                 </button>
 
                 <button
@@ -879,9 +992,9 @@ onBeforeUnmount(() => {
               {{ dirError }}
             </div>
 
-            <!-- Subfolder Cards -->
+            <!-- Subfolder Cards (shown in Folder View when not actively filtering) -->
             <div
-              v-if="snapshot && snapshot.folders.length > 0"
+              v-if="viewMode === 'folders' && !hasActiveSearchOrFilter && snapshot && snapshot.folders.length > 0"
               class="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4"
             >
               <button
@@ -983,9 +1096,19 @@ onBeforeUnmount(() => {
                       {{ file.year }}
                     </span>
                   </div>
-                  <div class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
-                    <span v-if="file.display_subtitle">{{ file.display_subtitle }} · </span>
-                    <span class="font-mono">{{ file.file_name }}</span>
+                  <div class="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
+                    <button
+                      v-if="relativeDirBadge(file.rel_path)"
+                      type="button"
+                      class="inline-flex max-w-64 shrink-0 items-center gap-1 truncate rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-accent)]"
+                      :title="`点击进入子目录：${parentRelOf(file.rel_path)}`"
+                      @click.stop="enterFolder(parentRelOf(file.rel_path), true)"
+                    >
+                      <LuFolder class="h-3 w-3 shrink-0 text-[var(--ctp-accent)]" />
+                      <span class="truncate">{{ relativeDirBadge(file.rel_path) }}</span>
+                    </button>
+                    <span v-if="file.display_subtitle" class="truncate">{{ file.display_subtitle }} ·</span>
+                    <span class="truncate font-mono">{{ file.file_name }}</span>
                   </div>
                 </div>
 
@@ -1088,8 +1211,12 @@ onBeforeUnmount(() => {
       :open="scrapeModalOpen"
       :detail="activeDetail"
       :settings="settings"
+      :queue="scrapeQueue"
+      :queue-index="scrapeQueueIndex"
       @close="scrapeModalOpen = false"
       @applied="handleScrapeApplied"
+      @batch-applied="handleBatchScrapeApplied"
+      @select-queue-index="handleSelectScrapeQueueIndex"
       @open-settings="scrapeModalOpen = false; openSettingsTab('scrapers')"
       @settings-updated="handleSettingsUpdated"
     />

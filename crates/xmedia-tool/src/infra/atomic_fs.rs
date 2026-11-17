@@ -120,17 +120,73 @@ pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// Removes empty directories starting at `start_dir` walking upward, strictly stopping before `stop_at_root`.
+fn is_orphan_jellyfin_dir_sidecar(file_name: &str) -> bool {
+    matches!(
+        file_name.to_ascii_lowercase().as_str(),
+        "movie.nfo"
+            | "tvshow.nfo"
+            | "season.nfo"
+            | "poster.jpg"
+            | "poster.jpeg"
+            | "poster.png"
+            | "poster.webp"
+            | "fanart.jpg"
+            | "fanart.jpeg"
+            | "fanart.png"
+            | "fanart.webp"
+            | "backdrop.jpg"
+            | "backdrop.jpeg"
+            | "backdrop.png"
+            | "backdrop.webp"
+            | "folder.jpg"
+            | "folder.png"
+            | "cover.jpg"
+            | "cover.png"
+            | ".ds_store"
+            | "thumbs.db"
+    )
+}
+
+/// Removes vacated directories starting at `start_dir` walking upward, strictly stopping before `stop_at_root`.
+///
+/// If a vacated Jellyfin movie/season/series directory no longer contains any media or user files
+/// (only orphan `movie.nfo` / `season.nfo` / `tvshow.nfo` / `poster.*` / `fanart.*`), those orphan
+/// metadata files are removed first so no empty 0-file ghost folder is left behind on re-scrape/rename.
 pub fn cleanup_empty_parent_dirs(start_dir: &Path, stop_at_root: &Path) {
     let mut cur = Some(start_dir);
     while let Some(dir) = cur {
         if dir == stop_at_root || !dir.starts_with(stop_at_root) {
             break;
         }
-        let is_empty = std::fs::read_dir(dir)
-            .ok()
-            .is_some_and(|mut it| it.next().is_none());
-        if is_empty && std::fs::remove_dir(dir).is_ok() {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            break;
+        };
+        let mut orphan_files = Vec::new();
+        let mut has_non_orphan = false;
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                has_non_orphan = true;
+                break;
+            }
+            let Some(fname) = p.file_name().and_then(|s| s.to_str()) else {
+                has_non_orphan = true;
+                break;
+            };
+            if is_orphan_jellyfin_dir_sidecar(fname) {
+                orphan_files.push(p);
+            } else {
+                has_non_orphan = true;
+                break;
+            }
+        }
+        if has_non_orphan {
+            break;
+        }
+        for orphan in orphan_files {
+            let _ = std::fs::remove_file(orphan);
+        }
+        if std::fs::remove_dir(dir).is_ok() {
             cur = dir.parent();
         } else {
             break;

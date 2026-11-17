@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
+use walkdir::WalkDir;
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
@@ -61,6 +62,7 @@ impl MediaWorkbenchService {
         root_id: RootId,
         rel_path: &str,
         domain_filter: Option<MediaKind>,
+        recursive: bool,
     ) -> DomainResult<DirectorySnapshot> {
         let root = self.settings.find_root(root_id).await?;
         let dir_sandbox = root.resolve_existing(rel_path)?;
@@ -104,7 +106,8 @@ impl MediaWorkbenchService {
             }
             if p.is_dir() {
                 raw_dirs.push((fname.to_string(), p));
-            } else if p.is_file()
+            } else if !recursive
+                && p.is_file()
                 && let Some(ins) = self.resolve_inspector_for_path(&p, domain_filter)
                 && domain_filter.is_none_or(|want| ins.media_kind() == want)
             {
@@ -112,8 +115,37 @@ impl MediaWorkbenchService {
             }
         }
 
+        if recursive {
+            for entry in WalkDir::new(&dir_sandbox.abs_path)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|e| {
+                    e.depth() == 0 || !e.file_name().to_str().is_some_and(|n| n.starts_with('.'))
+                })
+                .flatten()
+            {
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let p = entry.path().to_path_buf();
+                let Some(fname) = p.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if let Some(ins) = self.resolve_inspector_for_path(&p, domain_filter)
+                    && domain_filter.is_none_or(|want| ins.media_kind() == want)
+                {
+                    raw_files.push((fname.to_string(), p, ins));
+                }
+            }
+        }
+
         raw_dirs.sort_by_key(|a| a.0.to_lowercase());
-        raw_files.sort_by_key(|a| a.0.to_lowercase());
+        raw_files.sort_by_key(|a| {
+            a.1.strip_prefix(&root.path)
+                .map(path_to_slash)
+                .unwrap_or_else(|_| a.0.clone())
+                .to_lowercase()
+        });
 
         let mut folders = Vec::with_capacity(raw_dirs.len());
         for (dir_name, dir_abs) in raw_dirs {
@@ -122,7 +154,7 @@ impl MediaWorkbenchService {
                 .map(path_to_slash)
                 .unwrap_or_else(|_| dir_name.clone());
             let (child_dir_count, media_file_count) =
-                count_immediate_children(&dir_abs, &self.inspectors, domain_filter);
+                count_subtree_children(&dir_abs, &self.inspectors, domain_filter);
             folders.push(FolderEntryDto {
                 name: dir_name,
                 rel_path: rel,
@@ -241,6 +273,7 @@ impl MediaWorkbenchService {
         root_id: RootId,
         rel_paths: &[String],
         template_override: Option<&str>,
+        episode_template_override: Option<&str>,
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<Vec<RenamePlanItem>> {
         let raw_settings = self.settings.get_raw().await?;
@@ -253,6 +286,11 @@ impl MediaWorkbenchService {
 
         let mut plans = Vec::with_capacity(rel_paths.len());
         let mut planned_targets = std::collections::HashSet::new();
+
+        let clean_primary_tpl = template_override.map(str::trim).filter(|s| !s.is_empty());
+        let clean_ep_tpl = episode_template_override
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         for rel in rel_paths {
             let sandbox = root.resolve_existing(rel)?;
@@ -268,22 +306,33 @@ impl MediaWorkbenchService {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default();
 
-            let tpl = template_override
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_owned)
-                .unwrap_or_else(|| match &meta {
-                    MediaMetadataPayload::Book(_) => raw_settings.rename_templates.book.clone(),
-                    MediaMetadataPayload::Comic(_) => raw_settings.rename_templates.comic.clone(),
-                    MediaMetadataPayload::Music(_) => raw_settings.rename_templates.music.clone(),
-                    MediaMetadataPayload::Video(v) => {
-                        if v.is_episode {
-                            raw_settings.rename_templates.video_episode.clone()
-                        } else {
-                            raw_settings.rename_templates.video_movie.clone()
-                        }
+            let tpl = match &meta {
+                MediaMetadataPayload::Book(_) => clean_primary_tpl
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| raw_settings.rename_templates.book.clone()),
+                MediaMetadataPayload::Comic(_) => clean_primary_tpl
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| raw_settings.rename_templates.comic.clone()),
+                MediaMetadataPayload::Music(_) => clean_primary_tpl
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| raw_settings.rename_templates.music.clone()),
+                MediaMetadataPayload::Video(v) => {
+                    if v.is_episode {
+                        clean_ep_tpl
+                            .or(if episode_template_override.is_none() {
+                                clean_primary_tpl
+                            } else {
+                                None
+                            })
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| raw_settings.rename_templates.video_episode.clone())
+                    } else {
+                        clean_primary_tpl
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| raw_settings.rename_templates.video_movie.clone())
                     }
-                });
+                }
+            };
 
             let parent_rel = sandbox
                 .rel_path
@@ -322,6 +371,71 @@ impl MediaWorkbenchService {
                             format!("{target_parent_rel}/{next_comp_name}")
                         };
                         companion_moves.push((comp_from, comp_to));
+                    }
+                }
+
+                // Also carry Jellyfin directory-level NFO & artwork (`movie.nfo`, `season.nfo`, `tvshow.nfo`, `poster.*`, `fanart.*`)
+                if let MediaMetadataPayload::Video(ref v) = meta
+                    && parent_rel != target_parent_rel
+                    && !target_parent_rel.is_empty()
+                    && let Some(old_dir) = sandbox.abs_path.parent()
+                    && old_dir != root.path
+                {
+                    let dir_files = if v.is_episode {
+                        &[
+                            "season.nfo",
+                            "poster.jpg",
+                            "poster.png",
+                            "fanart.jpg",
+                            "fanart.png",
+                        ][..]
+                    } else {
+                        &[
+                            "movie.nfo",
+                            "poster.jpg",
+                            "poster.png",
+                            "fanart.jpg",
+                            "fanart.png",
+                        ][..]
+                    };
+                    for fname in dir_files {
+                        let cand = old_dir.join(fname);
+                        if cand.is_file()
+                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
+                        {
+                            companion_moves.push((
+                                path_to_slash(rel_c),
+                                format!("{target_parent_rel}/{fname}"),
+                            ));
+                        }
+                    }
+
+                    if v.is_episode
+                        && let Some(old_show_dir) = old_dir.parent()
+                        && old_show_dir != root.path
+                        && old_show_dir.starts_with(&root.path)
+                        && let Some(new_show_parent) = Path::new(&target_parent_rel).parent()
+                    {
+                        let new_show_rel = path_to_slash(new_show_parent);
+                        if !new_show_rel.is_empty() {
+                            for fname in [
+                                "tvshow.nfo",
+                                "poster.jpg",
+                                "poster.png",
+                                "fanart.jpg",
+                                "fanart.png",
+                            ] {
+                                let cand = old_show_dir.join(fname);
+                                if cand.is_file()
+                                    && let Ok(rel_c) = cand.strip_prefix(&root.path)
+                                {
+                                    companion_moves.push((
+                                        path_to_slash(rel_c),
+                                        format!("{new_show_rel}/{fname}"),
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -379,7 +493,27 @@ impl MediaWorkbenchService {
                     if let Some(p) = comp_dst.parent() {
                         let _ = std::fs::create_dir_all(p);
                     }
-                    let _ = std::fs::rename(&comp_src.abs_path, &comp_dst);
+                    let is_shared_dir_sidecar = comp_src
+                        .abs_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|fname| {
+                            matches!(
+                                fname.to_ascii_lowercase().as_str(),
+                                "movie.nfo"
+                                    | "season.nfo"
+                                    | "tvshow.nfo"
+                                    | "poster.jpg"
+                                    | "poster.png"
+                                    | "fanart.jpg"
+                                    | "fanart.png"
+                            )
+                        });
+                    if is_shared_dir_sidecar {
+                        let _ = std::fs::copy(&comp_src.abs_path, &comp_dst);
+                    } else {
+                        let _ = std::fs::rename(&comp_src.abs_path, &comp_dst);
+                    }
                 }
             }
 
@@ -464,38 +598,49 @@ impl MediaWorkbenchService {
     }
 }
 
-fn count_immediate_children(
+fn count_subtree_children(
     dir_path: &Path,
     inspectors: &[Arc<dyn MediaInspectorPort>],
     domain_filter: Option<MediaKind>,
 ) -> (usize, usize) {
-    let Ok(entries) = std::fs::read_dir(dir_path) else {
-        return (0, 0);
-    };
-    let mut dirs = 0usize;
-    let mut files = 0usize;
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|n| n.starts_with('.'))
-        {
+    let mut immediate_dirs = 0usize;
+    if let Ok(entries) = std::fs::read_dir(dir_path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir()
+                && !p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|n| n.starts_with('.'))
+            {
+                immediate_dirs += 1;
+            }
+        }
+    }
+
+    let mut total_media_files = 0usize;
+    for entry in WalkDir::new(dir_path)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            e.depth() == 0 || !e.file_name().to_str().is_some_and(|n| n.starts_with('.'))
+        })
+        .flatten()
+    {
+        if !entry.file_type().is_file() {
             continue;
         }
-        if p.is_dir() {
-            dirs += 1;
-        } else if p.is_file()
-            && let Some(ext) = p.extension().and_then(|s| s.to_str())
-        {
+        if let Some(ext) = entry.path().extension().and_then(|s| s.to_str()) {
             let lower = ext.to_ascii_lowercase();
             let matched = inspectors.iter().any(|ins| {
                 ins.supports_extension(&lower)
                     && domain_filter.is_none_or(|want| ins.media_kind() == want)
             });
             if matched {
-                files += 1;
+                total_media_files += 1;
             }
         }
     }
-    (dirs, files)
+
+    (immediate_dirs, total_media_files)
 }

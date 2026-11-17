@@ -144,6 +144,8 @@ struct BrowseQuery {
     #[serde(default)]
     path: String,
     kind: Option<MediaKind>,
+    #[serde(default)]
+    recursive: bool,
 }
 
 async fn browse_fs(
@@ -153,7 +155,7 @@ async fn browse_fs(
 ) -> ApiResult<Json<DirectorySnapshot>> {
     let snap = state
         .workbench
-        .browse_directory(RootId(q.root_id), &q.path, q.kind)
+        .browse_directory(RootId(q.root_id), &q.path, q.kind, q.recursive)
         .await?;
     Ok(Json(snap))
 }
@@ -298,6 +300,7 @@ struct PreviewRenameRequest {
     root_id: Uuid,
     paths: Vec<String>,
     template: Option<String>,
+    episode_template: Option<String>,
     kind: Option<MediaKind>,
 }
 
@@ -312,6 +315,7 @@ async fn preview_rename(
             RootId(req.root_id),
             &req.paths,
             req.template.as_deref(),
+            req.episode_template.as_deref(),
             req.kind,
         )
         .await?;

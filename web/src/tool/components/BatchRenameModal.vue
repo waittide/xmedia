@@ -25,6 +25,8 @@ const emit = defineEmits<{
 }>()
 
 const templateInput = ref('')
+const episodeTemplateInput = ref('')
+const focusedVideoInput = ref<'movie' | 'episode'>('movie')
 const plans = ref<RenamePlanItem[]>([])
 const loadingPreview = ref(false)
 const executing = ref(false)
@@ -46,13 +48,23 @@ const tokenChips = computed<string[]>(() => {
   return ['{author}', '{title}', '{year}', '{isbn}']
 })
 
-function defaultTemplateForEntries(): string {
+function seedTemplatesForEntries(): void {
   const k = dominantKind.value
-  if (k === 'music') return props.templates.music
-  if (k === 'comic') return props.templates.comic
-  if (k === 'book') return props.templates.book
-  const looksLikeEpisode = props.entries.some((e) => /s\d{1,2}e\d{1,3}/i.test(e.file_name))
-  return looksLikeEpisode ? props.templates.video_episode : props.templates.video_movie
+  if (k === 'music') {
+    templateInput.value = props.templates.music
+    episodeTemplateInput.value = ''
+  } else if (k === 'comic') {
+    templateInput.value = props.templates.comic
+    episodeTemplateInput.value = ''
+  } else if (k === 'book') {
+    templateInput.value = props.templates.book
+    episodeTemplateInput.value = ''
+  } else {
+    templateInput.value = props.templates.video_movie
+    episodeTemplateInput.value = props.templates.video_episode
+    const looksLikeEpisode = props.entries.some((e) => /s\d{1,2}e\d{1,3}/i.test(e.file_name))
+    focusedVideoInput.value = looksLikeEpisode ? 'episode' : 'movie'
+  }
 }
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -67,6 +79,7 @@ async function runPreview(): Promise<void> {
       props.entries.map((e) => e.rel_path),
       templateInput.value.trim() || null,
       dominantKind.value,
+      dominantKind.value === 'video' ? episodeTemplateInput.value.trim() || null : undefined,
     )
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -79,13 +92,13 @@ watch(
   () => props.open,
   (isOpen) => {
     if (isOpen) {
-      templateInput.value = defaultTemplateForEntries()
+      seedTemplatesForEntries()
       void runPreview()
     }
   },
 )
 
-watch(templateInput, () => {
+watch([templateInput, episodeTemplateInput], () => {
   if (!props.open) return
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
@@ -94,7 +107,11 @@ watch(templateInput, () => {
 })
 
 function appendChip(tok: string): void {
-  templateInput.value = `${templateInput.value}${tok}`
+  if (dominantKind.value === 'video' && focusedVideoInput.value === 'episode') {
+    episodeTemplateInput.value = `${episodeTemplateInput.value}${tok}`
+  } else {
+    templateInput.value = `${templateInput.value}${tok}`
+  }
 }
 
 const actionableCount = computed(
@@ -148,11 +165,49 @@ async function handleExecute(): Promise<void> {
 
         <!-- Template Editor -->
         <div class="shrink-0 space-y-2.5 border-b border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/40 px-5 py-3.5">
-          <div class="flex items-center gap-2">
+          <template v-if="dominantKind === 'video'">
+            <div class="grid grid-cols-1 gap-2 sm:grid-cols-12">
+              <label class="block sm:col-span-5">
+                <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">
+                  电影归档模板（对非剧集生效）
+                </span>
+                <input
+                  v-model="templateInput"
+                  type="text"
+                  placeholder="{title} ({year})/{title} ({year})"
+                  class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+                  @focus="focusedVideoInput = 'movie'"
+                />
+              </label>
+              <label class="block sm:col-span-5">
+                <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">
+                  剧集归档模板（对剧集 SxxExx 生效）
+                </span>
+                <input
+                  v-model="episodeTemplateInput"
+                  type="text"
+                  placeholder="{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}"
+                  class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+                  @focus="focusedVideoInput = 'episode'"
+                />
+              </label>
+              <div class="flex items-end sm:col-span-2">
+                <button
+                  type="button"
+                  class="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+                  @click="runPreview"
+                >
+                  <LuRefreshCw class="h-3.5 w-3.5" :class="loadingPreview ? 'animate-spin' : ''" />
+                  <span>刷新</span>
+                </button>
+              </div>
+            </div>
+          </template>
+          <div v-else class="flex items-center gap-2">
             <input
               v-model="templateInput"
               type="text"
-              placeholder="输入重命名模板，例如 {track} - {artist} - {title}"
+              placeholder="输入重命名模板，例如 {track:2} - {artist} - {title}"
               class="flex-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
             <button

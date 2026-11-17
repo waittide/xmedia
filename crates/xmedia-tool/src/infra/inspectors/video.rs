@@ -165,45 +165,94 @@ fn list_sidecar_subtitles(video_path: &Path) -> Vec<String> {
     subs
 }
 
+fn strip_release_noise(raw: &str) -> String {
+    let tag_re = Regex::new(
+        r"(?i)(?:[\(\[]\s*(?:19\d{2}|20\d{2})\s*[\)\]]|\b(?:2160p|1080p|720p|480p|4k|uhd|bluray|bdrip|web-dl|webrip|hdtv|remux|x264|x265|h\.?264|h\.?265|hevc|av1|10bit|8bit|aac|ac3|dts|flac|hdr10|dv)\b.*$)",
+    )
+    .expect("valid release noise regex");
+    let leading_group_re = Regex::new(r"^(?:\[[^\]]+\]\s*)+").expect("valid group regex");
+    let without_group = leading_group_re.replace(raw.trim(), "");
+    let without_noise = tag_re.replace(&without_group, "");
+    without_noise
+        .replace(['.', '_'], " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches([' ', '-', '–', '_'])
+        .to_string()
+}
+
 fn guess_episode_and_year(
     video_path: &Path,
-) -> (bool, Option<String>, Option<u32>, Option<u32>, Option<i32>) {
+) -> (
+    bool,
+    String,
+    Option<String>,
+    Option<u32>,
+    Option<u32>,
+    Option<i32>,
+) {
     let stem = video_path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or_default();
+        .unwrap_or("Untitled");
     let se_re = Regex::new(r"(?i)S(\d{1,2})E(\d{1,3})").expect("valid regex");
-    let year_re = Regex::new(r"\b(19\d{2}|20\d{2})\b").expect("valid regex");
+    let year_re = Regex::new(r"(?:^|[\s\.\(\[_-])(19\d{2}|20\d{2})(?:$|[\s\.\)\]_-])")
+        .expect("valid year regex");
 
-    let year = year_re
+    let mut year = year_re
         .captures(stem)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<i32>().ok());
+    if year.is_none()
+        && let Some(parent_str) = video_path.parent().and_then(|p| p.to_str())
+    {
+        year = year_re
+            .captures(parent_str)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse::<i32>().ok());
+    }
 
     if let Some(caps) = se_re.captures(stem) {
+        let full_match = caps.get(0).unwrap();
         let season = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
         let ep = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
-        let prefix = stem[..caps.get(0).unwrap().start()]
-            .trim_matches([' ', '-', '_', '.'])
-            .replace('.', " ");
+        let prefix = strip_release_noise(&stem[..full_match.start()]);
+        let suffix = strip_release_noise(&stem[full_match.end()..]);
+
         let show_guess = if !prefix.is_empty() {
             Some(prefix)
         } else {
             video_path.parent().and_then(|p| {
-                let dir_name = p.file_name()?.to_string_lossy();
-                if dir_name.to_ascii_lowercase().starts_with("season") {
-                    p.parent()?
-                        .file_name()
-                        .map(|g| g.to_string_lossy().into_owned())
-                } else {
-                    Some(dir_name.into_owned())
-                }
+                let target_dir = if is_season_dir(p) { p.parent()? } else { p };
+                let dir_name = target_dir.file_name()?.to_string_lossy();
+                let cleaned = strip_release_noise(&dir_name);
+                (!cleaned.is_empty()).then_some(cleaned)
             })
         };
-        return (true, show_guess, season, ep, year);
+        let ep_title = if !suffix.is_empty() {
+            suffix
+        } else {
+            format!("S{:02}E{:02}", season.unwrap_or(1), ep.unwrap_or(1))
+        };
+        return (true, ep_title, show_guess, season, ep, year);
     }
 
-    (false, None, None, None, year)
+    // Movie / standalone video: strip `(YYYY)` or `.YYYY.1080p...` from clean title
+    let mut clean_movie_title = strip_release_noise(stem);
+    if let Some(y) = year {
+        let trailing_year = format!(" {y}");
+        if let Some(stripped) = clean_movie_title.strip_suffix(&trailing_year)
+            && !stripped.trim().is_empty()
+        {
+            clean_movie_title = stripped.trim_matches([' ', '-', '_']).to_string();
+        }
+    }
+    if clean_movie_title.is_empty() {
+        clean_movie_title = stem.to_string();
+    }
+
+    (false, clean_movie_title, None, None, None, year)
 }
 
 fn parse_nfo_into(xml_bytes: &[u8], meta: &mut VideoFileMeta) {
@@ -272,13 +321,16 @@ fn parse_nfo_into(xml_bytes: &[u8], meta: &mut VideoFileMeta) {
                             "title"
                                 if parent == "movie"
                                     || parent == "episodedetails"
-                                    || parent == "tvshow" =>
+                                    || parent == "tvshow"
+                                    || parent == "season" =>
                             {
                                 meta.title = trimmed.to_string();
                             }
                             "originaltitle" => meta.original_title = Some(trimmed.to_string()),
                             "showtitle" => meta.show_title = Some(trimmed.to_string()),
-                            "season" => meta.season_number = trimmed.parse::<u32>().ok(),
+                            "season" | "seasonnumber" if !parent.is_empty() => {
+                                meta.season_number = trimmed.parse::<u32>().ok();
+                            }
                             "episode" => meta.episode_number = trimmed.parse::<u32>().ok(),
                             "year" => meta.year = trimmed.parse::<i32>().ok(),
                             "premiered" | "aired" if meta.year.is_none() => {
@@ -540,24 +592,21 @@ pub(crate) fn render_season_nfo_xml(
 }
 
 pub(crate) fn read_base_video_meta(path: &Path) -> VideoFileMeta {
-    let fallback_stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Untitled");
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
         .unwrap_or("mp4")
         .to_ascii_lowercase();
 
-    let (is_ep, show_guess, season_guess, ep_guess, year_guess) = guess_episode_and_year(path);
+    let (is_ep, title_guess, show_guess, season_guess, ep_guess, year_guess) =
+        guess_episode_and_year(path);
     let default_nfo = path.with_extension("nfo");
     let existing_nfo = find_existing_nfo(path);
 
     let mut meta = VideoFileMeta {
         container: ext,
         is_episode: is_ep,
-        title: fallback_stem.to_string(),
+        title: title_guess,
         show_title: show_guess,
         season_number: season_guess,
         episode_number: ep_guess,
@@ -804,7 +853,42 @@ impl MediaInspectorPort for VideoNfoInspector {
                 p.with_extension("nfo")
             };
             let xml = render_video_nfo_xml(&meta);
-            atomic_write_bytes(&nfo_target, xml.as_bytes())
+            atomic_write_bytes(&nfo_target, xml.as_bytes())?;
+
+            // Keep Jellyfin `season.nfo` and `tvshow.nfo` synchronized when editing an archived episode
+            if meta.is_episode {
+                if let Some(parent) = p.parent() {
+                    let season_nfo = parent.join("season.nfo");
+                    if season_nfo.is_file() {
+                        let mut existing_season = VideoFileMeta::default();
+                        if let Ok(raw) = std::fs::read(&season_nfo) {
+                            parse_nfo_into(&raw, &mut existing_season);
+                        }
+                        let s_num = meta.season_number.unwrap_or(1);
+                        let s_title = (!existing_season.title.trim().is_empty())
+                            .then_some(existing_season.title.as_str());
+                        let s_xml = render_season_nfo_xml(
+                            s_num,
+                            s_title,
+                            meta.year,
+                            existing_season.summary.as_deref(),
+                            meta.tmdb_id.as_deref(),
+                            meta.bangumi_id.as_deref(),
+                        );
+                        let _ = atomic_write_bytes(&season_nfo, s_xml.as_bytes());
+                    }
+                }
+                if let Some(show_nfo) = find_show_nfo_for_episode(&p) {
+                    let mut existing_show = VideoFileMeta::default();
+                    if let Ok(raw) = std::fs::read(&show_nfo) {
+                        parse_nfo_into(&raw, &mut existing_show);
+                    }
+                    let show_xml = render_tvshow_nfo_xml(&meta, existing_show.summary.as_deref());
+                    let _ = atomic_write_bytes(&show_nfo, show_xml.as_bytes());
+                }
+            }
+
+            Ok(())
         })
         .await
         .map_err(|e| DomainError::Storage(format!("video nfo write failed: {e}")))??;
@@ -857,25 +941,42 @@ impl MediaInspectorPort for VideoNfoInspector {
             "jpg"
         };
         let is_jellyfin_movie_dir = parent.join("movie.nfo").is_file();
-        let stem_base = if slot.eq_ignore_ascii_case("thumb") {
+        let is_jellyfin_season = is_season_dir(&parent) || parent.join("season.nfo").is_file();
+        let is_jellyfin_show = parent.join("tvshow.nfo").is_file();
+        let use_dir_artwork = is_jellyfin_movie_dir || is_jellyfin_season || is_jellyfin_show;
+
+        let is_thumb = slot.eq_ignore_ascii_case("thumb");
+        let is_fanart =
+            slot.eq_ignore_ascii_case("fanart") || slot.eq_ignore_ascii_case("backdrop");
+        let stem_base = if is_thumb {
             format!("{stem}-thumb")
-        } else if slot.eq_ignore_ascii_case("fanart") || slot.eq_ignore_ascii_case("backdrop") {
-            if is_jellyfin_movie_dir {
+        } else if is_fanart {
+            if use_dir_artwork {
                 "fanart".to_string()
             } else {
                 format!("{stem}-fanart")
             }
-        } else if is_jellyfin_movie_dir {
+        } else if use_dir_artwork {
             "poster".to_string()
         } else {
             format!("{stem}-poster")
         };
         let raw = bytes.to_vec();
 
-        tokio::task::spawn_blocking(move || {
-            write_image_replacing_opposite_ext(&parent, &stem_base, ext, &raw)
+        tokio::task::spawn_blocking(move || -> DomainResult<()> {
+            write_image_replacing_opposite_ext(&parent, &stem_base, ext, &raw)?;
+            // If inside `Season XX/` and parent show directory has `tvshow.nfo`, also keep series poster/fanart present
+            if !is_thumb
+                && is_jellyfin_season
+                && let Some(show_dir) = parent.parent()
+                && show_dir.join("tvshow.nfo").is_file()
+            {
+                write_image_replacing_opposite_ext(show_dir, &stem_base, ext, &raw)?;
+            }
+            Ok(())
         })
         .await
-        .map_err(|e| DomainError::Storage(format!("video artwork write failed: {e}")))?
+        .map_err(|e| DomainError::Storage(format!("video artwork write failed: {e}")))??;
+        Ok(())
     }
 }
