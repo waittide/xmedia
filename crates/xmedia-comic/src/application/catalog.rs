@@ -82,11 +82,19 @@ impl ComicCatalogService {
         }
 
         let mut total_chapters = 0_u32;
+        let mut distinct_tags: HashSet<String> = HashSet::new();
+        let mut distinct_writers: HashSet<String> = HashSet::new();
         let mut summaries: Vec<SeriesSummaryDto> = Vec::with_capacity(all_series.len());
         let mut continue_items: Vec<ContinueReadingItemDto> = Vec::new();
 
         for s in all_series {
             total_chapters += s.chapter_count;
+            for t in &s.tags {
+                distinct_tags.insert(t.clone());
+            }
+            for w in &s.writers {
+                distinct_writers.insert(w.clone());
+            }
             let is_fav = fav_set.contains(&s.id);
             let s_prog = progress_by_series
                 .get(&s.id)
@@ -103,6 +111,7 @@ impl ComicCatalogService {
         }
 
         continue_items.sort_by_key(|a| std::cmp::Reverse(a.pointer.last_read_at));
+        let in_progress_count = continue_items.len() as u32;
         continue_items.truncate(16);
 
         let mut recently_updated = summaries.clone();
@@ -110,10 +119,8 @@ impl ComicCatalogService {
         recently_updated.truncate(18);
 
         let total_series = summaries.len() as u32;
-        let in_progress_count = continue_items.len() as u32;
         let bookmarks_count = self.reading.list_user_bookmarks(user.id).await?.len() as u32;
         let shelves_count = self.reading.list_shelves(user.id).await?.len() as u32;
-        let taxonomy = self.taxonomy_overview().await?;
         let mut recently_added = summaries;
         recently_added.sort_by_key(|a| std::cmp::Reverse(a.created_at));
         recently_added.truncate(18);
@@ -130,8 +137,8 @@ impl ComicCatalogService {
                 bookmarks_count,
                 favorites_count: favorites.len() as u32,
                 shelves_count,
-                tags_count: taxonomy.tags.len() as u32,
-                writers_count: taxonomy.writers.len() as u32,
+                tags_count: distinct_tags.len() as u32,
+                writers_count: distinct_writers.len() as u32,
             },
         })
     }

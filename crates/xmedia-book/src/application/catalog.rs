@@ -18,8 +18,7 @@ use crate::application::ports::{
 };
 use crate::application::reading::BookReadingService;
 use crate::domain::book::{
-    Book, BookFormat, BookId, BookQuery, BookSortField, BookSource, FacetCount, PagedResult,
-    SortOrder,
+    Book, BookFormat, BookId, BookQuery, BookSource, FacetCount, PagedResult,
 };
 use crate::domain::reading::ReadingProgress;
 use crate::domain::repository::{BookReadingRepository, BookRepository};
@@ -456,40 +455,29 @@ impl BookCatalogService {
         actor: &User,
         reading_service: &BookReadingService,
     ) -> DomainResult<BookHomeOverviewDto> {
-        let latest_page = self
-            .search_books(
-                Some(actor),
-                CatalogSearchFilter {
-                    sort_by: Some(BookSortField::CreatedAt),
-                    sort_order: Some(SortOrder::Desc),
-                    page: Some(1),
-                    page_size: Some(12),
-                    ..Default::default()
-                },
-            )
-            .await?;
+        let (latest_raw, total_books, authors_count, tags_count) =
+            self.books.home_catalog_snapshot(12).await?;
+        let recently_added = self.enrich_books(Some(actor), &latest_raw).await?;
         let continue_reading = reading_service.list_recent_books(actor, 6, self).await?;
         let reading_count = reading_service.count_user_progress(actor).await?;
         let bookmarks_count = reading_service.count_user_bookmarks(actor).await?;
         let favorites_count = reading_service.count_user_favorites(actor).await?;
         let shelves = reading_service.list_shelves(actor).await?;
-        let tags = self.list_tags().await?;
-        let authors = self.list_authors().await?;
         let libs = self.libraries.list_by_media(MediaKind::Book).await?;
 
         Ok(BookHomeOverviewDto {
             stats: BookLibraryStatsDto {
-                total_books: latest_page.total,
+                total_books,
                 reading_count,
                 bookmarks_count,
                 favorites_count,
                 shelves_count: shelves.len() as u64,
-                tags_count: tags.len() as u64,
-                authors_count: authors.len() as u64,
+                tags_count,
+                authors_count,
                 libraries_count: libs.len() as u64,
             },
             continue_reading,
-            recently_added: latest_page.items,
+            recently_added,
         })
     }
 

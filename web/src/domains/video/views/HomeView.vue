@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, type Component } from 'vue'
+import { computed, onActivated, onMounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
@@ -16,10 +16,11 @@ import {
   LuTag,
   LuTv,
 } from 'vue-icons-plus/lu'
+import { fetchHomeOverview, peekHomeCache } from '@/config/homeCache'
 import { useThemeStore } from '@/stores/theme'
 import { useUploadStore } from '@/stores/uploads'
+import HomeSkeleton from '@/components/HomeSkeleton.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
-import { api } from '../api'
 import PosterImage from '../components/PosterImage.vue'
 import ShowCard from '../components/ShowCard.vue'
 import VideoCard from '../components/VideoCard.vue'
@@ -28,6 +29,8 @@ import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
 import type { VideoHomeOverviewDto, VideoSummaryDto } from '../types'
 
+defineOptions({ name: 'VideoHomeView' })
+
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const router = useRouter()
@@ -35,22 +38,26 @@ const themeStore = useThemeStore()
 const videoStore = useVideoStore()
 const uploadStore = useUploadStore()
 
-const loading = ref(true)
-const overview = ref<VideoHomeOverviewDto | null>(null)
+const overview = ref<VideoHomeOverviewDto | null>(peekHomeCache('video'))
+const loading = ref(overview.value === null)
 const editingVideo = ref<VideoSummaryDto | null>(null)
 const customizerOpen = ref(false)
 
-async function loadHome(): Promise<void> {
-  loading.value = true
+async function loadHome(force = false): Promise<void> {
+  if (!overview.value) loading.value = true
   try {
-    overview.value = await api.homeOverview()
+    overview.value = await fetchHomeOverview('video', { force })
   } finally {
     loading.value = false
   }
 }
 
-onMounted(loadHome)
-watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], loadHome)
+onMounted(() => void loadHome(false))
+onActivated(() => void loadHome(false))
+watch(
+  () => [videoStore.catalogVersion, uploadStore.versionCounter],
+  () => void loadHome(true),
+)
 
 interface StatCardItem {
   key: string
@@ -223,9 +230,12 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
       </div>
     </section>
 
+    <!-- Cold-Load Skeleton -->
+    <HomeSkeleton v-if="loading && !overview" />
+
     <!-- Empty Library Onboarding -->
     <section
-      v-if="!loading && overview && overview.total_videos === 0"
+      v-else-if="!loading && overview && overview.total_videos === 0"
       class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
     >
       <div
@@ -342,7 +352,7 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
             :key="v.id"
             :video="v"
             @edit="editingVideo = $event"
-            @deleted="loadHome"
+            @deleted="() => loadHome(true)"
           />
         </div>
       </section>
@@ -352,7 +362,7 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
       :open="editingVideo !== null"
       :video="editingVideo"
       @close="editingVideo = null"
-      @saved="loadHome"
+      @saved="() => loadHome(true)"
     />
 
     <LayoutCustomizerModal

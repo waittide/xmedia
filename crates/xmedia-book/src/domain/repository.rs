@@ -15,6 +15,10 @@ pub trait BookRepository: Send + Sync {
     async fn count_by_library(&self, library_id: LibraryId) -> DomainResult<u64>;
     async fn list_authors(&self) -> DomainResult<Vec<FacetCount>>;
     async fn list_tags(&self) -> DomainResult<Vec<FacetCount>>;
+    async fn home_catalog_snapshot(
+        &self,
+        recent_limit: usize,
+    ) -> DomainResult<(Vec<Book>, u64, u64, u64)>;
     async fn save(&self, book: &Book) -> DomainResult<()>;
     async fn delete(&self, id: BookId) -> DomainResult<()>;
     async fn delete_by_library(&self, library_id: LibraryId) -> DomainResult<()>;

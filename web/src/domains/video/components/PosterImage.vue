@@ -45,6 +45,7 @@ const src = computed(() => {
       :src="src"
       :alt="alt"
       loading="lazy"
+      decoding="async"
       class="h-full w-full object-cover"
       @error="failed = true"
     />

@@ -265,7 +265,7 @@ impl MusicCatalogService {
     }
 
     pub async fn get_home_overview(&self, user_id: UserId) -> DomainResult<HomeOverviewDto> {
-        let recent_added = self
+        let recent_added_page = self
             .list_albums(
                 user_id,
                 AlbumListQuery {
@@ -274,8 +274,9 @@ impl MusicCatalogService {
                     ..Default::default()
                 },
             )
-            .await?
-            .items;
+            .await?;
+        let total_albums = recent_added_page.total;
+        let recent_added = recent_added_page.items;
 
         let frequent = self
             .list_albums(
@@ -289,25 +290,98 @@ impl MusicCatalogService {
             .await?
             .items;
 
-        let recent_played_tracks = self.list_recent_played_tracks(user_id, 10).await?;
+        // Collect recent scrobble track IDs, random tracks, bookmarks, and active queue track
+        // so we can enrich all unique tracks in ONE batch instead of 4 separate passes.
+        let scrobbles = self.collections.list_recent_scrobbles(user_id, 30).await?;
+        let mut recent_ids: Vec<TrackId> = Vec::new();
+        for sc in scrobbles {
+            if !recent_ids.contains(&sc.track_id) {
+                recent_ids.push(sc.track_id);
+            }
+            if recent_ids.len() >= 10 {
+                break;
+            }
+        }
 
-        let random_tracks = self
-            .get_random_tracks(user_id, 12, None, None, None, None)
+        let raw_random = self
+            .catalog
+            .list_random_tracks(12, None, None, None, None)
             .await?;
+        let raw_bookmarks = self.collections.list_bookmarks(user_id).await?;
+        let bookmarks_count = raw_bookmarks.len() as u64;
+        let raw_queue = self.collections.get_play_queue(user_id).await?;
+
+        let mut fetch_ids: Vec<TrackId> = recent_ids.clone();
+        for bm in &raw_bookmarks {
+            if !fetch_ids.contains(&bm.track_id) {
+                fetch_ids.push(bm.track_id);
+            }
+        }
+        if let Some(ref q) = raw_queue
+            && let Some(cid) = q.current_track_id
+            && !fetch_ids.contains(&cid)
+        {
+            fetch_ids.push(cid);
+        }
+
+        let mut track_pool: HashMap<TrackId, Track> = self
+            .catalog
+            .find_tracks_by_ids(&fetch_ids)
+            .await?
+            .into_iter()
+            .filter(|t| !t.is_missing)
+            .map(|t| (t.id, t))
+            .collect();
+        let random_ids: Vec<TrackId> = raw_random.iter().map(|t| t.id).collect();
+        for tr in raw_random {
+            track_pool.entry(tr.id).or_insert(tr);
+        }
+
+        let all_dtos = self
+            .enrich_tracks(user_id, track_pool.into_values().collect())
+            .await?;
+        let dto_lookup: HashMap<TrackId, TrackDto> =
+            all_dtos.into_iter().map(|t| (t.id, t)).collect();
+
+        let recent_played_tracks: Vec<TrackDto> = recent_ids
+            .iter()
+            .filter_map(|id| dto_lookup.get(id).cloned())
+            .collect();
+        let random_tracks: Vec<TrackDto> = random_ids
+            .iter()
+            .filter_map(|id| dto_lookup.get(id).cloned())
+            .collect();
+
+        let mut bookmarks = Vec::new();
+        for bm in raw_bookmarks {
+            if let Some(track) = dto_lookup.get(&bm.track_id).cloned() {
+                bookmarks.push(BookmarkDto {
+                    track,
+                    position_ms: bm.position_ms,
+                    comment: bm.comment,
+                    created_at: bm.created_at,
+                    updated_at: bm.updated_at,
+                });
+            }
+        }
+        bookmarks.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+
+        let play_queue = raw_queue.map(|q| {
+            let current_tracks: Vec<TrackDto> = q
+                .current_track_id
+                .and_then(|cid| dto_lookup.get(&cid).cloned())
+                .into_iter()
+                .collect();
+            PlayQueueDto {
+                tracks: current_tracks,
+                current_track_id: q.current_track_id,
+                position_ms: q.position_ms,
+                changed_by: q.changed_by,
+                updated_at: q.updated_at,
+            }
+        });
 
         let total_tracks = self.catalog.count_all_active_tracks().await?;
-        let total_albums = self
-            .catalog
-            .list_albums(
-                &AlbumListQuery {
-                    size: 1,
-                    ..Default::default()
-                },
-                None,
-                None,
-            )
-            .await?
-            .total;
         let total_artists = self
             .catalog
             .list_artists(&ArtistQuery {
@@ -329,59 +403,6 @@ impl MusicCatalogService {
         let genres_count = self.catalog.list_genres().await?.len() as u64;
         let tags_count = self.catalog.list_tags().await?.len() as u64;
         let libraries_count = self.libraries.list_by_media(MediaKind::Music).await?.len() as u64;
-
-        let raw_bookmarks = self.collections.list_bookmarks(user_id).await?;
-        let bookmarks_count = raw_bookmarks.len() as u64;
-        let mut bookmarks = Vec::new();
-        if !raw_bookmarks.is_empty() {
-            let bm_ids: Vec<TrackId> = raw_bookmarks.iter().map(|b| b.track_id).collect();
-            let bm_tracks = self.catalog.find_tracks_by_ids(&bm_ids).await?;
-            let bm_dtos = self
-                .enrich_tracks(
-                    user_id,
-                    bm_tracks.into_iter().filter(|t| !t.is_missing).collect(),
-                )
-                .await?;
-            let bm_lookup: HashMap<TrackId, TrackDto> =
-                bm_dtos.into_iter().map(|t| (t.id, t)).collect();
-            for bm in raw_bookmarks {
-                if let Some(track) = bm_lookup.get(&bm.track_id).cloned() {
-                    bookmarks.push(BookmarkDto {
-                        track,
-                        position_ms: bm.position_ms,
-                        comment: bm.comment,
-                        created_at: bm.created_at,
-                        updated_at: bm.updated_at,
-                    });
-                }
-            }
-            bookmarks.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
-        }
-
-        let play_queue = if let Some(q) = self.collections.get_play_queue(user_id).await? {
-            let fetched = self.catalog.find_tracks_by_ids(&q.track_ids).await?;
-            let dtos = self
-                .enrich_tracks(
-                    user_id,
-                    fetched.into_iter().filter(|t| !t.is_missing).collect(),
-                )
-                .await?;
-            let lookup: HashMap<TrackId, TrackDto> = dtos.into_iter().map(|t| (t.id, t)).collect();
-            let ordered: Vec<TrackDto> = q
-                .track_ids
-                .iter()
-                .filter_map(|id| lookup.get(id).cloned())
-                .collect();
-            Some(PlayQueueDto {
-                tracks: ordered,
-                current_track_id: q.current_track_id,
-                position_ms: q.position_ms,
-                changed_by: q.changed_by,
-                updated_at: q.updated_at,
-            })
-        } else {
-            None
-        };
 
         let mut listening_ids: HashSet<TrackId> = bookmarks.iter().map(|b| b.track.id).collect();
         if let Some(ref pq) = play_queue

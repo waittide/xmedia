@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, type Component } from 'vue'
+import { computed, onActivated, onMounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
@@ -16,13 +16,17 @@ import {
   LuTag,
   LuUser,
 } from 'vue-icons-plus/lu'
+import { fetchHomeOverview, peekHomeCache } from '@/config/homeCache'
 import { api } from '@/domains/book/api'
 import { useCatalogStore } from '@/domains/book/store'
 import { useThemeStore } from '@/stores/theme'
 import { useUploadStore } from '@/stores/uploads'
 import type { BookHomeOverviewDto, BookSummaryDto } from '@/domains/book/types'
 import BookCard from '@/domains/book/components/BookCard.vue'
+import HomeSkeleton from '@/components/HomeSkeleton.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
+
+defineOptions({ name: 'BookHomeView' })
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
@@ -31,27 +35,31 @@ const catalogStore = useCatalogStore()
 const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
 
-const overview = ref<BookHomeOverviewDto | null>(null)
-const loading = ref<boolean>(true)
+const overview = ref<BookHomeOverviewDto | null>(peekHomeCache('book'))
+const loading = ref<boolean>(overview.value === null)
 const customizerOpen = ref<boolean>(false)
 
-async function loadHome(): Promise<void> {
-  loading.value = true
+async function loadHome(force = false): Promise<void> {
+  if (!overview.value) loading.value = true
   try {
-    overview.value = await api.homeOverview()
+    overview.value = await fetchHomeOverview('book', { force })
   } finally {
     loading.value = false
   }
 }
 
 onMounted(() => {
-  void loadHome()
+  void loadHome(false)
+})
+
+onActivated(() => {
+  void loadHome(false)
 })
 
 watch(
   () => [uploadStore.versionCounter, catalogStore.scanRefreshVersion],
   () => {
-    void loadHome()
+    void loadHome(true)
   },
 )
 
@@ -226,9 +234,12 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
       </div>
     </section>
 
+    <!-- Cold-Load Skeleton -->
+    <HomeSkeleton v-if="loading && !overview" />
+
     <!-- Empty Welcome State -->
     <section
-      v-if="!loading && overview && overview.stats.total_books === 0"
+      v-else-if="!loading && overview && overview.stats.total_books === 0"
       class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
     >
       <div
@@ -278,6 +289,7 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
               :src="api.coverUrl(book.id, book.updated_at)"
               :alt="book.metadata.title"
               loading="lazy"
+              decoding="async"
               class="h-full w-full object-cover transition duration-300 group-hover:scale-105"
             />
             <div v-else class="flex h-full w-full flex-col justify-between p-2 text-left">

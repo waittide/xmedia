@@ -294,6 +294,48 @@ impl BookRepository for ToastyBookRepository {
         Ok(out)
     }
 
+    async fn home_catalog_snapshot(
+        &self,
+        recent_limit: usize,
+    ) -> DomainResult<(Vec<Book>, u64, u64, u64)> {
+        let mut db = self.db.clone();
+        let rows = BookModel::filter_by_is_missing(false)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+
+        let total_books = rows.len() as u64;
+        let mut author_keys = HashSet::new();
+        let mut tag_keys = HashSet::new();
+        let mut books: Vec<Book> = Vec::with_capacity(rows.len());
+
+        for row in rows {
+            for author in &row.metadata.0.authors {
+                let clean = author.trim().to_lowercase();
+                if !clean.is_empty() {
+                    author_keys.insert(clean);
+                }
+            }
+            for tag in &row.metadata.0.tags {
+                let clean = tag.trim().to_lowercase();
+                if !clean.is_empty() {
+                    tag_keys.insert(clean);
+                }
+            }
+            books.push(Self::to_domain(row));
+        }
+
+        books.sort_by_key(|b| std::cmp::Reverse(b.created_at));
+        books.truncate(recent_limit);
+
+        Ok((
+            books,
+            total_books,
+            author_keys.len() as u64,
+            tag_keys.len() as u64,
+        ))
+    }
+
     async fn save(&self, book: &Book) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = BookModel::filter_by_id(book.id.0)

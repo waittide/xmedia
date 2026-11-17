@@ -76,6 +76,7 @@ import { useVideoI18n } from '@/domains/video/i18n'
 import { useVideoStore } from '@/domains/video/store'
 import type { VideoShelfDto } from '@/domains/video/types'
 
+import { fetchHomeOverview } from '@/config/homeCache'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import UploadShelf from '@/components/UploadShelf.vue'
 
@@ -110,6 +111,7 @@ const layoutCustomizerOpen = ref(false)
 const dragDepth = ref(0)
 
 const filePickerRef = ref<HTMLInputElement | null>(null)
+const mainScrollRef = ref<HTMLElement | null>(null)
 const searchWrapRef = ref<HTMLFormElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const comicSearchDropdownRef = ref<HTMLDivElement | null>(null)
@@ -171,13 +173,25 @@ async function ensureDomainSidebarLoaded(kind: MediaKind): Promise<void> {
   }
 }
 
+let sidebarLoadTimer: ReturnType<typeof setTimeout> | null = null
+
 watch(
   () => domainStore.activeDomain,
   (next) => {
     creatingGroupId.value = null
     newCollectionName.value = ''
     comicSearchFocused.value = false
-    void ensureDomainSidebarLoaded(next)
+    if (mainScrollRef.value) {
+      mainScrollRef.value.scrollTop = 0
+    }
+    if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
+    if (loadedDomains.has(next)) {
+      void ensureDomainSidebarLoaded(next)
+    } else {
+      sidebarLoadTimer = setTimeout(() => {
+        void ensureDomainSidebarLoaded(next)
+      }, 60)
+    }
   },
   { immediate: true },
 )
@@ -1319,6 +1333,22 @@ function handleGlobalKeydown(ev: KeyboardEvent): void {
   }
 }
 
+let idlePrewarmTimer: ReturnType<typeof setTimeout> | null = null
+
+async function prewarmOtherDomains(): Promise<void> {
+  const loaders: Record<MediaKind, () => Promise<unknown>> = {
+    book: () => import('@/domains/book/views/HomeView.vue'),
+    comic: () => import('@/domains/comic/views/HomeView.vue'),
+    music: () => import('@/domains/music/views/HomeView.vue'),
+    video: () => import('@/domains/video/views/HomeView.vue'),
+  }
+  const others = authStore.enabledModules.filter((k) => k !== domainStore.activeDomain)
+  await Promise.allSettled(others.map((k) => loaders[k]()))
+  for (const kind of others) {
+    await fetchHomeOverview(kind).catch(() => {})
+  }
+}
+
 onMounted(() => {
   document.addEventListener('mousedown', handleOutsideClick)
   window.addEventListener('keydown', handleGlobalKeydown)
@@ -1327,6 +1357,9 @@ onMounted(() => {
   if (authStore.hasModule('music')) {
     void playerStore.restoreRemoteQueue(false)
   }
+  idlePrewarmTimer = setTimeout(() => {
+    void prewarmOtherDomains()
+  }, 350)
 })
 
 onBeforeUnmount(() => {
@@ -1335,6 +1368,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', updateSearchDropdownPosition)
   eventsStore.disconnect()
   if (comicSearchTimer) clearTimeout(comicSearchTimer)
+  if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
+  if (idlePrewarmTimer) clearTimeout(idlePrewarmTimer)
 })
 </script>
 
@@ -1845,9 +1880,14 @@ onBeforeUnmount(() => {
 
       <!-- Main Route Viewport (Flush Rounded Top-Left Canvas) -->
       <main
+        ref="mainScrollRef"
         class="min-w-0 flex-1 overflow-y-auto border-t border-[var(--ctp-surface0)]/65 bg-[var(--ctp-canvas)] md:rounded-tl-3xl md:border-l"
       >
-        <RouterView />
+        <RouterView v-slot="{ Component }">
+          <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">
+            <component :is="Component" />
+          </KeepAlive>
+        </RouterView>
       </main>
     </div>
 

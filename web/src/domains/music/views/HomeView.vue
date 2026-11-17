@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, type Component } from 'vue'
+import { computed, onActivated, onMounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
@@ -19,8 +19,10 @@ import {
   LuSlidersHorizontal,
   LuTag,
 } from 'vue-icons-plus/lu'
+import { fetchHomeOverview, peekHomeCache } from '@/config/homeCache'
 import { useThemeStore } from '@/stores/theme'
 import { useUploadStore } from '@/stores/uploads'
+import HomeSkeleton from '@/components/HomeSkeleton.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
@@ -31,6 +33,8 @@ import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { HomeOverviewDto, TrackDto } from '../types'
 
+defineOptions({ name: 'MusicHomeView' })
+
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const router = useRouter()
@@ -39,14 +43,14 @@ const playerStore = usePlayerStore()
 const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
 
-const loading = ref(true)
-const overview = ref<HomeOverviewDto | null>(null)
+const overview = ref<HomeOverviewDto | null>(peekHomeCache('music'))
+const loading = ref(overview.value === null)
 const customizerOpen = ref(false)
 
-async function loadHome(): Promise<void> {
-  loading.value = true
+async function loadHome(force = false): Promise<void> {
+  if (!overview.value) loading.value = true
   try {
-    overview.value = await api.homeOverview()
+    overview.value = await fetchHomeOverview('music', { force })
   } finally {
     loading.value = false
   }
@@ -57,8 +61,12 @@ async function refreshRandomPicks(): Promise<void> {
   overview.value.random_tracks = await api.randomTracks(12)
 }
 
-onMounted(loadHome)
-watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], loadHome)
+onMounted(() => void loadHome(false))
+onActivated(() => void loadHome(false))
+watch(
+  () => [musicStore.catalogVersion, uploadStore.versionCounter],
+  () => void loadHome(true),
+)
 
 interface StatCardItem {
   key: string
@@ -283,9 +291,12 @@ const continueItems = computed<ContinueListenItem[]>(() => {
       </div>
     </section>
 
+    <!-- Cold-Load Skeleton -->
+    <HomeSkeleton v-if="loading && !overview" />
+
     <!-- Empty Library Onboarding -->
     <section
-      v-if="!loading && overview && overview.stats.total_tracks === 0"
+      v-else-if="!loading && overview && overview.stats.total_tracks === 0"
       class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
     >
       <div

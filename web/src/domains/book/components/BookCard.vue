@@ -23,6 +23,7 @@ const { t } = useI18n()
         :src="api.coverUrl(book.id, book.updated_at)"
         :alt="book.metadata.title"
         loading="lazy"
+        decoding="async"
         class="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
       />
       <div

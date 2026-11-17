@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, type Component } from 'vue'
+import { computed, onActivated, onMounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
@@ -18,13 +18,17 @@ import {
   LuTag,
   LuUpload,
 } from 'vue-icons-plus/lu'
-import { api, withAuthUrl } from '@/domains/comic/api'
+import { fetchHomeOverview, peekHomeCache } from '@/config/homeCache'
+import { withAuthUrl } from '@/domains/comic/api'
 import { useSidebarStore } from '@/domains/comic/store'
 import { useThemeStore } from '@/stores/theme'
 import { useUploadStore } from '@/stores/uploads'
 import SeriesCard from '@/domains/comic/components/SeriesCard.vue'
+import HomeSkeleton from '@/components/HomeSkeleton.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import type { HomeOverviewDto } from '@/domains/comic/types'
+
+defineOptions({ name: 'ComicHomeView' })
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
@@ -33,22 +37,23 @@ const sidebarStore = useSidebarStore()
 const themeStore = useThemeStore()
 const upload = useUploadStore()
 
-const overview = ref<HomeOverviewDto | null>(null)
-const loading = ref(true)
+const overview = ref<HomeOverviewDto | null>(peekHomeCache('comic'))
+const loading = ref(overview.value === null)
 const customizerOpen = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
-async function loadHome(): Promise<void> {
-  loading.value = true
+async function loadHome(force = false): Promise<void> {
+  if (!overview.value) loading.value = true
   try {
-    overview.value = await api.homeOverview()
+    overview.value = await fetchHomeOverview('comic', { force })
   } finally {
     loading.value = false
   }
 }
 
-onMounted(loadHome)
-watch(() => upload.catalogVersion, loadHome)
+onMounted(() => void loadHome(false))
+onActivated(() => void loadHome(false))
+watch(() => upload.catalogVersion, () => void loadHome(true))
 
 function onPickUpload(ev: Event): void {
   const input = ev.target as HTMLInputElement
@@ -192,9 +197,12 @@ const cardsGridClass = computed(() => {
       </div>
     </section>
 
+    <!-- Cold-Load Skeleton -->
+    <HomeSkeleton v-if="loading && !overview" />
+
     <!-- Empty Welcome State -->
     <section
-      v-if="!loading && overview && overview.stats.series_count === 0"
+      v-else-if="!loading && overview && overview.stats.series_count === 0"
       class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
     >
       <div
@@ -267,6 +275,7 @@ const cardsGridClass = computed(() => {
               :src="withAuthUrl(item.series.cover_url)"
               :alt="item.series.title"
               loading="lazy"
+              decoding="async"
               class="h-full w-full object-cover transition duration-300 group-hover:scale-105"
             />
             <div

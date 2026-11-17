@@ -54,6 +54,7 @@ function quickRead(ev: MouseEvent): void {
         :src="withAuthUrl(series.cover_url)"
         :alt="series.title"
         loading="lazy"
+        decoding="async"
         class="h-full w-full object-cover"
       />
       <div
