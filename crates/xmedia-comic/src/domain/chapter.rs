@@ -1,0 +1,203 @@
+use std::cmp::Ordering;
+
+use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
+use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::library::LibraryId;
+
+use crate::domain::id::{ChapterId, SeriesId};
+use crate::domain::natural::{build_chapter_sort_key, natural_cmp};
+use crate::domain::series::normalize_list;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChapterKind {
+    Volume,
+    #[default]
+    Chapter,
+    Special,
+}
+
+impl ChapterKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Volume => "volume",
+            Self::Chapter => "chapter",
+            Self::Special => "special",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "volume" | "vol" => Self::Volume,
+            "special" | "extra" | "omake" => Self::Special,
+            _ => Self::Chapter,
+        }
+    }
+
+    pub fn sort_rank(self) -> u8 {
+        match self {
+            Self::Volume => 0,
+            Self::Chapter => 1,
+            Self::Special => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChapterSourceKind {
+    #[default]
+    ArchiveFile,
+    ImageDirectory,
+}
+
+impl ChapterSourceKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ArchiveFile => "archive_file",
+            Self::ImageDirectory => "image_directory",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "image_directory" => Self::ImageDirectory,
+            _ => Self::ArchiveFile,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Chapter {
+    pub id: ChapterId,
+    pub series_id: SeriesId,
+    pub library_id: LibraryId,
+    pub kind: ChapterKind,
+    pub number: f64,
+    pub volume_number: Option<f64>,
+    pub title: String,
+    pub sort_key: String,
+    pub page_count: u32,
+    pub source_kind: ChapterSourceKind,
+    pub source_path: String,
+    pub file_size: u64,
+    pub file_hash: String,
+    pub cover_path: Option<String>,
+    pub summary: String,
+    pub writers: Vec<String>,
+    pub pencillers: Vec<String>,
+    pub is_missing: bool,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChapterMetadataPatch {
+    pub kind: Option<ChapterKind>,
+    pub number: Option<f64>,
+    pub volume_number: Option<Option<f64>>,
+    pub title: Option<String>,
+    pub summary: Option<String>,
+    pub writers: Option<Vec<String>>,
+    pub pencillers: Option<Vec<String>>,
+}
+
+impl Chapter {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        series_id: SeriesId,
+        library_id: LibraryId,
+        kind: ChapterKind,
+        number: f64,
+        volume_number: Option<f64>,
+        title: String,
+        page_count: u32,
+        source_kind: ChapterSourceKind,
+        source_path: String,
+        file_size: u64,
+        file_hash: String,
+    ) -> DomainResult<Self> {
+        if !number.is_finite() || number < 0.0 {
+            return Err(DomainError::Validation(
+                "chapter number must be a non-negative finite number".into(),
+            ));
+        }
+        let clean_title = title.trim().to_owned();
+        let sort_key =
+            build_chapter_sort_key(kind.sort_rank(), volume_number, number, &clean_title);
+        let now = Timestamp::now();
+
+        Ok(Self {
+            id: ChapterId::new(),
+            series_id,
+            library_id,
+            kind,
+            number,
+            volume_number,
+            title: clean_title,
+            sort_key,
+            page_count,
+            source_kind,
+            source_path,
+            file_size,
+            file_hash,
+            cover_path: None,
+            summary: String::new(),
+            writers: Vec::new(),
+            pencillers: Vec::new(),
+            is_missing: false,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    pub fn apply_patch(&mut self, patch: ChapterMetadataPatch) -> DomainResult<()> {
+        if let Some(kind) = patch.kind {
+            self.kind = kind;
+        }
+        if let Some(number) = patch.number {
+            if !number.is_finite() || number < 0.0 {
+                return Err(DomainError::Validation(
+                    "chapter number must be non-negative".into(),
+                ));
+            }
+            self.number = number;
+        }
+        if let Some(vol) = patch.volume_number {
+            self.volume_number = vol;
+        }
+        if let Some(title) = patch.title {
+            self.title = title.trim().to_owned();
+        }
+        if let Some(summary) = patch.summary {
+            self.summary = summary.trim().to_owned();
+        }
+        if let Some(writers) = patch.writers {
+            self.writers = normalize_list(writers);
+        }
+        if let Some(pencillers) = patch.pencillers {
+            self.pencillers = normalize_list(pencillers);
+        }
+        self.sort_key = build_chapter_sort_key(
+            self.kind.sort_rank(),
+            self.volume_number,
+            self.number,
+            &self.title,
+        );
+        self.updated_at = Timestamp::now();
+        Ok(())
+    }
+
+    pub fn cmp_order(&self, other: &Self) -> Ordering {
+        self.kind
+            .sort_rank()
+            .cmp(&other.kind.sort_rank())
+            .then_with(|| match (self.volume_number, other.volume_number) {
+                (Some(va), Some(vb)) => va.total_cmp(&vb),
+                _ => Ordering::Equal,
+            })
+            .then_with(|| self.number.total_cmp(&other.number))
+            .then_with(|| natural_cmp(&self.title, &other.title))
+    }
+}
