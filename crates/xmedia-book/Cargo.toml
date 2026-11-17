@@ -1,0 +1,28 @@
+[package]
+name = "xmedia-book"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+jiff.workspace = true
+lopdf.workspace = true
+quick-xml.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toasty.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+xmedia-core.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+tempfile.workspace = true
+tower.workspace = true

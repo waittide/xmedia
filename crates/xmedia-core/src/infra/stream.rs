@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::mpsc;
 
-use crate::application::ports::{ByteChunkStream, ByteRangeStream};
+use crate::application::ports::{ByteChunkStream, ByteRangeSpec, ByteRangeStream};
 use crate::domain::error::{DomainError, DomainResult};
 
 pub struct MpscByteStream {
@@ -68,6 +68,20 @@ pub async fn open_file_range_stream(
     path: &Path,
     range: Option<(u64, Option<u64>)>,
 ) -> DomainResult<ByteRangeStream> {
+    let spec = match range {
+        None => ByteRangeSpec::Full,
+        Some((start, end_inclusive)) => ByteRangeSpec::FromTo {
+            start,
+            end_inclusive,
+        },
+    };
+    open_file_range_stream_spec(path, spec).await
+}
+
+pub async fn open_file_range_stream_spec(
+    path: &Path,
+    spec: ByteRangeSpec,
+) -> DomainResult<ByteRangeStream> {
     let mut file = tokio::fs::File::open(path).await.map_err(|e| {
         DomainError::Storage(format!("failed to open media file {}: {e}", path.display()))
     })?;
@@ -79,9 +93,12 @@ pub async fn open_file_range_stream(
         return Err(DomainError::Storage("media file is empty".into()));
     }
 
-    let (start, end_inclusive) = match range {
-        None => (0, total_size - 1),
-        Some((s, maybe_end)) => {
+    let (start, end_inclusive) = match spec {
+        ByteRangeSpec::Full => (0, total_size - 1),
+        ByteRangeSpec::FromTo {
+            start: s,
+            end_inclusive: maybe_end,
+        } => {
             if s >= total_size {
                 return Err(DomainError::RangeNotSatisfiable { total_size });
             }
@@ -90,6 +107,16 @@ pub async fn open_file_range_stream(
                 return Err(DomainError::RangeNotSatisfiable { total_size });
             }
             (s, end)
+        }
+        ByteRangeSpec::Suffix { last_bytes } => {
+            if last_bytes == 0 {
+                return Err(DomainError::RangeNotSatisfiable { total_size });
+            }
+            let take_len = last_bytes.min(total_size);
+            (total_size - take_len, total_size - 1)
+        }
+        ByteRangeSpec::Malformed => {
+            return Err(DomainError::RangeNotSatisfiable { total_size });
         }
     };
 

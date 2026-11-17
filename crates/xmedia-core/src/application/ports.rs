@@ -11,6 +11,25 @@ use crate::domain::user::{UserId, UserRole};
 
 pub type ByteChunkStream = Pin<Box<dyn Stream<Item = DomainResult<Bytes>> + Send + 'static>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteRangeSpec {
+    Full,
+    FromTo {
+        start: u64,
+        end_inclusive: Option<u64>,
+    },
+    Suffix {
+        last_bytes: u64,
+    },
+    Malformed,
+}
+
+impl ByteRangeSpec {
+    pub fn is_partial(self) -> bool {
+        !matches!(self, Self::Full)
+    }
+}
+
 pub struct ByteRangeStream {
     pub stream: ByteChunkStream,
     pub start: u64,

@@ -12,7 +12,7 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::Serialize;
 
 use crate::application::auth::AuthService;
-use crate::application::ports::{BinaryPayload, ByteChunkStream, ByteRangeStream};
+use crate::application::ports::{BinaryPayload, ByteChunkStream, ByteRangeSpec, ByteRangeStream};
 use crate::domain::error::DomainError;
 use crate::domain::user::User;
 
@@ -212,20 +212,62 @@ pub async fn authenticate_opds_parts(
 }
 
 pub fn parse_http_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
-    let raw = headers.get(axum::http::header::RANGE)?.to_str().ok()?;
-    let spec = raw.strip_prefix("bytes=")?;
-    let first = spec.split(',').next()?.trim();
-    let (start_str, end_str) = first.split_once('-')?;
-    if start_str.trim().is_empty() {
-        return None;
+    match parse_http_range_spec(headers) {
+        ByteRangeSpec::FromTo {
+            start,
+            end_inclusive,
+        } => Some((start, end_inclusive)),
+        _ => None,
     }
-    let start: u64 = start_str.trim().parse().ok()?;
-    let end: Option<u64> = if end_str.trim().is_empty() {
+}
+
+pub fn parse_http_range_spec(headers: &HeaderMap) -> ByteRangeSpec {
+    let Some(header_val) = headers.get(axum::http::header::RANGE) else {
+        return ByteRangeSpec::Full;
+    };
+    let Ok(raw) = header_val.to_str() else {
+        return ByteRangeSpec::Malformed;
+    };
+    let Some(spec) = raw.trim().strip_prefix("bytes=") else {
+        return ByteRangeSpec::Malformed;
+    };
+    let Some(first) = spec.split(',').next() else {
+        return ByteRangeSpec::Malformed;
+    };
+    let Some((start_str, end_str)) = first.trim().split_once('-') else {
+        return ByteRangeSpec::Malformed;
+    };
+    let start_trimmed = start_str.trim();
+    let end_trimmed = end_str.trim();
+
+    if start_trimmed.is_empty() {
+        let Ok(last_bytes) = end_trimmed.parse::<u64>() else {
+            return ByteRangeSpec::Malformed;
+        };
+        if last_bytes == 0 {
+            return ByteRangeSpec::Malformed;
+        }
+        return ByteRangeSpec::Suffix { last_bytes };
+    }
+
+    let Ok(start) = start_trimmed.parse::<u64>() else {
+        return ByteRangeSpec::Malformed;
+    };
+    let end_inclusive = if end_trimmed.is_empty() {
         None
     } else {
-        Some(end_str.trim().parse().ok()?)
+        let Ok(end_val) = end_trimmed.parse::<u64>() else {
+            return ByteRangeSpec::Malformed;
+        };
+        if end_val < start {
+            return ByteRangeSpec::Malformed;
+        }
+        Some(end_val)
     };
-    Some((start, end))
+    ByteRangeSpec::FromTo {
+        start,
+        end_inclusive,
+    }
 }
 
 pub fn sanitize_download_filename(title: &str, ext: &str) -> String {
