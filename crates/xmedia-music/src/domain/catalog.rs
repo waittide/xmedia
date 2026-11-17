@@ -293,6 +293,8 @@ pub struct TrackQuery {
     pub album_id: Option<AlbumId>,
     pub artist_id: Option<ArtistId>,
     pub genre: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
     pub year_from: Option<i32>,
     pub year_to: Option<i32>,
     pub search: Option<String>,
@@ -310,6 +312,7 @@ impl Default for TrackQuery {
             album_id: None,
             artist_id: None,
             genre: None,
+            tag: None,
             year_from: None,
             year_to: None,
             search: None,
@@ -416,6 +419,12 @@ pub struct GenreStat {
     pub name: String,
     pub song_count: u64,
     pub album_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MusicTagStat {
+    pub name: String,
+    pub song_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

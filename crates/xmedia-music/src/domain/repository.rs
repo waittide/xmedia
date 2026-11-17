@@ -6,8 +6,8 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::catalog::{
-    Album, AlbumId, AlbumListQuery, Artist, ArtistId, ArtistQuery, GenreStat, PagedResult,
-    SearchQuery, SearchResult, Track, TrackId, TrackQuery,
+    Album, AlbumId, AlbumListQuery, Artist, ArtistId, ArtistQuery, GenreStat, MusicTagStat,
+    PagedResult, SearchQuery, SearchResult, Track, TrackId, TrackQuery,
 };
 use crate::domain::collection::{
     AudioBookmark, PlayQueue, Playlist, PlaylistId, RatingEntry, ScrobbleEntry, StarTargetKind,
@@ -64,6 +64,16 @@ pub trait MusicCatalogRepository: Send + Sync {
     async fn delete_artist(&self, id: ArtistId) -> DomainResult<()>;
 
     async fn list_genres(&self) -> DomainResult<Vec<GenreStat>>;
+    async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>>;
+    async fn get_tags_for_tracks(
+        &self,
+        track_ids: &[TrackId],
+    ) -> DomainResult<std::collections::HashMap<TrackId, Vec<String>>>;
+    async fn set_track_tags(
+        &self,
+        track_id: TrackId,
+        tags: Vec<String>,
+    ) -> DomainResult<Vec<String>>;
     async fn search_catalog(&self, query: &SearchQuery) -> DomainResult<SearchResult>;
     async fn recompute_catalog_aggregates(&self) -> DomainResult<()>;
 }

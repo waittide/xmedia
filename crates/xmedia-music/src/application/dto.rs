@@ -56,6 +56,8 @@ pub struct TrackDto {
     pub is_compilation: bool,
     pub cover_key: Option<String>,
     pub path: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub starred_at: Option<Timestamp>,
     pub user_rating: Option<u8>,
     pub play_count: u64,
@@ -124,6 +126,12 @@ pub struct CatalogStatsDto {
     pub total_albums: u64,
     pub total_artists: u64,
     pub starred_tracks: u64,
+    pub playlists_count: u64,
+    pub listening_count: u64,
+    pub bookmarks_count: u64,
+    pub genres_count: u64,
+    pub tags_count: u64,
+    pub libraries_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +141,8 @@ pub struct HomeOverviewDto {
     pub frequent_albums: Vec<AlbumDto>,
     pub recent_played_tracks: Vec<TrackDto>,
     pub random_tracks: Vec<TrackDto>,
+    pub bookmarks: Vec<BookmarkDto>,
+    pub play_queue: Option<PlayQueueDto>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

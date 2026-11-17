@@ -10,8 +10,8 @@ use xmedia_core::domain::user::UserId;
 
 use crate::domain::catalog::{
     Album, AlbumId, AlbumListQuery, AlbumListType, Artist, ArtistId, ArtistQuery, ArtistRoleFilter,
-    AudioFormat, GenreStat, PagedResult, SearchQuery, SearchResult, SortOrder, Track, TrackId,
-    TrackQuery, TrackSortField,
+    AudioFormat, GenreStat, MusicTagStat, PagedResult, SearchQuery, SearchResult, SortOrder, Track,
+    TrackId, TrackQuery, TrackSortField,
 };
 use crate::domain::collection::{
     AudioBookmark, PlayQueue, Playlist, PlaylistId, RatingEntry, ScrobbleEntry, StarTargetKind,
@@ -22,6 +22,7 @@ use crate::domain::repository::{MusicCatalogRepository, MusicCollectionRepositor
 use super::models::{
     MusicAlbumModel, MusicArtistModel, MusicBookmarkModel, MusicPlayQueueModel, MusicPlayStatModel,
     MusicPlaylistModel, MusicRatingModel, MusicScrobbleModel, MusicStarredModel, MusicTrackModel,
+    MusicTrackTagModel,
 };
 
 fn db_err(err: impl std::fmt::Display) -> DomainError {
@@ -196,6 +197,20 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .only_ids
             .as_ref()
             .map(|ids| ids.iter().copied().collect());
+        let tag_track_set: Option<HashSet<TrackId>> = if let Some(tag_lower) = query
+            .tag
+            .as_ref()
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| !t.is_empty())
+        {
+            let tag_rows = MusicTrackTagModel::filter_by_tag_lower(tag_lower)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            Some(tag_rows.into_iter().map(|r| TrackId(r.track_id)).collect())
+        } else {
+            None
+        };
         let genre_lower = query
             .genre
             .as_ref()
@@ -213,6 +228,11 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .filter(|t| {
                 if let Some(ref set) = only_set
                     && !set.contains(&t.id)
+                {
+                    return false;
+                }
+                if let Some(ref tset) = tag_track_set
+                    && !tset.contains(&t.id)
                 {
                     return false;
                 }
@@ -516,6 +536,11 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
 
     async fn delete_track(&self, id: TrackId) -> DomainResult<()> {
         let mut db = self.db.clone();
+        MusicTrackTagModel::filter_by_track_id(id.0)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
         MusicTrackModel::filter_by_id(id.0)
             .delete()
             .exec(&mut db)
@@ -531,6 +556,11 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .await
             .map_err(db_err)?;
         for rec in rows {
+            MusicTrackTagModel::filter_by_track_id(rec.id)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
             rec.delete().exec(&mut db).await.map_err(db_err)?;
         }
         Ok(())
@@ -949,6 +979,107 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
                 .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
         Ok(out)
+    }
+
+    async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>> {
+        let mut db = self.db.clone();
+        let active_ids: HashSet<Uuid> = MusicTrackModel::filter_by_is_missing(false)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        let rows = MusicTrackTagModel::all()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+
+        let mut map: BTreeMap<String, (String, u64)> = BTreeMap::new();
+        for row in rows {
+            if !active_ids.contains(&row.track_id) {
+                continue;
+            }
+            let entry = map.entry(row.tag_lower).or_insert_with(|| (row.tag, 0));
+            entry.1 += 1;
+        }
+
+        let mut out: Vec<MusicTagStat> = map
+            .into_values()
+            .map(|(name, song_count)| MusicTagStat { name, song_count })
+            .collect();
+        out.sort_by(|a, b| {
+            b.song_count
+                .cmp(&a.song_count)
+                .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        });
+        Ok(out)
+    }
+
+    async fn get_tags_for_tracks(
+        &self,
+        track_ids: &[TrackId],
+    ) -> DomainResult<HashMap<TrackId, Vec<String>>> {
+        if track_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut db = self.db.clone();
+        let raw_ids: Vec<Uuid> = track_ids.iter().map(|i| i.0).collect();
+        let rows =
+            MusicTrackTagModel::filter(MusicTrackTagModel::fields().track_id().in_list(raw_ids))
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+
+        let mut map: HashMap<TrackId, Vec<String>> = HashMap::new();
+        for row in rows {
+            map.entry(TrackId(row.track_id)).or_default().push(row.tag);
+        }
+        for list in map.values_mut() {
+            list.sort_by_key(|t| t.to_lowercase());
+        }
+        Ok(map)
+    }
+
+    async fn set_track_tags(
+        &self,
+        track_id: TrackId,
+        tags: Vec<String>,
+    ) -> DomainResult<Vec<String>> {
+        let mut db = self.db.clone();
+        MusicTrackTagModel::filter_by_track_id(track_id.0)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+
+        let now = Timestamp::now();
+        let mut seen = HashSet::new();
+        let mut saved = Vec::new();
+        for raw in tags {
+            let clean = raw.trim();
+            if clean.is_empty() {
+                continue;
+            }
+            let lower = clean.to_lowercase();
+            if !seen.insert(lower.clone()) {
+                continue;
+            }
+            let key = format!("{}:{}", track_id.0, lower);
+            toasty::create!(MusicTrackTagModel {
+                composite_key: key,
+                track_id: track_id.0,
+                tag_lower: lower,
+                tag: clean.to_string(),
+                created_at: now,
+            })
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+            saved.push(clean.to_string());
+        }
+        saved.sort_by_key(|t| t.to_lowercase());
+        Ok(saved)
     }
 
     async fn search_catalog(&self, query: &SearchQuery) -> DomainResult<SearchResult> {

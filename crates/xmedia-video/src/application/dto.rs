@@ -114,7 +114,14 @@ pub struct VideoHomeOverviewDto {
     pub recent_videos: Vec<VideoSummaryDto>,
     pub recent_shows: Vec<ShowSummaryDto>,
     pub total_videos: u64,
+    pub movies_count: u64,
     pub total_shows: u64,
+    pub watching_count: u64,
+    pub favorites_count: u64,
+    pub shelves_count: u64,
+    pub genres_count: u64,
+    pub tags_count: u64,
+    pub libraries_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

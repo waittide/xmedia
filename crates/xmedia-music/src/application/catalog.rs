@@ -1,23 +1,23 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::library::LibraryId;
+use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::UserId;
 
 use crate::application::dto::{
-    AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, CatalogStatsDto, HomeOverviewDto,
-    SearchResultDto, TrackDto,
+    AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BookmarkDto, CatalogStatsDto,
+    HomeOverviewDto, PlayQueueDto, SearchResultDto, TrackDto,
 };
 use crate::application::ports::{LyricsResolverPort, MusicStoragePort};
 use crate::domain::catalog::{
     Album, AlbumId, AlbumListQuery, AlbumListType, Artist, ArtistId, ArtistQuery, GenreStat,
-    PagedResult, SearchQuery, SortOrder, StructuredLyrics, Track, TrackId, TrackQuery,
-    TrackSortField,
+    MusicTagStat, PagedResult, SearchQuery, SortOrder, StructuredLyrics, Track, TrackId,
+    TrackQuery, TrackSortField,
 };
 use crate::domain::collection::{PlaylistId, StarTargetKind};
 use crate::domain::repository::{MusicCatalogRepository, MusicCollectionRepository};
@@ -67,6 +67,8 @@ impl MusicCatalogService {
         if tracks.is_empty() {
             return Ok(Vec::new());
         }
+        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
+        let mut tag_map = self.catalog.get_tags_for_tracks(&track_ids).await?;
         let stars = self
             .collections
             .list_starred(user_id, Some(StarTargetKind::Track))
@@ -125,6 +127,7 @@ impl MusicCatalogService {
                     is_compilation: t.is_compilation,
                     cover_key: t.cover_key.clone(),
                     path: t.source.display_path().to_string(),
+                    tags: tag_map.remove(&t.id).unwrap_or_default(),
                     starred_at: star_map.get(&t.id.0).copied(),
                     user_rating: rating_map.get(&t.id.0).copied(),
                     play_count,
@@ -318,6 +321,78 @@ impl MusicCatalogService {
             .list_starred(user_id, Some(StarTargetKind::Track))
             .await?
             .len() as u64;
+        let playlists_count = self
+            .collections
+            .list_visible_playlists(user_id)
+            .await?
+            .len() as u64;
+        let genres_count = self.catalog.list_genres().await?.len() as u64;
+        let tags_count = self.catalog.list_tags().await?.len() as u64;
+        let libraries_count = self.libraries.list_by_media(MediaKind::Music).await?.len() as u64;
+
+        let raw_bookmarks = self.collections.list_bookmarks(user_id).await?;
+        let bookmarks_count = raw_bookmarks.len() as u64;
+        let mut bookmarks = Vec::new();
+        if !raw_bookmarks.is_empty() {
+            let bm_ids: Vec<TrackId> = raw_bookmarks.iter().map(|b| b.track_id).collect();
+            let bm_tracks = self.catalog.find_tracks_by_ids(&bm_ids).await?;
+            let bm_dtos = self
+                .enrich_tracks(
+                    user_id,
+                    bm_tracks.into_iter().filter(|t| !t.is_missing).collect(),
+                )
+                .await?;
+            let bm_lookup: HashMap<TrackId, TrackDto> =
+                bm_dtos.into_iter().map(|t| (t.id, t)).collect();
+            for bm in raw_bookmarks {
+                if let Some(track) = bm_lookup.get(&bm.track_id).cloned() {
+                    bookmarks.push(BookmarkDto {
+                        track,
+                        position_ms: bm.position_ms,
+                        comment: bm.comment,
+                        created_at: bm.created_at,
+                        updated_at: bm.updated_at,
+                    });
+                }
+            }
+            bookmarks.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+        }
+
+        let play_queue = if let Some(q) = self.collections.get_play_queue(user_id).await? {
+            let fetched = self.catalog.find_tracks_by_ids(&q.track_ids).await?;
+            let dtos = self
+                .enrich_tracks(
+                    user_id,
+                    fetched.into_iter().filter(|t| !t.is_missing).collect(),
+                )
+                .await?;
+            let lookup: HashMap<TrackId, TrackDto> = dtos.into_iter().map(|t| (t.id, t)).collect();
+            let ordered: Vec<TrackDto> = q
+                .track_ids
+                .iter()
+                .filter_map(|id| lookup.get(id).cloned())
+                .collect();
+            Some(PlayQueueDto {
+                tracks: ordered,
+                current_track_id: q.current_track_id,
+                position_ms: q.position_ms,
+                changed_by: q.changed_by,
+                updated_at: q.updated_at,
+            })
+        } else {
+            None
+        };
+
+        let mut listening_ids: HashSet<TrackId> = bookmarks.iter().map(|b| b.track.id).collect();
+        if let Some(ref pq) = play_queue
+            && let Some(cid) = pq.current_track_id
+        {
+            listening_ids.insert(cid);
+        }
+        for rt in &recent_played_tracks {
+            listening_ids.insert(rt.id);
+        }
+        let listening_count = listening_ids.len() as u64;
 
         Ok(HomeOverviewDto {
             stats: CatalogStatsDto {
@@ -325,11 +400,19 @@ impl MusicCatalogService {
                 total_albums,
                 total_artists,
                 starred_tracks,
+                playlists_count,
+                listening_count,
+                bookmarks_count,
+                genres_count,
+                tags_count,
+                libraries_count,
             },
             recent_added_albums: recent_added,
             frequent_albums: frequent,
             recent_played_tracks,
             random_tracks,
+            bookmarks,
+            play_queue,
         })
     }
 
@@ -504,6 +587,26 @@ impl MusicCatalogService {
 
     pub async fn list_genres(&self) -> DomainResult<Vec<GenreStat>> {
         self.catalog.list_genres().await
+    }
+
+    pub async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>> {
+        self.catalog.list_tags().await
+    }
+
+    pub async fn set_track_tags(
+        &self,
+        user_id: UserId,
+        track_id: TrackId,
+        tags: Vec<String>,
+    ) -> DomainResult<TrackDto> {
+        let track = self
+            .catalog
+            .find_track_by_id(track_id)
+            .await?
+            .filter(|t| !t.is_missing)
+            .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
+        self.catalog.set_track_tags(track.id, tags).await?;
+        self.get_track(user_id, track.id).await
     }
 
     pub async fn get_random_tracks(

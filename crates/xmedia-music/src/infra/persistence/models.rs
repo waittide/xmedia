@@ -235,3 +235,19 @@ pub(crate) struct MusicBookmarkModel {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
+
+#[derive(Debug, toasty::Model)]
+#[table = "music_track_tags"]
+pub(crate) struct MusicTrackTagModel {
+    #[key]
+    pub composite_key: String,
+
+    #[index]
+    pub track_id: Uuid,
+
+    #[index]
+    pub tag_lower: String,
+
+    pub tag: String,
+    pub created_at: Timestamp,
+}

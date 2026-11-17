@@ -19,7 +19,8 @@ use crate::application::dto::{
 use crate::application::ports::FfmpegStatusDto;
 use crate::domain::catalog::{
     AlbumId, AlbumListQuery, AlbumListType, ArtistId, ArtistQuery, ArtistRoleFilter, GenreStat,
-    PagedResult, SearchQuery, SortOrder, StructuredLyrics, TrackId, TrackQuery, TrackSortField,
+    MusicTagStat, PagedResult, SearchQuery, SortOrder, StructuredLyrics, TrackId, TrackQuery,
+    TrackSortField,
 };
 use crate::domain::collection::PlaylistId;
 use crate::http::extractors::MusicWebAuth;
@@ -43,6 +44,7 @@ pub fn router() -> Router<MusicHttpState> {
         .route("/tracks/recent", get(recent_tracks))
         .route("/tracks/random", get(random_tracks))
         .route("/tracks/{id}", get(get_track))
+        .route("/tracks/{id}/tags", put(set_track_tags))
         .route("/tracks/{id}/lyrics", get(get_track_lyrics))
         .route("/tracks/{id}/stream", get(stream_track))
         .route("/tracks/{id}/download", get(download_track))
@@ -52,6 +54,7 @@ pub fn router() -> Router<MusicHttpState> {
         .route("/artists", get(list_artists))
         .route("/artists/{id}", get(get_artist))
         .route("/genres", get(list_genres))
+        .route("/tags", get(list_tags))
         .route("/search", get(search_catalog))
         .route("/playlists", get(list_playlists).post(create_playlist))
         .route(
@@ -96,6 +99,7 @@ struct TrackListParams {
     album_id: Option<Uuid>,
     artist_id: Option<Uuid>,
     genre: Option<String>,
+    tag: Option<String>,
     year_from: Option<i32>,
     year_to: Option<i32>,
     search: Option<String>,
@@ -267,6 +271,7 @@ async fn query_tracks(
         album_id: p.album_id.map(AlbumId),
         artist_id: p.artist_id.map(ArtistId),
         genre: p.genre,
+        tag: p.tag,
         year_from: p.year_from,
         year_to: p.year_to,
         search: p.search,
@@ -452,11 +457,39 @@ async fn get_artist(
     ))
 }
 
+#[derive(Deserialize)]
+struct SetTrackTagsBody {
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
 async fn list_genres(
     State(state): State<MusicHttpState>,
     MusicWebAuth(_user): MusicWebAuth,
 ) -> ApiResult<Json<Vec<GenreStat>>> {
     Ok(Json(state.services.catalog.list_genres().await?))
+}
+
+async fn list_tags(
+    State(state): State<MusicHttpState>,
+    MusicWebAuth(_user): MusicWebAuth,
+) -> ApiResult<Json<Vec<MusicTagStat>>> {
+    Ok(Json(state.services.catalog.list_tags().await?))
+}
+
+async fn set_track_tags(
+    State(state): State<MusicHttpState>,
+    MusicWebAuth(user): MusicWebAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetTrackTagsBody>,
+) -> ApiResult<Json<TrackDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .set_track_tags(user.id, TrackId(id), body.tags)
+            .await?,
+    ))
 }
 
 async fn search_catalog(

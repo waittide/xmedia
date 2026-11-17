@@ -175,18 +175,20 @@ impl VideoCatalogService {
         let mut all_prog = self.watch.list_user_progress(user.id).await?;
         all_prog.retain(|p| !p.completed && p.position_secs > 1.0);
         all_prog.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
-        all_prog.truncate(12);
-
-        let cw_ids: Vec<VideoId> = all_prog.iter().map(|p| p.video_id).collect();
-        let fetched_cw = self.catalog.find_videos_by_ids(&cw_ids).await?;
-        let cw_lookup: HashMap<VideoId, VideoItem> =
-            fetched_cw.into_iter().map(|v| (v.id, v)).collect();
-        let ordered_cw: Vec<VideoItem> = cw_ids
+        let all_prog_ids: Vec<VideoId> = all_prog.iter().map(|p| p.video_id).collect();
+        let fetched_all_cw = self.catalog.find_videos_by_ids(&all_prog_ids).await?;
+        let cw_lookup: HashMap<VideoId, VideoItem> = fetched_all_cw
+            .into_iter()
+            .filter(|v| !v.is_missing)
+            .map(|v| (v.id, v))
+            .collect();
+        let mut active_cw: Vec<VideoItem> = all_prog_ids
             .iter()
             .filter_map(|id| cw_lookup.get(id).cloned())
-            .filter(|v| !v.is_missing)
             .collect();
-        let continue_watching = self.enrich_videos(user.id, ordered_cw).await?;
+        let watching_count = active_cw.len() as u64;
+        active_cw.truncate(12);
+        let continue_watching = self.enrich_videos(user.id, active_cw).await?;
 
         let mut all_videos = self
             .catalog
@@ -196,21 +198,65 @@ impl VideoCatalogService {
             })
             .await?;
         let total_videos = all_videos.len() as u64;
+        let movies_count = all_videos.iter().filter(|v| v.show_id.is_none()).count() as u64;
+
+        let mut genre_set = HashSet::new();
+        let mut tag_set = HashSet::new();
+        for v in &all_videos {
+            for g in &v.genres {
+                let clean = g.trim().to_lowercase();
+                if !clean.is_empty() {
+                    genre_set.insert(clean);
+                }
+            }
+            for t in &v.tags {
+                let clean = t.trim().to_lowercase();
+                if !clean.is_empty() {
+                    tag_set.insert(clean);
+                }
+            }
+        }
+
         all_videos.truncate(16);
         let recent_videos = self.enrich_videos(user.id, all_videos).await?;
 
         let mut all_shows = self.catalog.list_shows(&ShowQueryFilter::default()).await?;
         let total_shows = all_shows.len() as u64;
+        for s in &all_shows {
+            for g in &s.genres {
+                let clean = g.trim().to_lowercase();
+                if !clean.is_empty() {
+                    genre_set.insert(clean);
+                }
+            }
+            for t in &s.tags {
+                let clean = t.trim().to_lowercase();
+                if !clean.is_empty() {
+                    tag_set.insert(clean);
+                }
+            }
+        }
         all_shows.sort_by_key(|s| std::cmp::Reverse(s.created_at));
         all_shows.truncate(12);
         let recent_shows = self.enrich_shows(user.id, all_shows).await?;
+
+        let favorites_count = self.watch.list_favorites(user.id, None).await?.len() as u64;
+        let shelves_count = self.watch.list_shelves(user.id).await?.len() as u64;
+        let libraries_count = self.libraries.list_by_media(MediaKind::Video).await?.len() as u64;
 
         Ok(VideoHomeOverviewDto {
             continue_watching,
             recent_videos,
             recent_shows,
             total_videos,
+            movies_count,
             total_shows,
+            watching_count,
+            favorites_count,
+            shelves_count,
+            genres_count: genre_set.len() as u64,
+            tags_count: tag_set.len() as u64,
+            libraries_count,
         })
     }
 
