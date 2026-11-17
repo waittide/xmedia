@@ -4,6 +4,7 @@ members = [
     "crates/xmedia-core",
     "crates/xmedia-book",
     "crates/xmedia-comic",
+    "crates/xmedia-music",
 ]
 
 [workspace.package]
@@ -29,6 +30,7 @@ hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "avif"] }
 jiff = { version = "0.2.43", features = ["serde"] }
 jsonwebtoken = { version = "12.0.0", default-features = false, features = ["rust_crypto"] }
+lofty = "0.25.5"
 lopdf = "0.47.0"
 md-5 = "0.11.0"
 quick-xml = { version = "0.42.0", features = ["serialize"] }
