@@ -345,6 +345,253 @@ fn default_accent_mode() -> String {
     "catppuccin".to_string()
 }
 
+// --- Customizable Workspace Layout Preferences (<= 4 items per slot) ---
+
+pub const MAX_LAYOUT_ITEMS: usize = 4;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainLayoutConfig {
+    #[serde(default)]
+    pub home_cards: Vec<String>,
+    #[serde(default)]
+    pub sidebar_groups: Vec<String>,
+}
+
+fn sanitize_slot(
+    raw: &[String],
+    allowed: &[&str],
+    fallback: &[&str],
+    allow_empty: bool,
+) -> Vec<String> {
+    let mut out = Vec::with_capacity(MAX_LAYOUT_ITEMS);
+    for item in raw {
+        let trimmed = item.trim();
+        if allowed.contains(&trimmed) && !out.iter().any(|existing| existing == trimmed) {
+            out.push(trimmed.to_string());
+            if out.len() >= MAX_LAYOUT_ITEMS {
+                break;
+            }
+        }
+    }
+    if out.is_empty() && !allow_empty {
+        fallback
+            .iter()
+            .take(MAX_LAYOUT_ITEMS)
+            .map(|s| (*s).to_string())
+            .collect()
+    } else {
+        out
+    }
+}
+
+fn default_book_layout() -> DomainLayoutConfig {
+    DomainLayoutConfig {
+        home_cards: vec![
+            "all".into(),
+            "reading".into(),
+            "bookmarks".into(),
+            "favorites".into(),
+        ],
+        sidebar_groups: vec![
+            "authors".into(),
+            "tags".into(),
+            "shelves".into(),
+            "libraries".into(),
+        ],
+    }
+}
+
+fn default_comic_layout() -> DomainLayoutConfig {
+    DomainLayoutConfig {
+        home_cards: vec![
+            "all".into(),
+            "reading".into(),
+            "bookmarks".into(),
+            "favorites".into(),
+        ],
+        sidebar_groups: vec![
+            "writers".into(),
+            "tags".into(),
+            "shelves".into(),
+            "libraries".into(),
+        ],
+    }
+}
+
+fn default_music_layout() -> DomainLayoutConfig {
+    DomainLayoutConfig {
+        home_cards: vec![
+            "all".into(),
+            "playlists".into(),
+            "listening".into(),
+            "favorites".into(),
+        ],
+        sidebar_groups: vec![
+            "artists".into(),
+            "tags".into(),
+            "albums".into(),
+            "genres".into(),
+        ],
+    }
+}
+
+fn default_video_layout() -> DomainLayoutConfig {
+    DomainLayoutConfig {
+        home_cards: vec![
+            "all".into(),
+            "movies".into(),
+            "shows".into(),
+            "favorites".into(),
+        ],
+        sidebar_groups: vec![
+            "shows".into(),
+            "genres".into(),
+            "tags".into(),
+            "shelves".into(),
+        ],
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceLayoutPreferences {
+    #[serde(default = "default_book_layout")]
+    pub book: DomainLayoutConfig,
+    #[serde(default = "default_comic_layout")]
+    pub comic: DomainLayoutConfig,
+    #[serde(default = "default_music_layout")]
+    pub music: DomainLayoutConfig,
+    #[serde(default = "default_video_layout")]
+    pub video: DomainLayoutConfig,
+}
+
+impl Default for WorkspaceLayoutPreferences {
+    fn default() -> Self {
+        Self {
+            book: default_book_layout(),
+            comic: default_comic_layout(),
+            music: default_music_layout(),
+            video: default_video_layout(),
+        }
+    }
+}
+
+impl WorkspaceLayoutPreferences {
+    pub fn sanitized(self) -> Self {
+        Self {
+            book: DomainLayoutConfig {
+                home_cards: sanitize_slot(
+                    &self.book.home_cards,
+                    &[
+                        "all",
+                        "reading",
+                        "bookmarks",
+                        "favorites",
+                        "shelves",
+                        "tags",
+                        "authors",
+                        "libraries",
+                    ],
+                    &["all", "reading", "bookmarks", "favorites"],
+                    false,
+                ),
+                sidebar_groups: sanitize_slot(
+                    &self.book.sidebar_groups,
+                    &["authors", "tags", "shelves", "libraries", "bookmarks"],
+                    &["authors", "tags", "shelves", "libraries"],
+                    true,
+                ),
+            },
+            comic: DomainLayoutConfig {
+                home_cards: sanitize_slot(
+                    &self.comic.home_cards,
+                    &[
+                        "all",
+                        "reading",
+                        "bookmarks",
+                        "favorites",
+                        "chapters",
+                        "shelves",
+                        "tags",
+                        "libraries",
+                    ],
+                    &["all", "reading", "bookmarks", "favorites"],
+                    false,
+                ),
+                sidebar_groups: sanitize_slot(
+                    &self.comic.sidebar_groups,
+                    &[
+                        "writers",
+                        "pencillers",
+                        "genres",
+                        "tags",
+                        "shelves",
+                        "libraries",
+                        "bookmarks",
+                    ],
+                    &["writers", "tags", "shelves", "libraries"],
+                    true,
+                ),
+            },
+            music: DomainLayoutConfig {
+                home_cards: sanitize_slot(
+                    &self.music.home_cards,
+                    &[
+                        "all",
+                        "playlists",
+                        "listening",
+                        "favorites",
+                        "bookmarks",
+                        "albums",
+                        "artists",
+                        "genres",
+                        "tags",
+                        "libraries",
+                    ],
+                    &["all", "playlists", "listening", "favorites"],
+                    false,
+                ),
+                sidebar_groups: sanitize_slot(
+                    &self.music.sidebar_groups,
+                    &[
+                        "artists",
+                        "tags",
+                        "albums",
+                        "genres",
+                        "playlists",
+                        "libraries",
+                    ],
+                    &["artists", "tags", "albums", "genres"],
+                    true,
+                ),
+            },
+            video: DomainLayoutConfig {
+                home_cards: sanitize_slot(
+                    &self.video.home_cards,
+                    &[
+                        "all",
+                        "movies",
+                        "shows",
+                        "favorites",
+                        "watching",
+                        "shelves",
+                        "genres",
+                        "tags",
+                        "libraries",
+                    ],
+                    &["all", "movies", "shows", "favorites"],
+                    false,
+                ),
+                sidebar_groups: sanitize_slot(
+                    &self.video.sidebar_groups,
+                    &["shows", "genres", "tags", "shelves", "libraries"],
+                    &["shows", "genres", "tags", "shelves"],
+                    true,
+                ),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserPreferences {
     #[serde(default)]
@@ -375,6 +622,8 @@ pub struct UserPreferences {
     pub music: MusicPlaybackPreferences,
     #[serde(default)]
     pub video: VideoPlaybackPreferences,
+    #[serde(default)]
+    pub workspace_layout: WorkspaceLayoutPreferences,
 }
 
 impl Default for UserPreferences {
@@ -394,6 +643,7 @@ impl Default for UserPreferences {
             comic: ComicReaderPreferences::default(),
             music: MusicPlaybackPreferences::default(),
             video: VideoPlaybackPreferences::default(),
+            workspace_layout: WorkspaceLayoutPreferences::default(),
         }
     }
 }
@@ -527,8 +777,35 @@ impl User {
         Ok(())
     }
 
-    pub fn update_preferences(&mut self, preferences: UserPreferences) {
+    pub fn update_preferences(&mut self, mut preferences: UserPreferences) {
+        preferences.workspace_layout = preferences.workspace_layout.sanitized();
         self.preferences = preferences;
         self.updated_at = Timestamp::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workspace_layout_clamps_to_four_and_deduplicates() {
+        let mut prefs = WorkspaceLayoutPreferences::default();
+        prefs.book.home_cards = vec![
+            "shelves".into(),
+            "shelves".into(),
+            "tags".into(),
+            "all".into(),
+            "reading".into(),
+            "bookmarks".into(),
+            "invalid".into(),
+        ];
+        prefs.book.sidebar_groups = vec![];
+        let clean = prefs.sanitized();
+        assert_eq!(
+            clean.book.home_cards,
+            vec!["shelves", "tags", "all", "reading"]
+        );
+        assert!(clean.book.sidebar_groups.is_empty());
     }
 }
