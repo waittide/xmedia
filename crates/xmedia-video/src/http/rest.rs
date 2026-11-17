@@ -1,0 +1,462 @@
+use axum::body::Body;
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
+use axum::{Json, Router};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use xmedia_core::domain::error::DomainError;
+use xmedia_core::http::{ApiError, ApiResult, into_binary_cache_response, parse_http_range_spec};
+
+use crate::application::catalog::VideoCatalogService;
+use crate::application::dto::{
+    SaveWatchProgressInput, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, UpsertVideoShelfInput,
+    VideoDetailDto, VideoFavoritesDto, VideoHomeOverviewDto, VideoShelfDetailDto, VideoShelfDto,
+    VideoSummaryDto, VideoSystemStatusDto, VideoUploadItem, VideoUploadResultDto,
+};
+use crate::application::ports::parse_quality_param;
+use crate::domain::id::{ShowId, VideoId, VideoShelfId};
+use crate::domain::video::{
+    ShowMetadataPatch, ShowQueryFilter, VideoMetadataPatch, VideoQueryFilter,
+};
+use crate::domain::watch::{VideoFavoriteKind, WatchProgress};
+use crate::http::extractors::VideoWebAuth;
+use crate::http::into_video_http_response;
+use crate::http::state::VideoHttpState;
+
+pub fn router() -> Router<VideoHttpState> {
+    Router::new()
+        .route("/status", get(video_status))
+        .route("/home", get(home_overview))
+        .route(
+            "/upload",
+            post(upload_videos).layer(DefaultBodyLimit::max(4 * 1024 * 1024 * 1024)),
+        )
+        .route("/videos", get(list_videos))
+        .route(
+            "/videos/{id}",
+            get(get_video_detail)
+                .patch(update_video_metadata)
+                .delete(delete_video),
+        )
+        .route(
+            "/videos/{id}/poster",
+            post(upload_video_poster).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route("/videos/{id}/stream", get(stream_video))
+        .route("/videos/{id}/download", get(download_video))
+        .route("/videos/{id}/subtitles", get(list_video_subtitles))
+        .route("/videos/{id}/subtitles/{sub_id}", get(get_subtitle_vtt))
+        .route("/videos/{id}/progress", put(save_watch_progress))
+        .route("/videos/{id}/watched", post(set_video_watched))
+        .route("/shows", get(list_shows))
+        .route(
+            "/shows/{id}",
+            get(get_show_detail).patch(update_show_metadata),
+        )
+        .route(
+            "/shows/{id}/poster",
+            post(upload_show_poster).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
+        .route("/posters/{key}", get(get_poster))
+        .route("/favorites", get(list_favorites))
+        .route("/favorites/{kind}/{id}", put(set_favorite))
+        .route("/shelves", get(list_shelves).post(create_shelf))
+        .route(
+            "/shelves/{id}",
+            get(get_shelf).put(update_shelf).delete(delete_shelf),
+        )
+}
+
+#[derive(Serialize)]
+struct OkResponse {
+    ok: bool,
+}
+
+#[derive(Deserialize, Default)]
+struct StreamQueryParams {
+    quality: Option<String>,
+    audio_stream: Option<u32>,
+    start_secs: Option<u32>,
+}
+
+#[derive(Deserialize, Default)]
+struct PosterParams {
+    size: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct WatchedBody {
+    watched: bool,
+}
+
+#[derive(Deserialize)]
+struct FavoriteBody {
+    favorite: bool,
+}
+
+async fn video_status(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(_user): VideoWebAuth,
+) -> ApiResult<Json<VideoSystemStatusDto>> {
+    Ok(Json(state.services.catalog.system_status().await?))
+}
+
+async fn home_overview(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+) -> ApiResult<Json<VideoHomeOverviewDto>> {
+    Ok(Json(state.services.catalog.home_overview(&user).await?))
+}
+
+async fn upload_videos(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    mut multipart: Multipart,
+) -> ApiResult<(StatusCode, Json<VideoUploadResultDto>)> {
+    let mut files = Vec::new();
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError(DomainError::Validation(format!("multipart error: {e}"))))?
+    {
+        let Some(filename) = field.file_name().map(str::to_string) else {
+            continue;
+        };
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| ApiError(DomainError::Validation(format!("upload read error: {e}"))))?;
+        if !bytes.is_empty() {
+            files.push(VideoUploadItem { filename, bytes });
+        }
+    }
+    let res = state.services.ingest.upload_files(&user, files).await?;
+    Ok((StatusCode::CREATED, Json(res)))
+}
+
+async fn list_videos(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Query(filter): Query<VideoQueryFilter>,
+) -> ApiResult<Json<Vec<VideoSummaryDto>>> {
+    Ok(Json(
+        state.services.catalog.list_videos(&user, filter).await?,
+    ))
+}
+
+async fn get_video_detail(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<VideoDetailDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .get_video_detail(&user, VideoId(id))
+            .await?,
+    ))
+}
+
+async fn update_video_metadata(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    Json(patch): Json<VideoMetadataPatch>,
+) -> ApiResult<Json<VideoSummaryDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .update_video_metadata(&user, VideoId(id), patch)
+            .await?,
+    ))
+}
+
+async fn delete_video(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<OkResponse>> {
+    state
+        .services
+        .catalog
+        .delete_video(&user, VideoId(id))
+        .await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn upload_video_poster(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> ApiResult<Json<VideoSummaryDto>> {
+    let bytes = read_first_multipart_bytes(&mut multipart).await?;
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .upload_video_poster(&user, VideoId(id), &bytes)
+            .await?,
+    ))
+}
+
+async fn stream_video(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(_user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<StreamQueryParams>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let spec = parse_http_range_spec(&headers);
+    let quality = parse_quality_param(q.quality.as_deref());
+    let resolved = state
+        .services
+        .streaming
+        .open_stream(VideoId(id), quality, q.audio_stream, q.start_secs, spec)
+        .await?;
+    Ok(into_video_http_response(resolved, false))
+}
+
+async fn download_video(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(_user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let spec = parse_http_range_spec(&headers);
+    let resolved = state
+        .services
+        .streaming
+        .open_raw_download(VideoId(id), spec)
+        .await?;
+    Ok(into_video_http_response(resolved, true))
+}
+
+async fn list_video_subtitles(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<SubtitleTrackDto>>> {
+    let detail = state
+        .services
+        .catalog
+        .get_video_detail(&user, VideoId(id))
+        .await?;
+    Ok(Json(detail.subtitles))
+}
+
+async fn get_subtitle_vtt(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(_user): VideoWebAuth,
+    Path((id, sub_id)): Path<(Uuid, String)>,
+) -> ApiResult<Response> {
+    let _ = VideoCatalogService::collect_subtitle_dtos;
+    let vtt = state
+        .services
+        .catalog
+        .get_subtitle_webvtt(VideoId(id), &sub_id)
+        .await?;
+    let mut res = (StatusCode::OK, Body::from(vtt)).into_response();
+    res.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/vtt; charset=utf-8"),
+    );
+    Ok(res)
+}
+
+async fn save_watch_progress(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    Json(input): Json<SaveWatchProgressInput>,
+) -> ApiResult<Json<WatchProgress>> {
+    Ok(Json(
+        state
+            .services
+            .watch
+            .save_progress(&user, VideoId(id), input)
+            .await?,
+    ))
+}
+
+async fn set_video_watched(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    Json(body): Json<WatchedBody>,
+) -> ApiResult<Json<WatchProgress>> {
+    Ok(Json(
+        state
+            .services
+            .watch
+            .set_watched(&user, VideoId(id), body.watched)
+            .await?,
+    ))
+}
+
+async fn list_shows(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Query(filter): Query<ShowQueryFilter>,
+) -> ApiResult<Json<Vec<ShowSummaryDto>>> {
+    Ok(Json(
+        state.services.catalog.list_shows(&user, filter).await?,
+    ))
+}
+
+async fn get_show_detail(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<ShowDetailDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .get_show_detail(&user, ShowId(id))
+            .await?,
+    ))
+}
+
+async fn update_show_metadata(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    Json(patch): Json<ShowMetadataPatch>,
+) -> ApiResult<Json<ShowSummaryDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .update_show_metadata(&user, ShowId(id), patch)
+            .await?,
+    ))
+}
+
+async fn upload_show_poster(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> ApiResult<Json<ShowSummaryDto>> {
+    let bytes = read_first_multipart_bytes(&mut multipart).await?;
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .upload_show_poster(&user, ShowId(id), &bytes)
+            .await?,
+    ))
+}
+
+async fn get_poster(
+    State(state): State<VideoHttpState>,
+    Path(key): Path<String>,
+    Query(p): Query<PosterParams>,
+) -> ApiResult<Response> {
+    let payload = state.services.catalog.get_poster(&key, p.size).await?;
+    Ok(into_binary_cache_response(payload))
+}
+
+async fn list_favorites(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+) -> ApiResult<Json<VideoFavoritesDto>> {
+    Ok(Json(state.services.watch.list_favorites(&user).await?))
+}
+
+async fn set_favorite(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path((kind_raw, id)): Path<(String, Uuid)>,
+    Json(body): Json<FavoriteBody>,
+) -> ApiResult<Json<OkResponse>> {
+    let kind = VideoFavoriteKind::parse(&kind_raw)?;
+    state
+        .services
+        .watch
+        .set_favorite(&user, kind, id, body.favorite)
+        .await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn list_shelves(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+) -> ApiResult<Json<Vec<VideoShelfDto>>> {
+    Ok(Json(state.services.watch.list_shelves(&user).await?))
+}
+
+async fn get_shelf(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<VideoShelfDetailDto>> {
+    Ok(Json(
+        state
+            .services
+            .watch
+            .get_shelf(&user, VideoShelfId(id))
+            .await?,
+    ))
+}
+
+async fn create_shelf(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Json(input): Json<UpsertVideoShelfInput>,
+) -> ApiResult<(StatusCode, Json<VideoShelfDetailDto>)> {
+    let created = state.services.watch.create_shelf(&user, input).await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn update_shelf(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+    Json(input): Json<UpsertVideoShelfInput>,
+) -> ApiResult<Json<VideoShelfDetailDto>> {
+    Ok(Json(
+        state
+            .services
+            .watch
+            .update_shelf(&user, VideoShelfId(id), input)
+            .await?,
+    ))
+}
+
+async fn delete_shelf(
+    State(state): State<VideoHttpState>,
+    VideoWebAuth(user): VideoWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<OkResponse>> {
+    state
+        .services
+        .watch
+        .delete_shelf(&user, VideoShelfId(id))
+        .await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+async fn read_first_multipart_bytes(multipart: &mut Multipart) -> ApiResult<Vec<u8>> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError(DomainError::Validation(format!("multipart error: {e}"))))?
+    {
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| ApiError(DomainError::Validation(format!("upload read error: {e}"))))?;
+        if !data.is_empty() {
+            return Ok(data.to_vec());
+        }
+    }
+    Err(ApiError(DomainError::Validation(
+        "no file payload received".into(),
+    )))
+}

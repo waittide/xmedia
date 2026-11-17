@@ -5,6 +5,7 @@ members = [
     "crates/xmedia-book",
     "crates/xmedia-comic",
     "crates/xmedia-music",
+    "crates/xmedia-video",
 ]
 
 [workspace.package]

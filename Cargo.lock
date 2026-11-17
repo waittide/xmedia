@@ -5660,6 +5660,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "xmedia-video"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "bytes",
+ "jiff",
+ "quick-xml",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toasty",
+ "tokio",
+ "tower",
+ "tracing",
+ "uuid",
+ "walkdir",
+ "xmedia-core",
+]
+
+[[package]]
 name = "y4m"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
