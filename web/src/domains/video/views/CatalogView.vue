@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { LuSearch, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import { useUploadStore } from '@/stores/uploads'
@@ -15,6 +16,7 @@ import type { ShowSummaryDto, VideoKindFilter, VideoSortBy, VideoSummaryDto } fr
 type CatalogTab = 'videos' | 'shows'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const videoStore = useVideoStore()
@@ -24,11 +26,18 @@ function resolveTabFromQuery(): CatalogTab {
   return route.query.tab === 'shows' ? 'shows' : 'videos'
 }
 
+function resolveKindFromQuery(): VideoKindFilter {
+  const q = route.query.kind
+  if (q === 'standalone' || q === 'episodes') return q
+  return 'all'
+}
+
 const activeTab = ref<CatalogTab>(resolveTabFromQuery())
 const selectedLibrary = ref(typeof route.query.library === 'string' ? route.query.library : '')
+const selectedGenre = ref(typeof route.query.genre === 'string' ? route.query.genre : '')
 const selectedTag = ref(typeof route.query.tag === 'string' ? route.query.tag : '')
 const search = ref(typeof route.query.q === 'string' ? route.query.q : '')
-const kindFilter = ref<VideoKindFilter>('all')
+const kindFilter = ref<VideoKindFilter>(resolveKindFromQuery())
 const sortKey = ref('created_at:desc')
 
 const videos = ref<VideoSummaryDto[]>([])
@@ -43,7 +52,11 @@ const activeLibraryName = computed(() => {
 
 const pageTitle = computed(() => {
   if (activeLibraryName.value) return activeLibraryName.value
-  if (selectedTag.value) return selectedTag.value
+  if (selectedGenre.value) return selectedGenre.value
+  if (selectedTag.value) return `#${selectedTag.value}`
+  if (activeTab.value === 'videos' && kindFilter.value === 'standalone') {
+    return t('catalog.kindStandalone')
+  }
   return t('nav.all')
 })
 
@@ -62,12 +75,21 @@ const libraryOptions = computed(() => [
   })),
 ])
 
-const tagOptions = computed(() => [
+const genreOptions = computed(() => [
   { value: '', label: t('catalog.allGenres') },
-  ...videoStore.tags.map((g) => ({
+  ...videoStore.genres.map((g) => ({
     value: g.name,
     label: g.name,
     badge: g.count,
+  })),
+])
+
+const tagOptions = computed(() => [
+  { value: '', label: globalT('musicTags.allTagsFilter') },
+  ...videoStore.tags.map((tg) => ({
+    value: tg.name,
+    label: `#${tg.name}`,
+    badge: tg.count,
   })),
 ])
 
@@ -88,7 +110,9 @@ function syncRouteQuery(): void {
   const nextQuery: Record<string, string> = {}
   if (activeTab.value !== 'videos') nextQuery.tab = activeTab.value
   if (selectedLibrary.value) nextQuery.library = selectedLibrary.value
+  if (selectedGenre.value) nextQuery.genre = selectedGenre.value
   if (selectedTag.value) nextQuery.tag = selectedTag.value
+  if (activeTab.value === 'videos' && kindFilter.value !== 'all') nextQuery.kind = kindFilter.value
   if (search.value.trim()) nextQuery.q = search.value.trim()
   void router.replace({ path: '/video/catalog', query: nextQuery })
 }
@@ -102,7 +126,9 @@ function selectTab(tab: CatalogTab): void {
 
 function clearScopeFilters(): void {
   selectedLibrary.value = ''
+  selectedGenre.value = ''
   selectedTag.value = ''
+  kindFilter.value = 'all'
   search.value = ''
   syncRouteQuery()
   void fetchActive()
@@ -115,7 +141,8 @@ async function fetchVideos(): Promise<void> {
     videos.value = await api.listVideos({
       library_id: selectedLibrary.value || undefined,
       kind: kindFilter.value,
-      genre: selectedTag.value || undefined,
+      genre: selectedGenre.value || undefined,
+      tag: selectedTag.value || undefined,
       search: search.value.trim() || undefined,
       sort_by: sortBy,
       sort_desc: order === 'desc',
@@ -130,7 +157,7 @@ async function fetchShows(): Promise<void> {
   try {
     shows.value = await api.listShows({
       library_id: selectedLibrary.value || undefined,
-      genre: selectedTag.value || undefined,
+      genre: selectedGenre.value || selectedTag.value || undefined,
       search: search.value.trim() || undefined,
     })
   } finally {
@@ -152,20 +179,35 @@ function handleFilterChange(): void {
 }
 
 watch(
-  () => [route.query.tab, route.query.library, route.query.tag, route.query.q] as const,
-  ([qTab, qLib, qTag, qSearch]) => {
+  () =>
+    [
+      route.query.tab,
+      route.query.library,
+      route.query.genre,
+      route.query.tag,
+      route.query.kind,
+      route.query.q,
+    ] as const,
+  ([qTab, qLib, qGenre, qTag, qKind, qSearch]) => {
     const nextTab: CatalogTab = qTab === 'shows' ? 'shows' : 'videos'
     const nextLib = typeof qLib === 'string' ? qLib : ''
+    const nextGenre = typeof qGenre === 'string' ? qGenre : ''
     const nextTag = typeof qTag === 'string' ? qTag : ''
+    const nextKind: VideoKindFilter =
+      qKind === 'standalone' || qKind === 'episodes' ? qKind : 'all'
     const nextSearch = typeof qSearch === 'string' ? qSearch : search.value
     const changed =
       nextTab !== activeTab.value ||
       nextLib !== selectedLibrary.value ||
+      nextGenre !== selectedGenre.value ||
       nextTag !== selectedTag.value ||
+      nextKind !== kindFilter.value ||
       nextSearch !== search.value
     activeTab.value = nextTab
     selectedLibrary.value = nextLib
+    selectedGenre.value = nextGenre
     selectedTag.value = nextTag
+    kindFilter.value = nextKind
     search.value = nextSearch
     if (changed) {
       void fetchActive()
@@ -185,7 +227,7 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
         <div class="flex items-center gap-2">
           <h1 class="text-2xl font-extrabold tracking-tight">{{ pageTitle }}</h1>
           <button
-            v-if="selectedLibrary || selectedTag"
+            v-if="selectedLibrary || selectedGenre || selectedTag || kindFilter !== 'all'"
             type="button"
             class="inline-flex items-center gap-1 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
             @click="clearScopeFilters"
@@ -251,6 +293,14 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
       />
 
       <AppSelect
+        v-model="selectedGenre"
+        :options="genreOptions"
+        searchable
+        @change="handleFilterChange"
+      />
+
+      <AppSelect
+        v-if="videoStore.tags.length > 0 || selectedTag"
         v-model="selectedTag"
         :options="tagOptions"
         searchable
@@ -261,7 +311,7 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
         <AppSelect
           v-model="kindFilter"
           :options="kindOptions"
-          @change="fetchVideos"
+          @change="handleFilterChange"
         />
 
         <AppSelect

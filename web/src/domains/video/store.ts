@@ -15,6 +15,8 @@ export const useVideoStore = defineStore('video', () => {
 
   const libraries = ref<VideoLibraryDto[]>([])
   const shelves = ref<VideoShelfDto[]>([])
+  const shows = ref<ShowSummaryDto[]>([])
+  const genres = ref<VideoTagStat[]>([])
   const tags = ref<VideoTagStat[]>([])
   const catalogVersion = ref(0)
 
@@ -27,25 +29,38 @@ export const useVideoStore = defineStore('video', () => {
     ])
     if (libsRes.status === 'fulfilled') libraries.value = libsRes.value
     if (shelvesRes.status === 'fulfilled') shelves.value = shelvesRes.value
+    if (showsRes.status === 'fulfilled') shows.value = showsRes.value
 
-    const counts = new Map<string, number>()
+    const genreCounts = new Map<string, number>()
+    const tagCounts = new Map<string, number>()
     if (videosRes.status === 'fulfilled') {
       for (const v of videosRes.value) {
-        for (const g of [...v.genres, ...v.tags]) {
+        for (const g of v.genres) {
           const clean = g.trim()
-          if (clean) counts.set(clean, (counts.get(clean) ?? 0) + 1)
+          if (clean) genreCounts.set(clean, (genreCounts.get(clean) ?? 0) + 1)
+        }
+        for (const t of v.tags) {
+          const clean = t.trim()
+          if (clean) tagCounts.set(clean, (tagCounts.get(clean) ?? 0) + 1)
         }
       }
     }
     if (showsRes.status === 'fulfilled') {
       for (const s of showsRes.value) {
-        for (const g of [...s.genres, ...s.tags]) {
+        for (const g of s.genres) {
           const clean = g.trim()
-          if (clean && !counts.has(clean)) counts.set(clean, 1)
+          if (clean && !genreCounts.has(clean)) genreCounts.set(clean, 1)
+        }
+        for (const t of s.tags) {
+          const clean = t.trim()
+          if (clean && !tagCounts.has(clean)) tagCounts.set(clean, 1)
         }
       }
     }
-    tags.value = Array.from(counts.entries())
+    genres.value = Array.from(genreCounts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    tags.value = Array.from(tagCounts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
   }
@@ -93,6 +108,8 @@ export const useVideoStore = defineStore('video', () => {
   return {
     libraries,
     shelves,
+    shows,
+    genres,
     tags,
     catalogVersion,
     refreshSidebar,

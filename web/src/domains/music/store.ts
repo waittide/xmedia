@@ -7,6 +7,7 @@ import type {
   ArtistDto,
   GenreStatDto,
   LibraryDto,
+  MusicTagStatDto,
   PlaylistSummaryDto,
   TrackDto,
 } from './types'
@@ -17,18 +18,27 @@ export const useMusicStore = defineStore('music', () => {
   const libraries = ref<LibraryDto[]>([])
   const playlists = ref<PlaylistSummaryDto[]>([])
   const genres = ref<GenreStatDto[]>([])
+  const tags = ref<MusicTagStatDto[]>([])
+  const artists = ref<ArtistDto[]>([])
+  const albums = ref<AlbumDto[]>([])
   const globalSearchQuery = ref('')
   const catalogVersion = ref(0)
 
   async function refreshSidebar(): Promise<void> {
-    const [libs, pls, gs] = await Promise.allSettled([
+    const [libs, pls, gs, tgs, ars, als] = await Promise.allSettled([
       api.listLibraries(),
       api.listPlaylists(),
       api.listGenres(),
+      api.listTags(),
+      api.listArtists({ size: 24 }),
+      api.listAlbums({ type: 'newest', size: 24 }),
     ])
     if (libs.status === 'fulfilled') libraries.value = libs.value
     if (pls.status === 'fulfilled') playlists.value = pls.value
     if (gs.status === 'fulfilled') genres.value = gs.value
+    if (tgs.status === 'fulfilled') tags.value = tgs.value
+    if (ars.status === 'fulfilled') artists.value = ars.value.items
+    if (als.status === 'fulfilled') albums.value = als.value.items
   }
 
   function bumpCatalogVersion(): void {
@@ -88,6 +98,9 @@ export const useMusicStore = defineStore('music', () => {
     libraries,
     playlists,
     genres,
+    tags,
+    artists,
+    albums,
     globalSearchQuery,
     catalogVersion,
     refreshSidebar,

@@ -3,6 +3,8 @@ import type { CoreLibraryDto } from '@/types/api'
 import type {
   ChapterItemDto,
   ChapterMetadataPatch,
+  ComicBookmark,
+  ComicBookmarkItemDto,
   EffectiveReaderPrefDto,
   HomeOverviewDto,
   Library,
@@ -229,4 +231,18 @@ export const api = {
 
   deleteShelf: (id: string) =>
     requestJson<void>(`/comic/shelves/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
+  listAllBookmarks: () => requestJson<ComicBookmarkItemDto[]>('/comic/bookmarks'),
+  listChapterBookmarks: (chapterId: string) =>
+    requestJson<ComicBookmark[]>(`/comic/chapters/${encodeURIComponent(chapterId)}/bookmarks`),
+  createBookmark: (
+    chapterId: string,
+    payload: { page_number: number; title?: string; note?: string },
+  ) =>
+    requestJson<ComicBookmark>(`/comic/chapters/${encodeURIComponent(chapterId)}/bookmarks`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  deleteBookmark: (id: string) =>
+    requestJson<void>(`/comic/bookmarks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

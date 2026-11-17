@@ -97,6 +97,7 @@ export interface TrackDto {
   is_compilation: boolean
   cover_key: string | null
   path: string
+  tags: string[]
   starred_at: string | null
   user_rating: number | null
   play_count: number
@@ -154,6 +155,11 @@ export interface GenreStatDto {
   album_count: number
 }
 
+export interface MusicTagStatDto {
+  name: string
+  song_count: number
+}
+
 export interface LyricLineDto {
   start_ms: number
   text: string
@@ -188,11 +194,19 @@ export interface HomeOverviewDto {
     total_albums: number
     total_artists: number
     starred_tracks: number
+    playlists_count: number
+    listening_count: number
+    bookmarks_count: number
+    genres_count: number
+    tags_count: number
+    libraries_count: number
   }
   recent_added_albums: AlbumDto[]
   frequent_albums: AlbumDto[]
   recent_played_tracks: TrackDto[]
   random_tracks: TrackDto[]
+  bookmarks: BookmarkDto[]
+  play_queue: PlayQueueDto | null
 }
 
 export interface PlaylistSummaryDto {

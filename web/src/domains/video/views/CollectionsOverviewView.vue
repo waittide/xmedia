@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuLibrary,
   LuFolderHeart,
@@ -23,10 +24,11 @@ import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
 import type { VideoLibraryDto, VideoShelfDto } from '../types'
 
-type CollectionKind = 'libraries' | 'shelves' | 'tags'
+type CollectionKind = 'libraries' | 'shelves' | 'tags' | 'genres'
 type SortKey = 'count_desc' | 'count_asc' | 'name_asc'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -36,6 +38,7 @@ const videoStore = useVideoStore()
 const kind = computed<CollectionKind>(() => {
   if (route.name === 'video-libraries-overview') return 'libraries'
   if (route.name === 'video-shelves-overview') return 'shelves'
+  if (route.name === 'video-genres-overview') return 'genres'
   return 'tags'
 })
 
@@ -71,6 +74,13 @@ const headerMeta = computed(() => {
       total: videoStore.shelves.length,
     }
   }
+  if (kind.value === 'genres') {
+    return {
+      title: globalT('layoutCustomizer.sidebar.video.genres'),
+      subtitle: t('collections.tagsSubtitle'),
+      total: videoStore.genres.length,
+    }
+  }
   return {
     title: t('collections.tagsTitle'),
     subtitle: t('collections.tagsSubtitle'),
@@ -103,8 +113,9 @@ const filteredShelves = computed(() => {
 })
 
 const filteredTags = computed(() => {
+  const src = kind.value === 'genres' ? videoStore.genres : videoStore.tags
   const q = filterKeyword.value.trim().toLowerCase()
-  const list = videoStore.tags.filter((g) => !q || g.name.toLowerCase().includes(q))
+  const list = src.filter((g) => !q || g.name.toLowerCase().includes(q))
   return [...list].sort((a, b) => {
     if (sortKey.value === 'count_desc') return b.count - a.count
     if (sortKey.value === 'count_asc') return a.count - b.count
@@ -441,7 +452,12 @@ function formatLibraryScanText(lib: VideoLibraryDto): string {
           :key="g.name"
           type="button"
           class="group card-soft flex items-center justify-between gap-2.5 rounded-2xl bg-[var(--ctp-shell)] px-4 py-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--ctp-accent)]"
-          @click="router.push({ path: '/video/catalog', query: { tag: g.name } })"
+          @click="
+            router.push({
+              path: '/video/catalog',
+              query: kind === 'genres' ? { genre: g.name } : { tag: g.name },
+            })
+          "
         >
           <span class="flex min-w-0 items-center gap-2.5">
             <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]">

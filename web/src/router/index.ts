@@ -101,6 +101,18 @@ export const router = createRouter({
           component: () => import('@/domains/book/views/CollectionsOverviewView.vue'),
           meta: { domain: 'book' as MediaKind },
         },
+        {
+          path: 'book/authors',
+          name: 'book-authors-overview',
+          component: () => import('@/domains/book/views/CollectionsOverviewView.vue'),
+          meta: { domain: 'book' as MediaKind },
+        },
+        {
+          path: 'book/bookmarks',
+          name: 'book-bookmarks',
+          component: () => import('@/domains/book/views/BookmarksView.vue'),
+          meta: { domain: 'book' as MediaKind },
+        },
 
         // 2. Comics Domain (/comic)
         {
@@ -152,6 +164,12 @@ export const router = createRouter({
           path: 'comic/tags',
           name: 'comic-tags',
           component: () => import('@/domains/comic/views/TagsView.vue'),
+          meta: { domain: 'comic' as MediaKind },
+        },
+        {
+          path: 'comic/bookmarks',
+          name: 'comic-bookmarks',
+          component: () => import('@/domains/comic/views/BookmarksView.vue'),
           meta: { domain: 'comic' as MediaKind },
         },
 
@@ -225,6 +243,12 @@ export const router = createRouter({
           meta: { domain: 'music' as MediaKind },
         },
         {
+          path: 'music/tags',
+          name: 'music-tags-overview',
+          component: () => import('@/domains/music/views/CollectionsOverviewView.vue'),
+          meta: { domain: 'music' as MediaKind },
+        },
+        {
           path: 'music/search',
           name: 'music-search',
           component: () => import('@/domains/music/views/SearchView.vue'),
@@ -279,6 +303,16 @@ export const router = createRouter({
           name: 'video-tags-overview',
           component: () => import('@/domains/video/views/CollectionsOverviewView.vue'),
           meta: { domain: 'video' as MediaKind },
+        },
+        {
+          path: 'video/genres',
+          name: 'video-genres-overview',
+          component: () => import('@/domains/video/views/CollectionsOverviewView.vue'),
+          meta: { domain: 'video' as MediaKind },
+        },
+        {
+          path: 'video/shows',
+          redirect: { path: '/video/catalog', query: { tab: 'shows' } },
         },
         {
           path: 'video/shows/:id',

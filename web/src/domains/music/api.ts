@@ -13,6 +13,7 @@ import type {
   HomeOverviewDto,
   LibraryDto,
   MusicStatusDto,
+  MusicTagStatDto,
   PagedResult,
   PlayQueueDto,
   PlaylistDetailDto,
@@ -124,6 +125,7 @@ export const api = {
     album_id?: string
     artist_id?: string
     genre?: string
+    tag?: string
     year_from?: number
     year_to?: number
     search?: string
@@ -157,6 +159,12 @@ export const api = {
   }) => requestJson<PagedResult<ArtistDto>>(`/music/artists${toQuery(params)}`),
   getArtist: (id: string) => requestJson<ArtistDetailDto>(`/music/artists/${id}`),
   listGenres: () => requestJson<GenreStatDto[]>('/music/genres'),
+  listTags: () => requestJson<MusicTagStatDto[]>('/music/tags'),
+  setTrackTags: (trackId: string, tags: string[]) =>
+    requestJson<TrackDto>(`/music/tracks/${encodeURIComponent(trackId)}/tags`, {
+      method: 'PUT',
+      body: JSON.stringify({ tags }),
+    }),
   search: (q: string, limit = 24) =>
     requestJson<SearchResultDto>(`/music/search${toQuery({ q, limit })}`),
 

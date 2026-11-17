@@ -58,6 +58,7 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import AppColorPicker from '@/components/ui/AppColorPicker.vue'
+import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 
 type SettingsTab = 'appearance' | 'preferences' | 'account' | 'libraries' | 'users'
 
@@ -581,6 +582,16 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
 
         <!-- ==================== 1. APPEARANCE & LANGUAGE ==================== -->
         <template v-if="activeTab === 'appearance'">
+          <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
+            <h2 class="text-sm font-bold">{{ t('layoutCustomizer.title') }}</h2>
+            <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+              {{ t('layoutCustomizer.subtitle') }}
+            </p>
+            <div class="mt-4">
+              <LayoutCustomizerModal inline :domain="domainStore.activeDomain" />
+            </div>
+          </section>
+
           <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
             <h2 class="text-sm font-bold">{{ t('theme.languageTitle') }}</h2>
             <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.languageDesc') }}</p>

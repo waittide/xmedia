@@ -28,6 +28,8 @@ export default {
     shelvesSubtitle: 'Curate and organize your reading collections',
     tagsTitle: 'Tags',
     tagsSubtitle: 'Filter and explore your catalog by subject tags',
+    authorsTitle: 'Authors',
+    authorsSubtitle: 'Filter and explore your catalog by author',
     searchPlaceholder: 'Filter by name…',
     sortCountDesc: 'Book count (High → Low)',
     sortCountAsc: 'Book count (Low → High)',

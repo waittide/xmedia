@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuPlay,
   LuPause,
@@ -8,6 +9,7 @@ import {
   LuMoreHorizontal,
   LuListPlus,
   LuPlus,
+  LuTag,
   LuDownload,
   LuTrash2,
   LuVolume2,
@@ -39,6 +41,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const router = useRouter()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
@@ -107,6 +110,24 @@ async function createPlaylistWithTrack(track: TrackDto): Promise<void> {
 async function addToExistingPlaylist(playlistId: string, track: TrackDto): Promise<void> {
   activeMenuIdx.value = null
   await musicStore.addTrackToPlaylist(playlistId, track.id)
+}
+
+async function editTrackTags(track: TrackDto): Promise<void> {
+  activeMenuIdx.value = null
+  const raw = await dialogStore.prompt({
+    title: globalT('musicTags.editPromptTitle'),
+    message: globalT('musicTags.editPromptMessage'),
+    placeholder: globalT('musicTags.editPlaceholder'),
+    initialValue: (track.tags ?? []).join(', '),
+  })
+  if (raw === null) return
+  const nextTags = raw
+    .split(/[,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  const updated = await api.setTrackTags(track.id, nextTags)
+  track.tags = updated.tags
+  await musicStore.refreshSidebar()
 }
 
 function handleOutside(ev: MouseEvent): void {
@@ -194,13 +215,22 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
                     LRC
                   </span>
                 </div>
-                <div class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
+                <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--ctp-subtext0)]">
                   <span
-                    class="hover:text-[var(--ctp-accent)] hover:underline"
+                    class="truncate hover:text-[var(--ctp-accent)] hover:underline"
                     @click.stop="router.push(`/music/artists/${tr.artist_id}`)"
                   >
                     {{ tr.artist_name }}
                   </span>
+                  <button
+                    v-for="tg in tr.tags ?? []"
+                    :key="tg"
+                    type="button"
+                    class="rounded bg-[var(--ctp-surface0)]/65 px-1.5 py-0.2 text-[9px] font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                    @click.stop="router.push({ path: '/music/songs', query: { tag: tg } })"
+                  >
+                    #{{ tg }}
+                  </button>
                 </div>
               </div>
             </div>
@@ -278,6 +308,15 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       >
         <LuListPlus class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
         <span>{{ t('common.addToQueue') }}</span>
+      </button>
+
+      <button
+        type="button"
+        class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
+        @click="editTrackTags(tracks[activeMenuIdx]!)"
+      >
+        <LuTag class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+        <span>{{ globalT('musicTags.editTags') }}</span>
       </button>
 
       <button

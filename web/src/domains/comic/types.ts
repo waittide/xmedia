@@ -107,6 +107,31 @@ export interface LibraryStatsDto {
   chapter_count: number
   completed_chapters: number
   favorites_count: number
+  in_progress_count: number
+  bookmarks_count: number
+  shelves_count: number
+  tags_count: number
+  writers_count: number
+}
+
+export interface ComicBookmark {
+  id: string
+  user_id: string
+  series_id: string
+  chapter_id: string
+  page_number: number
+  title: string
+  note: string | null
+  created_at: number | string
+}
+
+export interface ComicBookmarkItemDto {
+  bookmark: ComicBookmark
+  series_title: string
+  chapter_number: string
+  chapter_title: string
+  total_pages: number
+  cover_url: string | null
 }
 
 export interface HomeOverviewDto {

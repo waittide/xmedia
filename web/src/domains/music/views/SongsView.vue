@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { LuPlay, LuShuffle, LuSearch, LuHeart, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import { useUploadStore } from '@/stores/uploads'
@@ -24,6 +25,7 @@ import type {
 type CatalogTab = 'songs' | 'albums' | 'artists'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const musicStore = useMusicStore()
@@ -39,6 +41,7 @@ function resolveTabFromQuery(): CatalogTab {
 const activeTab = ref<CatalogTab>(resolveTabFromQuery())
 const selectedLibrary = ref(typeof route.query.library === 'string' ? route.query.library : '')
 const selectedGenre = ref(typeof route.query.genre === 'string' ? route.query.genre : '')
+const selectedTag = ref(typeof route.query.tag === 'string' ? route.query.tag : '')
 const search = ref('')
 
 // Songs state
@@ -69,6 +72,7 @@ const activeLibraryName = computed(() => {
 
 const pageTitle = computed(() => {
   if (activeLibraryName.value) return activeLibraryName.value
+  if (selectedTag.value) return `#${selectedTag.value}`
   if (selectedGenre.value) return selectedGenre.value
   return t('nav.all')
 })
@@ -98,6 +102,15 @@ const genreOptions = computed(() => [
     value: g.name,
     label: g.name,
     badge: activeTab.value === 'albums' ? g.album_count : g.song_count,
+  })),
+])
+
+const tagOptions = computed(() => [
+  { value: '', label: globalT('musicTags.allTagsFilter') },
+  ...musicStore.tags.map((tg) => ({
+    value: tg.name,
+    label: `#${tg.name}`,
+    badge: tg.song_count,
   })),
 ])
 
@@ -134,6 +147,7 @@ function syncRouteQuery(): void {
   if (activeTab.value !== 'songs') nextQuery.tab = activeTab.value
   if (selectedLibrary.value) nextQuery.library = selectedLibrary.value
   if (selectedGenre.value) nextQuery.genre = selectedGenre.value
+  if (selectedTag.value) nextQuery.tag = selectedTag.value
   void router.replace({ path: '/music/songs', query: nextQuery })
 }
 
@@ -147,6 +161,7 @@ function selectTab(tab: CatalogTab): void {
 function clearScopeFilters(): void {
   selectedLibrary.value = ''
   selectedGenre.value = ''
+  selectedTag.value = ''
   tracksPage.value = 1
   albumsPage.value = 1
   syncRouteQuery()
@@ -160,6 +175,7 @@ async function fetchSongs(): Promise<void> {
     const res = await api.queryTracks({
       library_id: selectedLibrary.value || undefined,
       genre: selectedGenre.value || undefined,
+      tag: selectedTag.value || undefined,
       search: search.value.trim() || undefined,
       sort_by: field,
       sort_order: order,
@@ -224,18 +240,21 @@ function handleFilterChange(): void {
 }
 
 watch(
-  () => [route.query.tab, route.query.library, route.query.genre] as const,
-  ([qTab, qLib, qGenre]) => {
+  () => [route.query.tab, route.query.library, route.query.genre, route.query.tag] as const,
+  ([qTab, qLib, qGenre, qTag]) => {
     const nextTab: CatalogTab = qTab === 'albums' || qTab === 'artists' ? qTab : 'songs'
     const nextLib = typeof qLib === 'string' ? qLib : ''
     const nextGenre = typeof qGenre === 'string' ? qGenre : ''
+    const nextTag = typeof qTag === 'string' ? qTag : ''
     const changed =
       nextTab !== activeTab.value ||
       nextLib !== selectedLibrary.value ||
-      nextGenre !== selectedGenre.value
+      nextGenre !== selectedGenre.value ||
+      nextTag !== selectedTag.value
     activeTab.value = nextTab
     selectedLibrary.value = nextLib
     selectedGenre.value = nextGenre
+    selectedTag.value = nextTag
     if (changed) {
       tracksPage.value = 1
       albumsPage.value = 1
@@ -257,7 +276,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           <div class="flex items-center gap-2">
             <h1 class="text-2xl font-extrabold tracking-tight">{{ pageTitle }}</h1>
             <button
-              v-if="selectedLibrary || selectedGenre"
+              v-if="selectedLibrary || selectedGenre || selectedTag"
               type="button"
               class="inline-flex items-center gap-1 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
               @click="clearScopeFilters"
@@ -336,7 +355,10 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
 
     <!-- 1. SONGS TAB -->
     <template v-if="activeTab === 'songs'">
-      <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
+      <div
+        class="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
+        :class="musicStore.tags.length > 0 || selectedTag ? 'lg:grid-cols-5' : 'lg:grid-cols-4'"
+      >
         <div class="relative">
           <LuSearch
             class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
@@ -359,6 +381,14 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
         <AppSelect
           v-model="selectedGenre"
           :options="genreOptions"
+          searchable
+          @change="handleFilterChange"
+        />
+
+        <AppSelect
+          v-if="musicStore.tags.length > 0 || selectedTag"
+          v-model="selectedTag"
+          :options="tagOptions"
           searchable
           @change="handleFilterChange"
         />

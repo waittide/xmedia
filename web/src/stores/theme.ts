@@ -13,12 +13,16 @@ import {
 import { i18n, setAppLocale } from '@/i18n'
 import type {
   ComicReaderPreferences,
+  DomainLayoutConfig,
   LocaleCode,
+  MediaKind,
   PlaybackPreferences,
   ReaderPreferences,
   UserPreferences,
   VideoPlaybackPreferences,
+  WorkspaceLayoutPreferences,
 } from '@/types/api'
+import { DEFAULT_WORKSPACE_LAYOUT, sanitizeDomainLayout, sanitizeWorkspaceLayout } from '@/config/workspaceLayout'
 import { api, getStoredToken } from '@/api/client'
 
 const PREFS_STORAGE_KEY = 'xmedia.preferences'
@@ -75,6 +79,7 @@ function loadLocalPrefs(): UserPreferences {
     comic: { ...DEFAULT_COMIC_PREFS },
     music: { ...DEFAULT_MUSIC_PREFS },
     video: { ...DEFAULT_VIDEO_PREFS },
+    workspace_layout: sanitizeWorkspaceLayout(DEFAULT_WORKSPACE_LAYOUT),
   }
   try {
     const raw = localStorage.getItem(PREFS_STORAGE_KEY)
@@ -100,6 +105,7 @@ function loadLocalPrefs(): UserPreferences {
       comic: { ...DEFAULT_COMIC_PREFS, ...(parsed.comic ?? {}) },
       music: { ...DEFAULT_MUSIC_PREFS, ...(parsed.music ?? {}) },
       video: { ...DEFAULT_VIDEO_PREFS, ...(parsed.video ?? {}) },
+      workspace_layout: sanitizeWorkspaceLayout(parsed.workspace_layout),
     }
   } catch {
     return fallback
@@ -127,6 +133,9 @@ export const useThemeStore = defineStore('theme', () => {
   const comic = ref<ComicReaderPreferences>(initial.comic)
   const playback = ref<PlaybackPreferences>(initial.music)
   const video = ref<VideoPlaybackPreferences>(initial.video)
+  const workspaceLayout = ref<WorkspaceLayoutPreferences>(
+    sanitizeWorkspaceLayout(initial.workspace_layout),
+  )
 
   const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
   const prefersDark = ref<boolean>(mediaQuery.matches)
@@ -175,6 +184,7 @@ export const useThemeStore = defineStore('theme', () => {
       comic: { ...comic.value },
       music: { ...playback.value },
       video: { ...video.value },
+      workspace_layout: sanitizeWorkspaceLayout(workspaceLayout.value),
     }
   }
 
@@ -211,6 +221,7 @@ export const useThemeStore = defineStore('theme', () => {
     if (prefs.comic) comic.value = { ...DEFAULT_COMIC_PREFS, ...prefs.comic }
     if (prefs.music) playback.value = { ...DEFAULT_MUSIC_PREFS, ...prefs.music }
     if (prefs.video) video.value = { ...DEFAULT_VIDEO_PREFS, ...prefs.video }
+    workspaceLayout.value = sanitizeWorkspaceLayout(prefs.workspace_layout)
     applyNow()
   }
 
@@ -326,6 +337,30 @@ export const useThemeStore = defineStore('theme', () => {
     scheduleServerSync()
   }
 
+  function updateDomainLayout(domain: MediaKind, patch: Partial<DomainLayoutConfig>): void {
+    const current = workspaceLayout.value[domain]
+    const next = sanitizeDomainLayout(domain, {
+      home_cards: patch.home_cards ?? current.home_cards,
+      sidebar_groups:
+        patch.sidebar_groups !== undefined ? patch.sidebar_groups : current.sidebar_groups,
+    })
+    workspaceLayout.value = {
+      ...workspaceLayout.value,
+      [domain]: next,
+    }
+    applyNow()
+    scheduleServerSync()
+  }
+
+  function resetDomainLayout(domain: MediaKind): void {
+    workspaceLayout.value = {
+      ...workspaceLayout.value,
+      [domain]: sanitizeDomainLayout(domain, DEFAULT_WORKSPACE_LAYOUT[domain]),
+    }
+    applyNow()
+    scheduleServerSync()
+  }
+
   watch(
     [activePalette, isDark, activePresetId],
     () => {
@@ -350,6 +385,7 @@ export const useThemeStore = defineStore('theme', () => {
     comic,
     playback,
     video,
+    workspaceLayout,
     isDark,
     activePresetId,
     activePalette,
@@ -368,5 +404,7 @@ export const useThemeStore = defineStore('theme', () => {
     updateComicPreferences,
     updatePlaybackPreferences,
     updateVideoPreferences,
+    updateDomainLayout,
+    resetDomainLayout,
   }
 })

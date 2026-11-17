@@ -124,7 +124,14 @@ export interface VideoHomeOverviewDto {
   recent_videos: VideoSummaryDto[]
   recent_shows: ShowSummaryDto[]
   total_videos: number
+  movies_count: number
   total_shows: number
+  watching_count: number
+  favorites_count: number
+  shelves_count: number
+  genres_count: number
+  tags_count: number
+  libraries_count: number
 }
 
 export interface VideoFavoritesDto {

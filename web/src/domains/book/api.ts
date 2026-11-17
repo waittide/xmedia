@@ -1,7 +1,9 @@
 import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
 import type { CoreLibraryDto } from '@/types/api'
 import type {
+  BookBookmarkItemDto,
   BookFormat,
+  BookHomeOverviewDto,
   Bookmark,
   BookSortField,
   BookSummaryDto,
@@ -121,6 +123,8 @@ export const api = {
     requestJson<TxtChapterContent>(`/book/books/${id}/chapters/${index}`),
   listAuthors: () => requestJson<FacetCount[]>('/book/authors'),
   listTags: () => requestJson<FacetCount[]>('/book/tags'),
+  homeOverview: () => requestJson<BookHomeOverviewDto>('/book/home'),
+  listAllBookmarks: () => requestJson<BookBookmarkItemDto[]>('/book/bookmarks'),
 
   listRecent: (limit = 24) => requestJson<BookSummaryDto[]>(`/book/recent?limit=${limit}`),
   getProgress: (bookId: string) =>

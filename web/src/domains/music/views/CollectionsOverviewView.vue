@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuLibrary,
   LuListMusic,
@@ -23,10 +24,11 @@ import { useMusicI18n as useI18n } from '../i18n'
 import { useMusicStore } from '../store'
 import type { LibraryDto, PlaylistSummaryDto } from '../types'
 
-type CollectionKind = 'libraries' | 'playlists' | 'genres'
+type CollectionKind = 'libraries' | 'playlists' | 'genres' | 'tags'
 type SortKey = 'count_desc' | 'count_asc' | 'name_asc' | 'updated_desc'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
@@ -36,6 +38,7 @@ const musicStore = useMusicStore()
 const kind = computed<CollectionKind>(() => {
   if (route.name === 'music-libraries-overview') return 'libraries'
   if (route.name === 'music-playlists-overview') return 'playlists'
+  if (route.name === 'music-tags-overview') return 'tags'
   return 'genres'
 })
 
@@ -56,7 +59,7 @@ const sortOptions = computed<SelectOption[]>(() => {
     { value: 'count_asc', label: t('collections.sortCountAsc') },
     { value: 'name_asc', label: t('collections.sortNameAsc') },
   ]
-  if (kind.value !== 'genres') {
+  if (kind.value === 'libraries' || kind.value === 'playlists') {
     base.push({ value: 'updated_desc', label: t('collections.sortUpdatedDesc') })
   }
   return base
@@ -75,6 +78,13 @@ const headerMeta = computed(() => {
       title: t('collections.playlistsTitle'),
       subtitle: t('collections.playlistsSubtitle'),
       total: musicStore.playlists.length,
+    }
+  }
+  if (kind.value === 'tags') {
+    return {
+      title: globalT('musicTags.allTitle'),
+      subtitle: globalT('musicTags.allSubtitle'),
+      total: musicStore.tags.length,
     }
   }
   return {
@@ -112,7 +122,11 @@ const filteredPlaylists = computed(() => {
 
 const filteredGenres = computed(() => {
   const q = filterKeyword.value.trim().toLowerCase()
-  const list = musicStore.genres.filter((g) => !q || g.name.toLowerCase().includes(q))
+  const rawList =
+    kind.value === 'tags'
+      ? musicStore.tags.map((tg) => ({ name: tg.name, song_count: tg.song_count, album_count: null }))
+      : musicStore.genres.map((g) => ({ name: g.name, song_count: g.song_count, album_count: g.album_count }))
+  const list = rawList.filter((g) => !q || g.name.toLowerCase().includes(q))
   return [...list].sort((a, b) => {
     if (sortKey.value === 'count_desc') return b.song_count - a.song_count
     if (sortKey.value === 'count_asc') return a.song_count - b.song_count
@@ -133,7 +147,11 @@ async function openPlaylist(id: string): Promise<void> {
 }
 
 async function openGenre(name: string): Promise<void> {
-  await router.push({ path: '/music/songs', query: { genre: name } })
+  if (kind.value === 'tags') {
+    await router.push({ path: '/music/songs', query: { tag: name } })
+  } else {
+    await router.push({ path: '/music/songs', query: { genre: name } })
+  }
 }
 
 async function triggerLibraryScan(lib: LibraryDto): Promise<void> {
@@ -500,7 +518,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
               >
                 {{ g.name }}
               </span>
-              <span class="block text-[10px] text-[var(--ctp-subtext0)]">
+              <span v-if="g.album_count !== null" class="block text-[10px] text-[var(--ctp-subtext0)]">
                 {{ t('common.albumsCount', { count: g.album_count }) }}
               </span>
             </span>

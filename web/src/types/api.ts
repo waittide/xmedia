@@ -49,6 +49,18 @@ export interface VideoPlaybackPreferences {
   playback_rate: number
 }
 
+export interface DomainLayoutConfig {
+  home_cards: string[]
+  sidebar_groups: string[]
+}
+
+export interface WorkspaceLayoutPreferences {
+  book: DomainLayoutConfig
+  comic: DomainLayoutConfig
+  music: DomainLayoutConfig
+  video: DomainLayoutConfig
+}
+
 export interface UserPreferences {
   theme_mode: ThemeMode
   light_preset: string
@@ -64,6 +76,7 @@ export interface UserPreferences {
   comic: ComicReaderPreferences
   music: PlaybackPreferences
   video: VideoPlaybackPreferences
+  workspace_layout?: WorkspaceLayoutPreferences
 }
 
 export interface UserDto {

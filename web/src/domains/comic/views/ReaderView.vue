@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
+  LuBookmark,
   LuChevronLeft,
   LuChevronRight,
   LuColumns2,
@@ -17,17 +19,21 @@ import {
   LuZoomOut,
 } from 'vue-icons-plus/lu'
 import { api, chapterPageUrl } from '@/domains/comic/api'
+import { useSidebarStore } from '@/domains/comic/store'
 import { useThemeStore } from '@/stores/theme'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import type { ReaderContextDto, ReaderFitMode, ReaderMode } from '@/domains/comic/types'
+import type { ComicBookmark, ReaderContextDto, ReaderFitMode, ReaderMode } from '@/domains/comic/types'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const theme = useThemeStore()
+const sidebarStore = useSidebarStore()
 
 const ctx = ref<ReaderContextDto | null>(null)
+const chapterBookmarks = ref<ComicBookmark[]>([])
 const loading = ref(true)
 const hudVisible = ref(true)
 const settingsDrawerOpen = ref(false)
@@ -149,8 +155,12 @@ async function loadChapter(chapterId: string, queryPage?: number, seamlessToast 
   Object.keys(widePages).forEach((k) => delete widePages[Number(k)])
 
   try {
-    const data = await api.getReaderContext(chapterId)
+    const [data, bms] = await Promise.all([
+      api.getReaderContext(chapterId),
+      api.listChapterBookmarks(chapterId).catch(() => []),
+    ])
     ctx.value = data
+    chapterBookmarks.value = bms
 
     readerMode.value = data.effective_pref.reader_mode
     fitMode.value = data.effective_pref.fit_mode
@@ -426,6 +436,29 @@ function onWebtoonScroll(): void {
     }
   }
 }
+
+const currentPageBookmark = computed<ComicBookmark | null>(
+  () => chapterBookmarks.value.find((b) => b.page_number === currentPage.value) ?? null,
+)
+
+async function togglePageBookmark(): Promise<void> {
+  if (!ctx.value) return
+  const page = currentPage.value
+  const existing = currentPageBookmark.value
+  if (existing) {
+    await api.deleteBookmark(existing.id)
+    chapterBookmarks.value = chapterBookmarks.value.filter((b) => b.id !== existing.id)
+    showToast(globalT('bookmarksPage.removedBookmark', { page }))
+  } else {
+    const created = await api.createBookmark(ctx.value.chapter.id, {
+      page_number: page,
+      title: `#${ctx.value.chapter.number_label} · ${globalT('bookmarksPage.pageLabel', { page })}`,
+    })
+    chapterBookmarks.value = [...chapterBookmarks.value, created]
+    showToast(globalT('bookmarksPage.addedBookmark', { page }))
+  }
+  void sidebarStore.refresh()
+}
 </script>
 
 <template>
@@ -512,6 +545,21 @@ function onWebtoonScroll(): void {
           @click="zoomPercent = Math.min(200, zoomPercent + 10)"
         >
           <LuZoomIn class="h-4 w-4" />
+        </button>
+
+        <!-- Page Bookmark Button -->
+        <button
+          type="button"
+          :title="globalT('bookmarksPage.bookmarkPage')"
+          class="flex h-9 w-9 items-center justify-center rounded-xl transition"
+          :class="
+            currentPageBookmark
+              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+              : 'bg-white/10 text-zinc-200 hover:bg-white/20'
+          "
+          @click="togglePageBookmark"
+        >
+          <LuBookmark class="h-4 w-4" :class="currentPageBookmark ? 'fill-current' : ''" />
         </button>
 
         <!-- Chapter List Popover Button -->

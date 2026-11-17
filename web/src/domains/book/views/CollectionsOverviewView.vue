@@ -7,6 +7,7 @@ import {
   LuFolder,
   LuFolderPlus,
   LuTag,
+  LuUser,
   LuSearch,
   LuRefreshCw,
   LuSettings,
@@ -22,7 +23,7 @@ import { useDialogStore } from '@/stores/dialog'
 import type { LibraryDto, ShelfDto } from '@/domains/book/types'
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
 
-type CollectionKind = 'libraries' | 'shelves' | 'tags'
+type CollectionKind = 'libraries' | 'shelves' | 'tags' | 'authors'
 type SortKey = 'count_desc' | 'count_asc' | 'name_asc' | 'updated_desc'
 
 const { t } = useI18n()
@@ -35,6 +36,7 @@ const dialogStore = useDialogStore()
 const kind = computed<CollectionKind>(() => {
   if (route.name === 'book-libraries-overview') return 'libraries'
   if (route.name === 'book-shelves-overview') return 'shelves'
+  if (route.name === 'book-authors-overview') return 'authors'
   return 'tags'
 })
 
@@ -55,7 +57,7 @@ const sortOptions = computed<SelectOption[]>(() => {
     { value: 'count_asc', label: t('collections.sortCountAsc') },
     { value: 'name_asc', label: t('collections.sortNameAsc') },
   ]
-  if (kind.value !== 'tags') {
+  if (kind.value === 'libraries' || kind.value === 'shelves') {
     base.push({ value: 'updated_desc', label: t('collections.sortUpdatedDesc') })
   }
   return base
@@ -74,6 +76,13 @@ const headerMeta = computed(() => {
       title: t('collections.shelvesTitle'),
       subtitle: t('collections.shelvesSubtitle'),
       total: catalogStore.shelves.length,
+    }
+  }
+  if (kind.value === 'authors') {
+    return {
+      title: t('collections.authorsTitle'),
+      subtitle: t('collections.authorsSubtitle'),
+      total: catalogStore.authors.length,
     }
   }
   return {
@@ -110,8 +119,9 @@ const filteredShelves = computed(() => {
 })
 
 const filteredTags = computed(() => {
+  const src = kind.value === 'authors' ? catalogStore.authors : catalogStore.tags
   const q = filterKeyword.value.trim().toLowerCase()
-  const list = catalogStore.tags.filter((tg) => !q || tg.name.toLowerCase().includes(q))
+  const list = src.filter((tg) => !q || tg.name.toLowerCase().includes(q))
   return [...list].sort((a, b) => {
     if (sortKey.value === 'count_desc') return b.count - a.count
     if (sortKey.value === 'count_asc') return a.count - b.count
@@ -130,7 +140,11 @@ async function openShelf(id: string): Promise<void> {
 }
 
 async function openTag(name: string): Promise<void> {
-  catalogStore.selectSection('tag', name)
+  if (kind.value === 'authors') {
+    catalogStore.selectSection('author', name)
+  } else {
+    catalogStore.selectSection('tag', name)
+  }
   await router.push('/book/catalog')
 }
 
@@ -454,7 +468,8 @@ function formatLibraryScanText(lib: LibraryDto): string {
         >
           <span class="flex min-w-0 items-center gap-2.5">
             <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]">
-              <LuTag class="h-4 w-4" />
+              <LuUser v-if="kind === 'authors'" class="h-4 w-4" />
+              <LuTag v-else class="h-4 w-4" />
             </span>
             <span class="truncate text-xs font-bold text-[var(--ctp-text)] group-hover:text-[var(--ctp-accent)]">
               {{ tg.name }}

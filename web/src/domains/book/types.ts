@@ -179,3 +179,29 @@ export interface UpdateMetadataPatch {
   published_at?: string
   tags?: string[]
 }
+
+export interface BookBookmarkItemDto {
+  bookmark: Bookmark
+  book_title: string
+  book_authors: string[]
+  book_format: BookFormat
+  has_cover: boolean
+  book_updated_at: string
+}
+
+export interface BookLibraryStatsDto {
+  total_books: number
+  reading_count: number
+  bookmarks_count: number
+  favorites_count: number
+  shelves_count: number
+  tags_count: number
+  authors_count: number
+  libraries_count: number
+}
+
+export interface BookHomeOverviewDto {
+  stats: BookLibraryStatsDto
+  continue_reading: BookSummaryDto[]
+  recently_added: BookSummaryDto[]
+}

@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { api } from './api'
 import { useEventsStore } from '@/stores/events'
 import type {
+  BookBookmarkItemDto,
   BookFormat,
   BookSortField,
   BookSummaryDto,
@@ -13,7 +14,7 @@ import type {
   TagMatchMode,
 } from './types'
 
-export type NavSection = 'all' | 'recent' | 'favorites' | 'library' | 'shelf' | 'tag'
+export type NavSection = 'all' | 'recent' | 'favorites' | 'library' | 'shelf' | 'tag' | 'author'
 
 export const useCatalogStore = defineStore('bookCatalog', () => {
   const eventsStore = useEventsStore()
@@ -22,6 +23,7 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
   const shelves = ref<ShelfDto[]>([])
   const authors = ref<FacetCount[]>([])
   const tags = ref<FacetCount[]>([])
+  const bookmarks = ref<BookBookmarkItemDto[]>([])
 
   const books = ref<BookSummaryDto[]>([])
   const total = ref<number>(0)
@@ -66,16 +68,18 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
   }
 
   async function refreshSidebarData(): Promise<void> {
-    const [libs, sh, au, tg] = await Promise.all([
+    const [libs, sh, au, tg, bms] = await Promise.all([
       api.listLibraries(),
       api.listShelves(),
       api.listAuthors(),
       api.listTags(),
+      api.listAllBookmarks().catch(() => []),
     ])
     libraries.value = libs
     shelves.value = sh
     authors.value = au
     tags.value = tg
+    bookmarks.value = bms
   }
 
   async function fetchBooks(): Promise<void> {
@@ -126,12 +130,21 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
     page.value = 1
     if (section === 'library') {
       activeLibraryId.value = id
+      filterTags.value = []
+      filterAuthors.value = []
     } else if (section === 'shelf') {
       activeShelfId.value = id
+      filterTags.value = []
+      filterAuthors.value = []
     } else if (section === 'tag') {
       filterTags.value = id ? [id] : []
+      filterAuthors.value = []
+    } else if (section === 'author') {
+      filterAuthors.value = id ? [id] : []
+      filterTags.value = []
     } else {
       filterTags.value = []
+      filterAuthors.value = []
     }
     void fetchBooks()
   }
@@ -182,6 +195,7 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
     shelves,
     authors,
     tags,
+    bookmarks,
     books,
     total,
     page,

@@ -28,6 +28,8 @@ export default {
     shelvesSubtitle: '按主题整理你的专属阅读书单',
     tagsTitle: '全部标签',
     tagsSubtitle: '按标签检索并探索馆藏分类',
+    authorsTitle: '全部作者',
+    authorsSubtitle: '按作者检索与浏览馆藏书籍',
     searchPlaceholder: '输入名称快速过滤…',
     sortCountDesc: '按藏书量（多 → 少）',
     sortCountAsc: '按藏书量（少 → 多）',
