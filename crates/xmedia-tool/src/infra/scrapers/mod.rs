@@ -1,5 +1,6 @@
 pub mod bangumi;
 pub mod http_client;
+pub mod itunes;
 pub mod lrclib;
 pub mod musicbrainz;
 pub mod openlibrary;
@@ -18,6 +19,7 @@ use crate::domain::ports::ScraperProviderPort;
 /// Both the HTTP API (`/api/v1/tool/scrapers/providers`) and the Web UI discover new sources automatically.
 pub fn build_default_scraper_providers() -> Vec<Arc<dyn ScraperProviderPort>> {
     vec![
+        Arc::new(itunes::ItunesMusicProvider),
         Arc::new(musicbrainz::MusicBrainzProvider),
         Arc::new(lrclib::LrclibProvider),
         Arc::new(openlibrary::OpenLibraryProvider),
@@ -32,6 +34,7 @@ mod tests {
     use crate::domain::scraper::ScrapeTargetKind;
     use crate::infra::scrapers::bangumi::{BgmSubject, map_bgm_detail};
     use crate::infra::scrapers::build_default_scraper_providers;
+    use crate::infra::scrapers::itunes::{ItunesItem, map_itunes_detail};
     use crate::infra::scrapers::lrclib::LrclibRecord;
     use crate::infra::scrapers::musicbrainz::{MbRecordingItem, map_recording_detail};
     use crate::infra::scrapers::openlibrary::{OlSearchDoc, map_ol_doc_to_candidate};
@@ -40,9 +43,9 @@ mod tests {
     };
 
     #[test]
-    fn default_registry_exposes_five_providers_and_checks_tmdb_credentials() {
+    fn default_registry_exposes_six_providers_and_checks_tmdb_credentials() {
         let providers = build_default_scraper_providers();
-        assert_eq!(providers.len(), 5);
+        assert_eq!(providers.len(), 6);
 
         let empty_creds = ProviderCredentials::default();
         let configured_ids: Vec<String> = providers
@@ -52,7 +55,7 @@ mod tests {
             .collect();
         assert_eq!(
             configured_ids,
-            vec!["musicbrainz", "lrclib", "openlibrary", "bangumi"]
+            vec!["itunes", "musicbrainz", "lrclib", "openlibrary", "bangumi"]
         );
 
         let with_tmdb = ProviderCredentials {
@@ -63,7 +66,30 @@ mod tests {
     }
 
     #[test]
-    fn provider_payload_mappers_normalize_all_five_sources_cleanly() {
+    fn provider_payload_mappers_normalize_all_sources_cleanly() {
+        // 0. Apple Music / iTunes
+        let itunes_item: ItunesItem = serde_json::from_str(
+            r#"{
+                "wrapperType": "track",
+                "trackId": 535824738,
+                "collectionName": "葉惠美",
+                "trackName": "晴天",
+                "artistName": "周杰倫",
+                "artworkUrl100": "https://is1-ssl.mzstatic.com/image/thumb/Music115/JAY.jpg/100x100bb.jpg",
+                "releaseDate": "2003-07-31T07:00:00Z",
+                "trackNumber": 3,
+                "discNumber": 1,
+                "primaryGenreName": "Mandopop"
+            }"#,
+        )
+        .unwrap();
+        let it_meta = map_itunes_detail(itunes_item, "TW:535824738", ScrapeTargetKind::MusicTrack);
+        assert_eq!(it_meta.title.as_deref(), Some("晴天"));
+        assert_eq!(it_meta.track_or_episode_number, Some(3));
+        assert_eq!(
+            it_meta.cover_url.as_deref(),
+            Some("https://is1-ssl.mzstatic.com/image/thumb/Music115/JAY.jpg/1000x1000bb.jpg")
+        );
         // 1. LRCLIB
         let lrc: LrclibRecord = serde_json::from_str(
             r#"{

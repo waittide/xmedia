@@ -54,11 +54,22 @@ pub(crate) struct MbLabelInfo {
 }
 
 #[derive(Debug, Deserialize, Default)]
+pub(crate) struct MbReleaseGroup {
+    pub id: String,
+    #[serde(default, rename = "primary-type")]
+    pub primary_type: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub(crate) struct MbReleaseItem {
     pub id: String,
     pub title: String,
     #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
     pub date: Option<String>,
+    #[serde(default, rename = "release-group")]
+    pub release_group: Option<MbReleaseGroup>,
     #[serde(default, rename = "artist-credit")]
     pub artist_credit: Vec<MbArtistCredit>,
     #[serde(default, rename = "label-info")]
@@ -124,17 +135,41 @@ fn parse_year_prefix(date_opt: Option<&str>) -> Option<i32> {
         .filter(|&y| y > 1000)
 }
 
-fn cover_art_url(release_id: &str) -> String {
-    format!("https://coverartarchive.org/release/{release_id}/front-500")
+fn best_cover_for_release(rel: &MbReleaseItem) -> String {
+    if let Some(ref rg) = rel.release_group
+        && !rg.id.trim().is_empty()
+    {
+        return format!(
+            "https://coverartarchive.org/release-group/{}/front-500",
+            rg.id
+        );
+    }
+    format!("https://coverartarchive.org/release/{}/front-500", rel.id)
+}
+
+fn select_best_release(releases: &[MbReleaseItem]) -> Option<&MbReleaseItem> {
+    releases.iter().max_by_key(|r| {
+        let official = r
+            .status
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case("official"));
+        let is_album = r
+            .release_group
+            .as_ref()
+            .and_then(|rg| rg.primary_type.as_deref())
+            .is_some_and(|pt| pt.eq_ignore_ascii_case("album"));
+        let has_rg = r.release_group.is_some();
+        (official, is_album, has_rg)
+    })
 }
 
 pub(crate) fn map_recording_to_candidate(rec: MbRecordingItem) -> ScrapeCandidate {
     let artists = extract_artists(&rec.artist_credit);
-    let first_release = rec.releases.first();
-    let album_title = first_release.map(|r| r.title.clone());
-    let cover_url = first_release.map(|r| cover_art_url(&r.id));
+    let best_release = select_best_release(&rec.releases);
+    let album_title = best_release.map(|r| r.title.clone());
+    let cover_url = best_release.map(best_cover_for_release);
     let year = parse_year_prefix(rec.first_release_date.as_deref())
-        .or_else(|| first_release.and_then(|r| parse_year_prefix(r.date.as_deref())));
+        .or_else(|| best_release.and_then(|r| parse_year_prefix(r.date.as_deref())));
 
     let mut sub = Vec::new();
     if !artists.is_empty() {
@@ -162,7 +197,7 @@ pub(crate) fn map_recording_to_candidate(rec: MbRecordingItem) -> ScrapeCandidat
 pub(crate) fn map_release_to_candidate(rel: MbReleaseItem) -> ScrapeCandidate {
     let artists = extract_artists(&rel.artist_credit);
     let year = parse_year_prefix(rel.date.as_deref());
-    let cover = cover_art_url(&rel.id);
+    let cover = best_cover_for_release(&rel);
     ScrapeCandidate {
         provider_id: "musicbrainz".to_string(),
         provider_name: "MusicBrainz".to_string(),
@@ -180,9 +215,9 @@ pub(crate) fn map_release_to_candidate(rel: MbReleaseItem) -> ScrapeCandidate {
 
 pub(crate) fn map_recording_detail(rec: MbRecordingItem) -> ScrapedMetadata {
     let creators = extract_artists(&rec.artist_credit);
-    let rel = rec.releases.first();
+    let rel = select_best_release(&rec.releases);
     let album_title = rel.map(|r| r.title.clone());
-    let cover_url = rel.map(|r| cover_art_url(&r.id));
+    let cover_url = rel.map(best_cover_for_release);
     let disc_num = rel.and_then(|r| r.media.first()).and_then(|m| m.position);
     let track_num = rel
         .and_then(|r| r.media.first())
@@ -236,7 +271,7 @@ pub(crate) fn map_recording_detail(rec: MbRecordingItem) -> ScrapedMetadata {
 pub(crate) fn map_release_detail(rel: MbReleaseItem) -> ScrapedMetadata {
     let creators = extract_artists(&rel.artist_credit);
     let year = parse_year_prefix(rel.date.as_deref());
-    let cover = cover_art_url(&rel.id);
+    let cover = best_cover_for_release(&rel);
     let label = rel
         .label_info
         .iter()
@@ -375,7 +410,10 @@ impl ScraperProviderPort for MusicBrainzProvider {
                 .get(&url)
                 .query(&[
                     ("fmt", "json"),
-                    ("inc", "artist-credits+labels+genres+tags+media"),
+                    (
+                        "inc",
+                        "artist-credits+labels+release-groups+genres+tags+media",
+                    ),
                 ])
                 .send()
                 .await
@@ -399,7 +437,10 @@ impl ScraperProviderPort for MusicBrainzProvider {
             .get(&url)
             .query(&[
                 ("fmt", "json"),
-                ("inc", "artist-credits+releases+genres+tags+media"),
+                (
+                    "inc",
+                    "artist-credits+releases+release-groups+genres+tags+media",
+                ),
             ])
             .send()
             .await

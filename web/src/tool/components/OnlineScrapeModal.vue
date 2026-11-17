@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import {
   LuCheck,
   LuExternalLink,
+  LuImage,
   LuKey,
   LuRefreshCw,
   LuSearch,
@@ -43,6 +44,8 @@ const episode = ref('')
 
 const searching = ref(false)
 const candidates = ref<ScrapeCandidate[]>([])
+const activeSourceTab = ref<'all' | string>('all')
+const brokenCoverUrls = ref<Set<string>>(new Set())
 const selectedCandidate = ref<ScrapeCandidate | null>(null)
 const loadingDetail = ref(false)
 const previewDetail = ref<ScrapedMetadata | null>(null)
@@ -154,11 +157,63 @@ function toggleProvider(p: ProviderStatusDto): void {
   }
 }
 
+const sourceResultTabs = computed<Array<{ id: string; label: string; count: number }>>(() => {
+  const counts = new Map<string, { name: string; count: number }>()
+  for (const p of providers.value) {
+    if (p.configured && enabledProviderIds.value.includes(p.id)) {
+      counts.set(p.id, { name: p.name, count: 0 })
+    }
+  }
+  for (const c of candidates.value) {
+    const cur = counts.get(c.provider_id)
+    if (cur) {
+      cur.count += 1
+    } else {
+      counts.set(c.provider_id, { name: c.provider_name, count: 1 })
+    }
+  }
+  const tabs: Array<{ id: string; label: string; count: number }> = [
+    { id: 'all', label: '全部', count: candidates.value.length },
+  ]
+  for (const [id, info] of counts.entries()) {
+    tabs.push({ id, label: info.name, count: info.count })
+  }
+  return tabs
+})
+
+const displayedCandidates = computed<ScrapeCandidate[]>(() => {
+  if (activeSourceTab.value === 'all') return candidates.value
+  return candidates.value.filter((c) => c.provider_id === activeSourceTab.value)
+})
+
+function switchSourceTab(tabId: string): void {
+  activeSourceTab.value = tabId
+  if (tabId !== 'all' && selectedCandidate.value?.provider_id !== tabId) {
+    const first = candidates.value.find((c) => c.provider_id === tabId)
+    if (first) {
+      void selectCandidate(first)
+    }
+  }
+}
+
+function markCoverBroken(url: string | null | undefined): void {
+  if (!url) return
+  const next = new Set(brokenCoverUrls.value)
+  next.add(url)
+  brokenCoverUrls.value = next
+}
+
+function isCoverUsable(url: string | null | undefined): url is string {
+  return Boolean(url && !brokenCoverUrls.value.has(url))
+}
+
 async function runSearch(): Promise<void> {
   if (!keyword.value.trim() && !isbn.value.trim()) return
   searching.value = true
   errorMsg.value = null
   candidates.value = []
+  activeSourceTab.value = 'all'
+  brokenCoverUrls.value = new Set()
   selectedCandidate.value = null
   previewDetail.value = null
 
@@ -360,62 +415,103 @@ async function applyMetadata(): Promise<void> {
 
         <!-- Split Results + Rich Preview -->
         <div class="grid min-h-0 flex-1 grid-cols-1 divide-y divide-[var(--ctp-surface0)]/75 overflow-hidden md:grid-cols-12 md:divide-x md:divide-y-0">
-          <!-- Candidate List -->
-          <div class="overflow-y-auto p-3 md:col-span-5">
-            <div v-if="searching" class="py-12 text-center text-xs text-[var(--ctp-subtext0)]">
-              正在并发检索已启用的刮削源…
-            </div>
+          <!-- Candidate List with Per-Source Tabs -->
+          <div class="flex min-h-0 flex-col overflow-hidden md:col-span-5">
+            <!-- Source Differentiation Tabs (全部 / 源1 / 源2 ...) -->
             <div
-              v-else-if="candidates.length === 0"
-              class="py-12 text-center text-xs text-[var(--ctp-subtext0)]"
+              v-if="sourceResultTabs.length > 2 || candidates.length > 0"
+              class="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--ctp-surface0)]/65 bg-[var(--ctp-mantle)]/30 px-3 py-2"
             >
-              暂无候选结果，请调整关键词或配置对应刮削源密钥后重试
-            </div>
-            <div v-else class="space-y-1.5">
               <button
-                v-for="cand in candidates"
-                :key="`${cand.provider_id}-${cand.external_id}`"
+                v-for="stab in sourceResultTabs"
+                :key="stab.id"
                 type="button"
-                class="flex w-full items-start gap-3 rounded-2xl p-2.5 text-left transition"
+                class="inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
                 :class="
-                  selectedCandidate?.provider_id === cand.provider_id &&
-                  selectedCandidate?.external_id === cand.external_id
-                    ? 'bg-[var(--ctp-accent-soft)] ring-1 ring-[var(--ctp-accent)]'
-                    : 'hover:bg-[var(--ctp-surface0)]/55'
+                  activeSourceTab === stab.id
+                    ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-xs'
+                    : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/65 hover:text-[var(--ctp-text)]'
                 "
-                @click="selectCandidate(cand)"
+                @click="switchSourceTab(stab.id)"
               >
-                <div class="h-14 w-11 shrink-0 overflow-hidden rounded-lg bg-[var(--ctp-mantle)]">
-                  <img
-                    v-if="cand.cover_url"
-                    :src="cand.cover_url"
-                    alt=""
-                    class="h-full w-full object-cover"
-                    loading="lazy"
-                  />
-                </div>
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-1.5">
-                    <span
-                      class="rounded-md bg-[var(--ctp-mantle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
-                    >
-                      {{ cand.provider_name }}
-                    </span>
-                    <span v-if="cand.year" class="text-[10px] text-[var(--ctp-subtext0)]">
-                      {{ cand.year }}
-                    </span>
-                  </div>
-                  <div class="mt-1 truncate text-xs font-semibold text-[var(--ctp-text)]">
-                    {{ cand.title }}
-                  </div>
-                  <div
-                    v-if="cand.subtitle"
-                    class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]"
-                  >
-                    {{ cand.subtitle }}
-                  </div>
-                </div>
+                <span>{{ stab.label }}</span>
+                <span
+                  class="rounded-full px-1.5 py-0.2 font-mono text-[10px]"
+                  :class="
+                    activeSourceTab === stab.id
+                      ? 'bg-black/15 text-[var(--ctp-on-accent)]'
+                      : 'bg-[var(--ctp-mantle)] text-[var(--ctp-subtext0)]'
+                  "
+                >
+                  {{ stab.count }}
+                </span>
               </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-3">
+              <div v-if="searching" class="py-12 text-center text-xs text-[var(--ctp-subtext0)]">
+                正在并发检索已启用的刮削源…
+              </div>
+              <div
+                v-else-if="displayedCandidates.length === 0"
+                class="py-12 text-center text-xs text-[var(--ctp-subtext0)]"
+              >
+                {{
+                  candidates.length > 0
+                    ? '该刮削源下暂无匹配条目，可切换其他源查看'
+                    : '暂无候选结果，请调整关键词或配置对应刮削源密钥后重试'
+                }}
+              </div>
+              <div v-else class="space-y-1.5">
+                <button
+                  v-for="cand in displayedCandidates"
+                  :key="`${cand.provider_id}-${cand.external_id}`"
+                  type="button"
+                  class="flex w-full items-start gap-3 rounded-2xl p-2.5 text-left transition"
+                  :class="
+                    selectedCandidate?.provider_id === cand.provider_id &&
+                    selectedCandidate?.external_id === cand.external_id
+                      ? 'bg-[var(--ctp-accent-soft)] ring-1 ring-[var(--ctp-accent)]'
+                      : 'hover:bg-[var(--ctp-surface0)]/55'
+                  "
+                  @click="selectCandidate(cand)"
+                >
+                  <div
+                    class="flex h-14 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--ctp-mantle)]"
+                  >
+                    <img
+                      v-if="isCoverUsable(cand.cover_url)"
+                      :src="cand.cover_url"
+                      alt=""
+                      class="h-full w-full object-cover"
+                      loading="lazy"
+                      @error="markCoverBroken(cand.cover_url)"
+                    />
+                    <LuImage v-else class="h-4 w-4 text-[var(--ctp-subtext0)]/55" />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-1.5">
+                      <span
+                        class="rounded-md bg-[var(--ctp-mantle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+                      >
+                        {{ cand.provider_name }}
+                      </span>
+                      <span v-if="cand.year" class="text-[10px] text-[var(--ctp-subtext0)]">
+                        {{ cand.year }}
+                      </span>
+                    </div>
+                    <div class="mt-1 truncate text-xs font-semibold text-[var(--ctp-text)]">
+                      {{ cand.title }}
+                    </div>
+                    <div
+                      v-if="cand.subtitle"
+                      class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]"
+                    >
+                      {{ cand.subtitle }}
+                    </div>
+                  </div>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -434,10 +530,15 @@ async function applyMetadata(): Promise<void> {
             <div v-else-if="previewDetail" class="space-y-4">
               <div class="flex gap-4">
                 <div
-                  v-if="previewDetail.cover_url"
+                  v-if="isCoverUsable(previewDetail.cover_url)"
                   class="h-36 w-26 shrink-0 overflow-hidden rounded-xl bg-[var(--ctp-mantle)] shadow-md"
                 >
-                  <img :src="previewDetail.cover_url" alt="" class="h-full w-full object-cover" />
+                  <img
+                    :src="previewDetail.cover_url"
+                    alt=""
+                    class="h-full w-full object-cover"
+                    @error="markCoverBroken(previewDetail.cover_url)"
+                  />
                 </div>
                 <div class="min-w-0 flex-1 space-y-1.5">
                   <div class="text-base font-bold text-[var(--ctp-text)]">

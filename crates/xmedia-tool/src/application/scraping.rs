@@ -97,26 +97,43 @@ impl ScrapingOrchestratorService {
             return Ok(Vec::new());
         }
 
+        let provider_count = selected.len();
         let mut set = JoinSet::new();
-        for provider in selected {
+        for (order_idx, provider) in selected.into_iter().enumerate() {
             let q = query.clone();
             let c = creds.clone();
             set.spawn(async move {
                 let id = provider.descriptor().id;
-                match provider.search(&q, &c).await {
+                let items = match provider.search(&q, &c).await {
                     Ok(items) => items,
                     Err(err) => {
                         warn!("scraper provider '{id}' search failed: {err}");
                         Vec::new()
                     }
-                }
+                };
+                (order_idx, items)
             });
         }
 
-        let mut combined = Vec::new();
+        let mut per_provider: Vec<Vec<ScrapeCandidate>> = vec![Vec::new(); provider_count];
         while let Some(res) = set.join_next().await {
-            if let Ok(items) = res {
-                combined.extend(items);
+            if let Ok((idx, items)) = res
+                && let Some(slot) = per_provider.get_mut(idx)
+            {
+                *slot = items;
+            }
+        }
+
+        // Round-robin interleave across providers so the "All" view never lets one fast provider
+        // push every other provider's top hits out of sight.
+        let max_len = per_provider.iter().map(Vec::len).max().unwrap_or(0);
+        let total_cap: usize = per_provider.iter().map(Vec::len).sum();
+        let mut combined = Vec::with_capacity(total_cap);
+        for row in 0..max_len {
+            for bucket in &per_provider {
+                if let Some(item) = bucket.get(row) {
+                    combined.push(item.clone());
+                }
             }
         }
         Ok(combined)
