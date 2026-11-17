@@ -1,0 +1,38 @@
+[package]
+name = "xmedia-tool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+clap.workspace = true
+encoding_rs.workspace = true
+form_urlencoded.workspace = true
+hex.workspace = true
+jiff.workspace = true
+lofty.workspace = true
+mime_guess.workspace = true
+quick-xml.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+xmedia-core.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tower.workspace = true

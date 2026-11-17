@@ -1,7 +1,9 @@
 /target
 /data
+/data-tool
 /web/node_modules
 /web/dist
+/web/dist-tool
 *.db
 *.db-journal
 *.db-shm
