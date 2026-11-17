@@ -5,7 +5,7 @@ use xmedia_core::domain::library::LibraryId;
 use crate::domain::book::{
     Book, BookFormat, BookId, BookMetadata, BookSortField, SortOrder, TagMatchMode,
 };
-use crate::domain::reading::{ReadingLocation, ReadingProgress, Shelf, ShelfId};
+use crate::domain::reading::{Bookmark, ReadingLocation, ReadingProgress, Shelf, ShelfId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookSummaryDto {
@@ -132,4 +132,33 @@ impl From<&Shelf> for ShelfDto {
             updated_at: shelf.updated_at,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookBookmarkItemDto {
+    pub bookmark: Bookmark,
+    pub book_title: String,
+    pub book_authors: Vec<String>,
+    pub book_format: BookFormat,
+    pub has_cover: bool,
+    pub book_updated_at: Timestamp,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookLibraryStatsDto {
+    pub total_books: u64,
+    pub reading_count: u64,
+    pub bookmarks_count: u64,
+    pub favorites_count: u64,
+    pub shelves_count: u64,
+    pub tags_count: u64,
+    pub authors_count: u64,
+    pub libraries_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookHomeOverviewDto {
+    pub stats: BookLibraryStatsDto,
+    pub continue_reading: Vec<BookSummaryDto>,
+    pub recently_added: Vec<BookSummaryDto>,
 }

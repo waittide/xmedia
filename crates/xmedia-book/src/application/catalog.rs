@@ -9,12 +9,17 @@ use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::User;
 
-use crate::application::dto::{BookSummaryDto, CatalogSearchFilter, UpdateMetadataPatch};
+use crate::application::dto::{
+    BookHomeOverviewDto, BookLibraryStatsDto, BookSummaryDto, CatalogSearchFilter,
+    UpdateMetadataPatch,
+};
 use crate::application::ports::{
     BookAsset, BookParserPort, BookStoragePort, CoverPayload, TocItem, TxtChapterContent,
 };
+use crate::application::reading::BookReadingService;
 use crate::domain::book::{
-    Book, BookFormat, BookId, BookQuery, BookSource, FacetCount, PagedResult,
+    Book, BookFormat, BookId, BookQuery, BookSortField, BookSource, FacetCount, PagedResult,
+    SortOrder,
 };
 use crate::domain::reading::ReadingProgress;
 use crate::domain::repository::{BookReadingRepository, BookRepository};
@@ -444,6 +449,48 @@ impl BookCatalogService {
                 )
             })
             .collect())
+    }
+
+    pub async fn home_overview(
+        &self,
+        actor: &User,
+        reading_service: &BookReadingService,
+    ) -> DomainResult<BookHomeOverviewDto> {
+        let latest_page = self
+            .search_books(
+                Some(actor),
+                CatalogSearchFilter {
+                    sort_by: Some(BookSortField::CreatedAt),
+                    sort_order: Some(SortOrder::Desc),
+                    page: Some(1),
+                    page_size: Some(12),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let continue_reading = reading_service.list_recent_books(actor, 6, self).await?;
+        let reading_count = reading_service.count_user_progress(actor).await?;
+        let bookmarks_count = reading_service.count_user_bookmarks(actor).await?;
+        let favorites_count = reading_service.count_user_favorites(actor).await?;
+        let shelves = reading_service.list_shelves(actor).await?;
+        let tags = self.list_tags().await?;
+        let authors = self.list_authors().await?;
+        let libs = self.libraries.list_by_media(MediaKind::Book).await?;
+
+        Ok(BookHomeOverviewDto {
+            stats: BookLibraryStatsDto {
+                total_books: latest_page.total,
+                reading_count,
+                bookmarks_count,
+                favorites_count,
+                shelves_count: shelves.len() as u64,
+                tags_count: tags.len() as u64,
+                authors_count: authors.len() as u64,
+                libraries_count: libs.len() as u64,
+            },
+            continue_reading,
+            recently_added: latest_page.items,
+        })
     }
 
     async fn find_book(&self, book_id: BookId) -> DomainResult<Book> {

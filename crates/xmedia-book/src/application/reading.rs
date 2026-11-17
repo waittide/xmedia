@@ -6,7 +6,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 
 use crate::application::catalog::BookCatalogService;
-use crate::application::dto::{BookSummaryDto, ShelfDto};
+use crate::application::dto::{BookBookmarkItemDto, BookSummaryDto, ShelfDto};
 use crate::domain::book::{Book, BookId};
 use crate::domain::reading::{
     Bookmark, BookmarkId, ReadingLocation, ReadingProgress, Shelf, ShelfId,
@@ -110,6 +110,48 @@ impl BookReadingService {
         book_id: BookId,
     ) -> DomainResult<Vec<Bookmark>> {
         self.readings.list_bookmarks(actor.id, book_id).await
+    }
+
+    pub async fn list_all_bookmarks(&self, actor: &User) -> DomainResult<Vec<BookBookmarkItemDto>> {
+        let bookmarks = self.readings.list_user_bookmarks(actor.id).await?;
+        if bookmarks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut unique_ids = Vec::new();
+        for bm in &bookmarks {
+            if !unique_ids.contains(&bm.book_id) {
+                unique_ids.push(bm.book_id);
+            }
+        }
+        let found = self.books.find_by_ids(&unique_ids).await?;
+        let by_id: HashMap<BookId, Book> = found.into_iter().map(|b| (b.id, b)).collect();
+
+        let mut out = Vec::with_capacity(bookmarks.len());
+        for bm in bookmarks {
+            if let Some(book) = by_id.get(&bm.book_id) {
+                out.push(BookBookmarkItemDto {
+                    bookmark: bm,
+                    book_title: book.metadata.title.clone(),
+                    book_authors: book.metadata.authors.clone(),
+                    book_format: book.format,
+                    has_cover: book.cover_key.is_some(),
+                    book_updated_at: book.updated_at,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn count_user_progress(&self, actor: &User) -> DomainResult<u64> {
+        self.readings.count_user_progress(actor.id).await
+    }
+
+    pub async fn count_user_bookmarks(&self, actor: &User) -> DomainResult<u64> {
+        Ok(self.readings.list_user_bookmarks(actor.id).await?.len() as u64)
+    }
+
+    pub async fn count_user_favorites(&self, actor: &User) -> DomainResult<u64> {
+        Ok(self.readings.list_favorite_book_ids(actor.id).await?.len() as u64)
     }
 
     pub async fn create_bookmark(

@@ -164,3 +164,23 @@ pub(crate) struct ComicShelfModel {
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
+
+#[derive(Debug, toasty::Model)]
+#[table = "comic_bookmarks"]
+pub(crate) struct ComicBookmarkModel {
+    #[key]
+    pub id: Uuid,
+
+    #[index]
+    pub user_id: Uuid,
+
+    #[index]
+    pub series_id: Uuid,
+
+    #[index]
+    pub chapter_id: Uuid,
+
+    pub page_number: i64,
+    pub title: String,
+    pub created_at: Timestamp,
+}

@@ -32,3 +32,4 @@ macro_rules! define_uuid_id {
 define_uuid_id!(SeriesId);
 define_uuid_id!(ChapterId);
 define_uuid_id!(ComicShelfId);
+define_uuid_id!(ComicBookmarkId);

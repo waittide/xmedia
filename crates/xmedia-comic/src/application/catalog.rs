@@ -110,6 +110,10 @@ impl ComicCatalogService {
         recently_updated.truncate(18);
 
         let total_series = summaries.len() as u32;
+        let in_progress_count = continue_items.len() as u32;
+        let bookmarks_count = self.reading.list_user_bookmarks(user.id).await?.len() as u32;
+        let shelves_count = self.reading.list_shelves(user.id).await?.len() as u32;
+        let taxonomy = self.taxonomy_overview().await?;
         let mut recently_added = summaries;
         recently_added.sort_by_key(|a| std::cmp::Reverse(a.created_at));
         recently_added.truncate(18);
@@ -122,7 +126,12 @@ impl ComicCatalogService {
                 series_count: total_series,
                 chapter_count: total_chapters,
                 completed_chapters: completed_chapters_total,
+                in_progress_count,
+                bookmarks_count,
                 favorites_count: favorites.len() as u32,
+                shelves_count,
+                tags_count: taxonomy.tags.len() as u32,
+                writers_count: taxonomy.writers.len() as u32,
             },
         })
     }

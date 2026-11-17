@@ -15,7 +15,10 @@ use xmedia_core::http::{
     sanitize_download_filename,
 };
 
-use crate::application::dto::{BookSummaryDto, CatalogSearchFilter, ShelfDto, UpdateMetadataPatch};
+use crate::application::dto::{
+    BookBookmarkItemDto, BookHomeOverviewDto, BookSummaryDto, CatalogSearchFilter, ShelfDto,
+    UpdateMetadataPatch,
+};
 use crate::application::ports::{TocItem, TxtChapterContent};
 use crate::application::reading::{CreateBookmarkCommand, SaveProgressCommand};
 use crate::domain::book::{
@@ -27,6 +30,7 @@ use crate::http::state::BookHttpState;
 
 pub fn router() -> Router<BookHttpState> {
     Router::new()
+        .route("/home", get(home_overview))
         .route("/books", get(search_books))
         .route(
             "/books/upload",
@@ -56,6 +60,7 @@ pub fn router() -> Router<BookHttpState> {
             "/books/{id}/bookmarks",
             get(list_bookmarks).post(create_bookmark),
         )
+        .route("/bookmarks", get(list_all_bookmarks))
         .route("/bookmarks/{bookmark_id}", delete(delete_bookmark))
         .route("/shelves", get(list_shelves).post(create_shelf))
         .route(
@@ -495,6 +500,28 @@ async fn list_bookmarks(
             .reading
             .list_bookmarks(&actor, BookId(id))
             .await?,
+    ))
+}
+
+async fn home_overview(
+    State(state): State<BookHttpState>,
+    BookWebAuth(actor): BookWebAuth,
+) -> ApiResult<Json<BookHomeOverviewDto>> {
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .home_overview(&actor, &state.services.reading)
+            .await?,
+    ))
+}
+
+async fn list_all_bookmarks(
+    State(state): State<BookHttpState>,
+    BookWebAuth(actor): BookWebAuth,
+) -> ApiResult<Json<Vec<BookBookmarkItemDto>>> {
+    Ok(Json(
+        state.services.reading.list_all_bookmarks(&actor).await?,
     ))
 }
 

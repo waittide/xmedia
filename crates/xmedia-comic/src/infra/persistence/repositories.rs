@@ -7,14 +7,16 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::chapter::{Chapter, ChapterKind, ChapterSourceKind};
-use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
-use crate::domain::reading::{ChapterProgress, ComicShelf, FavoriteSeries, SeriesReaderPref};
+use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
+use crate::domain::reading::{
+    ChapterProgress, ComicBookmark, ComicShelf, FavoriteSeries, SeriesReaderPref,
+};
 use crate::domain::repository::{ChapterRepository, ComicReadingRepository, SeriesRepository};
 use crate::domain::series::{ReadingDirection, Series, SeriesStatus};
 
 use super::models::{
-    ComicChapterModel, ComicChapterProgressModel, ComicFavoriteSeriesModel, ComicSeriesModel,
-    ComicSeriesReaderPrefModel, ComicShelfModel,
+    ComicBookmarkModel, ComicChapterModel, ComicChapterProgressModel, ComicFavoriteSeriesModel,
+    ComicSeriesModel, ComicSeriesReaderPrefModel, ComicShelfModel,
 };
 
 fn db_err(err: impl std::fmt::Display) -> DomainError {
@@ -389,6 +391,18 @@ impl ToastyComicReadingRepository {
             updated_at: m.updated_at,
         }
     }
+
+    fn bookmark_to_domain(m: ComicBookmarkModel) -> ComicBookmark {
+        ComicBookmark {
+            id: ComicBookmarkId(m.id),
+            user_id: UserId(m.user_id),
+            series_id: SeriesId(m.series_id),
+            chapter_id: ChapterId(m.chapter_id),
+            page_number: u32::try_from(m.page_number.max(1)).unwrap_or(1),
+            title: m.title,
+            created_at: m.created_at,
+        }
+    }
 }
 
 #[async_trait]
@@ -510,6 +524,13 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
         {
             row.delete().exec(&mut db).await.map_err(db_err)?;
         }
+        for row in ComicBookmarkModel::filter_by_series_id(series_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            row.delete().exec(&mut db).await.map_err(db_err)?;
+        }
         for mut shelf in ComicShelfModel::all().exec(&mut db).await.map_err(db_err)? {
             if shelf.series_ids.0.contains(&series_id.0) {
                 let filtered: Vec<Uuid> = shelf
@@ -555,6 +576,13 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
             row.delete().exec(&mut db).await.map_err(db_err)?;
         }
         for row in ComicShelfModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            row.delete().exec(&mut db).await.map_err(db_err)?;
+        }
+        for row in ComicBookmarkModel::filter_by_user_id(user_id.0)
             .exec(&mut db)
             .await
             .map_err(db_err)?
@@ -736,6 +764,66 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
             .exec(&mut db)
             .await
             .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn list_chapter_bookmarks(
+        &self,
+        user_id: UserId,
+        chapter_id: ChapterId,
+    ) -> DomainResult<Vec<ComicBookmark>> {
+        let mut db = self.db.clone();
+        let mut rows = ComicBookmarkModel::filter_by_user_id(user_id.0)
+            .filter(ComicBookmarkModel::fields().chapter_id().eq(chapter_id.0))
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        rows.sort_by_key(|a| a.page_number);
+        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
+    }
+
+    async fn list_user_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<ComicBookmark>> {
+        let mut db = self.db.clone();
+        let mut rows = ComicBookmarkModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
+        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
+    }
+
+    async fn save_bookmark(&self, bookmark: &ComicBookmark) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        toasty::create!(ComicBookmarkModel {
+            id: bookmark.id.0,
+            user_id: bookmark.user_id.0,
+            series_id: bookmark.series_id.0,
+            chapter_id: bookmark.chapter_id.0,
+            page_number: i64::from(bookmark.page_number),
+            title: bookmark.title.clone(),
+            created_at: bookmark.created_at,
+        })
+        .exec(&mut db)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn delete_bookmark(
+        &self,
+        user_id: UserId,
+        bookmark_id: ComicBookmarkId,
+    ) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        if let Some(record) = ComicBookmarkModel::filter_by_id(bookmark_id.0)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+            && record.user_id == user_id.0
+        {
+            record.delete().exec(&mut db).await.map_err(db_err)?;
+        }
         Ok(())
     }
 }

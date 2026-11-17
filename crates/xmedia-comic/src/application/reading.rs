@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
@@ -6,12 +7,17 @@ use xmedia_core::domain::user::{User, UserId};
 
 use crate::application::catalog::ComicCatalogService;
 use crate::application::dto::{
-    SaveSeriesReaderPrefInput, SeriesQueryFilter, ShelfDetailDto, UpdateProgressInput,
-    UpsertShelfInput,
+    ComicBookmarkItemDto, CreateComicBookmarkInput, SaveSeriesReaderPrefInput, SeriesQueryFilter,
+    ShelfDetailDto, UpdateProgressInput, UpsertShelfInput,
 };
-use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
-use crate::domain::reading::{ChapterProgress, ComicShelf, FavoriteSeries, SeriesReaderPref};
+use crate::domain::chapter::Chapter;
+use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
+use crate::domain::reading::{
+    ChapterProgress, ComicBookmark, ComicShelf, FavoriteSeries, SeriesReaderPref,
+    format_chapter_number,
+};
 use crate::domain::repository::{ChapterRepository, ComicReadingRepository, SeriesRepository};
+use crate::domain::series::Series;
 
 pub struct ComicReadingService {
     series: Arc<dyn SeriesRepository>,
@@ -332,5 +338,95 @@ impl ComicReadingService {
             }
         }
         Ok(())
+    }
+
+    pub async fn list_chapter_bookmarks(
+        &self,
+        user_id: UserId,
+        chapter_id: ChapterId,
+    ) -> DomainResult<Vec<ComicBookmark>> {
+        self.reading
+            .list_chapter_bookmarks(user_id, chapter_id)
+            .await
+    }
+
+    pub async fn list_all_bookmarks(
+        &self,
+        user_id: UserId,
+    ) -> DomainResult<Vec<ComicBookmarkItemDto>> {
+        let bookmarks = self.reading.list_user_bookmarks(user_id).await?;
+        if bookmarks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let all_series = self.series.list_all().await?;
+        let series_map: HashMap<SeriesId, Series> =
+            all_series.into_iter().map(|s| (s.id, s)).collect();
+
+        let mut chapter_cache: HashMap<ChapterId, Option<Chapter>> = HashMap::new();
+        let mut out = Vec::with_capacity(bookmarks.len());
+
+        for bm in bookmarks {
+            let Some(series) = series_map.get(&bm.series_id) else {
+                continue;
+            };
+            let chapter_opt = if let Some(cached) = chapter_cache.get(&bm.chapter_id) {
+                cached.clone()
+            } else {
+                let found = self.chapters.find_by_id(bm.chapter_id).await?;
+                chapter_cache.insert(bm.chapter_id, found.clone());
+                found
+            };
+            let Some(ch) = chapter_opt else {
+                continue;
+            };
+
+            let cover_url = series
+                .cover_path
+                .as_ref()
+                .or(ch.cover_path.as_ref())
+                .map(|key| format!("/api/v1/comic/covers/{key}"));
+
+            out.push(ComicBookmarkItemDto {
+                id: bm.id,
+                bookmark: bm,
+                series_title: series.title.clone(),
+                series_cover_url: cover_url,
+                chapter_number_label: format_chapter_number(ch.number),
+                chapter_title: ch.title,
+                total_pages: ch.page_count.max(1),
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn create_bookmark(
+        &self,
+        user_id: UserId,
+        chapter_id: ChapterId,
+        input: CreateComicBookmarkInput,
+    ) -> DomainResult<ComicBookmark> {
+        let chapter = self
+            .chapters
+            .find_by_id(chapter_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        let page = input.page_number.clamp(1, chapter.page_count.max(1));
+        let default_title = format!("#{} P.{}", format_chapter_number(chapter.number), page);
+        let title = input
+            .title
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or(default_title);
+        let bookmark = ComicBookmark::new(user_id, chapter.series_id, chapter.id, page, title);
+        self.reading.save_bookmark(&bookmark).await?;
+        Ok(bookmark)
+    }
+
+    pub async fn delete_bookmark(
+        &self,
+        user_id: UserId,
+        bookmark_id: ComicBookmarkId,
+    ) -> DomainResult<()> {
+        self.reading.delete_bookmark(user_id, bookmark_id).await
     }
 }

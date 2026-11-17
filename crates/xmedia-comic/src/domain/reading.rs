@@ -6,7 +6,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{ComicFitMode, ComicReaderMode, UserId};
 
 use crate::domain::chapter::Chapter;
-use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
+use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChapterProgress {
@@ -193,5 +193,36 @@ impl ComicShelf {
             created_at: now,
             updated_at: now,
         })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComicBookmark {
+    pub id: ComicBookmarkId,
+    pub user_id: UserId,
+    pub series_id: SeriesId,
+    pub chapter_id: ChapterId,
+    pub page_number: u32,
+    pub title: String,
+    pub created_at: Timestamp,
+}
+
+impl ComicBookmark {
+    pub fn new(
+        user_id: UserId,
+        series_id: SeriesId,
+        chapter_id: ChapterId,
+        page_number: u32,
+        title: String,
+    ) -> Self {
+        Self {
+            id: ComicBookmarkId::new(),
+            user_id,
+            series_id,
+            chapter_id,
+            page_number: page_number.max(1),
+            title: title.trim().to_owned(),
+            created_at: Timestamp::now(),
+        }
     }
 }

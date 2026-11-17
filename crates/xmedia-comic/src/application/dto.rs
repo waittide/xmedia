@@ -4,9 +4,9 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::{ComicFitMode, ComicReaderMode};
 
 use crate::domain::chapter::{Chapter, ChapterKind, ChapterSourceKind};
-use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
+use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
 use crate::domain::reading::{
-    ComicShelf, ContinueReadingPointer, SeriesReaderPref, format_chapter_number,
+    ComicBookmark, ComicShelf, ContinueReadingPointer, SeriesReaderPref, format_chapter_number,
 };
 use crate::domain::series::{ReadingDirection, Series, SeriesStatus};
 
@@ -59,7 +59,12 @@ pub struct ComicLibraryStatsDto {
     pub series_count: u32,
     pub chapter_count: u32,
     pub completed_chapters: u32,
+    pub in_progress_count: u32,
+    pub bookmarks_count: u32,
     pub favorites_count: u32,
+    pub shelves_count: u32,
+    pub tags_count: u32,
+    pub writers_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,4 +231,21 @@ pub struct UpsertShelfInput {
 pub struct ShelfDetailDto {
     pub shelf: ComicShelf,
     pub series: Vec<SeriesSummaryDto>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateComicBookmarkInput {
+    pub page_number: u32,
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ComicBookmarkItemDto {
+    pub id: ComicBookmarkId,
+    pub bookmark: ComicBookmark,
+    pub series_title: String,
+    pub series_cover_url: Option<String>,
+    pub chapter_number_label: String,
+    pub chapter_title: String,
+    pub total_pages: u32,
 }

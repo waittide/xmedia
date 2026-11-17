@@ -451,6 +451,15 @@ impl BookReadingRepository for ToastyBookReadingRepository {
             .collect())
     }
 
+    async fn count_user_progress(&self, user_id: UserId) -> DomainResult<u64> {
+        let mut db = self.db.clone();
+        let rows = BookReadingProgressModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.len() as u64)
+    }
+
     async fn save_progress(&self, progress: &ReadingProgress) -> DomainResult<()> {
         let mut db = self.db.clone();
         let key = Self::pair_key(progress.user_id, progress.book_id);
@@ -491,6 +500,16 @@ impl BookReadingRepository for ToastyBookReadingRepository {
         let mut db = self.db.clone();
         let mut rows = BookBookmarkModel::filter_by_user_id(user_id.0)
             .filter(BookBookmarkModel::fields().book_id().eq(book_id.0))
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        rows.sort_by_key(|a| std::cmp::Reverse(a.created_at));
+        Ok(rows.into_iter().map(Self::bookmark_to_domain).collect())
+    }
+
+    async fn list_user_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<Bookmark>> {
+        let mut db = self.db.clone();
+        let mut rows = BookBookmarkModel::filter_by_user_id(user_id.0)
             .exec(&mut db)
             .await
             .map_err(db_err)?;

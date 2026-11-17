@@ -7,8 +7,8 @@ use tracing::info;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use models::{
-    ComicChapterModel, ComicChapterProgressModel, ComicFavoriteSeriesModel, ComicSeriesModel,
-    ComicSeriesReaderPrefModel, ComicShelfModel,
+    ComicBookmarkModel, ComicChapterModel, ComicChapterProgressModel, ComicFavoriteSeriesModel,
+    ComicSeriesModel, ComicSeriesReaderPrefModel, ComicShelfModel,
 };
 
 pub fn register_comic_models(set: &mut ModelSet) {
@@ -18,6 +18,7 @@ pub fn register_comic_models(set: &mut ModelSet) {
     <ComicSeriesReaderPrefModel as Model>::register(set);
     <ComicFavoriteSeriesModel as Model>::register(set);
     <ComicShelfModel as Model>::register(set);
+    <ComicBookmarkModel as Model>::register(set);
 }
 
 pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
@@ -32,6 +33,18 @@ pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResul
             .map_err(|e| DomainError::Persistence(format!("failed to connect comic db: {e}")))?;
         bootstrap.push_schema().await.map_err(|e| {
             DomainError::Persistence(format!("failed to push comic database schema: {e}"))
+        })?;
+    } else if ComicBookmarkModel::all().limit(1).exec(db).await.is_err() {
+        info!("migrating comic_bookmarks table via toasty");
+        let mut set = ModelSet::new();
+        <ComicBookmarkModel as Model>::register(&mut set);
+        let bootstrap = Db::builder()
+            .models(set)
+            .connect(database_url)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("failed to connect comic db: {e}")))?;
+        bootstrap.push_schema().await.map_err(|e| {
+            DomainError::Persistence(format!("failed to push comic_bookmarks schema: {e}"))
         })?;
     }
     Ok(())

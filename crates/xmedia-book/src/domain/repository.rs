@@ -32,10 +32,12 @@ pub trait BookReadingRepository: Send + Sync {
         user_id: UserId,
         limit: u32,
     ) -> DomainResult<Vec<ReadingProgress>>;
+    async fn count_user_progress(&self, user_id: UserId) -> DomainResult<u64>;
     async fn save_progress(&self, progress: &ReadingProgress) -> DomainResult<()>;
 
     async fn list_bookmarks(&self, user_id: UserId, book_id: BookId)
     -> DomainResult<Vec<Bookmark>>;
+    async fn list_user_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<Bookmark>>;
     async fn save_bookmark(&self, bookmark: &Bookmark) -> DomainResult<()>;
     async fn delete_bookmark(&self, user_id: UserId, bookmark_id: BookmarkId) -> DomainResult<()>;
 

@@ -4,8 +4,10 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::chapter::Chapter;
-use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
-use crate::domain::reading::{ChapterProgress, ComicShelf, FavoriteSeries, SeriesReaderPref};
+use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
+use crate::domain::reading::{
+    ChapterProgress, ComicBookmark, ComicShelf, FavoriteSeries, SeriesReaderPref,
+};
 use crate::domain::series::Series;
 
 #[async_trait]
@@ -71,4 +73,17 @@ pub trait ComicReadingRepository: Send + Sync {
     async fn list_shelves(&self, user_id: UserId) -> DomainResult<Vec<ComicShelf>>;
     async fn save_shelf(&self, shelf: &ComicShelf) -> DomainResult<()>;
     async fn delete_shelf(&self, id: ComicShelfId) -> DomainResult<()>;
+
+    async fn list_chapter_bookmarks(
+        &self,
+        user_id: UserId,
+        chapter_id: ChapterId,
+    ) -> DomainResult<Vec<ComicBookmark>>;
+    async fn list_user_bookmarks(&self, user_id: UserId) -> DomainResult<Vec<ComicBookmark>>;
+    async fn save_bookmark(&self, bookmark: &ComicBookmark) -> DomainResult<()>;
+    async fn delete_bookmark(
+        &self,
+        user_id: UserId,
+        bookmark_id: ComicBookmarkId,
+    ) -> DomainResult<()>;
 }

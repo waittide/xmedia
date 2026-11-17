@@ -10,14 +10,15 @@ use xmedia_core::domain::error::DomainError;
 use xmedia_core::http::{ApiError, ApiResult};
 
 use crate::application::dto::{
-    ChapterItemDto, HomeOverviewDto, ReaderContextDto, SaveSeriesReaderPrefInput, SeriesDetailDto,
-    SeriesQueryFilter, SeriesSummaryDto, ShelfDetailDto, TaxonomyOverviewDto, UpdateProgressInput,
-    UploadArchiveInput, UploadArchiveResultDto, UpsertShelfInput,
+    ChapterItemDto, ComicBookmarkItemDto, CreateComicBookmarkInput, HomeOverviewDto,
+    ReaderContextDto, SaveSeriesReaderPrefInput, SeriesDetailDto, SeriesQueryFilter,
+    SeriesSummaryDto, ShelfDetailDto, TaxonomyOverviewDto, UpdateProgressInput, UploadArchiveInput,
+    UploadArchiveResultDto, UpsertShelfInput,
 };
 use crate::application::ports::PageContent;
 use crate::domain::chapter::ChapterMetadataPatch;
-use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
-use crate::domain::reading::{ChapterProgress, ComicShelf, SeriesReaderPref};
+use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
+use crate::domain::reading::{ChapterProgress, ComicBookmark, ComicShelf, SeriesReaderPref};
 use crate::domain::series::{Series, SeriesMetadataPatch};
 use crate::http::extractors::ComicWebAuth;
 use crate::http::state::ComicHttpState;
@@ -52,6 +53,12 @@ pub fn router() -> Router<ComicHttpState> {
             "/chapters/{id}/mark-previous-read",
             post(mark_previous_read),
         )
+        .route(
+            "/chapters/{id}/bookmarks",
+            get(list_chapter_bookmarks).post(create_bookmark),
+        )
+        .route("/bookmarks", get(list_all_bookmarks))
+        .route("/bookmarks/{id}", axum::routing::delete(delete_bookmark))
         .route("/covers/{key}", get(stream_cover))
         .route("/shelves", get(list_shelves).post(create_shelf))
         .route("/shelves/{id}", put(update_shelf).delete(delete_shelf))
@@ -449,6 +456,56 @@ async fn delete_shelf(
         .services
         .reading
         .delete_shelf(user.id, ComicShelfId(id))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_chapter_bookmarks(
+    State(state): State<ComicHttpState>,
+    ComicWebAuth(user): ComicWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Vec<ComicBookmark>>> {
+    Ok(Json(
+        state
+            .services
+            .reading
+            .list_chapter_bookmarks(user.id, ChapterId(id))
+            .await?,
+    ))
+}
+
+async fn list_all_bookmarks(
+    State(state): State<ComicHttpState>,
+    ComicWebAuth(user): ComicWebAuth,
+) -> ApiResult<Json<Vec<ComicBookmarkItemDto>>> {
+    Ok(Json(
+        state.services.reading.list_all_bookmarks(user.id).await?,
+    ))
+}
+
+async fn create_bookmark(
+    State(state): State<ComicHttpState>,
+    ComicWebAuth(user): ComicWebAuth,
+    Path(id): Path<Uuid>,
+    Json(input): Json<CreateComicBookmarkInput>,
+) -> ApiResult<(StatusCode, Json<ComicBookmark>)> {
+    let bm = state
+        .services
+        .reading
+        .create_bookmark(user.id, ChapterId(id), input)
+        .await?;
+    Ok((StatusCode::CREATED, Json(bm)))
+}
+
+async fn delete_bookmark(
+    State(state): State<ComicHttpState>,
+    ComicWebAuth(user): ComicWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    state
+        .services
+        .reading
+        .delete_bookmark(user.id, ComicBookmarkId(id))
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
