@@ -1,7 +1,8 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api, getStoredToken, setStoredToken } from '@/api/client'
-import type { MediaKind, SystemCapabilitiesDto, UserDto, UserPreferences } from '@/types/api'
+import { useThemeStore } from '@/stores/theme'
+import type { MediaKind, SystemCapabilitiesDto, UserDto } from '@/types/api'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<UserDto | null>(null)
@@ -21,13 +22,16 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function bootstrap(): Promise<void> {
     if (initialized.value) return
+    const themeStore = useThemeStore()
     try {
       const [cap, status] = await Promise.all([api.capabilities(), api.setupStatus()])
       capabilities.value = cap
       needsSetup.value = status.needs_setup
       if (!status.needs_setup && getStoredToken()) {
         try {
-          user.value = await api.getMe()
+          const me = await api.me()
+          user.value = me
+          themeStore.hydrateFromUser(me.preferences)
         } catch {
           setStoredToken(null)
           user.value = null
@@ -43,37 +47,34 @@ export const useAuthStore = defineStore('auth', () => {
     display_name?: string
     password: string
   }): Promise<void> {
+    const themeStore = useThemeStore()
     const session = await api.setupAdmin(payload)
     setStoredToken(session.token)
     user.value = session.user
     needsSetup.value = false
+    themeStore.hydrateFromUser(session.user.preferences)
   }
 
   async function login(username: string, password: string): Promise<void> {
+    const themeStore = useThemeStore()
     const session = await api.login({ username, password })
     setStoredToken(session.token)
     user.value = session.user
+    themeStore.hydrateFromUser(session.user.preferences)
   }
 
   async function logout(): Promise<void> {
     try {
       await api.logout()
     } catch {
-      // ignore network error on logout
+      // ignore
     }
     setStoredToken(null)
     user.value = null
   }
 
-  async function savePreferences(prefs: UserPreferences): Promise<void> {
-    if (!user.value) return
-    const updated = await api.updatePreferences(prefs)
-    user.value = updated
-  }
-
-  async function rotateApiKey(): Promise<void> {
-    const updated = await api.rotateApiKey()
-    user.value = updated
+  function setUser(next: UserDto): void {
+    user.value = next
   }
 
   return {
@@ -89,7 +90,6 @@ export const useAuthStore = defineStore('auth', () => {
     setupAdmin,
     login,
     logout,
-    savePreferences,
-    rotateApiKey,
+    setUser,
   }
 })

@@ -397,4 +397,14 @@ export function applyResolvedPaletteToDom(
   root.style.setProperty('--ctp-red', resolved.red)
   root.style.setProperty('--ctp-green', resolved.green)
   root.style.setProperty('--ctp-yellow', resolved.yellow)
+
+  // Synchronize xcomic semantic tokens to the exact same resolved palette
+  root.style.colorScheme = isDark ? 'dark' : 'light'
+  root.style.setProperty('--bg-base', resolved.canvas)
+  root.style.setProperty('--bg-mantle', resolved.shell)
+  root.style.setProperty('--bg-surface', isDark ? resolved.mantle : '#ffffff')
+  root.style.setProperty('--text-primary', resolved.text)
+  root.style.setProperty('--text-secondary', resolved.subtext0)
+  root.style.setProperty('--accent', resolved.accent)
+  root.style.setProperty('--accent-contrast', resolved.onAccent)
 }

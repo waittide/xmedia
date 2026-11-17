@@ -485,7 +485,7 @@ async fn upload_comic_archive(
         } else {
             let text = field.text().await.unwrap_or_default();
             match field_name.as_str() {
-                "target_series_id" => {
+                "target_series_id" | "series_id" => {
                     target_series_id = text.trim().parse::<Uuid>().ok().map(SeriesId);
                 }
                 "series_title" | "series_title_override" if !text.trim().is_empty() => {

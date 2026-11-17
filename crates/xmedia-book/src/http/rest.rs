@@ -90,14 +90,21 @@ struct SearchBooksQuery {
 }
 
 fn split_multi_param(raw: Option<String>) -> Vec<String> {
-    raw.map(|s| {
-        s.split(',')
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map(ToString::to_string)
-            .collect()
-    })
-    .unwrap_or_default()
+    let Some(text) = raw else {
+        return Vec::new();
+    };
+    if let Ok(arr) = serde_json::from_str::<Vec<String>>(&text) {
+        return arr
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    text.split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 async fn search_books(

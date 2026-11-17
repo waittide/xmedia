@@ -1,0 +1,315 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { LuCheck, LuChevronDown, LuSearch, LuX } from 'vue-icons-plus/lu'
+
+export interface MultiSelectOption<T extends string = string> {
+  value: T
+  label: string
+  badge?: string | number
+}
+
+const MAX_RENDERED_ITEMS = 120
+
+const props = withDefaults(
+  defineProps<{
+    modelValue: string[]
+    options: MultiSelectOption[]
+    label: string
+    allPlaceholder: string
+    searchPlaceholder?: string
+    disabled?: boolean
+  }>(),
+  {
+    searchPlaceholder: '',
+    disabled: false,
+  },
+)
+
+const emit = defineEmits<{
+  'update:modelValue': [value: string[]]
+  change: [value: string[]]
+}>()
+
+const { t } = useI18n()
+
+const open = ref(false)
+const query = ref('')
+const triggerRef = ref<HTMLButtonElement | null>(null)
+const menuRef = ref<HTMLDivElement | null>(null)
+const searchInputRef = ref<HTMLInputElement | null>(null)
+const menuStyle = ref<Record<string, string>>({})
+
+const selectedSet = computed(() => new Set(props.modelValue))
+
+const triggerText = computed(() => {
+  if (props.modelValue.length === 0) return props.allPlaceholder
+  if (props.modelValue.length === 1) {
+    const first = props.modelValue[0]!
+    return props.options.find((o) => o.value === first)?.label ?? first
+  }
+  return t('search.selectedCountBadge', {
+    label: props.label,
+    count: props.modelValue.length,
+  })
+})
+
+const showSearchBox = computed(() => props.options.length > 5)
+
+// Selected items are pinned to the top so users never lose track of checked items in a 500-item list
+const matchedOptions = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  const matched = q
+    ? props.options.filter((opt) => opt.label.toLowerCase().includes(q))
+    : props.options
+
+  const checked: MultiSelectOption[] = []
+  const unchecked: MultiSelectOption[] = []
+  for (const opt of matched) {
+    if (selectedSet.value.has(opt.value)) {
+      checked.push(opt)
+    } else {
+      unchecked.push(opt)
+    }
+  }
+  return [...checked, ...unchecked]
+})
+
+const renderedOptions = computed(() =>
+  matchedOptions.value.slice(0, MAX_RENDERED_ITEMS),
+)
+
+function updatePosition(): void {
+  const el = triggerRef.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  const viewportH = window.innerHeight
+  const viewportW = window.innerWidth
+  const estimatedHeight = 320
+  const openUpward = rect.bottom + estimatedHeight + 12 > viewportH && rect.top > estimatedHeight
+
+  const minWidth = Math.max(rect.width, 232)
+  const left = Math.min(rect.left, Math.max(8, viewportW - minWidth - 8))
+
+  menuStyle.value = {
+    position: 'fixed',
+    left: `${Math.round(left)}px`,
+    minWidth: `${Math.round(minWidth)}px`,
+    maxWidth: 'min(22rem, calc(100vw - 16px))',
+    ...(openUpward
+      ? { bottom: `${Math.round(viewportH - rect.top + 6)}px` }
+      : { top: `${Math.round(rect.bottom + 6)}px` }),
+  }
+}
+
+async function openMenu(): Promise<void> {
+  if (props.disabled) return
+  open.value = true
+  query.value = ''
+  updatePosition()
+  await nextTick()
+  updatePosition()
+  if (showSearchBox.value) {
+    searchInputRef.value?.focus()
+  }
+}
+
+function closeMenu(): void {
+  open.value = false
+}
+
+function toggleMenu(): void {
+  if (open.value) {
+    closeMenu()
+  } else {
+    void openMenu()
+  }
+}
+
+function toggleValue(val: string): void {
+  const next = selectedSet.value.has(val)
+    ? props.modelValue.filter((v) => v !== val)
+    : [...props.modelValue, val]
+  emit('update:modelValue', next)
+  emit('change', next)
+}
+
+function clearAll(): void {
+  if (props.modelValue.length === 0) return
+  emit('update:modelValue', [])
+  emit('change', [])
+}
+
+function handleOutsideMouseDown(ev: MouseEvent): void {
+  if (!open.value) return
+  const target = ev.target as Node
+  if (triggerRef.value?.contains(target) || menuRef.value?.contains(target)) {
+    return
+  }
+  closeMenu()
+}
+
+function handleKeydown(ev: KeyboardEvent): void {
+  if (open.value && ev.key === 'Escape') {
+    ev.preventDefault()
+    closeMenu()
+    triggerRef.value?.focus()
+  }
+}
+
+function handleViewportChange(): void {
+  if (open.value) updatePosition()
+}
+
+watch(renderedOptions, () => {
+  if (open.value) void nextTick(updatePosition)
+})
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleOutsideMouseDown)
+  window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('resize', handleViewportChange)
+  window.addEventListener('scroll', handleViewportChange, true)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutsideMouseDown)
+  window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', handleViewportChange)
+  window.removeEventListener('scroll', handleViewportChange, true)
+})
+</script>
+
+<template>
+  <button
+    ref="triggerRef"
+    type="button"
+    :aria-expanded="open"
+    :disabled="disabled"
+    class="inline-flex h-9 w-full items-center justify-between gap-2 rounded-xl border bg-[var(--ctp-canvas)] px-3 text-left text-xs font-medium transition outline-none select-none disabled:opacity-50"
+    :class="[
+      open
+        ? 'border-[var(--ctp-accent)] ring-2 ring-[var(--ctp-accent-soft)]'
+        : modelValue.length > 0
+          ? 'border-[var(--ctp-accent)]/65 bg-[var(--ctp-accent-soft)]/35 text-[var(--ctp-accent)]'
+          : 'border-[var(--ctp-surface0)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]',
+    ]"
+    @click="toggleMenu"
+  >
+    <span class="truncate">{{ triggerText }}</span>
+    <span class="flex shrink-0 items-center gap-1">
+      <span
+        v-if="modelValue.length > 1"
+        class="rounded-full bg-[var(--ctp-accent)] px-1.5 py-0.2 text-[10px] font-bold text-[var(--ctp-on-accent)]"
+      >
+        {{ modelValue.length }}
+      </span>
+      <LuChevronDown
+        class="h-3.5 w-3.5 text-[var(--ctp-subtext0)] transition-transform duration-150"
+        :class="open ? 'rotate-180 text-[var(--ctp-accent)]' : ''"
+      />
+    </span>
+  </button>
+
+  <Teleport to="body">
+    <div
+      v-if="open"
+      ref="menuRef"
+      :style="menuStyle"
+      class="z-[90] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 text-[var(--ctp-text)] shadow-2xl"
+    >
+      <!-- Optional Header Controls Slot (e.g. Tag Match Any / Match All toggle) -->
+      <div v-if="$slots.header" class="mb-2 border-b border-[var(--ctp-surface0)]/65 pb-2">
+        <slot name="header" />
+      </div>
+
+      <!-- Instant Search Filter for Long Lists -->
+      <div v-if="showSearchBox" class="relative mb-1.5">
+        <LuSearch class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]" />
+        <input
+          ref="searchInputRef"
+          v-model="query"
+          type="text"
+          :placeholder="searchPlaceholder || t('search.filterOptionsPlaceholder')"
+          class="h-8 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] pl-8 pr-7 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none focus:border-[var(--ctp-accent)]"
+        />
+        <button
+          v-if="query"
+          type="button"
+          class="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+          @click="query = ''"
+        >
+          <LuX class="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <!-- Scrollable Option List (Selected pinned at top) -->
+      <div class="max-h-60 space-y-0.5 overflow-y-auto pr-0.5">
+        <div
+          v-if="renderedOptions.length === 0"
+          class="py-6 text-center text-xs text-[var(--ctp-subtext0)]"
+        >
+          {{ t('search.noMatchOption') }}
+        </div>
+
+        <button
+          v-for="opt in renderedOptions"
+          :key="opt.value"
+          type="button"
+          class="flex w-full items-center justify-between gap-2.5 rounded-xl px-2.5 py-1.5 text-left text-xs transition"
+          :class="
+            selectedSet.has(opt.value)
+              ? 'bg-[var(--ctp-accent-soft)]/70 font-semibold text-[var(--ctp-accent)]'
+              : 'text-[var(--ctp-text)] hover:bg-[var(--ctp-mantle)]'
+          "
+          @click="toggleValue(opt.value)"
+        >
+          <span class="flex min-w-0 items-center gap-2">
+            <span
+              class="flex h-4 w-4 shrink-0 items-center justify-center rounded border transition"
+              :class="
+                selectedSet.has(opt.value)
+                  ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                  : 'border-[var(--ctp-surface1)] bg-[var(--ctp-canvas)]'
+              "
+            >
+              <LuCheck v-if="selectedSet.has(opt.value)" class="h-3 w-3 stroke-[3]" />
+            </span>
+            <span class="truncate">{{ opt.label }}</span>
+          </span>
+
+          <span
+            v-if="opt.badge !== undefined"
+            class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-[var(--ctp-subtext1)]"
+          >
+            {{ opt.badge }}
+          </span>
+        </button>
+
+        <p
+          v-if="matchedOptions.length > MAX_RENDERED_ITEMS"
+          class="px-2 py-1.5 text-center text-[10px] text-[var(--ctp-subtext0)]"
+        >
+          {{ t('search.showingTopHint', { shown: MAX_RENDERED_ITEMS, total: matchedOptions.length }) }}
+        </p>
+      </div>
+
+      <!-- Footer Clear Action -->
+      <div
+        v-if="modelValue.length > 0"
+        class="mt-1.5 flex items-center justify-between border-t border-[var(--ctp-surface0)]/65 pt-1.5 px-1"
+      >
+        <span class="text-[11px] text-[var(--ctp-subtext0)]">
+          {{ t('search.selectedCountBadge', { label, count: modelValue.length }) }}
+        </span>
+        <button
+          type="button"
+          class="text-[11px] font-semibold text-[var(--ctp-accent)] hover:underline"
+          @click="clearAll"
+        >
+          {{ t('search.clearDimension') }}
+        </button>
+      </div>
+    </div>
+  </Teleport>
+</template>

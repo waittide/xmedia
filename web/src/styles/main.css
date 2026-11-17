@@ -2,6 +2,15 @@
 
 :root {
   color-scheme: light;
+  --text-muted: color-mix(in srgb, var(--text-primary) 50%, var(--text-secondary));
+  --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);
+  --border-subtle: color-mix(in srgb, var(--text-primary) 13%, transparent);
+  --border-strong: color-mix(in srgb, var(--text-primary) 24%, transparent);
+  --surface-hover: color-mix(in srgb, var(--text-primary) 6%, var(--bg-surface));
+  --sidebar-hover: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --select-bg: var(--bg-base);
+  --select-menu-bg: var(--bg-base);
+  --select-item-hover: color-mix(in srgb, var(--text-primary) 7%, var(--bg-base));
 }
 
 :root[data-theme="dark"] {
@@ -15,21 +24,56 @@ body,
   margin: 0;
   background-color: var(--ctp-shell);
   color: var(--ctp-text);
-  font-family: "Inter", "Noto Sans SC", "PingFang SC", system-ui, -apple-system, sans-serif;
+  font-family: "Inter", "Noto Sans SC", "PingFang SC", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
 }
 
-.media-shadow {
+.album-shadow {
   box-shadow:
-    0 10px 25px -5px rgb(0 0 0 / 0.2),
-    0 4px 10px -4px rgb(0 0 0 / 0.12),
-    inset 0 1px 1px rgb(255 255 255 / 0.14);
+    0 10px 25px -5px rgb(0 0 0 / 0.22),
+    0 4px 10px -4px rgb(0 0 0 / 0.14),
+    inset 0 1px 1px rgb(255 255 255 / 0.15);
 }
 
-:root[data-theme="dark"] .media-shadow {
+:root[data-theme="dark"] .album-shadow {
   box-shadow:
     0 14px 30px -6px rgb(0 0 0 / 0.55),
-    0 4px 12px -3px rgb(0 0 0 / 0.38),
+    0 4px 12px -3px rgb(0 0 0 / 0.4),
     inset 0 1px 1px rgb(255 255 255 / 0.08);
+}
+
+/* BeePub-inspired 3D book & comic cover shadow */
+.book-shadow {
+  position: relative;
+  box-shadow:
+    0 10px 24px -6px rgba(0, 0, 0, 0.28),
+    0 4px 10px -3px rgba(0, 0, 0, 0.16),
+    inset 3px 0 6px rgba(255, 255, 255, 0.18),
+    inset -1px 0 2px rgba(0, 0, 0, 0.22);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.book-shadow::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.18) 0%,
+    rgba(255, 255, 255, 0.14) 3.5%,
+    rgba(0, 0, 0, 0.06) 6%,
+    transparent 12%
+  );
+}
+
+.group:hover .book-shadow {
+  transform: translateY(-4px);
+  box-shadow:
+    0 18px 32px -8px rgba(0, 0, 0, 0.36),
+    0 6px 14px -4px rgba(0, 0, 0, 0.22),
+    inset 3px 0 6px rgba(255, 255, 255, 0.22);
 }
 
 .card-soft {

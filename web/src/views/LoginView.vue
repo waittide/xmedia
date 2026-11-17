@@ -2,76 +2,99 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
+import { LuLayers } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
+import ThemePopover from '@/components/ThemePopover.vue'
 
 const { t } = useI18n()
 const router = useRouter()
-const auth = useAuthStore()
+const authStore = useAuthStore()
 
 const username = ref('')
 const password = ref('')
-const loading = ref(false)
-const error = ref('')
+const submitting = ref(false)
+const errorMsg = ref('')
 
 async function onSubmit(): Promise<void> {
-  loading.value = true
-  error.value = ''
+  errorMsg.value = ''
+  submitting.value = true
   try {
-    await auth.login(username.value.trim(), password.value)
-    await router.push('/')
+    await authStore.login(username.value, password.value)
+    await router.replace('/')
   } catch (err) {
-    error.value = err instanceof Error ? err.message : String(err)
+    errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loading.value = false
+    submitting.value = false
   }
 }
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-[var(--ctp-shell)] p-6">
-    <form
-      class="w-full max-w-md space-y-5 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] p-8 shadow-xl"
-      @submit.prevent="onSubmit"
-    >
-      <div class="space-y-1.5">
-        <div class="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-sm font-extrabold text-[var(--ctp-on-accent)]">
-          XM
+  <div class="flex min-h-screen flex-col bg-[var(--ctp-shell)] text-[var(--ctp-text)]">
+    <header class="flex items-center justify-between px-6 py-4">
+      <div class="flex items-center gap-2.5">
+        <div
+          class="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm"
+        >
+          <LuLayers class="h-5 w-5" />
         </div>
-        <h1 class="text-xl font-bold text-[var(--ctp-text)]">{{ t('auth.loginTitle') }}</h1>
-        <p class="text-xs text-[var(--ctp-subtext0)]">{{ t('auth.loginSubtitle') }}</p>
+        <span class="text-lg font-bold tracking-tight">{{ t('app.name') }}</span>
       </div>
+      <ThemePopover show-language />
+    </header>
 
-      <div v-if="error" class="rounded-lg bg-[var(--ctp-red)]/15 px-3 py-2 text-xs text-[var(--ctp-red)]">
-        {{ error }}
-      </div>
-
-      <div class="space-y-3">
-        <div>
-          <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext1)]">{{ t('auth.username') }}</label>
-          <input
-            v-model="username"
-            required
-            class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2.5 text-sm outline-none focus:border-[var(--ctp-accent)]"
-          />
-        </div>
-        <div>
-          <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext1)]">{{ t('auth.password') }}</label>
-          <input
-            v-model="password"
-            type="password"
-            required
-            class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2.5 text-sm outline-none focus:border-[var(--ctp-accent)]"
-          />
-        </div>
-      </div>
-
-      <button
-        type="submit"
-        :disabled="loading"
-        class="w-full rounded-xl bg-[var(--ctp-accent)] py-2.5 text-sm font-semibold text-[var(--ctp-on-accent)] shadow hover:opacity-90 disabled:opacity-50"
+    <main class="flex flex-1 items-center justify-center p-4">
+      <div
+        class="w-full max-w-md rounded-[28px] border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-8 shadow-xl"
       >
-        {{ loading ? t('common.loading') : t('auth.submitLogin') }}
-      </button>
-    </form>
+        <h1 class="text-2xl font-bold">{{ t('auth.loginTitle') }}</h1>
+        <p class="mt-1 mb-6 text-sm text-[var(--ctp-subtext0)]">{{ t('auth.loginSubtitle') }}</p>
+
+        <div
+          v-if="errorMsg"
+          class="mb-4 rounded-2xl bg-[var(--ctp-red)]/15 px-4 py-3 text-xs font-medium text-[var(--ctp-red)]"
+        >
+          {{ errorMsg }}
+        </div>
+
+        <form class="space-y-4" @submit.prevent="onSubmit">
+          <div>
+            <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+              {{ t('auth.username') }}
+            </label>
+            <input
+              v-model="username"
+              type="text"
+              required
+              autocomplete="username"
+              :placeholder="t('auth.usernamePlaceholder')"
+              class="w-full rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-4 py-2.5 text-sm outline-none transition focus:border-[var(--ctp-accent)]"
+            />
+          </div>
+
+          <div>
+            <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+              {{ t('auth.password') }}
+            </label>
+            <input
+              v-model="password"
+              type="password"
+              required
+              autocomplete="current-password"
+              :placeholder="t('auth.passwordPlaceholder')"
+              class="w-full rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-4 py-2.5 text-sm outline-none transition focus:border-[var(--ctp-accent)]"
+            />
+          </div>
+
+          <button
+            type="submit"
+            :disabled="submitting"
+            class="mt-2 w-full rounded-full bg-[var(--ctp-accent)] py-3 text-sm font-semibold text-[var(--ctp-on-accent)] shadow-md transition hover:opacity-95 disabled:opacity-60"
+          >
+            {{ submitting ? t('common.loading') : t('auth.signInBtn') }}
+          </button>
+        </form>
+      </div>
+    </main>
   </div>
 </template>
