@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use xmedia_core::domain::library::MediaKind;
 
 use crate::domain::workspace::ManagedRoot;
 
@@ -57,6 +58,61 @@ impl Default for RenameTemplates {
     }
 }
 
+/// Per-domain scraper provider priority order (first = highest priority during field-level waterfall merge).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScraperPriorities {
+    #[serde(default = "default_book_priority")]
+    pub book: Vec<String>,
+    #[serde(default = "default_comic_priority")]
+    pub comic: Vec<String>,
+    #[serde(default = "default_music_priority")]
+    pub music: Vec<String>,
+    #[serde(default = "default_video_priority")]
+    pub video: Vec<String>,
+}
+
+fn default_book_priority() -> Vec<String> {
+    vec!["bangumi".to_string(), "openlibrary".to_string()]
+}
+
+fn default_comic_priority() -> Vec<String> {
+    vec!["bangumi".to_string()]
+}
+
+fn default_music_priority() -> Vec<String> {
+    vec![
+        "itunes".to_string(),
+        "musicbrainz".to_string(),
+        "lrclib".to_string(),
+    ]
+}
+
+fn default_video_priority() -> Vec<String> {
+    vec!["tmdb".to_string(), "bangumi".to_string()]
+}
+
+impl Default for ScraperPriorities {
+    fn default() -> Self {
+        Self {
+            book: default_book_priority(),
+            comic: default_comic_priority(),
+            music: default_music_priority(),
+            video: default_video_priority(),
+        }
+    }
+}
+
+impl ScraperPriorities {
+    pub fn order_for(&self, kind: MediaKind) -> &[String] {
+        match kind {
+            MediaKind::Book => &self.book,
+            MediaKind::Comic => &self.comic,
+            MediaKind::Music => &self.music,
+            MediaKind::Video => &self.video,
+        }
+    }
+}
+
 /// Persistent configuration aggregate for `xmedia-tool`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolSettings {
@@ -66,6 +122,8 @@ pub struct ToolSettings {
     pub credentials: ProviderCredentials,
     #[serde(default)]
     pub rename_templates: RenameTemplates,
+    #[serde(default)]
+    pub scraper_priorities: ScraperPriorities,
     #[serde(default = "default_locale")]
     pub default_scrape_locale: String,
 }

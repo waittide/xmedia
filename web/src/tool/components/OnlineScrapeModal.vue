@@ -1,10 +1,14 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
+  LuArrowDown,
+  LuArrowUp,
   LuCheck,
+  LuChevronRight,
   LuExternalLink,
   LuImage,
   LuKey,
+  LuLayers,
   LuRefreshCw,
   LuSearch,
   LuSparkles,
@@ -12,9 +16,14 @@ import {
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { toolApi } from '../api'
+import { mergeScrapedClientSide } from '../merger'
 import type {
+  FieldSourceBadge,
   MediaFileDetail,
+  MergedScrapedResult,
+  ProviderBriefDto,
   ProviderStatusDto,
+  PublicSettingsDto,
   ScrapeCandidate,
   ScrapeTargetKind,
   ScrapedMetadata,
@@ -23,12 +32,14 @@ import type {
 const props = defineProps<{
   open: boolean
   detail: MediaFileDetail | null
+  settings: PublicSettingsDto | null
 }>()
 
 const emit = defineEmits<{
   close: []
   applied: [detail: MediaFileDetail]
   openSettings: []
+  settingsUpdated: [settings: PublicSettingsDto]
 }>()
 
 const targetKind = ref<ScrapeTargetKind>('music_track')
@@ -44,11 +55,14 @@ const episode = ref('')
 
 const searching = ref(false)
 const candidates = ref<ScrapeCandidate[]>([])
-const activeSourceTab = ref<'all' | string>('all')
+const activeSourceTab = ref<'merged' | string>('merged')
+const previewMode = ref<'merged' | 'single'>('merged')
 const brokenCoverUrls = ref<Set<string>>(new Set())
-const selectedCandidate = ref<ScrapeCandidate | null>(null)
-const loadingDetail = ref(false)
-const previewDetail = ref<ScrapedMetadata | null>(null)
+
+// Per-provider selected candidate & fetched detail for reactive waterfall merging
+const selectedByProvider = ref<Record<string, ScrapeCandidate>>({})
+const detailsByProvider = ref<Record<string, ScrapedMetadata>>({})
+const loadingProviderId = ref<string | null>(null)
 
 const applyCover = ref(true)
 const writeSidecarLrc = ref(true)
@@ -59,9 +73,9 @@ const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>((
   const kind = props.detail?.entry.media_kind
   if (kind === 'music') {
     return [
-      { value: 'music_track', label: '单曲元数据 + 封面' },
-      { value: 'lyrics', label: 'LRC 同步歌词' },
+      { value: 'music_track', label: '单曲多源刮削 (含封面+歌词)' },
       { value: 'music_album', label: '整张专辑' },
+      { value: 'lyrics', label: '仅检索歌词' },
     ]
   }
   if (kind === 'video') {
@@ -79,10 +93,117 @@ const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>((
   return [{ value: 'book', label: '电子书 / 出版物' }]
 })
 
+const orderedActiveBriefs = computed<ProviderBriefDto[]>(() =>
+  enabledProviderIds.value
+    .map((id) => providers.value.find((p) => p.id === id && p.configured))
+    .filter((p): p is ProviderStatusDto => Boolean(p))
+    .map((p) => ({ id: p.id, name: p.name })),
+)
+
+const mergedResult = computed<MergedScrapedResult | null>(() =>
+  mergeScrapedClientSide(
+    orderedActiveBriefs.value,
+    detailsByProvider.value,
+    targetKind.value,
+    brokenCoverUrls.value,
+  ),
+)
+
+const activeSingleProviderDetail = computed<ScrapedMetadata | null>(() => {
+  if (activeSourceTab.value === 'merged') return null
+  return detailsByProvider.value[activeSourceTab.value] ?? null
+})
+
+const activeSingleBadge = computed<FieldSourceBadge | null>(() => {
+  if (activeSourceTab.value === 'merged') return null
+  const p = providers.value.find((x) => x.id === activeSourceTab.value)
+  return p ? { provider_id: p.id, provider_name: p.name } : null
+})
+
+// Metadata & provenance map currently displayed in the right pane
+const effectiveView = computed<{
+  metadata: ScrapedMetadata
+  sources: Record<string, FieldSourceBadge>
+} | null>(() => {
+  if (activeSourceTab.value !== 'merged' && previewMode.value === 'single') {
+    const single = activeSingleProviderDetail.value
+    if (!single) return null
+    const badge = activeSingleBadge.value ?? {
+      provider_id: single.provider_id,
+      provider_name: single.provider_id,
+    }
+    return {
+      metadata: single,
+      sources: {
+        title: badge,
+        original_title: badge,
+        series_or_album: badge,
+        creators: badge,
+        illustrators_or_directors: badge,
+        cast: badge,
+        publisher_or_studio: badge,
+        year: badge,
+        isbn: badge,
+        rating: badge,
+        track_or_episode_number: badge,
+        disc_or_season_number: badge,
+        summary: badge,
+        genres: badge,
+        tags: badge,
+        cover_url: badge,
+        backdrop_url: badge,
+        lyrics: badge,
+      },
+    }
+  }
+  if (!mergedResult.value) return null
+  return {
+    metadata: mergedResult.value.metadata,
+    sources: mergedResult.value.field_sources,
+  }
+})
+
+const sourceTabs = computed<Array<{ id: string; label: string; count: number }>>(() => {
+  const counts = new Map<string, number>()
+  for (const c of candidates.value) {
+    counts.set(c.provider_id, (counts.get(c.provider_id) ?? 0) + 1)
+  }
+  const tabs: Array<{ id: string; label: string; count: number }> = [
+    {
+      id: 'merged',
+      label: '✦ 多源聚合',
+      count: Object.keys(detailsByProvider.value).length,
+    },
+  ]
+  for (const brief of orderedActiveBriefs.value) {
+    tabs.push({
+      id: brief.id,
+      label: brief.name,
+      count: counts.get(brief.id) ?? 0,
+    })
+  }
+  return tabs
+})
+
+const candidatesForActiveSource = computed<ScrapeCandidate[]>(() => {
+  if (activeSourceTab.value === 'merged') return []
+  return candidates.value.filter((c) => c.provider_id === activeSourceTab.value)
+})
+
+function candidatesCountFor(providerId: string): number {
+  return candidates.value.filter((c) => c.provider_id === providerId).length
+}
+
+function badgeName(key: string): string | null {
+  return effectiveView.value?.sources[key]?.provider_name ?? null
+}
+
 async function refreshProvidersForTarget(target: ScrapeTargetKind): Promise<void> {
   try {
-    const list = await toolApi.listProviders(target)
+    const domain = props.detail?.entry.media_kind
+    const list = await toolApi.listProviders(target, domain)
     providers.value = list
+    // Returned `list` is already ordered by user's `scraper_priorities` on the backend!
     enabledProviderIds.value = list.filter((p) => p.configured).map((p) => p.id)
   } catch {
     providers.value = []
@@ -92,7 +213,10 @@ async function refreshProvidersForTarget(target: ScrapeTargetKind): Promise<void
 function stripChapterSuffix(raw: string): string {
   return raw
     .replace(/^(?:\[[^\]]*\]|\([^)]*\)|\s)+/, '')
-    .replace(/[\s_.-]*(?:第\s*\d+(?:\.\d+)?\s*[话話回章集卷册]|(?:vol|ch|chapter)\.?\s*\d+(?:\.\d+)?).*$/i, '')
+    .replace(
+      /[\s_.-]*(?:第\s*\d+(?:\.\d+)?\s*[话話回章集卷册]|(?:vol|ch|chapter)\.?\s*\d+(?:\.\d+)?).*$/i,
+      '',
+    )
     .replace(/_/g, ' ')
     .trim()
 }
@@ -100,8 +224,10 @@ function stripChapterSuffix(raw: string): string {
 function seedFromDetail(d: MediaFileDetail): void {
   errorMsg.value = null
   candidates.value = []
-  selectedCandidate.value = null
-  previewDetail.value = null
+  selectedByProvider.value = {}
+  detailsByProvider.value = {}
+  activeSourceTab.value = 'merged'
+  previewMode.value = 'merged'
 
   const m = d.metadata
   if (m.kind === 'music') {
@@ -111,7 +237,8 @@ function seedFromDetail(d: MediaFileDetail): void {
     albumOrSeries.value = m.data.album || ''
   } else if (m.kind === 'video') {
     targetKind.value = m.data.is_episode ? 'tv_show' : 'movie'
-    keyword.value = (m.data.is_episode && m.data.show_title) || m.data.title || d.entry.display_title
+    keyword.value =
+      (m.data.is_episode && m.data.show_title) || m.data.title || d.entry.display_title
     season.value = m.data.season_number !== null ? String(m.data.season_number) : ''
     episode.value = m.data.episode_number !== null ? String(m.data.episode_number) : ''
   } else if (m.kind === 'comic') {
@@ -133,7 +260,7 @@ watch(
     if (isOpen && d) {
       seedFromDetail(d)
       await refreshProvidersForTarget(targetKind.value)
-      if (keyword.value.trim()) {
+      if (keyword.value.trim() || isbn.value.trim()) {
         void runSearch()
       }
     }
@@ -143,6 +270,9 @@ watch(
 watch(targetKind, async (next) => {
   if (!props.open) return
   await refreshProvidersForTarget(next)
+  if (keyword.value.trim() || isbn.value.trim()) {
+    void runSearch()
+  }
 })
 
 function toggleProvider(p: ProviderStatusDto): void {
@@ -153,45 +283,47 @@ function toggleProvider(p: ProviderStatusDto): void {
   if (enabledProviderIds.value.includes(p.id)) {
     enabledProviderIds.value = enabledProviderIds.value.filter((id) => id !== p.id)
   } else {
-    enabledProviderIds.value = [...enabledProviderIds.value, p.id]
+    // Re-insert preserving `providers.value` priority order
+    const nextSet = new Set([...enabledProviderIds.value, p.id])
+    enabledProviderIds.value = providers.value
+      .filter((x) => nextSet.has(x.id))
+      .map((x) => x.id)
   }
 }
 
-const sourceResultTabs = computed<Array<{ id: string; label: string; count: number }>>(() => {
-  const counts = new Map<string, { name: string; count: number }>()
-  for (const p of providers.value) {
-    if (p.configured && enabledProviderIds.value.includes(p.id)) {
-      counts.set(p.id, { name: p.name, count: 0 })
-    }
-  }
-  for (const c of candidates.value) {
-    const cur = counts.get(c.provider_id)
-    if (cur) {
-      cur.count += 1
-    } else {
-      counts.set(c.provider_id, { name: c.provider_name, count: 1 })
-    }
-  }
-  const tabs: Array<{ id: string; label: string; count: number }> = [
-    { id: 'all', label: '全部', count: candidates.value.length },
-  ]
-  for (const [id, info] of counts.entries()) {
-    tabs.push({ id, label: info.name, count: info.count })
-  }
-  return tabs
-})
+async function moveActiveProviderOrder(idx: number, delta: -1 | 1): Promise<void> {
+  const list = [...enabledProviderIds.value]
+  const targetIdx = idx + delta
+  if (targetIdx < 0 || targetIdx >= list.length) return
+  const [moved] = list.splice(idx, 1)
+  list.splice(targetIdx, 0, moved!)
+  enabledProviderIds.value = list
 
-const displayedCandidates = computed<ScrapeCandidate[]>(() => {
-  if (activeSourceTab.value === 'all') return candidates.value
-  return candidates.value.filter((c) => c.provider_id === activeSourceTab.value)
-})
+  // Also reorder `providers` locally and persist to user's domain `scraper_priorities`!
+  const reorderedProviders = [...providers.value].sort((a, b) => {
+    const pa = list.indexOf(a.id)
+    const pb = list.indexOf(b.id)
+    return (pa === -1 ? 999 : pa) - (pb === -1 ? 999 : pb)
+  })
+  providers.value = reorderedProviders
 
-function switchSourceTab(tabId: string): void {
-  activeSourceTab.value = tabId
-  if (tabId !== 'all' && selectedCandidate.value?.provider_id !== tabId) {
-    const first = candidates.value.find((c) => c.provider_id === tabId)
-    if (first) {
-      void selectCandidate(first)
+  const dom = props.detail?.entry.media_kind
+  if (dom && props.settings) {
+    const existingDomOrder = props.settings.scraper_priorities[dom]
+    const fullOrder = [
+      ...list,
+      ...existingDomOrder.filter((id) => !list.includes(id)),
+    ]
+    try {
+      const nextSettings = await toolApi.updateSettings({
+        scraper_priorities: {
+          ...props.settings.scraper_priorities,
+          [dom]: fullOrder,
+        },
+      })
+      emit('settingsUpdated', nextSettings)
+    } catch {
+      // Non-fatal UI convenience sync
     }
   }
 }
@@ -212,13 +344,14 @@ async function runSearch(): Promise<void> {
   searching.value = true
   errorMsg.value = null
   candidates.value = []
-  activeSourceTab.value = 'all'
+  activeSourceTab.value = 'merged'
+  previewMode.value = 'merged'
   brokenCoverUrls.value = new Set()
-  selectedCandidate.value = null
-  previewDetail.value = null
+  selectedByProvider.value = {}
+  detailsByProvider.value = {}
 
   try {
-    const list = await toolApi.searchScrapers({
+    const agg = await toolApi.aggregateScrapers({
       target: targetKind.value,
       providers: enabledProviderIds.value,
       keyword: keyword.value.trim(),
@@ -228,10 +361,9 @@ async function runSearch(): Promise<void> {
       season: season.value.trim() ? Number.parseInt(season.value, 10) : undefined,
       episode: episode.value.trim() ? Number.parseInt(episode.value, 10) : undefined,
     })
-    candidates.value = list
-    if (list.length > 0) {
-      await selectCandidate(list[0]!)
-    }
+    candidates.value = agg.candidates
+    selectedByProvider.value = agg.selected_by_provider
+    detailsByProvider.value = agg.details_by_provider
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -239,21 +371,36 @@ async function runSearch(): Promise<void> {
   }
 }
 
-async function selectCandidate(c: ScrapeCandidate): Promise<void> {
-  selectedCandidate.value = c
-  loadingDetail.value = true
+function switchSourceTab(tabId: string): void {
+  activeSourceTab.value = tabId
+  if (tabId === 'merged') {
+    previewMode.value = 'merged'
+  }
+}
+
+async function selectCandidateForProvider(cand: ScrapeCandidate): Promise<void> {
+  selectedByProvider.value = {
+    ...selectedByProvider.value,
+    [cand.provider_id]: cand,
+  }
+  loadingProviderId.value = cand.provider_id
   errorMsg.value = null
   try {
-    previewDetail.value = await toolApi.getScraperDetail(c.provider_id, c.external_id, c.target)
+    const detail = await toolApi.getScraperDetail(cand.provider_id, cand.external_id, cand.target)
+    detailsByProvider.value = {
+      ...detailsByProvider.value,
+      [cand.provider_id]: detail,
+    }
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loadingDetail.value = false
+    loadingProviderId.value = null
   }
 }
 
 async function applyMetadata(): Promise<void> {
-  if (!props.detail || !previewDetail.value || applying.value) return
+  const targetMeta = effectiveView.value?.metadata
+  if (!props.detail || !targetMeta || applying.value) return
   applying.value = true
   errorMsg.value = null
   try {
@@ -261,7 +408,7 @@ async function applyMetadata(): Promise<void> {
       props.detail.entry.root_id,
       props.detail.entry.rel_path,
       props.detail.entry.media_kind,
-      previewDetail.value,
+      targetMeta,
       applyCover.value,
       writeSidecarLrc.value,
     )
@@ -283,7 +430,7 @@ async function applyMetadata(): Promise<void> {
       @click.self="emit('close')"
     >
       <div
-        class="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
+        class="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
       >
         <!-- Header -->
         <div
@@ -292,7 +439,7 @@ async function applyMetadata(): Promise<void> {
           <div class="min-w-0">
             <div class="flex items-center gap-2">
               <LuSparkles class="h-4 w-4 text-[var(--ctp-accent)]" />
-              <h2 class="text-sm font-bold text-[var(--ctp-text)]">在线刮削元信息与封面</h2>
+              <h2 class="text-sm font-bold text-[var(--ctp-text)]">多源优先级互补在线刮削</h2>
             </div>
             <p class="mt-0.5 truncate text-xs text-[var(--ctp-subtext0)]">
               目标文件：{{ detail.entry.file_name }}
@@ -307,8 +454,10 @@ async function applyMetadata(): Promise<void> {
           </button>
         </div>
 
-        <!-- Target Tabs + Dynamic Provider Pills + Query Bar -->
-        <div class="shrink-0 space-y-3 border-b border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/40 px-5 py-3.5">
+        <!-- Target Tabs + Ordered Provider Pills + Query Bar -->
+        <div
+          class="shrink-0 space-y-3 border-b border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/40 px-5 py-3.5"
+        >
           <div class="flex flex-wrap items-center justify-between gap-2">
             <!-- Target Selector -->
             <div class="flex flex-wrap items-center gap-1 rounded-xl bg-[var(--ctp-mantle)] p-1">
@@ -328,9 +477,9 @@ async function applyMetadata(): Promise<void> {
               </button>
             </div>
 
-            <!-- Dynamic Pluggable Providers -->
+            <!-- Priority-Ordered Provider Toggle Pills -->
             <div class="flex flex-wrap items-center gap-1.5">
-              <span class="text-[11px] text-[var(--ctp-subtext0)]">刮削源：</span>
+              <span class="text-[11px] text-[var(--ctp-subtext0)]">优先级源：</span>
               <button
                 v-for="prov in providers"
                 :key="prov.id"
@@ -346,10 +495,12 @@ async function applyMetadata(): Promise<void> {
                 "
                 @click="toggleProvider(prov)"
               >
-                <LuCheck
+                <span
                   v-if="prov.configured && enabledProviderIds.includes(prov.id)"
-                  class="h-3 w-3"
-                />
+                  class="font-mono text-[10px] font-bold"
+                >
+                  #{{ enabledProviderIds.indexOf(prov.id) + 1 }}
+                </span>
                 <LuKey v-else-if="!prov.configured" class="h-3 w-3" />
                 <span>{{ prov.name }}</span>
                 <span v-if="!prov.configured" class="text-[10px]">(去配置)</span>
@@ -408,22 +559,23 @@ async function applyMetadata(): Promise<void> {
             >
               <LuRefreshCw v-if="searching" class="h-3.5 w-3.5 animate-spin" />
               <LuSearch v-else class="h-3.5 w-3.5" />
-              <span>搜索</span>
+              <span>搜索聚合</span>
             </button>
           </form>
         </div>
 
-        <!-- Split Results + Rich Preview -->
-        <div class="grid min-h-0 flex-1 grid-cols-1 divide-y divide-[var(--ctp-surface0)]/75 overflow-hidden md:grid-cols-12 md:divide-x md:divide-y-0">
-          <!-- Candidate List with Per-Source Tabs -->
+        <!-- Split Pane: Left Source / Priority Selector + Right Provenance-Annotated Preview -->
+        <div
+          class="grid min-h-0 flex-1 grid-cols-1 divide-y divide-[var(--ctp-surface0)]/75 overflow-hidden md:grid-cols-12 md:divide-x md:divide-y-0"
+        >
+          <!-- LEFT COLUMN -->
           <div class="flex min-h-0 flex-col overflow-hidden md:col-span-5">
-            <!-- Source Differentiation Tabs (全部 / 源1 / 源2 ...) -->
+            <!-- Tabs: ✦ 多源聚合 | 源1 (n) | 源2 (n) ... -->
             <div
-              v-if="sourceResultTabs.length > 2 || candidates.length > 0"
               class="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-[var(--ctp-surface0)]/65 bg-[var(--ctp-mantle)]/30 px-3 py-2"
             >
               <button
-                v-for="stab in sourceResultTabs"
+                v-for="stab in sourceTabs"
                 :key="stab.id"
                 type="button"
                 class="inline-flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
@@ -450,31 +602,116 @@ async function applyMetadata(): Promise<void> {
 
             <div class="flex-1 overflow-y-auto p-3">
               <div v-if="searching" class="py-12 text-center text-xs text-[var(--ctp-subtext0)]">
-                正在并发检索已启用的刮削源…
+                正在并发检索各优先级刮削源并合成缺失字段…
               </div>
+
+              <!-- 1. Default `✦ 多源聚合` Queue View -->
+              <div v-else-if="activeSourceTab === 'merged'" class="space-y-2">
+                <div class="px-1 text-[11px] text-[var(--ctp-subtext0)]">
+                  按下方优先级顺序互补填充，可上下调整优先级或点入单源更换匹配条目：
+                </div>
+
+                <div
+                  v-for="(brief, idx) in orderedActiveBriefs"
+                  :key="brief.id"
+                  class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-2.5"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-1.5">
+                      <span
+                        class="flex h-5 w-5 items-center justify-center rounded-md bg-[var(--ctp-accent-soft)] font-mono text-[10px] font-bold text-[var(--ctp-accent)]"
+                      >
+                        #{{ idx + 1 }}
+                      </span>
+                      <span class="text-xs font-bold text-[var(--ctp-text)]">{{ brief.name }}</span>
+                    </div>
+
+                    <div class="flex items-center gap-1">
+                      <button
+                        type="button"
+                        :disabled="idx === 0"
+                        class="flex h-6 w-6 items-center justify-center rounded-md text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-accent)] disabled:opacity-30"
+                        title="上移优先级"
+                        @click="moveActiveProviderOrder(idx, -1)"
+                      >
+                        <LuArrowUp class="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        :disabled="idx === orderedActiveBriefs.length - 1"
+                        class="flex h-6 w-6 items-center justify-center rounded-md text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-accent)] disabled:opacity-30"
+                        title="下移优先级"
+                        @click="moveActiveProviderOrder(idx, 1)"
+                      >
+                        <LuArrowDown class="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        v-if="candidatesCountFor(brief.id) > 0"
+                        type="button"
+                        class="inline-flex items-center gap-0.5 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)]"
+                        @click="switchSourceTab(brief.id)"
+                      >
+                        <span>换选 ({{ candidatesCountFor(brief.id) }})</span>
+                        <LuChevronRight class="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="selectedByProvider[brief.id]"
+                    class="mt-2 flex items-center gap-2.5 rounded-xl bg-[var(--ctp-canvas)]/80 p-2"
+                  >
+                    <div
+                      class="flex h-11 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-[var(--ctp-mantle)]"
+                    >
+                      <img
+                        v-if="isCoverUsable(selectedByProvider[brief.id]?.cover_url)"
+                        :src="selectedByProvider[brief.id]!.cover_url!"
+                        alt=""
+                        class="h-full w-full object-cover"
+                        loading="lazy"
+                        @error="markCoverBroken(selectedByProvider[brief.id]?.cover_url)"
+                      />
+                      <LuImage v-else class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]/55" />
+                    </div>
+                    <div class="min-w-0 flex-1">
+                      <div class="truncate text-xs font-semibold text-[var(--ctp-text)]">
+                        {{ selectedByProvider[brief.id]!.title }}
+                      </div>
+                      <div class="truncate text-[11px] text-[var(--ctp-subtext0)]">
+                        {{ selectedByProvider[brief.id]!.subtitle || '已参与聚合' }}
+                      </div>
+                    </div>
+                    <LuRefreshCw
+                      v-if="loadingProviderId === brief.id"
+                      class="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--ctp-accent)]"
+                    />
+                  </div>
+                  <div v-else class="mt-1.5 px-1 text-[11px] text-[var(--ctp-subtext0)]">
+                    未检索到匹配条目
+                  </div>
+                </div>
+              </div>
+
+              <!-- 2. Individual Provider Candidate List -->
               <div
-                v-else-if="displayedCandidates.length === 0"
+                v-else-if="candidatesForActiveSource.length === 0"
                 class="py-12 text-center text-xs text-[var(--ctp-subtext0)]"
               >
-                {{
-                  candidates.length > 0
-                    ? '该刮削源下暂无匹配条目，可切换其他源查看'
-                    : '暂无候选结果，请调整关键词或配置对应刮削源密钥后重试'
-                }}
+                该刮削源下暂无匹配条目
               </div>
               <div v-else class="space-y-1.5">
                 <button
-                  v-for="cand in displayedCandidates"
+                  v-for="cand in candidatesForActiveSource"
                   :key="`${cand.provider_id}-${cand.external_id}`"
                   type="button"
                   class="flex w-full items-start gap-3 rounded-2xl p-2.5 text-left transition"
                   :class="
-                    selectedCandidate?.provider_id === cand.provider_id &&
-                    selectedCandidate?.external_id === cand.external_id
+                    selectedByProvider[cand.provider_id]?.external_id === cand.external_id
                       ? 'bg-[var(--ctp-accent-soft)] ring-1 ring-[var(--ctp-accent)]'
                       : 'hover:bg-[var(--ctp-surface0)]/55'
                   "
-                  @click="selectCandidate(cand)"
+                  @click="selectCandidateForProvider(cand)"
                 >
                   <div
                     class="flex h-14 w-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[var(--ctp-mantle)]"
@@ -492,9 +729,11 @@ async function applyMetadata(): Promise<void> {
                   <div class="min-w-0 flex-1">
                     <div class="flex items-center gap-1.5">
                       <span
-                        class="rounded-md bg-[var(--ctp-mantle)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+                        v-if="selectedByProvider[cand.provider_id]?.external_id === cand.external_id"
+                        class="inline-flex items-center gap-0.5 rounded-md bg-[var(--ctp-accent)] px-1.5 py-0.2 text-[10px] font-semibold text-[var(--ctp-on-accent)]"
                       >
-                        {{ cand.provider_name }}
+                        <LuCheck class="h-2.5 w-2.5" />
+                        当前采用
                       </span>
                       <span v-if="cand.year" class="text-[10px] text-[var(--ctp-subtext0)]">
                         {{ cand.year }}
@@ -515,7 +754,7 @@ async function applyMetadata(): Promise<void> {
             </div>
           </div>
 
-          <!-- Detail Preview -->
+          <!-- RIGHT COLUMN: Provenance-Annotated Merged Preview -->
           <div class="overflow-y-auto p-4 md:col-span-7">
             <div
               v-if="errorMsg"
@@ -524,85 +763,356 @@ async function applyMetadata(): Promise<void> {
               {{ errorMsg }}
             </div>
 
-            <div v-if="loadingDetail" class="py-16 text-center text-xs text-[var(--ctp-subtext0)]">
-              正在拉取完整条目详情…
-            </div>
-            <div v-else-if="previewDetail" class="space-y-4">
-              <div class="flex gap-4">
-                <div
-                  v-if="isCoverUsable(previewDetail.cover_url)"
-                  class="h-36 w-26 shrink-0 overflow-hidden rounded-xl bg-[var(--ctp-mantle)] shadow-md"
+            <!-- Preview Mode Header -->
+            <div
+              v-if="effectiveView"
+              class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--ctp-mantle)]/55 px-3 py-2"
+            >
+              <div class="flex items-center gap-1.5 text-xs font-semibold text-[var(--ctp-text)]">
+                <LuLayers class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                <span>
+                  {{
+                    activeSourceTab !== 'merged' && previewMode === 'single'
+                      ? `单源原始信息（${activeSingleBadge?.provider_name}）`
+                      : '多源优先级互补合成结果（每项右侧标注实际来源）'
+                  }}
+                </span>
+              </div>
+
+              <div
+                v-if="activeSourceTab !== 'merged'"
+                class="flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] p-0.5"
+              >
+                <button
+                  type="button"
+                  class="rounded-md px-2 py-0.5 text-[11px] font-semibold transition"
+                  :class="
+                    previewMode === 'merged'
+                      ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                      : 'text-[var(--ctp-subtext1)]'
+                  "
+                  @click="previewMode = 'merged'"
                 >
-                  <img
-                    :src="previewDetail.cover_url"
-                    alt=""
-                    class="h-full w-full object-cover"
-                    @error="markCoverBroken(previewDetail.cover_url)"
-                  />
-                </div>
-                <div class="min-w-0 flex-1 space-y-1.5">
-                  <div class="text-base font-bold text-[var(--ctp-text)]">
-                    {{ previewDetail.title || selectedCandidate?.title }}
-                  </div>
+                  看聚合后
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md px-2 py-0.5 text-[11px] font-semibold transition"
+                  :class="
+                    previewMode === 'single'
+                      ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                      : 'text-[var(--ctp-subtext1)]'
+                  "
+                  @click="previewMode = 'single'"
+                >
+                  仅看此源
+                </button>
+              </div>
+            </div>
+
+            <div v-if="searching" class="py-16 text-center text-xs text-[var(--ctp-subtext0)]">
+              正在合成多源元信息…
+            </div>
+            <div v-else-if="effectiveView" class="space-y-3.5">
+              <!-- Top Block: Cover (with Source Badge) + Core Annotated Fields -->
+              <div class="flex flex-col gap-4 sm:flex-row">
+                <div class="flex shrink-0 flex-col items-center gap-1.5">
                   <div
-                    v-if="previewDetail.original_title && previewDetail.original_title !== previewDetail.title"
-                    class="text-xs text-[var(--ctp-subtext0)]"
+                    class="flex h-38 w-28 items-center justify-center overflow-hidden rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] shadow-md"
                   >
-                    原名：{{ previewDetail.original_title }}
-                  </div>
-                  <div v-if="previewDetail.series_or_album" class="text-xs text-[var(--ctp-subtext1)]">
-                    系列 / 专辑：{{ previewDetail.series_or_album }}
-                    <template v-if="previewDetail.disc_or_season_number || previewDetail.track_or_episode_number">
-                      · #{{ previewDetail.disc_or_season_number ?? 1 }}-{{ previewDetail.track_or_episode_number ?? 1 }}
-                    </template>
-                  </div>
-                  <div v-if="previewDetail.creators.length > 0" class="text-xs text-[var(--ctp-subtext1)]">
-                    创作者：{{ previewDetail.creators.join(' / ') }}
-                  </div>
-                  <div
-                    v-if="previewDetail.illustrators_or_directors.length > 0"
-                    class="text-xs text-[var(--ctp-subtext1)]"
-                  >
-                    导演 / 作画：{{ previewDetail.illustrators_or_directors.join(' / ') }}
-                  </div>
-                  <div v-if="previewDetail.publisher_or_studio" class="text-xs text-[var(--ctp-subtext0)]">
-                    出品 / 出版社：{{ previewDetail.publisher_or_studio }}
-                    <template v-if="previewDetail.year"> · {{ previewDetail.year }}</template>
-                    <template v-if="previewDetail.rating"> · ★ {{ previewDetail.rating.toFixed(1) }}</template>
-                  </div>
-                  <div class="flex flex-wrap gap-1 pt-1">
-                    <span
-                      v-for="tag in [...previewDetail.genres, ...previewDetail.tags].slice(0, 8)"
-                      :key="tag"
-                      class="rounded-full bg-[var(--ctp-mantle)] px-2 py-0.5 text-[10px] text-[var(--ctp-subtext1)]"
+                    <img
+                      v-if="isCoverUsable(effectiveView.metadata.cover_url)"
+                      :src="effectiveView.metadata.cover_url"
+                      alt=""
+                      class="h-full w-full object-cover"
+                      @error="markCoverBroken(effectiveView.metadata.cover_url)"
+                    />
+                    <div
+                      v-else
+                      class="flex flex-col items-center gap-1 text-[var(--ctp-subtext0)]"
                     >
-                      {{ tag }}
+                      <LuImage class="h-6 w-6 opacity-50" />
+                      <span class="text-[10px]">暂无封面</span>
+                    </div>
+                  </div>
+                  <span
+                    v-if="isCoverUsable(effectiveView.metadata.cover_url) && badgeName('cover_url')"
+                    class="rounded-full bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+                  >
+                    封面 · {{ badgeName('cover_url') }}
+                  </span>
+                  <span
+                    v-if="isCoverUsable(effectiveView.metadata.backdrop_url) && badgeName('backdrop_url')"
+                    class="rounded-full bg-[var(--ctp-mantle)] px-2 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)]"
+                  >
+                    背景图 · {{ badgeName('backdrop_url') }}
+                  </span>
+                </div>
+
+                <!-- Field-by-Field Provenance List -->
+                <div class="min-w-0 flex-1 space-y-2 rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/35 p-3">
+                  <!-- Title -->
+                  <div
+                    v-if="effectiveView.metadata.title"
+                    class="flex items-start justify-between gap-2"
+                  >
+                    <div class="min-w-0">
+                      <span class="text-[10px] text-[var(--ctp-subtext0)]">标题</span>
+                      <div class="text-sm font-bold text-[var(--ctp-text)]">
+                        {{ effectiveView.metadata.title }}
+                      </div>
+                    </div>
+                    <span
+                      v-if="badgeName('title')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-accent-soft)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('title') }}
+                    </span>
+                  </div>
+
+                  <!-- Original Title -->
+                  <div
+                    v-if="
+                      effectiveView.metadata.original_title &&
+                      effectiveView.metadata.original_title !== effectiveView.metadata.title
+                    "
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span class="truncate text-[var(--ctp-subtext1)]">
+                      <b class="font-medium text-[var(--ctp-subtext0)]">原名：</b>
+                      {{ effectiveView.metadata.original_title }}
+                    </span>
+                    <span
+                      v-if="badgeName('original_title')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('original_title') }}
+                    </span>
+                  </div>
+
+                  <!-- Series / Album -->
+                  <div
+                    v-if="effectiveView.metadata.series_or_album"
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span class="truncate text-[var(--ctp-subtext1)]">
+                      <b class="font-medium text-[var(--ctp-subtext0)]">系列 / 专辑：</b>
+                      {{ effectiveView.metadata.series_or_album }}
+                    </span>
+                    <span
+                      v-if="badgeName('series_or_album')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('series_or_album') }}
+                    </span>
+                  </div>
+
+                  <!-- Track / Episode Number -->
+                  <div
+                    v-if="
+                      effectiveView.metadata.track_or_episode_number ||
+                      effectiveView.metadata.disc_or_season_number
+                    "
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span class="text-[var(--ctp-subtext1)]">
+                      <b class="font-medium text-[var(--ctp-subtext0)]">季碟 / 序号：</b>
+                      #{{ effectiveView.metadata.disc_or_season_number ?? 1 }} -
+                      {{ effectiveView.metadata.track_or_episode_number ?? 1 }}
+                    </span>
+                    <span
+                      v-if="
+                        badgeName('track_or_episode_number') ||
+                        badgeName('disc_or_season_number')
+                      "
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{
+                        badgeName('track_or_episode_number') ||
+                        badgeName('disc_or_season_number')
+                      }}
+                    </span>
+                  </div>
+
+                  <!-- Creators -->
+                  <div
+                    v-if="effectiveView.metadata.creators.length > 0"
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span class="truncate text-[var(--ctp-subtext1)]">
+                      <b class="font-medium text-[var(--ctp-subtext0)]">创作者：</b>
+                      {{ effectiveView.metadata.creators.join(' / ') }}
+                    </span>
+                    <span
+                      v-if="badgeName('creators')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('creators') }}
+                    </span>
+                  </div>
+
+                  <!-- Directors / Pencillers -->
+                  <div
+                    v-if="effectiveView.metadata.illustrators_or_directors.length > 0"
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span class="truncate text-[var(--ctp-subtext1)]">
+                      <b class="font-medium text-[var(--ctp-subtext0)]">导演 / 作画：</b>
+                      {{ effectiveView.metadata.illustrators_or_directors.join(' / ') }}
+                    </span>
+                    <span
+                      v-if="badgeName('illustrators_or_directors')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('illustrators_or_directors') }}
+                    </span>
+                  </div>
+
+                  <!-- Cast -->
+                  <div
+                    v-if="effectiveView.metadata.cast.length > 0"
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span class="truncate text-[var(--ctp-subtext1)]">
+                      <b class="font-medium text-[var(--ctp-subtext0)]">主演 / 声优：</b>
+                      {{ effectiveView.metadata.cast.slice(0, 6).join(' / ') }}
+                    </span>
+                    <span
+                      v-if="badgeName('cast')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('cast') }}
+                    </span>
+                  </div>
+
+                  <!-- Publisher / Studio -->
+                  <div
+                    v-if="effectiveView.metadata.publisher_or_studio"
+                    class="flex items-center justify-between gap-2 text-xs"
+                  >
+                    <span class="truncate text-[var(--ctp-subtext1)]">
+                      <b class="font-medium text-[var(--ctp-subtext0)]">出品 / 出版社：</b>
+                      {{ effectiveView.metadata.publisher_or_studio }}
+                    </span>
+                    <span
+                      v-if="badgeName('publisher_or_studio')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('publisher_or_studio') }}
+                    </span>
+                  </div>
+
+                  <!-- Year / Rating / ISBN -->
+                  <div class="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
+                    <span
+                      v-if="effectiveView.metadata.year"
+                      class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px]"
+                    >
+                      <span>年份 {{ effectiveView.metadata.year }}</span>
+                      <span v-if="badgeName('year')" class="text-[10px] text-[var(--ctp-accent)]">
+                        · {{ badgeName('year') }}
+                      </span>
+                    </span>
+                    <span
+                      v-if="effectiveView.metadata.rating"
+                      class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px]"
+                    >
+                      <span>★ {{ effectiveView.metadata.rating.toFixed(1) }}</span>
+                      <span v-if="badgeName('rating')" class="text-[10px] text-[var(--ctp-accent)]">
+                        · {{ badgeName('rating') }}
+                      </span>
+                    </span>
+                    <span
+                      v-if="effectiveView.metadata.isbn"
+                      class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 font-mono text-[11px]"
+                    >
+                      <span>ISBN {{ effectiveView.metadata.isbn }}</span>
+                      <span v-if="badgeName('isbn')" class="font-sans text-[10px] text-[var(--ctp-accent)]">
+                        · {{ badgeName('isbn') }}
+                      </span>
+                    </span>
+                  </div>
+
+                  <!-- Genres & Tags -->
+                  <div
+                    v-if="
+                      effectiveView.metadata.genres.length > 0 ||
+                      effectiveView.metadata.tags.length > 0
+                    "
+                    class="flex items-start justify-between gap-2 pt-1"
+                  >
+                    <div class="flex flex-wrap gap-1">
+                      <span
+                        v-for="tag in [
+                          ...effectiveView.metadata.genres,
+                          ...effectiveView.metadata.tags,
+                        ].slice(0, 8)"
+                        :key="tag"
+                        class="rounded-full bg-[var(--ctp-canvas)] px-2 py-0.5 text-[10px] text-[var(--ctp-subtext1)]"
+                      >
+                        {{ tag }}
+                      </span>
+                    </div>
+                    <span
+                      v-if="badgeName('genres') || badgeName('tags')"
+                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
+                    >
+                      {{ badgeName('genres') || badgeName('tags') }}
                     </span>
                   </div>
                 </div>
               </div>
 
-              <div v-if="previewDetail.summary" class="rounded-2xl bg-[var(--ctp-mantle)]/65 p-3">
-                <div class="mb-1 text-[11px] font-semibold text-[var(--ctp-subtext0)]">内容简介</div>
-                <p class="whitespace-pre-line text-xs leading-relaxed text-[var(--ctp-text)]">
-                  {{ previewDetail.summary }}
+              <!-- Summary Block with Provenance Badge -->
+              <div
+                v-if="effectiveView.metadata.summary"
+                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/55 p-3"
+              >
+                <div class="mb-1.5 flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">内容简介</span>
+                  <span
+                    v-if="badgeName('summary')"
+                    class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+                  >
+                    {{ badgeName('summary') }}
+                  </span>
+                </div>
+                <p class="text-xs leading-relaxed whitespace-pre-line text-[var(--ctp-text)]">
+                  {{ effectiveView.metadata.summary }}
                 </p>
               </div>
 
+              <!-- Lyrics Block with Provenance Badge -->
               <div
-                v-if="previewDetail.synced_lyrics || previewDetail.plain_lyrics"
-                class="rounded-2xl bg-[var(--ctp-mantle)]/65 p-3"
+                v-if="
+                  effectiveView.metadata.synced_lyrics || effectiveView.metadata.plain_lyrics
+                "
+                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/55 p-3"
               >
-                <div class="mb-1 flex items-center justify-between text-[11px] font-semibold text-[var(--ctp-subtext0)]">
-                  <span>歌词预览 ({{ previewDetail.synced_lyrics ? 'LRC 时间轴同步歌词' : '纯文本歌词' }})</span>
+                <div class="mb-1.5 flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
+                    歌词预览 ({{
+                      effectiveView.metadata.synced_lyrics ? 'LRC 时间轴同步歌词' : '纯文本歌词'
+                    }})
+                  </span>
+                  <span
+                    v-if="badgeName('lyrics')"
+                    class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+                  >
+                    {{ badgeName('lyrics') }}
+                  </span>
                 </div>
                 <pre
-                  class="max-h-52 overflow-y-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[var(--ctp-text)]"
-                >{{ previewDetail.synced_lyrics || previewDetail.plain_lyrics }}</pre>
+                  class="max-h-48 overflow-y-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-[var(--ctp-text)]"
+                >{{ effectiveView.metadata.synced_lyrics || effectiveView.metadata.plain_lyrics }}</pre>
               </div>
             </div>
-            <div v-else class="flex h-full items-center justify-center text-xs text-[var(--ctp-subtext0)]">
-              选择左侧搜索结果以预览刮削详情
+
+            <div
+              v-else
+              class="flex h-full items-center justify-center py-16 text-xs text-[var(--ctp-subtext0)]"
+            >
+              暂无可用刮削数据，请调整关键词或启用更多刮削源后重试
             </div>
           </div>
         </div>
@@ -613,14 +1123,16 @@ async function applyMetadata(): Promise<void> {
         >
           <div class="flex flex-wrap items-center gap-4">
             <AppCheckbox
-              v-if="previewDetail?.cover_url || previewDetail?.backdrop_url"
+              v-if="
+                effectiveView?.metadata.cover_url || effectiveView?.metadata.backdrop_url
+              "
               v-model="applyCover"
               label="同时下载并写入封面 / 海报图片"
             />
             <AppCheckbox
               v-if="
                 detail.entry.media_kind === 'music' &&
-                (previewDetail?.synced_lyrics || previewDetail?.plain_lyrics)
+                (effectiveView?.metadata.synced_lyrics || effectiveView?.metadata.plain_lyrics)
               "
               v-model="writeSidecarLrc"
               label="同步生成同名外挂 .lrc 歌词文件"
@@ -637,13 +1149,13 @@ async function applyMetadata(): Promise<void> {
             </button>
             <button
               type="button"
-              :disabled="!previewDetail || applying"
+              :disabled="!effectiveView || applying"
               class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
               @click="applyMetadata"
             >
               <LuRefreshCw v-if="applying" class="h-3.5 w-3.5 animate-spin" />
               <LuExternalLink v-else class="h-3.5 w-3.5" />
-              <span>{{ applying ? '正在写入原文件…' : '应用并写入原文件' }}</span>
+              <span>{{ applying ? '正在写入原文件…' : '应用聚合结果并写入原文件' }}</span>
             </button>
           </div>
         </div>

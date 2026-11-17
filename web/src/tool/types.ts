@@ -31,6 +31,13 @@ export interface RenameTemplatesDto {
   video_episode: string
 }
 
+export interface ScraperPrioritiesDto {
+  book: string[]
+  comic: string[]
+  music: string[]
+  video: string[]
+}
+
 export interface PublicSettingsDto {
   roots: ManagedRootDto[]
   has_tmdb_api_key: boolean
@@ -39,6 +46,7 @@ export interface PublicSettingsDto {
   bangumi_token_masked: string | null
   http_proxy: string | null
   rename_templates: RenameTemplatesDto
+  scraper_priorities: ScraperPrioritiesDto
   default_scrape_locale: string
 }
 
@@ -47,6 +55,7 @@ export interface UpdateToolSettingsInput {
   bangumi_access_token?: string
   http_proxy?: string
   rename_templates?: RenameTemplatesDto
+  scraper_priorities?: ScraperPrioritiesDto
   default_scrape_locale?: string
 }
 
@@ -342,4 +351,28 @@ export interface ScrapedMetadata {
   backdrop_url: string | null
   synced_lyrics: string | null
   plain_lyrics: string | null
+  external_ids?: Record<string, string>
+}
+
+export interface FieldSourceBadge {
+  provider_id: string
+  provider_name: string
+}
+
+export interface MergedScrapedResult {
+  metadata: ScrapedMetadata
+  field_sources: Record<string, FieldSourceBadge>
+}
+
+export interface ProviderBriefDto {
+  id: string
+  name: string
+}
+
+export interface AggregateScrapeResponse {
+  provider_order: ProviderBriefDto[]
+  candidates: ScrapeCandidate[]
+  selected_by_provider: Record<string, ScrapeCandidate>
+  details_by_provider: Record<string, ScrapedMetadata>
+  merged: MergedScrapedResult
 }

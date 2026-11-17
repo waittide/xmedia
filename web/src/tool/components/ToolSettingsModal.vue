@@ -2,6 +2,8 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  LuArrowDown,
+  LuArrowUp,
   LuCheck,
   LuFileSignature,
   LuFolderPlus,
@@ -33,7 +35,13 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { LocaleCode, MediaKind } from '@/types/api'
 import { toolApi } from '../api'
-import type { ManagedRootDto, PublicSettingsDto, RenameTemplatesDto } from '../types'
+import type {
+  ManagedRootDto,
+  ProviderStatusDto,
+  PublicSettingsDto,
+  RenameTemplatesDto,
+  ScraperPrioritiesDto,
+} from '../types'
 
 export type ToolSettingsTab = 'appearance' | 'roots' | 'scrapers' | 'templates'
 
@@ -64,6 +72,14 @@ const tmdbKeyInput = ref('')
 const bangumiTokenInput = ref('')
 const proxyInput = ref('')
 const scrapeLocale = ref('zh-CN')
+const priorityDomainTab = ref<MediaKind>('music')
+const allProviders = ref<ProviderStatusDto[]>([])
+const priorities = ref<ScraperPrioritiesDto>({
+  book: ['bangumi', 'openlibrary'],
+  comic: ['bangumi'],
+  music: ['itunes', 'musicbrainz', 'lrclib'],
+  video: ['tmdb', 'bangumi'],
+})
 
 const templates = ref<RenameTemplatesDto>({
   book: '{author} - {title}',
@@ -136,12 +152,56 @@ function onCustomAccentInput(raw: string): void {
   themeStore.setCustomAccentHex(clean)
 }
 
+function domainSupportsProvider(dom: MediaKind, p: ProviderStatusDto): boolean {
+  if (dom === 'book') return p.supported_targets.includes('book')
+  if (dom === 'comic') return p.supported_targets.includes('comic')
+  if (dom === 'music') {
+    return (
+      p.supported_targets.includes('music_track') ||
+      p.supported_targets.includes('music_album') ||
+      p.supported_targets.includes('lyrics')
+    )
+  }
+  return p.supported_targets.includes('movie') || p.supported_targets.includes('tv_show')
+}
+
+function normalizeDomainOrder(dom: MediaKind, currentIds: string[]): string[] {
+  const valid = allProviders.value.filter((p) => domainSupportsProvider(dom, p)).map((p) => p.id)
+  const ordered = currentIds.filter((id) => valid.includes(id))
+  for (const id of valid) {
+    if (!ordered.includes(id)) ordered.push(id)
+  }
+  return ordered
+}
+
+const orderedProvidersForPriorityTab = computed<ProviderStatusDto[]>(() => {
+  const dom = priorityDomainTab.value
+  const order = normalizeDomainOrder(dom, priorities.value[dom])
+  return order
+    .map((id) => allProviders.value.find((p) => p.id === id))
+    .filter((p): p is ProviderStatusDto => Boolean(p))
+})
+
+function moveProviderPriority(dom: MediaKind, idx: number, delta: -1 | 1): void {
+  const current = normalizeDomainOrder(dom, priorities.value[dom])
+  const targetIdx = idx + delta
+  if (targetIdx < 0 || targetIdx >= current.length) return
+  const copy = [...current]
+  const [moved] = copy.splice(idx, 1)
+  copy.splice(targetIdx, 0, moved!)
+  priorities.value = {
+    ...priorities.value,
+    [dom]: copy,
+  }
+}
+
 watch(
   () => [props.open, props.settings, props.initialTab, props.activeDomain] as const,
-  ([isOpen, s, tab, dom]) => {
+  async ([isOpen, s, tab, dom]) => {
     if (!isOpen) return
     if (tab) activeTab.value = tab
     newRootKind.value = dom
+    priorityDomainTab.value = dom
     errorMsg.value = null
     savedBanner.value = false
     tmdbKeyInput.value = ''
@@ -150,6 +210,17 @@ watch(
       proxyInput.value = s.http_proxy ?? ''
       scrapeLocale.value = s.default_scrape_locale || 'zh-CN'
       templates.value = { ...s.rename_templates }
+      priorities.value = {
+        book: [...s.scraper_priorities.book],
+        comic: [...s.scraper_priorities.comic],
+        music: [...s.scraper_priorities.music],
+        video: [...s.scraper_priorities.video],
+      }
+    }
+    try {
+      allProviders.value = await toolApi.listProviders()
+    } catch {
+      allProviders.value = []
     }
   },
 )
@@ -187,6 +258,12 @@ async function handleSaveSettings(): Promise<void> {
   errorMsg.value = null
   savedBanner.value = false
   try {
+    const normalizedPrio: ScraperPrioritiesDto = {
+      book: normalizeDomainOrder('book', priorities.value.book),
+      comic: normalizeDomainOrder('comic', priorities.value.comic),
+      music: normalizeDomainOrder('music', priorities.value.music),
+      video: normalizeDomainOrder('video', priorities.value.video),
+    }
     const next = await toolApi.updateSettings({
       tmdb_api_key: tmdbKeyInput.value.trim() ? tmdbKeyInput.value.trim() : undefined,
       bangumi_access_token: bangumiTokenInput.value.trim()
@@ -195,6 +272,7 @@ async function handleSaveSettings(): Promise<void> {
       http_proxy: proxyInput.value,
       default_scrape_locale: scrapeLocale.value,
       rename_templates: { ...templates.value },
+      scraper_priorities: normalizedPrio,
     })
     tmdbKeyInput.value = ''
     bangumiTokenInput.value = ''
@@ -769,8 +847,96 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             </div>
           </div>
 
-          <!-- TAB 3: SCRAPERS & PROXY -->
+          <!-- TAB 3: SCRAPERS, PRIORITY ORDER & PROXY -->
           <div v-else-if="activeTab === 'scrapers'" class="space-y-4">
+            <!-- Per-Domain Scraper Priority Reordering -->
+            <div class="space-y-3 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/40 p-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div class="text-xs font-bold text-[var(--ctp-text)]">
+                    多源互补刮削优先级顺序
+                  </div>
+                  <p class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
+                    排在前面的源优先填充信息；若某字段缺失（如无封面、无歌词、无 ISBN），自动依次从下方源补齐
+                  </p>
+                </div>
+
+                <div class="flex items-center gap-1 rounded-xl bg-[var(--ctp-canvas)] p-1 border border-[var(--ctp-surface0)]/75">
+                  <button
+                    v-for="d in (['book', 'comic', 'music', 'video'] as MediaKind[])"
+                    :key="`prio-${d}`"
+                    type="button"
+                    class="rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
+                    :class="
+                      priorityDomainTab === d
+                        ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                        : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                    "
+                    @click="priorityDomainTab = d"
+                  >
+                    {{ domainBadgeLabels[d] }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <div
+                  v-for="(prov, idx) in orderedProvidersForPriorityTab"
+                  :key="prov.id"
+                  class="flex items-center justify-between gap-3 rounded-xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-canvas)] px-3.5 py-2.5"
+                >
+                  <div class="flex min-w-0 items-center gap-2.5">
+                    <span
+                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-[var(--ctp-accent-soft)] font-mono text-[11px] font-bold text-[var(--ctp-accent)]"
+                    >
+                      {{ idx + 1 }}
+                    </span>
+                    <div class="min-w-0">
+                      <div class="flex items-center gap-2">
+                        <span class="text-xs font-semibold text-[var(--ctp-text)]">
+                          {{ prov.name }}
+                        </span>
+                        <span
+                          class="rounded-full px-2 py-0.2 text-[10px] font-medium"
+                          :class="
+                            prov.configured
+                              ? 'bg-emerald-500/15 text-emerald-500'
+                              : 'bg-amber-500/15 text-amber-500'
+                          "
+                        >
+                          {{ prov.configured ? '已就绪' : '需配置密钥' }}
+                        </span>
+                      </div>
+                      <div class="truncate text-[11px] text-[var(--ctp-subtext0)]">
+                        {{ prov.description }}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex shrink-0 items-center gap-1">
+                    <button
+                      type="button"
+                      :disabled="idx === 0"
+                      class="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-35"
+                      title="提高优先级"
+                      @click="moveProviderPriority(priorityDomainTab, idx, -1)"
+                    >
+                      <LuArrowUp class="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      :disabled="idx === orderedProvidersForPriorityTab.length - 1"
+                      class="flex h-7 w-7 items-center justify-center rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-35"
+                      title="降低优先级"
+                      @click="moveProviderPriority(priorityDomainTab, idx, 1)"
+                    >
+                      <LuArrowDown class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div class="space-y-3 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-4">
               <div class="flex items-center justify-between">
                 <div class="flex items-center gap-2 text-xs font-bold text-[var(--ctp-text)]">

@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
-use crate::domain::config::{ProviderCredentials, RenameTemplates, ToolSettings};
+use crate::domain::config::{
+    ProviderCredentials, RenameTemplates, ScraperPriorities, ToolSettings,
+};
 use crate::domain::ports::ConfigRepositoryPort;
 use crate::domain::workspace::{ManagedRoot, RootId};
 
@@ -18,6 +20,7 @@ pub struct PublicSettingsDto {
     pub bangumi_token_masked: Option<String>,
     pub http_proxy: Option<String>,
     pub rename_templates: RenameTemplates,
+    pub scraper_priorities: ScraperPriorities,
     pub default_scrape_locale: String,
 }
 
@@ -27,6 +30,7 @@ pub struct UpdateSettingsInput {
     pub bangumi_access_token: Option<String>,
     pub http_proxy: Option<String>,
     pub rename_templates: Option<RenameTemplates>,
+    pub scraper_priorities: Option<ScraperPriorities>,
     pub default_scrape_locale: Option<String>,
 }
 
@@ -112,6 +116,9 @@ impl ToolSettingsService {
         if let Some(tpl) = input.rename_templates {
             settings.rename_templates = tpl;
         }
+        if let Some(prio) = input.scraper_priorities {
+            settings.scraper_priorities = prio;
+        }
         if let Some(loc) = input.default_scrape_locale
             && !loc.trim().is_empty()
         {
@@ -134,6 +141,7 @@ impl ToolSettingsService {
             bangumi_token_masked: mask_secret(s.credentials.bangumi_access_token.as_deref()),
             http_proxy: s.credentials.http_proxy,
             rename_templates: s.rename_templates,
+            scraper_priorities: s.scraper_priorities,
             default_scrape_locale: s.default_scrape_locale,
         }
     }

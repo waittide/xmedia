@@ -1,5 +1,6 @@
 import type { MediaKind } from '@/types/api'
 import type {
+  AggregateScrapeResponse,
   DirectorySnapshot,
   ManagedRootDto,
   MediaFileDetail,
@@ -205,13 +206,23 @@ export const toolApi = {
     })
   },
 
-  listProviders(target?: ScrapeTargetKind): Promise<ProviderStatusDto[]> {
-    const q = target ? `?target=${encodeURIComponent(target)}` : ''
-    return toolRequest<ProviderStatusDto[]>(`/scrapers/providers${q}`)
+  listProviders(target?: ScrapeTargetKind, domain?: MediaKind): Promise<ProviderStatusDto[]> {
+    const params = new URLSearchParams()
+    if (target) params.set('target', target)
+    if (domain) params.set('domain', domain)
+    const qs = params.toString()
+    return toolRequest<ProviderStatusDto[]>(`/scrapers/providers${qs ? `?${qs}` : ''}`)
   },
 
   searchScrapers(query: ScrapeQuery): Promise<ScrapeCandidate[]> {
     return toolRequest<ScrapeCandidate[]>('/scrapers/search', {
+      method: 'POST',
+      body: JSON.stringify(query),
+    })
+  },
+
+  aggregateScrapers(query: ScrapeQuery): Promise<AggregateScrapeResponse> {
+    return toolRequest<AggregateScrapeResponse>('/scrapers/aggregate', {
       method: 'POST',
       body: JSON.stringify(query),
     })

@@ -19,7 +19,8 @@ use crate::domain::media::{
     DirectorySnapshot, MediaFileDetail, MediaMetadataPatch, RenamePlanItem,
 };
 use crate::domain::scraper::{
-    ProviderStatusDto, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
+    AggregateScrapeResponse, ProviderStatusDto, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind,
+    ScrapedMetadata,
 };
 use crate::domain::workspace::{ManagedRoot, RootId};
 use crate::http::ToolHttpState;
@@ -45,6 +46,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/files/rename/execute", post(execute_rename))
         .route("/scrapers/providers", get(list_scraper_providers))
         .route("/scrapers/search", post(search_scrapers))
+        .route("/scrapers/aggregate", post(aggregate_scrapers))
         .route("/scrapers/detail", get(get_scraper_detail))
         .route("/scrapers/apply", post(apply_scraped_metadata))
 }
@@ -342,6 +344,7 @@ async fn execute_rename(
 #[derive(Deserialize, Default)]
 struct ProvidersQuery {
     target: Option<ScrapeTargetKind>,
+    domain: Option<MediaKind>,
 }
 
 async fn list_scraper_providers(
@@ -349,7 +352,9 @@ async fn list_scraper_providers(
     State(state): State<ToolHttpState>,
     Query(q): Query<ProvidersQuery>,
 ) -> ApiResult<Json<Vec<ProviderStatusDto>>> {
-    Ok(Json(state.scraping.list_providers(q.target).await?))
+    Ok(Json(
+        state.scraping.list_providers(q.target, q.domain).await?,
+    ))
 }
 
 async fn search_scrapers(
@@ -358,6 +363,14 @@ async fn search_scrapers(
     Json(query): Json<ScrapeQuery>,
 ) -> ApiResult<Json<Vec<ScrapeCandidate>>> {
     Ok(Json(state.scraping.search(query).await?))
+}
+
+async fn aggregate_scrapers(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(query): Json<ScrapeQuery>,
+) -> ApiResult<Json<AggregateScrapeResponse>> {
+    Ok(Json(state.scraping.aggregate(query).await?))
 }
 
 #[derive(Deserialize)]

@@ -1077,9 +1077,11 @@ onBeforeUnmount(() => {
     <OnlineScrapeModal
       :open="scrapeModalOpen"
       :detail="activeDetail"
+      :settings="settings"
       @close="scrapeModalOpen = false"
       @applied="(d) => handleDetailUpdated(d, true)"
       @open-settings="scrapeModalOpen = false; openSettingsTab('scrapers')"
+      @settings-updated="handleSettingsUpdated"
     />
 
     <BatchRenameModal
