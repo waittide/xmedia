@@ -86,6 +86,14 @@ async function refreshProvidersForTarget(target: ScrapeTargetKind): Promise<void
   }
 }
 
+function stripChapterSuffix(raw: string): string {
+  return raw
+    .replace(/^(?:\[[^\]]*\]|\([^)]*\)|\s)+/, '')
+    .replace(/[\s_.-]*(?:第\s*\d+(?:\.\d+)?\s*[话話回章集卷册]|(?:vol|ch|chapter)\.?\s*\d+(?:\.\d+)?).*$/i, '')
+    .replace(/_/g, ' ')
+    .trim()
+}
+
 function seedFromDetail(d: MediaFileDetail): void {
   errorMsg.value = null
   candidates.value = []
@@ -105,7 +113,8 @@ function seedFromDetail(d: MediaFileDetail): void {
     episode.value = m.data.episode_number !== null ? String(m.data.episode_number) : ''
   } else if (m.kind === 'comic') {
     targetKind.value = 'comic'
-    keyword.value = m.data.series || m.data.title || d.entry.display_title
+    const fallbackClean = stripChapterSuffix(m.data.title || d.entry.display_title)
+    keyword.value = m.data.series || fallbackClean || m.data.title || d.entry.display_title
     artistOrAuthor.value = m.data.writers[0] ?? ''
   } else if (m.kind === 'book') {
     targetKind.value = 'book'

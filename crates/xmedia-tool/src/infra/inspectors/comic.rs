@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use quick_xml::Reader;
 use quick_xml::escape::escape;
 use quick_xml::events::Event;
+use regex::Regex;
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
@@ -202,6 +203,110 @@ fn render_comic_info_xml(meta: &ComicFileMeta) -> String {
     xml
 }
 
+const GENERIC_COMIC_FOLDER_NAMES: &[&str] = &[
+    "comic",
+    "comics",
+    "manga",
+    "mangas",
+    "book",
+    "books",
+    "video",
+    "videos",
+    "music",
+    "sample",
+    "samples",
+    "download",
+    "downloads",
+    "inbox",
+    "library",
+    "media",
+    "漫画",
+    "图书",
+    "书籍",
+];
+
+fn is_generic_comic_folder(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    GENERIC_COMIC_FOLDER_NAMES
+        .iter()
+        .any(|g| lower == *g || trimmed == *g)
+}
+
+/// Infers `(series, number, volume)` from a comic filename stem and non-generic parent folder.
+pub(crate) fn guess_comic_from_filename(
+    comic_path: &Path,
+) -> (Option<String>, Option<String>, Option<i32>) {
+    let raw_stem = comic_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .trim();
+
+    // Strip leading bracket tags such as `[Author]` or `(C103)`
+    let bracket_re = Regex::new(r"^(?:\[[^\]]*\]|\([^)]*\)|\s)+").expect("valid bracket regex");
+    let cleaned_stem = bracket_re.replace(raw_stem, "").trim().to_string();
+
+    let vol_re = Regex::new(r"(?i)(?:第\s*0*(\d+)\s*[卷册]|(?:\bvol\.?|\bv)\s*0*(\d+))")
+        .expect("valid vol regex");
+    let ch_re = Regex::new(
+        r"(?i)(?:第\s*0*(\d+(?:\.\d+)?)\s*[话話回章集]|(?:\bch(?:apter)?\.?|\bc|#)\s*0*(\d+(?:\.\d+)?))",
+    )
+    .expect("valid ch regex");
+
+    let mut cut_idx = cleaned_stem.len();
+    let mut volume: Option<i32> = None;
+    let mut number: Option<String> = None;
+
+    if let Some(m) = vol_re.captures(&cleaned_stem) {
+        let full = m.get(0).expect("full match");
+        cut_idx = cut_idx.min(full.start());
+        volume = m
+            .get(1)
+            .or_else(|| m.get(2))
+            .and_then(|g| g.as_str().parse::<i32>().ok());
+    }
+    if let Some(m) = ch_re.captures(&cleaned_stem) {
+        let full = m.get(0).expect("full match");
+        cut_idx = cut_idx.min(full.start());
+        number = m
+            .get(1)
+            .or_else(|| m.get(2))
+            .map(|g| g.as_str().to_string());
+    }
+
+    let prefix = cleaned_stem[..cut_idx]
+        .trim_matches([' ', '_', '-', '.', '·', '—'])
+        .replace('_', " ")
+        .trim()
+        .to_string();
+
+    let is_bare_digits = !prefix.is_empty() && prefix.chars().all(|c| c.is_ascii_digit());
+    if is_bare_digits && number.is_none() {
+        let trimmed_zero = prefix.trim_start_matches('0');
+        number = Some(if trimmed_zero.is_empty() {
+            "0".to_string()
+        } else {
+            trimmed_zero.to_string()
+        });
+    }
+
+    let series = if !prefix.is_empty() && !is_bare_digits {
+        Some(prefix)
+    } else {
+        comic_path
+            .parent()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().into_owned())
+            .filter(|dir_name| !is_generic_comic_folder(dir_name))
+    };
+
+    (series, number, volume)
+}
+
 fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
     let ext = path
         .extension()
@@ -242,13 +347,14 @@ fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
         }
     }
 
+    let (guessed_series, guessed_number, guessed_volume) = guess_comic_from_filename(path);
+
     let mut meta = ComicFileMeta {
         format: ext,
-        series: path
-            .parent()
-            .and_then(|p| p.file_name())
-            .map(|s| s.to_string_lossy().into_owned()),
+        series: guessed_series,
         title: Some(fallback_stem),
+        number: guessed_number,
+        volume: guessed_volume,
         reading_direction: "rtl".to_string(),
         page_count,
         has_comic_info_xml: comic_info_bytes.is_some(),
@@ -544,5 +650,40 @@ impl MediaInspectorPort for CbzComicInspector {
         })
         .await
         .map_err(|e| DomainError::Storage(format!("comic cover write failed: {e}")))?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::guess_comic_from_filename;
+
+    #[test]
+    fn comic_filename_inference_ignores_generic_parent_dir_and_parses_series_chapter() {
+        let (series, number, volume) =
+            guess_comic_from_filename(Path::new("/data/samples/comic/葬送的芙莉莲_第01话.cbz"));
+        assert_eq!(series.as_deref(), Some("葬送的芙莉莲"));
+        assert_eq!(number.as_deref(), Some("1"));
+        assert_eq!(volume, None);
+
+        let (series2, number2, volume2) = guess_comic_from_filename(Path::new(
+            "/data/samples/comic/[九井谅子] 迷宫饭 Vol.02 Ch.14.cbz",
+        ));
+        assert_eq!(series2.as_deref(), Some("迷宫饭"));
+        assert_eq!(volume2, Some(2));
+        assert_eq!(number2.as_deref(), Some("14"));
+
+        // Bare chapter filename inside a dedicated series directory uses that series directory
+        let (series3, number3, _) =
+            guess_comic_from_filename(Path::new("/data/manga/孤独摇滚/第05话.cbz"));
+        assert_eq!(series3.as_deref(), Some("孤独摇滚"));
+        assert_eq!(number3.as_deref(), Some("5"));
+
+        // Bare chapter filename directly inside generic `comic` bucket does NOT set series = "comic"
+        let (series4, number4, _) =
+            guess_comic_from_filename(Path::new("/data/samples/comic/003.cbz"));
+        assert_eq!(series4, None);
+        assert_eq!(number4.as_deref(), Some("3"));
     }
 }
