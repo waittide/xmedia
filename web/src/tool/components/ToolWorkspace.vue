@@ -354,6 +354,7 @@ function toggleSelectAllFiltered(): void {
 
 function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): void {
   activeDetail.value = updated
+  inspectingPath.value = updated.entry.rel_path
   if (bumpArt) {
     artworkVersion.value += 1
   }
@@ -365,6 +366,15 @@ function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): void {
       ),
     }
   }
+}
+
+async function handleScrapeApplied(updated: MediaFileDetail): Promise<void> {
+  const prevRel = activeDetail.value?.entry.rel_path
+  artworkVersion.value += 1
+  if (prevRel && prevRel !== updated.entry.rel_path && activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  }
+  handleDetailUpdated(updated, false)
 }
 
 async function openScrapeForEntry(entry?: MediaFileEntry): Promise<void> {
@@ -1079,7 +1089,7 @@ onBeforeUnmount(() => {
       :detail="activeDetail"
       :settings="settings"
       @close="scrapeModalOpen = false"
-      @applied="(d) => handleDetailUpdated(d, true)"
+      @applied="handleScrapeApplied"
       @open-settings="scrapeModalOpen = false; openSettingsTab('scrapers')"
       @settings-updated="handleSettingsUpdated"
     />

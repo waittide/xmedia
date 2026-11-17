@@ -35,15 +35,15 @@ const dominantKind = computed<MediaKind>(() => props.entries[0]?.media_kind ?? '
 const tokenChips = computed<string[]>(() => {
   const k = dominantKind.value
   if (k === 'music') {
-    return ['{track}', '{disc}', '{artist}', '{album}', '{title}', '{year}']
+    return ['{track:2}', '{disc}', '{artist}', '{album}', '{title}', '{year}']
   }
   if (k === 'video') {
-    return ['{show}', '{season}', '{episode}', '{title}', '{year}']
+    return ['{show}', '{season:2}', '{episode:2}', '{title}', '{year}', '{jellyfin_id}', '{tmdbid}']
   }
   if (k === 'comic') {
-    return ['{series}', '{number}', '{volume}', '{title}', '{year}']
+    return ['{series}', '{number:2}', '{volume:2}', '{title}', '{year}']
   }
-  return ['{author}', '{title}', '{year}']
+  return ['{author}', '{title}', '{year}', '{isbn}']
 })
 
 function defaultTemplateForEntries(): string {

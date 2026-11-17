@@ -345,6 +345,11 @@ export interface ScrapedMetadata {
   track_or_episode_number: number | null
   disc_or_season_number: number | null
   summary: string | null
+  show_summary?: string | null
+  season_title?: string | null
+  season_summary?: string | null
+  season_poster_url?: string | null
+  episode_still_url?: string | null
   genres: string[]
   tags: string[]
   cover_url: string | null

@@ -12,10 +12,9 @@ use crate::domain::media::{
     MediaMetadataPayload, RenamePlanItem,
 };
 use crate::domain::ports::MediaInspectorPort;
-use crate::domain::workspace::{
-    ManagedRoot, RootId, SandboxPath, path_to_slash, sanitize_filename_component,
-};
-use crate::infra::atomic_fs::find_companion_sidecars;
+use crate::domain::template::render_template_target;
+use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
+use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
 
 #[derive(Clone)]
 pub struct MediaWorkbenchService {
@@ -286,23 +285,17 @@ impl MediaWorkbenchService {
                     }
                 });
 
-            let rendered_stem = render_rename_stem(&tpl, &meta, &sandbox.abs_path);
-            let new_filename = if ext.is_empty() {
-                rendered_stem.clone()
-            } else {
-                format!("{rendered_stem}.{ext}")
-            };
-
             let parent_rel = sandbox
                 .rel_path
                 .parent()
                 .map(path_to_slash)
                 .unwrap_or_default();
-            let to_rel = if parent_rel.is_empty() {
-                new_filename
-            } else {
-                format!("{parent_rel}/{new_filename}")
-            };
+            let (to_rel, rendered_stem) =
+                render_template_target(&tpl, &parent_rel, &meta, &sandbox.abs_path, ext);
+            let target_parent_rel = Path::new(&to_rel)
+                .parent()
+                .map(path_to_slash)
+                .unwrap_or_default();
 
             let from_rel = sandbox.rel_slash_string();
             let unchanged = from_rel == to_rel;
@@ -323,10 +316,10 @@ impl MediaWorkbenchService {
                     if let Ok(comp_rel) = comp_abs.strip_prefix(&root.path) {
                         let comp_from = path_to_slash(comp_rel);
                         let next_comp_name = format!("{rendered_stem}{suffix}");
-                        let comp_to = if parent_rel.is_empty() {
+                        let comp_to = if target_parent_rel.is_empty() {
                             next_comp_name
                         } else {
-                            format!("{parent_rel}/{next_comp_name}")
+                            format!("{target_parent_rel}/{next_comp_name}")
                         };
                         companion_moves.push((comp_from, comp_to));
                     }
@@ -358,6 +351,7 @@ impl MediaWorkbenchService {
                 continue;
             }
             let src = root.resolve_existing(&item.from_rel_path)?;
+            let old_parent = src.abs_path.parent().map(Path::to_path_buf);
             let dst = root.resolve_target(&item.to_rel_path)?;
             if dst.exists() && dst != src.abs_path {
                 return Err(DomainError::Conflict(format!(
@@ -382,8 +376,15 @@ impl MediaWorkbenchService {
                     && let Ok(comp_dst) = root.resolve_target(comp_to)
                     && !comp_dst.exists()
                 {
+                    if let Some(p) = comp_dst.parent() {
+                        let _ = std::fs::create_dir_all(p);
+                    }
                     let _ = std::fs::rename(&comp_src.abs_path, &comp_dst);
                 }
+            }
+
+            if let Some(ref prev_dir) = old_parent {
+                cleanup_empty_parent_dirs(prev_dir, &root.path);
             }
         }
 
@@ -497,98 +498,4 @@ fn count_immediate_children(
         }
     }
     (dirs, files)
-}
-
-fn render_rename_stem(tpl: &str, meta: &MediaMetadataPayload, fallback_path: &Path) -> String {
-    let fallback_stem = fallback_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Untitled");
-
-    let mut out = tpl.to_string();
-    let mut replace_tok = |key: &str, val: &str| {
-        out = out.replace(key, &sanitize_filename_component(val));
-    };
-
-    match meta {
-        MediaMetadataPayload::Book(b) => {
-            let author = b
-                .authors
-                .first()
-                .map(String::as_str)
-                .unwrap_or("Unknown Author");
-            let year = b
-                .published_at
-                .as_deref()
-                .and_then(|d| d.get(..4))
-                .unwrap_or("");
-            replace_tok("{title}", &b.title);
-            replace_tok("{author}", author);
-            replace_tok("{year}", year);
-        }
-        MediaMetadataPayload::Comic(c) => {
-            replace_tok("{series}", c.series.as_deref().unwrap_or("Series"));
-            replace_tok("{title}", c.title.as_deref().unwrap_or(fallback_stem));
-            replace_tok("{number}", c.number.as_deref().unwrap_or("01"));
-            replace_tok(
-                "{volume}",
-                &c.volume.map(|v| format!("{v:02}")).unwrap_or_default(),
-            );
-            replace_tok("{year}", &c.year.map(|y| y.to_string()).unwrap_or_default());
-        }
-        MediaMetadataPayload::Music(m) => {
-            let track_str = m
-                .track_number
-                .map(|n| format!("{n:02}"))
-                .unwrap_or_else(|| "00".to_string());
-            let disc_str = m
-                .disc_number
-                .map(|n| format!("{n}"))
-                .unwrap_or_else(|| "1".to_string());
-            let artist = if m.artist.trim().is_empty() {
-                "Unknown Artist"
-            } else {
-                m.artist.as_str()
-            };
-            replace_tok("{track}", &track_str);
-            replace_tok("{disc}", &disc_str);
-            replace_tok("{artist}", artist);
-            replace_tok("{album}", &m.album);
-            replace_tok("{title}", &m.title);
-            replace_tok("{year}", &m.year.map(|y| y.to_string()).unwrap_or_default());
-        }
-        MediaMetadataPayload::Video(v) => {
-            replace_tok("{title}", &v.title);
-            replace_tok("{show}", v.show_title.as_deref().unwrap_or(&v.title));
-            replace_tok(
-                "{season}",
-                &v.season_number
-                    .map(|s| format!("{s:02}"))
-                    .unwrap_or_else(|| "01".to_string()),
-            );
-            replace_tok(
-                "{episode}",
-                &v.episode_number
-                    .map(|e| format!("{e:02}"))
-                    .unwrap_or_else(|| "01".to_string()),
-            );
-            replace_tok("{year}", &v.year.map(|y| y.to_string()).unwrap_or_default());
-        }
-    }
-
-    // Clean up empty parentheses like ` ()` or duplicate separators when optional fields are blank
-    let cleaned = out
-        .replace("()", "")
-        .replace("[]", "")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim_matches([' ', '-', '_'])
-        .to_string();
-
-    if cleaned.is_empty() {
-        sanitize_filename_component(fallback_stem)
-    } else {
-        cleaned
-    }
 }

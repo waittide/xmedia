@@ -81,13 +81,19 @@ const priorities = ref<ScraperPrioritiesDto>({
   video: ['tmdb', 'bangumi'],
 })
 
-const templates = ref<RenameTemplatesDto>({
+const DEFAULT_RENAME_TEMPLATES: RenameTemplatesDto = {
   book: '{author} - {title}',
-  comic: '{series} - #{number} {title}',
-  music: '{track} - {artist} - {title}',
-  video_movie: '{title} ({year})',
-  video_episode: '{show} - S{season}E{episode} - {title}',
-})
+  comic: '{series} - #{number:2} {title}',
+  music: '{track:2} - {artist} - {title}',
+  video_movie: '{title} ({year})/{title} ({year})',
+  video_episode: '{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}',
+}
+
+const templates = ref<RenameTemplatesDto>({ ...DEFAULT_RENAME_TEMPLATES })
+
+function resetTemplatesToDefaults(): void {
+  templates.value = { ...DEFAULT_RENAME_TEMPLATES }
+}
 
 const saving = ref(false)
 const savedBanner = ref(false)
@@ -1021,9 +1027,30 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
           </div>
 
           <!-- TAB 4: RENAME TEMPLATES -->
-          <div v-else class="space-y-3">
+          <div v-else class="space-y-3.5">
+            <div
+              class="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/40 p-3.5"
+            >
+              <div class="space-y-1 text-xs">
+                <div class="font-bold text-[var(--ctp-text)]">
+                  占位符与 Jellyfin 目录归档语法
+                </div>
+                <p class="leading-relaxed text-[11px] text-[var(--ctp-subtext0)]">
+                  使用 <code class="font-mono text-[var(--ctp-accent)]">{变量}</code> 引用字段，<code class="font-mono text-[var(--ctp-accent)]">{变量:2}</code> 指定数值补零位数（如 <code class="font-mono">01</code>），<code class="font-mono text-[var(--ctp-accent)]">/</code> 表示相对当前根目录建夹归档；包裹为空变量的括号或方括号（如 <code class="font-mono">({year})</code>、<code class="font-mono">[tmdbid-{tmdbid}]</code>）会自动消隐。
+                </p>
+              </div>
+              <button
+                type="button"
+                class="inline-flex shrink-0 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+                @click="resetTemplatesToDefaults"
+              >
+                <LuRotateCw class="h-3.5 w-3.5" />
+                <span>恢复默认模板</span>
+              </button>
+            </div>
+
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">图书模板 ({author}, {title}, {year})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">图书模板 ({author}, {title}, {year}, {isbn}, {publisher})</span>
               <input
                 v-model="templates.book"
                 type="text"
@@ -1031,7 +1058,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">漫画模板 ({series}, {number}, {volume}, {title}, {year})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">漫画模板 ({series}, {number:2}, {volume:2}, {title}, {year})</span>
               <input
                 v-model="templates.comic"
                 type="text"
@@ -1039,7 +1066,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">音乐模板 ({track}, {disc}, {artist}, {album}, {title}, {year})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">音乐模板 ({track:2}, {disc}, {artist}, {album}, {title}, {year})</span>
               <input
                 v-model="templates.music"
                 type="text"
@@ -1047,7 +1074,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">电影模板 ({title}, {year})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">电影 Jellyfin 归档模板 ({title}, {original_title}, {year}, {tmdbid}, {bangumiid}, {jellyfin_id})</span>
               <input
                 v-model="templates.video_movie"
                 type="text"
@@ -1055,7 +1082,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">剧集单集模板 ({show}, {season}, {episode}, {title}, {year})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">剧集 Jellyfin 归档模板 ({show}, {season:2}, {episode:2}, {title}, {year}, {tmdbid}, {bangumiid}, {jellyfin_id})</span>
               <input
                 v-model="templates.video_episode"
                 type="text"

@@ -397,7 +397,7 @@ mod tests {
             .preview_rename(
                 root_id,
                 &["raw_song.wav".to_string()],
-                Some("{track} - {artist} - {title}"),
+                Some("{track:2} - {artist} - {title}"),
                 Some(MediaKind::Music),
             )
             .await
@@ -545,26 +545,192 @@ mod tests {
             .unwrap();
         assert_eq!(
             video_plans[0].to_rel_path,
-            "Frieren - S01E01 - The Journey's End.mkv"
+            "Frieren (2023)/Season 01/Frieren - S01E01 - The Journey's End.mkv"
         );
         app.workbench
             .execute_rename(root_id, &video_plans)
             .await
             .unwrap();
+        let expected_ep_dir = media_root.join("Frieren (2023)").join("Season 01");
         assert!(
-            media_root
+            expected_ep_dir
                 .join("Frieren - S01E01 - The Journey's End.mkv")
                 .exists()
         );
         assert!(
-            media_root
+            expected_ep_dir
                 .join("Frieren - S01E01 - The Journey's End.nfo")
                 .exists()
         );
         assert!(
-            media_root
+            expected_ep_dir
                 .join("Frieren - S01E01 - The Journey's End.zh.srt")
                 .exists()
         );
+    }
+
+    #[tokio::test]
+    async fn video_scrape_apply_creates_full_jellyfin_movie_and_three_tier_tvshow_layout() {
+        use crate::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
+        use axum::Router;
+        use axum::routing::get;
+
+        // Spin up a local loopback image server so `apply_to_file(..., apply_cover=true)` downloads real artwork
+        let img_app = Router::new().route(
+            "/{name}",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], TINY_PNG) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, img_app).await;
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let video_root = tmp.path().join("videos");
+        std::fs::create_dir_all(&video_root).unwrap();
+
+        // Scattered flat files + legacy sidecars in root
+        std::fs::write(video_root.join("spirited_away.mp4"), b"dummy-mp4").unwrap();
+        std::fs::write(
+            video_root.join("spirited_away.nfo"),
+            b"<movie><title>Old</title></movie>",
+        )
+        .unwrap();
+        std::fs::write(video_root.join("Frieren.S01E01.1080p.mkv"), b"dummy-mkv").unwrap();
+        std::fs::write(
+            video_root.join("Frieren.S01E01.1080p.zh.srt"),
+            b"1\n00:00:01,000 --> 00:00:02,000\nSub\n",
+        )
+        .unwrap();
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![video_root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // 1. Apply Movie scrape -> `<Root>/千与千寻 (2001)/{千与千寻 (2001).mp4, movie.nfo, poster.png, fanart.png}`
+        let movie_detail = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "spirited_away.mp4",
+                MediaKind::Video,
+                ScrapedMetadata {
+                    provider_id: "tmdb".into(),
+                    external_id: "129".into(),
+                    target: Some(ScrapeTargetKind::Movie),
+                    title: Some("千与千寻".into()),
+                    year: Some(2001),
+                    summary: Some("少女千寻误入神灵世界。".into()),
+                    cover_url: Some(format!("http://{addr}/movie_poster.png")),
+                    backdrop_url: Some(format!("http://{addr}/movie_fanart.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            movie_detail.entry.rel_path,
+            "千与千寻 (2001)/千与千寻 (2001).mp4"
+        );
+        assert!(movie_detail.entry.completeness.has_cover);
+        assert!(movie_detail.entry.completeness.has_nfo_or_tag_block);
+        assert!(!video_root.join("spirited_away.mp4").exists());
+        assert!(!video_root.join("spirited_away.nfo").exists());
+
+        let movie_dir = video_root.join("千与千寻 (2001)");
+        assert!(movie_dir.join("千与千寻 (2001).mp4").is_file());
+        assert!(movie_dir.join("movie.nfo").is_file());
+        assert!(movie_dir.join("poster.png").is_file());
+        assert!(movie_dir.join("fanart.png").is_file());
+
+        // 2. Apply TV Episode scrape -> 3-tier Jellyfin layout (`tvshow.nfo`, `season.nfo`, `<ep>.nfo`, + all images + migrated `.srt`)
+        let ep_detail = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "Frieren.S01E01.1080p.mkv",
+                MediaKind::Video,
+                ScrapedMetadata {
+                    provider_id: "tmdb".into(),
+                    external_id: "209867".into(),
+                    target: Some(ScrapeTargetKind::TvShow),
+                    series_or_album: Some("葬送的芙莉莲".into()),
+                    title: Some("冒险的终点".into()),
+                    disc_or_season_number: Some(1),
+                    track_or_episode_number: Some(1),
+                    year: Some(2023),
+                    summary: Some("第一集剧情简介。".into()),
+                    show_summary: Some("全剧总览简介。".into()),
+                    season_title: Some("第 1 季".into()),
+                    season_summary: Some("第一季剧情简介。".into()),
+                    cover_url: Some(format!("http://{addr}/show_poster.png")),
+                    backdrop_url: Some(format!("http://{addr}/show_fanart.png")),
+                    season_poster_url: Some(format!("http://{addr}/season1_poster.png")),
+                    episode_still_url: Some(format!("http://{addr}/ep1_still.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ep_detail.entry.rel_path,
+            "葬送的芙莉莲 (2023)/Season 01/葬送的芙莉莲 - S01E01 - 冒险的终点.mkv"
+        );
+        assert!(ep_detail.entry.completeness.has_cover);
+
+        let show_dir = video_root.join("葬送的芙莉莲 (2023)");
+        let season_dir = show_dir.join("Season 01");
+        assert!(show_dir.join("tvshow.nfo").is_file());
+        assert!(show_dir.join("poster.png").is_file());
+        assert!(show_dir.join("fanart.png").is_file());
+
+        assert!(season_dir.join("season.nfo").is_file());
+        assert!(season_dir.join("poster.png").is_file());
+        assert!(season_dir.join("fanart.png").is_file());
+        assert!(
+            season_dir
+                .join("葬送的芙莉莲 - S01E01 - 冒险的终点.mkv")
+                .is_file()
+        );
+        assert!(
+            season_dir
+                .join("葬送的芙莉莲 - S01E01 - 冒险的终点.nfo")
+                .is_file()
+        );
+        assert!(
+            season_dir
+                .join("葬送的芙莉莲 - S01E01 - 冒险的终点-thumb.png")
+                .is_file()
+        );
+        assert!(
+            season_dir
+                .join("葬送的芙莉莲 - S01E01 - 冒险的终点.zh.srt")
+                .is_file()
+        );
+
+        let tvshow_nfo_str = std::fs::read_to_string(show_dir.join("tvshow.nfo")).unwrap();
+        let season_nfo_str = std::fs::read_to_string(season_dir.join("season.nfo")).unwrap();
+        let ep_nfo_str =
+            std::fs::read_to_string(season_dir.join("葬送的芙莉莲 - S01E01 - 冒险的终点.nfo"))
+                .unwrap();
+        assert!(tvshow_nfo_str.contains("全剧总览简介。"));
+        assert!(season_nfo_str.contains("<seasonnumber>1</seasonnumber>"));
+        assert!(season_nfo_str.contains("第一季剧情简介。"));
+        assert!(ep_nfo_str.contains("第一集剧情简介。"));
     }
 }

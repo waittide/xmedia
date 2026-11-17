@@ -109,7 +109,8 @@ pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
                 || lower.ends_with("-poster.png")
                 || lower.ends_with("-fanart.jpg")
                 || lower.ends_with("-fanart.png")
-                || lower.ends_with("-thumb.jpg");
+                || lower.ends_with("-thumb.jpg")
+                || lower.ends_with("-thumb.png");
             if is_companion {
                 let suffix = rest.to_string();
                 out.push((p, suffix));
@@ -117,4 +118,22 @@ pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
         }
     }
     out
+}
+
+/// Removes empty directories starting at `start_dir` walking upward, strictly stopping before `stop_at_root`.
+pub fn cleanup_empty_parent_dirs(start_dir: &Path, stop_at_root: &Path) {
+    let mut cur = Some(start_dir);
+    while let Some(dir) = cur {
+        if dir == stop_at_root || !dir.starts_with(stop_at_root) {
+            break;
+        }
+        let is_empty = std::fs::read_dir(dir)
+            .ok()
+            .is_some_and(|mut it| it.next().is_none());
+        if is_empty && std::fs::remove_dir(dir).is_ok() {
+            cur = dir.parent();
+        } else {
+            break;
+        }
+    }
 }

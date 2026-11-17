@@ -104,6 +104,21 @@ pub struct ScrapedMetadata {
     pub track_or_episode_number: Option<u32>,
     pub disc_or_season_number: Option<u32>,
     pub summary: Option<String>,
+    /// Series-level overview for `tvshow.nfo` (kept separate so episode summary never clobbers it).
+    #[serde(default)]
+    pub show_summary: Option<String>,
+    /// Season-level title for `season.nfo` (e.g. `"第 1 季"` / `"Season 1"`).
+    #[serde(default)]
+    pub season_title: Option<String>,
+    /// Season-level overview for `season.nfo`.
+    #[serde(default)]
+    pub season_summary: Option<String>,
+    /// Dedicated season poster URL (`Season XX/poster.jpg`).
+    #[serde(default)]
+    pub season_poster_url: Option<String>,
+    /// Dedicated episode still/thumbnail URL (`<episode>-thumb.jpg`).
+    #[serde(default)]
+    pub episode_still_url: Option<String>,
     pub genres: Vec<String>,
     pub tags: Vec<String>,
     pub cover_url: Option<String>,
@@ -272,6 +287,24 @@ pub fn merge_scraped_by_priority(
             out.summary = Some(v);
             sources.insert("summary".to_string(), badge.clone());
         }
+        if out.show_summary.is_none()
+            && let Some(v) = non_empty_str(&src.show_summary)
+        {
+            out.show_summary = Some(v);
+            sources.insert("show_summary".to_string(), badge.clone());
+        }
+        if out.season_title.is_none()
+            && let Some(v) = non_empty_str(&src.season_title)
+        {
+            out.season_title = Some(v);
+            sources.insert("season_title".to_string(), badge.clone());
+        }
+        if out.season_summary.is_none()
+            && let Some(v) = non_empty_str(&src.season_summary)
+        {
+            out.season_summary = Some(v);
+            sources.insert("season_summary".to_string(), badge.clone());
+        }
         if out.genres.is_empty() && !src.genres.is_empty() {
             out.genres = src.genres.clone();
             sources.insert("genres".to_string(), badge.clone());
@@ -291,6 +324,18 @@ pub fn merge_scraped_by_priority(
         {
             out.backdrop_url = Some(v);
             sources.insert("backdrop_url".to_string(), badge.clone());
+        }
+        if out.season_poster_url.is_none()
+            && let Some(v) = non_empty_str(&src.season_poster_url)
+        {
+            out.season_poster_url = Some(v);
+            sources.insert("season_poster_url".to_string(), badge.clone());
+        }
+        if out.episode_still_url.is_none()
+            && let Some(v) = non_empty_str(&src.episode_still_url)
+        {
+            out.episode_still_url = Some(v);
+            sources.insert("episode_still_url".to_string(), badge.clone());
         }
         if out.synced_lyrics.is_none()
             && let Some(v) = non_empty_str(&src.synced_lyrics)

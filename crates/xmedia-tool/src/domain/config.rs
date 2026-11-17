@@ -50,11 +50,39 @@ impl Default for RenameTemplates {
     fn default() -> Self {
         Self {
             book: "{author} - {title}".to_string(),
-            comic: "{series} - #{number} {title}".to_string(),
-            music: "{track} - {artist} - {title}".to_string(),
-            video_movie: "{title} ({year})".to_string(),
-            video_episode: "{show} - S{season}E{episode} - {title}".to_string(),
+            comic: "{series} - #{number:2} {title}".to_string(),
+            music: "{track:2} - {artist} - {title}".to_string(),
+            video_movie: "{title} ({year})/{title} ({year})".to_string(),
+            video_episode:
+                "{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}"
+                    .to_string(),
         }
+    }
+}
+
+impl RenameTemplates {
+    /// Upgrades untouched v1 flat default templates to v2 `{var:N}` + Jellyfin folder hierarchy defaults.
+    pub fn upgrade_legacy_defaults(&mut self) -> bool {
+        let mut changed = false;
+        if self.comic == "{series} - #{number} {title}" {
+            self.comic = "{series} - #{number:2} {title}".to_string();
+            changed = true;
+        }
+        if self.music == "{track} - {artist} - {title}" {
+            self.music = "{track:2} - {artist} - {title}".to_string();
+            changed = true;
+        }
+        if self.video_movie == "{title} ({year})" {
+            self.video_movie = "{title} ({year})/{title} ({year})".to_string();
+            changed = true;
+        }
+        if self.video_episode == "{show} - S{season}E{episode} - {title}" {
+            self.video_episode =
+                "{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}"
+                    .to_string();
+            changed = true;
+        }
+        changed
     }
 }
 

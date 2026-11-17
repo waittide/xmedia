@@ -237,8 +237,8 @@ impl VideoScannerPort for LocalVideoScanner {
 
                 let sidecar_subtitles = discover_sidecar_subtitles(&root, &parent_dir, video_stem);
                 let directory_poster_path =
-                    discover_video_poster(&parent_dir, video_stem, &mut dir_posters);
-                let nfo = discover_and_parse_nfo(&parent_dir, video_stem);
+                    discover_video_poster(&root, &parent_dir, video_stem, &mut dir_posters);
+                let nfo = discover_and_parse_nfo(&root, &parent_dir, video_stem);
 
                 out.push(ScannedVideoEntry {
                     absolute_path: path.to_string_lossy().into_owned(),
@@ -332,6 +332,7 @@ fn discover_sidecar_subtitles(
 }
 
 fn discover_video_poster(
+    root: &Path,
     parent_dir: &Path,
     video_stem: &str,
     dir_cache: &mut HashMap<PathBuf, Option<String>>,
@@ -349,18 +350,20 @@ fn discover_video_poster(
         }
     }
 
-    dir_cache
+    let poster_names = [
+        "poster.jpg",
+        "poster.png",
+        "poster.webp",
+        "folder.jpg",
+        "folder.png",
+        "cover.jpg",
+        "cover.png",
+    ];
+
+    let found_in_dir = dir_cache
         .entry(parent_dir.to_path_buf())
         .or_insert_with(|| {
-            for name in [
-                "poster.jpg",
-                "poster.png",
-                "poster.webp",
-                "folder.jpg",
-                "folder.png",
-                "cover.jpg",
-                "cover.png",
-            ] {
+            for name in poster_names {
                 let p = parent_dir.join(name);
                 if p.is_file() {
                     return Some(p.to_string_lossy().into_owned());
@@ -368,26 +371,80 @@ fn discover_video_poster(
             }
             None
         })
-        .clone()
+        .clone();
+    if found_in_dir.is_some() {
+        return found_in_dir;
+    }
+
+    // Jellyfin `Show/Season XX/` fallback: look up series-level `poster.jpg` in parent show directory
+    if parent_dir != root
+        && let Some(show_dir) = parent_dir.parent()
+        && show_dir != root
+        && show_dir.starts_with(root)
+    {
+        return dir_cache
+            .entry(show_dir.to_path_buf())
+            .or_insert_with(|| {
+                for name in poster_names {
+                    let p = show_dir.join(name);
+                    if p.is_file() {
+                        return Some(p.to_string_lossy().into_owned());
+                    }
+                }
+                None
+            })
+            .clone();
+    }
+
+    None
 }
 
-fn discover_and_parse_nfo(parent_dir: &Path, video_stem: &str) -> Option<ParsedNfoMetadata> {
-    let candidates = [
+fn discover_and_parse_nfo(
+    root: &Path,
+    parent_dir: &Path,
+    video_stem: &str,
+) -> Option<ParsedNfoMetadata> {
+    let mut candidates = vec![
         parent_dir.join(format!("{video_stem}.nfo")),
         parent_dir.join("movie.nfo"),
         parent_dir.join("tvshow.nfo"),
     ];
+    if parent_dir != root
+        && let Some(show_dir) = parent_dir.parent()
+        && show_dir != root
+        && show_dir.starts_with(root)
+    {
+        candidates.push(show_dir.join("tvshow.nfo"));
+    }
+
+    let mut primary: Option<ParsedNfoMetadata> = None;
     for p in candidates {
         if p.is_file()
             && let Ok(bytes) = std::fs::read(&p)
         {
             let (xml, _) = decode_text_smart(&bytes);
             if let Some(parsed) = parse_nfo_xml(&xml) {
-                return Some(parsed);
+                if let Some(ref mut base) = primary {
+                    // Merge missing series-level genres/tags/year from `tvshow.nfo`
+                    if base.show_title.is_none() {
+                        base.show_title = parsed.show_title.or(parsed.title);
+                    }
+                    if base.year.is_none() {
+                        base.year = parsed.year;
+                    }
+                    if base.genres.is_empty() {
+                        base.genres = parsed.genres;
+                    }
+                    if base.tags.is_empty() {
+                        base.tags = parsed.tags;
+                    }
+                } else {
+                    primary = Some(parsed);
+                }
             }
         }
     }
-    None
+    primary
 }
 
 fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {

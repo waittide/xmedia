@@ -148,10 +148,15 @@ const effectiveView = computed<{
         track_or_episode_number: badge,
         disc_or_season_number: badge,
         summary: badge,
+        show_summary: badge,
+        season_title: badge,
+        season_summary: badge,
         genres: badge,
         tags: badge,
         cover_url: badge,
         backdrop_url: badge,
+        season_poster_url: badge,
+        episode_still_url: badge,
         lyrics: badge,
       },
     }
@@ -1063,13 +1068,103 @@ async function applyMetadata(): Promise<void> {
                 </div>
               </div>
 
+              <!-- Video Jellyfin Scraped Artwork Strip (Fanart / Season Poster / Episode Thumb) -->
+              <div
+                v-if="
+                  detail.entry.media_kind === 'video' &&
+                  (isCoverUsable(effectiveView.metadata.backdrop_url) ||
+                    isCoverUsable(effectiveView.metadata.season_poster_url) ||
+                    isCoverUsable(effectiveView.metadata.episode_still_url))
+                "
+                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/45 p-3"
+              >
+                <div class="mb-2 flex items-center justify-between">
+                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
+                    Jellyfin 附属刮削图片（写入 fanart / Season 海报 / 单集 thumb）
+                  </span>
+                </div>
+                <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+                  <div
+                    v-if="isCoverUsable(effectiveView.metadata.backdrop_url)"
+                    class="space-y-1 rounded-xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-canvas)] p-2"
+                  >
+                    <div class="aspect-video overflow-hidden rounded-lg bg-[var(--ctp-mantle)]">
+                      <img
+                        :src="effectiveView.metadata.backdrop_url"
+                        alt=""
+                        class="h-full w-full object-cover"
+                        @error="markCoverBroken(effectiveView.metadata.backdrop_url)"
+                      />
+                    </div>
+                    <div class="flex items-center justify-between text-[10px]">
+                      <span class="font-medium text-[var(--ctp-subtext1)]">fanart.jpg</span>
+                      <span v-if="badgeName('backdrop_url')" class="font-semibold text-[var(--ctp-accent)]">
+                        {{ badgeName('backdrop_url') }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="isCoverUsable(effectiveView.metadata.season_poster_url)"
+                    class="space-y-1 rounded-xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-canvas)] p-2"
+                  >
+                    <div class="aspect-video overflow-hidden rounded-lg bg-[var(--ctp-mantle)]">
+                      <img
+                        :src="effectiveView.metadata.season_poster_url"
+                        alt=""
+                        class="h-full w-full object-contain"
+                        @error="markCoverBroken(effectiveView.metadata.season_poster_url)"
+                      />
+                    </div>
+                    <div class="flex items-center justify-between text-[10px]">
+                      <span class="font-medium text-[var(--ctp-subtext1)]">Season/poster.jpg</span>
+                      <span
+                        v-if="badgeName('season_poster_url')"
+                        class="font-semibold text-[var(--ctp-accent)]"
+                      >
+                        {{ badgeName('season_poster_url') }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div
+                    v-if="isCoverUsable(effectiveView.metadata.episode_still_url)"
+                    class="space-y-1 rounded-xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-canvas)] p-2"
+                  >
+                    <div class="aspect-video overflow-hidden rounded-lg bg-[var(--ctp-mantle)]">
+                      <img
+                        :src="effectiveView.metadata.episode_still_url"
+                        alt=""
+                        class="h-full w-full object-cover"
+                        @error="markCoverBroken(effectiveView.metadata.episode_still_url)"
+                      />
+                    </div>
+                    <div class="flex items-center justify-between text-[10px]">
+                      <span class="font-medium text-[var(--ctp-subtext1)]">单集 -thumb.jpg</span>
+                      <span
+                        v-if="badgeName('episode_still_url')"
+                        class="font-semibold text-[var(--ctp-accent)]"
+                      >
+                        {{ badgeName('episode_still_url') }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <!-- Summary Block with Provenance Badge -->
               <div
                 v-if="effectiveView.metadata.summary"
                 class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/55 p-3"
               >
                 <div class="mb-1.5 flex items-center justify-between gap-2">
-                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">内容简介</span>
+                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
+                    {{
+                      effectiveView.metadata.target === 'tv_show'
+                        ? '单集简介 (写入 <episodedetails>)'
+                        : '内容简介'
+                    }}
+                  </span>
                   <span
                     v-if="badgeName('summary')"
                     class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
@@ -1079,6 +1174,36 @@ async function applyMetadata(): Promise<void> {
                 </div>
                 <p class="text-xs leading-relaxed whitespace-pre-line text-[var(--ctp-text)]">
                   {{ effectiveView.metadata.summary }}
+                </p>
+              </div>
+
+              <!-- Series / Season NFO Summary Preview for TV Shows -->
+              <div
+                v-if="
+                  effectiveView.metadata.target === 'tv_show' &&
+                  (effectiveView.metadata.show_summary || effectiveView.metadata.season_summary) &&
+                  (effectiveView.metadata.show_summary !== effectiveView.metadata.summary ||
+                    effectiveView.metadata.season_title)
+                "
+                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/40 p-3"
+              >
+                <div class="mb-1.5 flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
+                    剧集 / 季级简介 (写入 tvshow.nfo &amp; season.nfo{{
+                      effectiveView.metadata.season_title
+                        ? ` · ${effectiveView.metadata.season_title}`
+                        : ''
+                    }})
+                  </span>
+                  <span
+                    v-if="badgeName('season_summary') || badgeName('show_summary')"
+                    class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+                  >
+                    {{ badgeName('season_summary') || badgeName('show_summary') }}
+                  </span>
+                </div>
+                <p class="text-xs leading-relaxed whitespace-pre-line text-[var(--ctp-subtext1)]">
+                  {{ effectiveView.metadata.season_summary || effectiveView.metadata.show_summary }}
                 </p>
               </div>
 
@@ -1124,11 +1249,24 @@ async function applyMetadata(): Promise<void> {
           <div class="flex flex-wrap items-center gap-4">
             <AppCheckbox
               v-if="
-                effectiveView?.metadata.cover_url || effectiveView?.metadata.backdrop_url
+                effectiveView?.metadata.cover_url ||
+                effectiveView?.metadata.backdrop_url ||
+                effectiveView?.metadata.season_poster_url ||
+                effectiveView?.metadata.episode_still_url
               "
               v-model="applyCover"
-              label="同时下载并写入封面 / 海报图片"
+              :label="
+                detail.entry.media_kind === 'video'
+                  ? '同步下载全套刮削图片 (poster / fanart / Season 海报 / thumb)'
+                  : '同时下载并写入封面 / 海报图片'
+              "
             />
+            <span
+              v-if="detail.entry.media_kind === 'video'"
+              class="rounded-lg bg-[var(--ctp-accent-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-accent)]"
+            >
+              自动按 Jellyfin 目录与 NFO 规范建夹归档
+            </span>
             <AppCheckbox
               v-if="
                 detail.entry.media_kind === 'music' &&

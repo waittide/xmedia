@@ -50,6 +50,9 @@ impl JsonFileConfigRepository {
         });
 
         let mut changed = !file_path.exists();
+        if settings.rename_templates.upgrade_legacy_defaults() {
+            changed = true;
+        }
         for raw_dir in cli_roots {
             if let Ok(root) = ManagedRoot::new("", raw_dir, None)
                 && !settings

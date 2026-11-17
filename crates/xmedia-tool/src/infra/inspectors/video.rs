@@ -31,6 +31,33 @@ impl VideoNfoInspector {
     }
 }
 
+pub(crate) fn is_season_dir(dir: &Path) -> bool {
+    let Some(name) = dir.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let trimmed = name.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "specials" {
+        return true;
+    }
+    if let Some(rest) = lower.strip_prefix("season") {
+        return rest.trim().chars().all(|c| c.is_ascii_digit()) && !rest.trim().is_empty();
+    }
+    if let Some(rest) = lower.strip_prefix('s')
+        && !rest.is_empty()
+        && rest.len() <= 3
+        && rest.chars().all(|c| c.is_ascii_digit())
+    {
+        return true;
+    }
+    if let Some(rest) = trimmed.strip_prefix('第')
+        && let Some(num_str) = rest.strip_suffix('季')
+    {
+        return !num_str.trim().is_empty() && num_str.trim().chars().all(|c| c.is_ascii_digit());
+    }
+    false
+}
+
 fn find_existing_nfo(video_path: &Path) -> Option<PathBuf> {
     let same_stem = video_path.with_extension("nfo");
     if same_stem.is_file() {
@@ -45,30 +72,64 @@ fn find_existing_nfo(video_path: &Path) -> Option<PathBuf> {
     None
 }
 
+fn find_show_nfo_for_episode(video_path: &Path) -> Option<PathBuf> {
+    let parent = video_path.parent()?;
+    let direct = parent.join("tvshow.nfo");
+    if direct.is_file() {
+        return Some(direct);
+    }
+    if is_season_dir(parent)
+        && let Some(show_dir) = parent.parent()
+    {
+        let up = show_dir.join("tvshow.nfo");
+        if up.is_file() {
+            return Some(up);
+        }
+    }
+    None
+}
+
 fn find_poster_path(video_path: &Path) -> Option<PathBuf> {
     let parent = video_path.parent()?;
     let stem = video_path.file_stem()?.to_str()?;
-    let candidates = [
+    let mut candidates = vec![
         parent.join(format!("{stem}-poster.jpg")),
         parent.join(format!("{stem}-poster.png")),
-        parent.join(format!("{stem}-thumb.jpg")),
         parent.join("poster.jpg"),
         parent.join("poster.png"),
+        parent.join(format!("{stem}-thumb.jpg")),
+        parent.join(format!("{stem}-thumb.png")),
         parent.join("folder.jpg"),
     ];
+    if is_season_dir(parent)
+        && let Some(show_dir) = parent.parent()
+    {
+        candidates.push(show_dir.join("poster.jpg"));
+        candidates.push(show_dir.join("poster.png"));
+        candidates.push(show_dir.join("folder.jpg"));
+    }
     candidates.into_iter().find(|p| p.is_file())
 }
 
 fn find_fanart_path(video_path: &Path) -> Option<PathBuf> {
     let parent = video_path.parent()?;
     let stem = video_path.file_stem()?.to_str()?;
-    let candidates = [
+    let mut candidates = vec![
         parent.join(format!("{stem}-fanart.jpg")),
         parent.join(format!("{stem}-fanart.png")),
         parent.join("fanart.jpg"),
         parent.join("fanart.png"),
         parent.join("backdrop.jpg"),
+        parent.join("backdrop.png"),
     ];
+    if is_season_dir(parent)
+        && let Some(show_dir) = parent.parent()
+    {
+        candidates.push(show_dir.join("fanart.jpg"));
+        candidates.push(show_dir.join("fanart.png"));
+        candidates.push(show_dir.join("backdrop.jpg"));
+        candidates.push(show_dir.join("backdrop.png"));
+    }
     candidates.into_iter().find(|p| p.is_file())
 }
 
@@ -208,7 +269,11 @@ fn parse_nfo_into(xml_bytes: &[u8], meta: &mut VideoFileMeta) {
                         }
                     } else {
                         match cur {
-                            "title" if parent == "movie" || parent == "episodedetails" => {
+                            "title"
+                                if parent == "movie"
+                                    || parent == "episodedetails"
+                                    || parent == "tvshow" =>
+                            {
                                 meta.title = trimmed.to_string();
                             }
                             "originaltitle" => meta.original_title = Some(trimmed.to_string()),
@@ -270,7 +335,7 @@ fn parse_nfo_into(xml_bytes: &[u8], meta: &mut VideoFileMeta) {
     }
 }
 
-fn render_video_nfo_xml(meta: &VideoFileMeta) -> String {
+pub(crate) fn render_video_nfo_xml(meta: &VideoFileMeta) -> String {
     let root_tag = if meta.is_episode {
         "episodedetails"
     } else {
@@ -347,27 +412,134 @@ fn render_video_nfo_xml(meta: &VideoFileMeta) -> String {
             xml.push_str("  </actor>\n");
         }
     }
-    if let Some(ref tmdb) = meta.tmdb_id
-        && !tmdb.trim().is_empty()
-    {
-        xml.push_str(&format!(
-            "  <uniqueid type=\"tmdb\" default=\"true\">{}</uniqueid>\n",
-            escape(tmdb.trim())
-        ));
-    }
-    if let Some(ref bgm) = meta.bangumi_id
-        && !bgm.trim().is_empty()
-    {
-        xml.push_str(&format!(
-            "  <uniqueid type=\"bangumi\">{}</uniqueid>\n",
-            escape(bgm.trim())
-        ));
-    }
+    append_unique_ids_xml(
+        &mut xml,
+        meta.tmdb_id.as_deref(),
+        meta.bangumi_id.as_deref(),
+    );
     xml.push_str(&format!("</{root_tag}>\n"));
     xml
 }
 
-fn read_base_video_meta(path: &Path) -> VideoFileMeta {
+fn clean_id(raw: &str) -> &str {
+    raw.trim().split(':').next().unwrap_or("").trim()
+}
+
+fn append_unique_ids_xml(xml: &mut String, tmdb_id: Option<&str>, bangumi_id: Option<&str>) {
+    if let Some(tmdb) = tmdb_id.map(clean_id).filter(|s| !s.is_empty()) {
+        xml.push_str(&format!(
+            "  <uniqueid type=\"tmdb\" default=\"true\">{}</uniqueid>\n",
+            escape(tmdb)
+        ));
+    }
+    if let Some(bgm) = bangumi_id.map(clean_id).filter(|s| !s.is_empty()) {
+        let default_attr = if tmdb_id.map(clean_id).is_some_and(|s| !s.is_empty()) {
+            ""
+        } else {
+            " default=\"true\""
+        };
+        xml.push_str(&format!(
+            "  <uniqueid type=\"bangumi\"{default_attr}>{}</uniqueid>\n",
+            escape(bgm)
+        ));
+    }
+}
+
+/// Renders Jellyfin series-level `tvshow.nfo` (`<tvshow>`).
+pub(crate) fn render_tvshow_nfo_xml(meta: &VideoFileMeta, show_plot: Option<&str>) -> String {
+    let show_title = meta
+        .show_title
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&meta.title);
+    let mut xml = String::with_capacity(1024);
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+    xml.push_str("<tvshow>\n");
+    xml.push_str(&format!("  <title>{}</title>\n", escape(show_title.trim())));
+    if let Some(ref orig) = meta.original_title
+        && !orig.trim().is_empty()
+    {
+        xml.push_str(&format!(
+            "  <originaltitle>{}</originaltitle>\n",
+            escape(orig.trim())
+        ));
+    }
+    if let Some(year) = meta.year {
+        xml.push_str(&format!("  <year>{year}</year>\n"));
+    }
+    if let Some(rating) = meta.rating {
+        xml.push_str(&format!("  <rating>{rating:.1}</rating>\n"));
+    }
+    if let Some(plot) = show_plot.or(meta.summary.as_deref())
+        && !plot.trim().is_empty()
+    {
+        xml.push_str(&format!("  <plot>{}</plot>\n", escape(plot.trim())));
+    }
+    if let Some(ref studio) = meta.studio
+        && !studio.trim().is_empty()
+    {
+        xml.push_str(&format!("  <studio>{}</studio>\n", escape(studio.trim())));
+    }
+    for g in &meta.genres {
+        let clean = g.trim();
+        if !clean.is_empty() {
+            xml.push_str(&format!("  <genre>{}</genre>\n", escape(clean)));
+        }
+    }
+    for tg in &meta.tags {
+        let clean = tg.trim();
+        if !clean.is_empty() {
+            xml.push_str(&format!("  <tag>{}</tag>\n", escape(clean)));
+        }
+    }
+    for actor in &meta.actors {
+        let clean = actor.trim();
+        if !clean.is_empty() {
+            xml.push_str("  <actor>\n");
+            xml.push_str(&format!("    <name>{}</name>\n", escape(clean)));
+            xml.push_str("  </actor>\n");
+        }
+    }
+    append_unique_ids_xml(
+        &mut xml,
+        meta.tmdb_id.as_deref(),
+        meta.bangumi_id.as_deref(),
+    );
+    xml.push_str("</tvshow>\n");
+    xml
+}
+
+/// Renders Jellyfin season-level `season.nfo` (`<season>`).
+pub(crate) fn render_season_nfo_xml(
+    season_number: u32,
+    season_title: Option<&str>,
+    year: Option<i32>,
+    season_plot: Option<&str>,
+    tmdb_id: Option<&str>,
+    bangumi_id: Option<&str>,
+) -> String {
+    let default_title = format!("Season {season_number:02}");
+    let title = season_title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&default_title);
+    let mut xml = String::with_capacity(512);
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n");
+    xml.push_str("<season>\n");
+    xml.push_str(&format!("  <seasonnumber>{season_number}</seasonnumber>\n"));
+    xml.push_str(&format!("  <title>{}</title>\n", escape(title)));
+    if let Some(y) = year {
+        xml.push_str(&format!("  <year>{y}</year>\n"));
+    }
+    if let Some(plot) = season_plot.map(str::trim).filter(|s| !s.is_empty()) {
+        xml.push_str(&format!("  <plot>{}</plot>\n", escape(plot)));
+    }
+    append_unique_ids_xml(&mut xml, tmdb_id, bangumi_id);
+    xml.push_str("</season>\n");
+    xml
+}
+
+pub(crate) fn read_base_video_meta(path: &Path) -> VideoFileMeta {
     let fallback_stem = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -409,7 +581,126 @@ fn read_base_video_meta(path: &Path) -> VideoFileMeta {
         parse_nfo_into(&bytes, &mut meta);
     }
 
+    if meta.is_episode
+        && let Some(show_nfo_path) = find_show_nfo_for_episode(path)
+        && let Ok(bytes) = std::fs::read(show_nfo_path)
+    {
+        let mut show_meta = VideoFileMeta::default();
+        parse_nfo_into(&bytes, &mut show_meta);
+        if meta.show_title.is_none() && !show_meta.title.trim().is_empty() {
+            meta.show_title = Some(show_meta.title);
+        }
+        if meta.year.is_none() {
+            meta.year = show_meta.year;
+        }
+        if meta.genres.is_empty() {
+            meta.genres = show_meta.genres;
+        }
+        if meta.tags.is_empty() {
+            meta.tags = show_meta.tags;
+        }
+        if meta.actors.is_empty() {
+            meta.actors = show_meta.actors;
+        }
+        if meta.studio.is_none() {
+            meta.studio = show_meta.studio;
+        }
+        if meta.tmdb_id.is_none() {
+            meta.tmdb_id = show_meta.tmdb_id;
+        }
+        if meta.bangumi_id.is_none() {
+            meta.bangumi_id = show_meta.bangumi_id;
+        }
+    }
+
     meta
+}
+
+pub(crate) fn apply_video_patch_onto(meta: &mut VideoFileMeta, vp: VideoMetaPatch) {
+    if let Some(is_ep) = vp.is_episode {
+        meta.is_episode = is_ep;
+    }
+    if let Some(title) = vp.title
+        && !title.trim().is_empty()
+    {
+        meta.title = title.trim().to_string();
+    }
+    if let Some(orig) = vp.original_title {
+        meta.original_title = (!orig.trim().is_empty()).then(|| orig.trim().to_string());
+    }
+    if let Some(show) = vp.show_title {
+        meta.show_title = (!show.trim().is_empty()).then(|| show.trim().to_string());
+    }
+    if vp.season_number.is_some() {
+        meta.season_number = vp.season_number.filter(|&n| n > 0);
+    }
+    if vp.episode_number.is_some() {
+        meta.episode_number = vp.episode_number.filter(|&n| n > 0);
+    }
+    if vp.year.is_some() {
+        meta.year = vp.year.filter(|&y| y > 0);
+    }
+    if vp.rating.is_some() {
+        meta.rating = vp.rating.filter(|&r| r > 0.0);
+    }
+    if let Some(summary) = vp.summary {
+        meta.summary = (!summary.trim().is_empty()).then(|| summary.trim().to_string());
+    }
+    if let Some(genres) = vp.genres {
+        meta.genres = genres
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(tags) = vp.tags {
+        meta.tags = tags
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(actors) = vp.actors {
+        meta.actors = actors
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(directors) = vp.directors {
+        meta.directors = directors
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(studio) = vp.studio {
+        meta.studio = (!studio.trim().is_empty()).then(|| studio.trim().to_string());
+    }
+    if let Some(tmdb) = vp.tmdb_id {
+        meta.tmdb_id = (!tmdb.trim().is_empty()).then(|| tmdb.trim().to_string());
+    }
+    if let Some(bgm) = vp.bangumi_id {
+        meta.bangumi_id = (!bgm.trim().is_empty()).then(|| bgm.trim().to_string());
+    }
+}
+
+/// Atomically writes `{stem_base}.{ext}` inside `dir` and removes any stale sibling with the
+/// opposite `.jpg`/`.png` extension so old artwork never shadows the updated file.
+pub(crate) fn write_image_replacing_opposite_ext(
+    dir: &Path,
+    stem_base: &str,
+    ext: &str,
+    bytes: &[u8],
+) -> DomainResult<()> {
+    let target = dir.join(format!("{stem_base}.{ext}"));
+    atomic_write_bytes(&target, bytes)?;
+    let stale_ext = if ext == "png" { "jpg" } else { "png" };
+    let stale_path = dir.join(format!("{stem_base}.{stale_ext}"));
+    if stale_path.is_file() {
+        let _ = std::fs::remove_file(stale_path);
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -501,74 +792,17 @@ impl MediaInspectorPort for VideoNfoInspector {
 
         tokio::task::spawn_blocking(move || -> DomainResult<()> {
             let mut meta = read_base_video_meta(&p);
-            if let Some(is_ep) = vp_cloned.is_episode {
-                meta.is_episode = is_ep;
-            }
-            if let Some(title) = vp_cloned.title
-                && !title.trim().is_empty()
-            {
-                meta.title = title.trim().to_string();
-            }
-            if let Some(orig) = vp_cloned.original_title {
-                meta.original_title = (!orig.trim().is_empty()).then(|| orig.trim().to_string());
-            }
-            if let Some(show) = vp_cloned.show_title {
-                meta.show_title = (!show.trim().is_empty()).then(|| show.trim().to_string());
-            }
-            if vp_cloned.season_number.is_some() {
-                meta.season_number = vp_cloned.season_number.filter(|&n| n > 0);
-            }
-            if vp_cloned.episode_number.is_some() {
-                meta.episode_number = vp_cloned.episode_number.filter(|&n| n > 0);
-            }
-            if vp_cloned.year.is_some() {
-                meta.year = vp_cloned.year.filter(|&y| y > 0);
-            }
-            if vp_cloned.rating.is_some() {
-                meta.rating = vp_cloned.rating.filter(|&r| r > 0.0);
-            }
-            if let Some(summary) = vp_cloned.summary {
-                meta.summary = (!summary.trim().is_empty()).then(|| summary.trim().to_string());
-            }
-            if let Some(genres) = vp_cloned.genres {
-                meta.genres = genres
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            if let Some(tags) = vp_cloned.tags {
-                meta.tags = tags
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            if let Some(actors) = vp_cloned.actors {
-                meta.actors = actors
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            if let Some(directors) = vp_cloned.directors {
-                meta.directors = directors
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            if let Some(studio) = vp_cloned.studio {
-                meta.studio = (!studio.trim().is_empty()).then(|| studio.trim().to_string());
-            }
-            if let Some(tmdb) = vp_cloned.tmdb_id {
-                meta.tmdb_id = (!tmdb.trim().is_empty()).then(|| tmdb.trim().to_string());
-            }
-            if let Some(bgm) = vp_cloned.bangumi_id {
-                meta.bangumi_id = (!bgm.trim().is_empty()).then(|| bgm.trim().to_string());
-            }
+            apply_video_patch_onto(&mut meta, vp_cloned);
 
-            let nfo_target = p.with_extension("nfo");
+            let nfo_target = if !meta.is_episode
+                && let Some(parent) = p.parent()
+                && parent.join("movie.nfo").is_file()
+                && !p.with_extension("nfo").is_file()
+            {
+                parent.join("movie.nfo")
+            } else {
+                p.with_extension("nfo")
+            };
             let xml = render_video_nfo_xml(&meta);
             atomic_write_bytes(&nfo_target, xml.as_bytes())
         })
@@ -622,17 +856,26 @@ impl MediaInspectorPort for VideoNfoInspector {
         } else {
             "jpg"
         };
-        let target_name =
-            if slot.eq_ignore_ascii_case("fanart") || slot.eq_ignore_ascii_case("backdrop") {
-                format!("{stem}-fanart.{ext}")
+        let is_jellyfin_movie_dir = parent.join("movie.nfo").is_file();
+        let stem_base = if slot.eq_ignore_ascii_case("thumb") {
+            format!("{stem}-thumb")
+        } else if slot.eq_ignore_ascii_case("fanart") || slot.eq_ignore_ascii_case("backdrop") {
+            if is_jellyfin_movie_dir {
+                "fanart".to_string()
             } else {
-                format!("{stem}-poster.{ext}")
-            };
-        let target_path = parent.join(target_name);
+                format!("{stem}-fanart")
+            }
+        } else if is_jellyfin_movie_dir {
+            "poster".to_string()
+        } else {
+            format!("{stem}-poster")
+        };
         let raw = bytes.to_vec();
 
-        tokio::task::spawn_blocking(move || atomic_write_bytes(&target_path, &raw))
-            .await
-            .map_err(|e| DomainError::Storage(format!("video artwork write failed: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            write_image_replacing_opposite_ext(&parent, &stem_base, ext, &raw)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("video artwork write failed: {e}")))?
     }
 }

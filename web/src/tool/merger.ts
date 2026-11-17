@@ -56,6 +56,11 @@ export function mergeScrapedClientSide(
     track_or_episode_number: null,
     disc_or_season_number: null,
     summary: null,
+    show_summary: null,
+    season_title: null,
+    season_summary: null,
+    season_poster_url: null,
+    episode_still_url: null,
     genres: [],
     tags: [],
     cover_url: null,
@@ -174,6 +179,24 @@ export function mergeScrapedClientSide(
       sources.summary = badge
     }
 
+    const showSummary = nonEmptyStr(src.show_summary)
+    if (!out.show_summary && showSummary) {
+      out.show_summary = showSummary
+      sources.show_summary = badge
+    }
+
+    const seasonTitle = nonEmptyStr(src.season_title)
+    if (!out.season_title && seasonTitle) {
+      out.season_title = seasonTitle
+      sources.season_title = badge
+    }
+
+    const seasonSummary = nonEmptyStr(src.season_summary)
+    if (!out.season_summary && seasonSummary) {
+      out.season_summary = seasonSummary
+      sources.season_summary = badge
+    }
+
     if (out.genres.length === 0 && src.genres.length > 0) {
       out.genres = [...src.genres]
       sources.genres = badge
@@ -194,6 +217,18 @@ export function mergeScrapedClientSide(
     if (!out.backdrop_url && backdrop && !brokenImageUrls.has(backdrop)) {
       out.backdrop_url = backdrop
       sources.backdrop_url = badge
+    }
+
+    const seasonPoster = nonEmptyStr(src.season_poster_url)
+    if (!out.season_poster_url && seasonPoster && !brokenImageUrls.has(seasonPoster)) {
+      out.season_poster_url = seasonPoster
+      sources.season_poster_url = badge
+    }
+
+    const epStill = nonEmptyStr(src.episode_still_url)
+    if (!out.episode_still_url && epStill && !brokenImageUrls.has(epStill)) {
+      out.episode_still_url = epStill
+      sources.episode_still_url = badge
     }
 
     const synced = nonEmptyStr(src.synced_lyrics)

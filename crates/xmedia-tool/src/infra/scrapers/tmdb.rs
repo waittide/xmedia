@@ -102,7 +102,7 @@ pub(crate) struct TmdbDetailBody {
     pub credits: Option<TmdbCredits>,
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct TmdbEpisodeBody {
     #[serde(default)]
     pub name: Option<String>,
@@ -116,6 +116,24 @@ pub(crate) struct TmdbEpisodeBody {
     pub season_number: Option<u32>,
     #[serde(default)]
     pub episode_number: Option<u32>,
+    #[serde(default)]
+    pub still_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct TmdbSeasonBody {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub overview: Option<String>,
+    #[serde(default)]
+    pub air_date: Option<String>,
+    #[serde(default)]
+    pub poster_path: Option<String>,
+    #[serde(default)]
+    pub season_number: Option<u32>,
+    #[serde(default)]
+    pub episodes: Vec<TmdbEpisodeBody>,
 }
 
 fn attach_tmdb_auth(req: RequestBuilder, raw_key: &str) -> RequestBuilder {
@@ -204,11 +222,16 @@ pub(crate) fn map_tmdb_hit_to_candidate(
 pub(crate) fn map_tmdb_detail(
     detail: TmdbDetailBody,
     target: ScrapeTargetKind,
+    season: Option<TmdbSeasonBody>,
     episode: Option<TmdbEpisodeBody>,
 ) -> ScrapedMetadata {
     let show_or_movie_title = detail.title.or(detail.name);
     let original_title = detail.original_title.or(detail.original_name);
-    let date_raw = detail.release_date.or(detail.first_air_date);
+    let date_raw = detail
+        .release_date
+        .or(detail.first_air_date)
+        .or_else(|| season.as_ref().and_then(|s| s.air_date.clone()));
+    let show_overview = detail.overview.filter(|s| !s.trim().is_empty());
 
     let mut directors: Vec<String> = detail
         .created_by
@@ -245,20 +268,35 @@ pub(crate) fn map_tmdb_detail(
         .filter(|n| !n.trim().is_empty())
         .collect();
 
-    let (final_title, series_title, season_num, ep_num, summary, rating, pub_date) =
+    let season_title = season
+        .as_ref()
+        .and_then(|s| s.name.clone())
+        .filter(|s| !s.trim().is_empty());
+    let season_summary = season
+        .as_ref()
+        .and_then(|s| s.overview.clone())
+        .filter(|s| !s.trim().is_empty());
+    let season_poster_url = season
+        .as_ref()
+        .and_then(|s| poster_url(s.poster_path.as_deref()));
+    let season_num_from_body = season.as_ref().and_then(|s| s.season_number);
+
+    let (final_title, series_title, season_num, ep_num, summary, rating, pub_date, ep_still_url) =
         if let Some(ep) = episode {
+            let still = poster_url(ep.still_path.as_deref());
             (
                 ep.name
                     .filter(|s| !s.trim().is_empty())
                     .or_else(|| show_or_movie_title.clone()),
                 show_or_movie_title,
-                ep.season_number,
+                ep.season_number.or(season_num_from_body),
                 ep.episode_number,
                 ep.overview
                     .filter(|s| !s.trim().is_empty())
-                    .or(detail.overview),
+                    .or_else(|| show_overview.clone()),
                 ep.vote_average.filter(|&v| v > 0.0).or(detail.vote_average),
-                ep.air_date.or(date_raw),
+                ep.air_date.or_else(|| date_raw.clone()),
+                still,
             )
         } else {
             let s_title = (target == ScrapeTargetKind::TvShow)
@@ -267,15 +305,21 @@ pub(crate) fn map_tmdb_detail(
             (
                 show_or_movie_title,
                 s_title,
+                season_num_from_body,
                 None,
-                None,
-                detail.overview.filter(|s| !s.trim().is_empty()),
+                show_overview.clone(),
                 detail.vote_average.filter(|&v| v > 0.0),
-                date_raw,
+                date_raw.clone(),
+                None,
             )
         };
 
-    let year = parse_year(pub_date.as_deref());
+    // Keep the series premiere year for TV shows so episodes across calendar years share one series folder
+    let year = if target == ScrapeTargetKind::TvShow {
+        parse_year(date_raw.as_deref()).or_else(|| parse_year(pub_date.as_deref()))
+    } else {
+        parse_year(pub_date.as_deref())
+    };
 
     ScrapedMetadata {
         provider_id: "tmdb".to_string(),
@@ -293,6 +337,13 @@ pub(crate) fn map_tmdb_detail(
         track_or_episode_number: ep_num,
         disc_or_season_number: season_num,
         summary,
+        show_summary: (target == ScrapeTargetKind::TvShow)
+            .then_some(show_overview)
+            .flatten(),
+        season_title,
+        season_summary,
+        season_poster_url,
+        episode_still_url: ep_still_url,
         genres,
         cover_url: poster_url(detail.poster_path.as_deref()),
         backdrop_url: backdrop_url(detail.backdrop_path.as_deref()),
@@ -367,7 +418,12 @@ impl ScraperProviderPort for TmdbProvider {
         }
 
         let body: TmdbSearchResponse = resp.json().await.unwrap_or_default();
-        let season_ep = query.season.zip(query.episode);
+        let season_ep = match (query.season, query.episode) {
+            (Some(s), Some(e)) => Some((s, e)),
+            (None, Some(e)) => Some((1, e)),
+            (Some(s), None) => Some((s, 1)),
+            _ => None,
+        };
         Ok(body
             .results
             .into_iter()
@@ -413,22 +469,44 @@ impl ScraperProviderPort for TmdbProvider {
             .await
             .map_err(|e| DomainError::Storage(format!("TMDB detail JSON error: {e}")))?;
 
+        let mut season_body: Option<TmdbSeasonBody> = None;
         let mut ep_body: Option<TmdbEpisodeBody> = None;
-        if target == ScrapeTargetKind::TvShow
-            && let Some((s, e)) = season_ep
-        {
-            let ep_url =
-                format!("https://api.themoviedb.org/3/tv/{base_id}/season/{s}/episode/{e}");
-            if let Ok(ep_resp) = attach_tmdb_auth(client.get(&ep_url), api_key)
+
+        if target == ScrapeTargetKind::TvShow {
+            let s = season_ep.map(|(s, _)| s).unwrap_or(1);
+            let season_url = format!("https://api.themoviedb.org/3/tv/{base_id}/season/{s}");
+            if let Ok(s_resp) = attach_tmdb_auth(client.get(&season_url), api_key)
                 .query(&[("language", locale)])
                 .send()
                 .await
-                && ep_resp.status().is_success()
+                && s_resp.status().is_success()
             {
-                ep_body = ep_resp.json().await.ok();
+                season_body = s_resp.json().await.ok();
+            }
+
+            if let Some((_, e)) = season_ep {
+                if let Some(ref sb) = season_body {
+                    ep_body = sb
+                        .episodes
+                        .iter()
+                        .find(|ep| ep.episode_number == Some(e))
+                        .cloned();
+                }
+                if ep_body.is_none() {
+                    let ep_url =
+                        format!("https://api.themoviedb.org/3/tv/{base_id}/season/{s}/episode/{e}");
+                    if let Ok(ep_resp) = attach_tmdb_auth(client.get(&ep_url), api_key)
+                        .query(&[("language", locale)])
+                        .send()
+                        .await
+                        && ep_resp.status().is_success()
+                    {
+                        ep_body = ep_resp.json().await.ok();
+                    }
+                }
             }
         }
 
-        Ok(map_tmdb_detail(detail, target, ep_body))
+        Ok(map_tmdb_detail(detail, target, season_body, ep_body))
     }
 }
