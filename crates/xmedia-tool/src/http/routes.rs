@@ -414,6 +414,10 @@ struct ApplyScrapedRequest {
     apply_cover: bool,
     #[serde(default = "default_true")]
     write_sidecar_lrc: bool,
+    #[serde(default)]
+    organize_by_template: Option<bool>,
+    #[serde(default)]
+    only_fill_missing: bool,
 }
 
 const fn default_true() -> bool {
@@ -434,6 +438,8 @@ async fn apply_scraped_metadata(
             req.metadata,
             req.apply_cover,
             req.write_sidecar_lrc,
+            req.organize_by_template,
+            req.only_fill_missing,
         )
         .await?;
     Ok(Json(detail))

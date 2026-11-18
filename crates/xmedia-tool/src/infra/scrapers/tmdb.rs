@@ -434,12 +434,19 @@ impl ScraperProviderPort for TmdbProvider {
             .enumerate()
             .map(|(idx, h)| {
                 let votes = h.vote_count;
+                let raw_orig = h
+                    .original_title
+                    .as_deref()
+                    .or(h.original_name.as_deref())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
                 let cand = map_tmdb_hit_to_candidate(h, target, season_ep);
                 let rel = score_candidate_relevance(
                     &query.keyword,
                     query.year,
                     &cand.title,
-                    cand.subtitle.as_deref(),
+                    raw_orig.as_deref(),
                     cand.year,
                     votes,
                 );

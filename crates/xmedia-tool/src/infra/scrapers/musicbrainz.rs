@@ -147,8 +147,18 @@ fn best_cover_for_release(rel: &MbReleaseItem) -> String {
     format!("https://coverartarchive.org/release/{}/front-500", rel.id)
 }
 
-fn select_best_release(releases: &[MbReleaseItem]) -> Option<&MbReleaseItem> {
+fn select_best_release<'a>(
+    releases: &'a [MbReleaseItem],
+    preferred_album: Option<&str>,
+) -> Option<&'a MbReleaseItem> {
+    let pref_trimmed = preferred_album.map(str::trim).filter(|s| !s.is_empty());
     releases.iter().max_by_key(|r| {
+        let exact_album = pref_trimmed.is_some_and(|p| r.title.trim().eq_ignore_ascii_case(p));
+        let contains_album = pref_trimmed.is_some_and(|p| {
+            let rt = r.title.trim().to_lowercase();
+            let pt = p.to_lowercase();
+            rt.contains(&pt) || pt.contains(&rt)
+        });
         let official = r
             .status
             .as_deref()
@@ -159,13 +169,16 @@ fn select_best_release(releases: &[MbReleaseItem]) -> Option<&MbReleaseItem> {
             .and_then(|rg| rg.primary_type.as_deref())
             .is_some_and(|pt| pt.eq_ignore_ascii_case("album"));
         let has_rg = r.release_group.is_some();
-        (official, is_album, has_rg)
+        (exact_album, contains_album, official, is_album, has_rg)
     })
 }
 
-pub(crate) fn map_recording_to_candidate(rec: MbRecordingItem) -> ScrapeCandidate {
+pub(crate) fn map_recording_to_candidate(
+    rec: MbRecordingItem,
+    preferred_album: Option<&str>,
+) -> ScrapeCandidate {
     let artists = extract_artists(&rec.artist_credit);
-    let best_release = select_best_release(&rec.releases);
+    let best_release = select_best_release(&rec.releases, preferred_album);
     let album_title = best_release.map(|r| r.title.clone());
     let cover_url = best_release.map(best_cover_for_release);
     let year = parse_year_prefix(rec.first_release_date.as_deref())
@@ -215,7 +228,7 @@ pub(crate) fn map_release_to_candidate(rel: MbReleaseItem) -> ScrapeCandidate {
 
 pub(crate) fn map_recording_detail(rec: MbRecordingItem) -> ScrapedMetadata {
     let creators = extract_artists(&rec.artist_credit);
-    let rel = select_best_release(&rec.releases);
+    let rel = select_best_release(&rec.releases, None);
     let album_title = rel.map(|r| r.title.clone());
     let cover_url = rel.map(best_cover_for_release);
     let disc_num = rel.and_then(|r| r.media.first()).and_then(|m| m.position);
@@ -390,7 +403,7 @@ impl ScraperProviderPort for MusicBrainzProvider {
         Ok(body
             .recordings
             .into_iter()
-            .map(map_recording_to_candidate)
+            .map(|rec| map_recording_to_candidate(rec, album))
             .collect())
     }
 
@@ -429,7 +442,13 @@ impl ScraperProviderPort for MusicBrainzProvider {
                 .json()
                 .await
                 .map_err(|e| DomainError::Storage(format!("MusicBrainz JSON error: {e}")))?;
-            return Ok(map_release_detail(rel));
+            let mut meta = map_release_detail(rel);
+            if let Some(ref cover) = meta.cover_url
+                && !verify_cover_art_exists(&client, cover).await
+            {
+                meta.cover_url = None;
+            }
+            return Ok(meta);
         }
 
         let url = format!("https://musicbrainz.org/ws/2/recording/{id}");
@@ -456,6 +475,27 @@ impl ScraperProviderPort for MusicBrainzProvider {
             .json()
             .await
             .map_err(|e| DomainError::Storage(format!("MusicBrainz JSON error: {e}")))?;
-        Ok(map_recording_detail(rec))
+        let mut meta = map_recording_detail(rec);
+        if let Some(ref cover) = meta.cover_url
+            && !verify_cover_art_exists(&client, cover).await
+        {
+            meta.cover_url = None;
+        }
+        Ok(meta)
+    }
+}
+
+async fn verify_cover_art_exists(client: &reqwest::Client, url: &str) -> bool {
+    if !url.starts_with("https://coverartarchive.org/") {
+        return true;
+    }
+    match client
+        .head(url)
+        .timeout(std::time::Duration::from_millis(2500))
+        .send()
+        .await
+    {
+        Ok(resp) => resp.status().is_success(),
+        Err(_) => false,
     }
 }

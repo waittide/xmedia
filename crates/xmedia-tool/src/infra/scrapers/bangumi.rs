@@ -350,7 +350,13 @@ pub(crate) fn map_bgm_detail(
         show_summary: (target == ScrapeTargetKind::TvShow)
             .then(|| subject_summary.clone())
             .flatten(),
-        season_title: season_num.map(|s| format!("第 {s} 季")),
+        season_title: season_num.map(|s| {
+            if s == 0 {
+                "特别篇".to_string()
+            } else {
+                format!("第 {s} 季")
+            }
+        }),
         season_summary: (target == ScrapeTargetKind::TvShow)
             .then_some(subject_summary)
             .flatten(),
@@ -428,12 +434,13 @@ impl ScraperProviderPort for BangumiProvider {
             .enumerate()
             .map(|(idx, s)| {
                 let votes = s.rating.as_ref().map(|r| r.total).unwrap_or(0);
+                let raw_orig = (!s.name.trim().is_empty()).then(|| s.name.trim().to_string());
                 let cand = map_bgm_to_candidate(s, query.target, season_ep);
                 let rel = score_candidate_relevance(
                     &query.keyword,
                     query.year,
                     &cand.title,
-                    cand.subtitle.as_deref(),
+                    raw_orig.as_deref(),
                     cand.year,
                     votes,
                 );
@@ -482,11 +489,12 @@ impl ScraperProviderPort for BangumiProvider {
 
         let mut matched_ep: Option<BgmEpisodeItem> = None;
         if target == ScrapeTargetKind::TvShow
-            && let Some((_, ep_num)) = season_ep
+            && let Some((season_num, ep_num)) = season_ep
         {
+            let ep_type = if season_num == 0 { 1 } else { 0 };
             let offset = ep_num.saturating_sub(1) / 100 * 100;
             let ep_url = format!(
-                "https://api.bgm.tv/v0/episodes?subject_id={base_id}&type=0&limit=100&offset={offset}"
+                "https://api.bgm.tv/v0/episodes?subject_id={base_id}&type={ep_type}&limit=100&offset={offset}"
             );
             let mut ep_req = client.get(&ep_url);
             if let Some(tok) = tok_opt {

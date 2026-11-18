@@ -16,6 +16,7 @@ use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
 use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
 use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
+use crate::infra::inspectors::video::{dir_contains_any_video, dir_has_single_video};
 
 #[derive(Clone)]
 pub struct MediaWorkbenchService {
@@ -388,26 +389,32 @@ impl MediaWorkbenchService {
                     && let Some(old_dir) = sandbox.abs_path.parent()
                     && old_dir != root.path
                 {
-                    let dir_files = if v.is_episode {
+                    let dir_files: &[&str] = if v.is_episode {
                         &[
                             "season.nfo",
                             "poster.jpg",
+                            "poster.jpeg",
                             "poster.png",
                             "poster.webp",
                             "fanart.jpg",
+                            "fanart.jpeg",
                             "fanart.png",
                             "fanart.webp",
-                        ][..]
-                    } else {
+                        ]
+                    } else if dir_has_single_video(old_dir) {
                         &[
                             "movie.nfo",
                             "poster.jpg",
+                            "poster.jpeg",
                             "poster.png",
                             "poster.webp",
                             "fanart.jpg",
+                            "fanart.jpeg",
                             "fanart.png",
                             "fanart.webp",
-                        ][..]
+                        ]
+                    } else {
+                        &[]
                     };
                     for fname in dir_files {
                         let cand = old_dir.join(fname);
@@ -432,9 +439,11 @@ impl MediaWorkbenchService {
                             for fname in [
                                 "tvshow.nfo",
                                 "poster.jpg",
+                                "poster.jpeg",
                                 "poster.png",
                                 "poster.webp",
                                 "fanart.jpg",
+                                "fanart.jpeg",
                                 "fanart.png",
                                 "fanart.webp",
                             ] {
@@ -498,14 +507,12 @@ impl MediaWorkbenchService {
             })?;
             moved_count += 1;
 
+            let mut migrated_shared_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)> =
+                Vec::new();
             for (comp_from, comp_to) in &item.companion_moves {
                 if let Ok(comp_src) = root.resolve_existing(comp_from)
                     && let Ok(comp_dst) = root.resolve_target(comp_to)
-                    && !comp_dst.exists()
                 {
-                    if let Some(p) = comp_dst.parent() {
-                        let _ = std::fs::create_dir_all(p);
-                    }
                     let is_shared_dir_sidecar = comp_src
                         .abs_path
                         .file_name()
@@ -517,18 +524,39 @@ impl MediaWorkbenchService {
                                     | "season.nfo"
                                     | "tvshow.nfo"
                                     | "poster.jpg"
+                                    | "poster.jpeg"
                                     | "poster.png"
                                     | "poster.webp"
                                     | "fanart.jpg"
+                                    | "fanart.jpeg"
                                     | "fanart.png"
                                     | "fanart.webp"
                             )
                         });
-                    if is_shared_dir_sidecar {
-                        let _ = std::fs::copy(&comp_src.abs_path, &comp_dst);
-                    } else {
-                        let _ = std::fs::rename(&comp_src.abs_path, &comp_dst);
+                    if !comp_dst.exists() {
+                        if let Some(p) = comp_dst.parent() {
+                            let _ = std::fs::create_dir_all(p);
+                        }
+                        if is_shared_dir_sidecar {
+                            let _ = std::fs::copy(&comp_src.abs_path, &comp_dst);
+                            migrated_shared_dirs
+                                .push((comp_src.abs_path.clone(), comp_dst.clone()));
+                        } else {
+                            let _ = std::fs::rename(&comp_src.abs_path, &comp_dst);
+                        }
+                    } else if is_shared_dir_sidecar {
+                        migrated_shared_dirs.push((comp_src.abs_path.clone(), comp_dst));
                     }
+                }
+            }
+
+            for (src_sidecar, dst_sidecar) in migrated_shared_dirs {
+                if dst_sidecar.is_file()
+                    && src_sidecar != dst_sidecar
+                    && let Some(dir) = src_sidecar.parent()
+                    && !dir_contains_any_video(dir)
+                {
+                    let _ = std::fs::remove_file(&src_sidecar);
                 }
             }
 

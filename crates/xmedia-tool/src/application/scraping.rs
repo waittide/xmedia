@@ -18,7 +18,8 @@ use crate::domain::media::{
 use crate::domain::ports::ScraperProviderPort;
 use crate::domain::scraper::{
     AggregateScrapeResponse, FieldSourceBadge, ProviderBriefDto, ProviderStatusDto,
-    ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata, merge_scraped_by_priority,
+    ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
+    is_compatible_secondary_source, merge_scraped_by_priority,
 };
 use crate::domain::template::render_template_target;
 use crate::domain::workspace::RootId;
@@ -343,8 +344,22 @@ impl ScrapingOrchestratorService {
             }
         }
 
-        let active_sources: Vec<(FieldSourceBadge, ScrapedMetadata)> =
+        let raw_active: Vec<(FieldSourceBadge, ScrapedMetadata)> =
             ordered_details.into_iter().flatten().collect();
+        let active_sources: Vec<(FieldSourceBadge, ScrapedMetadata)> = if raw_active.len() > 1 {
+            let primary_meta = raw_active[0].1.clone();
+            let target_hint = query.target;
+            raw_active
+                .into_iter()
+                .enumerate()
+                .filter(|(idx, (_, sec))| {
+                    *idx == 0 || is_compatible_secondary_source(&primary_meta, sec, target_hint)
+                })
+                .map(|(_, pair)| pair)
+                .collect()
+        } else {
+            raw_active
+        };
         let merged = merge_scraped_by_priority(&active_sources, query.target);
 
         let max_len = per_provider.iter().map(Vec::len).max().unwrap_or(0);
@@ -401,7 +416,8 @@ impl ScrapingOrchestratorService {
     }
 
     /// Applies `ScrapedMetadata` directly onto a target media file (atomically writing tags/OPF/ComicInfo/NFO,
-    /// lyrics, downloading artwork, and—for Video—directly archiving into Jellyfin folder hierarchy).
+    /// lyrics, downloading artwork, and optionally organizing into templates / Jellyfin folder layout).
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_to_file(
         &self,
         root_id: RootId,
@@ -410,14 +426,54 @@ impl ScrapingOrchestratorService {
         scraped: ScrapedMetadata,
         apply_cover: bool,
         write_sidecar_lrc: bool,
+        organize_by_template: Option<bool>,
+        only_fill_missing: bool,
     ) -> DomainResult<MediaFileDetail> {
-        if media_kind == MediaKind::Video {
+        let should_organize = organize_by_template.unwrap_or(media_kind == MediaKind::Video);
+
+        if media_kind == MediaKind::Video && should_organize {
             return self
-                .apply_video_jellyfin_archive(root_id, rel_path, scraped, apply_cover)
+                .apply_video_jellyfin_archive(
+                    root_id,
+                    rel_path,
+                    scraped,
+                    apply_cover,
+                    only_fill_missing,
+                )
                 .await;
         }
 
-        let patch = map_scraped_to_patch(media_kind, &scraped, write_sidecar_lrc);
+        let need_existing = only_fill_missing
+            || (media_kind == MediaKind::Music
+                && scraped.target == Some(ScrapeTargetKind::MusicAlbum));
+        let existing_detail = if need_existing {
+            Some(
+                self.workbench
+                    .inspect_file(root_id, rel_path, Some(media_kind))
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        let existing_music_artist = existing_detail.as_ref().is_some_and(|d| {
+            matches!(&d.metadata, MediaMetadataPayload::Music(m) if !m.artist.trim().is_empty())
+        });
+
+        let mut patch = map_scraped_to_patch(
+            media_kind,
+            &scraped,
+            write_sidecar_lrc,
+            existing_music_artist,
+        );
+        if only_fill_missing && let Some(ref cur) = existing_detail {
+            let fallback_stem = Path::new(rel_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            filter_patch_for_missing(&mut patch, &cur.metadata, fallback_stem);
+        }
+
         let mut detail = self
             .workbench
             .write_metadata(root_id, rel_path, patch)
@@ -427,13 +483,68 @@ impl ScrapingOrchestratorService {
             let creds = self.settings.get_credentials().await?;
             let client = build_http_client(&creds)?;
 
-            if let Some(ref cover_url) = scraped.cover_url
-                && !cover_url.trim().is_empty()
-                && let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await
+            if media_kind == MediaKind::Video {
+                let (has_poster, has_fanart, has_thumb) = match existing_detail
+                    .as_ref()
+                    .map(|d| &d.metadata)
+                    .unwrap_or(&detail.metadata)
+                {
+                    MediaMetadataPayload::Video(v) => (v.has_poster, v.has_fanart, v.has_thumb),
+                    _ => (false, false, false),
+                };
+                for (slot, url_opt, already_has) in [
+                    ("poster", scraped.cover_url.as_deref(), has_poster),
+                    ("fanart", scraped.backdrop_url.as_deref(), has_fanart),
+                    ("thumb", scraped.episode_still_url.as_deref(), has_thumb),
+                ] {
+                    if only_fill_missing && already_has {
+                        continue;
+                    }
+                    if let Some(u) = url_opt.map(str::trim).filter(|s| !s.is_empty())
+                        && let Ok((bytes, mime)) = download_image_bytes(&client, u).await
+                    {
+                        detail = self
+                            .workbench
+                            .write_artwork(root_id, rel_path, &bytes, &mime, slot, Some(media_kind))
+                            .await?;
+                    }
+                }
+            } else {
+                let already_has_cover = existing_detail
+                    .as_ref()
+                    .is_some_and(|d| existing_artwork_present(&d.metadata));
+                if !(only_fill_missing && already_has_cover)
+                    && let Some(ref cover_url) = scraped.cover_url
+                    && !cover_url.trim().is_empty()
+                    && let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await
+                {
+                    detail = self
+                        .workbench
+                        .write_artwork(root_id, rel_path, &bytes, &mime, "cover", Some(media_kind))
+                        .await?;
+                }
+            }
+        }
+
+        if should_organize {
+            let plans = self
+                .workbench
+                .preview_rename(
+                    root_id,
+                    &[detail.entry.rel_path.clone()],
+                    None,
+                    None,
+                    Some(media_kind),
+                )
+                .await?;
+            if let Some(plan) = plans.first()
+                && !plan.unchanged
+                && plan.conflict.is_none()
             {
+                self.workbench.execute_rename(root_id, &plans).await?;
                 detail = self
                     .workbench
-                    .write_artwork(root_id, rel_path, &bytes, &mime, "cover", Some(media_kind))
+                    .inspect_file(root_id, &plan.to_rel_path, Some(media_kind))
                     .await?;
             }
         }
@@ -447,6 +558,7 @@ impl ScrapingOrchestratorService {
         rel_path: &str,
         scraped: ScrapedMetadata,
         apply_cover: bool,
+        only_fill_missing: bool,
     ) -> DomainResult<MediaFileDetail> {
         let raw_settings = self.settings.get_raw().await?;
         let root = raw_settings
@@ -463,8 +575,8 @@ impl ScrapingOrchestratorService {
             )));
         }
 
-        let patch = map_scraped_to_patch(MediaKind::Video, &scraped, false);
-        let MediaMetadataPatch::Video(vp) = patch else {
+        let patch = map_scraped_to_patch(MediaKind::Video, &scraped, false, false);
+        let MediaMetadataPatch::Video(mut vp) = patch else {
             unreachable!();
         };
 
@@ -473,6 +585,17 @@ impl ScrapingOrchestratorService {
         let mut meta = tokio::task::spawn_blocking(move || read_base_video_meta(&src_abs_for_read))
             .await
             .map_err(|e| DomainError::Storage(format!("video base inspect failed: {e}")))?;
+        let existing_poster = meta.has_poster;
+        let existing_fanart = meta.has_fanart;
+        let existing_thumb = meta.has_thumb;
+        if only_fill_missing {
+            let fallback_stem = src_sandbox
+                .abs_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            filter_video_patch_for_missing(&mut vp, &meta, fallback_stem);
+        }
         apply_video_patch_onto(&mut meta, vp);
         if meta.is_episode && meta.season_number.is_none() {
             meta.season_number = Some(1);
@@ -530,13 +653,24 @@ impl ScrapingOrchestratorService {
 
         // 3. Pre-fetch requested scraped artwork bytes (with URL deduplication)
         let mut downloaded_images: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
+        let skip_poster = only_fill_missing && existing_poster;
+        let skip_fanart = only_fill_missing && existing_fanart;
+        let skip_thumb = only_fill_missing && existing_thumb;
         if apply_cover {
             let client = build_http_client(&raw_settings.credentials)?;
             let urls_to_fetch: [Option<&str>; 4] = [
-                scraped.cover_url.as_deref(),
-                scraped.backdrop_url.as_deref(),
-                scraped.season_poster_url.as_deref(),
-                scraped.episode_still_url.as_deref(),
+                (!skip_poster)
+                    .then_some(scraped.cover_url.as_deref())
+                    .flatten(),
+                (!skip_fanart)
+                    .then_some(scraped.backdrop_url.as_deref())
+                    .flatten(),
+                (!skip_poster)
+                    .then_some(scraped.season_poster_url.as_deref())
+                    .flatten(),
+                (!skip_thumb)
+                    .then_some(scraped.episode_still_url.as_deref())
+                    .flatten(),
             ];
             for raw_url in urls_to_fetch.into_iter().flatten() {
                 let u = raw_url.trim();
@@ -600,34 +734,37 @@ impl ScrapingOrchestratorService {
                         let _ = std::fs::rename(&comp_abs, &sub_dst);
                     }
                 } else if dst_abs_clone != src_abs {
-                    // Preserve existing local poster/fanart if online cover download wasn't used
-                    if !apply_cover {
-                        if lower.ends_with("-poster.jpg") || lower.ends_with("-poster.png") {
-                            let target_poster_dir =
-                                if meta.is_episode { &show_dir } else { &dst_dir };
-                            let ext_p = if lower.ends_with(".png") {
-                                "png"
-                            } else {
-                                "jpg"
-                            };
-                            let migrated = target_poster_dir.join(format!("poster.{ext_p}"));
-                            if !migrated.exists() {
-                                let _ = std::fs::copy(&comp_abs, &migrated);
-                            }
-                        } else if lower.ends_with("-fanart.jpg") || lower.ends_with("-fanart.png") {
-                            let target_fan_dir = if meta.is_episode { &show_dir } else { &dst_dir };
-                            let ext_f = if lower.ends_with(".png") {
-                                "png"
-                            } else {
-                                "jpg"
-                            };
-                            let migrated = target_fan_dir.join(format!("fanart.{ext_f}"));
-                            if !migrated.exists() {
-                                let _ = std::fs::copy(&comp_abs, &migrated);
-                            }
+                    // Preserve existing local poster/fanart/thumb when online download isn't replacing that slot
+                    let image_ext = |p_lower: &str| -> &'static str {
+                        if p_lower.ends_with(".png") {
+                            "png"
+                        } else if p_lower.ends_with(".webp") {
+                            "webp"
+                        } else {
+                            "jpg"
+                        }
+                    };
+                    if lower.contains("-poster.") && (!apply_cover || skip_poster) {
+                        let target_poster_dir = if meta.is_episode { &show_dir } else { &dst_dir };
+                        let migrated =
+                            target_poster_dir.join(format!("poster.{}", image_ext(&lower)));
+                        if !migrated.exists() {
+                            let _ = std::fs::copy(&comp_abs, &migrated);
+                        }
+                    } else if lower.contains("-fanart.") && (!apply_cover || skip_fanart) {
+                        let target_fan_dir = if meta.is_episode { &show_dir } else { &dst_dir };
+                        let migrated = target_fan_dir.join(format!("fanart.{}", image_ext(&lower)));
+                        if !migrated.exists() {
+                            let _ = std::fs::copy(&comp_abs, &migrated);
+                        }
+                    } else if lower.contains("-thumb.") && (!apply_cover || skip_thumb) {
+                        let migrated =
+                            dst_dir.join(format!("{target_stem}-thumb.{}", image_ext(&lower)));
+                        if !migrated.exists() {
+                            let _ = std::fs::copy(&comp_abs, &migrated);
                         }
                     }
-                    // Clean up flat legacy sidecars (`<old>.nfo`, `<old>-poster.*`, `<old>-fanart.*`)
+                    // Clean up flat legacy sidecars (`<old>.nfo`, `<old>-poster.*`, `<old>-fanart.*`, `<old>-thumb.*`)
                     let _ = std::fs::remove_file(&comp_abs);
                 }
             }
@@ -643,12 +780,14 @@ impl ScrapingOrchestratorService {
                     let _ = std::fs::remove_file(same_stem_nfo);
                 }
 
-                if let Some(u) = scraped_clone.cover_url.as_deref().map(str::trim)
+                if !skip_poster
+                    && let Some(u) = scraped_clone.cover_url.as_deref().map(str::trim)
                     && let Some((bytes, img_ext)) = downloaded_images.get(u)
                 {
                     write_image_replacing_opposite_ext(&dst_dir, "poster", img_ext, bytes)?;
                 }
-                if let Some(u) = scraped_clone.backdrop_url.as_deref().map(str::trim)
+                if !skip_fanart
+                    && let Some(u) = scraped_clone.backdrop_url.as_deref().map(str::trim)
                     && let Some((bytes, img_ext)) = downloaded_images.get(u)
                 {
                     write_image_replacing_opposite_ext(&dst_dir, "fanart", img_ext, bytes)?;
@@ -656,19 +795,24 @@ impl ScrapingOrchestratorService {
             } else {
                 // Jellyfin 3-Tier TV Show layout:
                 // 1) Series root (`show_dir`): `tvshow.nfo`, `poster.jpg`, `fanart.jpg`
-                let show_plot = scraped_clone
-                    .show_summary
-                    .as_deref()
-                    .or(meta.summary.as_deref());
-                let tvshow_xml = render_tvshow_nfo_xml(&meta, show_plot);
-                atomic_write_bytes(&show_dir.join("tvshow.nfo"), tvshow_xml.as_bytes())?;
+                let tvshow_nfo_path = show_dir.join("tvshow.nfo");
+                if !only_fill_missing || !tvshow_nfo_path.is_file() {
+                    let show_plot = scraped_clone
+                        .show_summary
+                        .as_deref()
+                        .or(meta.summary.as_deref());
+                    let tvshow_xml = render_tvshow_nfo_xml(&meta, show_plot);
+                    atomic_write_bytes(&tvshow_nfo_path, tvshow_xml.as_bytes())?;
+                }
 
-                if let Some(u) = scraped_clone.cover_url.as_deref().map(str::trim)
+                if !skip_poster
+                    && let Some(u) = scraped_clone.cover_url.as_deref().map(str::trim)
                     && let Some((bytes, img_ext)) = downloaded_images.get(u)
                 {
                     write_image_replacing_opposite_ext(&show_dir, "poster", img_ext, bytes)?;
                 }
-                if let Some(u) = scraped_clone.backdrop_url.as_deref().map(str::trim)
+                if !skip_fanart
+                    && let Some(u) = scraped_clone.backdrop_url.as_deref().map(str::trim)
                     && let Some((bytes, img_ext)) = downloaded_images.get(u)
                 {
                     write_image_replacing_opposite_ext(&show_dir, "fanart", img_ext, bytes)?;
@@ -676,20 +820,23 @@ impl ScrapingOrchestratorService {
 
                 // 2) Season folder (`dst_dir` = `Season XX`): `season.nfo`, `poster.jpg`, `fanart.jpg`
                 let season_num = meta.season_number.unwrap_or(1);
-                let season_plot = scraped_clone
-                    .season_summary
-                    .as_deref()
-                    .or(scraped_clone.show_summary.as_deref())
-                    .or(meta.summary.as_deref());
-                let season_xml = render_season_nfo_xml(
-                    season_num,
-                    scraped_clone.season_title.as_deref(),
-                    meta.year,
-                    season_plot,
-                    meta.tmdb_id.as_deref(),
-                    meta.bangumi_id.as_deref(),
-                );
-                atomic_write_bytes(&dst_dir.join("season.nfo"), season_xml.as_bytes())?;
+                let season_nfo_path = dst_dir.join("season.nfo");
+                if !only_fill_missing || !season_nfo_path.is_file() {
+                    let season_plot = scraped_clone
+                        .season_summary
+                        .as_deref()
+                        .or(scraped_clone.show_summary.as_deref())
+                        .or(meta.summary.as_deref());
+                    let season_xml = render_season_nfo_xml(
+                        season_num,
+                        scraped_clone.season_title.as_deref(),
+                        meta.year,
+                        season_plot,
+                        meta.tmdb_id.as_deref(),
+                        meta.bangumi_id.as_deref(),
+                    );
+                    atomic_write_bytes(&season_nfo_path, season_xml.as_bytes())?;
+                }
 
                 if dst_dir != show_dir {
                     let season_poster_u = scraped_clone
@@ -698,12 +845,14 @@ impl ScrapingOrchestratorService {
                         .map(str::trim)
                         .filter(|s| !s.is_empty())
                         .or_else(|| scraped_clone.cover_url.as_deref().map(str::trim));
-                    if let Some(u) = season_poster_u
+                    if !skip_poster
+                        && let Some(u) = season_poster_u
                         && let Some((bytes, img_ext)) = downloaded_images.get(u)
                     {
                         write_image_replacing_opposite_ext(&dst_dir, "poster", img_ext, bytes)?;
                     }
-                    if let Some(u) = scraped_clone.backdrop_url.as_deref().map(str::trim)
+                    if !skip_fanart
+                        && let Some(u) = scraped_clone.backdrop_url.as_deref().map(str::trim)
                         && let Some((bytes, img_ext)) = downloaded_images.get(u)
                     {
                         write_image_replacing_opposite_ext(&dst_dir, "fanart", img_ext, bytes)?;
@@ -715,7 +864,8 @@ impl ScrapingOrchestratorService {
                 let ep_xml = render_video_nfo_xml(&meta);
                 atomic_write_bytes(&ep_nfo, ep_xml.as_bytes())?;
 
-                if let Some(u) = scraped_clone.episode_still_url.as_deref().map(str::trim)
+                if !skip_thumb
+                    && let Some(u) = scraped_clone.episode_still_url.as_deref().map(str::trim)
                     && let Some((bytes, img_ext)) = downloaded_images.get(u)
                 {
                     let thumb_base = format!("{target_stem}-thumb");
@@ -769,10 +919,209 @@ async fn download_image_bytes(
     Ok((raw, mime))
 }
 
+fn has_lrc_timestamps(text: &str) -> bool {
+    text.lines().any(|line| {
+        let b = line.trim_start().as_bytes();
+        b.len() >= 6
+            && b[0] == b'['
+            && b[1].is_ascii_digit()
+            && b[2].is_ascii_digit()
+            && b[3] == b':'
+            && b[4].is_ascii_digit()
+    })
+}
+
+fn existing_artwork_present(meta: &MediaMetadataPayload) -> bool {
+    match meta {
+        MediaMetadataPayload::Book(b) => b.has_cover,
+        MediaMetadataPayload::Comic(c) => c.has_cover,
+        MediaMetadataPayload::Music(m) => m.has_embedded_cover,
+        MediaMetadataPayload::Video(v) => v.has_poster,
+    }
+}
+
+fn non_empty_opt(s: &Option<String>) -> bool {
+    s.as_ref().is_some_and(|v| !v.trim().is_empty())
+}
+
+fn filter_video_patch_for_missing(
+    vp: &mut VideoMetaPatch,
+    cur: &crate::domain::media::VideoFileMeta,
+    fallback_stem: &str,
+) {
+    if cur.has_nfo && !cur.title.trim().is_empty() && cur.title.trim() != fallback_stem {
+        vp.title = None;
+    }
+    if cur.has_nfo {
+        vp.is_episode = None;
+    }
+    if non_empty_opt(&cur.original_title) {
+        vp.original_title = None;
+    }
+    if non_empty_opt(&cur.show_title) {
+        vp.show_title = None;
+    }
+    if cur.season_number.is_some() {
+        vp.season_number = None;
+    }
+    if cur.episode_number.is_some() {
+        vp.episode_number = None;
+    }
+    if cur.year.is_some() {
+        vp.year = None;
+    }
+    if cur.rating.is_some() {
+        vp.rating = None;
+    }
+    if non_empty_opt(&cur.summary) {
+        vp.summary = None;
+    }
+    if !cur.genres.is_empty() {
+        vp.genres = None;
+    }
+    if !cur.tags.is_empty() {
+        vp.tags = None;
+    }
+    if !cur.actors.is_empty() {
+        vp.actors = None;
+    }
+    if !cur.directors.is_empty() {
+        vp.directors = None;
+    }
+    if non_empty_opt(&cur.studio) {
+        vp.studio = None;
+    }
+    if non_empty_opt(&cur.tmdb_id) {
+        vp.tmdb_id = None;
+    }
+    if non_empty_opt(&cur.bangumi_id) {
+        vp.bangumi_id = None;
+    }
+}
+
+fn filter_patch_for_missing(
+    patch: &mut MediaMetadataPatch,
+    current: &MediaMetadataPayload,
+    fallback_stem: &str,
+) {
+    match (patch, current) {
+        (MediaMetadataPatch::Book(bp), MediaMetadataPayload::Book(b)) => {
+            let has_tag_block = !b.authors.is_empty()
+                || b.publisher.is_some()
+                || b.isbn.is_some()
+                || !b.tags.is_empty()
+                || b.description.is_some();
+            if !b.title.trim().is_empty() && (b.title.trim() != fallback_stem || has_tag_block) {
+                bp.title = None;
+            }
+            if !b.authors.is_empty() {
+                bp.authors = None;
+            }
+            if non_empty_opt(&b.description) {
+                bp.description = None;
+            }
+            if non_empty_opt(&b.publisher) {
+                bp.publisher = None;
+            }
+            if non_empty_opt(&b.published_at) {
+                bp.published_at = None;
+            }
+            if non_empty_opt(&b.language) {
+                bp.language = None;
+            }
+            if non_empty_opt(&b.isbn) {
+                bp.isbn = None;
+            }
+            if !b.tags.is_empty() {
+                bp.tags = None;
+            }
+        }
+        (MediaMetadataPatch::Comic(cp), MediaMetadataPayload::Comic(c)) => {
+            if non_empty_opt(&c.series) {
+                cp.series = None;
+            }
+            if non_empty_opt(&c.title) {
+                cp.title = None;
+            }
+            if non_empty_opt(&c.number) {
+                cp.number = None;
+            }
+            if c.volume.is_some() {
+                cp.volume = None;
+            }
+            if non_empty_opt(&c.summary) {
+                cp.summary = None;
+            }
+            if !c.writers.is_empty() {
+                cp.writers = None;
+            }
+            if !c.pencillers.is_empty() {
+                cp.pencillers = None;
+            }
+            if non_empty_opt(&c.publisher) {
+                cp.publisher = None;
+            }
+            if !c.genres.is_empty() {
+                cp.genres = None;
+            }
+            if !c.tags.is_empty() {
+                cp.tags = None;
+            }
+            if c.year.is_some() {
+                cp.year = None;
+            }
+            if non_empty_opt(&c.language_iso) {
+                cp.language_iso = None;
+            }
+        }
+        (MediaMetadataPatch::Music(mp), MediaMetadataPayload::Music(m)) => {
+            let has_tags = !m.artist.trim().is_empty()
+                || !m.album.trim().is_empty()
+                || m.track_number.is_some()
+                || m.year.is_some();
+            if !m.title.trim().is_empty() && (m.title.trim() != fallback_stem || has_tags) {
+                mp.title = None;
+            }
+            if !m.artist.trim().is_empty() {
+                mp.artist = None;
+            }
+            if non_empty_opt(&m.album_artist) {
+                mp.album_artist = None;
+            }
+            if !m.album.trim().is_empty() {
+                mp.album = None;
+            }
+            if m.track_number.is_some() {
+                mp.track_number = None;
+            }
+            if m.disc_number.is_some() {
+                mp.disc_number = None;
+            }
+            if m.year.is_some() {
+                mp.year = None;
+            }
+            if non_empty_opt(&m.genre) {
+                mp.genre = None;
+            }
+            if non_empty_opt(&m.embedded_lyrics) {
+                mp.embedded_lyrics = None;
+            }
+            if non_empty_opt(&m.sidecar_lrc) {
+                mp.sidecar_lrc = None;
+            }
+        }
+        (MediaMetadataPatch::Video(vp), MediaMetadataPayload::Video(v)) => {
+            filter_video_patch_for_missing(vp, v, fallback_stem);
+        }
+        _ => {}
+    }
+}
+
 fn map_scraped_to_patch(
     media_kind: MediaKind,
     s: &ScrapedMetadata,
     write_sidecar_lrc: bool,
+    existing_music_artist_non_empty: bool,
 ) -> MediaMetadataPatch {
     match media_kind {
         MediaKind::Book => MediaMetadataPatch::Book(BookMetaPatch {
@@ -796,41 +1145,76 @@ fn map_scraped_to_patch(
                 (!merged.is_empty()).then_some(merged)
             },
         }),
-        MediaKind::Comic => MediaMetadataPatch::Comic(ComicMetaPatch {
-            series: s.series_or_album.clone().or_else(|| s.title.clone()),
-            title: s.title.clone(),
-            number: s.track_or_episode_number.map(|n| n.to_string()),
-            volume: s.disc_or_season_number.and_then(|v| i32::try_from(v).ok()),
-            summary: s.summary.clone(),
-            writers: (!s.creators.is_empty()).then(|| s.creators.clone()),
-            pencillers: (!s.illustrators_or_directors.is_empty())
-                .then(|| s.illustrators_or_directors.clone()),
-            publisher: s.publisher_or_studio.clone(),
-            genres: (!s.genres.is_empty()).then(|| s.genres.clone()),
-            tags: (!s.tags.is_empty()).then(|| s.tags.clone()),
-            year: s.year,
-            language_iso: s.language.clone(),
-            reading_direction: None,
-        }),
+        MediaKind::Comic => {
+            let is_chapter_scrape = s.track_or_episode_number.is_some();
+            MediaMetadataPatch::Comic(ComicMetaPatch {
+                series: s.series_or_album.clone().or_else(|| s.title.clone()),
+                title: is_chapter_scrape.then(|| s.title.clone()).flatten(),
+                number: s.track_or_episode_number.map(|n| n.to_string()),
+                volume: is_chapter_scrape
+                    .then(|| s.disc_or_season_number.and_then(|v| i32::try_from(v).ok()))
+                    .flatten(),
+                summary: s.summary.clone(),
+                writers: (!s.creators.is_empty()).then(|| s.creators.clone()),
+                pencillers: (!s.illustrators_or_directors.is_empty())
+                    .then(|| s.illustrators_or_directors.clone()),
+                publisher: s.publisher_or_studio.clone(),
+                genres: (!s.genres.is_empty()).then(|| s.genres.clone()),
+                tags: (!s.tags.is_empty()).then(|| s.tags.clone()),
+                year: s.year,
+                language_iso: s.language.clone(),
+                reading_direction: None,
+            })
+        }
         MediaKind::Music => {
             let best_lyrics = s.synced_lyrics.clone().or_else(|| s.plain_lyrics.clone());
-            MediaMetadataPatch::Music(MusicMetaPatch {
-                title: s.title.clone(),
-                artist: s.creators.first().cloned(),
-                album_artist: (!s.creators.is_empty()).then(|| s.creators.join(", ")),
-                album: s.series_or_album.clone(),
-                track_number: s.track_or_episode_number,
-                disc_number: s.disc_or_season_number,
-                year: s.year,
-                genre: s.genres.first().cloned(),
-                comment: None,
-                embedded_lyrics: best_lyrics.clone(),
-                sidecar_lrc: if write_sidecar_lrc {
-                    s.synced_lyrics.clone().or(best_lyrics)
-                } else {
-                    None
-                },
-            })
+            let sidecar_lrc = if write_sidecar_lrc {
+                s.synced_lyrics
+                    .as_deref()
+                    .filter(|l| has_lrc_timestamps(l))
+                    .map(str::to_string)
+            } else {
+                None
+            };
+            if s.target == Some(ScrapeTargetKind::Lyrics) {
+                MediaMetadataPatch::Music(MusicMetaPatch {
+                    embedded_lyrics: best_lyrics,
+                    sidecar_lrc,
+                    ..Default::default()
+                })
+            } else if s.target == Some(ScrapeTargetKind::MusicAlbum) {
+                MediaMetadataPatch::Music(MusicMetaPatch {
+                    title: None,
+                    artist: if existing_music_artist_non_empty {
+                        None
+                    } else {
+                        s.creators.first().cloned()
+                    },
+                    album_artist: (!s.creators.is_empty()).then(|| s.creators.join(", ")),
+                    album: s.series_or_album.clone().or_else(|| s.title.clone()),
+                    track_number: None,
+                    disc_number: None,
+                    year: s.year,
+                    genre: s.genres.first().cloned(),
+                    comment: None,
+                    embedded_lyrics: None,
+                    sidecar_lrc: None,
+                })
+            } else {
+                MediaMetadataPatch::Music(MusicMetaPatch {
+                    title: s.title.clone(),
+                    artist: s.creators.first().cloned(),
+                    album_artist: (!s.creators.is_empty()).then(|| s.creators.join(", ")),
+                    album: s.series_or_album.clone(),
+                    track_number: s.track_or_episode_number,
+                    disc_number: s.disc_or_season_number,
+                    year: s.year,
+                    genre: s.genres.first().cloned(),
+                    comment: None,
+                    embedded_lyrics: best_lyrics,
+                    sidecar_lrc,
+                })
+            }
         }
         MediaKind::Video => {
             let is_ep = s.target == Some(ScrapeTargetKind::TvShow)

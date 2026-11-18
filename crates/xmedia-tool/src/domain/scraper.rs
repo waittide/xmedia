@@ -275,8 +275,12 @@ pub fn merge_scraped_by_priority(
             out.track_or_episode_number = Some(n);
             sources.insert("track_or_episode_number".to_string(), badge.clone());
         }
+        let allow_zero_season = out.target == Some(ScrapeTargetKind::TvShow)
+            || src.target == Some(ScrapeTargetKind::TvShow);
         if out.disc_or_season_number.is_none()
-            && let Some(n) = src.disc_or_season_number.filter(|&n| n > 0)
+            && let Some(n) = src
+                .disc_or_season_number
+                .filter(|&n| n > 0 || allow_zero_season)
         {
             out.disc_or_season_number = Some(n);
             sources.insert("disc_or_season_number".to_string(), badge.clone());
@@ -366,6 +370,95 @@ fn normalize_title_for_match(raw: &str) -> String {
         .filter(|c| c.is_alphanumeric())
         .flat_map(char::to_lowercase)
         .collect()
+}
+
+fn normalize_isbn(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| c.is_ascii_digit() || *c == 'X' || *c == 'x')
+        .flat_map(char::to_uppercase)
+        .collect()
+}
+
+/// Checks whether a lower-priority provider's metadata refers to the same work as the primary
+/// result, blocking unrelated secondary enrichment during automatic `aggregate` waterfall merge.
+pub fn is_compatible_secondary_source(
+    primary: &ScrapedMetadata,
+    secondary: &ScrapedMetadata,
+    target: Option<ScrapeTargetKind>,
+) -> bool {
+    if let (Some(i1), Some(i2)) = (primary.isbn.as_deref(), secondary.isbn.as_deref()) {
+        let n1 = normalize_isbn(i1);
+        let n2 = normalize_isbn(i2);
+        if !n1.is_empty() && !n2.is_empty() && n1 != n2 {
+            return false;
+        }
+    }
+
+    if matches!(
+        target.or(primary.target).or(secondary.target),
+        Some(
+            ScrapeTargetKind::Movie
+                | ScrapeTargetKind::TvShow
+                | ScrapeTargetKind::MusicTrack
+                | ScrapeTargetKind::MusicAlbum
+        )
+    ) && let (Some(y1), Some(y2)) = (primary.year, secondary.year)
+        && (y1 - y2).abs() > 2
+    {
+        return false;
+    }
+
+    let collect_titles = |m: &ScrapedMetadata| -> Vec<String> {
+        [&m.title, &m.original_title, &m.series_or_album]
+            .into_iter()
+            .flatten()
+            .map(|s| normalize_title_for_match(s))
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    let p_titles = collect_titles(primary);
+    let s_titles = collect_titles(secondary);
+    if !p_titles.is_empty() && !s_titles.is_empty() {
+        let has_title_overlap = p_titles.iter().any(|pt| {
+            s_titles.iter().any(|st| {
+                pt == st
+                    || (pt.chars().count() >= 2
+                        && st.chars().count() >= 2
+                        && (pt.contains(st) || st.contains(pt)))
+            })
+        });
+        if !has_title_overlap {
+            let p_ascii = p_titles.iter().all(|t| t.is_ascii());
+            let s_ascii = s_titles.iter().all(|t| t.is_ascii());
+            if p_ascii && s_ascii {
+                let p_creators: Vec<String> = primary
+                    .creators
+                    .iter()
+                    .map(|c| normalize_title_for_match(c))
+                    .filter(|c| !c.is_empty())
+                    .collect();
+                let s_creators: Vec<String> = secondary
+                    .creators
+                    .iter()
+                    .map(|c| normalize_title_for_match(c))
+                    .filter(|c| !c.is_empty())
+                    .collect();
+                let creator_match = p_creators.iter().any(|pc| {
+                    s_creators.iter().any(|sc| {
+                        pc == sc
+                            || (pc.len() >= 2
+                                && sc.len() >= 2
+                                && (pc.contains(sc) || sc.contains(pc)))
+                    })
+                });
+                if !creator_match {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
 }
 
 /// Scores how closely a candidate's primary/original title and year match the user's search query,

@@ -638,6 +638,8 @@ mod tests {
                 },
                 true,
                 false,
+                None,
+                false,
             )
             .await
             .unwrap();
@@ -684,6 +686,8 @@ mod tests {
                     ..Default::default()
                 },
                 true,
+                false,
+                None,
                 false,
             )
             .await
@@ -769,6 +773,8 @@ mod tests {
                     ..Default::default()
                 },
                 true,
+                false,
+                None,
                 false,
             )
             .await
@@ -1279,5 +1285,390 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn scrape_subitem_field_protection_only_fill_missing_and_untimed_lrc_guard() {
+        use crate::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("lib");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let cbz = root.join("ch01.cbz");
+        let wav = root.join("track01.wav");
+        let epub = root.join("book.epub");
+        write_minimal_cbz(&cbz);
+        write_minimal_wav(&wav);
+        write_minimal_epub(&epub);
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // 1. Pre-seed Comic chapter metadata, then apply Series-level scrape -> chapter fields survive
+        app.workbench
+            .write_metadata(
+                root_id,
+                "ch01.cbz",
+                MediaMetadataPatch::Comic(ComicMetaPatch {
+                    title: Some("第一话 犬与电锯".into()),
+                    number: Some("1".into()),
+                    volume: Some(1),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let comic_after = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "ch01.cbz",
+                MediaKind::Comic,
+                ScrapedMetadata {
+                    provider_id: "bangumi".into(),
+                    external_id: "321".into(),
+                    target: Some(ScrapeTargetKind::Comic),
+                    title: Some("链锯人".into()),
+                    creators: vec!["藤本树".into()],
+                    ..Default::default()
+                },
+                false,
+                false,
+                Some(false),
+                false,
+            )
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Comic(c) = comic_after.metadata {
+            assert_eq!(c.series.as_deref(), Some("链锯人"));
+            assert_eq!(c.title.as_deref(), Some("第一话 犬与电锯"));
+            assert_eq!(c.number.as_deref(), Some("1"));
+            assert_eq!(c.volume, Some(1));
+        } else {
+            panic!("expected comic payload");
+        }
+
+        // 2. Music: pre-seed track tags, apply MusicAlbum scrape -> track title/artist/track# preserved
+        app.workbench
+            .write_metadata(
+                root_id,
+                "track01.wav",
+                MediaMetadataPatch::Music(MusicMetaPatch {
+                    title: Some("晴天".into()),
+                    artist: Some("周杰伦".into()),
+                    track_number: Some(3),
+                    disc_number: Some(1),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let music_after_album = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "track01.wav",
+                MediaKind::Music,
+                ScrapedMetadata {
+                    provider_id: "itunes".into(),
+                    external_id: "alb-1".into(),
+                    target: Some(ScrapeTargetKind::MusicAlbum),
+                    title: Some("叶惠美".into()),
+                    series_or_album: Some("叶惠美".into()),
+                    creators: vec!["Jay Chou".into()],
+                    year: Some(2003),
+                    genres: vec!["Mandopop".into()],
+                    ..Default::default()
+                },
+                false,
+                true,
+                Some(false),
+                false,
+            )
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Music(m) = music_after_album.metadata {
+            assert_eq!(m.title, "晴天");
+            assert_eq!(m.artist, "周杰伦");
+            assert_eq!(m.album, "叶惠美");
+            assert_eq!(m.album_artist.as_deref(), Some("Jay Chou"));
+            assert_eq!(m.track_number, Some(3));
+            assert_eq!(m.year, Some(2003));
+        } else {
+            panic!("expected music payload");
+        }
+
+        // 3. Lyrics scrape: untimed lyrics must NOT create .lrc; timed LRC creates .lrc without touching tags
+        app.scraping
+            .apply_to_file(
+                root_id,
+                "track01.wav",
+                MediaKind::Music,
+                ScrapedMetadata {
+                    provider_id: "lrclib".into(),
+                    external_id: "lrc-1".into(),
+                    target: Some(ScrapeTargetKind::Lyrics),
+                    title: Some("WRONG TITLE".into()),
+                    creators: vec!["WRONG ARTIST".into()],
+                    synced_lyrics: Some("纯文本无时间戳歌词".into()),
+                    ..Default::default()
+                },
+                false,
+                true,
+                Some(false),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(!root.join("track01.lrc").exists());
+
+        let music_after_lrc = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "track01.wav",
+                MediaKind::Music,
+                ScrapedMetadata {
+                    provider_id: "lrclib".into(),
+                    external_id: "lrc-2".into(),
+                    target: Some(ScrapeTargetKind::Lyrics),
+                    title: Some("WRONG TITLE".into()),
+                    synced_lyrics: Some("[00:12.34]故事的小黄花".into()),
+                    ..Default::default()
+                },
+                false,
+                true,
+                Some(false),
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(root.join("track01.lrc").is_file());
+        if let MediaMetadataPayload::Music(m) = music_after_lrc.metadata {
+            assert_eq!(m.title, "晴天");
+            assert_eq!(m.sidecar_lrc.as_deref(), Some("[00:12.34]故事的小黄花"));
+        } else {
+            panic!("expected music payload");
+        }
+
+        // 4. `only_fill_missing = true`: keeps existing publisher while filling missing description & isbn
+        app.workbench
+            .write_metadata(
+                root_id,
+                "book.epub",
+                MediaMetadataPatch::Book(BookMetaPatch {
+                    publisher: Some("Local Publisher".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let book_after = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "book.epub",
+                MediaKind::Book,
+                ScrapedMetadata {
+                    provider_id: "openlibrary".into(),
+                    external_id: "OL1".into(),
+                    target: Some(ScrapeTargetKind::Book),
+                    title: Some("Remote Title".into()),
+                    creators: vec!["Bob".into()],
+                    publisher_or_studio: Some("Remote Publisher".into()),
+                    summary: Some("Filled Summary".into()),
+                    isbn: Some("9780134494166".into()),
+                    ..Default::default()
+                },
+                false,
+                false,
+                Some(false),
+                true,
+            )
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Book(b) = book_after.metadata {
+            assert_eq!(b.title, "Draft Title");
+            assert_eq!(b.publisher.as_deref(), Some("Local Publisher"));
+            assert_eq!(b.description.as_deref(), Some("Filled Summary"));
+            assert_eq!(b.isbn.as_deref(), Some("9780134494166"));
+        } else {
+            panic!("expected book payload");
+        }
+    }
+
+    #[tokio::test]
+    async fn scrape_organize_by_template_toggle_and_season_zero_compatibility() {
+        use crate::domain::scraper::{
+            FieldSourceBadge, ScrapeTargetKind, ScrapedMetadata, is_compatible_secondary_source,
+            merge_scraped_by_priority,
+        };
+        use axum::Router;
+        use axum::routing::get;
+
+        let img_app = Router::new().route(
+            "/{name}",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], TINY_PNG) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, img_app).await;
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("media");
+        let inbox = root.join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        std::fs::write(inbox.join("movie_raw.mkv"), b"dummy-mkv").unwrap();
+        write_minimal_epub(&inbox.join("book_raw.epub"));
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // 1. Video with `organize_by_template = Some(false)` updates NFO & artwork in place without moving
+        let vid = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "inbox/movie_raw.mkv",
+                MediaKind::Video,
+                ScrapedMetadata {
+                    provider_id: "tmdb".into(),
+                    external_id: "99".into(),
+                    target: Some(ScrapeTargetKind::Movie),
+                    title: Some("In-Place Movie".into()),
+                    year: Some(2024),
+                    cover_url: Some(format!("http://{addr}/p.png")),
+                    backdrop_url: Some(format!("http://{addr}/f.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+                Some(false),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(vid.entry.rel_path, "inbox/movie_raw.mkv");
+        assert!(inbox.join("movie_raw.nfo").is_file());
+        assert!(inbox.join("movie_raw-poster.png").is_file());
+        assert!(inbox.join("movie_raw-fanart.png").is_file());
+
+        // 2. Book with `organize_by_template = Some(true)` auto-organizes by template after scrape
+        let book = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "inbox/book_raw.epub",
+                MediaKind::Book,
+                ScrapedMetadata {
+                    provider_id: "openlibrary".into(),
+                    external_id: "OL2".into(),
+                    target: Some(ScrapeTargetKind::Book),
+                    title: Some("Clean Architecture".into()),
+                    creators: vec!["Robert Martin".into()],
+                    ..Default::default()
+                },
+                false,
+                false,
+                Some(true),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            book.entry.rel_path,
+            "inbox/Robert Martin - Clean Architecture.epub"
+        );
+        assert!(
+            inbox
+                .join("Robert Martin - Clean Architecture.epub")
+                .is_file()
+        );
+
+        // 3. Secondary source compatibility + Season 0 merge
+        let primary = ScrapedMetadata {
+            provider_id: "tmdb".into(),
+            target: Some(ScrapeTargetKind::TvShow),
+            title: Some("Inception".into()),
+            year: Some(2010),
+            isbn: Some("978-0-13-449416-6".into()),
+            disc_or_season_number: Some(0),
+            ..Default::default()
+        };
+        let bad_isbn = ScrapedMetadata {
+            isbn: Some("9780132350884".into()),
+            title: Some("Inception".into()),
+            ..Default::default()
+        };
+        assert!(!is_compatible_secondary_source(
+            &primary,
+            &bad_isbn,
+            Some(ScrapeTargetKind::Book)
+        ));
+        let bad_year = ScrapedMetadata {
+            title: Some("Inception".into()),
+            year: Some(2020),
+            ..Default::default()
+        };
+        assert!(!is_compatible_secondary_source(
+            &primary,
+            &bad_year,
+            Some(ScrapeTargetKind::Movie)
+        ));
+        let bad_ascii = ScrapedMetadata {
+            title: Some("Completely Unrelated Work".into()),
+            creators: vec!["Nobody".into()],
+            ..Default::default()
+        };
+        assert!(!is_compatible_secondary_source(
+            &primary,
+            &bad_ascii,
+            Some(ScrapeTargetKind::Movie)
+        ));
+        let zh_primary = ScrapedMetadata {
+            title: Some("三体".into()),
+            ..Default::default()
+        };
+        let en_secondary = ScrapedMetadata {
+            title: Some("The Three-Body Problem".into()),
+            ..Default::default()
+        };
+        assert!(is_compatible_secondary_source(
+            &zh_primary,
+            &en_secondary,
+            Some(ScrapeTargetKind::Book)
+        ));
+
+        let merged_s0 = merge_scraped_by_priority(
+            &[(
+                FieldSourceBadge {
+                    provider_id: "tmdb".into(),
+                    provider_name: "TMDB".into(),
+                },
+                primary,
+            )],
+            Some(ScrapeTargetKind::TvShow),
+        );
+        assert_eq!(merged_s0.metadata.disc_or_season_number, Some(0));
     }
 }

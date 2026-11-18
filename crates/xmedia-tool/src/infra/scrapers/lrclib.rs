@@ -169,10 +169,20 @@ impl ScraperProviderPort for LrclibProvider {
             }
         }
 
-        Ok(records
+        let mut scored: Vec<(i32, usize, LrclibRecord)> = records
+            .into_iter()
+            .enumerate()
+            .map(|(idx, rec)| {
+                let s = score_lrclib_record(&rec, kw, artist, query.duration_secs);
+                (s, idx, rec)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+        Ok(scored
             .into_iter()
             .take(15)
-            .map(LrclibRecord::into_candidate)
+            .map(|(_, _, rec)| LrclibRecord::into_candidate(rec))
             .collect())
     }
 
@@ -202,4 +212,77 @@ impl ScraperProviderPort for LrclibProvider {
             .map_err(|e| DomainError::Storage(format!("LRCLIB JSON parse error: {e}")))?;
         Ok(rec.into_metadata(target))
     }
+}
+
+fn score_lrclib_record(
+    rec: &LrclibRecord,
+    kw: &str,
+    artist: Option<&str>,
+    duration_secs: Option<u32>,
+) -> i32 {
+    let mut score = 0i32;
+    let rec_title = rec
+        .track_name
+        .as_deref()
+        .or(rec.name.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    let kw_l = kw.trim().to_lowercase();
+    if !kw_l.is_empty() && !rec_title.is_empty() {
+        if rec_title == kw_l {
+            score += 400;
+        } else if rec_title.starts_with(&kw_l) || rec_title.contains(&kw_l) {
+            score += 180;
+        }
+    }
+
+    if let Some(want_artist) = artist
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+    {
+        let got_artist = rec
+            .artist_name
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_lowercase();
+        if !got_artist.is_empty() {
+            if got_artist == want_artist
+                || got_artist.contains(&want_artist)
+                || want_artist.contains(&got_artist)
+            {
+                score += 250;
+            } else {
+                score -= 120;
+            }
+        }
+    }
+
+    if rec
+        .synced_lyrics
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        score += 300;
+    } else if rec
+        .plain_lyrics
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        score += 30;
+    }
+
+    if let (Some(want_dur), Some(got_dur)) = (duration_secs.filter(|&d| d > 0), rec.duration) {
+        let diff = (got_dur - f64::from(want_dur)).abs();
+        if diff <= 2.0 {
+            score += 350;
+        } else if diff <= 5.0 {
+            score += 180;
+        } else if diff > 15.0 {
+            score -= 250;
+        }
+    }
+
+    score
 }
