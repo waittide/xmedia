@@ -838,16 +838,17 @@ onBeforeUnmount(() => {
 
         <button
           type="button"
-          class="flex h-9 items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition"
+          class="flex h-9 w-9 items-center justify-center rounded-xl transition"
           :class="
             activeNav === 'settings'
-              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/80 text-[var(--ctp-text)] hover:border-[var(--ctp-accent)]'
+              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
           "
+          :title="txt.actions.settings"
+          :aria-label="txt.actions.settings"
           @click="activeNav === 'settings' ? exitSettings() : openSettingsTab('appearance')"
         >
-          <LuSettings class="h-4 w-4 text-[var(--ctp-accent)]" />
-          <span class="hidden sm:inline">{{ txt.actions.settings }}</span>
+          <LuSettings class="h-[18px] w-[18px]" />
         </button>
       </div>
     </header>
