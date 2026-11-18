@@ -662,6 +662,7 @@ async function handleTxtConvertedToEpub(
   }
   activeDetail.value = epubDetail
   inspectingPath.value = epubDetail.entry.rel_path
+  bookEditorEntry.value = epubDetail.entry
   batchSummaryBanner.value = deletedSourceTxt
     ? `已转换为 EPUB 并移除原 TXT：${epubDetail.entry.file_name}`
     : `已生成标准 EPUB：${epubDetail.entry.file_name}`

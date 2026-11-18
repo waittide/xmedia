@@ -88,6 +88,7 @@ export interface BookContentDocumentDto {
   format: 'txt' | 'epub'
   title: string
   authors: string[]
+  stylesheets: string[]
   chapters: EditableBookChapterDto[]
 }
 

@@ -221,6 +221,19 @@ export function buildArtworkUrl(
   return `/api/v1/tool/files/artwork?${params.toString()}`
 }
 
+export function buildEpubAssetUrl(rootId: string, relPath: string, assetPath: string): string {
+  const params = new URLSearchParams({
+    root_id: rootId,
+    path: relPath,
+    asset: assetPath,
+  })
+  const tok = getToolToken()
+  if (tok) {
+    params.set('token', tok)
+  }
+  return `/api/v1/tool/books/epub-asset?${params.toString()}`
+}
+
 export const toolApi = {
   getStatus(): Promise<ToolStatusDto> {
     return toolRequest<ToolStatusDto>('/status')
