@@ -17,6 +17,10 @@ use crate::domain::template::render_template_target;
 use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
 use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
 use crate::infra::inspectors::book::dir_has_single_book;
+use crate::infra::inspectors::book_content::{
+    BookContentDocumentDto, EditableBookChapterDto, SaveBookChapterInput, convert_txt_to_epub,
+    read_book_content, resegment_txt_file, save_book_content,
+};
 use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::dir_has_single_video;
@@ -818,6 +822,80 @@ impl MediaWorkbenchService {
         }
 
         Ok(moved_count)
+    }
+
+    pub async fn get_book_content(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+    ) -> DomainResult<BookContentDocumentDto> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .await?;
+        let abs = sandbox.abs_path;
+        tokio::task::spawn_blocking(move || read_book_content(&abs))
+            .await
+            .map_err(|e| DomainError::Storage(format!("book content read task failed: {e}")))?
+    }
+
+    pub async fn resegment_txt_book(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        chapter_pattern: Option<String>,
+        volume_pattern: Option<String>,
+    ) -> DomainResult<Vec<EditableBookChapterDto>> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .await?;
+        let abs = sandbox.abs_path;
+        tokio::task::spawn_blocking(move || {
+            resegment_txt_file(&abs, chapter_pattern.as_deref(), volume_pattern.as_deref())
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("txt resegment task failed: {e}")))?
+    }
+
+    pub async fn save_book_content(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        chapters: Vec<SaveBookChapterInput>,
+    ) -> DomainResult<MediaFileDetail> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .await?;
+        let abs = sandbox.abs_path.clone();
+        tokio::task::spawn_blocking(move || save_book_content(&abs, &chapters))
+            .await
+            .map_err(|e| DomainError::Storage(format!("book content write task failed: {e}")))??;
+        self.inspect_file(root_id, rel_path, Some(MediaKind::Book))
+            .await
+    }
+
+    pub async fn convert_txt_book_to_epub(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        chapters: Option<Vec<SaveBookChapterInput>>,
+        delete_source_txt: bool,
+    ) -> DomainResult<MediaFileDetail> {
+        let (root, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .await?;
+        let abs = sandbox.abs_path.clone();
+        let epub_abs = tokio::task::spawn_blocking(move || {
+            convert_txt_to_epub(&abs, chapters.as_deref(), delete_source_txt)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("txt to epub task failed: {e}")))??;
+
+        let new_rel = epub_abs
+            .strip_prefix(&root.path)
+            .map(path_to_slash)
+            .map_err(|_| DomainError::Storage("generated epub outside root".into()))?;
+        self.inspect_file(root_id, &new_rel, Some(MediaKind::Book))
+            .await
     }
 
     async fn resolve_media_file(

@@ -1,4 +1,5 @@
 pub mod book;
+pub mod book_content;
 pub mod comic;
 pub mod music;
 pub mod video;

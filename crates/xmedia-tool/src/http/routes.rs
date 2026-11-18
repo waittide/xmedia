@@ -34,6 +34,9 @@ use crate::domain::scraper::{
 use crate::domain::workspace::{ManagedRoot, RootId};
 use crate::http::ToolHttpState;
 use crate::http::auth::{ToolAuthGuard, build_tool_session_cookie, extract_tool_token};
+use crate::infra::inspectors::book_content::{
+    BookContentDocumentDto, EditableBookChapterDto, SaveBookChapterInput,
+};
 use crate::infra::scrape_cache::ScrapeCacheStatsDto;
 
 pub fn tool_api_router() -> Router<ToolHttpState> {
@@ -66,6 +69,17 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route(
             "/scrapers/cache",
             get(get_scrape_cache_stats).delete(clear_scrape_cache),
+        )
+        .route(
+            "/books/content",
+            get(get_book_content)
+                .put(put_book_content)
+                .layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route("/books/resegment-txt", post(resegment_txt_book))
+        .route(
+            "/books/convert-epub",
+            post(convert_txt_book_to_epub).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
 }
 
@@ -648,4 +662,104 @@ async fn execute_rename_stream(
             .await?;
         Ok(ExecuteRenameResponse { moved_count })
     })
+}
+
+#[derive(Deserialize)]
+struct BookContentQuery {
+    root_id: Uuid,
+    path: String,
+}
+
+async fn get_book_content(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Query(q): Query<BookContentQuery>,
+) -> ApiResult<Json<BookContentDocumentDto>> {
+    let doc = state
+        .workbench
+        .get_book_content(RootId(q.root_id), &q.path)
+        .await?;
+    Ok(Json(doc))
+}
+
+#[derive(Deserialize)]
+struct ResegmentTxtRequest {
+    root_id: Uuid,
+    path: String,
+    #[serde(default)]
+    chapter_pattern: Option<String>,
+    #[serde(default)]
+    volume_pattern: Option<String>,
+}
+
+async fn resegment_txt_book(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<ResegmentTxtRequest>,
+) -> ApiResult<Json<Vec<EditableBookChapterDto>>> {
+    let chapters = state
+        .workbench
+        .resegment_txt_book(
+            RootId(req.root_id),
+            &req.path,
+            req.chapter_pattern,
+            req.volume_pattern,
+        )
+        .await?;
+    Ok(Json(chapters))
+}
+
+#[derive(Deserialize)]
+struct SaveBookContentRequest {
+    root_id: Uuid,
+    path: String,
+    chapters: Vec<SaveBookChapterInput>,
+}
+
+async fn put_book_content(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<SaveBookContentRequest>,
+) -> ApiResult<Json<MediaFileDetail>> {
+    let detail = state
+        .workbench
+        .save_book_content(RootId(req.root_id), &req.path, req.chapters)
+        .await?;
+    Ok(Json(detail))
+}
+
+#[derive(Deserialize)]
+struct ConvertTxtToEpubRequest {
+    root_id: Uuid,
+    path: String,
+    #[serde(default)]
+    chapters: Option<Vec<SaveBookChapterInput>>,
+    #[serde(default)]
+    delete_source_txt: bool,
+}
+
+#[derive(Serialize)]
+struct ConvertTxtToEpubResponse {
+    detail: MediaFileDetail,
+    deleted_source_txt: bool,
+}
+
+async fn convert_txt_book_to_epub(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<ConvertTxtToEpubRequest>,
+) -> ApiResult<Json<ConvertTxtToEpubResponse>> {
+    let detail = state
+        .workbench
+        .convert_txt_book_to_epub(
+            RootId(req.root_id),
+            &req.path,
+            req.chapters,
+            req.delete_source_txt,
+        )
+        .await?;
+    Ok(Json(ConvertTxtToEpubResponse {
+        detail,
+        deleted_source_txt: req.delete_source_txt,
+    }))
 }

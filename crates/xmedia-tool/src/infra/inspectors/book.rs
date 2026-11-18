@@ -28,7 +28,7 @@ pub struct EpubBookInspector;
 
 const BOOK_EXTENSIONS: &[&str] = &["epub", "pdf", "txt"];
 
-fn attr_value(e: &BytesStart<'_>, local_key: &str) -> Option<String> {
+pub(crate) fn attr_value(e: &BytesStart<'_>, local_key: &str) -> Option<String> {
     for attr in e.attributes().flatten() {
         if attr.key.local_name().as_ref() == local_key
             && let Ok(val) = attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
@@ -39,7 +39,7 @@ fn attr_value(e: &BytesStart<'_>, local_key: &str) -> Option<String> {
     None
 }
 
-fn normalize_zip_rel(base_dir: &Path, href: &str) -> String {
+pub(crate) fn normalize_zip_rel(base_dir: &Path, href: &str) -> String {
     let clean = href.split('#').next().unwrap_or(href);
     let joined = base_dir.join(clean);
     let mut out = PathBuf::new();
@@ -58,7 +58,7 @@ fn normalize_zip_rel(base_dir: &Path, href: &str) -> String {
         .join("/")
 }
 
-fn find_opf_path_in_container(container_xml: &[u8]) -> Option<String> {
+pub(crate) fn find_opf_path_in_container(container_xml: &[u8]) -> Option<String> {
     let s = String::from_utf8_lossy(container_xml);
     let mut reader = Reader::from_str(&s);
     reader.config_mut().trim_text(true);
@@ -443,7 +443,7 @@ fn looks_like_isbn(text: &str, scheme_attr: Option<&str>) -> bool {
     !lower.starts_with("urn:uuid:") && (digits.len() == 10 || digits.len() == 13)
 }
 
-fn replace_opf_metadata_block(
+pub(crate) fn replace_opf_metadata_block(
     original_opf: &str,
     meta: &BookFileMeta,
     cover_id_hint: Option<&str>,
@@ -839,7 +839,7 @@ fn replace_opf_metadata_block(
     re.replace(original_opf, block.as_str()).into_owned()
 }
 
-fn rewrite_epub_entries(
+pub(crate) fn rewrite_epub_entries(
     epub_path: &Path,
     replacements: Vec<(String, Vec<u8>)>,
     skip_paths: &[String],
@@ -1009,7 +1009,7 @@ fn preferred_write_opf_path(book_path: &Path) -> PathBuf {
     same_stem
 }
 
-fn find_sidecar_cover(book_path: &Path) -> Option<PathBuf> {
+pub(crate) fn find_sidecar_cover(book_path: &Path) -> Option<PathBuf> {
     if let Some(same_stem) = ["jpg", "jpeg", "png", "webp"]
         .into_iter()
         .map(|ext| book_path.with_extension(ext))
@@ -1089,7 +1089,7 @@ fn render_sidecar_opf(meta: &BookFileMeta) -> String {
     replace_opf_metadata_block(base, meta, None, "bookid", "2.0")
 }
 
-fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
+pub(crate) fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
     let ext = path
         .extension()
         .and_then(|s| s.to_str())
