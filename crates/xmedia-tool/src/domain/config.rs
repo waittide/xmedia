@@ -49,7 +49,9 @@ pub struct RenameTemplates {
 impl Default for RenameTemplates {
     fn default() -> Self {
         Self {
-            book: "{author} - {title}".to_string(),
+            book:
+                "{author}/{series}/{subseries}/<Vol.{volume:2} >{title} ({year})/{title} - {author}"
+                    .to_string(),
             comic: "{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}".to_string(),
             music: "{album_artist}/{album} ({year})/{track:2} - {title}".to_string(),
             video_movie: "{title} ({year})/{title} ({year})".to_string(),
@@ -64,6 +66,12 @@ impl RenameTemplates {
     /// Upgrades untouched v1 flat default templates to v2 `{var:N}` + Jellyfin folder hierarchy defaults.
     pub fn upgrade_legacy_defaults(&mut self) -> bool {
         let mut changed = false;
+        if self.book == "{author} - {title}" {
+            self.book =
+                "{author}/{series}/{subseries}/<Vol.{volume:2} >{title} ({year})/{title} - {author}"
+                    .to_string();
+            changed = true;
+        }
         if self.comic == "{series} - #{number} {title}"
             || self.comic == "{series} - #{number:2} {title}"
         {

@@ -50,6 +50,9 @@ const skipNextHydrate = ref(false)
 // Book form
 const bookTitle = ref('')
 const bookAuthors = ref('')
+const bookSeries = ref('')
+const bookSubseries = ref('')
+const bookSeriesIndex = ref('')
 const bookIsbn = ref('')
 const bookPublisher = ref('')
 const bookPublishedAt = ref('')
@@ -115,6 +118,9 @@ function serializeFormSnapshot(): string {
   return JSON.stringify([
     bookTitle.value,
     bookAuthors.value,
+    bookSeries.value,
+    bookSubseries.value,
+    bookSeriesIndex.value,
     bookIsbn.value,
     bookPublisher.value,
     bookPublishedAt.value,
@@ -177,6 +183,9 @@ function hydrateForm(d: MediaFileDetail): void {
     const b = m.data
     bookTitle.value = b.title
     bookAuthors.value = b.authors.join(' / ')
+    bookSeries.value = b.series ?? ''
+    bookSubseries.value = b.subseries ?? ''
+    bookSeriesIndex.value = b.series_index ?? ''
     bookIsbn.value = b.isbn ?? ''
     bookPublisher.value = b.publisher ?? ''
     bookPublishedAt.value = b.published_at ?? ''
@@ -394,6 +403,9 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
         patch: {
           title: bookTitle.value,
           authors: splitListTokens(bookAuthors.value),
+          series: bookSeries.value,
+          subseries: bookSubseries.value,
+          series_index: bookSeriesIndex.value,
           isbn: bookIsbn.value,
           publisher: bookPublisher.value,
           published_at: bookPublishedAt.value,
@@ -1195,7 +1207,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
           class="flex items-center gap-2 rounded-xl border border-[var(--ctp-accent)]/35 bg-[var(--ctp-accent-soft)]/50 px-3 py-2 text-xs text-[var(--ctp-accent)]"
         >
           <LuFileText class="h-4 w-4 shrink-0" />
-          <span>当前为 {{ detail.metadata.data.format.toUpperCase() }} 文件，保存时将原子写入同名旁路 `.opf` 元数据及旁路封面，移动重命名自动同步。</span>
+          <span>当前为 {{ detail.metadata.data.format.toUpperCase() }} 文件，单书目录按 Calibre 规范写入 metadata.opf / cover，多书混放目录写入同名旁路文件，归档移动自动同步。</span>
         </div>
 
         <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
@@ -1217,6 +1229,38 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
           </label>
+          <div class="grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-12">
+            <label class="block sm:col-span-5">
+              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">系列 / 丛书 (Series)</span>
+              <input
+                v-model="bookSeries"
+                :disabled="!detail.metadata.data.writable"
+                type="text"
+                placeholder="如：三体 / 魔法禁书目录"
+                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
+              />
+            </label>
+            <label class="block sm:col-span-4">
+              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">部 / 子系列 (Subseries)</span>
+              <input
+                v-model="bookSubseries"
+                :disabled="!detail.metadata.data.writable"
+                type="text"
+                placeholder="选填，如：新约"
+                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
+              />
+            </label>
+            <label class="block sm:col-span-3">
+              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">卷 / 册号 (Volume)</span>
+              <input
+                v-model="bookSeriesIndex"
+                :disabled="!detail.metadata.data.writable"
+                type="text"
+                placeholder="如：1 / 2.5"
+                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
+              />
+            </label>
+          </div>
           <label class="block">
             <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">ISBN</span>
             <input

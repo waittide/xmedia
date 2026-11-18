@@ -51,6 +51,12 @@ pub struct BookFileMeta {
     pub format: String,
     pub title: String,
     pub authors: Vec<String>,
+    #[serde(default)]
+    pub series: Option<String>,
+    #[serde(default)]
+    pub subseries: Option<String>,
+    #[serde(default)]
+    pub series_index: Option<String>,
     pub description: Option<String>,
     pub publisher: Option<String>,
     pub published_at: Option<String>,
@@ -174,6 +180,12 @@ pub enum MediaMetadataPatch {
 pub struct BookMetaPatch {
     pub title: Option<String>,
     pub authors: Option<Vec<String>>,
+    #[serde(default)]
+    pub series: Option<String>,
+    #[serde(default)]
+    pub subseries: Option<String>,
+    #[serde(default)]
+    pub series_index: Option<String>,
     pub description: Option<String>,
     pub publisher: Option<String>,
     pub published_at: Option<String>,

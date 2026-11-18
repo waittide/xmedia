@@ -334,10 +334,7 @@ function seedFromDetail(d: MediaFileDetail): void {
   durationSecs.value = q.duration_secs ?? undefined
   applyCover.value = true
   writeAlbumCover.value = false
-  organizeByTemplate.value =
-    d.entry.media_kind === 'video' ||
-    d.entry.media_kind === 'comic' ||
-    d.entry.media_kind === 'music'
+  organizeByTemplate.value = true
   onlyFillMissing.value = false
 }
 
@@ -1873,7 +1870,7 @@ async function runBatchAutoScrape(): Promise<void> {
                     ? '同时按 Komga/Kavita 系列目录模板归档移动'
                     : detail.entry.media_kind === 'music'
                       ? '同时按 Picard/Navidrome 专辑目录模板归档移动'
-                      : '刮削后同时按模板整理文件名/目录'
+                      : '同时按 Calibre 独立书目模板归档移动'
               "
             />
             <AppCheckbox

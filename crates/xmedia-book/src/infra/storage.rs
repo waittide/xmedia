@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -178,6 +179,27 @@ impl BookStoragePort for LocalBookStorage {
     }
 }
 
+fn dir_has_single_book(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut count = 0usize;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|e| BookFormat::from_extension(e).is_some())
+        {
+            count += 1;
+            if count > 1 {
+                return false;
+            }
+        }
+    }
+    count == 1
+}
+
 #[derive(Default, Clone)]
 pub struct LocalBookScanner;
 
@@ -194,6 +216,7 @@ impl BookScannerPort for LocalBookScanner {
             }
 
             let mut entries = Vec::new();
+            let mut single_book_dirs: HashMap<PathBuf, bool> = HashMap::new();
             let walker = WalkDir::new(&root).follow_links(false).into_iter();
             for item in walker.filter_entry(|e| {
                 e.depth() == 0
@@ -225,16 +248,29 @@ impl BookScannerPort for LocalBookScanner {
                     .collect::<Vec<_>>()
                     .join("/");
 
-                let file_mtime = max_mtime_secs(
-                    path,
-                    [
-                        path.with_extension("opf"),
-                        path.with_extension("jpg"),
-                        path.with_extension("jpeg"),
-                        path.with_extension("png"),
-                        path.with_extension("webp"),
-                    ],
-                );
+                let parent_dir = path.parent().unwrap_or(&root).to_path_buf();
+                let is_single_book_dir = parent_dir != root
+                    && *single_book_dirs
+                        .entry(parent_dir.clone())
+                        .or_insert_with(|| dir_has_single_book(&parent_dir));
+
+                let mut tracked_sidecars = vec![
+                    path.with_extension("opf"),
+                    path.with_extension("jpg"),
+                    path.with_extension("jpeg"),
+                    path.with_extension("png"),
+                    path.with_extension("webp"),
+                ];
+                if is_single_book_dir {
+                    tracked_sidecars.extend([
+                        parent_dir.join("metadata.opf"),
+                        parent_dir.join("cover.jpg"),
+                        parent_dir.join("cover.jpeg"),
+                        parent_dir.join("cover.png"),
+                        parent_dir.join("cover.webp"),
+                    ]);
+                }
+                let file_mtime = max_mtime_secs(path, &tracked_sidecars);
 
                 let fallback_title = path
                     .file_stem()
@@ -271,9 +307,20 @@ impl BookScannerPort for LocalBookScanner {
         let file_hash = fast_bytes_fingerprint(&data);
         let legacy_sha256 = sha256_hex(&data);
 
+        let root_buf = PathBuf::from(root_path);
+        let parent_dir = full.parent().map(Path::to_path_buf);
+        let single_book_dir = parent_dir
+            .as_deref()
+            .is_some_and(|p| p != root_buf && dir_has_single_book(p));
+
         let opf_path = full.with_extension("opf");
         let sidecar_opf = if opf_path.is_file() {
             tokio::fs::read(&opf_path).await.ok()
+        } else if single_book_dir
+            && let Some(ref p) = parent_dir
+            && p.join("metadata.opf").is_file()
+        {
+            tokio::fs::read(p.join("metadata.opf")).await.ok()
         } else {
             None
         };
@@ -291,6 +338,25 @@ impl BookScannerPort for LocalBookScanner {
                     mime_type,
                 });
                 break;
+            }
+        }
+        if sidecar_cover.is_none()
+            && single_book_dir
+            && let Some(ref p) = parent_dir
+        {
+            for ext in ["jpg", "jpeg", "png", "webp"] {
+                let cp = p.join(format!("cover.{ext}"));
+                if cp.is_file()
+                    && let Ok(img_bytes) = tokio::fs::read(&cp).await
+                    && !img_bytes.is_empty()
+                {
+                    let mime_type = sniff_image_mime(&img_bytes).to_string();
+                    sidecar_cover = Some(CoverPayload {
+                        bytes: Bytes::from(img_bytes),
+                        mime_type,
+                    });
+                    break;
+                }
             }
         }
 

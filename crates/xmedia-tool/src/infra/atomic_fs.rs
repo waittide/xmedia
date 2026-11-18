@@ -202,7 +202,8 @@ pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
 fn is_orphan_jellyfin_dir_sidecar(file_name: &str) -> bool {
     matches!(
         file_name.to_ascii_lowercase().as_str(),
-        "movie.nfo"
+        "metadata.opf"
+            | "movie.nfo"
             | "tvshow.nfo"
             | "season.nfo"
             | "poster.jpg"

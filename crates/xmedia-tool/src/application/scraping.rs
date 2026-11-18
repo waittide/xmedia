@@ -26,6 +26,7 @@ use crate::domain::workspace::RootId;
 use crate::infra::atomic_fs::{
     atomic_write_bytes, cleanup_empty_parent_dirs, find_companion_sidecars,
 };
+use crate::infra::inspectors::book::{dir_has_single_book, is_generic_book_folder};
 use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::{
@@ -458,10 +459,7 @@ impl ScrapingOrchestratorService {
         only_fill_missing: bool,
         write_album_cover: bool,
     ) -> DomainResult<MediaFileDetail> {
-        let should_organize = organize_by_template.unwrap_or(matches!(
-            media_kind,
-            MediaKind::Video | MediaKind::Comic | MediaKind::Music
-        ));
+        let should_organize = organize_by_template.unwrap_or(true);
 
         if media_kind == MediaKind::Video && should_organize {
             return self
@@ -511,8 +509,11 @@ impl ScrapingOrchestratorService {
             .write_metadata(root_id, rel_path, patch)
             .await?;
 
+        let defer_non_epub_book_cover = media_kind == MediaKind::Book
+            && should_organize
+            && !detail.entry.extension.eq_ignore_ascii_case("epub");
         let mut cached_cover_download: Option<(Vec<u8>, String)> = None;
-        if apply_cover && media_kind != MediaKind::Comic {
+        if apply_cover && media_kind != MediaKind::Comic && !defer_non_epub_book_cover {
             let creds = self.settings.get_credentials().await?;
             let client = build_http_client(&creds)?;
 
@@ -588,10 +589,62 @@ impl ScrapingOrchestratorService {
                 && plan.conflict.is_none()
             {
                 self.workbench.execute_rename(root_id, &plans).await?;
+                if media_kind == MediaKind::Book
+                    && !detail.entry.extension.eq_ignore_ascii_case("epub")
+                    && let Ok(root) = self.settings.find_root(root_id).await
+                    && let Ok(dst_sb) = root.resolve_existing(&plan.to_rel_path)
+                    && let Some(dst_dir) = dst_sb.abs_path.parent()
+                    && dst_dir != root.path
+                    && dst_dir
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|n| !is_generic_book_folder(n))
+                    && dir_has_single_book(dst_dir)
+                {
+                    let stem_opf = dst_sb.abs_path.with_extension("opf");
+                    let calibre_opf = dst_dir.join("metadata.opf");
+                    if stem_opf.is_file() && !calibre_opf.exists() {
+                        let _ = std::fs::rename(&stem_opf, &calibre_opf);
+                    }
+                    for ext in ["jpg", "jpeg", "png", "webp"] {
+                        let stem_cov = dst_sb.abs_path.with_extension(ext);
+                        let calibre_cov = dst_dir.join(format!("cover.{ext}"));
+                        if stem_cov.is_file() && !calibre_cov.exists() {
+                            let _ = std::fs::rename(&stem_cov, &calibre_cov);
+                        }
+                    }
+                }
                 detail = self
                     .workbench
                     .inspect_file(root_id, &plan.to_rel_path, Some(media_kind))
                     .await?;
+            }
+        }
+
+        if apply_cover && defer_non_epub_book_cover {
+            let already_has_cover = existing_detail
+                .as_ref()
+                .is_some_and(|d| existing_artwork_present(&d.metadata));
+            if !(only_fill_missing && already_has_cover)
+                && let Some(ref cover_url) = scraped.cover_url
+                && !cover_url.trim().is_empty()
+            {
+                let creds = self.settings.get_credentials().await?;
+                let client = build_http_client(&creds)?;
+                if let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await {
+                    let cur_rel = detail.entry.rel_path.clone();
+                    detail = self
+                        .workbench
+                        .write_artwork(
+                            root_id,
+                            &cur_rel,
+                            &bytes,
+                            &mime,
+                            "cover",
+                            Some(MediaKind::Book),
+                        )
+                        .await?;
+                }
             }
         }
 
@@ -1134,6 +1187,15 @@ fn filter_patch_for_missing(
             if !b.authors.is_empty() {
                 bp.authors = None;
             }
+            if non_empty_opt(&b.series) {
+                bp.series = None;
+            }
+            if non_empty_opt(&b.subseries) {
+                bp.subseries = None;
+            }
+            if non_empty_opt(&b.series_index) {
+                bp.series_index = None;
+            }
             if non_empty_opt(&b.description) {
                 bp.description = None;
             }
@@ -1247,6 +1309,9 @@ fn map_scraped_to_patch(
         MediaKind::Book => MediaMetadataPatch::Book(BookMetaPatch {
             title: s.title.clone(),
             authors: (!s.creators.is_empty()).then(|| s.creators.clone()),
+            series: s.series_or_album.clone(),
+            subseries: None,
+            series_index: s.track_or_episode_number.map(|n| n.to_string()),
             description: s.summary.clone(),
             publisher: s.publisher_or_studio.clone(),
             published_at: s

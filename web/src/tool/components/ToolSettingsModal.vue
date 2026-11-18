@@ -82,7 +82,7 @@ const priorities = ref<ScraperPrioritiesDto>({
 })
 
 const DEFAULT_RENAME_TEMPLATES: RenameTemplatesDto = {
-  book: '{author} - {title}',
+  book: '{author}/{series}/{subseries}/<Vol.{volume:2} >{title} ({year})/{title} - {author}',
   comic: '{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}',
   music: '{album_artist}/{album} ({year})/{track:2} - {title}',
   video_movie: '{title} ({year})/{title} ({year})',
@@ -1051,7 +1051,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             </div>
 
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">图书模板 ({author}, {title}, {year}, {isbn}, {publisher})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">图书 Calibre/Kavita 归档模板 ({author}, {series}, {subseries}, &lt;Vol.{volume:2} &gt;, {title}, {year}, {isbn}, {publisher})</span>
               <input
                 v-model="templates.book"
                 type="text"

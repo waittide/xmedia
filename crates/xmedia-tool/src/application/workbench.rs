@@ -16,6 +16,7 @@ use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
 use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
 use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
+use crate::infra::inspectors::book::dir_has_single_book;
 use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::dir_has_single_video;
@@ -384,6 +385,33 @@ impl MediaWorkbenchService {
                     }
                 }
 
+                // Carry Calibre single-book `metadata.opf` and `cover.*` when moving a dedicated book folder
+                if matches!(meta, MediaMetadataPayload::Book(_))
+                    && parent_rel != target_parent_rel
+                    && !target_parent_rel.is_empty()
+                    && let Some(old_dir) = sandbox.abs_path.parent()
+                    && old_dir != root.path
+                    && dir_has_single_book(old_dir)
+                {
+                    for fname in [
+                        "metadata.opf",
+                        "cover.jpg",
+                        "cover.jpeg",
+                        "cover.png",
+                        "cover.webp",
+                    ] {
+                        let cand = old_dir.join(fname);
+                        if cand.is_file()
+                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
+                        {
+                            companion_moves.push((
+                                path_to_slash(rel_c),
+                                format!("{target_parent_rel}/{fname}"),
+                            ));
+                        }
+                    }
+                }
+
                 // Carry Navidrome/Picard album-level cover (`cover.*`, `folder.*`, `front.*`) when moving music folders
                 if matches!(meta, MediaMetadataPayload::Music(_))
                     && parent_rel != target_parent_rel
@@ -592,7 +620,8 @@ impl MediaWorkbenchService {
                         .is_some_and(|fname| {
                             matches!(
                                 fname.to_ascii_lowercase().as_str(),
-                                "movie.nfo"
+                                "metadata.opf"
+                                    | "movie.nfo"
                                     | "season.nfo"
                                     | "tvshow.nfo"
                                     | "poster.jpg"

@@ -81,7 +81,12 @@ fn build_token_map(
                     &b.title
                 },
             );
+            let vol = b.series_index.as_deref().unwrap_or("");
             put("author", author);
+            put("series", b.series.as_deref().unwrap_or(""));
+            put("subseries", b.subseries.as_deref().unwrap_or(""));
+            put("volume", vol);
+            put("series_index", vol);
             put("year", year);
             put("isbn", b.isbn.as_deref().unwrap_or(""));
             put("publisher", b.publisher.as_deref().unwrap_or(""));
@@ -370,7 +375,9 @@ mod tests {
     use std::path::Path;
 
     use super::{format_token_value, render_template_target};
-    use crate::domain::media::{ComicFileMeta, MediaMetadataPayload, MusicFileMeta, VideoFileMeta};
+    use crate::domain::media::{
+        BookFileMeta, ComicFileMeta, MediaMetadataPayload, MusicFileMeta, VideoFileMeta,
+    };
 
     #[test]
     fn width_specifier_pads_numbers_and_preserves_decimals_or_longer_digits() {
@@ -551,5 +558,73 @@ mod tests {
         let (single_rel, _) =
             render_template_target(tpl, "", &single, Path::new("/music/single.flac"), "flac");
         assert_eq!(single_rel, "周杰伦/01 - 说好不哭.flac");
+    }
+
+    #[test]
+    fn book_calibre_template_adapts_standalone_series_and_subseries_volumes() {
+        let tpl =
+            "{author}/{series}/{subseries}/<Vol.{volume:2} >{title} ({year})/{title} - {author}";
+
+        // 1. Standalone book omits series, subseries, and volume segments cleanly
+        let standalone = MediaMetadataPayload::Book(BookFileMeta {
+            format: "epub".into(),
+            title: "活着".into(),
+            authors: vec!["余华".into()],
+            published_at: Some("1993-01-01".into()),
+            ..Default::default()
+        });
+        let (r1, _) = render_template_target(
+            tpl,
+            "",
+            &standalone,
+            Path::new("/books/huozhe.epub"),
+            "epub",
+        );
+        assert_eq!(r1, "余华/活着 (1993)/活着 - 余华.epub");
+
+        // 2. Series + volume book omits empty subseries
+        let series_book = MediaMetadataPayload::Book(BookFileMeta {
+            format: "epub".into(),
+            title: "黑暗森林".into(),
+            authors: vec!["刘慈欣".into()],
+            series: Some("三体".into()),
+            series_index: Some("2".into()),
+            published_at: Some("2008-05-01".into()),
+            ..Default::default()
+        });
+        let (r2, _) = render_template_target(
+            tpl,
+            "",
+            &series_book,
+            Path::new("/books/santi2.epub"),
+            "epub",
+        );
+        assert_eq!(
+            r2,
+            "刘慈欣/三体/Vol.02 黑暗森林 (2008)/黑暗森林 - 刘慈欣.epub"
+        );
+
+        // 3. Series + subseries (Part/部) + volume book
+        let subseries_book = MediaMetadataPayload::Book(BookFileMeta {
+            format: "epub".into(),
+            title: "新约 魔法禁书目录".into(),
+            authors: vec!["镰池和马".into()],
+            series: Some("魔法禁书目录".into()),
+            subseries: Some("新约".into()),
+            series_index: Some("1".into()),
+            published_at: Some("2011-03-10".into()),
+            ..Default::default()
+        });
+        let (r3, _) = render_template_target(
+            tpl,
+            "",
+            &subseries_book,
+            Path::new("/books/index_nt1.epub"),
+            "epub",
+        );
+        assert_eq!(
+            r3,
+            "镰池和马/魔法禁书目录/新约/Vol.01 新约 魔法禁书目录 (2011)/新约 魔法禁书目录 - 镰池和马.epub"
+        );
     }
 }

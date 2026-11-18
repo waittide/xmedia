@@ -101,6 +101,9 @@ export interface BookFileMeta {
   format: string
   title: string
   authors: string[]
+  series: string | null
+  subseries: string | null
+  series_index: string | null
   description: string | null
   publisher: string | null
   published_at: string | null
@@ -221,6 +224,9 @@ export interface MediaFileDetail {
 export interface BookMetaPatch {
   title?: string
   authors?: string[]
+  series?: string
+  subseries?: string
+  series_index?: string
   description?: string
   publisher?: string
   published_at?: string

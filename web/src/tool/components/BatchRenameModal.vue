@@ -76,7 +76,16 @@ const tokenChips = computed<string[]>(() => {
       '{year}',
     ]
   }
-  return ['{author}', '{title}', '{publisher}', '{year}', '{isbn}']
+  return [
+    '{author}',
+    '{series}',
+    '{subseries}',
+    '<Vol.{volume:2} >',
+    '{title}',
+    '{publisher}',
+    '{year}',
+    '{isbn}',
+  ]
 })
 
 function seedTemplatesForEntries(): void {

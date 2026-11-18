@@ -22,6 +22,7 @@ use crate::domain::media::{
 };
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::{atomic_write_bytes, atomic_write_via_temp};
+use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
 
 pub struct EpubBookInspector;
 
@@ -115,9 +116,33 @@ fn parse_opf_bytes(opf_bytes: &[u8], format: &str, fallback_title: &str) -> Pars
     let mut unique_identifier_id = "bookid".to_string();
     let mut in_metadata = false;
     let mut cur_tag: Option<String> = None;
+    let mut cur_meta_id: Option<String> = None;
+    let mut cur_meta_prop: Option<String> = None;
+    let mut cur_meta_refines: Option<String> = None;
     let mut text_acc = String::new();
     let mut cover_meta_id: Option<String> = None;
+    let mut calibre_series: Option<String> = None;
+    let mut calibre_subseries: Option<String> = None;
+    let mut calibre_series_index: Option<String> = None;
+    let mut collections: Vec<(Option<String>, String)> = Vec::new();
+    let mut collection_types: Vec<(String, String)> = Vec::new();
+    let mut group_positions: Vec<(String, String)> = Vec::new();
     let mut manifest_items: Vec<(String, String, String, String)> = Vec::new();
+
+    let mut apply_meta_name_attr = |e: &BytesStart<'_>| {
+        if let Some(name_val) = attr_value(e, "name") {
+            let content = attr_value(e, "content")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            match name_val.trim().to_ascii_lowercase().as_str() {
+                "cover" => cover_meta_id = content,
+                "calibre:series" => calibre_series = content,
+                "calibre:subseries" => calibre_subseries = content,
+                "calibre:series_index" => calibre_series_index = content,
+                _ => {}
+            }
+        }
+    };
 
     loop {
         match reader.read_event() {
@@ -135,10 +160,11 @@ fn parse_opf_bytes(opf_bytes: &[u8], format: &str, fallback_title: &str) -> Pars
                 } else if local == "metadata" {
                     in_metadata = true;
                 } else if in_metadata {
-                    if local == "meta"
-                        && attr_value(e, "name").is_some_and(|n| n.eq_ignore_ascii_case("cover"))
-                    {
-                        cover_meta_id = attr_value(e, "content");
+                    if local == "meta" {
+                        apply_meta_name_attr(e);
+                        cur_meta_id = attr_value(e, "id");
+                        cur_meta_prop = attr_value(e, "property");
+                        cur_meta_refines = attr_value(e, "refines");
                     }
                     cur_tag = Some(local);
                     text_acc.clear();
@@ -153,11 +179,8 @@ fn parse_opf_bytes(opf_bytes: &[u8], format: &str, fallback_title: &str) -> Pars
             }
             Ok(Event::Empty(ref e)) => {
                 let local = e.local_name().as_ref().to_ascii_lowercase();
-                if in_metadata
-                    && local == "meta"
-                    && attr_value(e, "name").is_some_and(|n| n.eq_ignore_ascii_case("cover"))
-                {
-                    cover_meta_id = attr_value(e, "content");
+                if in_metadata && local == "meta" {
+                    apply_meta_name_attr(e);
                 } else if local == "item" {
                     manifest_items.push((
                         attr_value(e, "id").unwrap_or_default(),
@@ -222,16 +245,99 @@ fn parse_opf_bytes(opf_bytes: &[u8], format: &str, fallback_title: &str) -> Pars
                             {
                                 meta.tags.push(trimmed.to_string());
                             }
+                            "meta" => {
+                                if let Some(prop) = cur_meta_prop.as_deref() {
+                                    let prop_lower = prop.trim().to_ascii_lowercase();
+                                    if prop_lower == "belongs-to-collection" {
+                                        collections.push((
+                                            cur_meta_id.as_ref().map(|s| s.trim().to_string()),
+                                            trimmed.to_string(),
+                                        ));
+                                    } else if prop_lower == "collection-type" {
+                                        if let Some(ref_id) = cur_meta_refines
+                                            .as_deref()
+                                            .and_then(|r| r.trim().strip_prefix('#'))
+                                        {
+                                            collection_types.push((
+                                                ref_id.to_string(),
+                                                trimmed.to_ascii_lowercase(),
+                                            ));
+                                        }
+                                    } else if prop_lower == "group-position"
+                                        && let Some(ref_id) = cur_meta_refines
+                                            .as_deref()
+                                            .and_then(|r| r.trim().strip_prefix('#'))
+                                    {
+                                        group_positions
+                                            .push((ref_id.to_string(), trimmed.to_string()));
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
                 }
                 cur_tag = None;
+                cur_meta_id = None;
+                cur_meta_prop = None;
+                cur_meta_refines = None;
                 text_acc.clear();
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
+    }
+
+    // Resolve EPUB 3 belongs-to-collection (set + series + group-position)
+    if !collections.is_empty() {
+        let type_for = |cid: Option<&str>| -> Option<&str> {
+            let id = cid?;
+            collection_types
+                .iter()
+                .find(|(k, _)| k == id)
+                .map(|(_, v)| v.as_str())
+        };
+        let pos_for = |cid: Option<&str>| -> Option<String> {
+            let id = cid?;
+            group_positions
+                .iter()
+                .find(|(k, _)| k == id)
+                .map(|(_, v)| v.clone())
+        };
+
+        if collections.len() >= 2 {
+            let set_entry = collections
+                .iter()
+                .find(|(id, _)| type_for(id.as_deref()) == Some("set"));
+            let ser_entry = collections
+                .iter()
+                .find(|(id, _)| type_for(id.as_deref()) == Some("series"));
+            if let (Some((_, s_name)), Some((sub_id, sub_name))) = (set_entry, ser_entry) {
+                meta.series = Some(s_name.clone());
+                meta.subseries = Some(sub_name.clone());
+                meta.series_index = pos_for(sub_id.as_deref());
+            } else {
+                meta.series = Some(collections[0].1.clone());
+                meta.subseries = Some(collections[1].1.clone());
+                meta.series_index = pos_for(collections[1].0.as_deref())
+                    .or_else(|| pos_for(collections[0].0.as_deref()));
+            }
+        } else {
+            let (cid, cname) = &collections[0];
+            meta.series = Some(cname.clone());
+            meta.series_index =
+                pos_for(cid.as_deref()).or_else(|| group_positions.first().map(|(_, v)| v.clone()));
+        }
+    }
+
+    if meta.series.is_none() {
+        meta.series = calibre_series;
+    }
+    if meta.subseries.is_none() {
+        meta.subseries = calibre_subseries;
+    }
+    if meta.series_index.is_none() {
+        meta.series_index = calibre_series_index;
     }
 
     ParsedOpfData {
@@ -399,6 +505,31 @@ fn replace_opf_metadata_block(
                     .is_some_and(|p| p.eq_ignore_ascii_case("dcterms:modified"))
                 {
                     had_dcterms_modified = true;
+                    return;
+                }
+                if prop.as_deref().is_some_and(|p| {
+                    matches!(
+                        p.trim().to_ascii_lowercase().as_str(),
+                        "belongs-to-collection" | "collection-type" | "group-position"
+                    )
+                }) {
+                    if let Some(elem_id_val) = id {
+                        removed_ids.insert(elem_id_val);
+                    }
+                    return;
+                }
+                if name.as_deref().is_some_and(|n| {
+                    matches!(
+                        n.trim().to_ascii_lowercase().as_str(),
+                        "calibre:series"
+                            | "calibre:subseries"
+                            | "calibre:series_index"
+                            | "calibre:subseries_index"
+                    )
+                }) {
+                    if let Some(elem_id_val) = id {
+                        removed_ids.insert(elem_id_val);
+                    }
                     return;
                 }
                 if name
@@ -601,6 +732,84 @@ fn replace_opf_metadata_block(
             block.push_str(&format!("    <dc:subject>{}</dc:subject>\n", escape(clean)));
         }
     }
+    let clean_series = meta
+        .series
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let clean_subseries = meta
+        .subseries
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let clean_index = meta
+        .series_index
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    if package_version_hint.trim().starts_with('3') {
+        match (clean_series, clean_subseries) {
+            (Some(ser), Some(sub)) => {
+                block.push_str(&format!(
+                    "    <meta property=\"belongs-to-collection\" id=\"xmedia-col-set\">{}</meta>\n",
+                    escape(ser)
+                ));
+                block.push_str(
+                    "    <meta refines=\"#xmedia-col-set\" property=\"collection-type\">set</meta>\n",
+                );
+                block.push_str(&format!(
+                    "    <meta property=\"belongs-to-collection\" id=\"xmedia-col-series\">{}</meta>\n",
+                    escape(sub)
+                ));
+                block.push_str(
+                    "    <meta refines=\"#xmedia-col-series\" property=\"collection-type\">series</meta>\n",
+                );
+                if let Some(idx) = clean_index {
+                    block.push_str(&format!(
+                        "    <meta refines=\"#xmedia-col-series\" property=\"group-position\">{}</meta>\n",
+                        escape(idx)
+                    ));
+                }
+            }
+            (Some(ser), None) | (None, Some(ser)) => {
+                block.push_str(&format!(
+                    "    <meta property=\"belongs-to-collection\" id=\"xmedia-col-series\">{}</meta>\n",
+                    escape(ser)
+                ));
+                block.push_str(
+                    "    <meta refines=\"#xmedia-col-series\" property=\"collection-type\">series</meta>\n",
+                );
+                if let Some(idx) = clean_index {
+                    block.push_str(&format!(
+                        "    <meta refines=\"#xmedia-col-series\" property=\"group-position\">{}</meta>\n",
+                        escape(idx)
+                    ));
+                }
+            }
+            (None, None) => {}
+        }
+    } else {
+        if let Some(ser) = clean_series {
+            block.push_str(&format!(
+                "    <meta name=\"calibre:series\" content=\"{}\"/>\n",
+                escape(ser)
+            ));
+        }
+        if let Some(sub) = clean_subseries {
+            block.push_str(&format!(
+                "    <meta name=\"calibre:subseries\" content=\"{}\"/>\n",
+                escape(sub)
+            ));
+        }
+        if let Some(idx) = clean_index {
+            block.push_str(&format!(
+                "    <meta name=\"calibre:series_index\" content=\"{}\"/>\n",
+                escape(idx)
+            ));
+        }
+    }
+
     if let Some(cid) = cover_id_hint {
         block.push_str(&format!(
             "    <meta name=\"cover\" content=\"{}\"/>\n",
@@ -709,15 +918,114 @@ fn rewrite_epub_entries(
     })
 }
 
-fn sidecar_opf_path(book_path: &Path) -> PathBuf {
-    book_path.with_extension("opf")
+const GENERIC_BOOK_FOLDER_NAMES: &[&str] = &[
+    "book",
+    "books",
+    "ebook",
+    "ebooks",
+    "doc",
+    "docs",
+    "novel",
+    "novels",
+    "sample",
+    "samples",
+    "download",
+    "downloads",
+    "inbox",
+    "library",
+    "media",
+    "图书",
+    "书籍",
+    "电子书",
+    "小说",
+];
+
+pub(crate) fn is_generic_book_folder(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    GENERIC_BOOK_FOLDER_NAMES
+        .iter()
+        .any(|g| lower == *g || trimmed == *g)
+}
+
+pub(crate) fn dir_has_single_book(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut count = 0usize;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|e| BOOK_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        {
+            count += 1;
+            if count > 1 {
+                return false;
+            }
+        }
+    }
+    count == 1
+}
+
+fn is_dedicated_calibre_book_dir(dir: &Path) -> bool {
+    let Some(dir_name) = dir.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    !is_generic_book_folder(dir_name) && dir_has_single_book(dir)
+}
+
+fn find_existing_sidecar_opf(book_path: &Path) -> Option<PathBuf> {
+    let same_stem = book_path.with_extension("opf");
+    if same_stem.is_file() {
+        return Some(same_stem);
+    }
+    if let Some(parent) = book_path.parent()
+        && dir_has_single_book(parent)
+    {
+        let calibre_opf = parent.join("metadata.opf");
+        if calibre_opf.is_file() {
+            return Some(calibre_opf);
+        }
+    }
+    None
+}
+
+fn preferred_write_opf_path(book_path: &Path) -> PathBuf {
+    let same_stem = book_path.with_extension("opf");
+    if same_stem.is_file() {
+        return same_stem;
+    }
+    if let Some(parent) = book_path.parent() {
+        let calibre_opf = parent.join("metadata.opf");
+        if calibre_opf.is_file() || is_dedicated_calibre_book_dir(parent) {
+            return calibre_opf;
+        }
+    }
+    same_stem
 }
 
 fn find_sidecar_cover(book_path: &Path) -> Option<PathBuf> {
-    ["jpg", "jpeg", "png", "webp"]
+    if let Some(same_stem) = ["jpg", "jpeg", "png", "webp"]
         .into_iter()
         .map(|ext| book_path.with_extension(ext))
         .find(|p| p.is_file())
+    {
+        return Some(same_stem);
+    }
+    if let Some(parent) = book_path.parent()
+        && dir_has_single_book(parent)
+    {
+        return ["jpg", "jpeg", "png", "webp"]
+            .into_iter()
+            .map(|ext| parent.join(format!("cover.{ext}")))
+            .find(|p| p.is_file());
+    }
+    None
 }
 
 fn pdf_info_string(doc: &Document, info_dict: &lopdf::Dictionary, key: &[u8]) -> Option<String> {
@@ -794,7 +1102,47 @@ fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
         .to_string();
 
     if ext == "epub" {
-        return Ok(parse_epub_archive(path)?.meta);
+        let mut meta = parse_epub_archive(path)?.meta;
+        if let Some(opf_path) = find_existing_sidecar_opf(path)
+            && let Ok(bytes) = std::fs::read(&opf_path)
+        {
+            let sidecar = parse_opf_bytes(&bytes, &ext, &meta.title).meta;
+            if !sidecar.title.trim().is_empty() {
+                meta.title = sidecar.title;
+            }
+            if !sidecar.authors.is_empty() {
+                meta.authors = sidecar.authors;
+            }
+            if sidecar.series.is_some() {
+                meta.series = sidecar.series;
+            }
+            if sidecar.subseries.is_some() {
+                meta.subseries = sidecar.subseries;
+            }
+            if sidecar.series_index.is_some() {
+                meta.series_index = sidecar.series_index;
+            }
+            if sidecar.description.is_some() {
+                meta.description = sidecar.description;
+            }
+            if sidecar.publisher.is_some() {
+                meta.publisher = sidecar.publisher;
+            }
+            if sidecar.published_at.is_some() {
+                meta.published_at = sidecar.published_at;
+            }
+            if sidecar.language.is_some() {
+                meta.language = sidecar.language;
+            }
+            if sidecar.isbn.is_some() {
+                meta.isbn = sidecar.isbn;
+            }
+            if !sidecar.tags.is_empty() {
+                meta.tags = sidecar.tags;
+            }
+        }
+        meta.has_cover = meta.has_cover || find_sidecar_cover(path).is_some();
+        return Ok(meta);
     }
 
     let mut meta = BookFileMeta {
@@ -808,8 +1156,7 @@ fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
         apply_pdf_info_meta(path, &mut meta);
     }
 
-    let opf_path = sidecar_opf_path(path);
-    if opf_path.is_file()
+    if let Some(opf_path) = find_existing_sidecar_opf(path)
         && let Ok(bytes) = std::fs::read(&opf_path)
     {
         meta = parse_opf_bytes(&bytes, &ext, &meta.title).meta;
@@ -921,6 +1268,16 @@ impl MediaInspectorPort for EpubBookInspector {
                         .filter(|s| !s.is_empty())
                         .collect();
                 }
+                if let Some(series) = patch.series {
+                    meta.series = (!series.trim().is_empty()).then(|| series.trim().to_string());
+                }
+                if let Some(subseries) = patch.subseries {
+                    meta.subseries =
+                        (!subseries.trim().is_empty()).then(|| subseries.trim().to_string());
+                }
+                if let Some(idx) = patch.series_index {
+                    meta.series_index = (!idx.trim().is_empty()).then(|| idx.trim().to_string());
+                }
                 if let Some(desc) = patch.description {
                     meta.description = (!desc.trim().is_empty()).then(|| desc.trim().to_string());
                 }
@@ -950,7 +1307,7 @@ impl MediaInspectorPort for EpubBookInspector {
             if ext != "epub" {
                 let mut meta = read_book_meta_any(&p)?;
                 apply_patch(&mut meta, bp_cloned);
-                let opf_path = sidecar_opf_path(&p);
+                let opf_path = preferred_write_opf_path(&p);
                 let xml = if opf_path.is_file()
                     && let Ok(existing) = std::fs::read_to_string(&opf_path)
                 {
@@ -963,7 +1320,7 @@ impl MediaInspectorPort for EpubBookInspector {
             }
 
             let parsed = parse_epub_archive(&p)?;
-            let mut meta = parsed.meta;
+            let mut meta = read_book_meta_any(&p)?;
             apply_patch(&mut meta, bp_cloned);
 
             let src_file = File::open(&p)
@@ -987,7 +1344,18 @@ impl MediaInspectorPort for EpubBookInspector {
                 &parsed.package_version,
             );
             rewrite_epub_entries(&p, vec![(parsed.opf_path, next_opf.into_bytes())], &[])?;
-            Ok(parse_epub_archive(&p)?.meta)
+
+            // Keep any existing sidecar OPF (e.g. Calibre metadata.opf) synchronized so it never shadows updated EPUB tags
+            if let Some(sidecar_opf) = find_existing_sidecar_opf(&p) {
+                let side_xml = if let Ok(existing) = std::fs::read_to_string(&sidecar_opf) {
+                    replace_opf_metadata_block(&existing, &meta, None, "bookid", "2.0")
+                } else {
+                    render_sidecar_opf(&meta)
+                };
+                let _ = atomic_write_bytes(&sidecar_opf, side_xml.as_bytes());
+            }
+
+            read_book_meta_any(&p)
         })
         .await
         .map_err(|e| DomainError::Storage(format!("book write task failed: {e}")))??;
@@ -1009,25 +1377,24 @@ impl MediaInspectorPort for EpubBookInspector {
                 .to_ascii_lowercase();
             if ext == "epub" {
                 let parsed = parse_epub_archive(&p)?;
-                let Some(cover_entry) = parsed.cover_entry_path else {
-                    return Ok(None);
-                };
-                let src_file = File::open(&p)
-                    .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
-                let mut archive = ZipArchive::new(BufReader::new(src_file))
-                    .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
-                let mut entry = archive
-                    .by_name(&cover_entry)
-                    .map_err(|e| DomainError::Storage(format!("cover missing: {e}")))?;
-                let mut buf = Vec::new();
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| DomainError::Storage(format!("cover read error: {e}")))?;
-                let mime = sniff_image_mime(&buf).to_string();
-                return Ok(Some(BinaryPayload {
-                    bytes: buf,
-                    mime_type: mime,
-                }));
+                if let Some(cover_entry) = parsed.cover_entry_path {
+                    let src_file = File::open(&p)
+                        .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
+                    let mut archive = ZipArchive::new(BufReader::new(src_file))
+                        .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
+                    let mut entry = archive
+                        .by_name(&cover_entry)
+                        .map_err(|e| DomainError::Storage(format!("cover missing: {e}")))?;
+                    let mut buf = Vec::new();
+                    entry
+                        .read_to_end(&mut buf)
+                        .map_err(|e| DomainError::Storage(format!("cover read error: {e}")))?;
+                    let mime = sniff_image_mime(&buf).to_string();
+                    return Ok(Some(BinaryPayload {
+                        bytes: buf,
+                        mime_type: mime,
+                    }));
+                }
             }
 
             if let Some(sidecar) = find_sidecar_cover(&p) {
@@ -1078,6 +1445,18 @@ impl MediaInspectorPort for EpubBookInspector {
             };
 
             if ext != "epub" {
+                let has_same_stem = ["jpg", "jpeg", "png", "webp"]
+                    .into_iter()
+                    .any(|e| p.with_extension(e).is_file());
+                if !has_same_stem
+                    && let Some(parent) = p.parent()
+                    && (is_dedicated_calibre_book_dir(parent)
+                        || ["jpg", "jpeg", "png", "webp"]
+                            .into_iter()
+                            .any(|e| parent.join(format!("cover.{e}")).is_file()))
+                {
+                    return write_image_replacing_opposite_ext(parent, "cover", img_ext, &raw);
+                }
                 let sidecar = p.with_extension(img_ext);
                 atomic_write_bytes(&sidecar, &raw)?;
                 for old_ext in ["jpg", "jpeg", "png", "webp"] {
@@ -1089,6 +1468,15 @@ impl MediaInspectorPort for EpubBookInspector {
                     }
                 }
                 return Ok(());
+            }
+
+            if let Some(parent) = p.parent()
+                && dir_has_single_book(parent)
+                && ["jpg", "jpeg", "png", "webp"]
+                    .into_iter()
+                    .any(|e| parent.join(format!("cover.{e}")).is_file())
+            {
+                let _ = write_image_replacing_opposite_ext(parent, "cover", img_ext, &raw);
             }
 
             let parsed = parse_epub_archive(&p)?;

@@ -1597,11 +1597,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             book.entry.rel_path,
-            "inbox/Robert Martin - Clean Architecture.epub"
+            "Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub"
         );
         assert!(
-            inbox
-                .join("Robert Martin - Clean Architecture.epub")
+            root.join("Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub")
                 .is_file()
         );
 
@@ -1882,6 +1881,137 @@ mod tests {
             assert!(m.has_directory_cover);
         } else {
             panic!("expected music payload");
+        }
+    }
+
+    #[tokio::test]
+    async fn book_calibre_metadata_opf_cover_and_epub3_series_subseries_roundtrip() {
+        use crate::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
+        use axum::Router;
+        use axum::routing::get;
+
+        let img_app = Router::new().route(
+            "/{name}",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], TINY_PNG) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, img_app).await;
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("books");
+        let inbox = root.join("inbox");
+        std::fs::create_dir_all(&inbox).unwrap();
+
+        write_minimal_epub(&inbox.join("index_nt1.epub"));
+        std::fs::write(
+            inbox.join("dark_forest.txt"),
+            "Chapter 1
+The Dark Forest.
+",
+        )
+        .unwrap();
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // 1. EPUB 3.0 series + subseries + volume roundtrip & Calibre directory rename
+        let epub_patched = app
+            .workbench
+            .write_metadata(
+                root_id,
+                "inbox/index_nt1.epub",
+                MediaMetadataPatch::Book(BookMetaPatch {
+                    title: Some("新约 魔法禁书目录".into()),
+                    authors: Some(vec!["镰池和马".into()]),
+                    series: Some("魔法禁书目录".into()),
+                    subseries: Some("新约".into()),
+                    series_index: Some("1".into()),
+                    published_at: Some("2011-03-10".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Book(b) = &epub_patched.metadata {
+            assert_eq!(b.series.as_deref(), Some("魔法禁书目录"));
+            assert_eq!(b.subseries.as_deref(), Some("新约"));
+            assert_eq!(b.series_index.as_deref(), Some("1"));
+        } else {
+            panic!("expected book payload");
+        }
+
+        let epub_plans = app
+            .workbench
+            .preview_rename(
+                root_id,
+                &["inbox/index_nt1.epub".to_string()],
+                None,
+                None,
+                Some(MediaKind::Book),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            epub_plans[0].to_rel_path,
+            "镰池和马/魔法禁书目录/新约/Vol.01 新约 魔法禁书目录 (2011)/新约 魔法禁书目录 - 镰池和马.epub"
+        );
+        app.workbench
+            .execute_rename(root_id, &epub_plans)
+            .await
+            .unwrap();
+
+        // 2. TXT scrape & default organize creates native Calibre single-book metadata.opf + cover.png
+        let txt_detail = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "inbox/dark_forest.txt",
+                MediaKind::Book,
+                ScrapedMetadata {
+                    provider_id: "openlibrary".into(),
+                    external_id: "ol-df".into(),
+                    target: Some(ScrapeTargetKind::Book),
+                    title: Some("黑暗森林".into()),
+                    creators: vec!["刘慈欣".into()],
+                    series_or_album: Some("三体".into()),
+                    track_or_episode_number: Some(2),
+                    year: Some(2008),
+                    cover_url: Some(format!("http://{addr}/df.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let expected_dir = root.join("刘慈欣/三体/Vol.02 黑暗森林 (2008)");
+        assert_eq!(
+            txt_detail.entry.rel_path,
+            "刘慈欣/三体/Vol.02 黑暗森林 (2008)/黑暗森林 - 刘慈欣.txt"
+        );
+        assert!(expected_dir.join("metadata.opf").is_file());
+        assert!(expected_dir.join("cover.png").is_file());
+        assert!(!inbox.exists());
+        if let MediaMetadataPayload::Book(b) = &txt_detail.metadata {
+            assert_eq!(b.series.as_deref(), Some("三体"));
+            assert_eq!(b.series_index.as_deref(), Some("2"));
+            assert!(b.has_cover);
+        } else {
+            panic!("expected book payload");
         }
     }
 }
