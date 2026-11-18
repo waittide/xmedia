@@ -128,6 +128,7 @@ pub struct VideoFileMeta {
     pub nfo_filename: String,
     pub has_poster: bool,
     pub has_fanart: bool,
+    pub has_thumb: bool,
     pub duration_secs: u32,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -215,7 +216,8 @@ pub struct VideoMetaPatch {
     pub title: Option<String>,
     pub original_title: Option<String>,
     pub show_title: Option<String>,
-    pub season_number: Option<u32>,
+    /// `< 0` clears `season_number` to `None`; `>= 0` (including `0` for Specials) sets `Some(s as u32)`.
+    pub season_number: Option<i32>,
     pub episode_number: Option<u32>,
     pub year: Option<i32>,
     pub rating: Option<f32>,

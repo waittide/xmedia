@@ -545,7 +545,13 @@ impl ScrapingOrchestratorService {
                 }
                 match download_image_bytes(&client, u).await {
                     Ok((bytes, mime)) => {
-                        let img_ext = if mime.contains("png") { "png" } else { "jpg" };
+                        let img_ext = if mime.contains("png") {
+                            "png"
+                        } else if mime.contains("webp") {
+                            "webp"
+                        } else {
+                            "jpg"
+                        };
                         downloaded_images.insert(u.to_string(), (bytes, img_ext));
                     }
                     Err(err) => {
@@ -835,7 +841,7 @@ fn map_scraped_to_patch(
                 title: s.title.clone(),
                 original_title: s.original_title.clone(),
                 show_title: s.series_or_album.clone(),
-                season_number: s.disc_or_season_number,
+                season_number: s.disc_or_season_number.and_then(|v| i32::try_from(v).ok()),
                 episode_number: s.track_or_episode_number,
                 year: s.year,
                 rating: s.rating,

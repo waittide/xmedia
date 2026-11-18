@@ -1,8 +1,11 @@
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{Cursor, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use async_trait::async_trait;
+use jiff::Timestamp;
+use lopdf::{Document, Object, decode_text_string};
 use quick_xml::Reader;
 use quick_xml::escape::escape;
 use quick_xml::events::{BytesStart, Event};
@@ -18,7 +21,7 @@ use crate::domain::media::{
     BookFileMeta, BookMetaPatch, CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload,
 };
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
-use crate::infra::atomic_fs::atomic_mutate_copy;
+use crate::infra::atomic_fs::{atomic_write_bytes, atomic_write_via_temp};
 
 pub struct EpubBookInspector;
 
@@ -77,61 +80,59 @@ fn find_opf_path_in_container(container_xml: &[u8]) -> Option<String> {
 #[derive(Default)]
 struct ParsedEpubPackage {
     opf_path: String,
+    package_version: String,
+    unique_identifier_id: String,
     cover_entry_path: Option<String>,
+    cover_item_id: Option<String>,
+    cover_media_type: Option<String>,
+    cover_raw_href: Option<String>,
     meta: BookFileMeta,
 }
 
-fn parse_epub_archive(path: &Path) -> DomainResult<ParsedEpubPackage> {
-    let raw_zip = std::fs::read(path)
-        .map_err(|e| DomainError::Storage(format!("failed reading '{}': {e}", path.display())))?;
-    let mut archive = ZipArchive::new(Cursor::new(raw_zip.as_slice()))
-        .map_err(|e| DomainError::Validation(format!("invalid epub archive: {e}")))?;
+type OpfManifestEntry = (String, String, String, String);
 
-    let mut container_xml = Vec::new();
-    archive
-        .by_name("META-INF/container.xml")
-        .map_err(|_| DomainError::Validation("missing META-INF/container.xml in epub".into()))?
-        .read_to_end(&mut container_xml)
-        .map_err(|e| DomainError::Validation(format!("failed reading container.xml: {e}")))?;
+struct ParsedOpfData {
+    meta: BookFileMeta,
+    package_version: String,
+    unique_identifier_id: String,
+    cover_meta_id: Option<String>,
+    manifest_items: Vec<OpfManifestEntry>,
+}
 
-    let opf_path = find_opf_path_in_container(&container_xml)
-        .ok_or_else(|| DomainError::Validation("rootfile missing in container.xml".into()))?;
-    let mut opf_bytes = Vec::new();
-    archive
-        .by_name(&opf_path)
-        .map_err(|_| DomainError::Validation(format!("OPF '{opf_path}' missing in epub")))?
-        .read_to_end(&mut opf_bytes)
-        .map_err(|e| DomainError::Validation(format!("failed reading OPF: {e}")))?;
-
-    let opf_dir = Path::new(&opf_path).parent().unwrap_or(Path::new(""));
-    let opf_str = String::from_utf8_lossy(&opf_bytes);
+fn parse_opf_bytes(opf_bytes: &[u8], format: &str, fallback_title: &str) -> ParsedOpfData {
+    let opf_str = String::from_utf8_lossy(opf_bytes);
     let mut reader = Reader::from_str(&opf_str);
     reader.config_mut().trim_text(false);
 
-    let fallback_title = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Untitled")
-        .to_string();
-
     let mut meta = BookFileMeta {
-        format: "epub".to_string(),
-        title: fallback_title,
+        format: format.to_string(),
+        title: fallback_title.to_string(),
         writable: true,
         ..Default::default()
     };
 
+    let mut package_version = "2.0".to_string();
+    let mut unique_identifier_id = "bookid".to_string();
     let mut in_metadata = false;
     let mut cur_tag: Option<String> = None;
     let mut text_acc = String::new();
     let mut cover_meta_id: Option<String> = None;
-    let mut manifest_items: Vec<(String, String, String, String)> = Vec::new(); // (id, href, media_type, properties)
+    let mut manifest_items: Vec<(String, String, String, String)> = Vec::new();
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
                 let local = e.local_name().as_ref().to_ascii_lowercase();
-                if local == "metadata" {
+                if local == "package" {
+                    if let Some(v) = attr_value(e, "version") {
+                        package_version = v;
+                    }
+                    if let Some(uid) = attr_value(e, "unique-identifier")
+                        && !uid.trim().is_empty()
+                    {
+                        unique_identifier_id = uid.trim().to_string();
+                    }
+                } else if local == "metadata" {
                     in_metadata = true;
                 } else if in_metadata {
                     if local == "meta"
@@ -233,7 +234,52 @@ fn parse_epub_archive(path: &Path) -> DomainResult<ParsedEpubPackage> {
         }
     }
 
-    let cover_href = manifest_items
+    ParsedOpfData {
+        meta,
+        package_version,
+        unique_identifier_id,
+        cover_meta_id,
+        manifest_items,
+    }
+}
+
+fn parse_epub_archive(path: &Path) -> DomainResult<ParsedEpubPackage> {
+    let file = File::open(path)
+        .map_err(|e| DomainError::Storage(format!("failed opening '{}': {e}", path.display())))?;
+    let mut archive = ZipArchive::new(BufReader::new(file))
+        .map_err(|e| DomainError::Validation(format!("invalid epub archive: {e}")))?;
+
+    let mut container_xml = Vec::new();
+    archive
+        .by_name("META-INF/container.xml")
+        .map_err(|_| DomainError::Validation("missing META-INF/container.xml in epub".into()))?
+        .read_to_end(&mut container_xml)
+        .map_err(|e| DomainError::Validation(format!("failed reading container.xml: {e}")))?;
+
+    let opf_path = find_opf_path_in_container(&container_xml)
+        .ok_or_else(|| DomainError::Validation("rootfile missing in container.xml".into()))?;
+    let mut opf_bytes = Vec::new();
+    archive
+        .by_name(&opf_path)
+        .map_err(|_| DomainError::Validation(format!("OPF '{opf_path}' missing in epub")))?
+        .read_to_end(&mut opf_bytes)
+        .map_err(|e| DomainError::Validation(format!("failed reading OPF: {e}")))?;
+
+    let opf_dir = Path::new(&opf_path).parent().unwrap_or(Path::new(""));
+    let fallback_title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled");
+
+    let ParsedOpfData {
+        mut meta,
+        package_version,
+        unique_identifier_id,
+        cover_meta_id,
+        manifest_items,
+    } = parse_opf_bytes(&opf_bytes, "epub", fallback_title);
+
+    let cover_item = manifest_items
         .iter()
         .find(|(_, _, mt, props)| {
             mt.starts_with("image/") && props.split_whitespace().any(|p| p == "cover-image")
@@ -251,8 +297,14 @@ fn parse_epub_archive(path: &Path) -> DomainResult<ParsedEpubPackage> {
                     && (id.to_ascii_lowercase().contains("cover")
                         || href.to_ascii_lowercase().contains("cover"))
             })
-        })
-        .map(|(_, href, _, _)| normalize_zip_rel(opf_dir, href));
+        });
+
+    let cover_item_id = cover_item.map(|(id, _, _, _)| id.clone());
+    let cover_raw_href = cover_item.map(|(_, href, _, _)| href.clone());
+    let cover_media_type = cover_item.map(|(_, _, mt, _)| mt.clone());
+    let cover_href = cover_raw_href
+        .as_deref()
+        .map(|href| normalize_zip_rel(opf_dir, href));
 
     meta.has_cover = cover_href
         .as_ref()
@@ -260,18 +312,249 @@ fn parse_epub_archive(path: &Path) -> DomainResult<ParsedEpubPackage> {
 
     Ok(ParsedEpubPackage {
         opf_path,
+        package_version,
+        unique_identifier_id,
         cover_entry_path: cover_href,
+        cover_item_id,
+        cover_media_type,
+        cover_raw_href,
         meta,
     })
+}
+
+fn looks_like_isbn(text: &str, scheme_attr: Option<&str>) -> bool {
+    if scheme_attr.is_some_and(|s| s.eq_ignore_ascii_case("isbn")) {
+        return true;
+    }
+    let lower = text.trim().to_ascii_lowercase();
+    if lower.starts_with("urn:isbn:") || lower.starts_with("isbn:") {
+        return true;
+    }
+    let digits: String = text
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == 'X' || *c == 'x')
+        .collect();
+    !lower.starts_with("urn:uuid:") && (digits.len() == 10 || digits.len() == 13)
 }
 
 fn replace_opf_metadata_block(
     original_opf: &str,
     meta: &BookFileMeta,
     cover_id_hint: Option<&str>,
+    unique_id_hint: &str,
+    package_version_hint: &str,
 ) -> String {
-    let mut block = String::with_capacity(768);
-    block.push_str("<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:opf=\"http://www.idpf.org/2007/opf\">\n");
+    let re = Regex::new(
+        r"(?is)<(?P<prefix>\w+:)?metadata\b(?P<attrs>[^>]*)>(?P<inner>.*?)</(?:\w+:)?metadata>",
+    )
+    .expect("valid opf metadata regex");
+
+    let Some(caps) = re.captures(original_opf) else {
+        return original_opf.to_string();
+    };
+    let prefix = caps.name("prefix").map(|m| m.as_str()).unwrap_or("");
+    let open_attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or("");
+    let inner = caps.name("inner").map(|m| m.as_str()).unwrap_or("");
+
+    let mut preserved: Vec<(Option<String>, String)> = Vec::new();
+    let mut removed_ids: HashSet<String> = HashSet::new();
+    let mut has_primary_unique_id = false;
+    let mut emitted_isbn = false;
+    let mut had_dcterms_modified = false;
+
+    let mut reader = Reader::from_str(inner);
+    reader.config_mut().trim_text(false);
+    let mut prev_pos = 0usize;
+    let mut depth = 0usize;
+    let mut elem_start = 0usize;
+    let mut elem_local = String::new();
+    let mut elem_id: Option<String> = None;
+    let mut elem_name: Option<String> = None;
+    let mut elem_prop: Option<String> = None;
+    let mut elem_refines: Option<String> = None;
+    let mut elem_scheme: Option<String> = None;
+    let mut text_acc = String::new();
+
+    let mut handle_top_element = |local: &str,
+                                  id: Option<String>,
+                                  name: Option<String>,
+                                  prop: Option<String>,
+                                  refines: Option<String>,
+                                  scheme: Option<String>,
+                                  inner_text: &str,
+                                  raw_slice: &str| {
+        let trimmed_raw = raw_slice.trim();
+        if trimmed_raw.is_empty() {
+            return;
+        }
+        match local {
+            "title" | "creator" | "description" | "publisher" | "date" | "language" | "subject" => {
+                if let Some(elem_id_val) = id {
+                    removed_ids.insert(elem_id_val);
+                }
+            }
+            "meta" => {
+                if prop
+                    .as_deref()
+                    .is_some_and(|p| p.eq_ignore_ascii_case("dcterms:modified"))
+                {
+                    had_dcterms_modified = true;
+                    return;
+                }
+                if name
+                    .as_deref()
+                    .is_some_and(|n| n.eq_ignore_ascii_case("cover"))
+                    && cover_id_hint.is_some()
+                {
+                    return;
+                }
+                let refines_id = refines
+                    .as_deref()
+                    .and_then(|r| r.trim().strip_prefix('#'))
+                    .map(str::to_owned);
+                preserved.push((refines_id, trimmed_raw.to_string()));
+            }
+            "identifier" => {
+                let is_primary = id.as_deref() == Some(unique_id_hint);
+                let is_isbn = looks_like_isbn(inner_text, scheme.as_deref());
+                if is_primary {
+                    has_primary_unique_id = true;
+                    if !is_isbn {
+                        preserved.push((None, trimmed_raw.to_string()));
+                    } else if let Some(ref isbn_val) = meta.isbn
+                        && !isbn_val.trim().is_empty()
+                    {
+                        emitted_isbn = true;
+                        preserved.push((
+                            None,
+                            format!(
+                                "<dc:identifier id=\"{}\">urn:isbn:{}</dc:identifier>",
+                                escape(unique_id_hint),
+                                escape(isbn_val.trim())
+                            ),
+                        ));
+                    } else {
+                        preserved.push((
+                            None,
+                            format!(
+                                "<dc:identifier id=\"{}\">urn:uuid:{}</dc:identifier>",
+                                escape(unique_id_hint),
+                                uuid::Uuid::now_v7()
+                            ),
+                        ));
+                    }
+                } else if !is_isbn {
+                    preserved.push((None, trimmed_raw.to_string()));
+                }
+            }
+            _ => {
+                preserved.push((None, trimmed_raw.to_string()));
+            }
+        }
+    };
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                if depth == 0 {
+                    let rel = inner[prev_pos..].find('<').unwrap_or(0);
+                    elem_start = prev_pos + rel;
+                    elem_local = e.local_name().as_ref().to_ascii_lowercase();
+                    elem_id = attr_value(e, "id");
+                    elem_name = attr_value(e, "name");
+                    elem_prop = attr_value(e, "property");
+                    elem_refines = attr_value(e, "refines");
+                    elem_scheme = attr_value(e, "scheme");
+                    text_acc.clear();
+                }
+                depth += 1;
+            }
+            Ok(Event::Empty(ref e)) => {
+                if depth == 0 {
+                    let rel = inner[prev_pos..].find('<').unwrap_or(0);
+                    let start = prev_pos + rel;
+                    let end = reader.buffer_position() as usize;
+                    let local = e.local_name().as_ref().to_ascii_lowercase();
+                    handle_top_element(
+                        &local,
+                        attr_value(e, "id"),
+                        attr_value(e, "name"),
+                        attr_value(e, "property"),
+                        attr_value(e, "refines"),
+                        attr_value(e, "scheme"),
+                        "",
+                        &inner[start..end],
+                    );
+                }
+            }
+            Ok(Event::Text(t)) if depth > 0 => {
+                text_acc.push_str(&t.xml10_content());
+            }
+            Ok(Event::GeneralRef(r)) if depth > 0 => {
+                super::append_xml_ref(&mut text_acc, &r);
+            }
+            Ok(Event::CData(c)) if depth > 0 => {
+                text_acc.push_str(c.as_ref());
+            }
+            Ok(Event::End(_)) => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        let end = reader.buffer_position() as usize;
+                        handle_top_element(
+                            &elem_local,
+                            elem_id.take(),
+                            elem_name.take(),
+                            elem_prop.take(),
+                            elem_refines.take(),
+                            elem_scheme.take(),
+                            &text_acc,
+                            &inner[elem_start..end],
+                        );
+                        text_acc.clear();
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        prev_pos = reader.buffer_position() as usize;
+    }
+
+    let mut attrs_out = open_attrs.to_string();
+    if !original_opf.contains("xmlns:dc=") && !attrs_out.contains("xmlns:dc=") {
+        attrs_out.push_str(" xmlns:dc=\"http://purl.org/dc/elements/1.1/\"");
+    }
+
+    let mut block = String::with_capacity(1024);
+    block.push_str(&format!("<{prefix}metadata{attrs_out}>\n"));
+
+    if !has_primary_unique_id {
+        let book_id = if let Some(ref isbn_val) = meta.isbn
+            && !isbn_val.trim().is_empty()
+        {
+            emitted_isbn = true;
+            format!("urn:isbn:{}", isbn_val.trim())
+        } else {
+            format!("urn:uuid:{}", uuid::Uuid::now_v7())
+        };
+        block.push_str(&format!(
+            "    <dc:identifier id=\"{}\">{}</dc:identifier>\n",
+            escape(unique_id_hint),
+            escape(&book_id)
+        ));
+    }
+
+    if !emitted_isbn
+        && let Some(ref isbn_val) = meta.isbn
+        && !isbn_val.trim().is_empty()
+    {
+        block.push_str(&format!(
+            "    <dc:identifier>urn:isbn:{}</dc:identifier>\n",
+            escape(isbn_val.trim())
+        ));
+    }
+
     block.push_str(&format!(
         "    <dc:title>{}</dc:title>\n",
         escape(meta.title.trim())
@@ -291,18 +574,6 @@ fn replace_opf_metadata_block(
         "    <dc:language>{}</dc:language>\n",
         escape(lang)
     ));
-
-    let book_id = meta
-        .isbn
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| format!("urn:isbn:{}", s.trim()))
-        .unwrap_or_else(|| format!("urn:uuid:{}", uuid::Uuid::now_v7()));
-    block.push_str(&format!(
-        "    <dc:identifier id=\"bookid\">{}</dc:identifier>\n",
-        escape(&book_id)
-    ));
-
     if let Some(ref desc) = meta.description
         && !desc.trim().is_empty()
     {
@@ -336,30 +607,42 @@ fn replace_opf_metadata_block(
             escape(cid)
         ));
     }
-    block.push_str("  </metadata>");
 
-    let re = Regex::new(r"(?is)<(?:\w+:)?metadata\b[^>]*>.*?</(?:\w+:)?metadata>")
-        .expect("valid opf metadata regex");
-    if re.is_match(original_opf) {
-        re.replace(original_opf, block.as_str()).into_owned()
-    } else {
-        original_opf.to_string()
+    for (refines_target, raw_elem) in preserved {
+        if let Some(target_id) = refines_target
+            && removed_ids.contains(&target_id)
+        {
+            continue;
+        }
+        block.push_str("    ");
+        block.push_str(&raw_elem);
+        block.push('\n');
     }
+
+    if package_version_hint.trim().starts_with('3') || had_dcterms_modified {
+        let modified = Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
+        block.push_str(&format!(
+            "    <meta property=\"dcterms:modified\">{modified}</meta>\n"
+        ));
+    }
+
+    block.push_str(&format!("  </{prefix}metadata>"));
+    re.replace(original_opf, block.as_str()).into_owned()
 }
 
 fn rewrite_epub_entries(
     epub_path: &Path,
     replacements: Vec<(String, Vec<u8>)>,
+    skip_paths: &[String],
 ) -> DomainResult<()> {
-    let src_bytes = std::fs::read(epub_path)
-        .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
-
-    atomic_mutate_copy(epub_path, |staging| {
-        let mut src_archive = ZipArchive::new(Cursor::new(src_bytes.as_slice()))
+    atomic_write_via_temp(epub_path, |staging| {
+        let src_file = File::open(epub_path)
+            .map_err(|e| DomainError::Storage(format!("failed opening epub: {e}")))?;
+        let mut src_archive = ZipArchive::new(BufReader::new(src_file))
             .map_err(|e| DomainError::Validation(format!("invalid epub zip: {e}")))?;
         let out_file = File::create(staging)
             .map_err(|e| DomainError::Storage(format!("failed creating staging epub: {e}")))?;
-        let mut writer = ZipWriter::new(out_file);
+        let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
         // Per EPUB OCF specification, `mimetype` MUST be the first entry and stored uncompressed
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
@@ -370,22 +653,22 @@ fn rewrite_epub_entries(
             .write_all(b"application/epub+zip")
             .map_err(|e| DomainError::Storage(format!("epub write mimetype failed: {e}")))?;
 
-        let mut written: std::collections::HashSet<String> =
-            std::collections::HashSet::from(["mimetype".to_string()]);
+        let mut written: HashSet<String> = HashSet::from(["mimetype".to_string()]);
 
         for idx in 0..src_archive.len() {
-            let mut entry = src_archive
+            let entry = src_archive
                 .by_index(idx)
                 .map_err(|e| DomainError::Storage(format!("epub entry error: {e}")))?;
             let Ok(name_ref) = entry.name() else {
                 continue;
             };
             let name = name_ref.to_string();
-            if entry.is_dir() || name == "mimetype" {
+            if entry.is_dir() || name == "mimetype" || skip_paths.iter().any(|s| s == &name) {
                 continue;
             }
 
             if let Some((_, rep_bytes)) = replacements.iter().find(|(rn, _)| rn == &name) {
+                drop(entry);
                 let opts =
                     SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
                 writer
@@ -396,21 +679,9 @@ fn rewrite_epub_entries(
                     .map_err(|e| DomainError::Storage(format!("epub replace write error: {e}")))?;
                 written.insert(name);
             } else {
-                let method = match entry.compression() {
-                    CompressionMethod::Stored => CompressionMethod::Stored,
-                    _ => CompressionMethod::Deflated,
-                };
-                let opts = SimpleFileOptions::default().compression_method(method);
-                let mut buf = Vec::with_capacity(usize::try_from(entry.size()).unwrap_or(0));
-                entry
-                    .read_to_end(&mut buf)
-                    .map_err(|e| DomainError::Storage(format!("epub copy read error: {e}")))?;
                 writer
-                    .start_file(&name, opts)
-                    .map_err(|e| DomainError::Storage(format!("epub copy start error: {e}")))?;
-                writer
-                    .write_all(&buf)
-                    .map_err(|e| DomainError::Storage(format!("epub copy write error: {e}")))?;
+                    .raw_copy_file(entry)
+                    .map_err(|e| DomainError::Storage(format!("epub raw copy error: {e}")))?;
                 written.insert(name);
             }
         }
@@ -428,11 +699,86 @@ fn rewrite_epub_entries(
             }
         }
 
-        writer
+        let buf_writer = writer
             .finish()
             .map_err(|e| DomainError::Storage(format!("epub finish error: {e}")))?;
+        buf_writer
+            .into_inner()
+            .map_err(|e| DomainError::Storage(format!("epub flush error: {e}")))?;
         Ok(())
     })
+}
+
+fn sidecar_opf_path(book_path: &Path) -> PathBuf {
+    book_path.with_extension("opf")
+}
+
+fn find_sidecar_cover(book_path: &Path) -> Option<PathBuf> {
+    ["jpg", "jpeg", "png", "webp"]
+        .into_iter()
+        .map(|ext| book_path.with_extension(ext))
+        .find(|p| p.is_file())
+}
+
+fn pdf_info_string(doc: &Document, info_dict: &lopdf::Dictionary, key: &[u8]) -> Option<String> {
+    let obj = info_dict.get(key).ok()?;
+    let resolved = match obj {
+        Object::Reference(id) => doc.get_object(*id).ok()?,
+        other => other,
+    };
+    decode_text_string(resolved)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn apply_pdf_info_meta(path: &Path, meta: &mut BookFileMeta) {
+    let Ok(doc) = Document::load(path) else {
+        return;
+    };
+    let Ok(info_ref) = doc.trailer.get(b"Info") else {
+        return;
+    };
+    let Ok(info_obj) = (match info_ref {
+        Object::Reference(id) => doc.get_object(*id),
+        other => Ok(other),
+    }) else {
+        return;
+    };
+    let Ok(info_dict) = info_obj.as_dict() else {
+        return;
+    };
+
+    if let Some(t) = pdf_info_string(&doc, info_dict, b"Title") {
+        meta.title = t;
+    }
+    if let Some(a) = pdf_info_string(&doc, info_dict, b"Author") {
+        meta.authors = a
+            .split([';', '、'])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+    if let Some(subj) = pdf_info_string(&doc, info_dict, b"Subject") {
+        meta.description = Some(subj);
+    }
+    if let Some(kw) = pdf_info_string(&doc, info_dict, b"Keywords") {
+        meta.tags = kw
+            .split([',', ';', '、'])
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+}
+
+fn render_sidecar_opf(meta: &BookFileMeta) -> String {
+    let base = r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+  </metadata>
+</package>
+"#;
+    replace_opf_metadata_block(base, meta, None, "bookid", "2.0")
 }
 
 fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
@@ -451,15 +797,26 @@ fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
         return Ok(parse_epub_archive(path)?.meta);
     }
 
-    let sidecar_cover =
-        path.with_extension("jpg").is_file() || path.with_extension("png").is_file();
-    Ok(BookFileMeta {
-        format: ext,
-        title: fallback_title,
-        has_cover: sidecar_cover,
-        writable: false,
+    let mut meta = BookFileMeta {
+        format: ext.clone(),
+        title: fallback_title.clone(),
+        writable: true,
         ..Default::default()
-    })
+    };
+
+    if ext == "pdf" {
+        apply_pdf_info_meta(path, &mut meta);
+    }
+
+    let opf_path = sidecar_opf_path(path);
+    if opf_path.is_file()
+        && let Ok(bytes) = std::fs::read(&opf_path)
+    {
+        meta = parse_opf_bytes(&bytes, &ext, &meta.title).meta;
+    }
+
+    meta.has_cover = find_sidecar_cover(path).is_some();
+    Ok(meta)
 }
 
 #[async_trait]
@@ -494,7 +851,11 @@ impl MediaInspectorPort for EpubBookInspector {
                             .description
                             .as_ref()
                             .is_some_and(|d| !d.trim().is_empty()),
-                        has_nfo_or_tag_block: !m.tags.is_empty() || m.isbn.is_some(),
+                        has_nfo_or_tag_block: !m.tags.is_empty()
+                            || m.isbn.is_some()
+                            || m.publisher
+                                .as_ref()
+                                .is_some_and(|pub_name| !pub_name.trim().is_empty()),
                     },
                 }
             }
@@ -537,57 +898,77 @@ impl MediaInspectorPort for EpubBookInspector {
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if ext != "epub" {
-            return Err(DomainError::UnsupportedFormat(
-                "embedded book metadata writing is currently supported for EPUB files; TXT/PDF support filename organizing".into(),
-            ));
+        if !BOOK_EXTENSIONS.contains(&ext.as_str()) {
+            return Err(DomainError::UnsupportedFormat(format!(
+                "unsupported book format '.{ext}'"
+            )));
         }
 
         let p = path.to_path_buf();
         let bp_cloned: BookMetaPatch = bp.clone();
 
         let updated = tokio::task::spawn_blocking(move || -> DomainResult<BookFileMeta> {
+            let apply_patch = |meta: &mut BookFileMeta, patch: BookMetaPatch| {
+                if let Some(title) = patch.title
+                    && !title.trim().is_empty()
+                {
+                    meta.title = title.trim().to_string();
+                }
+                if let Some(authors) = patch.authors {
+                    meta.authors = authors
+                        .into_iter()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+                if let Some(desc) = patch.description {
+                    meta.description = (!desc.trim().is_empty()).then(|| desc.trim().to_string());
+                }
+                if let Some(pub_name) = patch.publisher {
+                    meta.publisher =
+                        (!pub_name.trim().is_empty()).then(|| pub_name.trim().to_string());
+                }
+                if let Some(pub_at) = patch.published_at {
+                    meta.published_at =
+                        (!pub_at.trim().is_empty()).then(|| pub_at.trim().to_string());
+                }
+                if let Some(lang) = patch.language {
+                    meta.language = (!lang.trim().is_empty()).then(|| lang.trim().to_string());
+                }
+                if let Some(isbn) = patch.isbn {
+                    meta.isbn = (!isbn.trim().is_empty()).then(|| isbn.trim().to_string());
+                }
+                if let Some(tags) = patch.tags {
+                    meta.tags = tags
+                        .into_iter()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                }
+            };
+
+            if ext != "epub" {
+                let mut meta = read_book_meta_any(&p)?;
+                apply_patch(&mut meta, bp_cloned);
+                let opf_path = sidecar_opf_path(&p);
+                let xml = if opf_path.is_file()
+                    && let Ok(existing) = std::fs::read_to_string(&opf_path)
+                {
+                    replace_opf_metadata_block(&existing, &meta, None, "bookid", "2.0")
+                } else {
+                    render_sidecar_opf(&meta)
+                };
+                atomic_write_bytes(&opf_path, xml.as_bytes())?;
+                return read_book_meta_any(&p);
+            }
+
             let parsed = parse_epub_archive(&p)?;
             let mut meta = parsed.meta;
+            apply_patch(&mut meta, bp_cloned);
 
-            if let Some(title) = bp_cloned.title
-                && !title.trim().is_empty()
-            {
-                meta.title = title.trim().to_string();
-            }
-            if let Some(authors) = bp_cloned.authors {
-                meta.authors = authors
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-            if let Some(desc) = bp_cloned.description {
-                meta.description = (!desc.trim().is_empty()).then(|| desc.trim().to_string());
-            }
-            if let Some(pub_name) = bp_cloned.publisher {
-                meta.publisher = (!pub_name.trim().is_empty()).then(|| pub_name.trim().to_string());
-            }
-            if let Some(pub_at) = bp_cloned.published_at {
-                meta.published_at = (!pub_at.trim().is_empty()).then(|| pub_at.trim().to_string());
-            }
-            if let Some(lang) = bp_cloned.language {
-                meta.language = (!lang.trim().is_empty()).then(|| lang.trim().to_string());
-            }
-            if let Some(isbn) = bp_cloned.isbn {
-                meta.isbn = (!isbn.trim().is_empty()).then(|| isbn.trim().to_string());
-            }
-            if let Some(tags) = bp_cloned.tags {
-                meta.tags = tags
-                    .into_iter()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
-
-            let raw_zip = std::fs::read(&p)
+            let src_file = File::open(&p)
                 .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
-            let mut archive = ZipArchive::new(Cursor::new(raw_zip.as_slice()))
+            let mut archive = ZipArchive::new(BufReader::new(src_file))
                 .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
             let mut opf_bytes = Vec::new();
             archive
@@ -595,19 +976,30 @@ impl MediaInspectorPort for EpubBookInspector {
                 .map_err(|_| DomainError::Validation("OPF missing".into()))?
                 .read_to_end(&mut opf_bytes)
                 .map_err(|e| DomainError::Storage(format!("read OPF error: {e}")))?;
+            drop(archive);
 
             let opf_str = String::from_utf8_lossy(&opf_bytes);
-            let next_opf = replace_opf_metadata_block(&opf_str, &meta, None);
-            rewrite_epub_entries(&p, vec![(parsed.opf_path, next_opf.into_bytes())])?;
+            let next_opf = replace_opf_metadata_block(
+                &opf_str,
+                &meta,
+                None,
+                &parsed.unique_identifier_id,
+                &parsed.package_version,
+            );
+            rewrite_epub_entries(&p, vec![(parsed.opf_path, next_opf.into_bytes())], &[])?;
             Ok(parse_epub_archive(&p)?.meta)
         })
         .await
-        .map_err(|e| DomainError::Storage(format!("epub write task failed: {e}")))??;
+        .map_err(|e| DomainError::Storage(format!("book write task failed: {e}")))??;
 
         Ok(MediaMetadataPayload::Book(updated))
     }
 
-    async fn read_artwork(&self, path: &Path) -> DomainResult<Option<BinaryPayload>> {
+    async fn read_artwork(
+        &self,
+        path: &Path,
+        _slot: Option<&str>,
+    ) -> DomainResult<Option<BinaryPayload>> {
         let p = path.to_path_buf();
         tokio::task::spawn_blocking(move || {
             let ext = p
@@ -620,9 +1012,9 @@ impl MediaInspectorPort for EpubBookInspector {
                 let Some(cover_entry) = parsed.cover_entry_path else {
                     return Ok(None);
                 };
-                let raw_zip = std::fs::read(&p)
+                let src_file = File::open(&p)
                     .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
-                let mut archive = ZipArchive::new(Cursor::new(raw_zip.as_slice()))
+                let mut archive = ZipArchive::new(BufReader::new(src_file))
                     .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
                 let mut entry = archive
                     .by_name(&cover_entry)
@@ -638,17 +1030,14 @@ impl MediaInspectorPort for EpubBookInspector {
                 }));
             }
 
-            for ext_cand in ["jpg", "png"] {
-                let sidecar = p.with_extension(ext_cand);
-                if sidecar.is_file() {
-                    let buf = std::fs::read(&sidecar)
-                        .map_err(|e| DomainError::Storage(format!("sidecar read error: {e}")))?;
-                    let mime = sniff_image_mime(&buf).to_string();
-                    return Ok(Some(BinaryPayload {
-                        bytes: buf,
-                        mime_type: mime,
-                    }));
-                }
+            if let Some(sidecar) = find_sidecar_cover(&p) {
+                let buf = std::fs::read(&sidecar)
+                    .map_err(|e| DomainError::Storage(format!("sidecar read error: {e}")))?;
+                let mime = sniff_image_mime(&buf).to_string();
+                return Ok(Some(BinaryPayload {
+                    bytes: buf,
+                    mime_type: mime,
+                }));
             }
             Ok(None)
         })
@@ -665,12 +1054,14 @@ impl MediaInspectorPort for EpubBookInspector {
     ) -> DomainResult<()> {
         let p = path.to_path_buf();
         let raw = bytes.to_vec();
-        let detected = if mime_type.trim().is_empty() {
-            sniff_image_mime(&raw)
+        let sniffed = sniff_image_mime(&raw).to_string();
+        let detected = if sniffed.starts_with("image/") && sniffed != "image/jpeg" {
+            sniffed
+        } else if mime_type.trim().starts_with("image/") {
+            mime_type.trim().to_string()
         } else {
-            mime_type.trim()
-        }
-        .to_string();
+            sniffed
+        };
 
         tokio::task::spawn_blocking(move || {
             let ext = p
@@ -678,34 +1069,89 @@ impl MediaInspectorPort for EpubBookInspector {
                 .and_then(|s| s.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
+            let img_ext = if detected.contains("png") {
+                "png"
+            } else if detected.contains("webp") {
+                "webp"
+            } else {
+                "jpg"
+            };
+
             if ext != "epub" {
-                let img_ext = if detected.contains("png") {
-                    "png"
-                } else {
-                    "jpg"
-                };
                 let sidecar = p.with_extension(img_ext);
-                return crate::infra::atomic_fs::atomic_write_bytes(&sidecar, &raw);
+                atomic_write_bytes(&sidecar, &raw)?;
+                for old_ext in ["jpg", "jpeg", "png", "webp"] {
+                    if old_ext != img_ext {
+                        let stale = p.with_extension(old_ext);
+                        if stale.is_file() {
+                            let _ = std::fs::remove_file(stale);
+                        }
+                    }
+                }
+                return Ok(());
             }
 
             let parsed = parse_epub_archive(&p)?;
             if let Some(existing_cover) = parsed.cover_entry_path {
-                return rewrite_epub_entries(&p, vec![(existing_cover, raw)]);
+                let same_mime = parsed
+                    .cover_media_type
+                    .as_deref()
+                    .is_some_and(|m| m.eq_ignore_ascii_case(&detected));
+                if same_mime {
+                    return rewrite_epub_entries(&p, vec![(existing_cover, raw)], &[]);
+                }
+
+                let old_raw_href = parsed
+                    .cover_raw_href
+                    .as_deref()
+                    .unwrap_or(&existing_cover);
+                let new_raw_href = swap_href_extension(old_raw_href, img_ext);
+                let opf_dir = Path::new(&parsed.opf_path).parent().unwrap_or(Path::new(""));
+                let new_zip_cover = normalize_zip_rel(opf_dir, &new_raw_href);
+
+                let src_file = File::open(&p)
+                    .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
+                let mut archive = ZipArchive::new(BufReader::new(src_file))
+                    .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
+                let mut opf_bytes = Vec::new();
+                archive
+                    .by_name(&parsed.opf_path)
+                    .map_err(|_| DomainError::Validation("OPF missing".into()))?
+                    .read_to_end(&mut opf_bytes)
+                    .map_err(|e| DomainError::Storage(format!("read OPF error: {e}")))?;
+                drop(archive);
+
+                let opf_str = String::from_utf8_lossy(&opf_bytes);
+                let updated_opf = update_manifest_cover_item(
+                    &opf_str,
+                    parsed.cover_item_id.as_deref(),
+                    old_raw_href,
+                    &new_raw_href,
+                    &detected,
+                );
+                let skip = if new_zip_cover != existing_cover {
+                    vec![existing_cover]
+                } else {
+                    Vec::new()
+                };
+                return rewrite_epub_entries(
+                    &p,
+                    vec![
+                        (new_zip_cover, raw),
+                        (parsed.opf_path, updated_opf.into_bytes()),
+                    ],
+                    &skip,
+                );
             }
 
             // Inject a new cover image entry + manifest item into OPF
-            let img_ext = if detected.contains("png") {
-                "png"
-            } else {
-                "jpg"
-            };
             let opf_dir = Path::new(&parsed.opf_path).parent().unwrap_or(Path::new(""));
             let rel_href = format!("xmedia-cover.{img_ext}");
             let zip_cover_path = normalize_zip_rel(opf_dir, &rel_href);
 
-            let raw_zip = std::fs::read(&p)
+            let src_file = File::open(&p)
                 .map_err(|e| DomainError::Storage(format!("failed reading epub: {e}")))?;
-            let mut archive = ZipArchive::new(Cursor::new(raw_zip.as_slice()))
+            let mut archive = ZipArchive::new(BufReader::new(src_file))
                 .map_err(|e| DomainError::Validation(format!("invalid epub: {e}")))?;
             let mut opf_bytes = Vec::new();
             archive
@@ -713,6 +1159,7 @@ impl MediaInspectorPort for EpubBookInspector {
                 .map_err(|_| DomainError::Validation("OPF missing".into()))?
                 .read_to_end(&mut opf_bytes)
                 .map_err(|e| DomainError::Storage(format!("read OPF error: {e}")))?;
+            drop(archive);
 
             let mut opf_str = String::from_utf8_lossy(&opf_bytes).into_owned();
             let item_tag = format!(
@@ -721,7 +1168,13 @@ impl MediaInspectorPort for EpubBookInspector {
                 escape(&detected)
             );
             opf_str = opf_str.replacen("</manifest>", &item_tag, 1);
-            opf_str = replace_opf_metadata_block(&opf_str, &parsed.meta, Some("xmedia-cover-img"));
+            opf_str = replace_opf_metadata_block(
+                &opf_str,
+                &parsed.meta,
+                Some("xmedia-cover-img"),
+                &parsed.unique_identifier_id,
+                &parsed.package_version,
+            );
 
             rewrite_epub_entries(
                 &p,
@@ -729,9 +1182,64 @@ impl MediaInspectorPort for EpubBookInspector {
                     (zip_cover_path, raw),
                     (parsed.opf_path, opf_str.into_bytes()),
                 ],
+                &[],
             )
         })
         .await
         .map_err(|e| DomainError::Storage(format!("book cover write failed: {e}")))?
     }
+}
+
+fn swap_href_extension(href: &str, new_ext: &str) -> String {
+    match href.rsplit_once('.') {
+        Some((stem, _)) if !stem.ends_with('/') => format!("{stem}.{new_ext}"),
+        _ => format!("{href}.{new_ext}"),
+    }
+}
+
+fn update_manifest_cover_item(
+    opf_str: &str,
+    cover_item_id: Option<&str>,
+    old_href: &str,
+    new_href: &str,
+    new_mime: &str,
+) -> String {
+    let item_re = Regex::new(r"(?is)<item\b[^>]*?/?>").expect("valid item regex");
+    let href_re = Regex::new(r#"(?i)\bhref\s*=\s*(?:"[^"]*"|'[^']*')"#).expect("valid href regex");
+    let mime_re =
+        Regex::new(r#"(?i)\bmedia-type\s*=\s*(?:"[^"]*"|'[^']*')"#).expect("valid mime regex");
+    let id_re = Regex::new(r#"(?i)\bid\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid id regex");
+    let href_val_re =
+        Regex::new(r#"(?i)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid href val regex");
+
+    item_re
+        .replace_all(opf_str, |caps: &regex::Captures<'_>| {
+            let tag = &caps[0];
+            let matched_by_id = cover_item_id.is_some_and(|cid| {
+                id_re
+                    .captures(tag)
+                    .and_then(|c| c.get(1).or_else(|| c.get(2)))
+                    .is_some_and(|m| m.as_str() == cid)
+            });
+            let matched_by_href = href_val_re
+                .captures(tag)
+                .and_then(|c| c.get(1).or_else(|| c.get(2)))
+                .is_some_and(|m| m.as_str() == old_href);
+            if !matched_by_id && !matched_by_href {
+                return tag.to_string();
+            }
+
+            let updated = href_re.replace(tag, format!("href=\"{}\"", escape(new_href)).as_str());
+            if mime_re.is_match(&updated) {
+                mime_re
+                    .replace(
+                        &updated,
+                        format!("media-type=\"{}\"", escape(new_mime)).as_str(),
+                    )
+                    .into_owned()
+            } else {
+                updated.into_owned()
+            }
+        })
+        .into_owned()
 }

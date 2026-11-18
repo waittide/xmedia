@@ -31,39 +31,71 @@ impl VideoNfoInspector {
     }
 }
 
-pub(crate) fn is_season_dir(dir: &Path) -> bool {
-    let Some(name) = dir.file_name().and_then(|s| s.to_str()) else {
-        return false;
-    };
+pub(crate) fn parse_season_dir_number(dir: &Path) -> Option<u32> {
+    let name = dir.file_name().and_then(|s| s.to_str())?;
     let trimmed = name.trim();
     let lower = trimmed.to_ascii_lowercase();
     if lower == "specials" {
-        return true;
+        return Some(0);
     }
     if let Some(rest) = lower.strip_prefix("season") {
-        return rest.trim().chars().all(|c| c.is_ascii_digit()) && !rest.trim().is_empty();
+        let digits = rest.trim();
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            return digits.parse::<u32>().ok();
+        }
     }
     if let Some(rest) = lower.strip_prefix('s')
         && !rest.is_empty()
         && rest.len() <= 3
         && rest.chars().all(|c| c.is_ascii_digit())
     {
-        return true;
+        return rest.parse::<u32>().ok();
     }
     if let Some(rest) = trimmed.strip_prefix('第')
         && let Some(num_str) = rest.strip_suffix('季')
     {
-        return !num_str.trim().is_empty() && num_str.trim().chars().all(|c| c.is_ascii_digit());
+        let digits = num_str.trim();
+        if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            return digits.parse::<u32>().ok();
+        }
     }
-    false
+    None
 }
 
-fn find_existing_nfo(video_path: &Path) -> Option<PathBuf> {
+pub(crate) fn is_season_dir(dir: &Path) -> bool {
+    parse_season_dir_number(dir).is_some()
+}
+
+fn dir_has_single_video(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut count = 0usize;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|e| VIDEO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+        {
+            count += 1;
+            if count > 1 {
+                return false;
+            }
+        }
+    }
+    count == 1
+}
+
+fn find_existing_nfo(video_path: &Path, is_episode_guess: bool) -> Option<PathBuf> {
     let same_stem = video_path.with_extension("nfo");
     if same_stem.is_file() {
         return Some(same_stem);
     }
-    if let Some(parent) = video_path.parent() {
+    if !is_episode_guess
+        && let Some(parent) = video_path.parent()
+        && dir_has_single_video(parent)
+    {
         let movie_nfo = parent.join("movie.nfo");
         if movie_nfo.is_file() {
             return Some(movie_nfo);
@@ -89,24 +121,51 @@ fn find_show_nfo_for_episode(video_path: &Path) -> Option<PathBuf> {
     None
 }
 
+fn allow_dir_level_artwork(parent: &Path) -> bool {
+    is_season_dir(parent) || parent.join("tvshow.nfo").is_file() || dir_has_single_video(parent)
+}
+
+fn find_thumb_path(video_path: &Path) -> Option<PathBuf> {
+    let parent = video_path.parent()?;
+    let stem = video_path.file_stem()?.to_str()?;
+    ["jpg", "jpeg", "png", "webp"]
+        .into_iter()
+        .map(|ext| parent.join(format!("{stem}-thumb.{ext}")))
+        .find(|p| p.is_file())
+}
+
 fn find_poster_path(video_path: &Path) -> Option<PathBuf> {
     let parent = video_path.parent()?;
     let stem = video_path.file_stem()?.to_str()?;
     let mut candidates = vec![
         parent.join(format!("{stem}-poster.jpg")),
+        parent.join(format!("{stem}-poster.jpeg")),
         parent.join(format!("{stem}-poster.png")),
-        parent.join("poster.jpg"),
-        parent.join("poster.png"),
-        parent.join(format!("{stem}-thumb.jpg")),
-        parent.join(format!("{stem}-thumb.png")),
-        parent.join("folder.jpg"),
+        parent.join(format!("{stem}-poster.webp")),
     ];
+    if allow_dir_level_artwork(parent) {
+        candidates.extend([
+            parent.join("poster.jpg"),
+            parent.join("poster.jpeg"),
+            parent.join("poster.png"),
+            parent.join("poster.webp"),
+            parent.join("folder.jpg"),
+            parent.join("folder.png"),
+            parent.join("folder.webp"),
+        ]);
+    }
     if is_season_dir(parent)
         && let Some(show_dir) = parent.parent()
     {
-        candidates.push(show_dir.join("poster.jpg"));
-        candidates.push(show_dir.join("poster.png"));
-        candidates.push(show_dir.join("folder.jpg"));
+        candidates.extend([
+            show_dir.join("poster.jpg"),
+            show_dir.join("poster.jpeg"),
+            show_dir.join("poster.png"),
+            show_dir.join("poster.webp"),
+            show_dir.join("folder.jpg"),
+            show_dir.join("folder.png"),
+            show_dir.join("folder.webp"),
+        ]);
     }
     candidates.into_iter().find(|p| p.is_file())
 }
@@ -116,19 +175,35 @@ fn find_fanart_path(video_path: &Path) -> Option<PathBuf> {
     let stem = video_path.file_stem()?.to_str()?;
     let mut candidates = vec![
         parent.join(format!("{stem}-fanart.jpg")),
+        parent.join(format!("{stem}-fanart.jpeg")),
         parent.join(format!("{stem}-fanart.png")),
-        parent.join("fanart.jpg"),
-        parent.join("fanart.png"),
-        parent.join("backdrop.jpg"),
-        parent.join("backdrop.png"),
+        parent.join(format!("{stem}-fanart.webp")),
     ];
+    if allow_dir_level_artwork(parent) {
+        candidates.extend([
+            parent.join("fanart.jpg"),
+            parent.join("fanart.jpeg"),
+            parent.join("fanart.png"),
+            parent.join("fanart.webp"),
+            parent.join("backdrop.jpg"),
+            parent.join("backdrop.jpeg"),
+            parent.join("backdrop.png"),
+            parent.join("backdrop.webp"),
+        ]);
+    }
     if is_season_dir(parent)
         && let Some(show_dir) = parent.parent()
     {
-        candidates.push(show_dir.join("fanart.jpg"));
-        candidates.push(show_dir.join("fanart.png"));
-        candidates.push(show_dir.join("backdrop.jpg"));
-        candidates.push(show_dir.join("backdrop.png"));
+        candidates.extend([
+            show_dir.join("fanart.jpg"),
+            show_dir.join("fanart.jpeg"),
+            show_dir.join("fanart.png"),
+            show_dir.join("fanart.webp"),
+            show_dir.join("backdrop.jpg"),
+            show_dir.join("backdrop.jpeg"),
+            show_dir.join("backdrop.png"),
+            show_dir.join("backdrop.webp"),
+        ]);
     }
     candidates.into_iter().find(|p| p.is_file())
 }
@@ -182,6 +257,19 @@ fn strip_release_noise(raw: &str) -> String {
         .to_string()
 }
 
+fn is_unlikely_episode_num(n: u32) -> bool {
+    matches!(n, 264 | 265 | 480 | 720 | 1080 | 2160) || (1900..=2099).contains(&n)
+}
+
+fn infer_show_from_parent(video_path: &Path) -> Option<String> {
+    video_path.parent().and_then(|p| {
+        let target_dir = if is_season_dir(p) { p.parent()? } else { p };
+        let dir_name = target_dir.file_name()?.to_string_lossy();
+        let cleaned = strip_release_noise(&dir_name);
+        (!cleaned.is_empty()).then_some(cleaned)
+    })
+}
+
 fn guess_episode_and_year(
     video_path: &Path,
 ) -> (
@@ -196,7 +284,14 @@ fn guess_episode_and_year(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled");
-    let se_re = Regex::new(r"(?i)S(\d{1,2})E(\d{1,3})").expect("valid regex");
+    let se_re = Regex::new(r"(?i)S(\d{1,2})E(\d{1,4})").expect("valid regex");
+    let zh_ep_re = Regex::new(r"第\s*0*(\d{1,4})\s*[话話集回]").expect("valid zh ep regex");
+    let ep_word_re =
+        Regex::new(r"(?i)(?:^|[\s._\-\[\(])(?:EP?|Episode)\s*0*(\d{1,4})(?:$|[\s._\-\]\)])")
+            .expect("valid ep word regex");
+    let dash_ep_re =
+        Regex::new(r"\s+-\s+0*(\d{1,4})(?:v\d)?(?:$|[\s.\[\(])").expect("valid dash ep regex");
+    let bracket_ep_re = Regex::new(r"\[0*(\d{1,3})(?:v\d)?\]").expect("valid bracket ep regex");
     let year_re = Regex::new(r"(?:^|[\s\.\(\[_-])(19\d{2}|20\d{2})(?:$|[\s\.\)\]_-])")
         .expect("valid year regex");
 
@@ -213,6 +308,8 @@ fn guess_episode_and_year(
             .and_then(|m| m.as_str().parse::<i32>().ok());
     }
 
+    let season_from_dir = video_path.parent().and_then(parse_season_dir_number);
+
     if let Some(caps) = se_re.captures(stem) {
         let full_match = caps.get(0).unwrap();
         let season = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
@@ -223,12 +320,7 @@ fn guess_episode_and_year(
         let show_guess = if !prefix.is_empty() {
             Some(prefix)
         } else {
-            video_path.parent().and_then(|p| {
-                let target_dir = if is_season_dir(p) { p.parent()? } else { p };
-                let dir_name = target_dir.file_name()?.to_string_lossy();
-                let cleaned = strip_release_noise(&dir_name);
-                (!cleaned.is_empty()).then_some(cleaned)
-            })
+            infer_show_from_parent(video_path)
         };
         let ep_title = if !suffix.is_empty() {
             suffix
@@ -236,6 +328,66 @@ fn guess_episode_and_year(
             format!("S{:02}E{:02}", season.unwrap_or(1), ep.unwrap_or(1))
         };
         return (true, ep_title, show_guess, season, ep, year);
+    }
+
+    // Check anime/Chinese episode naming: `第02话`, `EP02`, ` - 02 `, `[02]`, or bare `02` inside a Season folder
+    let extra_ep_match: Option<(usize, usize, u32)> = zh_ep_re
+        .captures(stem)
+        .and_then(|c| {
+            let full = c.get(0)?;
+            let ep = c.get(1)?.as_str().parse::<u32>().ok()?;
+            Some((full.start(), full.end(), ep))
+        })
+        .or_else(|| {
+            ep_word_re.captures(stem).and_then(|c| {
+                let full = c.get(0)?;
+                let ep = c.get(1)?.as_str().parse::<u32>().ok()?;
+                Some((full.start(), full.end(), ep))
+            })
+        })
+        .or_else(|| {
+            dash_ep_re.captures(stem).and_then(|c| {
+                let full = c.get(0)?;
+                let ep = c.get(1)?.as_str().parse::<u32>().ok()?;
+                (!is_unlikely_episode_num(ep)).then_some((full.start(), full.end(), ep))
+            })
+        })
+        .or_else(|| {
+            bracket_ep_re.captures(stem).and_then(|c| {
+                let full = c.get(0)?;
+                let ep = c.get(1)?.as_str().parse::<u32>().ok()?;
+                (!is_unlikely_episode_num(ep)).then_some((full.start(), full.end(), ep))
+            })
+        })
+        .or_else(|| {
+            if season_from_dir.is_some() {
+                let trimmed = stem.trim();
+                let digits_len = trimmed.bytes().take_while(|b| b.is_ascii_digit()).count();
+                if digits_len > 0 && digits_len <= 3 {
+                    let ep = trimmed[..digits_len].parse::<u32>().ok()?;
+                    if !is_unlikely_episode_num(ep) {
+                        return Some((0, digits_len, ep));
+                    }
+                }
+            }
+            None
+        });
+
+    if let Some((m_start, m_end, ep)) = extra_ep_match {
+        let prefix = strip_release_noise(&stem[..m_start]);
+        let suffix = strip_release_noise(&stem[m_end..]);
+        let season = season_from_dir.or(Some(1));
+        let show_guess = if !prefix.is_empty() {
+            Some(prefix)
+        } else {
+            infer_show_from_parent(video_path)
+        };
+        let ep_title = if !suffix.is_empty() {
+            suffix
+        } else {
+            format!("S{:02}E{:02}", season.unwrap_or(1), ep)
+        };
+        return (true, ep_title, show_guess, season, Some(ep), year);
     }
 
     // Movie / standalone video: strip `(YYYY)` or `.YYYY.1080p...` from clean title
@@ -601,7 +753,7 @@ pub(crate) fn read_base_video_meta(path: &Path) -> VideoFileMeta {
     let (is_ep, title_guess, show_guess, season_guess, ep_guess, year_guess) =
         guess_episode_and_year(path);
     let default_nfo = path.with_extension("nfo");
-    let existing_nfo = find_existing_nfo(path);
+    let existing_nfo = find_existing_nfo(path, is_ep);
 
     let mut meta = VideoFileMeta {
         container: ext,
@@ -620,6 +772,7 @@ pub(crate) fn read_base_video_meta(path: &Path) -> VideoFileMeta {
             .unwrap_or_default(),
         has_poster: find_poster_path(path).is_some(),
         has_fanart: find_fanart_path(path).is_some(),
+        has_thumb: find_thumb_path(path).is_some(),
         sidecar_subtitles: list_sidecar_subtitles(path),
         ..Default::default()
     };
@@ -680,8 +833,8 @@ pub(crate) fn apply_video_patch_onto(meta: &mut VideoFileMeta, vp: VideoMetaPatc
     if let Some(show) = vp.show_title {
         meta.show_title = (!show.trim().is_empty()).then(|| show.trim().to_string());
     }
-    if vp.season_number.is_some() {
-        meta.season_number = vp.season_number.filter(|&n| n > 0);
+    if let Some(s) = vp.season_number {
+        meta.season_number = if s < 0 { None } else { Some(s as u32) };
     }
     if vp.episode_number.is_some() {
         meta.episode_number = vp.episode_number.filter(|&n| n > 0);
@@ -734,8 +887,8 @@ pub(crate) fn apply_video_patch_onto(meta: &mut VideoFileMeta, vp: VideoMetaPatc
     }
 }
 
-/// Atomically writes `{stem_base}.{ext}` inside `dir` and removes any stale sibling with the
-/// opposite `.jpg`/`.png` extension so old artwork never shadows the updated file.
+/// Atomically writes `{stem_base}.{ext}` inside `dir` and removes any stale sibling with other
+/// image extensions (`.jpg`/`.jpeg`/`.png`/`.webp`) so old artwork never shadows the updated file.
 pub(crate) fn write_image_replacing_opposite_ext(
     dir: &Path,
     stem_base: &str,
@@ -744,10 +897,13 @@ pub(crate) fn write_image_replacing_opposite_ext(
 ) -> DomainResult<()> {
     let target = dir.join(format!("{stem_base}.{ext}"));
     atomic_write_bytes(&target, bytes)?;
-    let stale_ext = if ext == "png" { "jpg" } else { "png" };
-    let stale_path = dir.join(format!("{stem_base}.{stale_ext}"));
-    if stale_path.is_file() {
-        let _ = std::fs::remove_file(stale_path);
+    for stale_ext in ["jpg", "jpeg", "png", "webp"] {
+        if stale_ext != ext {
+            let stale_path = dir.join(format!("{stem_base}.{stale_ext}"));
+            if stale_path.is_file() {
+                let _ = std::fs::remove_file(stale_path);
+            }
+        }
     }
     Ok(())
 }
@@ -789,7 +945,7 @@ impl MediaInspectorPort for VideoNfoInspector {
                     has_creator: !meta.directors.is_empty()
                         || !meta.actors.is_empty()
                         || meta.show_title.is_some(),
-                    has_cover: meta.has_poster,
+                    has_cover: meta.has_poster || meta.has_thumb,
                     has_summary_or_lyrics: meta
                         .summary
                         .as_ref()
@@ -846,6 +1002,7 @@ impl MediaInspectorPort for VideoNfoInspector {
             let nfo_target = if !meta.is_episode
                 && let Some(parent) = p.parent()
                 && parent.join("movie.nfo").is_file()
+                && dir_has_single_video(parent)
                 && !p.with_extension("nfo").is_file()
             {
                 parent.join("movie.nfo")
@@ -896,10 +1053,23 @@ impl MediaInspectorPort for VideoNfoInspector {
         self.inspect_file(path).await
     }
 
-    async fn read_artwork(&self, path: &Path) -> DomainResult<Option<BinaryPayload>> {
+    async fn read_artwork(
+        &self,
+        path: &Path,
+        slot: Option<&str>,
+    ) -> DomainResult<Option<BinaryPayload>> {
         let p = path.to_path_buf();
+        let slot_owned = slot.map(|s| s.trim().to_ascii_lowercase());
         tokio::task::spawn_blocking(move || {
-            let Some(img_path) = find_poster_path(&p).or_else(|| find_fanart_path(&p)) else {
+            let resolved = match slot_owned.as_deref() {
+                Some("fanart") | Some("backdrop") => find_fanart_path(&p),
+                Some("thumb") => find_thumb_path(&p),
+                Some("poster") | Some("cover") => find_poster_path(&p),
+                _ => find_poster_path(&p)
+                    .or_else(|| find_fanart_path(&p))
+                    .or_else(|| find_thumb_path(&p)),
+            };
+            let Some(img_path) = resolved else {
                 return Ok(None);
             };
             let raw = std::fs::read(&img_path)
@@ -930,17 +1100,23 @@ impl MediaInspectorPort for VideoNfoInspector {
             .and_then(|s| s.to_str())
             .unwrap_or("video")
             .to_string();
-        let detected = if mime_type.trim().is_empty() {
-            sniff_image_mime(bytes)
-        } else {
+        let sniffed = sniff_image_mime(bytes);
+        let detected = if sniffed != "image/jpeg" {
+            sniffed
+        } else if !mime_type.trim().is_empty() {
             mime_type.trim()
+        } else {
+            sniffed
         };
         let ext = if detected.contains("png") {
             "png"
+        } else if detected.contains("webp") {
+            "webp"
         } else {
             "jpg"
         };
-        let is_jellyfin_movie_dir = parent.join("movie.nfo").is_file();
+        let is_jellyfin_movie_dir =
+            parent.join("movie.nfo").is_file() && dir_has_single_video(&parent);
         let is_jellyfin_season = is_season_dir(&parent) || parent.join("season.nfo").is_file();
         let is_jellyfin_show = parent.join("tvshow.nfo").is_file();
         let use_dir_artwork = is_jellyfin_movie_dir || is_jellyfin_season || is_jellyfin_show;

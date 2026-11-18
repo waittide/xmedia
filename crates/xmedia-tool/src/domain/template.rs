@@ -84,8 +84,19 @@ fn build_token_map(
             put("publisher", b.publisher.as_deref().unwrap_or(""));
         }
         MediaMetadataPayload::Comic(c) => {
-            put("series", c.series.as_deref().unwrap_or("Series"));
-            put("title", c.title.as_deref().unwrap_or(fallback_stem));
+            let series = c.series.as_deref().unwrap_or("Series");
+            let clean_title = c
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| {
+                    !t.is_empty()
+                        && !t.eq_ignore_ascii_case(series.trim())
+                        && (c.has_comic_info_xml || !t.eq_ignore_ascii_case(fallback_stem.trim()))
+                })
+                .unwrap_or("");
+            put("series", series);
+            put("title", clean_title);
             put("number", c.number.as_deref().unwrap_or("1"));
             put(
                 "volume",
@@ -126,7 +137,7 @@ fn build_token_map(
         }
         MediaMetadataPayload::Video(v) => {
             let season = v.season_number.unwrap_or(1);
-            let episode = v.episode_number.unwrap_or(1);
+            let episode_str = v.episode_number.map(|e| e.to_string()).unwrap_or_default();
             let show = v
                 .show_title
                 .as_deref()
@@ -137,11 +148,15 @@ fn build_token_map(
                     &v.title
                 });
 
-            let redundant_se_code = format!("S{season:02}E{episode:02}");
+            let redundant_se_code = v
+                .episode_number
+                .map(|ep| format!("S{season:02}E{ep:02}"))
+                .unwrap_or_default();
             let ep_or_movie_title = if v.title.trim().is_empty() {
                 if v.is_episode { "" } else { fallback_stem }
             } else if v.is_episode
-                && (v.title.trim().eq_ignore_ascii_case(&redundant_se_code)
+                && ((!redundant_se_code.is_empty()
+                    && v.title.trim().eq_ignore_ascii_case(&redundant_se_code))
                     || v.title.trim().eq_ignore_ascii_case(show.trim()))
             {
                 ""
@@ -173,7 +188,7 @@ fn build_token_map(
             put("original_title", v.original_title.as_deref().unwrap_or(""));
             put("show", show);
             put("season", &season.to_string());
-            put("episode", &episode.to_string());
+            put("episode", &episode_str);
             put("year", &v.year.map(|y| y.to_string()).unwrap_or_default());
             put("tmdbid", tmdb);
             put("bangumiid", bgm);

@@ -234,11 +234,12 @@ impl MediaWorkbenchService {
         root_id: RootId,
         rel_path: &str,
         preferred_kind: Option<MediaKind>,
+        slot: Option<&str>,
     ) -> DomainResult<Option<BinaryPayload>> {
         let (_root, sandbox, inspector) = self
             .resolve_media_file(root_id, rel_path, preferred_kind)
             .await?;
-        inspector.read_artwork(&sandbox.abs_path).await
+        inspector.read_artwork(&sandbox.abs_path, slot).await
     }
 
     pub async fn write_artwork(
@@ -351,7 +352,13 @@ impl MediaWorkbenchService {
 
             let target_abs = root.resolve_target(&to_rel)?;
             let mut conflict = None;
-            if !unchanged {
+            if let MediaMetadataPayload::Video(ref v) = meta
+                && v.is_episode
+                && v.episode_number.is_none()
+                && tpl.to_ascii_lowercase().contains("{episode")
+            {
+                conflict = Some("episode number is missing for episode template".to_string());
+            } else if !unchanged {
                 if target_abs.exists() && target_abs != sandbox.abs_path {
                     conflict = Some("target file already exists on disk".to_string());
                 } else if !planned_targets.insert(to_rel.to_lowercase()) {
@@ -386,16 +393,20 @@ impl MediaWorkbenchService {
                             "season.nfo",
                             "poster.jpg",
                             "poster.png",
+                            "poster.webp",
                             "fanart.jpg",
                             "fanart.png",
+                            "fanart.webp",
                         ][..]
                     } else {
                         &[
                             "movie.nfo",
                             "poster.jpg",
                             "poster.png",
+                            "poster.webp",
                             "fanart.jpg",
                             "fanart.png",
+                            "fanart.webp",
                         ][..]
                     };
                     for fname in dir_files {
@@ -422,8 +433,10 @@ impl MediaWorkbenchService {
                                 "tvshow.nfo",
                                 "poster.jpg",
                                 "poster.png",
+                                "poster.webp",
                                 "fanart.jpg",
                                 "fanart.png",
+                                "fanart.webp",
                             ] {
                                 let cand = old_show_dir.join(fname);
                                 if cand.is_file()
@@ -505,8 +518,10 @@ impl MediaWorkbenchService {
                                     | "tvshow.nfo"
                                     | "poster.jpg"
                                     | "poster.png"
+                                    | "poster.webp"
                                     | "fanart.jpg"
                                     | "fanart.png"
+                                    | "fanart.webp"
                             )
                         });
                     if is_shared_dir_sidecar {

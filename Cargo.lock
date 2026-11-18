@@ -6169,6 +6169,7 @@ dependencies = [
  "hex",
  "jiff",
  "lofty",
+ "lopdf",
  "mime_guess",
  "quick-xml",
  "regex",

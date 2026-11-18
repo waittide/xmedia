@@ -386,7 +386,7 @@ mod tests {
             .unwrap();
         assert!(
             app.workbench
-                .read_artwork(root_id, "raw_song.wav", Some(MediaKind::Music))
+                .read_artwork(root_id, "raw_song.wav", Some(MediaKind::Music), None)
                 .await
                 .unwrap()
                 .is_some()
@@ -779,5 +779,505 @@ mod tests {
         );
         // Old show folder and its orphan `tvshow.nfo`/`season.nfo`/`poster.png` are completely reclaimed
         assert!(!show_dir.exists());
+    }
+
+    #[test]
+    fn companion_sidecars_match_opf_and_reject_prefix_collisions() {
+        use crate::infra::atomic_fs::find_companion_sidecars;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+
+        // Video `01.mp4` must NOT grab `01-02.srt` or `010.nfo`, but MUST grab `01.zh.srt` & `01-poster.jpg`
+        let mp4 = dir.join("01.mp4");
+        std::fs::write(&mp4, b"v").unwrap();
+        std::fs::write(dir.join("01.zh.srt"), b"s1").unwrap();
+        std::fs::write(dir.join("01-poster.jpg"), b"p1").unwrap();
+        std::fs::write(dir.join("01-02.srt"), b"s2").unwrap();
+        std::fs::write(dir.join("010.nfo"), b"n").unwrap();
+
+        let video_sidecars: Vec<String> = find_companion_sidecars(&mp4)
+            .into_iter()
+            .filter_map(|(p, _)| p.file_name().and_then(|n| n.to_str()).map(String::from))
+            .collect();
+        assert!(video_sidecars.contains(&"01.zh.srt".to_string()));
+        assert!(video_sidecars.contains(&"01-poster.jpg".to_string()));
+        assert!(!video_sidecars.contains(&"01-02.srt".to_string()));
+        assert!(!video_sidecars.contains(&"010.nfo".to_string()));
+
+        // PDF / TXT sidecars include `.opf` and cover images
+        let pdf = dir.join("CleanCode.pdf");
+        std::fs::write(&pdf, b"%PDF").unwrap();
+        std::fs::write(dir.join("CleanCode.opf"), b"<package/>").unwrap();
+        std::fs::write(dir.join("CleanCode.webp"), b"img").unwrap();
+        let pdf_sidecars: Vec<String> = find_companion_sidecars(&pdf)
+            .into_iter()
+            .filter_map(|(p, _)| p.file_name().and_then(|n| n.to_str()).map(String::from))
+            .collect();
+        assert!(pdf_sidecars.contains(&"CleanCode.opf".to_string()));
+        assert!(pdf_sidecars.contains(&"CleanCode.webp".to_string()));
+    }
+
+    #[tokio::test]
+    async fn epub_preserves_rendition_uid_and_updates_cover_manifest_media_type() {
+        use std::io::{Read, Write};
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("books");
+        std::fs::create_dir_all(&root).unwrap();
+        let epub = root.join("fixed.epub");
+
+        // Build EPUB with rendition:layout meta, custom unique-identifier="pub-id", and PNG cover
+        {
+            let f = std::fs::File::create(&epub).unwrap();
+            let mut zip = ZipWriter::new(f);
+            let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            let deflated =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("mimetype", stored).unwrap();
+            zip.write_all(b"application/epub+zip").unwrap();
+            zip.start_file("META-INF/container.xml", deflated).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#,
+            )
+            .unwrap();
+            zip.start_file("OEBPS/content.opf", deflated).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="pub-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="pub-id">urn:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</dc:identifier>
+    <dc:title>Original</dc:title>
+    <meta property="rendition:layout">pre-paginated</meta>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="images/cover.png" media-type="image/png" properties="cover-image"/>
+    <item id="chap1" href="chap1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="chap1"/></spine>
+</package>"#,
+            )
+            .unwrap();
+            zip.start_file("OEBPS/images/cover.png", deflated).unwrap();
+            zip.write_all(TINY_PNG).unwrap();
+            zip.start_file("OEBPS/chap1.xhtml", deflated).unwrap();
+            zip.write_all(b"<html/>").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // Write metadata without touching cover first
+        app.workbench
+            .write_metadata(
+                root_id,
+                "fixed.epub",
+                MediaMetadataPatch::Book(BookMetaPatch {
+                    title: Some("Updated Title".into()),
+                    isbn: Some("9787111123456".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        // Replace PNG cover with JPEG bytes; manifest must update href + media-type
+        let fake_jpg = [0xFFu8, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46];
+        app.workbench
+            .write_artwork(
+                root_id,
+                "fixed.epub",
+                &fake_jpg,
+                "image/jpeg",
+                "cover",
+                Some(MediaKind::Book),
+            )
+            .await
+            .unwrap();
+
+        let f = std::fs::File::open(&epub).unwrap();
+        let mut archive = ZipArchive::new(f).unwrap();
+        let mut opf_xml = String::new();
+        archive
+            .by_name("OEBPS/content.opf")
+            .unwrap()
+            .read_to_string(&mut opf_xml)
+            .unwrap();
+        assert!(opf_xml.contains("rendition:layout"));
+        assert!(opf_xml.contains("pre-paginated"));
+        assert!(opf_xml.contains("id=\"pub-id\""));
+        assert!(opf_xml.contains("9787111123456"));
+        assert!(opf_xml.contains("dcterms:modified"));
+        assert!(opf_xml.contains("image/jpeg"));
+        assert!(opf_xml.contains("images/cover.jpg"));
+        assert!(!opf_xml.contains("image/png"));
+    }
+
+    #[tokio::test]
+    async fn txt_and_pdf_sidecar_opf_cover_and_rename_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("docs");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let txt = root.join("draft_novel.txt");
+        std::fs::write(&txt, "Chapter 1\nHello world.\n").unwrap();
+
+        let mut doc = lopdf::Document::with_version("1.4");
+        let pages_id = doc.new_object_id();
+        doc.objects.insert(
+            pages_id,
+            lopdf::Object::Dictionary(lopdf::Dictionary::from_iter([
+                ("Type", lopdf::Object::Name(b"Pages".to_vec())),
+                ("Count", lopdf::Object::Integer(0)),
+                ("Kids", lopdf::Object::Array(Vec::new())),
+            ])),
+        );
+        let catalog_id = doc.add_object(lopdf::Object::Dictionary(lopdf::Dictionary::from_iter([
+            ("Type", lopdf::Object::Name(b"Catalog".to_vec())),
+            ("Pages", lopdf::Object::Reference(pages_id)),
+        ])));
+        doc.trailer.set("Root", catalog_id);
+        let pdf = root.join("guide.pdf");
+        doc.save(&pdf).unwrap();
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        for file in ["draft_novel.txt", "guide.pdf"] {
+            let detail = app
+                .workbench
+                .write_metadata(
+                    root_id,
+                    file,
+                    MediaMetadataPatch::Book(BookMetaPatch {
+                        title: Some(format!("Title {file}")),
+                        authors: Some(vec!["Alice".into()]),
+                        publisher: Some("Acme Press".into()),
+                        tags: Some(vec!["Tech".into()]),
+                        ..Default::default()
+                    }),
+                )
+                .await
+                .unwrap();
+            match &detail.metadata {
+                MediaMetadataPayload::Book(b) => assert!(b.writable),
+                _ => panic!("expected book payload"),
+            }
+            app.workbench
+                .write_artwork(
+                    root_id,
+                    file,
+                    TINY_PNG,
+                    "image/png",
+                    "cover",
+                    Some(MediaKind::Book),
+                )
+                .await
+                .unwrap();
+            assert!(
+                app.workbench
+                    .read_artwork(root_id, file, Some(MediaKind::Book), None)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert!(root.join("draft_novel.opf").is_file());
+        assert!(root.join("draft_novel.png").is_file());
+        assert!(root.join("guide.opf").is_file());
+        assert!(root.join("guide.png").is_file());
+
+        // Rename moves sidecar .opf and cover together
+        let plans = app
+            .workbench
+            .preview_rename(
+                root_id,
+                &["draft_novel.txt".to_string()],
+                Some("{author}/{title}"),
+                None,
+                Some(MediaKind::Book),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plans[0].to_rel_path, "Alice/Title draft_novel.txt.txt");
+        app.workbench.execute_rename(root_id, &plans).await.unwrap();
+        assert!(root.join("Alice/Title draft_novel.txt.opf").is_file());
+        assert!(root.join("Alice/Title draft_novel.txt.png").is_file());
+    }
+
+    #[tokio::test]
+    async fn music_id3v2_year_persists_and_replacing_front_cover_keeps_back_cover() {
+        use lofty::config::WriteOptions;
+        use lofty::picture::{MimeType, Picture, PictureType};
+        use lofty::prelude::{AudioFile, TaggedFileExt};
+        use lofty::tag::Tag;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("music");
+        std::fs::create_dir_all(&root).unwrap();
+        let wav = root.join("track.wav");
+        write_minimal_wav(&wav);
+
+        // Pre-seed CoverBack in ID3v2 tag
+        {
+            let mut tagged = lofty::read_from_path(&wav).unwrap();
+            let tt = tagged.primary_tag_type();
+            if tagged.primary_tag().is_none() {
+                tagged.insert_tag(Tag::new(tt));
+            }
+            let tag = tagged.primary_tag_mut().unwrap();
+            tag.push_picture(
+                Picture::unchecked(TINY_PNG.to_vec())
+                    .pic_type(PictureType::CoverBack)
+                    .mime_type(MimeType::Png)
+                    .build(),
+            );
+            tagged.save_to_path(&wav, WriteOptions::default()).unwrap();
+        }
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        let updated = app
+            .workbench
+            .write_metadata(
+                root_id,
+                "track.wav",
+                MediaMetadataPatch::Music(MusicMetaPatch {
+                    title: Some("Seven Horizons".into()),
+                    year: Some(2004),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Music(m) = updated.metadata {
+            assert_eq!(m.year, Some(2004));
+        } else {
+            panic!("expected music payload");
+        }
+
+        app.workbench
+            .write_artwork(
+                root_id,
+                "track.wav",
+                TINY_PNG,
+                "image/png",
+                "cover",
+                Some(MediaKind::Music),
+            )
+            .await
+            .unwrap();
+        let tagged = lofty::read_from_path(&wav).unwrap();
+        let pics = tagged.primary_tag().unwrap().pictures();
+        assert!(pics.iter().any(|p| p.pic_type() == PictureType::CoverFront));
+        assert!(pics.iter().any(|p| p.pic_type() == PictureType::CoverBack));
+    }
+
+    #[tokio::test]
+    async fn comic_webtoon_roundtrip_and_template_avoids_duplicate_title() {
+        use std::io::{Read, Write};
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("comics");
+        std::fs::create_dir_all(&root).unwrap();
+        let cbz = root.join("Solo_Ch01.cbz");
+        {
+            let f = std::fs::File::create(&cbz).unwrap();
+            let mut zip = ZipWriter::new(f);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("001.png", opts).unwrap();
+            zip.write_all(TINY_PNG).unwrap();
+            zip.start_file("ComicInfo.xml", opts).unwrap();
+            zip.write_all(
+                br#"<ComicInfo><Series>Solo</Series><Number>1</Number><Format>Webtoon</Format></ComicInfo>"#,
+            )
+            .unwrap();
+            zip.finish().unwrap();
+        }
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        let detail = app
+            .workbench
+            .inspect_file(root_id, "Solo_Ch01.cbz", Some(MediaKind::Comic))
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Comic(ref c) = detail.metadata {
+            assert_eq!(c.reading_direction, "webtoon");
+            // Comic filename `Solo_Ch01` shouldn't pollute chapter title or duplicate `{series}` in template
+            let plans = app
+                .workbench
+                .preview_rename(
+                    root_id,
+                    &["Solo_Ch01.cbz".to_string()],
+                    Some("{series}/{series} Ch.{number:03} - {title}"),
+                    None,
+                    Some(MediaKind::Comic),
+                )
+                .await
+                .unwrap();
+            assert_eq!(plans[0].to_rel_path, "Solo/Solo Ch.001.cbz");
+        } else {
+            panic!("expected comic payload");
+        }
+
+        app.workbench
+            .write_metadata(
+                root_id,
+                "Solo_Ch01.cbz",
+                MediaMetadataPatch::Comic(ComicMetaPatch {
+                    title: Some("Awakening".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        let f = std::fs::File::open(&cbz).unwrap();
+        let mut archive = ZipArchive::new(f).unwrap();
+        let mut xml = String::new();
+        archive
+            .by_name("ComicInfo.xml")
+            .unwrap()
+            .read_to_string(&mut xml)
+            .unwrap();
+        assert!(xml.contains("<Format>Webtoon</Format>"));
+        assert!(xml.contains("<Title>Awakening</Title>"));
+    }
+
+    #[tokio::test]
+    async fn video_specials_anime_episode_guess_and_mixed_dir_isolation() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("videos");
+        let specials = root.join("Frieren/Specials");
+        let mixed = root.join("Mixed");
+        std::fs::create_dir_all(&specials).unwrap();
+        std::fs::create_dir_all(&mixed).unwrap();
+
+        let sp = specials.join("[Sub] Frieren - 02 [1080p].mkv");
+        std::fs::write(&sp, b"v").unwrap();
+
+        // Mixed folder has movie.nfo and two separate movies: movie.nfo & poster.jpg must NOT leak onto unrelated video
+        std::fs::write(mixed.join("Alpha.mp4"), b"v1").unwrap();
+        std::fs::write(mixed.join("Beta.mp4"), b"v2").unwrap();
+        std::fs::write(
+            mixed.join("movie.nfo"),
+            b"<movie><title>Shared</title></movie>",
+        )
+        .unwrap();
+        std::fs::write(mixed.join("poster.jpg"), TINY_PNG).unwrap();
+        std::fs::write(mixed.join("Alpha-fanart.webp"), TINY_PNG).unwrap();
+        std::fs::write(mixed.join("Alpha-thumb.jpg"), TINY_PNG).unwrap();
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        let sp_detail = app
+            .workbench
+            .inspect_file(
+                root_id,
+                "Frieren/Specials/[Sub] Frieren - 02 [1080p].mkv",
+                Some(MediaKind::Video),
+            )
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Video(v) = sp_detail.metadata {
+            assert!(v.is_episode);
+            assert_eq!(v.season_number, Some(0));
+            assert_eq!(v.episode_number, Some(2));
+        } else {
+            panic!("expected video payload");
+        }
+
+        let alpha = app
+            .workbench
+            .inspect_file(root_id, "Mixed/Alpha.mp4", Some(MediaKind::Video))
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Video(v) = alpha.metadata {
+            assert!(!v.has_nfo);
+            assert!(!v.has_poster);
+            assert!(v.has_fanart);
+            assert!(v.has_thumb);
+        } else {
+            panic!("expected video payload");
+        }
+        assert!(
+            app.workbench
+                .read_artwork(
+                    root_id,
+                    "Mixed/Alpha.mp4",
+                    Some(MediaKind::Video),
+                    Some("fanart")
+                )
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            app.workbench
+                .read_artwork(
+                    root_id,
+                    "Mixed/Alpha.mp4",
+                    Some(MediaKind::Video),
+                    Some("thumb")
+                )
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

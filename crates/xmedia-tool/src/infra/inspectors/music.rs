@@ -7,6 +7,7 @@ use lofty::config::{ParseOptions, ParsingMode, WriteOptions};
 use lofty::file::{AudioFile, FileType, TaggedFile, TaggedFileExt};
 use lofty::picture::{MimeType, Picture, PictureType};
 use lofty::probe::Probe;
+use lofty::tag::items::Timestamp;
 use lofty::tag::{Accessor, ItemKey, Tag, TagType};
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -233,10 +234,17 @@ fn apply_music_patch_to_file(path: &Path, patch: &MusicMetaPatch) -> DomainResul
                 }
             }
             if let Some(y) = patch.year {
-                tag.remove_key(ItemKey::Year);
-                tag.remove_key(ItemKey::RecordingDate);
+                tag.remove_date();
                 if y > 0 {
-                    tag.insert_text(ItemKey::Year, y.to_string());
+                    if let Ok(year_u16) = u16::try_from(y) {
+                        tag.set_date(Timestamp {
+                            year: year_u16,
+                            ..Default::default()
+                        });
+                    }
+                    if matches!(tag.tag_type(), TagType::Id3v1 | TagType::Ape) {
+                        tag.insert_text(ItemKey::Year, y.to_string());
+                    }
                 }
             }
             if let Some(ref g) = patch.genre {
@@ -373,7 +381,11 @@ impl MediaInspectorPort for LoftyMusicInspector {
         Ok(MediaMetadataPayload::Music(updated))
     }
 
-    async fn read_artwork(&self, path: &Path) -> DomainResult<Option<BinaryPayload>> {
+    async fn read_artwork(
+        &self,
+        path: &Path,
+        _slot: Option<&str>,
+    ) -> DomainResult<Option<BinaryPayload>> {
         let p = path.to_path_buf();
         tokio::task::spawn_blocking(move || {
             let tagged = open_tagged(&p)?;
@@ -424,8 +436,19 @@ impl MediaInspectorPort for LoftyMusicInspector {
                     .pic_type(PictureType::CoverFront)
                     .mime_type(lofty_mime)
                     .build();
-                tag.remove_picture_type(PictureType::CoverFront);
-                tag.set_picture(0, pic);
+                let preserved: Vec<Picture> = tag
+                    .pictures()
+                    .iter()
+                    .filter(|existing| existing.pic_type() != PictureType::CoverFront)
+                    .cloned()
+                    .collect();
+                while !tag.pictures().is_empty() {
+                    tag.remove_picture(0);
+                }
+                tag.push_picture(pic);
+                for other in preserved {
+                    tag.push_picture(other);
+                }
                 tagged
                     .save_to_path(staging, WriteOptions::default())
                     .map_err(|e| DomainError::Storage(format!("failed saving embedded cover: {e}")))

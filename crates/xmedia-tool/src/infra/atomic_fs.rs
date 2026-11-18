@@ -1,10 +1,23 @@
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
-/// Writes `bytes` to a sibling temporary file, fsyncs, and atomically replaces `target`.
+fn apply_target_permissions(target: &Path, staging: &Path) {
+    if let Ok(meta) = std::fs::metadata(target) {
+        let _ = std::fs::set_permissions(staging, meta.permissions());
+    } else {
+        #[cfg(unix)]
+        {
+            let _ = std::fs::set_permissions(staging, std::fs::Permissions::from_mode(0o644));
+        }
+    }
+}
+
+/// Writes `bytes` to a sibling temporary file, fsyncs, preserves file permissions, and atomically replaces `target`.
 pub fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> DomainResult<()> {
     let parent = target.parent().ok_or_else(|| {
         DomainError::Storage(format!("target path '{}' has no parent", target.display()))
@@ -27,6 +40,7 @@ pub fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> DomainResult<()> {
     tmp.as_file()
         .sync_all()
         .map_err(|e| DomainError::Storage(format!("failed syncing temp file: {e}")))?;
+    apply_target_permissions(target, tmp.path());
     tmp.persist(target).map_err(|e| {
         DomainError::Storage(format!(
             "failed atomically persisting '{}': {e}",
@@ -36,8 +50,47 @@ pub fn atomic_write_bytes(target: &Path, bytes: &[u8]) -> DomainResult<()> {
     Ok(())
 }
 
-/// Copies `target` to a sibling temporary file, runs `mutate(temp_path)`, fsyncs, and
-/// atomically replaces `target` so the source file is never partially overwritten on error.
+/// Writes a fresh replacement for `target` via `build(temp_path)` without pre-copying `target`,
+/// preserves permissions, fsyncs, and atomically replaces `target`.
+pub fn atomic_write_via_temp<F>(target: &Path, build: F) -> DomainResult<()>
+where
+    F: FnOnce(&Path) -> DomainResult<()>,
+{
+    let parent = target.parent().ok_or_else(|| {
+        DomainError::Storage(format!("target path '{}' has no parent", target.display()))
+    })?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed to create parent directory '{}': {e}",
+            parent.display()
+        ))
+    })?;
+
+    let tmp = NamedTempFile::new_in(parent).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed to create temp file in '{}': {e}",
+            parent.display()
+        ))
+    })?;
+
+    build(tmp.path())?;
+
+    let reopened = std::fs::File::open(tmp.path())
+        .map_err(|e| DomainError::Storage(format!("failed reopening staging file: {e}")))?;
+    let _ = reopened.sync_all();
+    apply_target_permissions(target, tmp.path());
+
+    tmp.persist(target).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed atomically replacing '{}': {e}",
+            target.display()
+        ))
+    })?;
+    Ok(())
+}
+
+/// Copies `target` to a sibling temporary file, runs `mutate(temp_path)`, fsyncs, preserves
+/// permissions, and atomically replaces `target` so the source file is never partially overwritten on error.
 pub fn atomic_mutate_copy<F>(target: &Path, mutate: F) -> DomainResult<()>
 where
     F: FnOnce(&Path) -> DomainResult<()>,
@@ -63,6 +116,7 @@ where
     let reopened = std::fs::File::open(tmp.path())
         .map_err(|e| DomainError::Storage(format!("failed reopening staging file: {e}")))?;
     let _ = reopened.sync_all();
+    apply_target_permissions(target, tmp.path());
 
     tmp.persist(target).map_err(|e| {
         DomainError::Storage(format!(
@@ -74,7 +128,8 @@ where
 }
 
 /// Discovers companion sidecar files sharing the same filename stem in the same directory
-/// (e.g. `song.lrc`, `movie.nfo`, `movie.zh.srt`, `movie-poster.jpg`), returning `(path, suffix_after_stem)`.
+/// (e.g. `song.lrc`, `book.opf`, `book.jpg`, `movie.nfo`, `movie.zh.srt`, `movie-poster.jpg`),
+/// returning `(path, suffix_after_stem)`.
 pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
     let Some(parent) = media_file.parent() else {
         return Vec::new();
@@ -82,6 +137,15 @@ pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
     let Some(stem) = media_file.file_stem().and_then(|s| s.to_str()) else {
         return Vec::new();
     };
+    let main_is_image = media_file
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "avif"
+            )
+        });
     let Ok(entries) = std::fs::read_dir(parent) else {
         return Vec::new();
     };
@@ -95,26 +159,41 @@ pub fn find_companion_sidecars(media_file: &Path) -> Vec<(PathBuf, String)> {
         let Some(fname) = p.file_name().and_then(|s| s.to_str()) else {
             continue;
         };
-        if let Some(rest) = fname.strip_prefix(stem)
-            && (rest.starts_with('.') || rest.starts_with('-'))
-        {
-            let lower = rest.to_ascii_lowercase();
-            let is_companion = lower.ends_with(".lrc")
+        let Some(rest) = fname.strip_prefix(stem) else {
+            continue;
+        };
+        let lower = rest.to_ascii_lowercase();
+        let is_companion = if rest.starts_with('.') {
+            lower.ends_with(".lrc")
                 || lower.ends_with(".nfo")
+                || lower.ends_with(".opf")
                 || lower.ends_with(".srt")
                 || lower.ends_with(".ass")
                 || lower.ends_with(".ssa")
                 || lower.ends_with(".vtt")
-                || lower.ends_with("-poster.jpg")
-                || lower.ends_with("-poster.png")
-                || lower.ends_with("-fanart.jpg")
-                || lower.ends_with("-fanart.png")
-                || lower.ends_with("-thumb.jpg")
-                || lower.ends_with("-thumb.png");
-            if is_companion {
-                let suffix = rest.to_string();
-                out.push((p, suffix));
-            }
+                || (!main_is_image && matches!(lower.as_str(), ".jpg" | ".jpeg" | ".png" | ".webp"))
+        } else if rest.starts_with('-') {
+            matches!(
+                lower.as_str(),
+                "-poster.jpg"
+                    | "-poster.jpeg"
+                    | "-poster.png"
+                    | "-poster.webp"
+                    | "-fanart.jpg"
+                    | "-fanart.jpeg"
+                    | "-fanart.png"
+                    | "-fanart.webp"
+                    | "-thumb.jpg"
+                    | "-thumb.jpeg"
+                    | "-thumb.png"
+                    | "-thumb.webp"
+            )
+        } else {
+            false
+        };
+        if is_companion {
+            let suffix = rest.to_string();
+            out.push((p, suffix));
         }
     }
     out
@@ -140,8 +219,10 @@ fn is_orphan_jellyfin_dir_sidecar(file_name: &str) -> bool {
             | "backdrop.webp"
             | "folder.jpg"
             | "folder.png"
+            | "folder.webp"
             | "cover.jpg"
             | "cover.png"
+            | "cover.webp"
             | ".ds_store"
             | "thumbs.db"
     )

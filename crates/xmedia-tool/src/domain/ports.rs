@@ -47,8 +47,12 @@ pub trait MediaInspectorPort: Send + Sync {
         patch: &MediaMetadataPatch,
     ) -> DomainResult<MediaMetadataPayload>;
 
-    /// Reads embedded or sidecar cover/poster image if available.
-    async fn read_artwork(&self, path: &Path) -> DomainResult<Option<BinaryPayload>>;
+    /// Reads embedded or sidecar cover/poster/fanart/thumb image if available.
+    async fn read_artwork(
+        &self,
+        path: &Path,
+        slot: Option<&str>,
+    ) -> DomainResult<Option<BinaryPayload>>;
 
     /// Writes/replaces embedded or sidecar cover/poster image (`slot`: `"cover"` / `"poster"` / `"fanart"`).
     async fn write_artwork(

@@ -165,6 +165,8 @@ struct FileTargetQuery {
     root_id: Uuid,
     path: String,
     kind: Option<MediaKind>,
+    #[serde(default)]
+    slot: Option<String>,
 }
 
 async fn inspect_file(
@@ -206,7 +208,7 @@ async fn get_artwork(
 ) -> ApiResult<Response> {
     let Some(payload) = state
         .workbench
-        .read_artwork(RootId(q.root_id), &q.path, q.kind)
+        .read_artwork(RootId(q.root_id), &q.path, q.kind, q.slot.as_deref())
         .await?
     else {
         return Err(ApiError(DomainError::NotFound(

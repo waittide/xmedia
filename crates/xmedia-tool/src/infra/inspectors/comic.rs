@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -18,7 +18,7 @@ use crate::domain::media::{
     ComicFileMeta, ComicMetaPatch, CompletenessFlags, MediaMetadataPatch, MediaMetadataPayload,
 };
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
-use crate::infra::atomic_fs::atomic_mutate_copy;
+use crate::infra::atomic_fs::atomic_write_via_temp;
 
 pub struct CbzComicInspector;
 
@@ -53,6 +53,7 @@ fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) {
     let mut cur_tag: Option<String> = None;
     let mut text_acc = String::new();
     let mut manga_raw: Option<String> = None;
+    let mut format_raw: Option<String> = None;
 
     loop {
         match reader.read_event() {
@@ -101,6 +102,7 @@ fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) {
                             "year" => meta.year = trimmed.parse::<i32>().ok(),
                             "languageiso" => meta.language_iso = Some(trimmed.to_string()),
                             "manga" => manga_raw = Some(trimmed.to_ascii_lowercase()),
+                            "format" => format_raw = Some(trimmed.to_ascii_lowercase()),
                             _ => {}
                         }
                     }
@@ -112,12 +114,28 @@ fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) {
         }
     }
 
-    if let Some(m) = manga_raw {
+    let is_webtoon_format = format_raw
+        .as_deref()
+        .is_some_and(|f| f.contains("webtoon") || f.contains("条漫"));
+    let is_webtoon_tag = meta.genres.iter().chain(meta.tags.iter()).any(|t| {
+        let l = t.to_ascii_lowercase();
+        l == "webtoon" || l == "条漫"
+    });
+
+    if is_webtoon_format {
+        meta.reading_direction = "webtoon".to_string();
+    } else if let Some(m) = manga_raw {
         if m == "yesandrighttoleft" || m == "yes" || m == "true" {
             meta.reading_direction = "rtl".to_string();
         } else if m == "no" || m == "false" {
-            meta.reading_direction = "ltr".to_string();
+            meta.reading_direction = if is_webtoon_tag {
+                "webtoon".to_string()
+            } else {
+                "ltr".to_string()
+            };
         }
+    } else if is_webtoon_tag {
+        meta.reading_direction = "webtoon".to_string();
     }
 }
 
@@ -199,6 +217,9 @@ fn render_comic_info_xml(meta: &ComicFileMeta) -> String {
         _ => "YesAndRightToLeft",
     };
     xml.push_str(&format!("  <Manga>{manga_tag}</Manga>\n"));
+    if meta.reading_direction == "webtoon" {
+        xml.push_str("  <Format>Webtoon</Format>\n");
+    }
     xml.push_str("</ComicInfo>\n");
     xml
 }
@@ -236,10 +257,10 @@ fn is_generic_comic_folder(name: &str) -> bool {
         .any(|g| lower == *g || trimmed == *g)
 }
 
-/// Infers `(series, number, volume)` from a comic filename stem and non-generic parent folder.
-pub(crate) fn guess_comic_from_filename(
+/// Infers `(series, number, volume, optional_chapter_title)` from a comic filename stem and non-generic parent folder.
+pub(crate) fn guess_comic_details(
     comic_path: &Path,
-) -> (Option<String>, Option<String>, Option<i32>) {
+) -> (Option<String>, Option<String>, Option<i32>, Option<String>) {
     let raw_stem = comic_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -258,12 +279,14 @@ pub(crate) fn guess_comic_from_filename(
     .expect("valid ch regex");
 
     let mut cut_idx = cleaned_stem.len();
+    let mut after_idx = cleaned_stem.len();
     let mut volume: Option<i32> = None;
     let mut number: Option<String> = None;
 
     if let Some(m) = vol_re.captures(&cleaned_stem) {
         let full = m.get(0).expect("full match");
         cut_idx = cut_idx.min(full.start());
+        after_idx = full.end();
         volume = m
             .get(1)
             .or_else(|| m.get(2))
@@ -272,6 +295,7 @@ pub(crate) fn guess_comic_from_filename(
     if let Some(m) = ch_re.captures(&cleaned_stem) {
         let full = m.get(0).expect("full match");
         cut_idx = cut_idx.min(full.start());
+        after_idx = full.end();
         number = m
             .get(1)
             .or_else(|| m.get(2))
@@ -304,6 +328,26 @@ pub(crate) fn guess_comic_from_filename(
             .filter(|dir_name| !is_generic_comic_folder(dir_name))
     };
 
+    let guessed_title = if after_idx < cleaned_stem.len() {
+        let suffix = cleaned_stem[after_idx..]
+            .trim_matches([' ', '_', '-', '.', '·', '—', ':'])
+            .replace('_', " ")
+            .trim()
+            .to_string();
+        (!suffix.is_empty()).then_some(suffix)
+    } else {
+        None
+    };
+
+    (series, number, volume, guessed_title)
+}
+
+/// Infers `(series, number, volume)` from a comic filename stem and non-generic parent folder.
+#[cfg(test)]
+pub(crate) fn guess_comic_from_filename(
+    comic_path: &Path,
+) -> (Option<String>, Option<String>, Option<i32>) {
+    let (series, number, volume, _) = guess_comic_details(comic_path);
     (series, number, volume)
 }
 
@@ -321,7 +365,7 @@ fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
 
     let file = File::open(path)
         .map_err(|e| DomainError::Storage(format!("failed opening '{}': {e}", path.display())))?;
-    let mut archive = ZipArchive::new(file)
+    let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|e| DomainError::Validation(format!("invalid comic archive: {e}")))?;
 
     let mut page_count = 0u32;
@@ -347,12 +391,16 @@ fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
         }
     }
 
-    let (guessed_series, guessed_number, guessed_volume) = guess_comic_from_filename(path);
+    let (guessed_series, guessed_number, guessed_volume, guessed_title) = guess_comic_details(path);
+    let initial_title = guessed_title.or_else(|| {
+        (guessed_series.is_none() && guessed_number.is_none() && guessed_volume.is_none())
+            .then_some(fallback_stem)
+    });
 
     let mut meta = ComicFileMeta {
         format: ext,
         series: guessed_series,
-        title: Some(fallback_stem),
+        title: initial_title,
         number: guessed_number,
         volume: guessed_volume,
         reading_direction: "rtl".to_string(),
@@ -374,18 +422,22 @@ fn rewrite_zip_with_replacements(
     replacements: Vec<(String, Vec<u8>)>,
     skip_predicate: impl Fn(&str) -> bool,
 ) -> DomainResult<()> {
-    let src_bytes = std::fs::read(source_path)
-        .map_err(|e| DomainError::Storage(format!("failed reading archive: {e}")))?;
-
-    atomic_mutate_copy(source_path, |staging| {
-        let mut src_archive = ZipArchive::new(std::io::Cursor::new(&src_bytes))
+    atomic_write_via_temp(source_path, |staging| {
+        let src_file = File::open(source_path)
+            .map_err(|e| DomainError::Storage(format!("failed reading archive: {e}")))?;
+        let mut src_archive = ZipArchive::new(BufReader::new(src_file))
             .map_err(|e| DomainError::Validation(format!("invalid zip archive: {e}")))?;
         let out_file = File::create(staging)
             .map_err(|e| DomainError::Storage(format!("failed creating staging zip: {e}")))?;
-        let mut writer = ZipWriter::new(out_file);
+        let mut writer = ZipWriter::new(BufWriter::new(out_file));
 
         for (rep_name, rep_data) in &replacements {
-            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            let method = if is_image_entry(rep_name) {
+                CompressionMethod::Stored
+            } else {
+                CompressionMethod::Deflated
+            };
+            let opts = SimpleFileOptions::default().compression_method(method);
             writer
                 .start_file(rep_name.as_str(), opts)
                 .map_err(|e| DomainError::Storage(format!("zip start_file error: {e}")))?;
@@ -395,7 +447,7 @@ fn rewrite_zip_with_replacements(
         }
 
         for idx in 0..src_archive.len() {
-            let mut entry = src_archive
+            let entry = src_archive
                 .by_index(idx)
                 .map_err(|e| DomainError::Storage(format!("zip read entry error: {e}")))?;
             let Ok(name_ref) = entry.name() else {
@@ -405,26 +457,17 @@ fn rewrite_zip_with_replacements(
             if entry.is_dir() || skip_predicate(&name) {
                 continue;
             }
-            let method = match entry.compression() {
-                CompressionMethod::Stored => CompressionMethod::Stored,
-                _ => CompressionMethod::Deflated,
-            };
-            let opts = SimpleFileOptions::default().compression_method(method);
-            let mut buf = Vec::with_capacity(usize::try_from(entry.size()).unwrap_or(0));
-            entry
-                .read_to_end(&mut buf)
-                .map_err(|e| DomainError::Storage(format!("zip read bytes error: {e}")))?;
             writer
-                .start_file(name, opts)
-                .map_err(|e| DomainError::Storage(format!("zip copy start error: {e}")))?;
-            writer
-                .write_all(&buf)
-                .map_err(|e| DomainError::Storage(format!("zip copy write error: {e}")))?;
+                .raw_copy_file(entry)
+                .map_err(|e| DomainError::Storage(format!("zip raw copy error: {e}")))?;
         }
 
-        writer
+        let buf_writer = writer
             .finish()
             .map_err(|e| DomainError::Storage(format!("zip finish error: {e}")))?;
+        buf_writer
+            .into_inner()
+            .map_err(|e| DomainError::Storage(format!("zip flush error: {e}")))?;
         Ok(())
     })
 }
@@ -455,7 +498,8 @@ impl MediaInspectorPort for CbzComicInspector {
                     display_subtitle: sub,
                     year: m.year,
                     completeness: CompletenessFlags {
-                        has_title: m.title.as_ref().is_some_and(|t| !t.trim().is_empty()),
+                        has_title: m.title.as_ref().is_some_and(|t| !t.trim().is_empty())
+                            || m.series.as_ref().is_some_and(|s| !s.trim().is_empty()),
                         has_creator: !m.writers.is_empty() || !m.pencillers.is_empty(),
                         has_cover: m.has_cover,
                         has_summary_or_lyrics: m
@@ -580,13 +624,17 @@ impl MediaInspectorPort for CbzComicInspector {
         Ok(MediaMetadataPayload::Comic(updated))
     }
 
-    async fn read_artwork(&self, path: &Path) -> DomainResult<Option<BinaryPayload>> {
+    async fn read_artwork(
+        &self,
+        path: &Path,
+        _slot: Option<&str>,
+    ) -> DomainResult<Option<BinaryPayload>> {
         let p = path.to_path_buf();
         tokio::task::spawn_blocking(move || {
             let file = File::open(&p).map_err(|e| {
                 DomainError::Storage(format!("failed opening '{}': {e}", p.display()))
             })?;
-            let mut archive = ZipArchive::new(file)
+            let mut archive = ZipArchive::new(BufReader::new(file))
                 .map_err(|e| DomainError::Validation(format!("invalid comic archive: {e}")))?;
 
             let mut image_names: Vec<String> = Vec::new();
