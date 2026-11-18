@@ -33,7 +33,14 @@ use crate::infra::inspectors::video::{
     apply_video_patch_onto, is_season_dir, read_base_video_meta, render_season_nfo_xml,
     render_tvshow_nfo_xml, render_video_nfo_xml, write_image_replacing_opposite_ext,
 };
+use crate::infra::scrape_cache::{ScrapeCacheStatsDto, ScrapeMetadataCache};
 use crate::infra::scrapers::http_client::build_http_client;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AutoScrapeResultDto {
+    pub matched: bool,
+    pub detail: MediaFileDetail,
+}
 
 /// Application service orchestrating pluggable `ScraperProviderPort` adapters.
 ///
@@ -44,6 +51,7 @@ pub struct ScrapingOrchestratorService {
     settings: ToolSettingsService,
     workbench: MediaWorkbenchService,
     providers: Arc<Vec<Arc<dyn ScraperProviderPort>>>,
+    cache: ScrapeMetadataCache,
 }
 
 impl ScrapingOrchestratorService {
@@ -52,11 +60,30 @@ impl ScrapingOrchestratorService {
         workbench: MediaWorkbenchService,
         providers: Vec<Arc<dyn ScraperProviderPort>>,
     ) -> Self {
+        Self::with_cache_dir(settings, workbench, providers, None)
+    }
+
+    pub fn with_cache_dir(
+        settings: ToolSettingsService,
+        workbench: MediaWorkbenchService,
+        providers: Vec<Arc<dyn ScraperProviderPort>>,
+        cache_dir: Option<std::path::PathBuf>,
+    ) -> Self {
         Self {
             settings,
             workbench,
             providers: Arc::new(providers),
+            cache: ScrapeMetadataCache::new(cache_dir),
         }
+    }
+
+    pub async fn cache_stats(&self) -> DomainResult<ScrapeCacheStatsDto> {
+        let ttl_ms = self.settings.get_raw().await?.scrape_cache_ttl_ms;
+        Ok(self.cache.stats(ttl_ms))
+    }
+
+    pub fn clear_cache(&self) -> DomainResult<usize> {
+        self.cache.clear()
     }
 
     fn sort_providers_by_priority(
@@ -132,9 +159,13 @@ impl ScrapingOrchestratorService {
             return Ok(Vec::new());
         }
         let raw_settings = self.settings.get_raw().await?;
-        if query.locale.is_none() {
-            query.locale = Some(raw_settings.default_scrape_locale);
-        }
+        let effective_locale = query
+            .locale
+            .clone()
+            .filter(|l| !l.trim().is_empty())
+            .unwrap_or_else(|| raw_settings.default_scrape_locale.clone());
+        query.locale = Some(effective_locale.clone());
+        let ttl_ms = raw_settings.scrape_cache_ttl_ms;
         let creds = raw_settings.credentials;
         let domain = query.target.map(ScrapeTargetKind::media_kind);
         let ordered = self.sort_providers_by_priority(
@@ -168,10 +199,18 @@ impl ScrapingOrchestratorService {
         for (order_idx, provider) in selected.into_iter().enumerate() {
             let q = query.clone();
             let c = creds.clone();
+            let loc = effective_locale.clone();
+            let cache = self.cache.clone();
             set.spawn(async move {
                 let id = provider.descriptor().id;
+                if let Some(cached) = cache.get_search(&id, &q, &loc, ttl_ms) {
+                    return (order_idx, cached);
+                }
                 let items = match provider.search(&q, &c).await {
-                    Ok(items) => items,
+                    Ok(items) => {
+                        cache.put_search(&id, &q, &loc, ttl_ms, &items);
+                        items
+                    }
                     Err(err) => {
                         warn!("scraper provider '{id}' search failed: {err}");
                         Vec::new()
@@ -217,6 +256,7 @@ impl ScrapingOrchestratorService {
             .filter(|l| !l.trim().is_empty())
             .unwrap_or_else(|| raw_settings.default_scrape_locale.clone());
         query.locale = Some(effective_locale.clone());
+        let ttl_ms = raw_settings.scrape_cache_ttl_ms;
         let creds = raw_settings.credentials;
         let domain = query.target.map(ScrapeTargetKind::media_kind);
 
@@ -264,10 +304,18 @@ impl ScrapingOrchestratorService {
         for (order_idx, provider) in selected.iter().cloned().enumerate() {
             let q = query.clone();
             let c = creds.clone();
+            let loc = effective_locale.clone();
+            let cache = self.cache.clone();
             search_set.spawn(async move {
                 let id = provider.descriptor().id;
+                if let Some(cached) = cache.get_search(&id, &q, &loc, ttl_ms) {
+                    return (order_idx, cached);
+                }
                 let items = match provider.search(&q, &c).await {
-                    Ok(items) => items,
+                    Ok(items) => {
+                        cache.put_search(&id, &q, &loc, ttl_ms, &items);
+                        items
+                    }
                     Err(err) => {
                         warn!("scraper provider '{id}' search failed: {err}");
                         Vec::new()
@@ -300,13 +348,29 @@ impl ScrapingOrchestratorService {
 
             let loc = effective_locale.clone();
             let c = creds.clone();
+            let cache = self.cache.clone();
             detail_set.spawn(async move {
                 let id = prov_desc.id.clone();
+                if let Some(cached) =
+                    cache.get_detail(&id, top_cand.target, &top_cand.external_id, &loc, ttl_ms)
+                {
+                    return (order_idx, id, prov_desc.name, cached);
+                }
                 let detail_res = provider
                     .fetch_detail(&top_cand.external_id, top_cand.target, &loc, &c)
                     .await;
                 let detail = match detail_res {
-                    Ok(d) => d,
+                    Ok(d) => {
+                        cache.put_detail(
+                            &id,
+                            top_cand.target,
+                            &top_cand.external_id,
+                            &loc,
+                            ttl_ms,
+                            &d,
+                        );
+                        d
+                    }
                     Err(err) => {
                         warn!("scraper provider '{id}' top detail failed: {err}");
                         // Fallback to candidate fields if detail endpoint failed
@@ -413,9 +477,86 @@ impl ScrapingOrchestratorService {
             )));
         }
 
-        provider
+        let ttl_ms = raw_settings.scrape_cache_ttl_ms;
+        if let Some(cached) =
+            self.cache
+                .get_detail(provider_id, target, external_id, effective_locale, ttl_ms)
+        {
+            return Ok(cached);
+        }
+
+        let detail = provider
             .fetch_detail(external_id, target, effective_locale, &creds)
-            .await
+            .await?;
+        self.cache.put_detail(
+            provider_id,
+            target,
+            external_id,
+            effective_locale,
+            ttl_ms,
+            &detail,
+        );
+        Ok(detail)
+    }
+
+    /// Automatic waterfall scrape for background task queue:
+    /// Priority order: Local non-empty metadata -> #1 Priority Provider -> #2 Priority Provider -> ...
+    pub async fn auto_scrape_file(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        media_kind: MediaKind,
+    ) -> DomainResult<AutoScrapeResultDto> {
+        let local_detail = self
+            .workbench
+            .inspect_file(root_id, rel_path, Some(media_kind))
+            .await?;
+        let query = build_auto_query_from_detail(&local_detail);
+        if query.keyword.trim().is_empty() && query.isbn.as_deref().unwrap_or("").trim().is_empty()
+        {
+            return Ok(AutoScrapeResultDto {
+                matched: false,
+                detail: local_detail,
+            });
+        }
+
+        let agg = self.aggregate(query).await?;
+        let has_hit = agg
+            .merged
+            .metadata
+            .title
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
+            || agg.merged.metadata.cover_url.is_some()
+            || agg.merged.metadata.synced_lyrics.is_some()
+            || agg.merged.metadata.plain_lyrics.is_some()
+            || agg.merged.metadata.summary.is_some();
+
+        if !has_hit {
+            return Ok(AutoScrapeResultDto {
+                matched: false,
+                detail: local_detail,
+            });
+        }
+
+        let updated = self
+            .apply_to_file_ext(
+                root_id,
+                rel_path,
+                media_kind,
+                agg.merged.metadata,
+                true,
+                true,
+                Some(false),
+                true,
+                false,
+            )
+            .await?;
+
+        Ok(AutoScrapeResultDto {
+            matched: true,
+            detail: updated,
+        })
     }
 
     /// Applies `ScrapedMetadata` directly onto a target media file (atomically writing tags/OPF/ComicInfo/NFO,
@@ -1433,6 +1574,134 @@ fn map_scraped_to_patch(
                     .cloned()
                     .or_else(|| (s.provider_id == "bangumi").then(|| s.external_id.clone())),
             })
+        }
+    }
+}
+
+fn strip_trailing_year_tag(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(idx) = trimmed.rfind(['(', '[']) {
+        let suffix = trimmed[idx..].trim();
+        if suffix.len() == 6
+            && (suffix.ends_with(')') || suffix.ends_with(']'))
+            && suffix[1..5]
+                .parse::<i32>()
+                .is_ok_and(|y| (1900..=2099).contains(&y))
+        {
+            return trimmed[..idx].trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn strip_comic_chapter_suffix(raw: &str) -> String {
+    let cleaned = raw.replace('_', " ");
+    let mut s = cleaned.trim();
+    while s.starts_with('[') || s.starts_with('(') {
+        let close = if s.starts_with('[') { ']' } else { ')' };
+        if let Some(pos) = s.find(close) {
+            s = s[pos + 1..].trim();
+        } else {
+            break;
+        }
+    }
+    let lower = s.to_ascii_lowercase();
+    for marker in [" vol.", " ch.", " chapter ", " 第"] {
+        if let Some(pos) = lower.find(marker) {
+            let head = s[..pos].trim();
+            if !head.is_empty() {
+                return head.to_string();
+            }
+        }
+    }
+    s.to_string()
+}
+
+fn build_auto_query_from_detail(d: &MediaFileDetail) -> ScrapeQuery {
+    match &d.metadata {
+        MediaMetadataPayload::Music(m) => ScrapeQuery {
+            target: Some(ScrapeTargetKind::MusicTrack),
+            keyword: if m.title.trim().is_empty() {
+                d.entry.display_title.clone()
+            } else {
+                m.title.trim().to_string()
+            },
+            artist_or_author: (!m.artist.trim().is_empty()).then(|| m.artist.trim().to_string()),
+            album_or_series: (!m.album.trim().is_empty()).then(|| m.album.trim().to_string()),
+            year: m.year,
+            duration_secs: (m.duration_secs > 0).then_some(m.duration_secs),
+            ..Default::default()
+        },
+        MediaMetadataPayload::Video(v) => {
+            let raw_kw = if v.is_episode {
+                v.show_title
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| {
+                        if v.title.trim().is_empty() {
+                            d.entry.display_title.as_str()
+                        } else {
+                            v.title.as_str()
+                        }
+                    })
+            } else if v.title.trim().is_empty() {
+                d.entry.display_title.as_str()
+            } else {
+                v.title.as_str()
+            };
+            ScrapeQuery {
+                target: Some(if v.is_episode {
+                    ScrapeTargetKind::TvShow
+                } else {
+                    ScrapeTargetKind::Movie
+                }),
+                keyword: strip_trailing_year_tag(raw_kw),
+                year: v.year,
+                season: v.season_number,
+                episode: v.episode_number,
+                duration_secs: (v.duration_secs > 0).then_some(v.duration_secs),
+                ..Default::default()
+            }
+        }
+        MediaMetadataPayload::Comic(c) => {
+            let title_or_disp = c
+                .title
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(&d.entry.display_title);
+            let keyword = c
+                .series
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| strip_comic_chapter_suffix(title_or_disp));
+            ScrapeQuery {
+                target: Some(ScrapeTargetKind::Comic),
+                keyword,
+                artist_or_author: c.writers.first().cloned(),
+                year: c.year,
+                ..Default::default()
+            }
+        }
+        MediaMetadataPayload::Book(b) => {
+            let parsed_year = b
+                .published_at
+                .as_deref()
+                .and_then(|s| s.get(0..4))
+                .and_then(|y| y.parse::<i32>().ok());
+            ScrapeQuery {
+                target: Some(ScrapeTargetKind::Book),
+                keyword: if b.title.trim().is_empty() {
+                    d.entry.display_title.clone()
+                } else {
+                    b.title.trim().to_string()
+                },
+                artist_or_author: b.authors.first().cloned(),
+                album_or_series: b.series.clone(),
+                isbn: b.isbn.clone(),
+                year: parsed_year,
+                ..Default::default()
+            }
         }
     }
 }

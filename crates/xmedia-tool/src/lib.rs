@@ -80,8 +80,12 @@ impl XMediaToolApp {
         let ffmpeg = FfmpegToolkit::from_ffmpeg_bin(&cfg.ffmpeg_bin);
         let inspectors = build_default_inspectors(ffmpeg.clone());
         let workbench = MediaWorkbenchService::new(settings.clone(), inspectors);
-        let scraping =
-            ScrapingOrchestratorService::new(settings.clone(), workbench.clone(), providers);
+        let scraping = ScrapingOrchestratorService::with_cache_dir(
+            settings.clone(),
+            workbench.clone(),
+            providers,
+            Some(cfg.data_dir.join("scrape-cache")),
+        );
         let auth = ToolAuthService::new(cfg.password);
 
         let state = ToolHttpState {

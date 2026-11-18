@@ -22,6 +22,7 @@ pub struct PublicSettingsDto {
     pub rename_templates: RenameTemplates,
     pub scraper_priorities: ScraperPriorities,
     pub default_scrape_locale: String,
+    pub scrape_cache_ttl_ms: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -32,6 +33,7 @@ pub struct UpdateSettingsInput {
     pub rename_templates: Option<RenameTemplates>,
     pub scraper_priorities: Option<ScraperPriorities>,
     pub default_scrape_locale: Option<String>,
+    pub scrape_cache_ttl_ms: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -124,6 +126,9 @@ impl ToolSettingsService {
         {
             settings.default_scrape_locale = loc.trim().to_string();
         }
+        if let Some(ttl_ms) = input.scrape_cache_ttl_ms {
+            settings.scrape_cache_ttl_ms = ttl_ms;
+        }
         self.repo.save(&settings).await?;
         Ok(Self::to_public(settings))
     }
@@ -143,6 +148,7 @@ impl ToolSettingsService {
             rename_templates: s.rename_templates,
             scraper_priorities: s.scraper_priorities,
             default_scrape_locale: s.default_scrape_locale,
+            scrape_cache_ttl_ms: s.scrape_cache_ttl_ms,
         }
     }
 }

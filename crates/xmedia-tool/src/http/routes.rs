@@ -21,6 +21,7 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{ApiError, ApiResult};
 use xmedia_core::infra::thumbnail::sniff_image_mime;
 
+use crate::application::scraping::AutoScrapeResultDto;
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
 use crate::application::workbench::WorkbenchProgress;
 use crate::domain::media::{
@@ -33,6 +34,7 @@ use crate::domain::scraper::{
 use crate::domain::workspace::{ManagedRoot, RootId};
 use crate::http::ToolHttpState;
 use crate::http::auth::{ToolAuthGuard, build_tool_session_cookie, extract_tool_token};
+use crate::infra::scrape_cache::ScrapeCacheStatsDto;
 
 pub fn tool_api_router() -> Router<ToolHttpState> {
     Router::new()
@@ -60,6 +62,11 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/scrapers/aggregate", post(aggregate_scrapers))
         .route("/scrapers/detail", get(get_scraper_detail))
         .route("/scrapers/apply", post(apply_scraped_metadata))
+        .route("/scrapers/auto-apply", post(auto_apply_scraped_metadata))
+        .route(
+            "/scrapers/cache",
+            get(get_scrape_cache_stats).delete(clear_scrape_cache),
+        )
 }
 
 #[derive(Serialize)]
@@ -457,6 +464,45 @@ async fn apply_scraped_metadata(
         )
         .await?;
     Ok(Json(detail))
+}
+
+#[derive(Deserialize)]
+struct AutoApplyScrapeRequest {
+    root_id: Uuid,
+    path: String,
+    media_kind: MediaKind,
+}
+
+async fn auto_apply_scraped_metadata(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<AutoApplyScrapeRequest>,
+) -> ApiResult<Json<AutoScrapeResultDto>> {
+    let res = state
+        .scraping
+        .auto_scrape_file(RootId(req.root_id), &req.path, req.media_kind)
+        .await?;
+    Ok(Json(res))
+}
+
+async fn get_scrape_cache_stats(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+) -> ApiResult<Json<ScrapeCacheStatsDto>> {
+    Ok(Json(state.scraping.cache_stats().await?))
+}
+
+#[derive(Serialize)]
+struct ClearScrapeCacheResponse {
+    removed_count: usize,
+}
+
+async fn clear_scrape_cache(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+) -> ApiResult<Json<ClearScrapeCacheResponse>> {
+    let removed_count = state.scraping.clear_cache()?;
+    Ok(Json(ClearScrapeCacheResponse { removed_count }))
 }
 
 struct MpscByteStream {

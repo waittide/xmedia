@@ -153,8 +153,15 @@ impl ScraperPriorities {
     }
 }
 
+/// Default scrape metadata cache TTL: 7 days in milliseconds (604,800,000 ms).
+pub const DEFAULT_SCRAPE_CACHE_TTL_MS: u64 = 7 * 24 * 3_600_000;
+
+fn default_scrape_cache_ttl_ms() -> u64 {
+    DEFAULT_SCRAPE_CACHE_TTL_MS
+}
+
 /// Persistent configuration aggregate for `xmedia-tool`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSettings {
     #[serde(default)]
     pub roots: Vec<ManagedRoot>,
@@ -166,6 +173,22 @@ pub struct ToolSettings {
     pub scraper_priorities: ScraperPriorities,
     #[serde(default = "default_locale")]
     pub default_scrape_locale: String,
+    /// Metadata cache TTL in milliseconds (`0` disables caching).
+    #[serde(default = "default_scrape_cache_ttl_ms")]
+    pub scrape_cache_ttl_ms: u64,
+}
+
+impl Default for ToolSettings {
+    fn default() -> Self {
+        Self {
+            roots: Vec::new(),
+            credentials: ProviderCredentials::default(),
+            rename_templates: RenameTemplates::default(),
+            scraper_priorities: ScraperPriorities::default(),
+            default_scrape_locale: default_locale(),
+            scrape_cache_ttl_ms: default_scrape_cache_ttl_ms(),
+        }
+    }
 }
 
 fn default_locale() -> String {
