@@ -72,6 +72,39 @@ export interface AutoScrapeResultDto {
   detail: MediaFileDetail
 }
 
+export type ChapterEditMode = 'plain' | 'xhtml'
+
+export interface EditableBookChapterDto {
+  id: string
+  title: string
+  level: number
+  plain_text: string
+  xhtml_body: string
+  has_rich_media: boolean
+  source_href: string | null
+}
+
+export interface BookContentDocumentDto {
+  format: 'txt' | 'epub'
+  title: string
+  authors: string[]
+  chapters: EditableBookChapterDto[]
+}
+
+export interface SaveBookChapterInput {
+  title: string
+  level: number
+  mode: ChapterEditMode
+  plain_text: string
+  xhtml_body: string
+  source_href?: string | null
+}
+
+export interface ConvertTxtToEpubResponseDto {
+  detail: MediaFileDetail
+  deleted_source_txt: boolean
+}
+
 export interface CompletenessFlags {
   has_title: boolean
   has_creator: boolean

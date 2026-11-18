@@ -2,13 +2,17 @@ import type { MediaKind } from '@/types/api'
 import type {
   AggregateScrapeResponse,
   AutoScrapeResultDto,
+  BookContentDocumentDto,
+  ConvertTxtToEpubResponseDto,
   DirectorySnapshot,
+  EditableBookChapterDto,
   ManagedRootDto,
   MediaFileDetail,
   MediaMetadataPatchEnvelope,
   ProviderStatusDto,
   PublicSettingsDto,
   RenamePlanItem,
+  SaveBookChapterInput,
   ScrapeCacheStatsDto,
   ScrapeCandidate,
   ScrapeQuery,
@@ -475,6 +479,60 @@ export const toolApi = {
   clearScrapeCache(): Promise<{ removed_count: number }> {
     return toolRequest<{ removed_count: number }>('/scrapers/cache', {
       method: 'DELETE',
+    })
+  },
+
+  getBookContent(rootId: string, relPath: string): Promise<BookContentDocumentDto> {
+    const q = new URLSearchParams({ root_id: rootId, path: relPath })
+    return toolRequest<BookContentDocumentDto>(`/books/content?${q.toString()}`)
+  },
+
+  resegmentTxtBook(
+    rootId: string,
+    relPath: string,
+    chapterPattern?: string,
+    volumePattern?: string,
+  ): Promise<EditableBookChapterDto[]> {
+    return toolRequest<EditableBookChapterDto[]>('/books/resegment-txt', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        path: relPath,
+        chapter_pattern: chapterPattern || undefined,
+        volume_pattern: volumePattern || undefined,
+      }),
+    })
+  },
+
+  saveBookContent(
+    rootId: string,
+    relPath: string,
+    chapters: SaveBookChapterInput[],
+  ): Promise<MediaFileDetail> {
+    return toolRequest<MediaFileDetail>('/books/content', {
+      method: 'PUT',
+      body: JSON.stringify({
+        root_id: rootId,
+        path: relPath,
+        chapters,
+      }),
+    })
+  },
+
+  convertTxtToEpub(
+    rootId: string,
+    relPath: string,
+    chapters: SaveBookChapterInput[] | undefined,
+    deleteSourceTxt: boolean,
+  ): Promise<ConvertTxtToEpubResponseDto> {
+    return toolRequest<ConvertTxtToEpubResponseDto>('/books/convert-epub', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        path: relPath,
+        chapters,
+        delete_source_txt: deleteSourceTxt,
+      }),
     })
   },
 }

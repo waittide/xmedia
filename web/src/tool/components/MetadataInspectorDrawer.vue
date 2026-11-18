@@ -20,7 +20,11 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { buildArtworkUrl, toolApi } from '../api'
 import { formatBytes, formatDuration, useToolText } from '../i18n'
-import type { MediaFileDetail, MediaMetadataPatchEnvelope } from '../types'
+import type {
+  MediaFileDetail,
+  MediaFileEntry,
+  MediaMetadataPatchEnvelope,
+} from '../types'
 
 const props = defineProps<{
   detail: MediaFileDetail
@@ -31,6 +35,7 @@ const emit = defineEmits<{
   close: []
   updated: [detail: MediaFileDetail, bumpArtwork: boolean]
   openScrape: [detail: MediaFileDetail]
+  openContentEditor: [entry: MediaFileEntry]
 }>()
 
 const txt = useToolText()
@@ -746,6 +751,22 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               >
                 <LuImage class="h-3.5 w-3.5" />
                 <span>上传系列封面</span>
+              </button>
+              <button
+                v-if="
+                  detail.entry.media_kind === 'book' &&
+                  (detail.entry.extension === 'txt' || detail.entry.extension === 'epub')
+                "
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
+                @click="emit('openContentEditor', detail.entry)"
+              >
+                <LuFileText class="h-3.5 w-3.5" />
+                <span>{{
+                  detail.entry.extension === 'txt'
+                    ? '编辑目录与正文 · 转 EPUB'
+                    : '编辑目录与正文'
+                }}</span>
               </button>
             </template>
             <template v-else>

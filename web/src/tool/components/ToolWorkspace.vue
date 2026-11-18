@@ -52,6 +52,7 @@ import type {
   ToolStatusDto,
 } from '../types'
 import BatchRenameModal from './BatchRenameModal.vue'
+import BookContentEditorModal from './BookContentEditorModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
 import ToolHomeView from './ToolHomeView.vue'
@@ -147,6 +148,8 @@ const scrapeModalOpen = ref(false)
 const scrapeQueue = ref<MediaFileEntry[]>([])
 const scrapeQueueIndex = ref(0)
 const renameModalOpen = ref(false)
+const bookEditorOpen = ref(false)
+const bookEditorEntry = ref<MediaFileEntry | null>(null)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -634,6 +637,37 @@ async function handleSelectScrapeQueueIndex(nextIdx: number): Promise<void> {
   if (!target) return
   scrapeQueueIndex.value = nextIdx
   await inspectEntry(target)
+}
+
+function openBookContentEditor(entry: MediaFileEntry): void {
+  bookEditorEntry.value = entry
+  bookEditorOpen.value = true
+}
+
+async function handleBookContentSaved(updated: MediaFileDetail): Promise<void> {
+  await handleDetailUpdated(updated, true)
+  batchSummaryBanner.value = `已保存章节目录与正文：${updated.entry.file_name}`
+  setTimeout(() => {
+    batchSummaryBanner.value = null
+  }, 4000)
+}
+
+async function handleTxtConvertedToEpub(
+  epubDetail: MediaFileDetail,
+  deletedSourceTxt: boolean,
+): Promise<void> {
+  artworkVersion.value += 1
+  if (activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  }
+  activeDetail.value = epubDetail
+  inspectingPath.value = epubDetail.entry.rel_path
+  batchSummaryBanner.value = deletedSourceTxt
+    ? `已转换为 EPUB 并移除原 TXT：${epubDetail.entry.file_name}`
+    : `已生成标准 EPUB：${epubDetail.entry.file_name}`
+  setTimeout(() => {
+    batchSummaryBanner.value = null
+  }, 5000)
 }
 
 async function openManualScrapeModal(entry: MediaFileEntry): Promise<void> {
@@ -1516,6 +1550,23 @@ onBeforeUnmount(() => {
                   </div>
 
                   <button
+                    v-if="
+                      file.media_kind === 'book' &&
+                      (file.extension === 'txt' || file.extension === 'epub')
+                    "
+                    type="button"
+                    class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                    :title="
+                      file.extension === 'txt'
+                        ? '编辑目录与正文 / 转为 EPUB'
+                        : '编辑目录与正文'
+                    "
+                    @click.stop="openBookContentEditor(file)"
+                  >
+                    <LuFileText class="h-4 w-4" />
+                  </button>
+
+                  <button
                     type="button"
                     class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
                     title="添加刮削任务（本地信息 → 高优先级源 → 低优先级源）"
@@ -1548,6 +1599,7 @@ onBeforeUnmount(() => {
             @close="activeDetail = null; inspectingPath = null"
             @updated="handleDetailUpdated"
             @open-scrape="(d) => openManualScrapeModal(d.entry)"
+            @open-content-editor="openBookContentEditor"
           />
         </div>
       </main>
@@ -1576,6 +1628,14 @@ onBeforeUnmount(() => {
       :templates="settings.rename_templates"
       @close="renameModalOpen = false"
       @renamed="handleRenamed"
+    />
+
+    <BookContentEditorModal
+      :open="bookEditorOpen"
+      :entry="bookEditorEntry"
+      @close="bookEditorOpen = false"
+      @saved="handleBookContentSaved"
+      @converted="handleTxtConvertedToEpub"
     />
 
     <!-- Bottom-Right Floating Task Progress Panel (Click task jumps to Tasks View) -->
