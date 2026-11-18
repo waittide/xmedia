@@ -94,6 +94,17 @@ export const useMusicStore = defineStore('music', () => {
     },
   )
 
+  function resetState(): void {
+    libraries.value = []
+    playlists.value = []
+    genres.value = []
+    tags.value = []
+    artists.value = []
+    albums.value = []
+    globalSearchQuery.value = ''
+    catalogVersion.value = 0
+  }
+
   return {
     libraries,
     playlists,
@@ -109,5 +120,6 @@ export const useMusicStore = defineStore('music', () => {
     toggleAlbumStar,
     toggleArtistStar,
     addTrackToPlaylist,
+    resetState,
   }
 })

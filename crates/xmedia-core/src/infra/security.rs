@@ -194,4 +194,8 @@ impl TokenServicePort for JwtTokenService {
             role,
         })
     }
+
+    fn ttl_seconds(&self) -> u64 {
+        self.ttl_seconds
+    }
 }

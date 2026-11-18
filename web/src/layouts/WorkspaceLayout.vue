@@ -67,9 +67,6 @@ import { useMusicI18n } from '@/domains/music/i18n'
 import { usePlayerStore } from '@/domains/music/player'
 import { useMusicStore } from '@/domains/music/store'
 import type { PlaylistSummaryDto } from '@/domains/music/types'
-import PlayerBar from '@/domains/music/components/PlayerBar.vue'
-import QueueDrawer from '@/domains/music/components/QueueDrawer.vue'
-import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
 
 import { api as videoApi } from '@/domains/video/api'
 import { useVideoI18n } from '@/domains/video/i18n'
@@ -160,8 +157,18 @@ function toggleGroupExpanded(id: string): void {
 
 const loadedDomains = new Set<MediaKind>()
 
+watch(
+  () => authStore.user?.id,
+  () => {
+    loadedDomains.clear()
+    if (authStore.isAuthenticated) {
+      void ensureDomainSidebarLoaded(domainStore.activeDomain)
+    }
+  },
+)
+
 async function ensureDomainSidebarLoaded(kind: MediaKind): Promise<void> {
-  if (!authStore.hasModule(kind) || loadedDomains.has(kind)) return
+  if (!authStore.isAuthenticated || !authStore.hasModule(kind) || loadedDomains.has(kind)) return
   loadedDomains.add(kind)
   try {
     if (kind === 'book') await bookStore.refreshSidebarData()
@@ -241,9 +248,11 @@ const showMusicBar = computed(
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
 async function switchDomain(kind: MediaKind): Promise<void> {
+  const alreadyInDomain = domainStore.activeDomain === kind && route.meta.domain === kind
+  const target = alreadyInDomain ? `/${kind}` : domainStore.getLastRoute(kind)
   domainStore.setActiveDomain(kind)
   mobileMenuOpen.value = false
-  await router.push(`/${kind}`)
+  await router.push(target)
 }
 
 function handleSidebarButtonClick(): void {
@@ -1353,10 +1362,6 @@ onMounted(() => {
   document.addEventListener('mousedown', handleOutsideClick)
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('resize', updateSearchDropdownPosition)
-  eventsStore.connect()
-  if (authStore.hasModule('music')) {
-    void playerStore.restoreRemoteQueue(false)
-  }
   idlePrewarmTimer = setTimeout(() => {
     void prewarmOtherDomains()
   }, 350)
@@ -1366,7 +1371,6 @@ onBeforeUnmount(() => {
   document.removeEventListener('mousedown', handleOutsideClick)
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('resize', updateSearchDropdownPosition)
-  eventsStore.disconnect()
   if (comicSearchTimer) clearTimeout(comicSearchTimer)
   if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
   if (idlePrewarmTimer) clearTimeout(idlePrewarmTimer)
@@ -1891,12 +1895,8 @@ onBeforeUnmount(() => {
       </main>
     </div>
 
-    <!-- Persistent Bottom Audio Player -->
-    <template v-if="showMusicBar">
-      <PlayerBar />
-      <QueueDrawer />
-      <LyricsOverlay />
-    </template>
+    <!-- Reserve Space for Persistent Global PlayerBar Rendered in App.vue -->
+    <div v-if="showMusicBar" class="h-20 shrink-0" aria-hidden="true" />
 
     <!-- Non-Blocking Multi-Domain Upload Queue Shelf -->
     <UploadShelf />

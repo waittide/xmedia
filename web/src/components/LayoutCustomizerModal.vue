@@ -58,6 +58,7 @@ watch(
       activeTab.value = tab
     }
   },
+  { immediate: true },
 )
 
 const domainOptions = computed(() => {
@@ -232,6 +233,7 @@ function onDropAt(targetIdx: number): void {
           class="flex items-center justify-between gap-2 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs transition hover:border-[var(--ctp-accent)]/60"
           @dragstart="onDragStart(idx)"
           @dragover.prevent
+          @dragend="dragIndex = null"
           @drop="onDropAt(idx)"
         >
           <div class="flex min-w-0 items-center gap-2">
@@ -416,6 +418,7 @@ function onDropAt(targetIdx: number): void {
               class="flex items-center justify-between gap-2 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2.5 text-xs transition hover:border-[var(--ctp-accent)]/60"
               @dragstart="onDragStart(idx)"
               @dragover.prevent
+              @dragend="dragIndex = null"
               @drop="onDropAt(idx)"
             >
               <div class="flex min-w-0 items-center gap-2.5">

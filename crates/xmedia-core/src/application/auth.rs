@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use tokio::sync::Mutex;
+
 use crate::application::dto::{
     AuthSessionDto, ChangePasswordInput, CreateUserInput, SetupAdminInput, SetupStatusDto,
     SubsonicCredentials, UpdateUserInput, UserDto,
@@ -19,6 +21,7 @@ pub struct AuthService {
     hasher: Arc<dyn PasswordHasherPort>,
     tokens: Arc<dyn TokenServicePort>,
     lifecycles: Arc<RwLock<HashMap<MediaKind, Arc<dyn MediaDomainLifecycle>>>>,
+    setup_lock: Arc<Mutex<()>>,
 }
 
 impl AuthService {
@@ -33,7 +36,12 @@ impl AuthService {
             hasher,
             tokens,
             lifecycles,
+            setup_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    pub fn token_ttl_seconds(&self) -> u64 {
+        self.tokens.ttl_seconds()
     }
 
     pub async fn setup_status(&self) -> DomainResult<SetupStatusDto> {
@@ -44,6 +52,7 @@ impl AuthService {
     }
 
     pub async fn setup_initial_admin(&self, req: SetupAdminInput) -> DomainResult<AuthSessionDto> {
+        let _guard = self.setup_lock.lock().await;
         if self.users.count().await? > 0 {
             return Err(DomainError::Conflict(
                 "initial administrator has already been configured".into(),
@@ -94,7 +103,9 @@ impl AuthService {
             .await?
             .ok_or_else(|| DomainError::Unauthorized("user no longer exists".into()))?;
         if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
+            return Err(DomainError::Unauthorized(
+                "account has been disabled".into(),
+            ));
         }
         Ok(user)
     }
@@ -110,7 +121,9 @@ impl AuthService {
             .await?
             .ok_or_else(|| DomainError::Unauthorized("invalid api key".into()))?;
         if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
+            return Err(DomainError::Unauthorized(
+                "account has been disabled".into(),
+            ));
         }
         Ok(user)
     }
@@ -126,7 +139,9 @@ impl AuthService {
             .await?
             .ok_or_else(|| DomainError::Unauthorized("invalid credentials".into()))?;
         if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
+            return Err(DomainError::Unauthorized(
+                "account has been disabled".into(),
+            ));
         }
         let ok = password == user.api_key
             || self.hasher.verify_password(password, &user.password_hash)?;
@@ -156,7 +171,9 @@ impl AuthService {
                         DomainError::Unauthorized("wrong username or password".into())
                     })?;
                 if !user.is_active {
-                    return Err(DomainError::Forbidden("account has been disabled".into()));
+                    return Err(DomainError::Unauthorized(
+                        "account has been disabled".into(),
+                    ));
                 }
                 let ok = self.hasher.verify_subsonic_token(
                     &user.subsonic_secret_enc,
@@ -202,7 +219,7 @@ impl AuthService {
         &self,
         actor: &User,
         input: ChangePasswordInput,
-    ) -> DomainResult<UserDto> {
+    ) -> DomainResult<AuthSessionDto> {
         let mut user = self
             .users
             .find_by_id(actor.id)
@@ -221,7 +238,7 @@ impl AuthService {
         let enc_secret = self.hasher.encrypt_subsonic_secret(&input.new_password)?;
         user.update_credentials(hash, enc_secret)?;
         self.users.save(&user).await?;
-        Ok(UserDto::from(user))
+        self.issue_session(user)
     }
 
     pub async fn rotate_api_key(&self, actor: &User) -> DomainResult<UserDto> {

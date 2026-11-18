@@ -15,11 +15,41 @@ export interface DomainHomeMap {
   video: VideoHomeOverviewDto
 }
 
-const cache: { [K in MediaKind]?: { data: DomainHomeMap[K]; updatedAt: number } } = {}
-const inflight: { [K in MediaKind]?: Promise<DomainHomeMap[K]> } = {}
+type HomeCacheMap = { [K in MediaKind]?: { data: DomainHomeMap[K]; updatedAt: number } }
+type HomeInflightMap = { [K in MediaKind]?: Promise<DomainHomeMap[K]> }
+
+let currentUserKey = 'anon'
+const cacheByUser: Record<string, HomeCacheMap> = {}
+const inflightByUser: Record<string, HomeInflightMap> = {}
+
+export function setHomeCacheUser(userId: string | null | undefined): void {
+  const next = userId?.trim() || 'anon'
+  if (next !== currentUserKey) {
+    currentUserKey = next
+  }
+}
+
+export function clearHomeCache(): void {
+  for (const k of Object.keys(cacheByUser)) {
+    delete cacheByUser[k]
+  }
+  for (const k of Object.keys(inflightByUser)) {
+    delete inflightByUser[k]
+  }
+}
+
+export function invalidateHomeCache(kind?: MediaKind): void {
+  if (!kind) {
+    clearHomeCache()
+    return
+  }
+  for (const bucket of Object.values(cacheByUser)) {
+    delete bucket[kind]
+  }
+}
 
 export function peekHomeCache<K extends MediaKind>(kind: K): DomainHomeMap[K] | null {
-  return (cache[kind]?.data as DomainHomeMap[K] | undefined) ?? null
+  return (cacheByUser[currentUserKey]?.[kind]?.data as DomainHomeMap[K] | undefined) ?? null
 }
 
 export function fetchHomeOverview<K extends MediaKind>(
@@ -27,12 +57,16 @@ export function fetchHomeOverview<K extends MediaKind>(
   options: { force?: boolean; maxAgeMs?: number } = {},
 ): Promise<DomainHomeMap[K]> {
   const { force = false, maxAgeMs = 15_000 } = options
-  const existing = cache[kind]
+  const userKey = currentUserKey
+  const userCache = (cacheByUser[userKey] ??= {})
+  const userInflight = (inflightByUser[userKey] ??= {})
+
+  const existing = userCache[kind]
   if (!force && existing && Date.now() - existing.updatedAt < maxAgeMs) {
     return Promise.resolve(existing.data as DomainHomeMap[K])
   }
 
-  const pending = inflight[kind]
+  const pending = userInflight[kind]
   if (pending) return pending as Promise<DomainHomeMap[K]>
 
   const req = (async (): Promise<DomainHomeMap[K]> => {
@@ -42,15 +76,16 @@ export function fetchHomeOverview<K extends MediaKind>(
     else if (kind === 'music') data = await musicApi.homeOverview()
     else data = await videoApi.homeOverview()
 
-    ;(cache as Record<MediaKind, { data: unknown; updatedAt: number }>)[kind] = {
+    const bucket = (cacheByUser[userKey] ??= {})
+    ;(bucket as Record<MediaKind, { data: unknown; updatedAt: number }>)[kind] = {
       data,
       updatedAt: Date.now(),
     }
     return data as DomainHomeMap[K]
   })().finally(() => {
-    delete inflight[kind]
+    delete inflightByUser[userKey]?.[kind]
   })
 
-  ;(inflight as Record<MediaKind, Promise<unknown>>)[kind] = req
+  ;(userInflight as Record<MediaKind, Promise<unknown>>)[kind] = req
   return req
 }

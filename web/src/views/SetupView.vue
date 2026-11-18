@@ -13,16 +13,21 @@ const authStore = useAuthStore()
 const username = ref('admin')
 const displayName = ref('')
 const password = ref('')
+const confirmPassword = ref('')
 const submitting = ref(false)
 const errorMsg = ref('')
 
 async function onSubmit(): Promise<void> {
   errorMsg.value = ''
+  if (password.value !== confirmPassword.value) {
+    errorMsg.value = t('auth.passwordMismatch')
+    return
+  }
   submitting.value = true
   try {
     await authStore.setupAdmin({
       username: username.value.trim(),
-      display_name: displayName.value.trim(),
+      display_name: displayName.value.trim() || undefined,
       password: password.value,
     })
     await router.replace('/')
@@ -108,6 +113,20 @@ async function onSubmit(): Promise<void> {
               required
               minlength="6"
               :placeholder="t('auth.passwordPlaceholder')"
+              class="w-full rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-4 py-2.5 text-sm outline-none transition focus:border-[var(--ctp-accent)]"
+            />
+          </div>
+
+          <div>
+            <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+              {{ t('auth.confirmPassword') }}
+            </label>
+            <input
+              v-model="confirmPassword"
+              type="password"
+              required
+              minlength="6"
+              :placeholder="t('auth.confirmPasswordPlaceholder')"
               class="w-full rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-4 py-2.5 text-sm outline-none transition focus:border-[var(--ctp-accent)]"
             />
           </div>

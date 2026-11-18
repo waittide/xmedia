@@ -190,6 +190,29 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
     void Promise.all([refreshSidebarData(), fetchBooks()]).catch(() => {})
   })
 
+  function resetState(): void {
+    libraries.value = []
+    shelves.value = []
+    authors.value = []
+    tags.value = []
+    bookmarks.value = []
+    books.value = []
+    total.value = 0
+    page.value = 1
+    activeSection.value = 'all'
+    activeLibraryId.value = ''
+    activeShelfId.value = ''
+    keyword.value = ''
+    filterFormats.value = []
+    filterAuthors.value = []
+    filterTags.value = []
+    filterTagMode.value = 'any'
+    filterLibraryIds.value = []
+    includeMissing.value = false
+    selectedBookIds.value = new Set()
+    activeBookId.value = null
+  }
+
   return {
     libraries,
     shelves,
@@ -229,5 +252,6 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
     clearSelection,
     updateBookInList,
     applyLibraryUpdate,
+    resetState,
   }
 })

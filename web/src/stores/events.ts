@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getStoredToken } from '@/api/client'
+import { invalidateHomeCache } from '@/config/homeCache'
 import type { MediaKind } from '@/types/api'
 
 interface WsEventFrame {
@@ -31,6 +32,7 @@ export const useEventsStore = defineStore('events', () => {
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
   function bumpDomain(kind: MediaKind): void {
+    invalidateHomeCache(kind)
     domainRefreshTick.value[kind] += 1
   }
 
@@ -54,11 +56,14 @@ export const useEventsStore = defineStore('events', () => {
           }
         } else if (msg.event === 'library_scan_completed' && msg.library_id) {
           delete activeScans.value[msg.library_id]
+          invalidateHomeCache(msg.media_kind)
           domainRefreshTick.value[msg.media_kind] += 1
         } else if (msg.event === 'library_scan_failed' && msg.library_id) {
           delete activeScans.value[msg.library_id]
+          invalidateHomeCache(msg.media_kind)
           domainRefreshTick.value[msg.media_kind] += 1
         } else if (msg.event === 'media_changed') {
+          invalidateHomeCache(msg.media_kind)
           domainRefreshTick.value[msg.media_kind] += 1
         }
       } catch {

@@ -1,8 +1,11 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { uploadWithXhr } from '@/api/client'
+import { invalidateHomeCache } from '@/config/homeCache'
 import { useEventsStore } from '@/stores/events'
 import type { MediaKind } from '@/types/api'
+
+const MAX_CONCURRENT_UPLOADS = 3
 
 export interface UploadTask {
   id: string
@@ -38,6 +41,9 @@ export const useUploadStore = defineStore('uploads', () => {
   const tasks = ref<UploadTask[]>([])
   const collapsed = ref(false)
   const versionCounter = ref(0)
+  let runningCount = 0
+  let queueEpoch = 0
+  const pendingJobs: Array<{ epoch: number; execute: () => Promise<void> }> = []
 
   const activeCount = computed(
     () => tasks.value.filter((t) => t.status === 'queued' || t.status === 'uploading').length,
@@ -56,7 +62,34 @@ export const useUploadStore = defineStore('uploads', () => {
 
   function notifyCatalogChanged(kind?: MediaKind): void {
     versionCounter.value += 1
+    invalidateHomeCache(kind)
     if (kind) eventsStore.bumpDomain(kind)
+  }
+
+  function pumpUploadQueue(): void {
+    while (runningCount < MAX_CONCURRENT_UPLOADS && pendingJobs.length > 0) {
+      const next = pendingJobs.shift()
+      if (!next || next.epoch !== queueEpoch) continue
+      runningCount += 1
+      void next.execute().finally(() => {
+        runningCount = Math.max(0, runningCount - 1)
+        pumpUploadQueue()
+      })
+    }
+  }
+
+  function scheduleTask(task: UploadTask, execute: () => Promise<void>): void {
+    tasks.value.unshift(task)
+    const epoch = queueEpoch
+    pendingJobs.push({
+      epoch,
+      execute: async () => {
+        if (epoch !== queueEpoch) return
+        task.status = 'uploading'
+        await execute()
+      },
+    })
+    pumpUploadQueue()
   }
 
   function enqueueFiles(
@@ -83,57 +116,61 @@ export const useUploadStore = defineStore('uploads', () => {
       } else if (kind === 'video') {
         videoBatch.push(file)
       } else if (kind === 'book') {
-        void runSingleBookUpload(file)
+        enqueueBookUpload(file)
       } else if (kind === 'comic') {
-        void runSingleComicUpload(file, options)
+        enqueueComicUpload(file, options)
       }
     }
 
     if (musicBatch.length > 0) {
-      void runMusicBatchUpload(musicBatch)
+      enqueueMusicBatchUpload(musicBatch)
     }
     if (videoBatch.length > 0) {
-      void runVideoBatchUpload(videoBatch)
+      enqueueVideoBatchUpload(videoBatch)
     }
   }
 
-  async function runSingleBookUpload(file: File): Promise<void> {
+  function enqueueBookUpload(file: File): void {
     const task: UploadTask = {
       id: crypto.randomUUID(),
       label: file.name,
       mediaKind: 'book',
-      status: 'uploading',
+      status: 'queued',
       totalBytes: file.size,
       uploadedBytes: 0,
       progress: 0,
     }
-    tasks.value.unshift(task)
-    try {
-      const fd = new FormData()
-      fd.append('file', file, file.name)
-      const res = await uploadWithXhr<{ uploaded: { id: string }[] }>(
-        '/api/v1/book/books/upload',
-        fd,
-        (loaded, total) => {
-          task.uploadedBytes = loaded
-          task.totalBytes = total
-          task.progress = Math.round((loaded / Math.max(1, total)) * 100)
-        },
-      )
-      task.status = 'completed'
-      task.uploadedBytes = task.totalBytes
-      task.progress = 100
-      if (res.uploaded[0]?.id) {
-        task.targetRoute = `/book/items/${res.uploaded[0].id}`
+    scheduleTask(task, async () => {
+      try {
+        const fd = new FormData()
+        fd.append('file', file, file.name)
+        const res = await uploadWithXhr<{ uploaded?: { id: string }[] }>(
+          '/api/v1/book/books/upload',
+          fd,
+          (loaded, total) => {
+            task.uploadedBytes = loaded
+            task.totalBytes = total
+            task.progress = Math.round((loaded / Math.max(1, total)) * 100)
+          },
+        )
+        if (!res.uploaded || res.uploaded.length === 0) {
+          throw new Error('No book files were imported')
+        }
+        task.status = 'completed'
+        task.uploadedBytes = task.totalBytes
+        task.progress = 100
+        if (res.uploaded[0]?.id) {
+          task.targetRoute = `/book/items/${res.uploaded[0].id}`
+        }
+        notifyCatalogChanged('book')
+      } catch (err) {
+        task.status = 'failed'
+        task.error = err instanceof Error ? err.message : String(err)
       }
-      notifyCatalogChanged('book')
-    } catch (err) {
-      task.status = 'failed'
-      task.error = err instanceof Error ? err.message : String(err)
-    }
+    })
   }
 
-  async function runSingleComicUpload(
+  function enqueueComicUpload(
     file: File,
     options?: {
       comicTargetSeriesId?: string
@@ -141,118 +178,138 @@ export const useUploadStore = defineStore('uploads', () => {
       targetSeriesId?: string
       seriesTitle?: string
     },
-  ): Promise<void> {
+  ): void {
     const task: UploadTask = {
       id: crypto.randomUUID(),
       label: file.name,
       mediaKind: 'comic',
-      status: 'uploading',
+      status: 'queued',
       totalBytes: file.size,
       uploadedBytes: 0,
       progress: 0,
     }
-    tasks.value.unshift(task)
-    try {
-      const fd = new FormData()
-      const sid = options?.comicTargetSeriesId ?? options?.targetSeriesId
-      const stitle = options?.comicSeriesTitle ?? options?.seriesTitle
-      if (sid) fd.append('target_series_id', sid)
-      if (stitle) fd.append('series_title', stitle)
-      fd.append('file', file, file.name)
-      const res = await uploadWithXhr<{
-        uploaded?: { series_id: string }[]
-        series_id?: string
-      }>(
-        '/api/v1/comic/upload',
-        fd,
-        (loaded, total) => {
-          task.uploadedBytes = loaded
-          task.totalBytes = total
-          task.progress = Math.round((loaded / Math.max(1, total)) * 100)
-        },
-      )
-      task.status = 'completed'
-      task.uploadedBytes = task.totalBytes
-      task.progress = 100
-      const resolvedSeriesId = res.uploaded?.[0]?.series_id ?? res.series_id
-      if (resolvedSeriesId) {
+    scheduleTask(task, async () => {
+      try {
+        const fd = new FormData()
+        const sid = options?.comicTargetSeriesId ?? options?.targetSeriesId
+        const stitle = options?.comicSeriesTitle ?? options?.seriesTitle
+        if (sid) fd.append('target_series_id', sid)
+        if (stitle) fd.append('series_title', stitle)
+        fd.append('file', file, file.name)
+        const res = await uploadWithXhr<{
+          uploaded?: { series_id: string }[]
+          series_id?: string
+        }>(
+          '/api/v1/comic/upload',
+          fd,
+          (loaded, total) => {
+            task.uploadedBytes = loaded
+            task.totalBytes = total
+            task.progress = Math.round((loaded / Math.max(1, total)) * 100)
+          },
+        )
+        const resolvedSeriesId = res.uploaded?.[0]?.series_id ?? res.series_id
+        if (!resolvedSeriesId) {
+          throw new Error('No comic archive was imported')
+        }
+        task.status = 'completed'
+        task.uploadedBytes = task.totalBytes
+        task.progress = 100
         task.targetRoute = `/comic/series/${resolvedSeriesId}`
+        notifyCatalogChanged('comic')
+      } catch (err) {
+        task.status = 'failed'
+        task.error = err instanceof Error ? err.message : String(err)
       }
-      notifyCatalogChanged('comic')
-    } catch (err) {
-      task.status = 'failed'
-      task.error = err instanceof Error ? err.message : String(err)
-    }
+    })
   }
 
-  async function runMusicBatchUpload(files: File[]): Promise<void> {
+  function enqueueMusicBatchUpload(files: File[]): void {
     const totalBytes = files.reduce((s, f) => s + f.size, 0)
     const label = files.length === 1 ? files[0]!.name : `${files[0]!.name} +${files.length - 1}`
     const task: UploadTask = {
       id: crypto.randomUUID(),
       label,
       mediaKind: 'music',
-      status: 'uploading',
+      status: 'queued',
       totalBytes,
       uploadedBytes: 0,
       progress: 0,
     }
-    tasks.value.unshift(task)
-    try {
-      const fd = new FormData()
-      for (const f of files) fd.append('file', f, f.name)
-      await uploadWithXhr('/api/v1/music/tracks/upload', fd, (loaded, total) => {
-        task.uploadedBytes = loaded
-        task.totalBytes = total
-        task.progress = Math.round((loaded / Math.max(1, total)) * 100)
-      })
-      task.status = 'completed'
-      task.uploadedBytes = task.totalBytes
-      task.progress = 100
-      task.targetRoute = '/music/songs'
-      notifyCatalogChanged('music')
-    } catch (err) {
-      task.status = 'failed'
-      task.error = err instanceof Error ? err.message : String(err)
-    }
+    scheduleTask(task, async () => {
+      try {
+        const fd = new FormData()
+        for (const f of files) fd.append('file', f, f.name)
+        const res = await uploadWithXhr<{
+          uploaded_tracks?: { id: string }[]
+          attached_lyrics_count?: number
+        }>('/api/v1/music/tracks/upload', fd, (loaded, total) => {
+          task.uploadedBytes = loaded
+          task.totalBytes = total
+          task.progress = Math.round((loaded / Math.max(1, total)) * 100)
+        })
+        const trackCount = res.uploaded_tracks?.length ?? 0
+        const lyricCount = res.attached_lyrics_count ?? 0
+        if (trackCount === 0 && lyricCount === 0) {
+          throw new Error('No music tracks or matching lyrics were imported')
+        }
+        task.status = 'completed'
+        task.uploadedBytes = task.totalBytes
+        task.progress = 100
+        task.targetRoute = '/music/songs'
+        notifyCatalogChanged('music')
+      } catch (err) {
+        task.status = 'failed'
+        task.error = err instanceof Error ? err.message : String(err)
+      }
+    })
   }
 
-  async function runVideoBatchUpload(files: File[]): Promise<void> {
+  function enqueueVideoBatchUpload(files: File[]): void {
     const totalBytes = files.reduce((s, f) => s + f.size, 0)
     const label = files.length === 1 ? files[0]!.name : `${files[0]!.name} +${files.length - 1}`
     const task: UploadTask = {
       id: crypto.randomUUID(),
       label,
       mediaKind: 'video',
-      status: 'uploading',
+      status: 'queued',
       totalBytes,
       uploadedBytes: 0,
       progress: 0,
     }
-    tasks.value.unshift(task)
-    try {
-      const fd = new FormData()
-      for (const f of files) fd.append('files', f, f.name)
-      const res = await uploadWithXhr<{ uploaded_videos: { id: string }[] }>(
-        '/api/v1/video/upload',
-        fd,
-        (loaded, total) => {
-          task.uploadedBytes = loaded
-          task.totalBytes = total
-          task.progress = Math.round((loaded / Math.max(1, total)) * 100)
-        },
-      )
-      task.status = 'completed'
-      task.uploadedBytes = task.totalBytes
-      task.progress = 100
-      if (res.uploaded_videos[0]?.id) {
-        task.targetRoute = `/video/watch/${res.uploaded_videos[0].id}`
+    scheduleTask(task, async () => {
+      try {
+        const fd = new FormData()
+        for (const f of files) fd.append('files', f, f.name)
+        const res = await uploadWithXhr<{
+          uploaded_videos?: { id: string }[]
+          attached_subtitles?: number
+        }>(
+          '/api/v1/video/upload',
+          fd,
+          (loaded, total) => {
+            task.uploadedBytes = loaded
+            task.totalBytes = total
+            task.progress = Math.round((loaded / Math.max(1, total)) * 100)
+          },
+        )
+        const videoCount = res.uploaded_videos?.length ?? 0
+        const subCount = res.attached_subtitles ?? 0
+        if (videoCount === 0 && subCount === 0) {
+          throw new Error('No video files or matching subtitles were imported')
+        }
+        task.status = 'completed'
+        task.uploadedBytes = task.totalBytes
+        task.progress = 100
+        if (res.uploaded_videos?.[0]?.id) {
+          task.targetRoute = `/video/watch/${res.uploaded_videos[0].id}`
+        }
+        notifyCatalogChanged('video')
+      } catch (err) {
+        task.status = 'failed'
+        task.error = err instanceof Error ? err.message : String(err)
       }
-      notifyCatalogChanged('video')
-    } catch (err) {
-      task.status = 'failed'
-      task.error = err instanceof Error ? err.message : String(err)
-    }
+    })
   }
 
   function clearCompleted(): void {
@@ -263,6 +320,13 @@ export const useUploadStore = defineStore('uploads', () => {
     if (activeCount.value === 0) {
       tasks.value = []
     }
+  }
+
+  function resetState(): void {
+    queueEpoch += 1
+    pendingJobs.length = 0
+    tasks.value = []
+    collapsed.value = false
   }
 
   return {
@@ -278,5 +342,6 @@ export const useUploadStore = defineStore('uploads', () => {
     notifyCatalogChanged,
     clearCompleted,
     dismissAll,
+    resetState,
   }
 })

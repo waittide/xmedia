@@ -78,7 +78,7 @@ async function saveCurrentBookmark(): Promise<void> {
 
 <template>
   <footer
-    class="relative z-30 flex h-20 shrink-0 items-center justify-between gap-4 border-t border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)]/95 px-4 backdrop-blur-md sm:px-6"
+    class="fixed inset-x-0 bottom-0 z-30 flex h-20 shrink-0 items-center justify-between gap-4 border-t border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)]/95 px-4 backdrop-blur-md sm:px-6"
   >
     <!-- Left: Track Info & Cover (Click Cover to open Fullscreen Lyrics) -->
     <div class="flex min-w-0 flex-1 items-center gap-3 md:max-w-[30%]">

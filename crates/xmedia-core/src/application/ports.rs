@@ -67,6 +67,7 @@ pub trait PasswordHasherPort: Send + Sync {
 pub trait TokenServicePort: Send + Sync {
     fn issue_token(&self, claims: &AuthClaims) -> DomainResult<String>;
     fn verify_token(&self, token: &str) -> DomainResult<AuthClaims>;
+    fn ttl_seconds(&self) -> u64;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

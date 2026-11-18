@@ -177,7 +177,7 @@ export const api = {
       body: JSON.stringify(prefs),
     }),
   changePassword: (payload: { current_password: string; new_password: string }) =>
-    requestJson<UserDto>(
+    requestJson<AuthSessionDto>(
       '/auth/password',
       { method: 'POST', body: JSON.stringify(payload) },
       true,

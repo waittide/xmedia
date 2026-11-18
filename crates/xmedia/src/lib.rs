@@ -102,11 +102,16 @@ impl XMediaApp {
             tokens,
             lifecycles.clone(),
         ));
-        let libraries = Arc::new(LibraryService::new(
+        let libraries = Arc::new(LibraryService::with_data_dir(
             libraries_repo.clone(),
             events.clone(),
             lifecycles,
+            Some(cfg.data_dir.clone()),
         ));
+        libraries
+            .recover_interrupted_scans()
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         #[allow(unused_mut)]
         let mut enabled_modules = Vec::new();
@@ -380,6 +385,18 @@ mod tests {
                 .unwrap();
             assert_eq!(res.status(), StatusCode::OK, "failed endpoint: {path}");
         }
+
+        let opds_key_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/opds/book/v1.2?api_key={api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(opds_key_res.status(), StatusCode::OK);
 
         let sub_res = app
             .clone()

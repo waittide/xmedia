@@ -96,14 +96,18 @@ fn is_https_request(headers: &HeaderMap) -> bool {
         })
 }
 
-pub fn build_session_cookie(token: &str, req_headers: &HeaderMap) -> HeaderValue {
+pub fn build_session_cookie(
+    token: &str,
+    max_age_secs: u64,
+    req_headers: &HeaderMap,
+) -> HeaderValue {
     let secure_attr = if is_https_request(req_headers) {
         "; Secure"
     } else {
         ""
     };
     let raw = format!(
-        "{AUTH_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800{secure_attr}"
+        "{AUTH_COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age_secs}{secure_attr}"
     );
     HeaderValue::from_str(&raw).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
@@ -202,10 +206,30 @@ pub async fn authenticate_opds_parts(
         return Ok(user);
     }
 
-    if let Some(token) = extract_request_token(parts)
-        && let Ok(user) = auth.authenticate_jwt(&token).await
+    if let Some(api_key) = parts.headers.get("x-api-key").and_then(|v| v.to_str().ok())
+        && let Ok(user) = auth.authenticate_api_key(api_key).await
     {
         return Ok(user);
+    }
+
+    if let Some(query) = parts.uri.query() {
+        for (k, v) in form_urlencoded::parse(query.as_bytes()) {
+            if (k == "api_key" || k == "apiKey")
+                && !v.trim().is_empty()
+                && let Ok(user) = auth.authenticate_api_key(&v).await
+            {
+                return Ok(user);
+            }
+        }
+    }
+
+    if let Some(token) = extract_request_token(parts) {
+        if let Ok(user) = auth.authenticate_jwt(&token).await {
+            return Ok(user);
+        }
+        if let Ok(user) = auth.authenticate_api_key(&token).await {
+            return Ok(user);
+        }
     }
 
     Err(OpdsAuthChallenge)

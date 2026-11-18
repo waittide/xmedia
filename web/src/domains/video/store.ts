@@ -105,6 +105,15 @@ export const useVideoStore = defineStore('video', () => {
     },
   )
 
+  function resetState(): void {
+    libraries.value = []
+    shelves.value = []
+    shows.value = []
+    genres.value = []
+    tags.value = []
+    catalogVersion.value = 0
+  }
+
   return {
     libraries,
     shelves,
@@ -117,5 +126,6 @@ export const useVideoStore = defineStore('video', () => {
     toggleVideoFavorite,
     toggleShowFavorite,
     addVideoToShelf,
+    resetState,
   }
 })

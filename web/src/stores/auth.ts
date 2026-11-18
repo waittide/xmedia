@@ -1,6 +1,8 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api, getStoredToken, setStoredToken } from '@/api/client'
+import { setHomeCacheUser } from '@/config/homeCache'
+import { resetAllSessionState } from '@/stores/sessionReset'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind, SystemCapabilitiesDto, UserDto } from '@/types/api'
 
@@ -31,10 +33,10 @@ export const useAuthStore = defineStore('auth', () => {
         try {
           const me = await api.me()
           user.value = me
+          setHomeCacheUser(me.id)
           themeStore.hydrateFromUser(me.preferences)
         } catch {
-          setStoredToken(null)
-          user.value = null
+          clearLocalSession()
         }
       }
     } finally {
@@ -42,25 +44,40 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  function applyAuthenticatedUser(nextUser: UserDto): void {
+    const themeStore = useThemeStore()
+    if (user.value && user.value.id !== nextUser.id) {
+      resetAllSessionState()
+    }
+    user.value = nextUser
+    setHomeCacheUser(nextUser.id)
+    themeStore.hydrateFromUser(nextUser.preferences)
+  }
+
   async function setupAdmin(payload: {
     username: string
     display_name?: string
     password: string
   }): Promise<void> {
-    const themeStore = useThemeStore()
     const session = await api.setupAdmin(payload)
+    resetAllSessionState()
     setStoredToken(session.token)
-    user.value = session.user
     needsSetup.value = false
-    themeStore.hydrateFromUser(session.user.preferences)
+    applyAuthenticatedUser(session.user)
   }
 
   async function login(username: string, password: string): Promise<void> {
-    const themeStore = useThemeStore()
     const session = await api.login({ username, password })
+    resetAllSessionState()
     setStoredToken(session.token)
-    user.value = session.user
-    themeStore.hydrateFromUser(session.user.preferences)
+    applyAuthenticatedUser(session.user)
+  }
+
+  function clearLocalSession(): void {
+    setStoredToken(null)
+    user.value = null
+    setHomeCacheUser(null)
+    resetAllSessionState()
   }
 
   async function logout(): Promise<void> {
@@ -69,12 +86,12 @@ export const useAuthStore = defineStore('auth', () => {
     } catch {
       // ignore
     }
-    setStoredToken(null)
-    user.value = null
+    clearLocalSession()
   }
 
   function setUser(next: UserDto): void {
     user.value = next
+    setHomeCacheUser(next.id)
   }
 
   return {
@@ -89,6 +106,7 @@ export const useAuthStore = defineStore('auth', () => {
     bootstrap,
     setupAdmin,
     login,
+    clearLocalSession,
     logout,
     setUser,
   }

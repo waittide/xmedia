@@ -31,7 +31,7 @@ import {
   type CatppuccinAccent,
   type CustomPaletteTokens,
 } from '@/theme/catppuccin'
-import { api } from '@/api/client'
+import { api, setStoredToken } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useDomainStore } from '@/stores/domain'
@@ -95,6 +95,8 @@ watch(
 
 function selectTab(tab: SettingsTab): void {
   activeTab.value = tab
+  errorMsg.value = ''
+  pwdSuccess.value = ''
   void router.replace({ path: '/settings', query: { tab } })
 }
 
@@ -277,7 +279,23 @@ function onCustomTokenInput(
 }
 
 async function copyText(key: string, val: string): Promise<void> {
-  await navigator.clipboard.writeText(val)
+  if (!val) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(val)
+    } else {
+      throw new Error('clipboard API unavailable')
+    }
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = val
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
   copiedKey.value = key
   setTimeout(() => {
     if (copiedKey.value === key) copiedKey.value = ''
@@ -304,11 +322,12 @@ async function submitPasswordChange(): Promise<void> {
   errorMsg.value = ''
   pwdSuccess.value = ''
   try {
-    const updated = await api.changePassword({
+    const session = await api.changePassword({
       current_password: currentPwd.value,
       new_password: nextPwd.value,
     })
-    authStore.setUser(updated)
+    setStoredToken(session.token)
+    authStore.setUser(session.user)
     currentPwd.value = ''
     nextPwd.value = ''
     pwdSuccess.value = t('auth.passwordUpdated')
@@ -1349,14 +1368,14 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
               </div>
 
               <div class="flex flex-wrap items-center justify-between gap-3">
-                <AppCheckbox v-model="scanNow" :label="t('admin.mountAndScanBtn')" />
+                <AppCheckbox v-model="scanNow" :label="t('admin.scanAfterMountLabel')" />
                 <button
                   type="submit"
                   :disabled="mounting"
                   class="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-55"
                 >
                   <LuLibrary class="h-4 w-4" />
-                  <span>{{ t('admin.mountAndScanBtn') }}</span>
+                  <span>{{ scanNow ? t('admin.mountAndScanBtn') : t('admin.mountOnlyBtn') }}</span>
                 </button>
               </div>
             </form>
@@ -1504,7 +1523,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
 
                 <div>
                   <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
-                    Role
+                    {{ t('admin.userRoleLabel') }}
                   </label>
                   <AppSelect
                     :model-value="newRole"

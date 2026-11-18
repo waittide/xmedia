@@ -342,8 +342,10 @@ export const router = createRouter({
 
 setUnauthorizedHandler(() => {
   const auth = useAuthStore()
-  void auth.logout()
-  void router.replace('/login')
+  auth.clearLocalSession()
+  if (router.currentRoute.value.name !== 'login' && router.currentRoute.value.name !== 'setup') {
+    void router.replace('/login')
+  }
 })
 
 router.beforeEach(async (to) => {
@@ -376,6 +378,6 @@ router.beforeEach(async (to) => {
     }
   }
 
-  domainStore.syncFromPath(to.path)
+  domainStore.syncFromPath(to.fullPath)
   return true
 })

@@ -402,6 +402,30 @@ export const usePlayerStore = defineStore('player', () => {
     scheduleQueueSync()
   }
 
+  function resetForLogout(): void {
+    if (queueSyncTimer) {
+      clearTimeout(queueSyncTimer)
+      queueSyncTimer = null
+    }
+    audio.pause()
+    audio.removeAttribute('src')
+    audio.load()
+    queue.value = []
+    currentIndex.value = -1
+    isPlaying.value = false
+    currentTimeSecs.value = 0
+    rawAudioDuration.value = 0
+    bufferedRatio.value = 0
+    streamOffsetSecs.value = 0
+    currentStreamIsTranscoded.value = false
+    lyricsOpen.value = false
+    queueOpen.value = false
+    lyricsLoading.value = false
+    lyrics.value = null
+    scrobbledCurrent = false
+    updateMediaSession(null)
+  }
+
   function scheduleQueueSync(): void {
     if (!getStoredToken()) return
     if (queueSyncTimer) clearTimeout(queueSyncTimer)
@@ -469,6 +493,7 @@ export const usePlayerStore = defineStore('player', () => {
     toggleMute,
     removeQueueAt,
     clearQueue,
+    resetForLogout,
     restoreRemoteQueue,
   }
 })

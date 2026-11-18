@@ -18,7 +18,8 @@ use xmedia_core::application::dto::{
     UserDto,
 };
 use xmedia_core::application::library::LibraryService;
-use xmedia_core::domain::library::{LibraryId, MediaKind};
+use xmedia_core::application::ports::SystemEvent;
+use xmedia_core::domain::library::{LibraryId, MediaKind, ScanStatus};
 use xmedia_core::domain::user::{User, UserId, UserPreferences};
 use xmedia_core::http::{
     ApiError, ApiResult, attach_cookie, authenticate_web_parts, build_clear_cookie,
@@ -111,7 +112,7 @@ async fn setup_admin(
     Json(input): Json<SetupAdminInput>,
 ) -> ApiResult<Response> {
     let session = state.auth.setup_initial_admin(input).await?;
-    let cookie = build_session_cookie(&session.token, &headers);
+    let cookie = build_session_cookie(&session.token, state.auth.token_ttl_seconds(), &headers);
     let res = (StatusCode::CREATED, Json(session)).into_response();
     Ok(attach_cookie(res, cookie))
 }
@@ -122,7 +123,7 @@ async fn login(
     Json(input): Json<LoginInput>,
 ) -> ApiResult<Response> {
     let session = state.auth.login(&input.username, &input.password).await?;
-    let cookie = build_session_cookie(&session.token, &headers);
+    let cookie = build_session_cookie(&session.token, state.auth.token_ttl_seconds(), &headers);
     let res = (StatusCode::OK, Json(session)).into_response();
     Ok(attach_cookie(res, cookie))
 }
@@ -151,9 +152,13 @@ async fn update_preferences(
 async fn change_password(
     State(state): State<GatewayState>,
     CoreWebAuth(user): CoreWebAuth,
+    headers: HeaderMap,
     Json(input): Json<ChangePasswordInput>,
-) -> ApiResult<Json<UserDto>> {
-    Ok(Json(state.auth.change_own_password(&user, input).await?))
+) -> ApiResult<Response> {
+    let session = state.auth.change_own_password(&user, input).await?;
+    let cookie = build_session_cookie(&session.token, state.auth.token_ttl_seconds(), &headers);
+    let res = (StatusCode::OK, Json(session)).into_response();
+    Ok(attach_cookie(res, cookie))
 }
 
 async fn rotate_api_key(
@@ -310,13 +315,36 @@ async fn events_ws(
     CoreWebAuth(_user): CoreWebAuth,
 ) -> Response {
     let rx = state.events.subscribe();
-    ws.on_upgrade(move |socket| forward_events(socket, rx))
+    let initial_scans = state
+        .libraries
+        .list_libraries(None)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|lib| match lib.scan_status {
+            ScanStatus::Scanning { scanned } => Some(SystemEvent::LibraryScanProgress {
+                library_id: lib.id,
+                media_kind: lib.media_kind,
+                scanned,
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ws.on_upgrade(move |socket| forward_events(socket, rx, initial_scans))
 }
 
 async fn forward_events(
     mut socket: WebSocket,
-    mut rx: tokio::sync::broadcast::Receiver<xmedia_core::application::ports::SystemEvent>,
+    mut rx: tokio::sync::broadcast::Receiver<SystemEvent>,
+    initial_events: Vec<SystemEvent>,
 ) {
+    for ev in initial_events {
+        if let Ok(json) = serde_json::to_string(&ev)
+            && socket.send(Message::Text(json.into())).await.is_err()
+        {
+            return;
+        }
+    }
     loop {
         match rx.recv().await {
             Ok(event) => {

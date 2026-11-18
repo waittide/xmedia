@@ -61,6 +61,17 @@ export const useSidebarStore = defineStore('comicSidebar', () => {
     },
   )
 
+  function resetState(): void {
+    libraries.value = []
+    shelves.value = []
+    tags.value = []
+    genres.value = []
+    writers.value = []
+    pencillers.value = []
+    bookmarks.value = []
+    loading.value = false
+  }
+
   return {
     libraries,
     shelves,
@@ -71,5 +82,6 @@ export const useSidebarStore = defineStore('comicSidebar', () => {
     bookmarks,
     loading,
     refresh,
+    resetState,
   }
 })
