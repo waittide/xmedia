@@ -418,6 +418,8 @@ struct ApplyScrapedRequest {
     organize_by_template: Option<bool>,
     #[serde(default)]
     only_fill_missing: bool,
+    #[serde(default)]
+    write_album_cover: bool,
 }
 
 const fn default_true() -> bool {
@@ -431,7 +433,7 @@ async fn apply_scraped_metadata(
 ) -> ApiResult<Json<MediaFileDetail>> {
     let detail = state
         .scraping
-        .apply_to_file(
+        .apply_to_file_ext(
             RootId(req.root_id),
             &req.path,
             req.media_kind,
@@ -440,6 +442,7 @@ async fn apply_scraped_metadata(
             req.write_sidecar_lrc,
             req.organize_by_template,
             req.only_fill_missing,
+            req.write_album_cover,
         )
         .await?;
     Ok(Json(detail))

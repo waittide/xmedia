@@ -51,7 +51,7 @@ impl Default for RenameTemplates {
         Self {
             book: "{author} - {title}".to_string(),
             comic: "{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}".to_string(),
-            music: "{track:2} - {artist} - {title}".to_string(),
+            music: "{album_artist}/{album} ({year})/{track:2} - {title}".to_string(),
             video_movie: "{title} ({year})/{title} ({year})".to_string(),
             video_episode:
                 "{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}"
@@ -70,8 +70,10 @@ impl RenameTemplates {
             self.comic = "{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}".to_string();
             changed = true;
         }
-        if self.music == "{track} - {artist} - {title}" {
-            self.music = "{track:2} - {artist} - {title}".to_string();
+        if self.music == "{track} - {artist} - {title}"
+            || self.music == "{track:2} - {artist} - {title}"
+        {
+            self.music = "{album_artist}/{album} ({year})/{track:2} - {title}".to_string();
             changed = true;
         }
         if self.video_movie == "{title} ({year})" {

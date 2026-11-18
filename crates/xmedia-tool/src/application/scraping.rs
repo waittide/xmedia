@@ -27,6 +27,7 @@ use crate::infra::atomic_fs::{
     atomic_write_bytes, cleanup_empty_parent_dirs, find_companion_sidecars,
 };
 use crate::infra::inspectors::comic::is_generic_comic_folder;
+use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::{
     apply_video_patch_onto, is_season_dir, read_base_video_meta, render_season_nfo_xml,
     render_tvshow_nfo_xml, render_video_nfo_xml, write_image_replacing_opposite_ext,
@@ -430,8 +431,37 @@ impl ScrapingOrchestratorService {
         organize_by_template: Option<bool>,
         only_fill_missing: bool,
     ) -> DomainResult<MediaFileDetail> {
-        let should_organize = organize_by_template
-            .unwrap_or(matches!(media_kind, MediaKind::Video | MediaKind::Comic));
+        self.apply_to_file_ext(
+            root_id,
+            rel_path,
+            media_kind,
+            scraped,
+            apply_cover,
+            write_sidecar_lrc,
+            organize_by_template,
+            only_fill_missing,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn apply_to_file_ext(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        media_kind: MediaKind,
+        scraped: ScrapedMetadata,
+        apply_cover: bool,
+        write_sidecar_lrc: bool,
+        organize_by_template: Option<bool>,
+        only_fill_missing: bool,
+        write_album_cover: bool,
+    ) -> DomainResult<MediaFileDetail> {
+        let should_organize = organize_by_template.unwrap_or(matches!(
+            media_kind,
+            MediaKind::Video | MediaKind::Comic | MediaKind::Music
+        ));
 
         if media_kind == MediaKind::Video && should_organize {
             return self
@@ -481,6 +511,7 @@ impl ScrapingOrchestratorService {
             .write_metadata(root_id, rel_path, patch)
             .await?;
 
+        let mut cached_cover_download: Option<(Vec<u8>, String)> = None;
         if apply_cover && media_kind != MediaKind::Comic {
             let creds = self.settings.get_credentials().await?;
             let client = build_http_client(&creds)?;
@@ -515,15 +546,28 @@ impl ScrapingOrchestratorService {
                 let already_has_cover = existing_detail
                     .as_ref()
                     .is_some_and(|d| existing_artwork_present(&d.metadata));
-                if !(only_fill_missing && already_has_cover)
-                    && let Some(ref cover_url) = scraped.cover_url
+                if let Some(ref cover_url) = scraped.cover_url
                     && !cover_url.trim().is_empty()
-                    && let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await
                 {
-                    detail = self
-                        .workbench
-                        .write_artwork(root_id, rel_path, &bytes, &mime, "cover", Some(media_kind))
-                        .await?;
+                    let need_embedded = !(only_fill_missing && already_has_cover);
+                    if (need_embedded || (media_kind == MediaKind::Music && write_album_cover))
+                        && let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await
+                    {
+                        if need_embedded {
+                            detail = self
+                                .workbench
+                                .write_artwork(
+                                    root_id,
+                                    rel_path,
+                                    &bytes,
+                                    &mime,
+                                    "cover",
+                                    Some(media_kind),
+                                )
+                                .await?;
+                        }
+                        cached_cover_download = Some((bytes, mime));
+                    }
                 }
             }
         }
@@ -547,6 +591,39 @@ impl ScrapingOrchestratorService {
                 detail = self
                     .workbench
                     .inspect_file(root_id, &plan.to_rel_path, Some(media_kind))
+                    .await?;
+            }
+        }
+
+        // Optional Music album directory `cover.*` (user opt-in, default false)
+        if apply_cover
+            && write_album_cover
+            && media_kind == MediaKind::Music
+            && let Some((bytes, mime)) = cached_cover_download
+        {
+            let parent_dir_name = Path::new(&detail.entry.rel_path)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let in_album_dir =
+                !parent_dir_name.is_empty() && !is_generic_music_folder(parent_dir_name);
+            let already_has_dir_cover = matches!(
+                &detail.metadata,
+                MediaMetadataPayload::Music(m) if m.has_directory_cover
+            );
+            if in_album_dir && !(only_fill_missing && already_has_dir_cover) {
+                let cur_rel = detail.entry.rel_path.clone();
+                detail = self
+                    .workbench
+                    .write_artwork(
+                        root_id,
+                        &cur_rel,
+                        &bytes,
+                        &mime,
+                        "album_cover",
+                        Some(MediaKind::Music),
+                    )
                     .await?;
             }
         }

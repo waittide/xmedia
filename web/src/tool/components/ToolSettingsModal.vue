@@ -84,7 +84,7 @@ const priorities = ref<ScraperPrioritiesDto>({
 const DEFAULT_RENAME_TEMPLATES: RenameTemplatesDto = {
   book: '{author} - {title}',
   comic: '{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}',
-  music: '{track:2} - {artist} - {title}',
+  music: '{album_artist}/{album} ({year})/{track:2} - {title}',
   video_movie: '{title} ({year})/{title} ({year})',
   video_episode: '{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}',
 }
@@ -1067,7 +1067,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">音乐模板 ({track:2}, {disc}, {artist}, {album}, {title}, {year})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">音乐 Picard/Navidrome 归档模板 ({album_artist}, {artist}, {album}, {disc}, {track:2}, {title}, {year}, {genre})</span>
               <input
                 v-model="templates.music"
                 type="text"

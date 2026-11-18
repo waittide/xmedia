@@ -181,7 +181,7 @@ export const toolApi = {
     rootId: string,
     relPath: string,
     file: File,
-    slot: 'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb',
+    slot: 'cover' | 'series_cover' | 'album_cover' | 'poster' | 'fanart' | 'thumb',
     kind: MediaKind,
   ): Promise<MediaFileDetail> {
     const fd = new FormData()
@@ -271,6 +271,7 @@ export const toolApi = {
     writeSidecarLrc: boolean,
     organizeByTemplate?: boolean,
     onlyFillMissing = false,
+    writeAlbumCover = false,
   ): Promise<MediaFileDetail> {
     return toolRequest<MediaFileDetail>('/scrapers/apply', {
       method: 'POST',
@@ -283,6 +284,7 @@ export const toolApi = {
         write_sidecar_lrc: writeSidecarLrc,
         organize_by_template: organizeByTemplate,
         only_fill_missing: onlyFillMissing,
+        write_album_cover: writeAlbumCover,
       }),
     })
   },

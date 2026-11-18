@@ -134,6 +134,12 @@ fn build_token_map(
             } else {
                 m.artist.as_str()
             };
+            let album_artist = m
+                .album_artist
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(artist);
             put(
                 "track",
                 &m.track_number
@@ -147,6 +153,7 @@ fn build_token_map(
                     .unwrap_or_else(|| "1".to_string()),
             );
             put("artist", artist);
+            put("album_artist", album_artist);
             put("album", &m.album);
             put(
                 "title",
@@ -157,6 +164,7 @@ fn build_token_map(
                 },
             );
             put("year", &m.year.map(|y| y.to_string()).unwrap_or_default());
+            put("genre", m.genre.as_deref().unwrap_or(""));
         }
         MediaMetadataPayload::Video(v) => {
             let season = v.season_number.unwrap_or(1);
@@ -512,5 +520,36 @@ mod tests {
             both_rel,
             "JOJO的奇妙冒险 第4部 不灭钻石/JOJO的奇妙冒险 第4部 不灭钻石 Vol.02 Ch.14 虹村兄弟.cbz"
         );
+    }
+
+    #[test]
+    fn music_picard_navidrome_template_groups_by_album_artist_and_drops_empty_album() {
+        let tpl = "{album_artist}/{album} ({year})/{track:2} - {title}";
+
+        // Feat / compilation track stays grouped under album_artist
+        let feat_track = MediaMetadataPayload::Music(MusicFileMeta {
+            title: "珊瑚海".into(),
+            artist: "周杰伦 & Lara梁心颐".into(),
+            album_artist: Some("周杰伦".into()),
+            album: "十一月的萧邦".into(),
+            track_number: Some(8),
+            year: Some(2005),
+            genre: Some("Mandopop".into()),
+            ..Default::default()
+        });
+        let (rel, _) =
+            render_template_target(tpl, "", &feat_track, Path::new("/music/08.flac"), "flac");
+        assert_eq!(rel, "周杰伦/十一月的萧邦 (2005)/08 - 珊瑚海.flac");
+
+        // Standalone single without album or year omits empty album folder segment
+        let single = MediaMetadataPayload::Music(MusicFileMeta {
+            title: "说好不哭".into(),
+            artist: "周杰伦".into(),
+            track_number: Some(1),
+            ..Default::default()
+        });
+        let (single_rel, _) =
+            render_template_target(tpl, "", &single, Path::new("/music/single.flac"), "flac");
+        assert_eq!(single_rel, "周杰伦/01 - 说好不哭.flac");
     }
 }

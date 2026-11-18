@@ -1783,4 +1783,105 @@ mod tests {
         assert!(root.join("不灭钻石/cover.png").is_file());
         assert!(!root.join("JOJO的奇妙冒险 第4部 不灭钻石").exists());
     }
+
+    #[tokio::test]
+    async fn music_picard_archive_and_opt_in_album_directory_cover() {
+        use crate::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
+        use axum::Router;
+        use axum::routing::get;
+
+        let img_app = Router::new().route(
+            "/{name}",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], TINY_PNG) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, img_app).await;
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("music");
+        std::fs::create_dir_all(&root).unwrap();
+
+        write_minimal_wav(&root.join("t1.wav"));
+        write_minimal_wav(&root.join("t2.wav"));
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // 1. Default (write_album_cover = false): embeds cover & archives to Picard hierarchy without creating cover.png
+        let d1 = app
+            .scraping
+            .apply_to_file_ext(
+                root_id,
+                "t1.wav",
+                MediaKind::Music,
+                ScrapedMetadata {
+                    provider_id: "itunes".into(),
+                    external_id: "it-1".into(),
+                    target: Some(ScrapeTargetKind::MusicTrack),
+                    title: Some("以父之名".into()),
+                    creators: vec!["周杰伦".into()],
+                    series_or_album: Some("叶惠美".into()),
+                    track_or_episode_number: Some(1),
+                    year: Some(2003),
+                    cover_url: Some(format!("http://{addr}/alb.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+                None,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(d1.entry.rel_path, "周杰伦/叶惠美 (2003)/01 - 以父之名.wav");
+        assert!(!root.join("周杰伦/叶惠美 (2003)/cover.png").exists());
+
+        // 2. Opt-in (write_album_cover = true): writes album directory cover.png alongside embedded cover
+        let d2 = app
+            .scraping
+            .apply_to_file_ext(
+                root_id,
+                "t2.wav",
+                MediaKind::Music,
+                ScrapedMetadata {
+                    provider_id: "itunes".into(),
+                    external_id: "it-3".into(),
+                    target: Some(ScrapeTargetKind::MusicTrack),
+                    title: Some("晴天".into()),
+                    creators: vec!["周杰伦".into()],
+                    series_or_album: Some("叶惠美".into()),
+                    track_or_episode_number: Some(3),
+                    year: Some(2003),
+                    cover_url: Some(format!("http://{addr}/alb.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+                None,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+        assert_eq!(d2.entry.rel_path, "周杰伦/叶惠美 (2003)/03 - 晴天.wav");
+        assert!(root.join("周杰伦/叶惠美 (2003)/cover.png").is_file());
+        if let MediaMetadataPayload::Music(m) = &d2.metadata {
+            assert!(m.has_embedded_cover);
+            assert!(m.has_directory_cover);
+        } else {
+            panic!("expected music payload");
+        }
+    }
 }

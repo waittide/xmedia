@@ -17,6 +17,7 @@ use crate::domain::template::render_template_target;
 use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
 use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
 use crate::infra::inspectors::comic::is_generic_comic_folder;
+use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::dir_has_single_video;
 
 #[derive(Clone)]
@@ -383,6 +384,43 @@ impl MediaWorkbenchService {
                     }
                 }
 
+                // Carry Navidrome/Picard album-level cover (`cover.*`, `folder.*`, `front.*`) when moving music folders
+                if matches!(meta, MediaMetadataPayload::Music(_))
+                    && parent_rel != target_parent_rel
+                    && !target_parent_rel.is_empty()
+                    && let Some(old_dir) = sandbox.abs_path.parent()
+                    && old_dir != root.path
+                    && old_dir
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|n| !is_generic_music_folder(n))
+                {
+                    for fname in [
+                        "cover.jpg",
+                        "cover.jpeg",
+                        "cover.png",
+                        "cover.webp",
+                        "folder.jpg",
+                        "folder.jpeg",
+                        "folder.png",
+                        "folder.webp",
+                        "front.jpg",
+                        "front.jpeg",
+                        "front.png",
+                        "front.webp",
+                    ] {
+                        let cand = old_dir.join(fname);
+                        if cand.is_file()
+                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
+                        {
+                            companion_moves.push((
+                                path_to_slash(rel_c),
+                                format!("{target_parent_rel}/{fname}"),
+                            ));
+                        }
+                    }
+                }
+
                 // Carry Komga/Kavita series-level cover (`cover.*`, `folder.*`) when moving comic series folders
                 if matches!(meta, MediaMetadataPayload::Comic(_))
                     && parent_rel != target_parent_rel
@@ -573,6 +611,10 @@ impl MediaWorkbenchService {
                                     | "folder.jpeg"
                                     | "folder.png"
                                     | "folder.webp"
+                                    | "front.jpg"
+                                    | "front.jpeg"
+                                    | "front.png"
+                                    | "front.webp"
                             )
                         });
                     if !comp_dst.exists() {

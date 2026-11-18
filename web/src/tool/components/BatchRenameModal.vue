@@ -42,7 +42,16 @@ const dominantKind = computed<MediaKind>(() => props.entries[0]?.media_kind ?? '
 const tokenChips = computed<string[]>(() => {
   const k = dominantKind.value
   if (k === 'music') {
-    return ['{track:2}', '{disc}', '{artist}', '{album}', '{title}', '{year}', '{genre}']
+    return [
+      '{album_artist}',
+      '{artist}',
+      '{album}',
+      '{disc}',
+      '{track:2}',
+      '{title}',
+      '{year}',
+      '{genre}',
+    ]
   }
   if (k === 'video') {
     return [

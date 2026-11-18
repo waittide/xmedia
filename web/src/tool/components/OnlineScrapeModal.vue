@@ -82,6 +82,7 @@ const detailsByProvider = ref<Record<string, ScrapedMetadata>>({})
 const loadingProviderId = ref<string | null>(null)
 
 const applyCover = ref(true)
+const writeAlbumCover = ref(false)
 const organizeByTemplate = ref(false)
 const onlyFillMissing = ref(false)
 const writeSidecarLrc = ref(true)
@@ -332,7 +333,11 @@ function seedFromDetail(d: MediaFileDetail): void {
   episode.value = q.episode !== undefined && q.episode !== null ? String(q.episode) : ''
   durationSecs.value = q.duration_secs ?? undefined
   applyCover.value = true
-  organizeByTemplate.value = d.entry.media_kind === 'video' || d.entry.media_kind === 'comic'
+  writeAlbumCover.value = false
+  organizeByTemplate.value =
+    d.entry.media_kind === 'video' ||
+    d.entry.media_kind === 'comic' ||
+    d.entry.media_kind === 'music'
   onlyFillMissing.value = false
 }
 
@@ -626,6 +631,7 @@ async function applyMetadata(mode: 'merged' | 'single' = 'merged'): Promise<void
       writeSidecarLrc.value,
       organizeByTemplate.value,
       onlyFillMissing.value,
+      writeAlbumCover.value,
     )
     emit('applied', updated)
     if (hasNextInQueue.value) {
@@ -743,6 +749,7 @@ async function runLockedQueueScrape(): Promise<void> {
           writeSidecarLrc.value,
           organizeByTemplate.value,
           onlyFillMissing.value,
+          writeAlbumCover.value,
         )
         successCount += 1
       } catch {
@@ -787,6 +794,7 @@ async function runBatchAutoScrape(): Promise<void> {
             writeSidecarLrc.value,
             organizeByTemplate.value,
             onlyFillMissing.value,
+            writeAlbumCover.value,
           )
           successCount += 1
         } else {
@@ -1863,8 +1871,19 @@ async function runBatchAutoScrape(): Promise<void> {
                   ? '同时按 Jellyfin 模板归档移动并生成层级 NFO'
                   : detail.entry.media_kind === 'comic'
                     ? '同时按 Komga/Kavita 系列目录模板归档移动'
-                    : '刮削后同时按模板整理文件名/目录'
+                    : detail.entry.media_kind === 'music'
+                      ? '同时按 Picard/Navidrome 专辑目录模板归档移动'
+                      : '刮削后同时按模板整理文件名/目录'
               "
+            />
+            <AppCheckbox
+              v-if="
+                detail.entry.media_kind === 'music' &&
+                applyCover &&
+                effectiveView?.metadata.cover_url
+              "
+              v-model="writeAlbumCover"
+              label="同时在专辑目录写入 cover 封面"
             />
             <AppCheckbox
               v-model="onlyFillMissing"

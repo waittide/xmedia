@@ -20,10 +20,65 @@ use crate::domain::media::{
 };
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::{atomic_mutate_copy, atomic_write_bytes};
+use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
 
 pub struct LoftyMusicInspector;
 
 const MUSIC_EXTENSIONS: &[&str] = &["mp3", "flac", "m4a", "aac", "alac", "ogg", "opus", "wav"];
+
+const GENERIC_MUSIC_FOLDER_NAMES: &[&str] = &[
+    "music",
+    "musics",
+    "audio",
+    "songs",
+    "tracks",
+    "sample",
+    "samples",
+    "download",
+    "downloads",
+    "inbox",
+    "library",
+    "media",
+    "音乐",
+    "歌曲",
+];
+
+pub(crate) fn is_generic_music_folder(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    GENERIC_MUSIC_FOLDER_NAMES
+        .iter()
+        .any(|g| lower == *g || trimmed == *g)
+}
+
+fn find_album_cover_path(audio_path: &Path) -> Option<PathBuf> {
+    let parent = audio_path.parent()?;
+    let dir_name = parent.file_name()?.to_str()?;
+    if is_generic_music_folder(dir_name) {
+        return None;
+    }
+    const CANDIDATES: &[&str] = &[
+        "cover.jpg",
+        "cover.jpeg",
+        "cover.png",
+        "cover.webp",
+        "folder.jpg",
+        "folder.jpeg",
+        "folder.png",
+        "folder.webp",
+        "front.jpg",
+        "front.jpeg",
+        "front.png",
+        "front.webp",
+    ];
+    CANDIDATES
+        .iter()
+        .map(|name| parent.join(name))
+        .find(|p| p.is_file())
+}
 
 fn sidecar_lrc_path(audio_path: &Path) -> PathBuf {
     audio_path.with_extension("lrc")
@@ -122,6 +177,7 @@ fn parse_music_meta(path: &Path) -> DomainResult<MusicFileMeta> {
         })
         .filter(|s| !s.trim().is_empty());
     let has_embedded_cover = tagged.tags().iter().any(|t| !t.pictures().is_empty());
+    let has_directory_cover = find_album_cover_path(path).is_some();
 
     let lrc_path = sidecar_lrc_path(path);
     let sidecar_lrc_filename = lrc_path
@@ -150,6 +206,7 @@ fn parse_music_meta(path: &Path) -> DomainResult<MusicFileMeta> {
         bit_depth: props.bit_depth().filter(|&d| d > 0).map(u16::from),
         channels: props.channels().filter(|&c| c > 0),
         has_embedded_cover,
+        has_directory_cover,
         embedded_lyrics,
         sidecar_lrc,
         sidecar_lrc_filename,
@@ -329,7 +386,7 @@ impl MediaInspectorPort for LoftyMusicInspector {
                     completeness: CompletenessFlags {
                         has_title: !m.title.trim().is_empty(),
                         has_creator: !m.artist.trim().is_empty(),
-                        has_cover: m.has_embedded_cover,
+                        has_cover: m.has_embedded_cover || m.has_directory_cover,
                         has_summary_or_lyrics: m.sidecar_lrc.is_some()
                             || m.embedded_lyrics.is_some(),
                         has_nfo_or_tag_block: !m.album.trim().is_empty(),
@@ -384,28 +441,41 @@ impl MediaInspectorPort for LoftyMusicInspector {
     async fn read_artwork(
         &self,
         path: &Path,
-        _slot: Option<&str>,
+        slot: Option<&str>,
     ) -> DomainResult<Option<BinaryPayload>> {
         let p = path.to_path_buf();
+        let slot_owned = slot.map(str::to_ascii_lowercase);
         tokio::task::spawn_blocking(move || {
-            let tagged = open_tagged(&p)?;
-            for tag in tagged.tags() {
-                if let Some(pic) = tag
-                    .pictures()
-                    .iter()
-                    .find(|pic| pic.pic_type() == PictureType::CoverFront)
-                    .or_else(|| tag.pictures().first())
-                {
-                    let data = pic.data().to_vec();
-                    let mime = pic
-                        .mime_type()
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_else(|| sniff_image_mime(&data).to_string());
-                    return Ok(Some(BinaryPayload {
-                        bytes: data,
-                        mime_type: mime,
-                    }));
+            if slot_owned.as_deref() != Some("album_cover") {
+                let tagged = open_tagged(&p)?;
+                for tag in tagged.tags() {
+                    if let Some(pic) = tag
+                        .pictures()
+                        .iter()
+                        .find(|pic| pic.pic_type() == PictureType::CoverFront)
+                        .or_else(|| tag.pictures().first())
+                    {
+                        let data = pic.data().to_vec();
+                        let mime = pic
+                            .mime_type()
+                            .map(|m| m.as_str().to_string())
+                            .unwrap_or_else(|| sniff_image_mime(&data).to_string());
+                        return Ok(Some(BinaryPayload {
+                            bytes: data,
+                            mime_type: mime,
+                        }));
+                    }
                 }
+            }
+            if let Some(cov_path) = find_album_cover_path(&p)
+                && let Ok(bytes) = std::fs::read(&cov_path)
+                && !bytes.is_empty()
+            {
+                let mime = sniff_image_mime(&bytes).to_string();
+                return Ok(Some(BinaryPayload {
+                    bytes,
+                    mime_type: mime,
+                }));
             }
             Ok(None)
         })
@@ -418,7 +488,7 @@ impl MediaInspectorPort for LoftyMusicInspector {
         path: &Path,
         bytes: &[u8],
         mime_type: &str,
-        _slot: &str,
+        slot: &str,
     ) -> DomainResult<()> {
         let p = path.to_path_buf();
         let raw = bytes.to_vec();
@@ -427,6 +497,26 @@ impl MediaInspectorPort for LoftyMusicInspector {
         } else {
             mime_type.trim().to_string()
         };
+        if slot.eq_ignore_ascii_case("album_cover") {
+            let ext = if mime_hint.contains("png") {
+                "png"
+            } else if mime_hint.contains("webp") {
+                "webp"
+            } else {
+                "jpg"
+            };
+            let parent = p
+                .parent()
+                .ok_or_else(|| {
+                    DomainError::Validation("audio file has no parent directory".into())
+                })?
+                .to_path_buf();
+            return tokio::task::spawn_blocking(move || {
+                write_image_replacing_opposite_ext(&parent, "cover", ext, &raw)
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("album cover write failed: {e}")))?;
+        }
         tokio::task::spawn_blocking(move || {
             atomic_mutate_copy(&p, |staging| {
                 let mut tagged = open_tagged(staging)?;

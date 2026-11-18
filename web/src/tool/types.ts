@@ -150,6 +150,7 @@ export interface MusicFileMeta {
   bit_depth: number | null
   channels: number | null
   has_embedded_cover: boolean
+  has_directory_cover: boolean
   embedded_lyrics: string | null
   sidecar_lrc: string | null
   sidecar_lrc_filename: string

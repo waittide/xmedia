@@ -225,6 +225,10 @@ fn is_orphan_jellyfin_dir_sidecar(file_name: &str) -> bool {
             | "cover.jpeg"
             | "cover.png"
             | "cover.webp"
+            | "front.jpg"
+            | "front.jpeg"
+            | "front.png"
+            | "front.webp"
             | ".ds_store"
             | "thumbs.db"
     )

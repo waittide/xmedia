@@ -104,6 +104,8 @@ pub struct MusicFileMeta {
     pub bit_depth: Option<u16>,
     pub channels: Option<u8>,
     pub has_embedded_cover: bool,
+    #[serde(default)]
+    pub has_directory_cover: bool,
     pub embedded_lyrics: Option<String>,
     pub sidecar_lrc: Option<String>,
     pub sidecar_lrc_filename: String,
