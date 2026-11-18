@@ -7,8 +7,10 @@ import {
   LuArrowUp,
   LuBookOpen,
   LuCheckCircle2,
+  LuChevronDown,
   LuChevronRight,
   LuClapperboard,
+  LuClock,
   LuDisc3,
   LuFileSignature,
   LuFileText,
@@ -16,8 +18,10 @@ import {
   LuFolderOpen,
   LuFolderPlus,
   LuHardDrive,
+  LuHome,
   LuImage,
   LuLayers,
+  LuLibrary,
   LuList,
   LuLock,
   LuMonitor,
@@ -37,8 +41,8 @@ import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl, toolApi } from '../api'
-import { useToolTaskStore } from '../tasks'
 import { formatBytes, useToolText } from '../i18n'
+import { useToolTaskStore } from '../tasks'
 import type {
   DirectorySnapshot,
   ManagedRootDto,
@@ -50,7 +54,9 @@ import type {
 import BatchRenameModal from './BatchRenameModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
-import ToolSettingsModal, { type ToolSettingsTab } from './ToolSettingsModal.vue'
+import ToolHomeView from './ToolHomeView.vue'
+import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
+import ToolTasksView from './ToolTasksView.vue'
 
 defineProps<{
   status: ToolStatusDto | null
@@ -65,6 +71,8 @@ const themeStore = useThemeStore()
 const taskStore = useToolTaskStore()
 const txt = useToolText()
 
+type PrimaryNavKey = 'home' | 'items' | 'tasks' | 'settings'
+type BrowseViewMode = 'flat' | 'folders'
 type CompletenessFilter =
   | 'all'
   | 'complete'
@@ -83,8 +91,14 @@ function loadSavedDomain(): MediaKind {
   return 'book'
 }
 
-type BrowseViewMode = 'flat' | 'folders'
+function loadSavedNav(): PrimaryNavKey {
+  const saved = localStorage.getItem('xmedia_tool.active_nav')
+  if (saved === 'home' || saved === 'items' || saved === 'tasks') return saved
+  return 'home'
+}
 
+const activeNav = ref<PrimaryNavKey>(loadSavedNav())
+const previousWorkspaceNav = ref<'home' | 'items' | 'tasks'>('home')
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
 const viewMode = ref<BrowseViewMode>(
   localStorage.getItem('xmedia_tool.view_mode') === 'folders' ? 'folders' : 'flat',
@@ -94,6 +108,17 @@ const activeDomain = ref<MediaKind>(loadSavedDomain())
 const completenessFilter = ref<CompletenessFilter>('all')
 const searchQuery = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
+
+// Collapsible sidebar groups (Server WorkspaceLayout style)
+const collapsedGroups = ref<Record<string, boolean>>({
+  roots: false,
+  folders: false,
+  filters: false,
+})
+
+function toggleGroupFold(groupId: string): void {
+  collapsedGroups.value[groupId] = !collapsedGroups.value[groupId]
+}
 
 const settings = ref<PublicSettingsDto | null>(null)
 const domainNavMemory = ref<Record<MediaKind, { rootId: string; relPath: string }>>({
@@ -117,7 +142,6 @@ const loadingInspector = ref(false)
 const artworkVersion = ref(1)
 const batchSummaryBanner = ref<string | null>(null)
 
-const settingsModalOpen = ref(false)
 const settingsInitialTab = ref<ToolSettingsTab>('appearance')
 const scrapeModalOpen = ref(false)
 const scrapeQueue = ref<MediaFileEntry[]>([])
@@ -125,6 +149,13 @@ const scrapeQueueIndex = ref(0)
 const renameModalOpen = ref(false)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
+
+function navigatePrimary(nav: 'home' | 'items' | 'tasks'): void {
+  activeNav.value = nav
+  previousWorkspaceNav.value = nav
+  localStorage.setItem('xmedia_tool.active_nav', nav)
+  mobileMenuOpen.value = false
+}
 
 const domainTabs = computed<Array<{ value: MediaKind; label: string; icon: Component }>>(() => [
   { value: 'book', label: txt.value.domains.book, icon: LuBookOpen },
@@ -135,7 +166,6 @@ const domainTabs = computed<Array<{ value: MediaKind; label: string; icon: Compo
 
 const domainLabels = computed(() => txt.value.domainLabels[activeDomain.value])
 
-// Strictly isolated roots per domain
 const domainRoots = computed<ManagedRootDto[]>(() =>
   (settings.value?.roots ?? []).filter((r) => r.default_kind === activeDomain.value),
 )
@@ -148,7 +178,13 @@ const themeModeTooltip = computed(() => {
 
 function isEntryComplete(e: MediaFileEntry): boolean {
   const c = e.completeness
-  return c.has_title && c.has_creator && c.has_cover && c.has_summary_or_lyrics && c.has_nfo_or_tag_block
+  return (
+    c.has_title &&
+    c.has_creator &&
+    c.has_cover &&
+    c.has_summary_or_lyrics &&
+    c.has_nfo_or_tag_block
+  )
 }
 
 const stats = computed(() => {
@@ -173,6 +209,20 @@ const stats = computed(() => {
   }
 })
 
+const filterItems = computed(() => [
+  { id: 'all' as CompletenessFilter, label: txt.value.filters.all, count: stats.value.total, icon: LuLayers },
+  { id: 'complete' as CompletenessFilter, label: txt.value.filters.complete, count: stats.value.complete, icon: LuCheckCircle2 },
+  { id: 'incomplete' as CompletenessFilter, label: txt.value.filters.incomplete, count: stats.value.incomplete, icon: LuAlertCircle },
+  { id: 'missing_cover' as CompletenessFilter, label: domainLabels.value.missingCover, count: stats.value.missingCover, icon: LuImage },
+  { id: 'missing_summary' as CompletenessFilter, label: domainLabels.value.missingSummary, count: stats.value.missingSummary, icon: LuFileText },
+  { id: 'missing_tag' as CompletenessFilter, label: domainLabels.value.missingTagBlock, count: stats.value.missingTag, icon: LuSparkles },
+])
+
+function selectCompletenessFilter(filter: CompletenessFilter): void {
+  completenessFilter.value = filter
+  navigatePrimary('items')
+}
+
 function parentRelOf(relPath: string): string {
   const idx = relPath.lastIndexOf('/')
   return idx === -1 ? '' : relPath.slice(0, idx)
@@ -192,6 +242,12 @@ function setViewMode(next: BrowseViewMode): void {
   viewMode.value = next
   localStorage.setItem('xmedia_tool.view_mode', next)
 }
+
+watch(searchQuery, (q) => {
+  if (q.trim() && activeNav.value !== 'items') {
+    navigatePrimary('items')
+  }
+})
 
 const hasActiveSearchOrFilter = computed<boolean>(
   () => Boolean(searchQuery.value.trim()) || completenessFilter.value !== 'all',
@@ -319,7 +375,6 @@ async function loadInitial(): Promise<void> {
   const s = await toolApi.getSettings()
   settings.value = s
 
-  // If current domain has no roots yet, auto-pick the first domain that has configured roots
   const currentHasRoots = s.roots.some((r) => r.default_kind === activeDomain.value)
   if (!currentHasRoots) {
     const firstWithRoot = VALID_DOMAINS.find((d) => s.roots.some((r) => r.default_kind === d))
@@ -341,12 +396,12 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
     selectedPaths.value = new Set()
   }
 
-  const rootLabel =
-    settings.value?.roots.find((r) => r.id === rootId)?.name || '媒体目录'
+  const rootLabel = settings.value?.roots.find((r) => r.id === rootId)?.name || '媒体目录'
   const taskId = `browse:${reqDomain}`
   taskStore.startTask({
     id: taskId,
     kind: 'browse',
+    domain: reqDomain,
     title: `读取目录 · ${relPath || rootLabel}`,
     detail: relPath || rootLabel,
     ephemeral: true,
@@ -355,7 +410,6 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
   let candidateRel = relPath
   let snap: DirectorySnapshot | null = null
   try {
-    // Walk up parent segments when empty source folders were removed by archive/rename
     while (true) {
       try {
         snap = await toolApi.browse(rootId, candidateRel, reqDomain, true, (prog) => {
@@ -414,15 +468,18 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
 }
 
 async function selectRoot(rootId: string): Promise<void> {
-  if (activeRootId.value === rootId && currentRelPath.value === '') return
   if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
     return
   }
+  mobileMenuOpen.value = false
+  if (activeNav.value === 'settings' || activeNav.value === 'tasks') {
+    navigatePrimary('items')
+  }
+  if (activeRootId.value === rootId && currentRelPath.value === '') return
   activeRootId.value = rootId
   currentRelPath.value = ''
   activeDetail.value = null
   inspectingPath.value = null
-  mobileMenuOpen.value = false
   await loadDirectory(rootId, '')
 }
 
@@ -433,6 +490,9 @@ async function enterFolder(relPath: string, forceFoldersView = false): Promise<v
   mobileMenuOpen.value = false
   if (forceFoldersView) {
     setViewMode('folders')
+  }
+  if (activeNav.value !== 'items') {
+    navigatePrimary('items')
   }
   await loadDirectory(activeRootId.value, relPath)
 }
@@ -480,7 +540,6 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
   if (bumpArt) {
     artworkVersion.value += 1
   }
-  // Update active refs BEFORE `loadDirectory` so moving/archiving keeps the drawer anchored
   activeDetail.value = updated
   inspectingPath.value = updated.entry.rel_path
 
@@ -549,6 +608,27 @@ async function handleRenamed(
   }
 }
 
+/**
+ * Adds background scrape tasks following:
+ * Local non-empty metadata -> High-priority provider -> Low-priority provider
+ */
+function enqueueScrapeFiles(files: MediaFileEntry[], labelHint?: string): void {
+  if (files.length === 0) return
+  taskStore.enqueueScrapeTask(files, labelHint)
+  batchSummaryBanner.value = `已添加 ${files.length} 个刮削任务（按 本地信息 → 高优先级源 → 低优先级源 自动补齐）`
+  setTimeout(() => {
+    batchSummaryBanner.value = null
+  }, 4000)
+}
+
+function enqueueScrapeForSelection(): void {
+  const targets =
+    selectedPaths.value.size > 0
+      ? filteredFiles.value.filter((f) => selectedPaths.value.has(f.rel_path))
+      : [...filteredFiles.value]
+  enqueueScrapeFiles(targets)
+}
+
 async function handleSelectScrapeQueueIndex(nextIdx: number): Promise<void> {
   const target = scrapeQueue.value[nextIdx]
   if (!target) return
@@ -556,35 +636,12 @@ async function handleSelectScrapeQueueIndex(nextIdx: number): Promise<void> {
   await inspectEntry(target)
 }
 
-async function openScrapeForEntry(entry?: MediaFileEntry): Promise<void> {
-  if (entry) {
-    if (inspectorRef.value && activeDetail.value?.entry.rel_path !== entry.rel_path) {
-      if (!(await inspectorRef.value.confirmDiscardIfDirty())) return
-    }
-    scrapeQueue.value = [entry]
-    scrapeQueueIndex.value = 0
-    if (activeDetail.value?.entry.rel_path !== entry.rel_path) {
-      await inspectEntry(entry)
-    }
-    if (activeDetail.value) {
-      scrapeModalOpen.value = true
-    }
-    return
+async function openManualScrapeModal(entry: MediaFileEntry): Promise<void> {
+  if (activeDetail.value?.entry.rel_path !== entry.rel_path) {
+    await inspectEntry(entry)
   }
-
-  const queue =
-    selectedPaths.value.size > 0
-      ? filteredFiles.value.filter((f) => selectedPaths.value.has(f.rel_path))
-      : activeDetail.value
-        ? [activeDetail.value.entry]
-        : [...filteredFiles.value]
-
-  if (queue.length === 0) return
-  scrapeQueue.value = queue
+  scrapeQueue.value = [entry]
   scrapeQueueIndex.value = 0
-  if (activeDetail.value?.entry.rel_path !== queue[0]!.rel_path) {
-    await inspectEntry(queue[0]!)
-  }
   if (activeDetail.value) {
     scrapeModalOpen.value = true
   }
@@ -611,7 +668,15 @@ function handleSettingsUpdated(next: PublicSettingsDto): void {
 
 function openSettingsTab(tab: ToolSettingsTab): void {
   settingsInitialTab.value = tab
-  settingsModalOpen.value = true
+  if (activeNav.value !== 'settings') {
+    previousWorkspaceNav.value = activeNav.value
+  }
+  activeNav.value = 'settings'
+  mobileMenuOpen.value = false
+}
+
+function exitSettings(): void {
+  activeNav.value = previousWorkspaceNav.value
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
@@ -621,13 +686,30 @@ function handleKeydown(ev: KeyboardEvent): void {
   }
 }
 
+let offFileScraped: (() => void) | null = null
+
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  offFileScraped = taskStore.onFileScraped((updated) => {
+    artworkVersion.value += 1
+    if (snapshot.value && snapshot.value.root_id === updated.entry.root_id) {
+      snapshot.value = {
+        ...snapshot.value,
+        files: snapshot.value.files.map((f) =>
+          f.rel_path === updated.entry.rel_path ? updated.entry : f,
+        ),
+      }
+    }
+    if (activeDetail.value?.entry.rel_path === updated.entry.rel_path) {
+      activeDetail.value = updated
+    }
+  })
   void loadInitial()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
+  if (offFileScraped) offFileScraped()
 })
 </script>
 
@@ -635,7 +717,7 @@ onBeforeUnmount(() => {
   <div
     class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--ctp-shell)] text-[var(--ctp-text)]"
   >
-    <!-- Full-Width Top Bar (Aligned with xmedia TopBar) -->
+    <!-- Full-Width Top Bar (Aligned with Server WorkspaceLayout) -->
     <header
       class="flex h-16 shrink-0 items-center justify-between gap-3 bg-[var(--ctp-shell)] px-4 select-none sm:px-5"
     >
@@ -650,7 +732,11 @@ onBeforeUnmount(() => {
           <LuPanelLeftClose v-else class="h-[18px] w-[18px]" />
         </button>
 
-        <div class="flex items-center gap-2.5">
+        <button
+          type="button"
+          class="flex items-center gap-2.5 text-left outline-none transition hover:opacity-90"
+          @click="navigatePrimary('home')"
+        >
           <div
             class="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm"
           >
@@ -660,9 +746,9 @@ onBeforeUnmount(() => {
             <div class="text-sm leading-tight font-bold tracking-tight">{{ txt.brand }}</div>
             <div class="text-[10px] text-[var(--ctp-subtext0)]">{{ txt.brandSub }}</div>
           </div>
-        </div>
+        </button>
 
-        <!-- Strictly Separated 4-Domain Capsule Switcher -->
+        <!-- Unified 4-Domain Capsule Switcher -->
         <div
           class="ml-1 hidden items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/70 p-1 md:flex"
         >
@@ -684,10 +770,10 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Center: Pill-Shaped Search Filter with ⌘K -->
-      <div class="relative mx-auto max-w-md flex-1 lg:max-w-lg">
+      <!-- Center: Pill Search Bar -->
+      <div class="relative mx-auto w-full max-w-xl">
         <LuSearch
-          class="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--ctp-subtext0)]"
         />
         <input
           ref="searchInputRef"
@@ -752,8 +838,13 @@ onBeforeUnmount(() => {
 
         <button
           type="button"
-          class="flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/80 px-3 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
-          @click="openSettingsTab('appearance')"
+          class="flex h-9 items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition"
+          :class="
+            activeNav === 'settings'
+              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+              : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/80 text-[var(--ctp-text)] hover:border-[var(--ctp-accent)]'
+          "
+          @click="activeNav === 'settings' ? exitSettings() : openSettingsTab('appearance')"
         >
           <LuSettings class="h-4 w-4 text-[var(--ctp-accent)]" />
           <span class="hidden sm:inline">{{ txt.actions.settings }}</span>
@@ -761,7 +852,7 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <!-- Middle Body: Collapsible Domain Sidebar + Flush Rounded Main Canvas -->
+    <!-- Middle Body: Server-Aligned Collapsible Sidebar + Flush Rounded Main Canvas -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
       <div
         v-if="mobileMenuOpen"
@@ -769,7 +860,7 @@ onBeforeUnmount(() => {
         @click="mobileMenuOpen = false"
       />
 
-      <!-- Domain-Specific Sidebar -->
+      <!-- Left Sidebar (Aligned with Server WorkspaceLayout: Home / Items / Tasks -> Groups) -->
       <aside
         class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col border-r border-[var(--ctp-surface0)]/65 bg-[var(--ctp-shell)] transition-all duration-200 select-none md:static md:border-r-0"
         :class="[
@@ -798,561 +889,648 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <nav class="flex-1 space-y-4 overflow-y-auto px-3 pt-1 pb-4">
-          <!-- Domain Completeness Filters -->
-          <div class="space-y-0.5">
-            <div
-              v-if="!isCompact"
-              class="px-3 pb-1 text-[10px] font-semibold tracking-wider uppercase text-[var(--ctp-subtext0)]"
-            >
-              {{ txt.filters.title }}
-            </div>
-            <button
-              v-for="item in [
-                { id: 'all' as CompletenessFilter, label: txt.filters.all, count: stats.total, icon: LuLayers },
-                { id: 'complete' as CompletenessFilter, label: txt.filters.complete, count: stats.complete, icon: LuCheckCircle2 },
-                { id: 'incomplete' as CompletenessFilter, label: txt.filters.incomplete, count: stats.incomplete, icon: LuAlertCircle },
-                { id: 'missing_cover' as CompletenessFilter, label: domainLabels.missingCover, count: stats.missingCover, icon: LuImage },
-                { id: 'missing_summary' as CompletenessFilter, label: domainLabels.missingSummary, count: stats.missingSummary, icon: LuFileText },
-                { id: 'missing_tag' as CompletenessFilter, label: domainLabels.missingTagBlock, count: stats.missingTag, icon: LuSparkles },
-              ]"
-              :key="item.id"
-              type="button"
-              class="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-xs font-medium transition"
-              :class="[
-                isCompact ? 'md:justify-center md:px-0' : '',
-                completenessFilter === item.id
-                  ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                  : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
-              ]"
-              :title="isCompact ? item.label : undefined"
-              @click="completenessFilter = item.id"
-            >
-              <component :is="item.icon" class="h-4 w-4 shrink-0" />
-              <template v-if="!isCompact">
-                <span class="flex-1 truncate text-left">{{ item.label }}</span>
-                <span class="font-mono text-[11px] opacity-75">{{ item.count }}</span>
-              </template>
-            </button>
-          </div>
+        <nav class="flex-1 space-y-0.5 overflow-y-auto px-3 pt-1 pb-4">
+          <!-- Fixed Top Primary Navigation: 首页 / 条目 / 任务 -->
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition"
+            :class="[
+              isCompact ? 'md:justify-center md:px-0' : '',
+              activeNav === 'home'
+                ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
+                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
+            ]"
+            :title="isCompact ? txt.nav.home : undefined"
+            @click="navigatePrimary('home')"
+          >
+            <LuHome class="h-4 w-4 shrink-0" />
+            <span v-if="!isCompact" class="truncate">{{ txt.nav.home }}</span>
+          </button>
 
-          <!-- Isolated Domain Roots -->
-          <div class="space-y-1">
-            <div
-              v-if="!isCompact"
-              class="flex items-center justify-between px-3 text-[10px] font-semibold tracking-wider uppercase text-[var(--ctp-subtext0)]"
-            >
-              <span>{{ txt.roots.title }}</span>
-              <button
-                type="button"
-                class="rounded-md p-0.5 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-accent)]"
-                :title="txt.roots.add"
-                @click="openSettingsTab('roots')"
+          <button
+            type="button"
+            class="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition"
+            :class="[
+              isCompact ? 'md:justify-center md:px-0' : '',
+              activeNav === 'items'
+                ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
+                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
+            ]"
+            :title="isCompact ? txt.nav.items : undefined"
+            @click="navigatePrimary('items')"
+          >
+            <LuLibrary class="h-4 w-4 shrink-0" />
+            <template v-if="!isCompact">
+              <span class="flex-1 truncate text-left">{{ txt.nav.items }}</span>
+              <span class="font-mono text-[11px] opacity-75">{{ stats.total }}</span>
+            </template>
+          </button>
+
+          <button
+            type="button"
+            class="relative flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition"
+            :class="[
+              isCompact ? 'md:justify-center md:px-0' : '',
+              activeNav === 'tasks'
+                ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
+                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
+            ]"
+            :title="isCompact ? txt.nav.tasks : undefined"
+            @click="navigatePrimary('tasks')"
+          >
+            <LuClock class="h-4 w-4 shrink-0" />
+            <template v-if="!isCompact">
+              <span class="flex-1 truncate text-left">{{ txt.nav.tasks }}</span>
+              <span
+                v-if="taskStore.activeCount > 0"
+                class="rounded-full bg-[var(--ctp-accent)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[var(--ctp-on-accent)]"
               >
-                <LuFolderPlus class="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-            <button
-              v-for="r in domainRoots"
-              :key="r.id"
-              type="button"
-              class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium transition"
-              :class="[
-                isCompact ? 'md:justify-center md:px-0' : '',
-                activeRootId === r.id
-                  ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                  : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
-              ]"
-              :title="r.path"
-              @click="selectRoot(r.id)"
-            >
-              <LuHardDrive class="h-4 w-4 shrink-0" />
-              <span v-if="!isCompact" class="flex-1 truncate text-left">{{ r.name }}</span>
-            </button>
-          </div>
-
-          <!-- Subfolders in Current Domain Root -->
-          <div
-            v-if="!isCompact && snapshot && (snapshot.parent_rel_path !== null || snapshot.folders.length > 0)"
-            class="space-y-1"
-          >
-            <div
-              class="px-3 text-[10px] font-semibold tracking-wider uppercase text-[var(--ctp-subtext0)]"
-            >
-              {{ txt.roots.foldersTitle }}
-            </div>
-
-            <button
-              v-if="snapshot.parent_rel_path !== null"
-              type="button"
-              class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-              @click="enterFolder(snapshot.parent_rel_path)"
-            >
-              <LuArrowUp class="h-3.5 w-3.5 shrink-0" />
-              <span class="truncate">{{ txt.roots.parentDir }}</span>
-            </button>
-
-            <button
-              v-for="folder in snapshot.folders"
-              :key="folder.rel_path"
-              type="button"
-              class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-              @click="enterFolder(folder.rel_path)"
-            >
-              <LuFolder class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-accent)]" />
-              <span class="flex-1 truncate text-left">{{ folder.name }}</span>
-              <span class="font-mono text-[10px] text-[var(--ctp-subtext0)]">
-                {{ folder.media_file_count }}
+                {{ taskStore.activeCount }}
               </span>
-            </button>
-          </div>
-        </nav>
-      </aside>
+              <span
+                v-else-if="taskStore.persistentTasks.length > 0"
+                class="font-mono text-[11px] opacity-70"
+              >
+                {{ taskStore.persistentTasks.length }}
+              </span>
+            </template>
+            <span
+              v-else-if="taskStore.activeCount > 0"
+              class="absolute top-1.5 right-2 h-2 w-2 rounded-full bg-[var(--ctp-accent)]"
+            />
+          </button>
 
-      <!-- Main Flush Rounded Top-Left Canvas + Optional Right Inspector -->
-      <main
-        class="flex min-w-0 flex-1 overflow-hidden border-t border-[var(--ctp-surface0)]/65 bg-[var(--ctp-canvas)] md:rounded-tl-3xl md:border-l"
-      >
-        <div class="flex min-w-0 flex-1 flex-col overflow-y-auto p-4 sm:p-6">
-          <!-- Domain-Specific Empty Roots Onboarding -->
+          <!-- Compact Rail Icons for Sidebar Groups -->
           <div
-            v-if="settings && domainRoots.length === 0"
-            class="m-auto flex max-w-md flex-col items-center rounded-3xl border border-dashed border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/40 p-8 text-center"
+            v-if="isCompact"
+            class="mt-3 hidden space-y-0.5 border-t border-[var(--ctp-surface0)]/55 pt-3 md:block"
           >
-            <div
-              class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
-            >
-              <LuFolderOpen class="h-7 w-7" />
-            </div>
-            <h2 class="text-base font-bold text-[var(--ctp-text)]">
-              {{ domainLabels.emptyRootsTitle }}
-            </h2>
-            <p class="mt-1.5 text-xs leading-relaxed text-[var(--ctp-subtext0)]">
-              {{ domainLabels.emptyRootsDesc }}
-            </p>
             <button
               type="button"
-              class="mt-5 inline-flex items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-4 py-2.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+              class="flex w-full items-center justify-center rounded-xl py-2 text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+              :title="txt.roots.title"
               @click="openSettingsTab('roots')"
             >
-              <LuFolderPlus class="h-4 w-4" />
-              <span>{{ txt.roots.add }}</span>
+              <LuHardDrive class="h-4 w-4 shrink-0" />
+            </button>
+            <button
+              type="button"
+              class="flex w-full items-center justify-center rounded-xl py-2 text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+              :title="txt.roots.foldersTitle"
+              @click="setViewMode('folders'); navigatePrimary('items')"
+            >
+              <LuFolder class="h-4 w-4 shrink-0" />
+            </button>
+            <button
+              type="button"
+              class="flex w-full items-center justify-center rounded-xl py-2 text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+              :title="txt.filters.title"
+              @click="selectCompletenessFilter('incomplete')"
+            >
+              <LuCheckCircle2 class="h-4 w-4 shrink-0" />
             </button>
           </div>
 
-          <template v-else>
-            <!-- Top 4 Domain Stat Cards -->
-            <div class="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-              <button
-                type="button"
-                class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-mantle)]/55 p-4 text-left transition hover:border-[var(--ctp-accent)]/50"
-                @click="completenessFilter = 'all'"
-              >
-                <div>
-                  <div class="text-xs text-[var(--ctp-subtext0)]">{{ txt.cards.totalFiles }}</div>
-                  <div class="mt-1 text-2xl font-bold tracking-tight text-[var(--ctp-text)]">
-                    {{ stats.total }}
-                  </div>
-                </div>
-                <div
-                  class="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
-                >
-                  <LuBookOpen v-if="activeDomain === 'book'" class="h-5 w-5" />
-                  <LuLayers v-else-if="activeDomain === 'comic'" class="h-5 w-5" />
-                  <LuDisc3 v-else-if="activeDomain === 'music'" class="h-5 w-5" />
-                  <LuClapperboard v-else class="h-5 w-5" />
-                </div>
-              </button>
-
-              <button
-                type="button"
-                class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-mantle)]/55 p-4 text-left transition hover:border-emerald-500/50"
-                @click="completenessFilter = 'complete'"
-              >
-                <div>
-                  <div class="text-xs text-[var(--ctp-subtext0)]">{{ txt.cards.completeFiles }}</div>
-                  <div class="mt-1 text-2xl font-bold tracking-tight text-emerald-500">
-                    {{ stats.complete }}
-                  </div>
-                </div>
-                <div
-                  class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-500"
-                >
-                  <LuCheckCircle2 class="h-5 w-5" />
-                </div>
-              </button>
-
-              <button
-                type="button"
-                class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-mantle)]/55 p-4 text-left transition hover:border-amber-500/50"
-                @click="completenessFilter = 'missing_cover'"
-              >
-                <div>
-                  <div class="text-xs text-[var(--ctp-subtext0)]">
-                    {{ domainLabels.missingCover }}
-                  </div>
-                  <div class="mt-1 text-2xl font-bold tracking-tight text-amber-500">
-                    {{ stats.missingCover }}
-                  </div>
-                </div>
-                <div
-                  class="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500"
-                >
-                  <LuImage class="h-5 w-5" />
-                </div>
-              </button>
-
-              <button
-                type="button"
-                class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-mantle)]/55 p-4 text-left transition hover:border-[var(--ctp-accent)]/50"
-                @click="completenessFilter = 'missing_summary'"
-              >
-                <div>
-                  <div class="text-xs text-[var(--ctp-subtext0)]">
-                    {{ domainLabels.missingSummary }}
-                  </div>
-                  <div class="mt-1 text-2xl font-bold tracking-tight text-[var(--ctp-accent)]">
-                    {{ stats.missingSummary }}
-                  </div>
-                </div>
-                <div
-                  class="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
-                >
-                  <LuFileText class="h-5 w-5" />
-                </div>
-              </button>
+          <!-- Expanded Collapsible Sidebar Groups (Server WorkspaceLayout Style) -->
+          <template v-if="!isCompact">
+            <div class="mt-4 flex items-center justify-between border-t border-[var(--ctp-surface0)]/50 px-2 pt-3">
+              <span class="text-[10px] font-semibold tracking-wider text-[var(--ctp-subtext0)]/80 uppercase">
+                {{ txt.domains[activeDomain] }}
+              </span>
             </div>
 
-            <!-- Breadcrumb + Batch Action Toolbar -->
-            <div
-              class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/45 px-4 py-2.5"
-            >
-              <div class="flex min-w-0 flex-wrap items-center gap-1 text-xs">
-                <template v-for="(bc, idx) in breadcrumbs" :key="bc.relPath || '__root__'">
-                  <LuChevronRight
-                    v-if="idx > 0"
-                    class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]"
-                  />
-                  <button
-                    type="button"
-                    class="rounded-lg px-2 py-1 font-medium transition hover:bg-[var(--ctp-surface0)]/65"
-                    :class="
-                      idx === breadcrumbs.length - 1
-                        ? 'font-bold text-[var(--ctp-text)]'
-                        : 'text-[var(--ctp-subtext1)]'
-                    "
-                    @click="enterFolder(bc.relPath)"
-                  >
-                    {{ bc.label }}
-                  </button>
-                </template>
+            <!-- Group 1: Media Roots -->
+            <div class="pt-3">
+              <div class="mb-1 flex items-center justify-between px-2">
+                <button
+                  type="button"
+                  class="flex min-w-0 flex-1 items-center gap-1 rounded-md py-0.5 text-left text-[11px] font-semibold tracking-wider text-[var(--ctp-subtext0)] uppercase transition hover:text-[var(--ctp-text)]"
+                  @click="toggleGroupFold('roots')"
+                >
+                  <LuChevronRight v-if="collapsedGroups.roots" class="h-3 w-3 shrink-0" />
+                  <LuChevronDown v-else class="h-3 w-3 shrink-0" />
+                  <span class="truncate">{{ txt.roots.title }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-accent)]"
+                  :title="txt.roots.add"
+                  @click="openSettingsTab('roots')"
+                >
+                  <LuFolderPlus class="h-3.5 w-3.5" />
+                </button>
               </div>
 
-              <div class="flex flex-wrap items-center gap-2">
-                <!-- View Mode Switcher: Flat All-Media vs Folder Hierarchy -->
+              <div v-if="!collapsedGroups.roots" class="space-y-0.5">
                 <div
-                  class="flex items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-canvas)] p-0.5"
+                  v-if="domainRoots.length === 0"
+                  class="px-3 py-1.5 text-[11px] text-[var(--ctp-subtext0)]"
                 >
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
-                    :class="
-                      viewMode === 'flat'
-                        ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                        : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-                    "
-                    title="平铺展示当前目录及所有子目录内的媒体文件"
-                    @click="setViewMode('flat')"
-                  >
-                    <LuList class="h-3.5 w-3.5" />
-                    <span>全部媒体</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
-                    :class="
-                      viewMode === 'folders'
-                        ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                        : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-                    "
-                    title="按文件夹目录层级逐级浏览"
-                    @click="setViewMode('folders')"
-                  >
-                    <LuFolder class="h-3.5 w-3.5" />
-                    <span>文件夹</span>
-                  </button>
+                  暂无目录，点击右上角 + 添加
                 </div>
-
-                <AppCheckbox
-                  v-if="filteredFiles.length > 0"
-                  :model-value="allFilteredSelected"
-                  :label="
-                    selectedPaths.size > 0
-                      ? `已选 ${selectedPaths.size} 项`
-                      : txt.actions.selectAll
+                <button
+                  v-for="r in domainRoots"
+                  :key="r.id"
+                  type="button"
+                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium transition"
+                  :class="
+                    activeRootId === r.id
+                      ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
+                      : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
                   "
-                  @change="toggleSelectAllFiltered"
-                />
-
-                <button
-                  v-if="selectedPaths.size > 0"
-                  type="button"
-                  class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-                  @click="selectedPaths = new Set()"
+                  :title="r.path"
+                  @click="selectRoot(r.id)"
                 >
-                  {{ txt.actions.clearSelect }}
+                  <LuHardDrive class="h-3.5 w-3.5 shrink-0" />
+                  <span class="flex-1 truncate text-left">{{ r.name }}</span>
                 </button>
-
-                <button
-                  type="button"
-                  :disabled="filteredFiles.length === 0"
-                  class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-accent)] transition hover:opacity-90 disabled:opacity-45"
-                  @click="openScrapeForEntry()"
-                >
-                  <LuSparkles class="h-3.5 w-3.5" />
-                  <span>
-                    {{
-                      selectedPaths.size > 1
-                        ? `队列刮削 (${selectedPaths.size})`
-                        : txt.actions.onlineScrape
-                    }}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  :disabled="selectedEntriesForRename.length === 0"
-                  class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
-                  @click="renameModalOpen = true"
-                >
-                  <LuFileSignature class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-                  <span>{{ txt.actions.batchRename }}</span>
-                </button>
-
-                <RefreshButton
-                  :action="() => loadDirectory(activeRootId, currentRelPath)"
-                  :busy="loadingDir"
-                  :title="txt.actions.refresh"
-                />
               </div>
             </div>
 
+            <!-- Group 2: Subfolders -->
             <div
-              v-if="batchSummaryBanner"
-              class="mb-4 flex items-center justify-between gap-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-2.5 text-xs font-medium text-emerald-500"
+              v-if="snapshot && (snapshot.parent_rel_path !== null || snapshot.folders.length > 0)"
+              class="pt-3"
             >
-              <span>{{ batchSummaryBanner }}</span>
-              <button
-                type="button"
-                class="rounded-lg p-1 hover:bg-emerald-500/15"
-                @click="batchSummaryBanner = null"
-              >
-                <LuX class="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-            <div
-              v-if="dirError"
-              class="mb-4 rounded-2xl border border-red-500/35 bg-red-500/10 px-4 py-3 text-xs text-red-400"
-            >
-              {{ dirError }}
-            </div>
-
-            <!-- Subfolder Cards (shown in Folder View when not actively filtering) -->
-            <div
-              v-if="viewMode === 'folders' && !hasActiveSearchOrFilter && snapshot && snapshot.folders.length > 0"
-              class="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4"
-            >
-              <button
-                v-for="folder in snapshot.folders"
-                :key="`grid-${folder.rel_path}`"
-                type="button"
-                class="flex items-center gap-3 rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/40 px-3.5 py-2.5 text-left transition hover:border-[var(--ctp-accent)]/60 hover:bg-[var(--ctp-surface0)]/45"
-                @click="enterFolder(folder.rel_path)"
-              >
-                <LuFolder class="h-5 w-5 shrink-0 text-[var(--ctp-accent)]" />
-                <div class="min-w-0 flex-1">
-                  <div class="truncate text-xs font-semibold text-[var(--ctp-text)]">
-                    {{ folder.name }}
-                  </div>
-                  <div class="text-[11px] text-[var(--ctp-subtext0)]">
-                    {{ folder.media_file_count }} 个文件
-                  </div>
-                </div>
-              </button>
-            </div>
-
-            <!-- Domain Media Files List -->
-            <div
-              v-if="loadingDir && !snapshot"
-              class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
-            >
-              正在扫描目录与解析原文件元信息…
-            </div>
-            <div
-              v-else-if="filteredFiles.length === 0"
-              class="rounded-3xl border border-dashed border-[var(--ctp-surface0)] py-16 text-center text-xs text-[var(--ctp-subtext0)]"
-            >
-              当前目录与筛选条件下暂无匹配的{{ txt.domains[activeDomain] }}文件
-            </div>
-            <div v-else class="space-y-1.5">
-              <div
-                v-for="file in filteredFiles"
-                :key="file.rel_path"
-                class="group flex cursor-pointer items-center gap-3 rounded-2xl border px-3 py-2.5 transition"
-                :class="
-                  inspectingPath === file.rel_path
-                    ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/55'
-                    : 'border-[var(--ctp-surface0)]/65 bg-[var(--ctp-mantle)]/30 hover:border-[var(--ctp-surface1)] hover:bg-[var(--ctp-surface0)]/40'
-                "
-                @click="inspectEntry(file)"
-              >
-                <div @click.stop>
-                  <AppCheckbox
-                    :model-value="selectedPaths.has(file.rel_path)"
-                    @change="toggleSelectFile(file.rel_path)"
-                  />
-                </div>
-
-                <!-- Thumbnail -->
-                <div
-                  class="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[var(--ctp-mantle)]"
-                >
-                  <img
-                    v-if="file.completeness.has_cover"
-                    :src="
-                      buildArtworkUrl(
-                        file.root_id,
-                        file.rel_path,
-                        file.media_kind,
-                        artworkVersion,
-                      )
-                    "
-                    alt=""
-                    class="h-full w-full object-cover"
-                    loading="lazy"
-                  />
-                  <LuBookOpen
-                    v-else-if="file.media_kind === 'book'"
-                    class="h-5 w-5 text-[var(--ctp-subtext0)]"
-                  />
-                  <LuLayers
-                    v-else-if="file.media_kind === 'comic'"
-                    class="h-5 w-5 text-[var(--ctp-subtext0)]"
-                  />
-                  <LuDisc3
-                    v-else-if="file.media_kind === 'music'"
-                    class="h-5 w-5 text-[var(--ctp-subtext0)]"
-                  />
-                  <LuClapperboard v-else class="h-5 w-5 text-[var(--ctp-subtext0)]" />
-                </div>
-
-                <!-- Title & Filename -->
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-2">
-                    <span class="truncate text-xs font-bold text-[var(--ctp-text)]">
-                      {{ file.display_title }}
-                    </span>
-                    <span
-                      class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 font-mono text-[10px] uppercase text-[var(--ctp-subtext0)]"
-                    >
-                      {{ file.extension }}
-                    </span>
-                    <span v-if="file.year" class="shrink-0 text-[11px] text-[var(--ctp-subtext0)]">
-                      {{ file.year }}
-                    </span>
-                  </div>
-                  <div class="mt-0.5 flex flex-wrap items-center gap-1.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
-                    <button
-                      v-if="relativeDirBadge(file.rel_path)"
-                      type="button"
-                      class="inline-flex max-w-64 shrink-0 items-center gap-1 truncate rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-accent)]"
-                      :title="`点击进入子目录：${parentRelOf(file.rel_path)}`"
-                      @click.stop="enterFolder(parentRelOf(file.rel_path), true)"
-                    >
-                      <LuFolder class="h-3 w-3 shrink-0 text-[var(--ctp-accent)]" />
-                      <span class="truncate">{{ relativeDirBadge(file.rel_path) }}</span>
-                    </button>
-                    <span v-if="file.display_subtitle" class="truncate">{{ file.display_subtitle }} ·</span>
-                    <span class="truncate font-mono">{{ file.file_name }}</span>
-                  </div>
-                </div>
-
-                <!-- Completeness Badges -->
-                <div class="hidden shrink-0 items-center gap-1.5 sm:flex">
-                  <span
-                    class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                    :class="
-                      file.completeness.has_cover
-                        ? 'bg-emerald-500/15 text-emerald-500'
-                        : 'bg-amber-500/15 text-amber-500'
-                    "
-                  >
-                    {{ file.completeness.has_cover ? '封面✓' : '缺封面' }}
-                  </span>
-                  <span
-                    class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                    :class="
-                      file.completeness.has_summary_or_lyrics
-                        ? 'bg-emerald-500/15 text-emerald-500'
-                        : 'bg-[var(--ctp-surface0)]/80 text-[var(--ctp-subtext0)]'
-                    "
-                  >
-                    {{
-                      file.media_kind === 'music'
-                        ? file.completeness.has_summary_or_lyrics
-                          ? '歌词✓'
-                          : '无歌词'
-                        : file.completeness.has_summary_or_lyrics
-                          ? '简介✓'
-                          : '无简介'
-                    }}
-                  </span>
-                  <span
-                    class="rounded-full px-2 py-0.5 text-[10px] font-medium"
-                    :class="
-                      file.completeness.has_nfo_or_tag_block
-                        ? 'bg-emerald-500/15 text-emerald-500'
-                        : 'bg-[var(--ctp-surface0)]/80 text-[var(--ctp-subtext0)]'
-                    "
-                  >
-                    {{
-                      file.media_kind === 'video'
-                        ? file.completeness.has_nfo_or_tag_block
-                          ? 'NFO✓'
-                          : '无NFO'
-                        : file.media_kind === 'comic'
-                          ? file.completeness.has_nfo_or_tag_block
-                            ? 'ComicInfo✓'
-                            : '无XML'
-                          : file.completeness.has_nfo_or_tag_block
-                            ? '元数据✓'
-                            : '待完善'
-                    }}
-                  </span>
-                </div>
-
-                <div class="hidden w-16 shrink-0 text-right font-mono text-[11px] text-[var(--ctp-subtext0)] lg:block">
-                  {{ formatBytes(file.file_size) }}
-                </div>
-
+              <div class="mb-1 flex items-center justify-between px-2">
                 <button
                   type="button"
-                  class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
-                  title="在线刮削此文件"
-                  @click.stop="openScrapeForEntry(file)"
+                  class="flex min-w-0 flex-1 items-center gap-1 rounded-md py-0.5 text-left text-[11px] font-semibold tracking-wider text-[var(--ctp-subtext0)] uppercase transition hover:text-[var(--ctp-text)]"
+                  @click="toggleGroupFold('folders')"
                 >
-                  <LuSparkles class="h-4 w-4" />
+                  <LuChevronRight v-if="collapsedGroups.folders" class="h-3 w-3 shrink-0" />
+                  <LuChevronDown v-else class="h-3 w-3 shrink-0" />
+                  <span class="truncate">{{ txt.roots.foldersTitle }}</span>
+                </button>
+                <span class="font-mono text-[10px] text-[var(--ctp-subtext0)]">
+                  {{ snapshot.folders.length }}
+                </span>
+              </div>
+
+              <div v-if="!collapsedGroups.folders" class="space-y-0.5">
+                <button
+                  v-if="snapshot.parent_rel_path !== null"
+                  type="button"
+                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+                  @click="enterFolder(snapshot.parent_rel_path)"
+                >
+                  <LuArrowUp class="h-3.5 w-3.5 shrink-0" />
+                  <span class="truncate">{{ txt.roots.parentDir }}</span>
+                </button>
+
+                <button
+                  v-for="folder in snapshot.folders"
+                  :key="folder.rel_path"
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-xs text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+                  @click="enterFolder(folder.rel_path)"
+                >
+                  <LuFolder class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-accent)]" />
+                  <span class="flex-1 truncate text-left">{{ folder.name }}</span>
+                  <span class="font-mono text-[10px] opacity-70">{{ folder.media_file_count }}</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Group 3: Completeness Filters -->
+            <div class="pt-3">
+              <div class="mb-1 flex items-center justify-between px-2">
+                <button
+                  type="button"
+                  class="flex min-w-0 flex-1 items-center gap-1 rounded-md py-0.5 text-left text-[11px] font-semibold tracking-wider text-[var(--ctp-subtext0)] uppercase transition hover:text-[var(--ctp-text)]"
+                  @click="toggleGroupFold('filters')"
+                >
+                  <LuChevronRight v-if="collapsedGroups.filters" class="h-3 w-3 shrink-0" />
+                  <LuChevronDown v-else class="h-3 w-3 shrink-0" />
+                  <span class="truncate">{{ txt.filters.title }}</span>
+                </button>
+              </div>
+
+              <div v-if="!collapsedGroups.filters" class="space-y-0.5">
+                <button
+                  v-for="item in filterItems"
+                  :key="item.id"
+                  type="button"
+                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium transition"
+                  :class="
+                    activeNav === 'items' && completenessFilter === item.id
+                      ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
+                      : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
+                  "
+                  @click="selectCompletenessFilter(item.id)"
+                >
+                  <component :is="item.icon" class="h-3.5 w-3.5 shrink-0" />
+                  <span class="flex-1 truncate text-left">{{ item.label }}</span>
+                  <span class="font-mono text-[10px] opacity-75">{{ item.count }}</span>
                 </button>
               </div>
             </div>
           </template>
+        </nav>
+      </aside>
+
+      <!-- Main Rounded Canvas + Optional Right Metadata Inspector Drawer -->
+      <main
+        class="flex min-w-0 flex-1 overflow-hidden border-t border-[var(--ctp-surface0)]/65 bg-[var(--ctp-canvas)] md:rounded-tl-3xl md:border-l"
+      >
+        <div class="min-w-0 flex-1 overflow-y-auto">
+          <!-- VIEW 1: IN-PAGE SETTINGS (Server SettingsView Left-Right Layout + Domain Tabs) -->
+          <ToolSettingsView
+            v-if="activeNav === 'settings'"
+            :settings="settings"
+            :active-domain="activeDomain"
+            :initial-tab="settingsInitialTab"
+            :ffmpeg-status="status?.ffmpeg ?? null"
+            @back="exitSettings"
+            @updated="handleSettingsUpdated"
+            @select-domain="switchDomain"
+          />
+
+          <!-- VIEW 2: TASKS CENTER -->
+          <ToolTasksView v-else-if="activeNav === 'tasks'" />
+
+          <!-- VIEW 3: DOMAIN HOME OVERVIEW -->
+          <ToolHomeView
+            v-else-if="activeNav === 'home'"
+            :active-domain="activeDomain"
+            :domain-roots="domainRoots"
+            :active-root-id="activeRootId"
+            :snapshot="snapshot"
+            :loading-dir="loadingDir"
+            :artwork-version="artworkVersion"
+            :stats="stats"
+            @open-items="(f) => selectCompletenessFilter(f ?? 'all')"
+            @enter-folder="(rel) => enterFolder(rel, true)"
+            @inspect-file="inspectEntry"
+            @scrape-files="enqueueScrapeFiles"
+            @open-rename-all="renameModalOpen = true"
+            @open-settings="openSettingsTab"
+            @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
+          />
+
+          <!-- VIEW 4: ITEMS BROWSER -->
+          <div v-else class="p-4 sm:p-6">
+            <!-- Domain Empty State -->
+            <div
+              v-if="domainRoots.length === 0"
+              class="mx-auto mt-12 max-w-lg rounded-3xl border border-dashed border-[var(--ctp-surface1)] bg-[var(--ctp-mantle)]/45 p-8 text-center"
+            >
+              <div
+                class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+              >
+                <LuFolderPlus class="h-6 w-6" />
+              </div>
+              <h2 class="text-base font-bold text-[var(--ctp-text)]">
+                {{ domainLabels.emptyRootsTitle }}
+              </h2>
+              <p class="mt-2 text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+                {{ domainLabels.emptyRootsDesc }}
+              </p>
+              <button
+                type="button"
+                class="mt-5 inline-flex items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+                @click="openSettingsTab('roots')"
+              >
+                <LuFolderPlus class="h-4 w-4" />
+                <span>{{ txt.roots.add }}</span>
+              </button>
+            </div>
+
+            <template v-else>
+              <!-- Breadcrumb + Batch Action Toolbar -->
+              <div
+                class="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/45 px-4 py-2.5"
+              >
+                <div class="flex min-w-0 flex-wrap items-center gap-1 text-xs">
+                  <template v-for="(bc, idx) in breadcrumbs" :key="bc.relPath || '__root__'">
+                    <LuChevronRight
+                      v-if="idx > 0"
+                      class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]"
+                    />
+                    <button
+                      type="button"
+                      class="rounded-lg px-2 py-1 font-medium transition hover:bg-[var(--ctp-surface0)]/65"
+                      :class="
+                        idx === breadcrumbs.length - 1
+                          ? 'font-bold text-[var(--ctp-text)]'
+                          : 'text-[var(--ctp-subtext1)]'
+                      "
+                      @click="enterFolder(bc.relPath)"
+                    >
+                      {{ bc.label }}
+                    </button>
+                  </template>
+                </div>
+
+                <div class="flex flex-wrap items-center gap-2">
+                  <!-- View Mode Switcher: Flat All-Media vs Folder Hierarchy -->
+                  <div
+                    class="flex items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-canvas)] p-0.5"
+                  >
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
+                      :class="
+                        viewMode === 'flat'
+                          ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                          : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                      "
+                      title="平铺展示当前目录及所有子目录内的媒体文件"
+                      @click="setViewMode('flat')"
+                    >
+                      <LuList class="h-3.5 w-3.5" />
+                      <span>全部媒体</span>
+                    </button>
+                    <button
+                      type="button"
+                      class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
+                      :class="
+                        viewMode === 'folders'
+                          ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                          : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                      "
+                      title="按文件夹目录层级逐级浏览"
+                      @click="setViewMode('folders')"
+                    >
+                      <LuFolder class="h-3.5 w-3.5" />
+                      <span>文件夹</span>
+                    </button>
+                  </div>
+
+                  <AppCheckbox
+                    v-if="filteredFiles.length > 0"
+                    :model-value="allFilteredSelected"
+                    :label="
+                      selectedPaths.size > 0
+                        ? `已选 ${selectedPaths.size} 项`
+                        : txt.actions.selectAll
+                    "
+                    @change="toggleSelectAllFiltered"
+                  />
+
+                  <button
+                    v-if="selectedPaths.size > 0"
+                    type="button"
+                    class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+                    @click="selectedPaths = new Set()"
+                  >
+                    {{ txt.actions.clearSelect }}
+                  </button>
+
+                  <!-- Scrape Button: Adds Background Scrape Task (Local -> High Priority -> Low Priority) -->
+                  <button
+                    type="button"
+                    :disabled="filteredFiles.length === 0"
+                    class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-accent)] transition hover:opacity-90 disabled:opacity-45"
+                    title="添加后台刮削任务（按 本地已有非空信息 → 高优先级源 → 低优先级源 自动补齐）"
+                    @click="enqueueScrapeForSelection"
+                  >
+                    <LuSparkles class="h-3.5 w-3.5" />
+                    <span>
+                      {{
+                        selectedPaths.size > 0
+                          ? `${txt.actions.scrape} (${selectedPaths.size})`
+                          : txt.actions.scrape
+                      }}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    :disabled="selectedEntriesForRename.length === 0"
+                    class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
+                    @click="renameModalOpen = true"
+                  >
+                    <LuFileSignature class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                    <span>{{ txt.actions.batchRename }}</span>
+                  </button>
+
+                  <RefreshButton
+                    :action="() => loadDirectory(activeRootId, currentRelPath)"
+                    :busy="loadingDir"
+                    :title="txt.actions.refresh"
+                  />
+                </div>
+              </div>
+
+              <div
+                v-if="batchSummaryBanner"
+                class="mb-4 flex items-center justify-between gap-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-2.5 text-xs font-medium text-emerald-500"
+              >
+                <span>{{ batchSummaryBanner }}</span>
+                <button
+                  type="button"
+                  class="rounded-lg p-1 hover:bg-emerald-500/15"
+                  @click="batchSummaryBanner = null"
+                >
+                  <LuX class="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <div
+                v-if="dirError"
+                class="mb-4 rounded-2xl border border-red-500/35 bg-red-500/10 px-4 py-3 text-xs text-red-400"
+              >
+                {{ dirError }}
+              </div>
+
+              <!-- Subfolder Cards (Folder View) -->
+              <div
+                v-if="viewMode === 'folders' && !hasActiveSearchOrFilter && snapshot && snapshot.folders.length > 0"
+                class="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4"
+              >
+                <button
+                  v-for="folder in snapshot.folders"
+                  :key="`grid-${folder.rel_path}`"
+                  type="button"
+                  class="card-soft flex items-center gap-3 rounded-2xl bg-[var(--ctp-mantle)]/45 p-3 text-left transition hover:border-[var(--ctp-accent)]"
+                  @click="enterFolder(folder.rel_path, true)"
+                >
+                  <div
+                    class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+                  >
+                    <LuFolderOpen class="h-4 w-4" />
+                  </div>
+                  <div class="min-w-0 flex-1">
+                    <div class="truncate text-xs font-semibold text-[var(--ctp-text)]">
+                      {{ folder.name }}
+                    </div>
+                    <div class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
+                      {{ folder.media_file_count }} 个媒体文件
+                    </div>
+                  </div>
+                </button>
+              </div>
+
+              <!-- Media Files List -->
+              <div
+                v-if="loadingDir && !snapshot"
+                class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+              >
+                正在读取当前领域本地目录结构…
+              </div>
+
+              <div
+                v-else-if="filteredFiles.length === 0"
+                class="rounded-3xl border border-dashed border-[var(--ctp-surface1)] py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+              >
+                当前目录与筛选条件下暂无匹配的{{ txt.domains[activeDomain] }}文件
+              </div>
+
+              <div v-else class="space-y-2">
+                <div
+                  v-for="file in filteredFiles"
+                  :key="file.rel_path"
+                  class="group flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-2.5 transition"
+                  :class="
+                    inspectingPath === file.rel_path
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/55'
+                      : 'border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/35 hover:border-[var(--ctp-surface1)] hover:bg-[var(--ctp-mantle)]/65'
+                  "
+                  @click="inspectEntry(file)"
+                >
+                  <div @click.stop>
+                    <AppCheckbox
+                      :model-value="selectedPaths.has(file.rel_path)"
+                      @change="toggleSelectFile(file.rel_path)"
+                    />
+                  </div>
+
+                  <!-- Artwork Thumbnail -->
+                  <div
+                    class="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]"
+                  >
+                    <img
+                      v-if="file.completeness.has_cover"
+                      :src="buildArtworkUrl(file.root_id, file.rel_path, file.media_kind, artworkVersion)"
+                      :alt="file.display_title"
+                      loading="lazy"
+                      class="h-full w-full object-cover"
+                    />
+                    <LuBookOpen
+                      v-else-if="file.media_kind === 'book'"
+                      class="h-5 w-5 text-[var(--ctp-subtext0)]"
+                    />
+                    <LuLayers
+                      v-else-if="file.media_kind === 'comic'"
+                      class="h-5 w-5 text-[var(--ctp-subtext0)]"
+                    />
+                    <LuDisc3
+                      v-else-if="file.media_kind === 'music'"
+                      class="h-5 w-5 text-[var(--ctp-subtext0)]"
+                    />
+                    <LuClapperboard v-else class="h-5 w-5 text-[var(--ctp-subtext0)]" />
+                  </div>
+
+                  <!-- Title + Subtitle + Folder Badge -->
+                  <div class="min-w-0 flex-1">
+                    <div class="flex items-center gap-2">
+                      <span class="truncate text-xs font-bold text-[var(--ctp-text)]">
+                        {{ file.display_title }}
+                      </span>
+                      <span
+                        v-if="file.year"
+                        class="shrink-0 font-mono text-[11px] text-[var(--ctp-subtext0)]"
+                      >
+                        ({{ file.year }})
+                      </span>
+                      <span
+                        class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/80 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--ctp-subtext1)]"
+                      >
+                        {{ file.extension }}
+                      </span>
+                    </div>
+                    <div class="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--ctp-subtext0)]">
+                      <span class="truncate">{{ file.display_subtitle }}</span>
+                      <span>·</span>
+                      <span
+                        v-if="relativeDirBadge(file.rel_path)"
+                        class="inline-flex max-w-[14rem] shrink-0 items-center gap-1 truncate rounded-md bg-[var(--ctp-surface0)]/65 px-1.5 py-0.5 font-mono text-[10px] text-[var(--ctp-subtext1)]"
+                      >
+                        <LuFolder class="h-2.5 w-2.5 shrink-0 text-[var(--ctp-accent)]" />
+                        <span class="truncate">{{ relativeDirBadge(file.rel_path) }}</span>
+                      </span>
+                      <span class="truncate font-mono text-[10px] opacity-80">
+                        {{ file.file_name }}
+                      </span>
+                    </div>
+                  </div>
+
+                  <!-- Completeness Badges -->
+                  <div class="hidden shrink-0 items-center gap-1.5 sm:flex">
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      :class="
+                        file.completeness.has_cover
+                          ? 'bg-emerald-500/15 text-emerald-500'
+                          : 'bg-amber-500/15 text-amber-500'
+                      "
+                    >
+                      {{ file.completeness.has_cover ? '封面✓' : '缺封面' }}
+                    </span>
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      :class="
+                        file.completeness.has_summary_or_lyrics
+                          ? 'bg-emerald-500/15 text-emerald-500'
+                          : 'bg-[var(--ctp-surface0)]/80 text-[var(--ctp-subtext0)]'
+                      "
+                    >
+                      {{
+                        file.media_kind === 'music'
+                          ? file.completeness.has_summary_or_lyrics
+                            ? '歌词✓'
+                            : '无歌词'
+                          : file.completeness.has_summary_or_lyrics
+                            ? '简介✓'
+                            : '无简介'
+                      }}
+                    </span>
+                    <span
+                      class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                      :class="
+                        file.completeness.has_nfo_or_tag_block
+                          ? 'bg-emerald-500/15 text-emerald-500'
+                          : 'bg-[var(--ctp-surface0)]/80 text-[var(--ctp-subtext0)]'
+                      "
+                    >
+                      {{
+                        file.media_kind === 'video'
+                          ? file.completeness.has_nfo_or_tag_block
+                            ? 'NFO✓'
+                            : '无NFO'
+                          : file.media_kind === 'comic'
+                            ? file.completeness.has_nfo_or_tag_block
+                              ? 'ComicInfo✓'
+                              : '无XML'
+                            : file.completeness.has_nfo_or_tag_block
+                              ? '元数据✓'
+                              : '待完善'
+                      }}
+                    </span>
+                  </div>
+
+                  <div class="hidden w-16 shrink-0 text-right font-mono text-[11px] text-[var(--ctp-subtext0)] lg:block">
+                    {{ formatBytes(file.file_size) }}
+                  </div>
+
+                  <button
+                    type="button"
+                    class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                    title="添加刮削任务（本地信息 → 高优先级源 → 低优先级源）"
+                    @click.stop="enqueueScrapeFiles([file])"
+                  >
+                    <LuSparkles class="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </template>
+          </div>
         </div>
 
-        <!-- Right Drawer: Metadata & Stream Inspector -->
+        <!-- Right Drawer: Metadata & Stream Inspector (Available on Home & Items) -->
         <div
-          v-if="activeDetail || loadingInspector"
+          v-if="(activeNav === 'home' || activeNav === 'items') && (activeDetail || loadingInspector)"
           class="fixed inset-y-0 right-0 z-40 flex w-full max-w-full bg-[var(--ctp-canvas)] shadow-2xl lg:static lg:z-auto lg:w-auto lg:shadow-none"
         >
           <div
@@ -1368,13 +1546,13 @@ onBeforeUnmount(() => {
             :artwork-version="artworkVersion"
             @close="activeDetail = null; inspectingPath = null"
             @updated="handleDetailUpdated"
-            @open-scrape="(d) => openScrapeForEntry(d.entry)"
+            @open-scrape="(d) => openManualScrapeModal(d.entry)"
           />
         </div>
       </main>
     </div>
 
-    <!-- Modals -->
+    <!-- Manual Match Scrape Modal (Accessible from Inspector Drawer) -->
     <OnlineScrapeModal
       :open="scrapeModalOpen"
       :detail="activeDetail"
@@ -1399,23 +1577,16 @@ onBeforeUnmount(() => {
       @renamed="handleRenamed"
     />
 
-    <ToolSettingsModal
-      :open="settingsModalOpen"
-      :settings="settings"
-      :active-domain="activeDomain"
-      :initial-tab="settingsInitialTab"
-      @close="settingsModalOpen = false"
-      @updated="handleSettingsUpdated"
-    />
-
-    <!-- Bottom-Right Floating Task Progress Panel -->
+    <!-- Bottom-Right Floating Task Progress Panel (Click task jumps to Tasks View) -->
     <FloatingTaskShelf
+      v-if="activeNav !== 'tasks'"
       high-z-index
       :tasks="taskStore.shelfItems"
       :collapsed="taskStore.collapsed"
       @update:collapsed="taskStore.collapsed = $event"
       @clear-completed="taskStore.clearCompleted"
       @dismiss-all="taskStore.dismissAll"
+      @select-task="navigatePrimary('tasks')"
     />
   </div>
 </template>
