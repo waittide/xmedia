@@ -331,8 +331,8 @@ function seedFromDetail(d: MediaFileDetail): void {
   season.value = q.season !== undefined && q.season !== null ? String(q.season) : ''
   episode.value = q.episode !== undefined && q.episode !== null ? String(q.episode) : ''
   durationSecs.value = q.duration_secs ?? undefined
-  applyCover.value = d.entry.media_kind !== 'comic'
-  organizeByTemplate.value = d.entry.media_kind === 'video'
+  applyCover.value = true
+  organizeByTemplate.value = d.entry.media_kind === 'video' || d.entry.media_kind === 'comic'
   onlyFillMissing.value = false
 }
 
@@ -1851,7 +1851,9 @@ async function runBatchAutoScrape(): Promise<void> {
               :label="
                 detail.entry.media_kind === 'video'
                   ? '同步下载刮削图片'
-                  : '同时下载并写入封面'
+                  : detail.entry.media_kind === 'comic'
+                    ? '同步保存系列封面 (cover)'
+                    : '同时下载并写入封面'
               "
             />
             <AppCheckbox
@@ -1859,7 +1861,9 @@ async function runBatchAutoScrape(): Promise<void> {
               :label="
                 detail.entry.media_kind === 'video'
                   ? '同时按 Jellyfin 模板归档移动并生成层级 NFO'
-                  : '刮削后同时按模板整理文件名/目录'
+                  : detail.entry.media_kind === 'comic'
+                    ? '同时按 Komga/Kavita 系列目录模板归档移动'
+                    : '刮削后同时按模板整理文件名/目录'
               "
             />
             <AppCheckbox

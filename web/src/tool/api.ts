@@ -181,7 +181,7 @@ export const toolApi = {
     rootId: string,
     relPath: string,
     file: File,
-    slot: 'cover' | 'poster' | 'fanart' | 'thumb',
+    slot: 'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb',
     kind: MediaKind,
   ): Promise<MediaFileDetail> {
     const fd = new FormData()

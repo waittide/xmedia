@@ -65,6 +65,8 @@ pub struct BookFileMeta {
 pub struct ComicFileMeta {
     pub format: String,
     pub series: Option<String>,
+    #[serde(default)]
+    pub series_group: Option<String>,
     pub title: Option<String>,
     pub number: Option<String>,
     pub volume: Option<i32>,
@@ -80,6 +82,8 @@ pub struct ComicFileMeta {
     pub page_count: u32,
     pub has_comic_info_xml: bool,
     pub has_cover: bool,
+    #[serde(default)]
+    pub has_series_cover: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -179,6 +183,8 @@ pub struct BookMetaPatch {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComicMetaPatch {
     pub series: Option<String>,
+    #[serde(default)]
+    pub series_group: Option<String>,
     pub title: Option<String>,
     pub number: Option<String>,
     pub volume: Option<i32>,

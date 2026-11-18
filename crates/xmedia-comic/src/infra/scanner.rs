@@ -60,12 +60,14 @@ impl ComicScannerPort for SmartComicScanner {
                 let series_dir_str = path.to_string_lossy().into_owned();
                 let chapters = self.collect_series_chapters(&path, known_chapters).await?;
                 if !chapters.is_empty() {
+                    let series_cover_bytes = find_series_cover_bytes(&path);
                     series_map.insert(
                         series_dir_str.clone(),
                         ScannedSeriesEntry {
                             title: name,
                             source_dir: series_dir_str,
                             chapters,
+                            series_cover_bytes,
                         },
                     );
                 }
@@ -106,6 +108,7 @@ impl ComicScannerPort for SmartComicScanner {
                             title: series_title,
                             source_dir: synthetic_dir,
                             chapters: Vec::new(),
+                            series_cover_bytes: None,
                         });
                 entry.chapters.push(ch);
             }
@@ -255,6 +258,29 @@ impl SmartComicScanner {
     }
 }
 
+fn find_series_cover_bytes(series_dir: &Path) -> Option<Vec<u8>> {
+    const CANDIDATES: &[&str] = &[
+        "cover.jpg",
+        "cover.jpeg",
+        "cover.png",
+        "cover.webp",
+        "folder.jpg",
+        "folder.jpeg",
+        "folder.png",
+        "folder.webp",
+    ];
+    for name in CANDIDATES {
+        let candidate = series_dir.join(name);
+        if candidate.is_file()
+            && let Ok(bytes) = fs::read(&candidate)
+            && !bytes.is_empty()
+        {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
 fn walk_series_tree(
     dir: &Path,
     depth: usize,
@@ -283,7 +309,14 @@ fn walk_series_tree(
             } else if is_supported_image_name(&name)
                 && !matches!(
                     name.to_ascii_lowercase().as_str(),
-                    "cover.jpg" | "cover.jpeg" | "cover.png" | "cover.webp" | "folder.jpg"
+                    "cover.jpg"
+                        | "cover.jpeg"
+                        | "cover.png"
+                        | "cover.webp"
+                        | "folder.jpg"
+                        | "folder.jpeg"
+                        | "folder.png"
+                        | "folder.webp"
                 )
             {
                 direct_images += 1;

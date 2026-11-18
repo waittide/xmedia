@@ -16,7 +16,8 @@ use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
 use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
 use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
-use crate::infra::inspectors::video::{dir_contains_any_video, dir_has_single_video};
+use crate::infra::inspectors::comic::is_generic_comic_folder;
+use crate::infra::inspectors::video::dir_has_single_video;
 
 #[derive(Clone)]
 pub struct MediaWorkbenchService {
@@ -382,6 +383,39 @@ impl MediaWorkbenchService {
                     }
                 }
 
+                // Carry Komga/Kavita series-level cover (`cover.*`, `folder.*`) when moving comic series folders
+                if matches!(meta, MediaMetadataPayload::Comic(_))
+                    && parent_rel != target_parent_rel
+                    && !target_parent_rel.is_empty()
+                    && let Some(old_dir) = sandbox.abs_path.parent()
+                    && old_dir != root.path
+                    && old_dir
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|n| !is_generic_comic_folder(n))
+                {
+                    for fname in [
+                        "cover.jpg",
+                        "cover.jpeg",
+                        "cover.png",
+                        "cover.webp",
+                        "folder.jpg",
+                        "folder.jpeg",
+                        "folder.png",
+                        "folder.webp",
+                    ] {
+                        let cand = old_dir.join(fname);
+                        if cand.is_file()
+                            && let Ok(rel_c) = cand.strip_prefix(&root.path)
+                        {
+                            companion_moves.push((
+                                path_to_slash(rel_c),
+                                format!("{target_parent_rel}/{fname}"),
+                            ));
+                        }
+                    }
+                }
+
                 // Also carry Jellyfin directory-level NFO & artwork (`movie.nfo`, `season.nfo`, `tvshow.nfo`, `poster.*`, `fanart.*`)
                 if let MediaMetadataPayload::Video(ref v) = meta
                     && parent_rel != target_parent_rel
@@ -531,6 +565,14 @@ impl MediaWorkbenchService {
                                     | "fanart.jpeg"
                                     | "fanart.png"
                                     | "fanart.webp"
+                                    | "cover.jpg"
+                                    | "cover.jpeg"
+                                    | "cover.png"
+                                    | "cover.webp"
+                                    | "folder.jpg"
+                                    | "folder.jpeg"
+                                    | "folder.png"
+                                    | "folder.webp"
                             )
                         });
                     if !comp_dst.exists() {
@@ -554,7 +596,7 @@ impl MediaWorkbenchService {
                 if dst_sidecar.is_file()
                     && src_sidecar != dst_sidecar
                     && let Some(dir) = src_sidecar.parent()
-                    && !dir_contains_any_video(dir)
+                    && count_subtree_children(dir, &self.inspectors, None).1 == 0
                 {
                     let _ = std::fs::remove_file(&src_sidecar);
                 }

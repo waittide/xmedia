@@ -11,6 +11,7 @@ use crate::domain::series::ReadingDirection;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComicInfoMetadata {
     pub series: Option<String>,
+    pub series_group: Option<String>,
     pub title: Option<String>,
     pub number: Option<f64>,
     pub volume: Option<f64>,
@@ -78,6 +79,7 @@ pub struct ScannedSeriesEntry {
     pub title: String,
     pub source_dir: String,
     pub chapters: Vec<ScannedChapterEntry>,
+    pub series_cover_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]

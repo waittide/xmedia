@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use quick_xml::Reader;
@@ -19,6 +19,7 @@ use crate::domain::media::{
 };
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::atomic_write_via_temp;
+use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
 
 pub struct CbzComicInspector;
 
@@ -82,6 +83,7 @@ fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) {
                     if !trimmed.is_empty() {
                         match tag.as_str() {
                             "series" => meta.series = Some(trimmed.to_string()),
+                            "seriesgroup" => meta.series_group = Some(trimmed.to_string()),
                             "title" => meta.title = Some(trimmed.to_string()),
                             "number" => meta.number = Some(trimmed.to_string()),
                             "volume" => {
@@ -148,6 +150,14 @@ fn render_comic_info_xml(meta: &ComicFileMeta) -> String {
         && !s.trim().is_empty()
     {
         xml.push_str(&format!("  <Series>{}</Series>\n", escape(s.trim())));
+    }
+    if let Some(ref sg) = meta.series_group
+        && !sg.trim().is_empty()
+    {
+        xml.push_str(&format!(
+            "  <SeriesGroup>{}</SeriesGroup>\n",
+            escape(sg.trim())
+        ));
     }
     if let Some(ref t) = meta.title
         && !t.trim().is_empty()
@@ -246,7 +256,7 @@ const GENERIC_COMIC_FOLDER_NAMES: &[&str] = &[
     "书籍",
 ];
 
-fn is_generic_comic_folder(name: &str) -> bool {
+pub(crate) fn is_generic_comic_folder(name: &str) -> bool {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return true;
@@ -255,6 +265,28 @@ fn is_generic_comic_folder(name: &str) -> bool {
     GENERIC_COMIC_FOLDER_NAMES
         .iter()
         .any(|g| lower == *g || trimmed == *g)
+}
+
+fn find_series_cover_path(comic_path: &Path) -> Option<PathBuf> {
+    let parent = comic_path.parent()?;
+    let dir_name = parent.file_name()?.to_str()?;
+    if is_generic_comic_folder(dir_name) {
+        return None;
+    }
+    const CANDIDATES: &[&str] = &[
+        "cover.jpg",
+        "cover.jpeg",
+        "cover.png",
+        "cover.webp",
+        "folder.jpg",
+        "folder.jpeg",
+        "folder.png",
+        "folder.webp",
+    ];
+    CANDIDATES
+        .iter()
+        .map(|name| parent.join(name))
+        .find(|p| p.is_file())
 }
 
 /// Infers `(series, number, volume, optional_chapter_title)` from a comic filename stem and non-generic parent folder.
@@ -271,22 +303,23 @@ pub(crate) fn guess_comic_details(
     let bracket_re = Regex::new(r"^(?:\[[^\]]*\]|\([^)]*\)|\s)+").expect("valid bracket regex");
     let cleaned_stem = bracket_re.replace(raw_stem, "").trim().to_string();
 
-    let vol_re = Regex::new(r"(?i)(?:第\s*0*(\d+)\s*[卷册]|(?:\bvol\.?|\bv)\s*0*(\d+))")
-        .expect("valid vol regex");
+    let vol_re =
+        Regex::new(r"(?i)(?:第\s*0*(\d+)\s*[卷册]|(?:^|[\s_\-\.\[\(])(?:vol\.?|v)\s*0*(\d+))")
+            .expect("valid vol regex");
     let ch_re = Regex::new(
-        r"(?i)(?:第\s*0*(\d+(?:\.\d+)?)\s*[话話回章集]|(?:\bch(?:apter)?\.?|\bc|#)\s*0*(\d+(?:\.\d+)?))",
+        r"(?i)(?:第\s*0*(\d+(?:\.\d+)?)\s*[话話回章集]|(?:(?:^|[\s_\-\.\[\(])(?:ch(?:apter)?\.?|c)|#)\s*0*(\d+(?:\.\d+)?))",
     )
     .expect("valid ch regex");
 
     let mut cut_idx = cleaned_stem.len();
-    let mut after_idx = cleaned_stem.len();
+    let mut matched_end = 0usize;
     let mut volume: Option<i32> = None;
     let mut number: Option<String> = None;
 
     if let Some(m) = vol_re.captures(&cleaned_stem) {
         let full = m.get(0).expect("full match");
         cut_idx = cut_idx.min(full.start());
-        after_idx = full.end();
+        matched_end = matched_end.max(full.end());
         volume = m
             .get(1)
             .or_else(|| m.get(2))
@@ -295,12 +328,17 @@ pub(crate) fn guess_comic_details(
     if let Some(m) = ch_re.captures(&cleaned_stem) {
         let full = m.get(0).expect("full match");
         cut_idx = cut_idx.min(full.start());
-        after_idx = full.end();
+        matched_end = matched_end.max(full.end());
         number = m
             .get(1)
             .or_else(|| m.get(2))
             .map(|g| g.as_str().to_string());
     }
+    let after_idx = if volume.is_some() || number.is_some() {
+        matched_end
+    } else {
+        cleaned_stem.len()
+    };
 
     let prefix = cleaned_stem[..cut_idx]
         .trim_matches([' ', '_', '-', '.', '·', '—'])
@@ -407,6 +445,7 @@ fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
         page_count,
         has_comic_info_xml: comic_info_bytes.is_some(),
         has_cover: page_count > 0,
+        has_series_cover: find_series_cover_path(path).is_some(),
         ..Default::default()
     };
 
@@ -552,6 +591,9 @@ impl MediaInspectorPort for CbzComicInspector {
             if let Some(series) = cp_cloned.series {
                 meta.series = (!series.trim().is_empty()).then(|| series.trim().to_string());
             }
+            if let Some(sg) = cp_cloned.series_group {
+                meta.series_group = (!sg.trim().is_empty()).then(|| sg.trim().to_string());
+            }
             if let Some(title) = cp_cloned.title {
                 meta.title = (!title.trim().is_empty()).then(|| title.trim().to_string());
             }
@@ -627,10 +669,22 @@ impl MediaInspectorPort for CbzComicInspector {
     async fn read_artwork(
         &self,
         path: &Path,
-        _slot: Option<&str>,
+        slot: Option<&str>,
     ) -> DomainResult<Option<BinaryPayload>> {
         let p = path.to_path_buf();
+        let slot_owned = slot.map(str::to_ascii_lowercase);
         tokio::task::spawn_blocking(move || {
+            if slot_owned.as_deref() == Some("series_cover")
+                && let Some(cov_path) = find_series_cover_path(&p)
+                && let Ok(bytes) = std::fs::read(&cov_path)
+                && !bytes.is_empty()
+            {
+                let mime = sniff_image_mime(&bytes).to_string();
+                return Ok(Some(BinaryPayload {
+                    bytes,
+                    mime_type: mime,
+                }));
+            }
             let file = File::open(&p).map_err(|e| {
                 DomainError::Storage(format!("failed opening '{}': {e}", p.display()))
             })?;
@@ -672,7 +726,7 @@ impl MediaInspectorPort for CbzComicInspector {
         path: &Path,
         bytes: &[u8],
         mime_type: &str,
-        _slot: &str,
+        slot: &str,
     ) -> DomainResult<()> {
         let p = path.to_path_buf();
         let raw = bytes.to_vec();
@@ -688,6 +742,21 @@ impl MediaInspectorPort for CbzComicInspector {
         } else {
             "jpg"
         };
+
+        if slot.eq_ignore_ascii_case("series_cover") {
+            let parent = p
+                .parent()
+                .ok_or_else(|| {
+                    DomainError::Validation("comic file has no parent directory".into())
+                })?
+                .to_path_buf();
+            return tokio::task::spawn_blocking(move || {
+                write_image_replacing_opposite_ext(&parent, "cover", ext, &raw)
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("comic series cover write failed: {e}")))?;
+        }
+
         let cover_entry = format!("000_cover.{ext}");
 
         tokio::task::spawn_blocking(move || {

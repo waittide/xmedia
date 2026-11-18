@@ -86,6 +86,7 @@ fn assign_field(
 ) {
     match tag {
         "series" => meta.series = Some(value.to_owned()),
+        "seriesgroup" => meta.series_group = Some(value.to_owned()),
         "title" => meta.title = Some(value.to_owned()),
         "number" => {
             meta.number = value.parse::<f64>().ok();

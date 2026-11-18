@@ -1671,4 +1671,116 @@ mod tests {
         );
         assert_eq!(merged_s0.metadata.disc_or_season_number, Some(0));
     }
+
+    #[tokio::test]
+    async fn comic_komga_archive_series_group_and_series_cover_without_polluting_cbz() {
+        use crate::domain::scraper::{ScrapeTargetKind, ScrapedMetadata};
+        use axum::Router;
+        use axum::routing::get;
+
+        let img_app = Router::new().route(
+            "/{name}",
+            get(|| async { ([(header::CONTENT_TYPE, "image/png")], TINY_PNG) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, img_app).await;
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("manga");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let raw_cbz = root.join("JOJO4_Ch01.cbz");
+        write_minimal_cbz(&raw_cbz);
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: tmp.path().join("data"),
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // Scrape & archive by default Komga/Kavita series template + series cover
+        let detail = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                "JOJO4_Ch01.cbz",
+                MediaKind::Comic,
+                ScrapedMetadata {
+                    provider_id: "bangumi".into(),
+                    external_id: "bgm-jojo4".into(),
+                    target: Some(ScrapeTargetKind::Comic),
+                    title: Some("JOJO的奇妙冒险 第4部 不灭钻石".into()),
+                    creators: vec!["荒木飞吕彦".into()],
+                    cover_url: Some(format!("http://{addr}/series_cover.png")),
+                    ..Default::default()
+                },
+                true,
+                false,
+                None,
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            detail.entry.rel_path,
+            "JOJO的奇妙冒险 第4部 不灭钻石/JOJO的奇妙冒险 第4部 不灭钻石 Ch.01.cbz"
+        );
+        // Series-level cover is written in the series directory without adding a 3rd page inside the CBZ
+        assert!(
+            root.join("JOJO的奇妙冒险 第4部 不灭钻石/cover.png")
+                .is_file()
+        );
+        if let MediaMetadataPayload::Comic(c) = &detail.metadata {
+            assert_eq!(c.page_count, 2);
+            assert!(c.has_series_cover);
+        } else {
+            panic!("expected comic payload");
+        }
+
+        // Write SeriesGroup and re-rename to new series folder -> series cover.png migrates & old folder cleans up
+        let patched = app
+            .workbench
+            .write_metadata(
+                root_id,
+                &detail.entry.rel_path,
+                MediaMetadataPatch::Comic(ComicMetaPatch {
+                    series: Some("不灭钻石".into()),
+                    series_group: Some("JOJO的奇妙冒险".into()),
+                    volume: Some(1),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        if let MediaMetadataPayload::Comic(c) = &patched.metadata {
+            assert_eq!(c.series_group.as_deref(), Some("JOJO的奇妙冒险"));
+        } else {
+            panic!("expected comic payload");
+        }
+
+        let plans = app
+            .workbench
+            .preview_rename(
+                root_id,
+                std::slice::from_ref(&detail.entry.rel_path),
+                None,
+                None,
+                Some(MediaKind::Comic),
+            )
+            .await
+            .unwrap();
+        assert_eq!(plans[0].to_rel_path, "不灭钻石/不灭钻石 Vol.01 Ch.01.cbz");
+        app.workbench.execute_rename(root_id, &plans).await.unwrap();
+        assert!(root.join("不灭钻石/cover.png").is_file());
+        assert!(!root.join("JOJO的奇妙冒险 第4部 不灭钻石").exists());
+    }
 }

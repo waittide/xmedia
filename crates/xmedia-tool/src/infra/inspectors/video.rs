@@ -87,26 +87,6 @@ pub(crate) fn dir_has_single_video(dir: &Path) -> bool {
     count == 1
 }
 
-pub(crate) fn dir_contains_any_video(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.is_file()
-            && p.extension()
-                .and_then(|s| s.to_str())
-                .is_some_and(|e| VIDEO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
-        {
-            return true;
-        }
-        if p.is_dir() && dir_contains_any_video(&p) {
-            return true;
-        }
-    }
-    false
-}
-
 fn find_existing_nfo(video_path: &Path, is_episode_guess: bool) -> Option<PathBuf> {
     let same_stem = video_path.with_extension("nfo");
     if same_stem.is_file() {

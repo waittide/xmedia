@@ -83,7 +83,7 @@ const priorities = ref<ScraperPrioritiesDto>({
 
 const DEFAULT_RENAME_TEMPLATES: RenameTemplatesDto = {
   book: '{author} - {title}',
-  comic: '{series} - #{number:2} {title}',
+  comic: '{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}',
   music: '{track:2} - {artist} - {title}',
   video_movie: '{title} ({year})/{title} ({year})',
   video_episode: '{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}',
@@ -1037,7 +1037,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
                   占位符与 Jellyfin 目录归档语法
                 </div>
                 <p class="leading-relaxed text-[11px] text-[var(--ctp-subtext0)]">
-                  使用 <code class="font-mono text-[var(--ctp-accent)]">{变量}</code> 引用字段，<code class="font-mono text-[var(--ctp-accent)]">{变量:2}</code> 指定数值补零位数（如 <code class="font-mono">01</code>），<code class="font-mono text-[var(--ctp-accent)]">/</code> 表示相对当前根目录建夹归档；包裹为空变量的括号或方括号（如 <code class="font-mono">({year})</code>、<code class="font-mono">[tmdbid-{tmdbid}]</code>）会自动消隐。
+                  使用 <code class="font-mono text-[var(--ctp-accent)]">{变量}</code> 引用字段，<code class="font-mono text-[var(--ctp-accent)]">{变量:2}</code> 指定数值补零位数（如 <code class="font-mono">01</code>），<code class="font-mono text-[var(--ctp-accent)]">/</code> 表示相对当前根目录建夹归档；包裹为空变量的 <code class="font-mono">({year})</code> / <code class="font-mono">[tmdbid-{tmdbid}]</code> 会连同括号自动消隐，尖括号 <code class="font-mono">&lt;Vol.{volume:2}&gt;</code> 在变量非空时输出内部文本、为空时自动消隐。
                 </p>
               </div>
               <button
@@ -1059,7 +1059,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
               />
             </label>
             <label class="block">
-              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">漫画模板 ({series}, {number:2}, {volume:2}, {title}, {year})</span>
+              <span class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">漫画 Komga/Kavita 归档模板 ({series}, {series_group}, &lt;Vol.{volume:2}&gt;, &lt;Ch.{number:2}&gt;, {title}, {year})</span>
               <input
                 v-model="templates.comic"
                 type="text"

@@ -26,6 +26,7 @@ use crate::domain::workspace::RootId;
 use crate::infra::atomic_fs::{
     atomic_write_bytes, cleanup_empty_parent_dirs, find_companion_sidecars,
 };
+use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::video::{
     apply_video_patch_onto, is_season_dir, read_base_video_meta, render_season_nfo_xml,
     render_tvshow_nfo_xml, render_video_nfo_xml, write_image_replacing_opposite_ext,
@@ -429,7 +430,8 @@ impl ScrapingOrchestratorService {
         organize_by_template: Option<bool>,
         only_fill_missing: bool,
     ) -> DomainResult<MediaFileDetail> {
-        let should_organize = organize_by_template.unwrap_or(media_kind == MediaKind::Video);
+        let should_organize = organize_by_template
+            .unwrap_or(matches!(media_kind, MediaKind::Video | MediaKind::Comic));
 
         if media_kind == MediaKind::Video && should_organize {
             return self
@@ -479,7 +481,7 @@ impl ScrapingOrchestratorService {
             .write_metadata(root_id, rel_path, patch)
             .await?;
 
-        if apply_cover {
+        if apply_cover && media_kind != MediaKind::Comic {
             let creds = self.settings.get_credentials().await?;
             let client = build_http_client(&creds)?;
 
@@ -546,6 +548,44 @@ impl ScrapingOrchestratorService {
                     .workbench
                     .inspect_file(root_id, &plan.to_rel_path, Some(media_kind))
                     .await?;
+            }
+        }
+
+        // For Comics (Komga/Kavita convention): write series-level `cover.*` in the dedicated
+        // series directory AFTER organizing, without injecting an extra page into each chapter CBZ.
+        if apply_cover && media_kind == MediaKind::Comic {
+            let parent_dir_name = Path::new(&detail.entry.rel_path)
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let in_series_dir =
+                !parent_dir_name.is_empty() && !is_generic_comic_folder(parent_dir_name);
+            let already_has_series_cover = matches!(
+                &detail.metadata,
+                MediaMetadataPayload::Comic(c) if c.has_series_cover
+            );
+            if in_series_dir
+                && !(only_fill_missing && already_has_series_cover)
+                && let Some(ref cover_url) = scraped.cover_url
+                && !cover_url.trim().is_empty()
+            {
+                let creds = self.settings.get_credentials().await?;
+                let client = build_http_client(&creds)?;
+                if let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await {
+                    let cur_rel = detail.entry.rel_path.clone();
+                    detail = self
+                        .workbench
+                        .write_artwork(
+                            root_id,
+                            &cur_rel,
+                            &bytes,
+                            &mime,
+                            "series_cover",
+                            Some(MediaKind::Comic),
+                        )
+                        .await?;
+                }
             }
         }
 
@@ -1040,6 +1080,9 @@ fn filter_patch_for_missing(
             if non_empty_opt(&c.series) {
                 cp.series = None;
             }
+            if non_empty_opt(&c.series_group) {
+                cp.series_group = None;
+            }
             if non_empty_opt(&c.title) {
                 cp.title = None;
             }
@@ -1149,6 +1192,7 @@ fn map_scraped_to_patch(
             let is_chapter_scrape = s.track_or_episode_number.is_some();
             MediaMetadataPatch::Comic(ComicMetaPatch {
                 series: s.series_or_album.clone().or_else(|| s.title.clone()),
+                series_group: None,
                 title: is_chapter_scrape.then(|| s.title.clone()).flatten(),
                 number: s.track_or_episode_number.map(|n| n.to_string()),
                 volume: is_chapter_scrape

@@ -7,6 +7,9 @@ use regex::Regex;
 use crate::domain::media::MediaMetadataPayload;
 use crate::domain::workspace::sanitize_filename_component;
 
+static RE_UNWRAP_BLOCK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<([^<>]*\{[^<>]*\}[^<>]*)>").expect("valid unwrap block regex"));
+
 static RE_WRAPPER_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\([^\(\)]*\{[^\(\)]*\}[^\(\)]*\)|\[[^\[\]]*\{[^\[\]]*\}[^\[\]]*\]")
         .expect("valid wrapper regex")
@@ -84,24 +87,44 @@ fn build_token_map(
             put("publisher", b.publisher.as_deref().unwrap_or(""));
         }
         MediaMetadataPayload::Comic(c) => {
-            let series = c.series.as_deref().unwrap_or("Series");
+            let series = c
+                .series
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("Series");
+            let raw_number = c
+                .number
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("");
+            let raw_volume = c.volume.map(|v| v.to_string()).unwrap_or_default();
             let clean_title = c
                 .title
                 .as_deref()
                 .map(str::trim)
                 .filter(|t| {
                     !t.is_empty()
-                        && !t.eq_ignore_ascii_case(series.trim())
+                        && !t.eq_ignore_ascii_case(series)
                         && (c.has_comic_info_xml || !t.eq_ignore_ascii_case(fallback_stem.trim()))
                 })
                 .unwrap_or("");
+            let effective_title = if !clean_title.is_empty() {
+                clean_title
+            } else if raw_number.is_empty()
+                && raw_volume.is_empty()
+                && !fallback_stem.trim().eq_ignore_ascii_case(series)
+            {
+                fallback_stem.trim()
+            } else {
+                ""
+            };
             put("series", series);
-            put("title", clean_title);
-            put("number", c.number.as_deref().unwrap_or("1"));
-            put(
-                "volume",
-                &c.volume.map(|v| v.to_string()).unwrap_or_default(),
-            );
+            put("series_group", c.series_group.as_deref().unwrap_or(""));
+            put("title", effective_title);
+            put("number", raw_number);
+            put("volume", &raw_volume);
             put("year", &c.year.map(|y| y.to_string()).unwrap_or_default());
             put("publisher", c.publisher.as_deref().unwrap_or(""));
         }
@@ -225,11 +248,25 @@ fn replace_tokens_in_text(
 }
 
 fn render_single_segment(raw_seg: &str, vars: &HashMap<&'static str, String>) -> String {
-    // 1. Evaluate `(...)` and `[...]` wrapper blocks first: if a wrapper contains one or more
+    // 1. Evaluate `<...>` bracketless conditional blocks: unwraps inner content when any `{var}`
+    //    is non-empty, or drops the entire block when all tokens evaluate to empty.
+    let after_unwrap = RE_UNWRAP_BLOCK
+        .replace_all(raw_seg, |caps: &regex::Captures<'_>| {
+            let inner = &caps[1];
+            let (inner_rendered, tok_count, non_empty) = replace_tokens_in_text(inner, vars);
+            if tok_count > 0 && non_empty == 0 {
+                String::new()
+            } else {
+                inner_rendered
+            }
+        })
+        .into_owned();
+
+    // 2. Evaluate `(...)` and `[...]` wrapper blocks: if a wrapper contains one or more
     //    `{var}` tokens and ALL of them evaluate to empty, drop the entire wrapper block cleanly
     //    (e.g. `({year})` or `[tmdbid-{tmdbid}]` disappears when missing).
     let after_wrappers = RE_WRAPPER_BLOCK
-        .replace_all(raw_seg, |caps: &regex::Captures<'_>| {
+        .replace_all(&after_unwrap, |caps: &regex::Captures<'_>| {
             let block = &caps[0];
             let (inner_rendered, tok_count, non_empty) = replace_tokens_in_text(block, vars);
             if tok_count > 0 && non_empty == 0 {
@@ -325,7 +362,7 @@ mod tests {
     use std::path::Path;
 
     use super::{format_token_value, render_template_target};
-    use crate::domain::media::{MediaMetadataPayload, MusicFileMeta, VideoFileMeta};
+    use crate::domain::media::{ComicFileMeta, MediaMetadataPayload, MusicFileMeta, VideoFileMeta};
 
     #[test]
     fn width_specifier_pads_numbers_and_preserves_decimals_or_longer_digits() {
@@ -415,5 +452,65 @@ mod tests {
             "flac",
         );
         assert_eq!(song_rel, "Jay/YeHuiMei/03 - 周杰伦 - 晴天.flac");
+    }
+
+    #[test]
+    fn comic_komga_template_adapts_to_volume_chapter_and_combined_entries() {
+        let tpl = "{series}/{series} <Vol.{volume:2}> <Ch.{number:2}> {title}";
+
+        // 1. Pure tankobon volume (has volume, no chapter number)
+        let vol_only = MediaMetadataPayload::Comic(ComicFileMeta {
+            format: "cbz".into(),
+            series: Some("葬送的芙莉莲".into()),
+            volume: Some(1),
+            number: None,
+            has_comic_info_xml: true,
+            ..Default::default()
+        });
+        let (vol_rel, _) = render_template_target(
+            tpl,
+            "",
+            &vol_only,
+            Path::new("/comics/frieren_v1.cbz"),
+            "cbz",
+        );
+        assert_eq!(vol_rel, "葬送的芙莉莲/葬送的芙莉莲 Vol.01.cbz");
+
+        // 2. Serialized chapter (no volume, has chapter number + title)
+        let ch_only = MediaMetadataPayload::Comic(ComicFileMeta {
+            format: "cbz".into(),
+            series: Some("葬送的芙莉莲".into()),
+            volume: None,
+            number: Some("1".into()),
+            title: Some("冒险的结束".into()),
+            has_comic_info_xml: true,
+            ..Default::default()
+        });
+        let (ch_rel, _) = render_template_target(
+            tpl,
+            "",
+            &ch_only,
+            Path::new("/comics/frieren_01.cbz"),
+            "cbz",
+        );
+        assert_eq!(ch_rel, "葬送的芙莉莲/葬送的芙莉莲 Ch.01 冒险的结束.cbz");
+
+        // 3. Volume + chapter + title together
+        let both = MediaMetadataPayload::Comic(ComicFileMeta {
+            format: "cbz".into(),
+            series: Some("JOJO的奇妙冒险 第4部 不灭钻石".into()),
+            series_group: Some("JOJO的奇妙冒险".into()),
+            volume: Some(2),
+            number: Some("14".into()),
+            title: Some("虹村兄弟".into()),
+            has_comic_info_xml: true,
+            ..Default::default()
+        });
+        let (both_rel, _) =
+            render_template_target(tpl, "", &both, Path::new("/comics/jojo4_14.cbz"), "cbz");
+        assert_eq!(
+            both_rel,
+            "JOJO的奇妙冒险 第4部 不灭钻石/JOJO的奇妙冒险 第4部 不灭钻石 Vol.02 Ch.14 虹村兄弟.cbz"
+        );
     }
 }

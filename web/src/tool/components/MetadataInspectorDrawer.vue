@@ -41,7 +41,7 @@ const saveFeedback = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 const uploadingArtwork = ref(false)
 const coverInputRef = ref<HTMLInputElement | null>(null)
-const pendingSlot = ref<'cover' | 'poster' | 'fanart' | 'thumb'>('cover')
+const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
 const videoArtworkSlot = ref<'poster' | 'fanart' | 'thumb'>('poster')
 const lyricsTab = ref<'embedded' | 'sidecar'>('embedded')
 const baselineSnapshot = ref('')
@@ -59,6 +59,7 @@ const bookDescription = ref('')
 
 // Comic form
 const comicSeries = ref('')
+const comicSeriesGroup = ref('')
 const comicTitle = ref('')
 const comicNumber = ref('')
 const comicVolume = ref('')
@@ -121,6 +122,7 @@ function serializeFormSnapshot(): string {
     bookTags.value,
     bookDescription.value,
     comicSeries.value,
+    comicSeriesGroup.value,
     comicTitle.value,
     comicNumber.value,
     comicVolume.value,
@@ -184,6 +186,7 @@ function hydrateForm(d: MediaFileDetail): void {
   } else if (m.kind === 'comic') {
     const c = m.data
     comicSeries.value = c.series ?? ''
+    comicSeriesGroup.value = c.series_group ?? ''
     comicTitle.value = c.title ?? ''
     comicNumber.value = c.number ?? ''
     comicVolume.value = c.volume !== null ? String(c.volume) : ''
@@ -294,7 +297,9 @@ const directionOptions = [
   { value: 'webtoon', label: '条漫竖滑 (Webtoon)' },
 ]
 
-function triggerArtworkUpload(slot: 'cover' | 'poster' | 'fanart' | 'thumb'): void {
+function triggerArtworkUpload(
+  slot: 'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb',
+): void {
   pendingSlot.value = slot
   coverInputRef.value?.click()
 }
@@ -402,6 +407,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
         kind: 'comic',
         patch: {
           series: comicSeries.value,
+          series_group: comicSeriesGroup.value,
           title: comicTitle.value,
           number: comicNumber.value,
           volume: comicVolume.value.trim() ? Number.parseInt(comicVolume.value, 10) : -1,
@@ -705,16 +711,31 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
           </div>
 
           <div class="flex flex-wrap gap-1.5">
-            <button
-              v-if="detail.entry.media_kind !== 'video'"
-              type="button"
-              :disabled="uploadingArtwork"
-              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
-              @click="triggerArtworkUpload('cover')"
-            >
-              <LuUpload class="h-3.5 w-3.5" />
-              <span>{{ txt.actions.uploadCover }}</span>
-            </button>
+            <template v-if="detail.entry.media_kind !== 'video'">
+              <button
+                type="button"
+                :disabled="uploadingArtwork"
+                class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+                @click="triggerArtworkUpload('cover')"
+              >
+                <LuUpload class="h-3.5 w-3.5" />
+                <span>{{
+                  detail.entry.media_kind === 'comic' ? '替换单话封面' : txt.actions.uploadCover
+                }}</span>
+              </button>
+              <button
+                v-if="
+                  detail.entry.media_kind === 'comic' && detail.entry.rel_path.includes('/')
+                "
+                type="button"
+                :disabled="uploadingArtwork"
+                class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+                @click="triggerArtworkUpload('series_cover')"
+              >
+                <LuImage class="h-3.5 w-3.5" />
+                <span>上传系列封面</span>
+              </button>
+            </template>
             <template v-else>
               <button
                 type="button"
@@ -1062,10 +1083,19 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
       <div v-else-if="detail.metadata.kind === 'comic'" class="space-y-2.5">
         <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
           <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">系列名 (Series)</span>
+            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">系列 / 部名 (Series，对应一级连载目录)</span>
             <input
               v-model="comicSeries"
               type="text"
+              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+            />
+          </label>
+          <label class="block sm:col-span-2">
+            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">总系列 / 系列组 (SeriesGroup，分多部作品选填)</span>
+            <input
+              v-model="comicSeriesGroup"
+              type="text"
+              placeholder="如：JOJO的奇妙冒险（单部作品留空）"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
           </label>

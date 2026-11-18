@@ -114,6 +114,7 @@ export interface BookFileMeta {
 export interface ComicFileMeta {
   format: string
   series: string | null
+  series_group: string | null
   title: string | null
   number: string | null
   volume: number | null
@@ -129,6 +130,7 @@ export interface ComicFileMeta {
   page_count: number
   has_comic_info_xml: boolean
   has_cover: boolean
+  has_series_cover: boolean
 }
 
 export interface MusicFileMeta {
@@ -228,6 +230,7 @@ export interface BookMetaPatch {
 
 export interface ComicMetaPatch {
   series?: string
+  series_group?: string
   title?: string
   number?: string
   volume?: number

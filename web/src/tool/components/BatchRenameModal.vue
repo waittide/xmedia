@@ -57,7 +57,15 @@ const tokenChips = computed<string[]>(() => {
     ]
   }
   if (k === 'comic') {
-    return ['{series}', '{number:2}', '{volume:2}', '{title}', '{publisher}', '{year}']
+    return [
+      '{series}',
+      '{series_group}',
+      '<Vol.{volume:2}>',
+      '<Ch.{number:2}>',
+      '{title}',
+      '{publisher}',
+      '{year}',
+    ]
   }
   return ['{author}', '{title}', '{publisher}', '{year}', '{isbn}']
 })

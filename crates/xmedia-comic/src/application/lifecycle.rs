@@ -245,6 +245,16 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
             ordered_chapters.sort_by(|a, b| a.cmp_order(b));
             series.chapter_count = ordered_chapters.len() as u32;
+            if let Some(ref cov_bytes) = entry.series_cover_bytes {
+                let thumb_key = format!("series_{}", series.id);
+                if let Ok(saved_key) = self
+                    .thumbnails
+                    .generate_from_bytes(&thumb_key, cov_bytes)
+                    .await
+                {
+                    series.cover_path = Some(saved_key);
+                }
+            }
             if series.cover_path.is_none() {
                 series.cover_path = ordered_chapters.iter().find_map(|c| c.cover_path.clone());
             }
@@ -368,6 +378,14 @@ pub fn apply_comic_info_to_series(series: &mut Series, ci: &ComicInfoMetadata) {
     {
         series.title = series_title.trim().to_owned();
         series.sort_title = series.title.clone();
+    }
+    if let Some(group) = &ci.series_group {
+        let trimmed = group.trim();
+        if !trimmed.is_empty() && !trimmed.eq_ignore_ascii_case(&series.title) {
+            let mut combined = series.alt_titles.clone();
+            combined.push(trimmed.to_owned());
+            series.alt_titles = normalize_list(combined);
+        }
     }
     if let Some(summary) = &ci.summary
         && series.summary.is_empty()
