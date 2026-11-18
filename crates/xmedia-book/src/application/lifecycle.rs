@@ -72,6 +72,24 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
             }
         }
 
+        let total = entries.len() as u64;
+        let progress_step = if total <= 100 {
+            1
+        } else if total <= 1000 {
+            5
+        } else {
+            20
+        };
+        library.mark_scanning(0, Some(total));
+        let _ = self.libraries.save(&library).await;
+        self.events.publish(SystemEvent::LibraryScanProgress {
+            library_id: library.id,
+            library_name: library.name.clone(),
+            media_kind: MediaKind::Book,
+            scanned: 0,
+            total: Some(total),
+        });
+
         let mut seen_paths = HashSet::with_capacity(entries.len());
         let mut added = 0u64;
         let mut updated = 0u64;
@@ -197,13 +215,15 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
             }
 
             let scanned = (idx + 1) as u64;
-            if scanned.is_multiple_of(10) {
-                library.mark_scanning(scanned);
+            if scanned.is_multiple_of(progress_step) || scanned == total {
+                library.mark_scanning(scanned, Some(total));
                 let _ = self.libraries.save(&library).await;
                 self.events.publish(SystemEvent::LibraryScanProgress {
                     library_id: library.id,
+                    library_name: library.name.clone(),
                     media_kind: MediaKind::Book,
                     scanned,
+                    total: Some(total),
                 });
             }
         }
@@ -226,6 +246,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
 
         self.events.publish(SystemEvent::LibraryScanCompleted {
             library_id: library.id,
+            library_name: library.name.clone(),
             media_kind: MediaKind::Book,
             scanned: total_scanned,
             added,

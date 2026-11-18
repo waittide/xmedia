@@ -272,7 +272,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        stale.mark_scanning(42);
+        stale.mark_scanning(42, Some(100));
         libraries_repo.save(&stale).await.unwrap();
         lib_svc.recover_interrupted_scans().await.unwrap();
         let recovered = libraries_repo

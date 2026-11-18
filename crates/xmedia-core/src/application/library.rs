@@ -265,7 +265,7 @@ impl LibraryService {
             );
         }
 
-        lib.mark_scanning(0);
+        lib.mark_scanning(0, None);
         if let Err(err) = self.libraries.save(&lib).await {
             self.remove_active_scan_if_seq(lib.id, scan_seq);
             return Err(err);
@@ -289,6 +289,7 @@ impl LibraryService {
 
         self.events.publish(SystemEvent::LibraryScanStarted {
             library_id: lib.id,
+            library_name: lib.name.clone(),
             media_kind: lib.media_kind,
         });
 
@@ -383,6 +384,7 @@ impl LibraryService {
         if was_scanning {
             self.events.publish(SystemEvent::LibraryScanFailed {
                 library_id: id,
+                library_name: lib.name.clone(),
                 media_kind: lib.media_kind,
                 message: "library deleted".to_string(),
             });
@@ -461,6 +463,7 @@ async fn settle_scan_failure(
         let _ = libraries_repo.save(&current).await;
         events.publish(SystemEvent::LibraryScanFailed {
             library_id,
+            library_name: current.name,
             media_kind,
             message,
         });

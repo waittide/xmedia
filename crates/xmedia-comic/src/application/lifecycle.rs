@@ -99,6 +99,24 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             .iter()
             .flat_map(|s| s.chapters.iter().map(|c| c.source_path.clone()))
             .collect();
+        let total_chapters: u64 = scanned_series.iter().map(|s| s.chapters.len() as u64).sum();
+        let progress_step = if total_chapters <= 100 {
+            1
+        } else if total_chapters <= 1000 {
+            5
+        } else {
+            20
+        };
+        library.mark_scanning(0, Some(total_chapters));
+        let _ = self.libraries.save(&library).await;
+        self.events.publish(SystemEvent::LibraryScanProgress {
+            library_id: library.id,
+            library_name: library.name.clone(),
+            media_kind: MediaKind::Comic,
+            scanned: 0,
+            total: Some(total_chapters),
+        });
+
         let mut seen_paths: HashSet<String> = HashSet::new();
         let mut affected_series: HashSet<SeriesId> = HashSet::new();
         let mut added = 0u64;
@@ -232,13 +250,17 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                 self.chapters.save(&chapter).await?;
                 ordered_chapters.push(chapter);
 
-                if scanned_chapters.is_multiple_of(10) {
-                    library.mark_scanning(scanned_chapters);
+                if scanned_chapters.is_multiple_of(progress_step)
+                    || scanned_chapters == total_chapters
+                {
+                    library.mark_scanning(scanned_chapters, Some(total_chapters));
                     let _ = self.libraries.save(&library).await;
                     self.events.publish(SystemEvent::LibraryScanProgress {
                         library_id: library.id,
+                        library_name: library.name.clone(),
                         media_kind: MediaKind::Comic,
                         scanned: scanned_chapters,
+                        total: Some(total_chapters),
                     });
                 }
             }
@@ -294,6 +316,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
         self.events.publish(SystemEvent::LibraryScanCompleted {
             library_id: library.id,
+            library_name: library.name.clone(),
             media_kind: MediaKind::Comic,
             scanned: scanned_chapters,
             added,

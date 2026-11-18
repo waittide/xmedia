@@ -75,15 +75,23 @@ pub trait TokenServicePort: Send + Sync {
 pub enum SystemEvent {
     LibraryScanStarted {
         library_id: LibraryId,
+        #[serde(default)]
+        library_name: String,
         media_kind: MediaKind,
     },
     LibraryScanProgress {
         library_id: LibraryId,
+        #[serde(default)]
+        library_name: String,
         media_kind: MediaKind,
         scanned: u64,
+        #[serde(default)]
+        total: Option<u64>,
     },
     LibraryScanCompleted {
         library_id: LibraryId,
+        #[serde(default)]
+        library_name: String,
         media_kind: MediaKind,
         scanned: u64,
         added: u64,
@@ -92,6 +100,8 @@ pub enum SystemEvent {
     },
     LibraryScanFailed {
         library_id: LibraryId,
+        #[serde(default)]
+        library_name: String,
         media_kind: MediaKind,
         message: String,
     },

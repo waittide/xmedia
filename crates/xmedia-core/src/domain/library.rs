@@ -94,6 +94,8 @@ pub enum ScanStatus {
     Idle,
     Scanning {
         scanned: u64,
+        #[serde(default)]
+        total: Option<u64>,
     },
     Completed {
         scanned: u64,
@@ -181,8 +183,8 @@ impl Library {
         Ok(())
     }
 
-    pub fn mark_scanning(&mut self, scanned: u64) {
-        self.scan_status = ScanStatus::Scanning { scanned };
+    pub fn mark_scanning(&mut self, scanned: u64, total: Option<u64>) {
+        self.scan_status = ScanStatus::Scanning { scanned, total };
         self.updated_at = Timestamp::now();
     }
 

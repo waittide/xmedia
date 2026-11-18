@@ -512,6 +512,24 @@ impl MediaDomainLifecycle for MusicIngestService {
             }
         }
 
+        let total = entries.len() as u64;
+        let progress_step = if total <= 100 {
+            1
+        } else if total <= 1000 {
+            5
+        } else {
+            20
+        };
+        library.mark_scanning(0, Some(total));
+        let _ = self.libraries.save(&library).await;
+        self.events.publish(SystemEvent::LibraryScanProgress {
+            library_id: library.id,
+            library_name: library.name.clone(),
+            media_kind: MediaKind::Music,
+            scanned: 0,
+            total: Some(total),
+        });
+
         let mut seen_rel: HashSet<String> = HashSet::new();
         let mut dir_cover_cache: HashMap<String, Option<String>> = HashMap::new();
         let mut scanned_count = 0u64;
@@ -539,6 +557,17 @@ impl MediaDomainLifecycle for MusicIngestService {
                     prev.updated_at = Timestamp::now();
                     self.catalog_repo.save_track(&prev).await?;
                     updated_count += 1;
+                }
+                if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
+                    library.mark_scanning(scanned_count, Some(total));
+                    let _ = self.libraries.save(&library).await;
+                    self.events.publish(SystemEvent::LibraryScanProgress {
+                        library_id: library.id,
+                        library_name: library.name.clone(),
+                        media_kind: MediaKind::Music,
+                        scanned: scanned_count,
+                        total: Some(total),
+                    });
                 }
                 continue;
             }
@@ -625,13 +654,15 @@ impl MediaDomainLifecycle for MusicIngestService {
                 added_count += 1;
             }
 
-            if scanned_count.is_multiple_of(20) {
-                library.mark_scanning(scanned_count);
+            if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
+                library.mark_scanning(scanned_count, Some(total));
                 let _ = self.libraries.save(&library).await;
                 self.events.publish(SystemEvent::LibraryScanProgress {
                     library_id: library.id,
+                    library_name: library.name.clone(),
                     media_kind: MediaKind::Music,
                     scanned: scanned_count,
+                    total: Some(total),
                 });
             }
         }
@@ -652,6 +683,7 @@ impl MediaDomainLifecycle for MusicIngestService {
 
         self.events.publish(SystemEvent::LibraryScanCompleted {
             library_id: library.id,
+            library_name: library.name.clone(),
             media_kind: MediaKind::Music,
             scanned: scanned_count,
             added: added_count,

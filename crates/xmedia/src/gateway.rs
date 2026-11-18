@@ -322,10 +322,12 @@ async fn events_ws(
         .unwrap_or_default()
         .into_iter()
         .filter_map(|lib| match lib.scan_status {
-            ScanStatus::Scanning { scanned } => Some(SystemEvent::LibraryScanProgress {
+            ScanStatus::Scanning { scanned, total } => Some(SystemEvent::LibraryScanProgress {
                 library_id: lib.id,
+                library_name: lib.name,
                 media_kind: lib.media_kind,
                 scanned,
+                total,
             }),
             _ => None,
         })

@@ -363,6 +363,24 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
             }
         }
 
+        let total = entries.len() as u64;
+        let progress_step = if total <= 100 {
+            1
+        } else if total <= 1000 {
+            5
+        } else {
+            20
+        };
+        library.mark_scanning(0, Some(total));
+        let _ = self.libraries.save(&library).await;
+        self.events.publish(SystemEvent::LibraryScanProgress {
+            library_id: library.id,
+            library_name: library.name.clone(),
+            media_kind: MediaKind::Video,
+            scanned: 0,
+            total: Some(total),
+        });
+
         let mut seen_rel: HashSet<String> = HashSet::new();
         let mut scanned_count = 0u64;
         let mut added_count = 0u64;
@@ -388,6 +406,17 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                     existing.updated_at = Timestamp::now();
                     self.catalog_repo.save_video(&existing).await?;
                     updated_count += 1;
+                }
+                if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
+                    library.mark_scanning(scanned_count, Some(total));
+                    let _ = self.libraries.save(&library).await;
+                    self.events.publish(SystemEvent::LibraryScanProgress {
+                        library_id: library.id,
+                        library_name: library.name.clone(),
+                        media_kind: MediaKind::Video,
+                        scanned: scanned_count,
+                        total: Some(total),
+                    });
                 }
                 continue;
             }
@@ -504,13 +533,15 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                 added_count += 1;
             }
 
-            if scanned_count.is_multiple_of(10) {
-                library.mark_scanning(scanned_count);
+            if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
+                library.mark_scanning(scanned_count, Some(total));
                 let _ = self.libraries.save(&library).await;
                 self.events.publish(SystemEvent::LibraryScanProgress {
                     library_id: library.id,
+                    library_name: library.name.clone(),
                     media_kind: MediaKind::Video,
                     scanned: scanned_count,
+                    total: Some(total),
                 });
             }
         }
@@ -531,6 +562,7 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
 
         self.events.publish(SystemEvent::LibraryScanCompleted {
             library_id: library.id,
+            library_name: library.name.clone(),
             media_kind: MediaKind::Video,
             scanned: scanned_count,
             added: added_count,
