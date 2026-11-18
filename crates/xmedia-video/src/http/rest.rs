@@ -86,6 +86,11 @@ struct PosterParams {
     size: Option<u32>,
 }
 
+#[derive(Deserialize, Default)]
+struct SubtitleParams {
+    offset_secs: Option<f64>,
+}
+
 #[derive(Deserialize)]
 struct WatchedBody {
     watched: bool,
@@ -253,13 +258,17 @@ async fn get_subtitle_vtt(
     State(state): State<VideoHttpState>,
     VideoWebAuth(_user): VideoWebAuth,
     Path((id, sub_id)): Path<(Uuid, String)>,
+    Query(q): Query<SubtitleParams>,
 ) -> ApiResult<Response> {
     let _ = VideoCatalogService::collect_subtitle_dtos;
-    let vtt = state
+    let mut vtt = state
         .services
         .catalog
         .get_subtitle_webvtt(VideoId(id), &sub_id)
         .await?;
+    if let Some(offset_secs) = q.offset_secs.filter(|&v| v.is_finite() && v > 0.0) {
+        vtt = crate::infra::media_engine::shift_webvtt_timestamps(&vtt, offset_secs);
+    }
     let mut res = (StatusCode::OK, Body::from(vtt)).into_response();
     res.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -355,6 +364,7 @@ async fn upload_show_poster(
 
 async fn get_poster(
     State(state): State<VideoHttpState>,
+    VideoWebAuth(_user): VideoWebAuth,
     Path(key): Path<String>,
     Query(p): Query<PosterParams>,
 ) -> ApiResult<Response> {

@@ -43,7 +43,7 @@ pub fn router() -> Router<MusicHttpState> {
         .route("/tracks", get(query_tracks))
         .route("/tracks/recent", get(recent_tracks))
         .route("/tracks/random", get(random_tracks))
-        .route("/tracks/{id}", get(get_track))
+        .route("/tracks/{id}", get(get_track).delete(delete_track))
         .route("/tracks/{id}/tags", put(set_track_tags))
         .route("/tracks/{id}/lyrics", get(get_track_lyrics))
         .route("/tracks/{id}/stream", get(stream_track))
@@ -151,6 +151,7 @@ struct AlbumListParams {
 #[derive(Deserialize, Default)]
 struct ArtistListParams {
     search: Option<String>,
+    library_id: Option<Uuid>,
     role: Option<ArtistRoleFilter>,
     offset: Option<u32>,
     size: Option<u32>,
@@ -333,6 +334,19 @@ async fn get_track(
     ))
 }
 
+async fn delete_track(
+    State(state): State<MusicHttpState>,
+    MusicWebAuth(user): MusicWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<OkResponse>> {
+    state
+        .services
+        .ingest
+        .delete_track(&user, TrackId(id))
+        .await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
 async fn get_track_lyrics(
     State(state): State<MusicHttpState>,
     MusicWebAuth(_user): MusicWebAuth,
@@ -386,6 +400,7 @@ async fn download_track(
 
 async fn get_cover(
     State(state): State<MusicHttpState>,
+    MusicWebAuth(_user): MusicWebAuth,
     Path(id): Path<String>,
     Query(p): Query<CoverParams>,
 ) -> ApiResult<Response> {
@@ -436,6 +451,7 @@ async fn list_artists(
 ) -> ApiResult<Json<PagedResult<ArtistDto>>> {
     let q = ArtistQuery {
         search: p.search,
+        library_id: p.library_id.map(LibraryId),
         role_filter: p.role.unwrap_or_default(),
         offset: p.offset.unwrap_or(0),
         size: p.size.unwrap_or(100).clamp(1, 1000),
@@ -487,7 +503,7 @@ async fn set_track_tags(
         state
             .services
             .catalog
-            .set_track_tags(user.id, TrackId(id), body.tags)
+            .set_track_tags(&user, TrackId(id), body.tags)
             .await?,
     ))
 }
@@ -548,7 +564,7 @@ async fn get_playlist(
         state
             .services
             .collection
-            .get_playlist(user.id, PlaylistId(id))
+            .get_playlist(&user, PlaylistId(id))
             .await?,
     ))
 }

@@ -194,6 +194,9 @@ export const api = {
       body: JSON.stringify(patch),
     }),
 
+  deleteChapter: (chapterId: string) =>
+    requestJson<void>(`/comic/chapters/${encodeURIComponent(chapterId)}`, { method: 'DELETE' }),
+
   updateProgress: (chapterId: string, currentPage: number, isCompleted?: boolean) =>
     requestJson<void>(`/comic/chapters/${encodeURIComponent(chapterId)}/progress`, {
       method: 'PUT',

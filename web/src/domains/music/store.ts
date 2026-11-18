@@ -49,10 +49,12 @@ export const useMusicStore = defineStore('music', () => {
     if (track.starred_at) {
       await api.unstar({ ids: [track.id] })
       track.starred_at = null
+      bumpCatalogVersion()
       return false
     } else {
       await api.star({ ids: [track.id] })
       track.starred_at = new Date().toISOString()
+      bumpCatalogVersion()
       return true
     }
   }
@@ -61,10 +63,12 @@ export const useMusicStore = defineStore('music', () => {
     if (album.starred_at) {
       await api.unstar({ album_ids: [album.id] })
       album.starred_at = null
+      bumpCatalogVersion()
       return false
     } else {
       await api.star({ album_ids: [album.id] })
       album.starred_at = new Date().toISOString()
+      bumpCatalogVersion()
       return true
     }
   }
@@ -73,10 +77,12 @@ export const useMusicStore = defineStore('music', () => {
     if (artist.starred_at) {
       await api.unstar({ artist_ids: [artist.id] })
       artist.starred_at = null
+      bumpCatalogVersion()
       return false
     } else {
       await api.star({ artist_ids: [artist.id] })
       artist.starred_at = new Date().toISOString()
+      bumpCatalogVersion()
       return true
     }
   }

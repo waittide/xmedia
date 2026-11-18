@@ -296,5 +296,6 @@ pub struct VideoQueryFilter {
 pub struct ShowQueryFilter {
     pub library_id: Option<LibraryId>,
     pub genre: Option<String>,
+    pub tag: Option<String>,
     pub search: Option<String>,
 }

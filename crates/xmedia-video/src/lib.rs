@@ -102,7 +102,9 @@ mod tests {
     use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
     use xmedia_core::{ensure_core_schema, register_core_models};
 
-    use crate::application::dto::{SaveWatchProgressInput, VideoUploadItem};
+    use crate::application::dto::{SaveWatchProgressInput, UpsertVideoShelfInput, VideoUploadItem};
+    use crate::domain::video::{ShowMetadataPatch, ShowQueryFilter};
+    use crate::domain::watch::VideoFavoriteKind;
     use crate::http::rest_router;
     use crate::http::state::VideoHttpState;
     use crate::{ensure_video_schema, init_video_module, register_video_models};
@@ -409,5 +411,163 @@ mod tests {
                 .as_ref()
                 .is_some_and(|p| p.completed)
         );
+
+        // 5. Verify WebVTT timestamp shift for transcoded seeks & poster auth enforcement
+        let shifted_vtt_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/video/videos/{}/subtitles/ext-s0.vtt?token={}&offset_secs=2.0",
+                        movie.id, session.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shifted_vtt_res.status(), StatusCode::OK);
+        let shifted_vtt = String::from_utf8(
+            to_bytes(shifted_vtt_res.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(shifted_vtt.contains("00:00:00.000 --> 00:00:02.000"));
+
+        let dropped_vtt_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/video/videos/{}/subtitles/ext-s0.vtt?token={}&offset_secs=5.0",
+                        movie.id, session.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(dropped_vtt_res.status(), StatusCode::OK);
+        let dropped_vtt = String::from_utf8(
+            to_bytes(dropped_vtt_res.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(!dropped_vtt.contains("Do not go gentle"));
+
+        let poster_key = movie.poster_key.as_deref().unwrap();
+        let unauth_poster_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/video/posters/{poster_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth_poster_res.status(), StatusCode::UNAUTHORIZED);
+
+        let auth_poster_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/video/posters/{poster_key}?token={}",
+                        session.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(auth_poster_res.status(), StatusCode::OK);
+
+        // 6. Verify ShowQueryFilter.tag filtering & update_show_metadata episode show_title sync
+        let moved_show_id = moved_ep1.video.show_id.unwrap();
+        video_services
+            .catalog
+            .update_show_metadata(
+                &admin,
+                moved_show_id,
+                ShowMetadataPatch {
+                    title: Some("Frieren Beyond Journey".into()),
+                    tags: Some(vec!["fantasy".into()]),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        let tagged_shows = video_services
+            .catalog
+            .list_shows(
+                &admin,
+                ShowQueryFilter {
+                    tag: Some("FANTASY".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(tagged_shows.len(), 1);
+        assert!(
+            video_services
+                .catalog
+                .list_shows(
+                    &admin,
+                    ShowQueryFilter {
+                        tag: Some("scifi".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let ep1_after_show_rename = video_services
+            .catalog
+            .get_video_detail(&admin, ep1.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            ep1_after_show_rename.video.show_title.as_deref(),
+            Some("Frieren Beyond Journey")
+        );
+
+        // 7. Verify delete_video removes favorite and shelf references
+        video_services
+            .watch
+            .set_favorite(&admin, VideoFavoriteKind::Video, movie.id.0, true)
+            .await
+            .unwrap();
+        let shelf = video_services
+            .watch
+            .create_shelf(
+                &admin,
+                UpsertVideoShelfInput {
+                    name: "Favorites".into(),
+                    description: String::new(),
+                    video_ids: vec![movie.id],
+                },
+            )
+            .await
+            .unwrap();
+        video_services
+            .catalog
+            .delete_video(&admin, movie.id)
+            .await
+            .unwrap();
+        let favs_after = video_services.watch.list_favorites(&admin).await.unwrap();
+        assert!(favs_after.videos.is_empty());
+        let shelf_after = video_services
+            .watch
+            .get_shelf(&admin, shelf.shelf.id)
+            .await
+            .unwrap();
+        assert!(shelf_after.videos.is_empty());
     }
 }

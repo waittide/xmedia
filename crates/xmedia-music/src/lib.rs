@@ -102,6 +102,7 @@ mod tests {
     use xmedia_core::application::auth::AuthService;
     use xmedia_core::application::dto::{CreateLibraryInput, CreateUserInput, SetupAdminInput};
     use xmedia_core::application::library::LibraryService;
+    use xmedia_core::domain::error::DomainError;
     use xmedia_core::domain::library::{MediaKind, ScanStatus};
     use xmedia_core::domain::user::UserRole;
     use xmedia_core::infra::events::BroadcastEventHub;
@@ -410,6 +411,86 @@ mod tests {
                 .unwrap()
                 .item_count,
             1
+        );
+
+        // 6. Verify empty/orphan LRC upload rejection, non-admin tag denial, cover auth,
+        //    private playlist isolation, lyrics artist fallback, and delete_track cleanup
+        let orphan_res = music_services
+            .ingest
+            .upload_files(
+                &admin,
+                vec![UploadFileItem {
+                    filename: "orphan.lrc".into(),
+                    bytes: Bytes::from_static(b"[00:01.00]orphan line\n"),
+                }],
+            )
+            .await;
+        assert!(matches!(orphan_res, Err(DomainError::Validation(_))));
+
+        let bob_user = auth_svc.authenticate_api_key(&bob.api_key).await.unwrap();
+        let bob_tag_res = music_services
+            .catalog
+            .set_track_tags(&bob_user, track_id, vec!["night".into()])
+            .await;
+        assert!(matches!(bob_tag_res, Err(DomainError::Forbidden(_))));
+
+        let unauth_cover_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/music/covers/nonexistent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth_cover_res.status(), StatusCode::UNAUTHORIZED);
+
+        let artist_name = uploaded.uploaded_tracks[0].artist_name.clone();
+        let fallback_lyrics = music_services
+            .catalog
+            .get_lyrics_by_artist_title(Some(&artist_name), None)
+            .await
+            .unwrap();
+        assert!(!fallback_lyrics.is_empty());
+
+        let pl = music_services
+            .collection
+            .create_playlist(&admin, "Admin Private", None, false, vec![track_id])
+            .await
+            .unwrap();
+        assert_eq!(pl.tracks.len(), 1);
+        assert!(matches!(
+            music_services
+                .collection
+                .get_playlist(&bob_user, pl.playlist.id)
+                .await,
+            Err(DomainError::Forbidden(_))
+        ));
+
+        music_services
+            .ingest
+            .delete_track(&admin, track_id)
+            .await
+            .unwrap();
+        assert!(matches!(
+            music_services.catalog.get_track(admin.id, track_id).await,
+            Err(DomainError::NotFound(_))
+        ));
+        let pl_after = music_services
+            .collection
+            .get_playlist(&admin, pl.playlist.id)
+            .await
+            .unwrap();
+        assert!(pl_after.tracks.is_empty());
+        assert!(
+            music_services
+                .collection
+                .get_starred(admin.id, None)
+                .await
+                .unwrap()
+                .tracks
+                .is_empty()
         );
     }
 }

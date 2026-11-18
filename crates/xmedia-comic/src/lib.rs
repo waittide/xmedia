@@ -52,7 +52,7 @@ pub fn init_comic_module(
         archives.clone(),
         thumbnails.clone(),
         storage.clone(),
-        events,
+        events.clone(),
     ));
     library_service.register_lifecycle(lifecycle);
 
@@ -64,6 +64,7 @@ pub fn init_comic_module(
         archives,
         thumbnails,
         storage,
+        events,
     ));
     let reading = Arc::new(ComicReadingService::new(
         series.clone(),
@@ -99,6 +100,7 @@ mod tests {
     use xmedia_core::application::auth::AuthService;
     use xmedia_core::application::dto::{CreateLibraryInput, SetupAdminInput};
     use xmedia_core::application::library::LibraryService;
+    use xmedia_core::domain::error::DomainError;
     use xmedia_core::domain::library::MediaKind;
     use xmedia_core::infra::events::BroadcastEventHub;
     use xmedia_core::infra::persistence::repositories::{
@@ -109,7 +111,7 @@ mod tests {
     use zip::ZipWriter;
     use zip::write::SimpleFileOptions;
 
-    use crate::application::dto::UploadArchiveInput;
+    use crate::application::dto::{SeriesQueryFilter, UploadArchiveInput};
     use crate::http::state::ComicHttpState;
     use crate::http::{opds_router, rest_router};
     use crate::{ensure_comic_schema, init_comic_module, register_comic_models};
@@ -352,5 +354,97 @@ mod tests {
                 .item_count,
             1
         );
+
+        // 5. Verify uploaded comic with same title as LocalMount series does NOT merge into local library
+        let local_list = comic_services
+            .catalog
+            .list_series(
+                &admin,
+                SeriesQueryFilter {
+                    library_id: Some(created_lib.id),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(local_list.len(), 1);
+        let local_dm = &local_list[0];
+
+        let cross_upload = comic_services
+            .catalog
+            .upload_archive(
+                &admin,
+                UploadArchiveInput {
+                    filename: "Dungeon Meshi - Ch.2.cbz".into(),
+                    bytes: sample_cbz("Dungeon Meshi", "2"),
+                    target_series_id: Some(local_dm.id),
+                    series_title_override: None,
+                },
+            )
+            .await;
+        assert!(matches!(cross_upload, Err(DomainError::Validation(_))));
+
+        let managed_dm = comic_services
+            .catalog
+            .upload_archive(
+                &admin,
+                UploadArchiveInput {
+                    filename: "Dungeon Meshi - Ch.2.cbz".into(),
+                    bytes: sample_cbz("Dungeon Meshi", "2"),
+                    target_series_id: None,
+                    series_title_override: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_ne!(managed_dm.series_id, local_dm.id);
+
+        // 6. Verify DELETE /api/v1/comic/chapters/{id} decrements count and removes empty series
+        let del_ch1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/api/v1/comic/chapters/{}?token={}",
+                        up1.chapter_id, session.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del_ch1.status(), StatusCode::NO_CONTENT);
+
+        let after_ch1 = comic_services
+            .catalog
+            .get_series_detail(&admin, up1.series_id)
+            .await
+            .unwrap();
+        assert_eq!(after_ch1.series.chapter_count, 1);
+
+        let del_ch2 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!(
+                        "/api/v1/comic/chapters/{}?token={}",
+                        _up2.chapter_id, session.token
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del_ch2.status(), StatusCode::NO_CONTENT);
+
+        assert!(matches!(
+            comic_services
+                .catalog
+                .get_series_detail(&admin, up1.series_id)
+                .await,
+            Err(DomainError::NotFound(_))
+        ));
     }
 }

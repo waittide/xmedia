@@ -46,7 +46,7 @@ export function mapVideoLibrary(raw: CoreLibraryDto): VideoLibraryDto {
 
 export function buildPosterUrl(posterKey: string | null | undefined, size = 480): string | null {
   if (!posterKey) return null
-  return `/api/v1/video/posters/${encodeURIComponent(posterKey)}?size=${size}`
+  return withAuthToken(`/api/v1/video/posters/${encodeURIComponent(posterKey)}?size=${size}`)
 }
 
 export function buildVideoStreamUrl(
@@ -72,10 +72,14 @@ export function buildVideoDownloadUrl(videoId: string): string {
   return withAuthToken(`/api/v1/video/videos/${encodeURIComponent(videoId)}/download`)
 }
 
-export function buildSubtitleVttUrl(videoId: string, subId: string): string {
-  return withAuthToken(
-    `/api/v1/video/videos/${encodeURIComponent(videoId)}/subtitles/${encodeURIComponent(subId)}`,
-  )
+export function buildSubtitleVttUrl(
+  videoId: string,
+  subId: string,
+  offsetSecs = 0,
+): string {
+  const base = `/api/v1/video/videos/${encodeURIComponent(videoId)}/subtitles/${encodeURIComponent(subId)}`
+  const query = offsetSecs > 0 ? `?offset_secs=${Math.floor(offsetSecs)}` : ''
+  return withAuthToken(`${base}${query}`)
 }
 
 export const api = {

@@ -386,6 +386,12 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_lowercase);
+        let tag_lower = filter
+            .tag
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_lowercase);
 
         let mut shows: Vec<VideoShow> = rows
             .into_iter()
@@ -395,6 +401,11 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
                 genre_lower
                     .as_ref()
                     .is_none_or(|g| s.genres.iter().any(|sg| sg.to_lowercase() == *g))
+            })
+            .filter(|s| {
+                tag_lower
+                    .as_ref()
+                    .is_none_or(|t| s.tags.iter().any(|st| st.to_lowercase() == *t))
             })
             .filter(|s| {
                 search_lower.as_ref().is_none_or(|q| {
@@ -619,6 +630,45 @@ impl VideoWatchRepository for ToastyVideoWatchRepository {
             .map_err(db_err)?
         {
             row.delete().exec(&mut db).await.map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    async fn delete_video_references(
+        &self,
+        video_id: VideoId,
+        deleted_show_id: Option<ShowId>,
+    ) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        for row in VideoFavoriteModel::all()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            let match_video = row.kind == "video" && row.target_id == video_id.0;
+            let match_show =
+                row.kind == "show" && deleted_show_id.is_some_and(|sid| sid.0 == row.target_id);
+            if match_video || match_show {
+                row.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+        for mut shelf in VideoShelfModel::all().exec(&mut db).await.map_err(db_err)? {
+            if shelf.video_ids.0.contains(&video_id) {
+                let filtered: Vec<VideoId> = shelf
+                    .video_ids
+                    .0
+                    .iter()
+                    .copied()
+                    .filter(|&id| id != video_id)
+                    .collect();
+                shelf
+                    .update()
+                    .video_ids(toasty::Json(filtered))
+                    .updated_at(Timestamp::now())
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
         }
         Ok(())
     }

@@ -39,6 +39,11 @@ pub trait VideoWatchRepository: Send + Sync {
     async fn list_user_progress(&self, user_id: UserId) -> DomainResult<Vec<WatchProgress>>;
     async fn save_progress(&self, progress: &WatchProgress) -> DomainResult<()>;
     async fn delete_progress_by_video(&self, video_id: VideoId) -> DomainResult<()>;
+    async fn delete_video_references(
+        &self,
+        video_id: VideoId,
+        deleted_show_id: Option<ShowId>,
+    ) -> DomainResult<()>;
 
     async fn set_favorite(
         &self,

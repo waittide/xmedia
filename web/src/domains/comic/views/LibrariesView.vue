@@ -164,7 +164,10 @@ async function removeLibrary(lib: Library): Promise<void> {
           </div>
         </div>
 
-        <div v-if="auth.isAdmin" class="flex items-center justify-end gap-2 border-t border-[var(--border-subtle)] pt-3">
+        <div
+          v-if="auth.isAdmin && lib.kind !== 'managed_upload'"
+          class="flex items-center justify-end gap-2 border-t border-[var(--border-subtle)] pt-3"
+        >
           <button
             type="button"
             :disabled="scanningIds[lib.id]"
@@ -176,7 +179,6 @@ async function removeLibrary(lib: Library): Promise<void> {
           </button>
 
           <button
-            v-if="lib.kind !== 'managed_upload'"
             type="button"
             class="rounded-xl p-1.5 text-[var(--text-secondary)] hover:bg-red-500/10 hover:text-red-500"
             @click="removeLibrary(lib)"

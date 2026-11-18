@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { LuPlay, LuShuffle, LuHeart } from 'vue-icons-plus/lu'
 import { api } from '../api'
@@ -8,20 +8,29 @@ import CoverImage from '../components/CoverImage.vue'
 import TrackTable from '../components/TrackTable.vue'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
+import { useMusicStore } from '../store'
 import type { StarredBundleDto } from '../types'
 
 const { t } = useI18n()
 const router = useRouter()
 const playerStore = usePlayerStore()
+const musicStore = useMusicStore()
 
 const activeTab = ref<'tracks' | 'albums' | 'artists'>('tracks')
 const starred = ref<StarredBundleDto>({ artists: [], albums: [], tracks: [] })
+
+const visibleTracks = computed(() => starred.value.tracks.filter((tr) => Boolean(tr.starred_at)))
+const visibleAlbums = computed(() => starred.value.albums.filter((al) => Boolean(al.starred_at)))
+const visibleArtists = computed(() => starred.value.artists.filter((ar) => Boolean(ar.starred_at)))
 
 async function loadStarred(): Promise<void> {
   starred.value = await api.getStarred()
 }
 
 onMounted(loadStarred)
+watch(() => musicStore.catalogVersion, () => {
+  void loadStarred().catch(() => {})
+})
 </script>
 
 <template>
@@ -32,11 +41,11 @@ onMounted(loadStarred)
         <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('favorites.subtitle') }}</p>
       </div>
 
-      <div v-if="starred.tracks.length > 0" class="flex items-center gap-2">
+      <div v-if="visibleTracks.length > 0" class="flex items-center gap-2">
         <button
           type="button"
           class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-4 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm"
-          @click="playerStore.playQueue(starred.tracks, 0)"
+          @click="playerStore.playQueue(visibleTracks, 0)"
         >
           <LuPlay class="h-3.5 w-3.5 fill-current" />
           <span>{{ t('common.playAll') }}</span>
@@ -44,7 +53,7 @@ onMounted(loadStarred)
         <button
           type="button"
           class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2 text-xs font-semibold"
-          @click="playerStore.shuffleAndPlay(starred.tracks)"
+          @click="playerStore.shuffleAndPlay(visibleTracks)"
         >
           <LuShuffle class="h-3.5 w-3.5" />
           <span>{{ t('common.shufflePlay') }}</span>
@@ -64,7 +73,7 @@ onMounted(loadStarred)
         "
         @click="activeTab = 'tracks'"
       >
-        {{ t('favorites.tabTracks') }} ({{ starred.tracks.length }})
+        {{ t('favorites.tabTracks') }} ({{ visibleTracks.length }})
       </button>
       <button
         type="button"
@@ -76,7 +85,7 @@ onMounted(loadStarred)
         "
         @click="activeTab = 'albums'"
       >
-        {{ t('favorites.tabAlbums') }} ({{ starred.albums.length }})
+        {{ t('favorites.tabAlbums') }} ({{ visibleAlbums.length }})
       </button>
       <button
         type="button"
@@ -88,12 +97,12 @@ onMounted(loadStarred)
         "
         @click="activeTab = 'artists'"
       >
-        {{ t('favorites.tabArtists') }} ({{ starred.artists.length }})
+        {{ t('favorites.tabArtists') }} ({{ visibleArtists.length }})
       </button>
     </div>
 
     <div v-if="activeTab === 'tracks'">
-      <TrackTable v-if="starred.tracks.length > 0" :tracks="starred.tracks" />
+      <TrackTable v-if="visibleTracks.length > 0" :tracks="visibleTracks" />
       <div v-else class="py-16 text-center text-xs text-[var(--ctp-subtext0)]">
         <LuHeart class="mx-auto mb-2 h-6 w-6 opacity-40" />
         {{ t('favorites.empty') }}
@@ -102,10 +111,10 @@ onMounted(loadStarred)
 
     <div v-else-if="activeTab === 'albums'">
       <div
-        v-if="starred.albums.length > 0"
+        v-if="visibleAlbums.length > 0"
         class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
       >
-        <AlbumCard v-for="al in starred.albums" :key="al.id" :album="al" />
+        <AlbumCard v-for="al in visibleAlbums" :key="al.id" :album="al" />
       </div>
       <div v-else class="py-16 text-center text-xs text-[var(--ctp-subtext0)]">
         {{ t('favorites.empty') }}
@@ -114,11 +123,11 @@ onMounted(loadStarred)
 
     <div v-else>
       <div
-        v-if="starred.artists.length > 0"
+        v-if="visibleArtists.length > 0"
         class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
       >
         <div
-          v-for="ar in starred.artists"
+          v-for="ar in visibleArtists"
           :key="ar.id"
           class="flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--ctp-mantle)]"
           @click="router.push(`/music/artists/${ar.id}`)"

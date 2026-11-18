@@ -189,6 +189,12 @@ impl MusicIngestService {
             }
         }
 
+        if created_tracks.is_empty() && attached_lyrics_count == 0 {
+            return Err(DomainError::Validation(
+                "no audio tracks or matching lyrics were imported".into(),
+            ));
+        }
+
         self.catalog_repo.recompute_catalog_aggregates().await?;
         let uploaded_dtos = self
             .catalog_service
@@ -199,6 +205,64 @@ impl MusicIngestService {
             uploaded_tracks: uploaded_dtos,
             attached_lyrics_count,
         })
+    }
+
+    pub async fn delete_track(&self, actor: &User, track_id: TrackId) -> DomainResult<()> {
+        if !actor.role.is_admin() {
+            return Err(DomainError::Forbidden(
+                "administrator privileges required".into(),
+            ));
+        }
+        let track = self
+            .catalog_repo
+            .find_track_by_id(track_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
+
+        if let TrackSource::Managed {
+            ref storage_key,
+            ref sidecar_lrc_key,
+        } = track.source
+        {
+            let _ = self.storage.delete_managed_file(storage_key).await;
+            if let Some(lrc_key) = sidecar_lrc_key {
+                let _ = self.storage.delete_managed_file(lrc_key).await;
+            }
+        }
+
+        self.catalog_repo.delete_track(track_id).await?;
+        self.catalog_repo.recompute_catalog_aggregates().await?;
+
+        let deleted_album_id = if self
+            .catalog_repo
+            .find_album_by_id(track.album_id)
+            .await?
+            .is_none()
+        {
+            Some(track.album_id)
+        } else {
+            None
+        };
+        let mut deleted_artist_ids = Vec::new();
+        for cand_artist in [track.artist_id, track.album_artist_id] {
+            if !deleted_artist_ids.contains(&cand_artist)
+                && self
+                    .catalog_repo
+                    .find_artist_by_id(cand_artist)
+                    .await?
+                    .is_none()
+            {
+                deleted_artist_ids.push(cand_artist);
+            }
+        }
+        self.collections
+            .delete_track_references(track_id, deleted_album_id, &deleted_artist_ids)
+            .await?;
+
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Music,
+        });
+        Ok(())
     }
 
     async fn ensure_default_managed_library(&self) -> DomainResult<Library> {

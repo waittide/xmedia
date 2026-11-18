@@ -7,7 +7,7 @@ use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::UserId;
+use xmedia_core::domain::user::{User, UserId};
 
 use crate::application::dto::{
     AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BookmarkDto, CatalogStatsDto,
@@ -395,11 +395,7 @@ impl MusicCatalogService {
             .list_starred(user_id, Some(StarTargetKind::Track))
             .await?
             .len() as u64;
-        let playlists_count = self
-            .collections
-            .list_visible_playlists(user_id)
-            .await?
-            .len() as u64;
+        let playlists_count = self.collections.list_owned_playlists(user_id).await?.len() as u64;
         let genres_count = self.catalog.list_genres().await?.len() as u64;
         let tags_count = self.catalog.list_tags().await?.len() as u64;
         let libraries_count = self.libraries.list_by_media(MediaKind::Music).await?.len() as u64;
@@ -616,10 +612,15 @@ impl MusicCatalogService {
 
     pub async fn set_track_tags(
         &self,
-        user_id: UserId,
+        actor: &User,
         track_id: TrackId,
         tags: Vec<String>,
     ) -> DomainResult<TrackDto> {
+        if !actor.role.is_admin() {
+            return Err(DomainError::Forbidden(
+                "administrator privileges required".into(),
+            ));
+        }
         let track = self
             .catalog
             .find_track_by_id(track_id)
@@ -627,7 +628,7 @@ impl MusicCatalogService {
             .filter(|t| !t.is_missing)
             .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
         self.catalog.set_track_tags(track.id, tags).await?;
-        self.get_track(user_id, track.id).await
+        self.get_track(actor.id, track.id).await
     }
 
     pub async fn get_random_tracks(
@@ -792,13 +793,19 @@ impl MusicCatalogService {
         title: Option<&str>,
     ) -> DomainResult<StructuredLyrics> {
         let title_q = title.unwrap_or_default().trim();
-        if title_q.is_empty() {
+        let artist_q = artist.unwrap_or_default().trim();
+        let search_term = if !title_q.is_empty() {
+            title_q
+        } else if !artist_q.is_empty() {
+            artist_q
+        } else {
             return Ok(StructuredLyrics::empty());
-        }
+        };
+
         let candidates = self
             .catalog
             .query_tracks(&TrackQuery {
-                search: Some(title_q.to_string()),
+                search: Some(search_term.to_string()),
                 sort_by: TrackSortField::Title,
                 sort_order: SortOrder::Asc,
                 page: 1,
@@ -808,23 +815,30 @@ impl MusicCatalogService {
             .await?
             .items;
 
-        let artist_lower = artist.unwrap_or_default().trim().to_lowercase();
+        let artist_lower = artist_q.to_lowercase();
         let title_lower = title_q.to_lowercase();
 
-        let matched = candidates
+        let mut prioritized: Vec<&Track> = candidates
             .iter()
-            .find(|t| {
-                t.title.to_lowercase() == title_lower
+            .filter(|t| {
+                (title_lower.is_empty() || t.title.to_lowercase() == title_lower)
                     && (artist_lower.is_empty()
                         || t.artist_name.to_lowercase().contains(&artist_lower))
             })
-            .or_else(|| candidates.first());
-
-        if let Some(track) = matched {
-            self.get_lyrics_by_track(track.id).await
-        } else {
-            Ok(StructuredLyrics::empty())
+            .collect();
+        for tr in &candidates {
+            if !prioritized.iter().any(|p| p.id == tr.id) {
+                prioritized.push(tr);
+            }
         }
+
+        for track in prioritized {
+            let lyr = self.get_lyrics_by_track(track.id).await?;
+            if !lyr.is_empty() {
+                return Ok(lyr);
+            }
+        }
+        Ok(StructuredLyrics::empty())
     }
 
     pub async fn get_cover_art(

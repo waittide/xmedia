@@ -52,6 +52,11 @@ const coverInputRef = ref<HTMLInputElement | null>(null)
 const chapterUploadRef = ref<HTMLInputElement | null>(null)
 
 const seriesId = computed(() => String(route.params.id))
+const isManagedSeries = computed(() =>
+  sidebarStore.libraries.some(
+    (l) => l.id === detail.value?.series.library_id && l.kind === 'managed_upload'
+  )
+)
 
 async function loadDetail(): Promise<void> {
   loading.value = true
@@ -222,6 +227,27 @@ async function handleDeleteSeries(): Promise<void> {
   await api.deleteSeries(detail.value.series.id)
   upload.notifyCatalogChanged()
   router.replace('/comic/series')
+}
+
+async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
+  const ok = await dialog.confirm({
+    title: t('series.deleteChapterConfirmTitle'),
+    description: t('series.deleteChapterConfirmDesc', {
+      title: ch.title || chapterKindBadge(ch),
+    }),
+    danger: true,
+    confirmText: t('common.delete'),
+  })
+  if (!ok) return
+  await api.deleteChapter(ch.id)
+  await sidebarStore.refresh()
+  try {
+    detail.value = await api.getSeriesDetail(seriesId.value)
+    upload.notifyCatalogChanged()
+  } catch {
+    await router.replace('/comic/series')
+    upload.notifyCatalogChanged()
+  }
 }
 </script>
 
@@ -401,22 +427,24 @@ async function handleDeleteSeries(): Promise<void> {
             <LuBookmark class="h-4.5 w-4.5" :class="{ 'fill-current text-[var(--accent)]': detail.shelf_ids.length > 0 }" />
           </button>
 
-          <input
-            ref="chapterUploadRef"
-            type="file"
-            multiple
-            accept=".cbz,.zip,.epub"
-            class="hidden"
-            @change="onUploadChaptersToSeries"
-          />
-          <button
-            type="button"
-            :title="t('series.uploadToSeries')"
-            class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/60 hover:text-[var(--text-primary)]"
-            @click="chapterUploadRef?.click()"
-          >
-            <LuUpload class="h-4.5 w-4.5" />
-          </button>
+          <template v-if="auth.isAdmin && isManagedSeries">
+            <input
+              ref="chapterUploadRef"
+              type="file"
+              multiple
+              accept=".cbz,.zip,.epub"
+              class="hidden"
+              @change="onUploadChaptersToSeries"
+            />
+            <button
+              type="button"
+              :title="t('series.uploadToSeries')"
+              class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/60 hover:text-[var(--text-primary)]"
+              @click="chapterUploadRef?.click()"
+            >
+              <LuUpload class="h-4.5 w-4.5" />
+            </button>
+          </template>
 
           <button
             type="button"
@@ -620,6 +648,15 @@ async function handleDeleteSeries(): Promise<void> {
                 >
                   <LuPencil class="h-3.5 w-3.5" />
                 </button>
+                <button
+                  v-if="auth.isAdmin"
+                  type="button"
+                  :title="t('series.deleteChapter')"
+                  class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-red-500/10 hover:text-red-500"
+                  @click="handleDeleteChapter(ch)"
+                >
+                  <LuTrash2 class="h-3.5 w-3.5" />
+                </button>
               </div>
             </div>
           </div>
@@ -715,6 +752,15 @@ async function handleDeleteSeries(): Promise<void> {
               @click="editingChapter = ch"
             >
               <LuPencil class="h-3.5 w-3.5" />
+            </button>
+            <button
+              v-if="auth.isAdmin"
+              type="button"
+              :title="t('series.deleteChapter')"
+              class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-red-500/10 hover:text-red-500"
+              @click="handleDeleteChapter(ch)"
+            >
+              <LuTrash2 class="h-3.5 w-3.5" />
             </button>
           </div>
         </div>

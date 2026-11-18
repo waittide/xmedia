@@ -41,7 +41,7 @@ impl MusicCollectionService {
     }
 
     pub async fn list_playlists(&self, user_id: UserId) -> DomainResult<Vec<PlaylistSummaryDto>> {
-        let playlists = self.collections.list_visible_playlists(user_id).await?;
+        let playlists = self.collections.list_owned_playlists(user_id).await?;
         let mut all_track_ids = Vec::new();
         for pl in &playlists {
             for &tid in &pl.track_ids {
@@ -61,7 +61,7 @@ impl MusicCollectionService {
 
     pub async fn get_playlist(
         &self,
-        user_id: UserId,
+        actor: &User,
         playlist_id: PlaylistId,
     ) -> DomainResult<PlaylistDetailDto> {
         let pl = self
@@ -69,7 +69,7 @@ impl MusicCollectionService {
             .find_playlist_by_id(playlist_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("playlist not found".into()))?;
-        if !pl.is_public && pl.owner_id != user_id {
+        if !pl.is_public && pl.owner_id != actor.id && !actor.role.is_admin() {
             return Err(DomainError::Forbidden(
                 "access denied to private playlist".into(),
             ));
@@ -85,7 +85,10 @@ impl MusicCollectionService {
             .collect();
 
         let summary = Self::summarize_playlist(&pl, &track_map);
-        let track_dtos = self.catalog_service.enrich_tracks(user_id, ordered).await?;
+        let track_dtos = self
+            .catalog_service
+            .enrich_tracks(actor.id, ordered)
+            .await?;
         Ok(PlaylistDetailDto {
             playlist: summary,
             tracks: track_dtos,
@@ -105,7 +108,7 @@ impl MusicCollectionService {
             pl.replace_tracks(initial_track_ids);
         }
         self.collections.save_playlist(&pl).await?;
-        self.get_playlist(owner.id, pl.id).await
+        self.get_playlist(owner, pl.id).await
     }
 
     pub async fn update_playlist(
@@ -138,7 +141,7 @@ impl MusicCollectionService {
             }
         }
         self.collections.save_playlist(&pl).await?;
-        self.get_playlist(actor.id, pl.id).await
+        self.get_playlist(actor, pl.id).await
     }
 
     pub async fn delete_playlist(&self, actor: &User, playlist_id: PlaylistId) -> DomainResult<()> {

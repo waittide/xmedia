@@ -21,6 +21,8 @@ export default {
     addToQueue: '下一首播放 / 加入队列',
     addToPlaylist: '添加到歌单',
     download: '下载原文件',
+    deleteTrackConfirmTitle: '确认删除该曲目？',
+    deleteTrackConfirm: '确定删除「{title}」吗？若是 Web 托管上传歌曲将同步清理源文件与歌词；本地只读目录源文件不会被修改。',
     noResults: '暂无匹配内容',
     tracksCount: '{count} 首歌曲',
     albumsCount: '{count} 张专辑',

@@ -98,21 +98,26 @@ async function loadContinueData(): Promise<void> {
   }
 }
 
-function handleResumeQueue(): void {
+async function handleResumeQueue(): Promise<void> {
   const s = resumeSession.value
   if (!s) return
   if (s.source === 'local') {
-    void playerStore.togglePlay()
-    if (!playerStore.isPlaying) {
-      playerStore.resumeQueue(s.tracks, s.index, s.posSecs)
-    }
+    await playerStore.togglePlay()
   } else {
     playerStore.resumeQueue(s.tracks, s.index, s.posSecs)
   }
 }
 
 function playBookmark(bm: BookmarkDto): void {
-  playerStore.playTrackAt(bm.track, bm.position_ms / 1000)
+  const posSecs = bm.position_ms / 1000
+  if (playerStore.queue.length === 0 && savedQueue.value && savedQueue.value.tracks.length > 0) {
+    const idx = savedQueue.value.tracks.findIndex((t) => t.id === bm.track.id)
+    if (idx >= 0) {
+      playerStore.resumeQueue(savedQueue.value.tracks, idx, posSecs)
+      return
+    }
+  }
+  playerStore.playTrackAt(bm.track, posSecs)
 }
 
 async function deleteBookmark(trackId: string): Promise<void> {

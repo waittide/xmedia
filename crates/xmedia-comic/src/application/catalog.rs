@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use jiff::Timestamp;
+use xmedia_core::application::ports::{RealtimeEventPort, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
@@ -33,9 +34,11 @@ pub struct ComicCatalogService {
     archives: Arc<dyn ArchiveReaderPort>,
     thumbnails: Arc<dyn ThumbnailGeneratorPort>,
     storage: Arc<dyn ComicFileStoragePort>,
+    events: Arc<dyn RealtimeEventPort>,
 }
 
 impl ComicCatalogService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         libraries: Arc<dyn LibraryRepository>,
         series: Arc<dyn SeriesRepository>,
@@ -44,6 +47,7 @@ impl ComicCatalogService {
         archives: Arc<dyn ArchiveReaderPort>,
         thumbnails: Arc<dyn ThumbnailGeneratorPort>,
         storage: Arc<dyn ComicFileStoragePort>,
+        events: Arc<dyn RealtimeEventPort>,
     ) -> Self {
         Self {
             libraries,
@@ -53,6 +57,7 @@ impl ComicCatalogService {
             archives,
             thumbnails,
             storage,
+            events,
         }
     }
 
@@ -407,7 +412,48 @@ impl ComicCatalogService {
         }
         self.reading.delete_by_series(series_id).await?;
         self.chapters.delete_by_series(series_id).await?;
-        self.series.delete(series_id).await
+        self.series.delete(series_id).await?;
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Comic,
+        });
+        Ok(())
+    }
+
+    pub async fn delete_chapter(&self, actor: &User, chapter_id: ChapterId) -> DomainResult<()> {
+        Self::ensure_admin(actor)?;
+        let chapter = self
+            .chapters
+            .find_by_id(chapter_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        let lib = self.libraries.find_by_id(chapter.library_id).await?;
+        if lib.is_some_and(|l| l.kind.is_managed()) {
+            let _ = self.storage.delete_managed_file(&chapter.source_path).await;
+        }
+        self.reading.delete_by_chapter(chapter_id).await?;
+        self.chapters.delete(chapter_id).await?;
+
+        if let Some(mut series) = self.series.find_by_id(chapter.series_id).await? {
+            let mut remaining = self.chapters.list_by_series(series.id).await?;
+            remaining.retain(|c| c.id != chapter_id);
+            if remaining.is_empty() {
+                self.reading.delete_by_series(series.id).await?;
+                self.series.delete(series.id).await?;
+            } else {
+                remaining.sort_by(|a, b| a.cmp_order(b));
+                series.chapter_count = remaining.iter().filter(|c| !c.is_missing).count() as u32;
+                if chapter.cover_path.is_some() && series.cover_path == chapter.cover_path {
+                    series.cover_path = remaining.iter().find_map(|c| c.cover_path.clone());
+                }
+                series.updated_at = Timestamp::now();
+                self.series.save(&series).await?;
+            }
+        }
+
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Comic,
+        });
+        Ok(())
     }
 
     pub async fn get_reader_context(
@@ -612,10 +658,17 @@ impl ComicCatalogService {
         let parsed = parse_chapter_filename(&input.filename, 1);
 
         let mut series = if let Some(target_id) = input.target_series_id {
-            self.series
+            let existing = self
+                .series
                 .find_by_id(target_id)
                 .await?
-                .ok_or_else(|| DomainError::NotFound("target series not found".into()))?
+                .ok_or_else(|| DomainError::NotFound("target series not found".into()))?;
+            if existing.library_id != managed_lib.id {
+                return Err(DomainError::Validation(
+                    "target series belongs to a read-only local library".into(),
+                ));
+            }
+            existing
         } else {
             let desired_title = input
                 .series_title_override
@@ -632,7 +685,7 @@ impl ComicCatalogService {
                 .or_else(|| parsed.inferred_series.clone())
                 .unwrap_or_else(|| parsed.clean_title.clone());
 
-            let all_series = self.series.list_all().await?;
+            let all_series = self.series.list_by_library(managed_lib.id).await?;
             if let Some(existing) = all_series
                 .into_iter()
                 .find(|s| s.title.eq_ignore_ascii_case(desired_title.trim()))
@@ -712,6 +765,10 @@ impl ComicCatalogService {
         series.chapter_count = active_count;
         series.updated_at = Timestamp::now();
         self.series.save(&series).await?;
+
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Comic,
+        });
 
         Ok(UploadArchiveResultDto {
             series_id: series.id,

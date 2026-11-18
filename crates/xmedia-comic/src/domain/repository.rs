@@ -54,6 +54,7 @@ pub trait ComicReadingRepository: Send + Sync {
         user_id: UserId,
         chapter_id: ChapterId,
     ) -> DomainResult<()>;
+    async fn delete_by_chapter(&self, chapter_id: ChapterId) -> DomainResult<()>;
     async fn delete_by_series(&self, series_id: SeriesId) -> DomainResult<()>;
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
 

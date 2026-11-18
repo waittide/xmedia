@@ -82,8 +82,15 @@ pub trait MusicCatalogRepository: Send + Sync {
 pub trait MusicCollectionRepository: Send + Sync {
     async fn find_playlist_by_id(&self, id: PlaylistId) -> DomainResult<Option<Playlist>>;
     async fn list_visible_playlists(&self, user_id: UserId) -> DomainResult<Vec<Playlist>>;
+    async fn list_owned_playlists(&self, owner_id: UserId) -> DomainResult<Vec<Playlist>>;
     async fn save_playlist(&self, playlist: &Playlist) -> DomainResult<()>;
     async fn delete_playlist(&self, id: PlaylistId) -> DomainResult<()>;
+    async fn delete_track_references(
+        &self,
+        track_id: TrackId,
+        deleted_album_id: Option<AlbumId>,
+        deleted_artist_ids: &[ArtistId],
+    ) -> DomainResult<()>;
 
     async fn set_starred(
         &self,

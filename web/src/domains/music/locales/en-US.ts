@@ -21,6 +21,8 @@ export default {
     addToQueue: 'Add to Queue',
     addToPlaylist: 'Add to Playlist',
     download: 'Download Original',
+    deleteTrackConfirmTitle: 'Delete this track?',
+    deleteTrackConfirm: 'Delete "{title}"? Managed uploaded audio and lyrics will be removed from disk; read-only local files remain untouched.',
     noResults: 'No matching items found',
     tracksCount: '{count} tracks',
     albumsCount: '{count} albums',

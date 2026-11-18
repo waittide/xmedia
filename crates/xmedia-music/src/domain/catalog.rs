@@ -397,6 +397,7 @@ pub enum ArtistRoleFilter {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtistQuery {
+    pub library_id: Option<LibraryId>,
     pub search: Option<String>,
     pub role_filter: ArtistRoleFilter,
     pub offset: u32,
@@ -406,6 +407,7 @@ pub struct ArtistQuery {
 impl Default for ArtistQuery {
     fn default() -> Self {
         Self {
+            library_id: None,
             search: None,
             role_filter: ArtistRoleFilter::All,
             offset: 0,

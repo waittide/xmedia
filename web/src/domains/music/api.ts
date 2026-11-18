@@ -165,6 +165,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ tags }),
     }),
+  deleteTrack: (trackId: string) =>
+    requestJson<{ ok: boolean }>(`/music/tracks/${encodeURIComponent(trackId)}`, {
+      method: 'DELETE',
+    }),
   search: (q: string, limit = 24) =>
     requestJson<SearchResultDto>(`/music/search${toQuery({ q, limit })}`),
 

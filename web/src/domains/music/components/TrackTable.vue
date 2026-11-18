@@ -14,6 +14,7 @@ import {
   LuTrash2,
   LuVolume2,
 } from 'vue-icons-plus/lu'
+import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { api, buildDownloadUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
@@ -43,6 +44,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
 const router = useRouter()
+const authStore = useAuthStore()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 const dialogStore = useDialogStore()
@@ -127,6 +129,20 @@ async function editTrackTags(track: TrackDto): Promise<void> {
     .filter(Boolean)
   const updated = await api.setTrackTags(track.id, nextTags)
   track.tags = updated.tags
+  await musicStore.refreshSidebar()
+}
+
+async function confirmDeleteTrack(track: TrackDto): Promise<void> {
+  activeMenuIdx.value = null
+  const confirmed = await dialogStore.confirm({
+    title: t('common.deleteTrackConfirmTitle'),
+    message: t('common.deleteTrackConfirm', { title: track.title }),
+    danger: true,
+  })
+  if (!confirmed) return
+  await api.deleteTrack(track.id)
+  playerStore.removeByTrackId(track.id)
+  musicStore.bumpCatalogVersion()
   await musicStore.refreshSidebar()
 }
 
@@ -311,6 +327,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       </button>
 
       <button
+        v-if="authStore.isAdmin"
         type="button"
         class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
         @click="editTrackTags(tracks[activeMenuIdx]!)"
@@ -361,6 +378,15 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       >
         <LuTrash2 class="h-3.5 w-3.5" />
         <span>{{ t('playlist.removeTrack') }}</span>
+      </button>
+      <button
+        v-if="authStore.isAdmin"
+        type="button"
+        class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--ctp-red)] transition hover:bg-[var(--ctp-red)]/10"
+        @click="confirmDeleteTrack(tracks[activeMenuIdx]!)"
+      >
+        <LuTrash2 class="h-3.5 w-3.5" />
+        <span>{{ t('common.delete') }}</span>
       </button>
     </div>
   </Teleport>

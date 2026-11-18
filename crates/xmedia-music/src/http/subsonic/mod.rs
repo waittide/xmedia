@@ -172,21 +172,30 @@ async fn handle_authenticated_method(
 
         "getUser" => {
             let target_username = params.first("username").unwrap_or(&user.username);
-            if target_username != user.username && !user.role.is_admin() {
-                return Err(SubsonicError {
-                    code: 50,
-                    message: "not authorized to inspect other users".into(),
-                });
-            }
-            let is_admin = user.role.is_admin();
+            let (resolved_username, is_admin) = if target_username != user.username {
+                if !user.role.is_admin() {
+                    return Err(SubsonicError {
+                        code: 50,
+                        message: "not authorized to inspect other users".into(),
+                    });
+                }
+                let all_users = state.auth.list_users(user).await?;
+                let target = all_users
+                    .into_iter()
+                    .find(|u| u.username == target_username)
+                    .ok_or_else(|| SubsonicError::not_found("user not found"))?;
+                (target.username, target.role.is_admin())
+            } else {
+                (user.username.clone(), user.role.is_admin())
+            };
             let libs = state
                 .libraries
                 .list_libraries(Some(MediaKind::Music))
                 .await?;
             let folder_ids: Vec<i64> = (1..=libs.len() as i64).collect();
             let u_node = SsNode::new()
-                .attr_str("username", &user.username)
-                .attr_str("email", format!("{}@xmedia.local", user.username))
+                .attr_str("username", &resolved_username)
+                .attr_str("email", format!("{resolved_username}@xmedia.local"))
                 .attr_bool("scrobblingEnabled", true)
                 .attr_bool("adminRole", is_admin)
                 .attr_bool("settingsRole", true)
@@ -221,12 +230,14 @@ async fn handle_authenticated_method(
         }
 
         "getIndexes" | "getArtists" => {
+            let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let artists = state
                 .services
                 .catalog
                 .list_artists(
                     user.id,
                     ArtistQuery {
+                        library_id: lib_id,
                         size: 5000,
                         ..Default::default()
                     },
@@ -277,9 +288,13 @@ async fn handle_authenticated_method(
         }
 
         "getMusicDirectory" => {
-            let id = params
+            let raw_id = params
                 .first("id")
                 .ok_or_else(|| SubsonicError::missing_param("id"))?;
+            let resolved_id = resolve_library_id_value(state, raw_id)
+                .await
+                .map(|lid| lid.to_string())
+                .unwrap_or_else(|| raw_id.to_string());
             let MusicDirectoryNode::Folder {
                 id,
                 parent,
@@ -289,7 +304,7 @@ async fn handle_authenticated_method(
             } = state
                 .services
                 .catalog
-                .get_music_directory(user.id, id)
+                .get_music_directory(user.id, &resolved_id)
                 .await?;
 
             let mut children: Vec<SsNode> = sub_albums.iter().map(album_to_dir_node).collect();
@@ -362,7 +377,7 @@ async fn handle_authenticated_method(
                 .first("type")
                 .ok_or_else(|| SubsonicError::missing_param("type"))?;
             let list_type = AlbumListType::parse(raw_type)?;
-            let lib_id = parse_optional_library_id(params, "musicFolderId");
+            let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let q = AlbumListQuery {
                 list_type,
                 library_id: lib_id,
@@ -387,7 +402,7 @@ async fn handle_authenticated_method(
 
         "getRandomSongs" => {
             let size = params.u32("size").unwrap_or(10).clamp(1, 500);
-            let lib_id = parse_optional_library_id(params, "musicFolderId");
+            let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let tracks = state
                 .services
                 .catalog
@@ -411,7 +426,7 @@ async fn handle_authenticated_method(
                 .ok_or_else(|| SubsonicError::missing_param("genre"))?;
             let count = params.u32("count").unwrap_or(10).clamp(1, 500);
             let offset = params.u32("offset").unwrap_or(0);
-            let lib_id = parse_optional_library_id(params, "musicFolderId");
+            let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let tracks = state
                 .services
                 .catalog
@@ -439,7 +454,7 @@ async fn handle_authenticated_method(
 
         "search2" | "search3" => {
             let query_str = params.first("query").unwrap_or_default().to_string();
-            let lib_id = parse_optional_library_id(params, "musicFolderId");
+            let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let sq = SearchQuery {
                 query: query_str,
                 library_id: lib_id,
@@ -599,7 +614,7 @@ async fn handle_authenticated_method(
         }
 
         "getStarred" | "getStarred2" => {
-            let lib_id = parse_optional_library_id(params, "musicFolderId");
+            let lib_id = resolve_optional_library_id(state, params, "musicFolderId").await;
             let starred = state
                 .services
                 .collection
@@ -698,7 +713,7 @@ async fn handle_authenticated_method(
             let detail = state
                 .services
                 .collection
-                .get_playlist(user.id, PlaylistId(id))
+                .get_playlist(user, PlaylistId(id))
                 .await?;
             let entries: Vec<SsNode> = detail.tracks.iter().map(track_to_node).collect();
             let node = playlist_summary_to_node(&detail.playlist).child_list("entry", entries);
@@ -916,11 +931,28 @@ fn parse_uuid_param(params: &SubsonicParams, key: &str) -> Result<Uuid, Subsonic
     Uuid::parse_str(clean).map_err(|_| SubsonicError::not_found(format!("invalid id '{raw}'")))
 }
 
-fn parse_optional_library_id(params: &SubsonicParams, key: &str) -> Option<LibraryId> {
-    params
-        .first(key)
-        .and_then(|s| Uuid::parse_str(s.trim()).ok())
-        .map(LibraryId)
+async fn resolve_optional_library_id(
+    state: &MusicHttpState,
+    params: &SubsonicParams,
+    key: &str,
+) -> Option<LibraryId> {
+    let raw = params.first(key)?;
+    resolve_library_id_value(state, raw).await
+}
+
+async fn resolve_library_id_value(state: &MusicHttpState, raw: &str) -> Option<LibraryId> {
+    let trimmed = raw.trim();
+    if let Ok(uuid) = Uuid::parse_str(trimmed) {
+        return Some(LibraryId(uuid));
+    }
+    if let Ok(folder_num) = trimmed.parse::<usize>()
+        && folder_num >= 1
+        && let Ok(libs) = state.libraries.list_libraries(Some(MediaKind::Music)).await
+        && let Some(lib) = libs.get(folder_num - 1)
+    {
+        return Some(lib.id);
+    }
+    None
 }
 
 fn artist_to_node(ar: &ArtistDto) -> SsNode {

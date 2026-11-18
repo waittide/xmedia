@@ -11,6 +11,7 @@ import {
   LuDownload,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { api, buildVideoDownloadUrl } from '../api'
 import { useVideoI18n as useI18n } from '../i18n'
@@ -37,6 +38,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const router = useRouter()
+const authStore = useAuthStore()
 const videoStore = useVideoStore()
 const dialogStore = useDialogStore()
 
@@ -270,6 +272,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       </button>
 
       <button
+        v-if="authStore.isAdmin"
         type="button"
         class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
         @click="menuOpen = false; emit('edit', video)"
@@ -323,6 +326,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       </button>
 
       <button
+        v-if="authStore.isAdmin"
         type="button"
         class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--ctp-red)] transition hover:bg-[var(--ctp-red)]/10"
         @click="confirmDelete"

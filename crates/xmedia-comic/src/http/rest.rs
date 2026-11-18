@@ -43,7 +43,10 @@ pub fn router() -> Router<ComicHttpState> {
         .route("/series/{id}/reader-pref", put(save_series_reader_pref))
         .route("/series/{id}/mark-read", post(mark_series_read))
         .route("/series/{id}/mark-volume-read", post(mark_volume_read))
-        .route("/chapters/{id}", patch(update_chapter_metadata))
+        .route(
+            "/chapters/{id}",
+            patch(update_chapter_metadata).delete(delete_chapter),
+        )
         .route("/chapters/{id}/reader", get(get_reader_context))
         .route("/chapters/{id}/pages/{page_num}", get(stream_chapter_page))
         .route("/chapters/{id}/download", get(download_chapter_archive))
@@ -278,6 +281,19 @@ async fn update_chapter_metadata(
             .update_chapter_metadata(&user, ChapterId(id), patch)
             .await?,
     ))
+}
+
+async fn delete_chapter(
+    State(state): State<ComicHttpState>,
+    ComicWebAuth(user): ComicWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    state
+        .services
+        .catalog
+        .delete_chapter(&user, ChapterId(id))
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_reader_context(

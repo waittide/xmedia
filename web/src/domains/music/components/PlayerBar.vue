@@ -298,5 +298,42 @@ async function saveCurrentBookmark(): Promise<void> {
         />
       </div>
     </div>
+
+    <!-- Mobile Compact Lyrics & Queue Controls -->
+    <div class="flex shrink-0 items-center gap-1 md:hidden">
+      <button
+        type="button"
+        class="rounded-xl p-2 transition"
+        :class="
+          playerStore.lyricsOpen
+            ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+            : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]'
+        "
+        :title="t('player.openLyrics')"
+        @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
+      >
+        <LuMic2 class="h-4 w-4" />
+      </button>
+
+      <button
+        type="button"
+        class="relative rounded-xl p-2 transition"
+        :class="
+          playerStore.queueOpen
+            ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+            : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]'
+        "
+        :title="t('player.queueTitle')"
+        @click="playerStore.queueOpen = !playerStore.queueOpen"
+      >
+        <LuListMusic class="h-4 w-4" />
+        <span
+          v-if="playerStore.queue.length > 0"
+          class="absolute -top-0.5 -right-0.5 rounded-full bg-[var(--ctp-accent)] px-1 text-[9px] font-bold text-[var(--ctp-on-accent)]"
+        >
+          {{ playerStore.queue.length }}
+        </span>
+      </button>
+    </div>
   </footer>
 </template>

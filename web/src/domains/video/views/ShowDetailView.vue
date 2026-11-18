@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LuPlay, LuHeart, LuPencil } from 'vue-icons-plus/lu'
+import { useAuthStore } from '@/stores/auth'
 import { api } from '../api'
 import PosterImage from '../components/PosterImage.vue'
 import ShowMetadataModal from '../components/ShowMetadataModal.vue'
@@ -14,6 +15,7 @@ import type { ShowDetailDto, VideoSummaryDto } from '../types'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 const videoStore = useVideoStore()
 
 const detail = ref<ShowDetailDto | null>(null)
@@ -139,6 +141,7 @@ watch(() => route.params.id, loadShow)
           </button>
 
           <button
+            v-if="authStore.isAdmin"
             type="button"
             class="inline-flex items-center gap-1.5 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 py-2 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
             @click="editShowOpen = true"

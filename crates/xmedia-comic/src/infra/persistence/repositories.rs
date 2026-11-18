@@ -501,6 +501,25 @@ impl ComicReadingRepository for ToastyComicReadingRepository {
         Ok(())
     }
 
+    async fn delete_by_chapter(&self, chapter_id: ChapterId) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        for row in ComicChapterProgressModel::filter_by_chapter_id(chapter_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            row.delete().exec(&mut db).await.map_err(db_err)?;
+        }
+        for row in ComicBookmarkModel::filter_by_chapter_id(chapter_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            row.delete().exec(&mut db).await.map_err(db_err)?;
+        }
+        Ok(())
+    }
+
     async fn delete_by_series(&self, series_id: SeriesId) -> DomainResult<()> {
         let mut db = self.db.clone();
         for row in ComicChapterProgressModel::filter_by_series_id(series_id.0)

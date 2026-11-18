@@ -53,7 +53,10 @@ const isTranscodedStream = computed(() => {
   if (!detail.value) return false
   if (quality.value === 'direct') return false
   if (quality.value !== 'auto') return true
-  if (selectedAudioStream.value !== null && selectedAudioStream.value > 0) return true
+  const defaultAudioIdx = detail.value.audio_streams[0]?.stream_index ?? null
+  if (selectedAudioStream.value !== null && selectedAudioStream.value !== defaultAudioIdx) {
+    return true
+  }
   return !detail.value.video.can_direct_play
 })
 
@@ -70,7 +73,11 @@ const activeSubtitleUrl = computed(() => {
   if (!detail.value || !selectedSubtitleId.value || selectedSubtitleId.value === 'off') {
     return null
   }
-  return buildSubtitleVttUrl(detail.value.video.id, selectedSubtitleId.value)
+  return buildSubtitleVttUrl(
+    detail.value.video.id,
+    selectedSubtitleId.value,
+    isTranscodedStream.value ? streamOffsetSecs.value : 0,
+  )
 })
 
 const qualityOptions = computed(() => [
@@ -202,13 +209,20 @@ async function initVideo(): Promise<void> {
 async function persistProgress(completedOverride?: boolean): Promise<void> {
   const d = detail.value
   if (!d) return
+  const roundedDur = Math.round(totalDurationSecs.value)
+  const completedPayload =
+    completedOverride !== undefined
+      ? completedOverride
+      : roundedDur > 0
+        ? undefined
+        : false
   try {
     await api.saveProgress(d.video.id, {
       position_secs: currentTimeSecs.value,
-      duration_secs: Math.round(totalDurationSecs.value) || undefined,
-      completed: completedOverride,
+      duration_secs: roundedDur > 0 ? roundedDur : undefined,
+      completed: completedPayload,
       selected_audio_stream: selectedAudioStream.value,
-      selected_subtitle: selectedSubtitleId.value === 'off' ? null : selectedSubtitleId.value,
+      selected_subtitle: selectedSubtitleId.value,
     })
     videoStore.bumpCatalogVersion()
   } catch {
@@ -315,6 +329,13 @@ function onDurationChange(): void {
   }
 }
 
+function onVideoPause(): void {
+  isPlaying.value = false
+  hudVisible.value = true
+  if (videoEl.value?.ended) return
+  void persistProgress()
+}
+
 function onVideoEnded(): void {
   isPlaying.value = false
   void persistProgress(true)
@@ -325,7 +346,9 @@ function onVideoEnded(): void {
 
 function goBack(): void {
   void persistProgress()
-  if (detail.value?.video.show_id) {
+  if (window.history.state?.back) {
+    router.back()
+  } else if (detail.value?.video.show_id) {
     void router.push(`/video/shows/${detail.value.video.show_id}`)
   } else {
     void router.push('/video')
@@ -378,6 +401,7 @@ watch(() => route.params.id, () => {
     ref="stageRef"
     class="relative flex h-dvh w-screen flex-col justify-between overflow-hidden bg-black text-white select-none"
     @mousemove="revealHud"
+    @touchstart.passive="revealHud"
     @click.self="togglePlay"
   >
     <!-- HTML5 Video Stage -->
@@ -389,7 +413,7 @@ watch(() => route.params.id, () => {
       @click="togglePlay"
       @dblclick="toggleFullscreen"
       @play="isPlaying = true; musicPlayerStore.pause(); revealHud()"
-      @pause="isPlaying = false; hudVisible = true; persistProgress()"
+      @pause="onVideoPause"
       @timeupdate="onTimeUpdate"
       @durationchange="onDurationChange"
       @ended="onVideoEnded"
@@ -407,7 +431,7 @@ watch(() => route.params.id, () => {
 
     <!-- Top HUD Overlay -->
     <header
-      class="absolute inset-x-0 top-0 z-20 flex items-center justify-between gap-4 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-5 py-4 transition-opacity duration-200 sm:px-8"
+      class="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-4 py-3 transition-opacity duration-200 sm:gap-4 sm:px-8 sm:py-4"
       :class="hudVisible ? 'opacity-100' : 'pointer-events-none opacity-0'"
     >
       <div class="flex min-w-0 items-center gap-3">
@@ -433,17 +457,17 @@ watch(() => route.params.id, () => {
         </div>
       </div>
 
-      <div v-if="detail" class="hidden items-center gap-2 md:flex">
-        <div v-if="audioOptions.length > 1" class="w-44">
+      <div v-if="detail" class="flex flex-wrap items-center gap-1.5 sm:gap-2">
+        <div v-if="audioOptions.length > 1" class="w-32 sm:w-44">
           <AppSelect
-            :model-value="String(selectedAudioStream ?? 0)"
+            :model-value="String(selectedAudioStream ?? detail.audio_streams[0]?.stream_index ?? 0)"
             :options="audioOptions"
             variant="compact"
             @change="onAudioStreamChange"
           />
         </div>
 
-        <div v-if="subtitleOptions.length > 1" class="w-40">
+        <div v-if="subtitleOptions.length > 1" class="w-28 sm:w-40">
           <AppSelect
             :model-value="selectedSubtitleId"
             :options="subtitleOptions"
@@ -452,7 +476,7 @@ watch(() => route.params.id, () => {
           />
         </div>
 
-        <div class="w-40">
+        <div class="w-28 sm:w-40">
           <AppSelect
             :model-value="quality"
             :options="qualityOptions"
@@ -461,7 +485,7 @@ watch(() => route.params.id, () => {
           />
         </div>
 
-        <div class="w-24">
+        <div class="hidden w-24 sm:block">
           <AppSelect
             :model-value="String(playbackRate)"
             :options="speedOptions"

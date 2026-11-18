@@ -249,6 +249,104 @@ fn strip_ass_tags(raw: &str) -> String {
     out.replace("\\N", "\n").replace("\\n", "\n")
 }
 
+pub fn shift_webvtt_timestamps(vtt: &str, offset_secs: f64) -> String {
+    if !offset_secs.is_finite() || offset_secs <= 0.0 {
+        return vtt.to_string();
+    }
+    let offset_ms = (offset_secs * 1000.0).round() as i64;
+    let normalized = vtt.replace("\r\n", "\n").replace('\r', "\n");
+    let mut out_blocks: Vec<String> = Vec::new();
+
+    for raw_block in normalized.split("\n\n") {
+        let lines: Vec<&str> = raw_block.lines().collect();
+        if lines.is_empty() {
+            continue;
+        }
+        if let Some(timing_idx) = lines.iter().position(|l| l.contains("-->")) {
+            let timing_line = lines[timing_idx];
+            if let Some(shifted_timing) = shift_vtt_timing_line(timing_line, offset_ms) {
+                let mut rebuilt = Vec::with_capacity(lines.len());
+                rebuilt.extend(lines[..timing_idx].iter().map(|s| s.to_string()));
+                rebuilt.push(shifted_timing);
+                rebuilt.extend(lines[timing_idx + 1..].iter().map(|s| s.to_string()));
+                out_blocks.push(rebuilt.join("\n"));
+            } else if timing_line.starts_with("WEBVTT") {
+                out_blocks.push(raw_block.to_string());
+            }
+            // Otherwise the cue ended before offset_ms and is dropped.
+        } else {
+            out_blocks.push(raw_block.to_string());
+        }
+    }
+
+    if out_blocks.is_empty() {
+        "WEBVTT\n\n".to_string()
+    } else {
+        format!("{}\n\n", out_blocks.join("\n\n"))
+    }
+}
+
+fn shift_vtt_timing_line(line: &str, offset_ms: i64) -> Option<String> {
+    let (left, right) = line.split_once("-->")?;
+    let start_ms = parse_vtt_timestamp_ms(left.trim())?;
+    let right_trimmed = right.trim_start();
+    let mut split_end = right_trimmed.splitn(2, char::is_whitespace);
+    let end_token = split_end.next()?.trim();
+    let settings = split_end.next().unwrap_or("").trim();
+    let end_ms = parse_vtt_timestamp_ms(end_token)?;
+
+    let shifted_end = end_ms - offset_ms;
+    if shifted_end <= 0 {
+        return None;
+    }
+    let shifted_start = (start_ms - offset_ms).max(0);
+    if settings.is_empty() {
+        Some(format!(
+            "{} --> {}",
+            format_vtt_timestamp_ms(shifted_start),
+            format_vtt_timestamp_ms(shifted_end)
+        ))
+    } else {
+        Some(format!(
+            "{} --> {} {settings}",
+            format_vtt_timestamp_ms(shifted_start),
+            format_vtt_timestamp_ms(shifted_end)
+        ))
+    }
+}
+
+fn parse_vtt_timestamp_ms(raw: &str) -> Option<i64> {
+    let clean = raw.trim().replace(',', ".");
+    let (hms, ms_str) = clean.split_once('.')?;
+    let millis: i64 = match ms_str.len() {
+        1 => ms_str.parse::<i64>().ok()? * 100,
+        2 => ms_str.parse::<i64>().ok()? * 10,
+        3 => ms_str.parse::<i64>().ok()?,
+        _ => ms_str.get(0..3)?.parse::<i64>().ok()?,
+    };
+    let parts: Vec<&str> = hms.split(':').collect();
+    let (h, m, s) = match parts.as_slice() {
+        [mm, ss] => (0i64, mm.parse::<i64>().ok()?, ss.parse::<i64>().ok()?),
+        [hh, mm, ss] => (
+            hh.parse::<i64>().ok()?,
+            mm.parse::<i64>().ok()?,
+            ss.parse::<i64>().ok()?,
+        ),
+        _ => return None,
+    };
+    Some((((h * 60 + m) * 60 + s) * 1000) + millis)
+}
+
+fn format_vtt_timestamp_ms(total_ms: i64) -> String {
+    let clamped = total_ms.max(0);
+    let millis = clamped % 1000;
+    let total_secs = clamped / 1000;
+    let secs = total_secs % 60;
+    let mins = (total_secs / 60) % 60;
+    let hours = total_secs / 3600;
+    format!("{hours:02}:{mins:02}:{secs:02}.{millis:03}")
+}
+
 fn generate_svg_poster(title: &str) -> String {
     let escaped: String = title
         .chars()

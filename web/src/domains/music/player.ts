@@ -18,6 +18,8 @@ export const usePlayerStore = defineStore('player', () => {
   const bufferedRatio = ref(0)
   const streamOffsetSecs = ref(0)
   const currentStreamIsTranscoded = ref(false)
+  const activeEffectiveProfile = ref<TranscodeProfile>('raw')
+  const fallbackFormats = ref<Set<string>>(new Set())
 
   const lyricsOpen = ref(false)
   const queueOpen = ref(false)
@@ -26,6 +28,8 @@ export const usePlayerStore = defineStore('player', () => {
 
   let scrobbledCurrent = false
   let queueSyncTimer: ReturnType<typeof setTimeout> | null = null
+  let playHistory: number[] = []
+  let shufflePool: number[] = []
 
   const currentTrack = computed<TrackDto | null>(() => {
     const idx = currentIndex.value
@@ -54,7 +58,7 @@ export const usePlayerStore = defineStore('player', () => {
   const qualitySummary = computed<string>(() => {
     const tr = currentTrack.value
     if (!tr) return ''
-    const prof = transcodeProfile.value
+    const prof = currentTrack.value ? activeEffectiveProfile.value : transcodeProfile.value
     if (prof === 'raw') {
       const fmt = tr.format.toUpperCase()
       const parts: string[] = [fmt]
@@ -75,7 +79,7 @@ export const usePlayerStore = defineStore('player', () => {
   const activeLyricIndex = computed<number>(() => {
     const lyr = lyrics.value
     if (!lyr || !lyr.synced || lyr.lines.length === 0) return -1
-    const nowMs = currentTimeSecs.value * 1000 + 120
+    const nowMs = currentTimeSecs.value * 1000 + 120 + (lyr.offset_ms || 0)
     let idx = -1
     for (let i = 0; i < lyr.lines.length; i++) {
       if (lyr.lines[i]!.start_ms <= nowMs) {
@@ -177,6 +181,25 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
+  function resetShuffleAndHistory(): void {
+    playHistory = []
+    shufflePool = []
+  }
+
+  function refillShufflePool(len: number, excludeIndex: number): void {
+    const indices: number[] = []
+    for (let i = 0; i < len; i++) {
+      if (i !== excludeIndex) indices.push(i)
+    }
+    for (let i = indices.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const tmp = indices[i]!
+      indices[i] = indices[j]!
+      indices[j] = tmp
+    }
+    shufflePool = indices
+  }
+
   async function loadAndPlayCurrent(
     startAtSecs = 0,
     autoPlay = true,
@@ -186,7 +209,13 @@ export const usePlayerStore = defineStore('player', () => {
     if (!track) return
 
     syncAudioGain()
-    const profile = overrideProfile ?? transcodeProfile.value
+    const requestedProfile = overrideProfile ?? transcodeProfile.value
+    const formatKey = track.format.toLowerCase()
+    const profile =
+      !overrideProfile && requestedProfile === 'raw' && fallbackFormats.value.has(formatKey)
+        ? 'mp3320'
+        : requestedProfile
+    activeEffectiveProfile.value = profile
     const needsTranscode = profile !== 'raw' || !canPlayFormatNatively(track.format)
     currentStreamIsTranscoded.value = needsTranscode
     const useServerOffset = needsTranscode && startAtSecs > 0
@@ -216,6 +245,7 @@ export const usePlayerStore = defineStore('player', () => {
         void api.scrobble(track.id, false).catch(() => {})
       } catch (err) {
         if (!overrideProfile && err instanceof DOMException && err.name === 'NotSupportedError') {
+          fallbackFormats.value.add(formatKey)
           await loadAndPlayCurrent(startAtSecs, true, 'mp3320')
           return
         }
@@ -230,6 +260,7 @@ export const usePlayerStore = defineStore('player', () => {
     queue.value = [...tracks]
     currentIndex.value = Math.max(0, Math.min(tracks.length - 1, startIndex))
     scrobbledCurrent = false
+    resetShuffleAndHistory()
     void loadAndPlayCurrent(0, true)
   }
 
@@ -238,6 +269,7 @@ export const usePlayerStore = defineStore('player', () => {
     queue.value = [...tracks]
     currentIndex.value = Math.max(0, Math.min(tracks.length - 1, startIndex))
     scrobbledCurrent = false
+    resetShuffleAndHistory()
     void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
   }
 
@@ -261,7 +293,24 @@ export const usePlayerStore = defineStore('player', () => {
   function playTrackAt(track: TrackDto, startAtSecs = 0): void {
     const existingIdx = queue.value.findIndex((t) => t.id === track.id)
     if (existingIdx >= 0) {
+      if (currentIndex.value >= 0 && currentIndex.value !== existingIdx) {
+        playHistory.push(currentIndex.value)
+        if (playHistory.length > 200) playHistory.shift()
+      }
       currentIndex.value = existingIdx
+      shufflePool = shufflePool.filter((i) => i !== existingIdx)
+      scrobbledCurrent = false
+      void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
+    } else if (queue.value.length > 0) {
+      const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
+      if (currentIndex.value >= 0) {
+        playHistory.push(currentIndex.value)
+        if (playHistory.length > 200) playHistory.shift()
+      }
+      playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
+      shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
+      queue.value.splice(insertAt, 0, track)
+      currentIndex.value = insertAt
       scrobbledCurrent = false
       void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
     } else {
@@ -275,6 +324,9 @@ export const usePlayerStore = defineStore('player', () => {
       return
     }
     const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
+    playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
+    shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
+    shufflePool.push(insertAt)
     queue.value.splice(insertAt, 0, track)
     scheduleQueueSync()
   }
@@ -305,12 +357,16 @@ export const usePlayerStore = defineStore('player', () => {
   function playNext(): void {
     const len = queue.value.length
     if (len === 0) return
+    if (currentIndex.value >= 0) {
+      playHistory.push(currentIndex.value)
+      if (playHistory.length > 200) playHistory.shift()
+    }
     if (playMode.value === 'shuffle' && len > 1) {
-      let next = currentIndex.value
-      while (next === currentIndex.value) {
-        next = Math.floor(Math.random() * len)
+      shufflePool = shufflePool.filter((i) => i >= 0 && i < len && i !== currentIndex.value)
+      if (shufflePool.length === 0) {
+        refillShufflePool(len, currentIndex.value)
       }
-      currentIndex.value = next
+      currentIndex.value = shufflePool.pop() ?? (currentIndex.value + 1) % len
     } else {
       currentIndex.value = (currentIndex.value + 1) % len
     }
@@ -324,6 +380,17 @@ export const usePlayerStore = defineStore('player', () => {
     if (currentTimeSecs.value > 4) {
       seekTo(0)
       return
+    }
+    if (playMode.value === 'shuffle') {
+      while (playHistory.length > 0) {
+        const prev = playHistory.pop()!
+        if (prev >= 0 && prev < len && prev !== currentIndex.value) {
+          currentIndex.value = prev
+          scrobbledCurrent = false
+          void loadAndPlayCurrent(0, true)
+          return
+        }
+      }
     }
     currentIndex.value = (currentIndex.value - 1 + len) % len
     scrobbledCurrent = false
@@ -376,12 +443,19 @@ export const usePlayerStore = defineStore('player', () => {
     if (idx < 0 || idx >= queue.value.length) return
     const wasCurrent = idx === currentIndex.value
     queue.value.splice(idx, 1)
+    playHistory = playHistory
+      .filter((i) => i !== idx)
+      .map((i) => (i > idx ? i - 1 : i))
+    shufflePool = shufflePool
+      .filter((i) => i !== idx)
+      .map((i) => (i > idx ? i - 1 : i))
     if (queue.value.length === 0) {
       audio.pause()
       audio.removeAttribute('src')
       currentIndex.value = -1
       currentTimeSecs.value = 0
       lyrics.value = null
+      resetShuffleAndHistory()
     } else if (wasCurrent) {
       currentIndex.value = Math.min(idx, queue.value.length - 1)
       scrobbledCurrent = false
@@ -392,6 +466,14 @@ export const usePlayerStore = defineStore('player', () => {
     scheduleQueueSync()
   }
 
+  function removeByTrackId(trackId: string): void {
+    for (let i = queue.value.length - 1; i >= 0; i--) {
+      if (queue.value[i]?.id === trackId) {
+        removeQueueAt(i)
+      }
+    }
+  }
+
   function clearQueue(): void {
     audio.pause()
     audio.removeAttribute('src')
@@ -399,6 +481,7 @@ export const usePlayerStore = defineStore('player', () => {
     currentIndex.value = -1
     currentTimeSecs.value = 0
     lyrics.value = null
+    resetShuffleAndHistory()
     scheduleQueueSync()
   }
 
@@ -418,11 +501,14 @@ export const usePlayerStore = defineStore('player', () => {
     bufferedRatio.value = 0
     streamOffsetSecs.value = 0
     currentStreamIsTranscoded.value = false
+    activeEffectiveProfile.value = 'raw'
+    fallbackFormats.value.clear()
     lyricsOpen.value = false
     queueOpen.value = false
     lyricsLoading.value = false
     lyrics.value = null
     scrobbledCurrent = false
+    resetShuffleAndHistory()
     updateMediaSession(null)
   }
 
@@ -492,6 +578,7 @@ export const usePlayerStore = defineStore('player', () => {
     setVolume,
     toggleMute,
     removeQueueAt,
+    removeByTrackId,
     clearQueue,
     resetForLogout,
     restoreRemoteQueue,

@@ -471,6 +471,7 @@ impl VideoCatalogService {
             .find_video_by_id(video_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+        let old_show_id = item.show_id;
         if let VideoSource::Managed {
             ref storage_key,
             ref sidecar_subtitles,
@@ -483,7 +484,19 @@ impl VideoCatalogService {
         }
         self.watch.delete_progress_by_video(video_id).await?;
         self.catalog.delete_video(video_id).await?;
-        self.catalog.recompute_show_aggregates().await
+        self.catalog.recompute_show_aggregates().await?;
+        let deleted_show_id = if let Some(sid) = old_show_id {
+            if self.catalog.find_show_by_id(sid).await?.is_none() {
+                Some(sid)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        self.watch
+            .delete_video_references(video_id, deleted_show_id)
+            .await
     }
 
     pub async fn list_shows(
@@ -564,12 +577,16 @@ impl VideoCatalogService {
             .find_show_by_id(show_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("show not found".into()))?;
+        let mut title_changed = false;
         if let Some(title) = patch.title {
             let trimmed = title.trim();
             if trimmed.is_empty() {
                 return Err(DomainError::Validation("show title cannot be empty".into()));
             }
-            show.title = trimmed.to_string();
+            if show.title != trimmed {
+                show.title = trimmed.to_string();
+                title_changed = true;
+            }
         }
         if let Some(summary) = patch.summary {
             show.summary = summary.trim().to_string();
@@ -585,6 +602,14 @@ impl VideoCatalogService {
         }
         show.updated_at = Timestamp::now();
         self.catalog.save_show(&show).await?;
+        if title_changed {
+            let episodes = self.catalog.list_episodes_by_show(show_id).await?;
+            for mut ep in episodes {
+                ep.show_title = Some(show.title.clone());
+                ep.updated_at = Timestamp::now();
+                self.catalog.save_video(&ep).await?;
+            }
+        }
         self.enrich_shows(actor.id, vec![show])
             .await?
             .into_iter()
