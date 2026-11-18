@@ -5,6 +5,7 @@ import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuArrowRight,
   LuBookmark,
+  LuCheck,
   LuClock,
   LuDisc3,
   LuHeart,
@@ -24,6 +25,8 @@ import { useThemeStore } from '@/stores/theme'
 import { useUploadStore } from '@/stores/uploads'
 import HomeSkeleton from '@/components/HomeSkeleton.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { useActionFeedback } from '@/composables/useActionFeedback'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
@@ -46,6 +49,7 @@ const uploadStore = useUploadStore()
 const overview = ref<HomeOverviewDto | null>(peekHomeCache('music'))
 const loading = ref(overview.value === null)
 const customizerOpen = ref(false)
+const randomFeedback = useActionFeedback()
 
 async function loadHome(force = false): Promise<void> {
   if (!overview.value) loading.value = true
@@ -54,6 +58,10 @@ async function loadHome(force = false): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function refreshPage(): Promise<void> {
+  await Promise.all([loadHome(true), musicStore.refreshSidebar()])
 }
 
 async function refreshRandomPicks(): Promise<void> {
@@ -254,7 +262,8 @@ const continueItems = computed<ContinueListenItem[]>(() => {
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-8 sm:px-8">
     <!-- Customizable Music Stat Cards (1..=4) -->
     <section class="space-y-2.5">
-      <div class="flex items-center justify-end">
+      <div class="flex items-center justify-end gap-1.5">
+        <RefreshButton variant="ghost" :action="refreshPage" />
         <button
           type="button"
           class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-shell)] hover:text-[var(--ctp-text)]"
@@ -437,10 +446,21 @@ const continueItems = computed<ContinueListenItem[]>(() => {
             </button>
             <button
               type="button"
-              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 py-1.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
-              @click="refreshRandomPicks"
+              :disabled="randomFeedback.running.value"
+              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 py-1.5 text-xs font-medium transition disabled:opacity-70"
+              :class="
+                randomFeedback.done.value
+                  ? 'border-emerald-500/45 text-emerald-500'
+                  : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+              "
+              @click="randomFeedback.run(refreshRandomPicks)"
             >
-              <LuRefreshCw class="h-3.5 w-3.5" />
+              <LuCheck v-if="randomFeedback.done.value" class="h-3.5 w-3.5" />
+              <LuRefreshCw
+                v-else
+                class="h-3.5 w-3.5"
+                :class="randomFeedback.running.value ? 'animate-spin' : ''"
+              />
               <span>{{ t('home.refreshRandom') }}</span>
             </button>
           </div>

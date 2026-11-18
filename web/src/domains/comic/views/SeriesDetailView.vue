@@ -24,6 +24,7 @@ import { useSidebarStore } from '@/domains/comic/store'
 import { useUploadStore } from '@/stores/uploads'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import SeriesMetadataModal from '@/domains/comic/components/SeriesMetadataModal.vue'
 import ChapterMetadataModal from '@/domains/comic/components/ChapterMetadataModal.vue'
 import type { ChapterItemDto, SeriesDetailDto, ShelfDetailDto } from '@/domains/comic/types'
@@ -65,6 +66,10 @@ async function loadDetail(): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function refreshPage(): Promise<void> {
+  await Promise.all([loadDetail(), sidebarStore.refresh()])
 }
 
 onMounted(loadDetail)
@@ -498,6 +503,8 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               <LuTrash2 class="h-4 w-4" />
             </button>
           </template>
+
+          <RefreshButton size="md" :action="refreshPage" :busy="loading" />
         </div>
       </div>
     </section>

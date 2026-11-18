@@ -7,6 +7,7 @@ import { api } from '@/domains/comic/api'
 import { resolveLibrarySeriesCount, useSidebarStore } from '@/domains/comic/store'
 import { useUploadStore } from '@/stores/uploads'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import SeriesCard from '@/domains/comic/components/SeriesCard.vue'
 import type { SeriesStatus, SeriesSummaryDto } from '@/domains/comic/types'
 
@@ -140,6 +141,10 @@ function resetAllFilters(): void {
   void router.replace({ query: {} })
 }
 
+async function refreshPage(): Promise<void> {
+  await Promise.all([sidebarStore.refresh(), fetchSeries()])
+}
+
 onMounted(async () => {
   if (sidebarStore.libraries.length === 0) {
     await sidebarStore.refresh()
@@ -234,6 +239,8 @@ watch(
             {{ sortDir === 'desc' ? '↓' : '↑' }}
           </button>
         </div>
+
+        <RefreshButton :action="refreshPage" :busy="loading" />
       </div>
     </div>
 

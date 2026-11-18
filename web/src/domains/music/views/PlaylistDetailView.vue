@@ -5,6 +5,7 @@ import { LuPlay, LuShuffle, LuPencil, LuTrash2 } from 'vue-icons-plus/lu'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import CoverImage from '../components/CoverImage.vue'
 import TrackTable from '../components/TrackTable.vue'
@@ -145,6 +146,8 @@ watch(() => route.params.id, loadPlaylist)
             <LuTrash2 class="h-3.5 w-3.5" />
             <span>{{ t('common.delete') }}</span>
           </button>
+
+          <RefreshButton size="md" :action="loadPlaylist" />
         </div>
       </div>
     </div>

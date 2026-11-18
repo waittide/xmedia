@@ -24,7 +24,6 @@ import {
   LuMoon,
   LuPanelLeftClose,
   LuPanelLeftOpen,
-  LuRefreshCw,
   LuSearch,
   LuSettings,
   LuSparkles,
@@ -33,6 +32,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl, toolApi } from '../api'
@@ -1107,14 +1107,11 @@ onBeforeUnmount(() => {
                   <span>{{ txt.actions.batchRename }}</span>
                 </button>
 
-                <button
-                  type="button"
-                  class="flex h-8 w-8 items-center justify-center rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+                <RefreshButton
+                  :action="() => loadDirectory(activeRootId, currentRelPath)"
+                  :busy="loadingDir"
                   :title="txt.actions.refresh"
-                  @click="loadDirectory(activeRootId, currentRelPath)"
-                >
-                  <LuRefreshCw class="h-3.5 w-3.5" :class="loadingDir ? 'animate-spin' : ''" />
-                </button>
+                />
               </div>
             </div>
 

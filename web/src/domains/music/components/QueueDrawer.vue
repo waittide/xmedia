@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { LuX, LuTrash2, LuPlay, LuVolume2, LuRefreshCw } from 'vue-icons-plus/lu'
+import { LuX, LuTrash2, LuPlay, LuVolume2 } from 'vue-icons-plus/lu'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import CoverImage from './CoverImage.vue'
@@ -26,14 +27,12 @@ const playerStore = usePlayerStore()
             </p>
           </div>
           <div class="flex items-center gap-1">
-            <button
-              type="button"
-              class="rounded-xl p-2 text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+            <RefreshButton
+              variant="ghost"
+              size="md"
+              :action="() => playerStore.restoreRemoteQueue(true)"
               :title="t('player.syncFromCloud')"
-              @click="playerStore.restoreRemoteQueue(true)"
-            >
-              <LuRefreshCw class="h-4 w-4" />
-            </button>
+            />
             <button
               v-if="playerStore.queue.length > 0"
               type="button"

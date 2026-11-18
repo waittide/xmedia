@@ -2,20 +2,33 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '@/domains/comic/api'
+import { useSidebarStore } from '@/domains/comic/store'
 import type { TaxonomyOverviewDto } from '@/domains/comic/types'
 
 const { t } = useI18n()
 const router = useRouter()
+const sidebarStore = useSidebarStore()
 const data = ref<TaxonomyOverviewDto | null>(null)
 
-onMounted(async () => {
+async function loadTaxonomy(): Promise<void> {
   data.value = await api.taxonomyOverview()
-})
+}
+
+async function refreshPage(): Promise<void> {
+  await Promise.all([loadTaxonomy(), sidebarStore.refresh()])
+}
+
+onMounted(loadTaxonomy)
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-8 p-6 sm:p-8">
+  <div class="mx-auto max-w-6xl space-y-6 p-6 sm:p-8">
+    <div class="flex items-center justify-end">
+      <RefreshButton :action="refreshPage" />
+    </div>
+
     <div
       v-if="
         data &&

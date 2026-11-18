@@ -22,6 +22,7 @@ import { useCatalogStore } from '@/domains/book/store'
 import { useDialogStore } from '@/stores/dialog'
 import type { LibraryDto, ShelfDto } from '@/domains/book/types'
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 
 type CollectionKind = 'libraries' | 'shelves' | 'tags' | 'authors'
 type SortKey = 'count_desc' | 'count_asc' | 'name_asc' | 'updated_desc'
@@ -151,7 +152,10 @@ async function openTag(name: string): Promise<void> {
 async function triggerLibraryScan(lib: LibraryDto): Promise<void> {
   scanningId.value = lib.id
   try {
-    const started = await api.scanLibrary(lib.id)
+    const [started] = await Promise.all([
+      api.scanLibrary(lib.id),
+      new Promise((resolve) => setTimeout(resolve, 450)),
+    ])
     catalogStore.applyLibraryUpdate(started)
   } finally {
     scanningId.value = null
@@ -229,36 +233,40 @@ function formatLibraryScanText(lib: LibraryDto): string {
         </p>
       </div>
 
-      <!-- Contextual Quick Action -->
-      <RouterLink
-        v-if="kind === 'libraries' && authStore.isAdmin"
-        to="/settings?tab=libraries"
-        class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
-      >
-        <LuSettings class="h-3.5 w-3.5" />
-        <span>{{ t('collections.manageLibraries') }}</span>
-      </RouterLink>
+      <!-- Contextual Quick Action + Refresh -->
+      <div class="flex flex-wrap items-center gap-2">
+        <RefreshButton size="md" :action="() => catalogStore.refreshSidebarData()" />
 
-      <form
-        v-else-if="kind === 'shelves'"
-        class="flex items-center gap-2"
-        @submit.prevent="createShelfInline"
-      >
-        <input
-          v-model="newShelfName"
-          type="text"
-          :placeholder="t('nav.shelfNamePlaceholder')"
-          class="h-9 w-52 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
-        />
-        <button
-          type="submit"
-          :disabled="!newShelfName.trim() || creatingShelf"
-          class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-50"
+        <RouterLink
+          v-if="kind === 'libraries' && authStore.isAdmin"
+          to="/settings?tab=libraries"
+          class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
         >
-          <LuFolderPlus class="h-3.5 w-3.5" />
-          <span>{{ t('nav.newShelf') }}</span>
-        </button>
-      </form>
+          <LuSettings class="h-3.5 w-3.5" />
+          <span>{{ t('collections.manageLibraries') }}</span>
+        </RouterLink>
+
+        <form
+          v-else-if="kind === 'shelves'"
+          class="flex items-center gap-2"
+          @submit.prevent="createShelfInline"
+        >
+          <input
+            v-model="newShelfName"
+            type="text"
+            :placeholder="t('nav.shelfNamePlaceholder')"
+            class="h-9 w-52 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
+          />
+          <button
+            type="submit"
+            :disabled="!newShelfName.trim() || creatingShelf"
+            class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-50"
+          >
+            <LuFolderPlus class="h-3.5 w-3.5" />
+            <span>{{ t('nav.newShelf') }}</span>
+          </button>
+        </form>
+      </div>
     </div>
 
     <!-- Search + Sort Toolbar -->

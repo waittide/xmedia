@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { LuPlay, LuShuffle, LuSearch, LuHeart, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
@@ -263,6 +264,10 @@ watch(
   },
 )
 
+async function refreshPage(): Promise<void> {
+  await Promise.all([musicStore.refreshSidebar(), fetchActiveTab()])
+}
+
 onMounted(fetchActiveTab)
 watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActiveTab)
 </script>
@@ -291,23 +296,26 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
         </div>
       </div>
 
-      <div v-if="activeTab === 'songs' && tracks.length > 0" class="flex items-center gap-2">
-        <button
-          type="button"
-          class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-4 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
-          @click="playerStore.playQueue(tracks, 0)"
-        >
-          <LuPlay class="h-3.5 w-3.5 fill-current" />
-          <span>{{ t('common.playAll') }}</span>
-        </button>
-        <button
-          type="button"
-          class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2 text-xs font-semibold text-[var(--ctp-text)] transition hover:bg-[var(--ctp-surface0)]"
-          @click="playerStore.shuffleAndPlay(tracks)"
-        >
-          <LuShuffle class="h-3.5 w-3.5" />
-          <span>{{ t('common.shufflePlay') }}</span>
-        </button>
+      <div class="flex items-center gap-2">
+        <template v-if="activeTab === 'songs' && tracks.length > 0">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-4 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+            @click="playerStore.playQueue(tracks, 0)"
+          >
+            <LuPlay class="h-3.5 w-3.5 fill-current" />
+            <span>{{ t('common.playAll') }}</span>
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2 text-xs font-semibold text-[var(--ctp-text)] transition hover:bg-[var(--ctp-surface0)]"
+            @click="playerStore.shuffleAndPlay(tracks)"
+          >
+            <LuShuffle class="h-3.5 w-3.5" />
+            <span>{{ t('common.shufflePlay') }}</span>
+          </button>
+        </template>
+        <RefreshButton size="md" :action="refreshPage" />
       </div>
     </div>
 

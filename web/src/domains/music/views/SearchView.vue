@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
@@ -37,9 +38,13 @@ watch(() => route.query.q, runSearch)
 
 <template>
   <div class="mx-auto max-w-6xl space-y-8 px-6 py-7 sm:px-8">
-    <h1 class="text-2xl font-extrabold tracking-tight">
-      {{ t('catalog.searchResultsFor', { q: queryText }) }}
-    </h1>
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <h1 class="text-2xl font-extrabold tracking-tight">
+        {{ t('catalog.searchResultsFor', { q: queryText }) }}
+      </h1>
+
+      <RefreshButton size="md" :action="runSearch" :busy="loading" />
+    </div>
 
     <div
       v-if="

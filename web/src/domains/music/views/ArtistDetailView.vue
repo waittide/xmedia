@@ -2,6 +2,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { LuPlay, LuShuffle, LuHeart } from 'vue-icons-plus/lu'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
@@ -96,6 +97,8 @@ watch(() => route.params.id, loadArtist)
               "
             />
           </button>
+
+          <RefreshButton size="md" :action="loadArtist" />
         </div>
       </div>
     </div>

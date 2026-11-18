@@ -21,6 +21,7 @@ import { useThemeStore } from '@/stores/theme'
 import { useUploadStore } from '@/stores/uploads'
 import HomeSkeleton from '@/components/HomeSkeleton.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import PosterImage from '../components/PosterImage.vue'
 import ShowCard from '../components/ShowCard.vue'
 import VideoCard from '../components/VideoCard.vue'
@@ -50,6 +51,10 @@ async function loadHome(force = false): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function refreshPage(): Promise<void> {
+  await Promise.all([loadHome(true), videoStore.refreshSidebar()])
 }
 
 onMounted(() => void loadHome(false))
@@ -193,7 +198,8 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-8 sm:px-8">
     <!-- Customizable Video Stat Cards (1..=4) -->
     <section class="space-y-2.5">
-      <div class="flex items-center justify-end">
+      <div class="flex items-center justify-end gap-1.5">
+        <RefreshButton variant="ghost" :action="refreshPage" />
         <button
           type="button"
           class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-shell)] hover:text-[var(--ctp-text)]"

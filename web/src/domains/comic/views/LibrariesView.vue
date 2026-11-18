@@ -8,6 +8,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useUploadStore } from '@/stores/uploads'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { Library } from '@/domains/comic/types'
 
 const { t } = useI18n()
@@ -51,9 +52,14 @@ async function createLibrary(): Promise<void> {
 async function scanSingle(id: string): Promise<void> {
   scanningIds.value[id] = true
   try {
-    await api.scanLibrary(id)
-    upload.notifyCatalogChanged()
-    await loadLibraries()
+    await Promise.all([
+      (async () => {
+        await api.scanLibrary(id)
+        upload.notifyCatalogChanged()
+        await loadLibraries()
+      })(),
+      new Promise((resolve) => setTimeout(resolve, 450)),
+    ])
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -64,9 +70,14 @@ async function scanSingle(id: string): Promise<void> {
 async function scanAll(): Promise<void> {
   scanningAll.value = true
   try {
-    await api.scanAllLibraries()
-    upload.notifyCatalogChanged()
-    await loadLibraries()
+    await Promise.all([
+      (async () => {
+        await api.scanAllLibraries()
+        upload.notifyCatalogChanged()
+        await loadLibraries()
+      })(),
+      new Promise((resolve) => setTimeout(resolve, 450)),
+    ])
   } finally {
     scanningAll.value = false
   }
@@ -94,10 +105,13 @@ async function removeLibrary(lib: Library): Promise<void> {
         <p class="text-xs text-[var(--text-secondary)]">{{ t('libraries.subtitle') }}</p>
       </div>
 
-      <div v-if="auth.isAdmin" class="flex items-center gap-2.5">
-        <button
-          type="button"
-          :disabled="scanningAll"
+      <div class="flex items-center gap-2.5">
+        <RefreshButton size="md" :action="loadLibraries" />
+
+        <template v-if="auth.isAdmin">
+          <button
+            type="button"
+            :disabled="scanningAll"
           class="inline-flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3.5 py-2 text-xs font-semibold text-[var(--text-primary)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
           @click="scanAll"
         >
@@ -113,6 +127,7 @@ async function removeLibrary(lib: Library): Promise<void> {
           <LuPlus class="h-4 w-4" />
           <span>{{ t('libraries.addLibrary') }}</span>
         </button>
+        </template>
       </div>
     </div>
 

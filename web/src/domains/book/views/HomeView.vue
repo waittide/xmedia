@@ -25,6 +25,7 @@ import type { BookHomeOverviewDto, BookSummaryDto } from '@/domains/book/types'
 import BookCard from '@/domains/book/components/BookCard.vue'
 import HomeSkeleton from '@/components/HomeSkeleton.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 
 defineOptions({ name: 'BookHomeView' })
 
@@ -46,6 +47,10 @@ async function loadHome(force = false): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+async function refreshPage(): Promise<void> {
+  await Promise.all([loadHome(true), catalogStore.refreshSidebarData()])
 }
 
 onMounted(() => {
@@ -197,7 +202,8 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-8 sm:px-8">
     <!-- Customizable Library Stat Cards (1..=4) -->
     <section class="space-y-2.5">
-      <div class="flex items-center justify-end">
+      <div class="flex items-center justify-end gap-1.5">
+        <RefreshButton variant="ghost" :action="refreshPage" />
         <button
           type="button"
           class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-shell)] hover:text-[var(--ctp-text)]"

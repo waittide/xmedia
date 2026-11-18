@@ -16,6 +16,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { api } from '../api'
@@ -157,9 +158,14 @@ async function openGenre(name: string): Promise<void> {
 async function triggerLibraryScan(lib: LibraryDto): Promise<void> {
   scanningId.value = lib.id
   try {
-    await api.scanLibrary(lib.id)
-    await musicStore.refreshSidebar()
-    musicStore.bumpCatalogVersion()
+    await Promise.all([
+      (async () => {
+        await api.scanLibrary(lib.id)
+        await musicStore.refreshSidebar()
+        musicStore.bumpCatalogVersion()
+      })(),
+      new Promise((resolve) => setTimeout(resolve, 450)),
+    ])
   } finally {
     scanningId.value = null
   }
@@ -240,36 +246,40 @@ function formatLibraryScanText(lib: LibraryDto): string {
         </p>
       </div>
 
-      <!-- Contextual Quick Action -->
-      <RouterLink
-        v-if="kind === 'libraries' && authStore.isAdmin"
-        to="/settings?tab=libraries"
-        class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
-      >
-        <LuSettings class="h-3.5 w-3.5" />
-        <span>{{ t('collections.manageLibraries') }}</span>
-      </RouterLink>
+      <!-- Contextual Quick Action + Refresh -->
+      <div class="flex flex-wrap items-center gap-2">
+        <RefreshButton size="md" :action="() => musicStore.refreshSidebar()" />
 
-      <form
-        v-else-if="kind === 'playlists'"
-        class="flex items-center gap-2"
-        @submit.prevent="createPlaylistInline"
-      >
-        <input
-          v-model="newPlaylistName"
-          type="text"
-          :placeholder="t('nav.playlistNamePlaceholder')"
-          class="h-9 w-52 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
-        />
-        <button
-          type="submit"
-          :disabled="!newPlaylistName.trim() || creatingPlaylist"
-          class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-50"
+        <RouterLink
+          v-if="kind === 'libraries' && authStore.isAdmin"
+          to="/settings?tab=libraries"
+          class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
         >
-          <LuFolderPlus class="h-3.5 w-3.5" />
-          <span>{{ t('nav.newPlaylist') }}</span>
-        </button>
-      </form>
+          <LuSettings class="h-3.5 w-3.5" />
+          <span>{{ t('collections.manageLibraries') }}</span>
+        </RouterLink>
+
+        <form
+          v-else-if="kind === 'playlists'"
+          class="flex items-center gap-2"
+          @submit.prevent="createPlaylistInline"
+        >
+          <input
+            v-model="newPlaylistName"
+            type="text"
+            :placeholder="t('nav.playlistNamePlaceholder')"
+            class="h-9 w-52 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
+          />
+          <button
+            type="submit"
+            :disabled="!newPlaylistName.trim() || creatingPlaylist"
+            class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-50"
+          >
+            <LuFolderPlus class="h-3.5 w-3.5" />
+            <span>{{ t('nav.newPlaylist') }}</span>
+          </button>
+        </form>
+      </div>
     </div>
 
     <!-- Search + Sort Toolbar -->

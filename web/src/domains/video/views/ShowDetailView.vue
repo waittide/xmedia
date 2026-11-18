@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LuPlay, LuHeart, LuPencil } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import PosterImage from '../components/PosterImage.vue'
 import ShowMetadataModal from '../components/ShowMetadataModal.vue'
@@ -149,6 +150,8 @@ watch(() => route.params.id, loadShow)
             <LuPencil class="h-3.5 w-3.5" />
             <span>{{ t('common.editMetadata') }}</span>
           </button>
+
+          <RefreshButton size="md" :action="loadShow" />
         </div>
       </div>
     </div>

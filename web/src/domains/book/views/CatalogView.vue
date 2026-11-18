@@ -23,6 +23,7 @@ import BookCard from '@/domains/book/components/BookCard.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -199,6 +200,10 @@ function goPage(nextPage: number): void {
   catalogStore.page = nextPage
   void catalogStore.fetchBooks()
 }
+
+async function refreshPage(): Promise<void> {
+  await Promise.all([catalogStore.refreshSidebarData(), catalogStore.fetchBooks()])
+}
 </script>
 
 <template>
@@ -300,11 +305,13 @@ function goPage(nextPage: number): void {
           </button>
         </div>
 
-        <!-- Right: Count + Grid/Table Switcher -->
-        <div class="flex items-center gap-3">
+        <!-- Right: Count + Refresh + Grid/Table Switcher -->
+        <div class="flex items-center gap-2.5">
           <span class="text-xs text-[var(--ctp-subtext0)]">
             {{ t('catalog.totalBooks', { count: catalogStore.total }) }}
           </span>
+
+          <RefreshButton :action="refreshPage" :busy="catalogStore.loading" />
 
           <div class="flex items-center rounded-xl bg-[var(--ctp-mantle)] p-0.5">
             <button

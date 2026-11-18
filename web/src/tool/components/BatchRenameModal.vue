@@ -9,6 +9,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import { useActionFeedback } from '@/composables/useActionFeedback'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import type { MediaFileEntry, RenamePlanItem, RenameTemplatesDto } from '../types'
@@ -34,6 +35,8 @@ const genericInputRef = ref<HTMLInputElement | null>(null)
 const plans = ref<RenamePlanItem[]>([])
 const excludedPaths = ref<Set<string>>(new Set())
 const loadingPreview = ref(false)
+const previewFeedback = useActionFeedback()
+const previewSpinning = computed(() => loadingPreview.value || previewFeedback.running.value)
 const executing = ref(false)
 const errorMsg = ref<string | null>(null)
 
@@ -279,11 +282,14 @@ async function handleExecute(): Promise<void> {
               <div class="flex items-end sm:col-span-2">
                 <button
                   type="button"
-                  class="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
-                  @click="runPreview"
+                  :disabled="previewSpinning"
+                  class="inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-70"
+                  :class="previewFeedback.done.value ? 'border-emerald-500/45 text-emerald-500' : ''"
+                  @click="previewFeedback.run(runPreview)"
                 >
-                  <LuRefreshCw class="h-3.5 w-3.5" :class="loadingPreview ? 'animate-spin' : ''" />
-                  <span>刷新</span>
+                  <LuCheck v-if="previewFeedback.done.value && !previewSpinning" class="h-3.5 w-3.5" />
+                  <LuRefreshCw v-else class="h-3.5 w-3.5" :class="previewSpinning ? 'animate-spin' : ''" />
+                  <span>{{ previewFeedback.done.value && !previewSpinning ? '已刷新' : '刷新' }}</span>
                 </button>
               </div>
             </div>
@@ -298,11 +304,14 @@ async function handleExecute(): Promise<void> {
             />
             <button
               type="button"
-              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
-              @click="runPreview"
+              :disabled="previewSpinning"
+              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-70"
+              :class="previewFeedback.done.value ? 'border-emerald-500/45 text-emerald-500' : ''"
+              @click="previewFeedback.run(runPreview)"
             >
-              <LuRefreshCw class="h-3.5 w-3.5" :class="loadingPreview ? 'animate-spin' : ''" />
-              <span>刷新预览</span>
+              <LuCheck v-if="previewFeedback.done.value && !previewSpinning" class="h-3.5 w-3.5" />
+              <LuRefreshCw v-else class="h-3.5 w-3.5" :class="previewSpinning ? 'animate-spin' : ''" />
+              <span>{{ previewFeedback.done.value && !previewSpinning ? '已刷新' : '刷新预览' }}</span>
             </button>
           </div>
 

@@ -9,6 +9,7 @@ import {
   LuListMusic,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
@@ -137,9 +138,13 @@ watch(() => musicStore.catalogVersion, loadContinueData)
 <template>
   <div class="mx-auto max-w-6xl space-y-8 px-6 py-7 sm:px-8">
     <!-- Header -->
-    <div>
-      <h1 class="text-2xl font-extrabold tracking-tight">{{ t('continueView.title') }}</h1>
-      <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('continueView.subtitle') }}</p>
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h1 class="text-2xl font-extrabold tracking-tight">{{ t('continueView.title') }}</h1>
+        <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('continueView.subtitle') }}</p>
+      </div>
+
+      <RefreshButton size="md" :action="loadContinueData" :busy="loading" />
     </div>
 
     <!-- Empty State -->

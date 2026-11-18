@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { LuSearch, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
 import ShowCard from '../components/ShowCard.vue'
@@ -215,6 +216,10 @@ watch(
   },
 )
 
+async function refreshPage(): Promise<void> {
+  await Promise.all([videoStore.refreshSidebar(), fetchActive()])
+}
+
 onMounted(fetchActive)
 watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive)
 </script>
@@ -238,6 +243,8 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
         </div>
         <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ pageSubtitle }}</p>
       </div>
+
+      <RefreshButton size="md" :action="refreshPage" />
     </div>
 
     <!-- Videos / Shows Tabs -->

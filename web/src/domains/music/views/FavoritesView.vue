@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { LuPlay, LuShuffle, LuHeart } from 'vue-icons-plus/lu'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
@@ -41,23 +42,26 @@ watch(() => musicStore.catalogVersion, () => {
         <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('favorites.subtitle') }}</p>
       </div>
 
-      <div v-if="visibleTracks.length > 0" class="flex items-center gap-2">
-        <button
-          type="button"
-          class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-4 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm"
-          @click="playerStore.playQueue(visibleTracks, 0)"
-        >
-          <LuPlay class="h-3.5 w-3.5 fill-current" />
-          <span>{{ t('common.playAll') }}</span>
-        </button>
-        <button
-          type="button"
-          class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2 text-xs font-semibold"
-          @click="playerStore.shuffleAndPlay(visibleTracks)"
-        >
-          <LuShuffle class="h-3.5 w-3.5" />
-          <span>{{ t('common.shufflePlay') }}</span>
-        </button>
+      <div class="flex items-center gap-2">
+        <template v-if="visibleTracks.length > 0">
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-4 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm"
+            @click="playerStore.playQueue(visibleTracks, 0)"
+          >
+            <LuPlay class="h-3.5 w-3.5 fill-current" />
+            <span>{{ t('common.playAll') }}</span>
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2 text-xs font-semibold"
+            @click="playerStore.shuffleAndPlay(visibleTracks)"
+          >
+            <LuShuffle class="h-3.5 w-3.5" />
+            <span>{{ t('common.shufflePlay') }}</span>
+          </button>
+        </template>
+        <RefreshButton size="md" :action="loadStarred" />
       </div>
     </div>
 

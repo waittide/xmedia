@@ -22,6 +22,7 @@ import { useCatalogStore } from '@/domains/book/store'
 import { useThemeStore } from '@/stores/theme'
 import { useDialogStore } from '@/stores/dialog'
 import type { Bookmark, BookSummaryDto, TocItem } from '@/domains/book/types'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import TocTree from '@/domains/book/components/TocTree.vue'
 
 const { t } = useI18n()
@@ -271,8 +272,8 @@ function openBookmarkInReader(bm: Bookmark): void {
 
 <template>
   <div class="mx-auto max-w-5xl px-6 py-6 sm:px-8">
-    <!-- Top Back Button -->
-    <div class="mb-6">
+    <!-- Top Back & Refresh Bar -->
+    <div class="mb-6 flex items-center justify-between gap-3">
       <button
         type="button"
         class="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-mantle)] hover:text-[var(--ctp-text)]"
@@ -281,6 +282,11 @@ function openBookmarkInReader(bm: Bookmark): void {
         <LuArrowLeft class="h-4 w-4" />
         <span>{{ t('detail.back') }}</span>
       </button>
+
+      <RefreshButton
+        :action="() => loadDetail(String(route.params.id))"
+        :busy="loading"
+      />
     </div>
 
     <div v-if="loading" class="py-20 text-center text-sm text-[var(--ctp-subtext0)]">

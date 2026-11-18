@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { LuBookmark, LuPlay, LuSearch, LuTrash2, LuX } from 'vue-icons-plus/lu'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '@/domains/book/api'
 import { useCatalogStore } from '@/domains/book/store'
 import type { BookBookmarkItemDto } from '@/domains/book/types'
@@ -72,6 +73,8 @@ async function removeBookmark(id: string): Promise<void> {
           {{ t('bookmarksPage.bookSubtitle') }}
         </p>
       </div>
+
+      <RefreshButton size="md" :action="refresh" :busy="loading" />
     </div>
 
     <div

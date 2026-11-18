@@ -55,6 +55,7 @@ import type {
   VideoQualityProfile,
 } from '@/types/api'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import AppColorPicker from '@/components/ui/AppColorPicker.vue'
@@ -374,9 +375,14 @@ async function handleRescan(lib: CoreLibraryDto): Promise<void> {
   errorMsg.value = ''
   scanningId.value = lib.id
   try {
-    await api.scanLibrary(lib.id)
-    eventsStore.bumpDomain(lib.media_kind)
-    await refreshAdminLibraries()
+    await Promise.all([
+      (async () => {
+        await api.scanLibrary(lib.id)
+        eventsStore.bumpDomain(lib.media_kind)
+        await refreshAdminLibraries()
+      })(),
+      new Promise((resolve) => setTimeout(resolve, 450)),
+    ])
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -388,13 +394,18 @@ async function handleScanAll(): Promise<void> {
   errorMsg.value = ''
   scanningAll.value = true
   try {
-    for (const lib of filteredLibraries.value) {
-      if (lib.kind.type === 'local_mount' && lib.scan_status.state !== 'scanning') {
-        await api.scanLibrary(lib.id)
-        eventsStore.bumpDomain(lib.media_kind)
-      }
-    }
-    await refreshAdminLibraries()
+    await Promise.all([
+      (async () => {
+        for (const lib of filteredLibraries.value) {
+          if (lib.kind.type === 'local_mount' && lib.scan_status.state !== 'scanning') {
+            await api.scanLibrary(lib.id)
+            eventsStore.bumpDomain(lib.media_kind)
+          }
+        }
+        await refreshAdminLibraries()
+      })(),
+      new Promise((resolve) => setTimeout(resolve, 450)),
+    ])
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -1391,15 +1402,18 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
                 />
               </div>
 
-              <button
-                type="button"
-                :disabled="scanningAll"
-                class="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
-                @click="handleScanAll"
-              >
-                <LuRefreshCw class="h-3.5 w-3.5" :class="scanningAll ? 'animate-spin' : ''" />
-                <span>{{ t('admin.scanAllBtn') }}</span>
-              </button>
+              <div class="flex items-center gap-2">
+                <RefreshButton size="md" :action="refreshAdminLibraries" />
+                <button
+                  type="button"
+                  :disabled="scanningAll"
+                  class="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+                  @click="handleScanAll"
+                >
+                  <LuRefreshCw class="h-3.5 w-3.5" :class="scanningAll ? 'animate-spin' : ''" />
+                  <span>{{ t('admin.scanAllBtn') }}</span>
+                </button>
+              </div>
             </div>
 
             <div class="space-y-3">
@@ -1545,7 +1559,12 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
           </section>
 
           <section class="card-soft space-y-3 rounded-2xl bg-[var(--ctp-shell)] p-6">
-            <h2 class="text-sm font-bold">{{ t('admin.usersListTitle') }}</h2>
+            <div class="flex items-center justify-between gap-3">
+              <h2 class="text-sm font-bold">{{ t('admin.usersListTitle') }}</h2>
+              <RefreshButton
+                :action="async () => { users = await api.listUsers() }"
+              />
+            </div>
 
             <div
               v-for="u in users"

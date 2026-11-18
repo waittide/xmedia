@@ -3,6 +3,7 @@ import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LuPlay, LuPencil, LuTrash2, LuFolderHeart } from 'vue-icons-plus/lu'
 import { useDialogStore } from '@/stores/dialog'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import PosterImage from '../components/PosterImage.vue'
 import VideoCard from '../components/VideoCard.vue'
@@ -125,6 +126,8 @@ watch(() => route.params.id, loadShelf)
             <LuTrash2 class="h-3.5 w-3.5" />
             <span>{{ t('common.delete') }}</span>
           </button>
+
+          <RefreshButton size="md" :action="loadShelf" />
         </div>
       </div>
     </div>

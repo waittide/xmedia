@@ -6,6 +6,7 @@ import { api } from '@/domains/comic/api'
 import { useDialogStore } from '@/stores/dialog'
 import { useSidebarStore } from '@/domains/comic/store'
 import AppDialog from '@/components/ui/AppDialog.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import SeriesCard from '@/domains/comic/components/SeriesCard.vue'
 import type { ShelfDetailDto } from '@/domains/comic/types'
 
@@ -21,6 +22,10 @@ const descInput = ref('')
 
 async function loadShelves(): Promise<void> {
   shelves.value = await api.listShelves()
+}
+
+async function refreshPage(): Promise<void> {
+  await Promise.all([loadShelves(), sidebarStore.refresh()])
 }
 
 onMounted(loadShelves)
@@ -76,14 +81,17 @@ async function removeShelf(item: ShelfDetailDto): Promise<void> {
         <h2 class="text-lg font-bold text-[var(--text-primary)]">{{ t('shelves.title') }}</h2>
         <p class="text-xs text-[var(--text-secondary)]">{{ t('shelves.subtitle') }}</p>
       </div>
-      <button
-        type="button"
-        class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-[var(--accent-contrast)] hover:opacity-90"
-        @click="openCreate"
-      >
-        <LuPlus class="h-4 w-4" />
-        <span>{{ t('shelves.createShelf') }}</span>
-      </button>
+      <div class="flex items-center gap-2">
+        <RefreshButton size="md" :action="refreshPage" />
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-[var(--accent-contrast)] hover:opacity-90"
+          @click="openCreate"
+        >
+          <LuPlus class="h-4 w-4" />
+          <span>{{ t('shelves.createShelf') }}</span>
+        </button>
+      </div>
     </div>
 
     <div
