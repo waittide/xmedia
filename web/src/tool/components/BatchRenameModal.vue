@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   LuAlertTriangle,
   LuArrowRight,
@@ -8,6 +8,7 @@ import {
   LuRefreshCw,
   LuX,
 } from 'vue-icons-plus/lu'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import type { MediaFileEntry, RenamePlanItem, RenameTemplatesDto } from '../types'
@@ -21,13 +22,17 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  renamed: [movedCount: number]
+  renamed: [movedCount: number, movedMap: Record<string, string>]
 }>()
 
 const templateInput = ref('')
 const episodeTemplateInput = ref('')
 const focusedVideoInput = ref<'movie' | 'episode'>('movie')
+const movieInputRef = ref<HTMLInputElement | null>(null)
+const episodeInputRef = ref<HTMLInputElement | null>(null)
+const genericInputRef = ref<HTMLInputElement | null>(null)
 const plans = ref<RenamePlanItem[]>([])
+const excludedPaths = ref<Set<string>>(new Set())
 const loadingPreview = ref(false)
 const executing = ref(false)
 const errorMsg = ref<string | null>(null)
@@ -37,15 +42,24 @@ const dominantKind = computed<MediaKind>(() => props.entries[0]?.media_kind ?? '
 const tokenChips = computed<string[]>(() => {
   const k = dominantKind.value
   if (k === 'music') {
-    return ['{track:2}', '{disc}', '{artist}', '{album}', '{title}', '{year}']
+    return ['{track:2}', '{disc}', '{artist}', '{album}', '{title}', '{year}', '{genre}']
   }
   if (k === 'video') {
-    return ['{show}', '{season:2}', '{episode:2}', '{title}', '{year}', '{jellyfin_id}', '{tmdbid}']
+    return [
+      '{show}',
+      '{season:2}',
+      '{episode:2}',
+      '{title}',
+      '{original_title}',
+      '{year}',
+      '{jellyfin_id}',
+      '{tmdbid}',
+    ]
   }
   if (k === 'comic') {
-    return ['{series}', '{number:2}', '{volume:2}', '{title}', '{year}']
+    return ['{series}', '{number:2}', '{volume:2}', '{title}', '{publisher}', '{year}']
   }
-  return ['{author}', '{title}', '{year}', '{isbn}']
+  return ['{author}', '{title}', '{publisher}', '{year}', '{isbn}']
 })
 
 function seedTemplatesForEntries(): void {
@@ -92,6 +106,7 @@ watch(
   () => props.open,
   (isOpen) => {
     if (isOpen) {
+      excludedPaths.value = new Set()
       seedTemplatesForEntries()
       void runPreview()
     }
@@ -106,16 +121,51 @@ watch([templateInput, episodeTemplateInput], () => {
   }, 260)
 })
 
+async function insertTokenAtCursor(
+  model: { value: string },
+  inputEl: HTMLInputElement | null,
+  tok: string,
+): Promise<void> {
+  if (!inputEl) {
+    model.value = `${model.value}${tok}`
+    return
+  }
+  const start = inputEl.selectionStart ?? model.value.length
+  const end = inputEl.selectionEnd ?? start
+  const nextVal = `${model.value.slice(0, start)}${tok}${model.value.slice(end)}`
+  model.value = nextVal
+  await nextTick()
+  inputEl.focus()
+  const caret = start + tok.length
+  inputEl.setSelectionRange(caret, caret)
+}
+
 function appendChip(tok: string): void {
   if (dominantKind.value === 'video' && focusedVideoInput.value === 'episode') {
-    episodeTemplateInput.value = `${episodeTemplateInput.value}${tok}`
+    void insertTokenAtCursor(episodeTemplateInput, episodeInputRef.value, tok)
+  } else if (dominantKind.value === 'video') {
+    void insertTokenAtCursor(templateInput, movieInputRef.value, tok)
   } else {
-    templateInput.value = `${templateInput.value}${tok}`
+    void insertTokenAtCursor(templateInput, genericInputRef.value, tok)
   }
 }
 
+function toggleRowExcluded(fromRelPath: string): void {
+  const next = new Set(excludedPaths.value)
+  if (next.has(fromRelPath)) {
+    next.delete(fromRelPath)
+  } else {
+    next.add(fromRelPath)
+  }
+  excludedPaths.value = next
+}
+
+const activePlans = computed(() =>
+  plans.value.filter((p) => !excludedPaths.value.has(p.from_rel_path)),
+)
+
 const actionableCount = computed(
-  () => plans.value.filter((p) => !p.unchanged && !p.conflict).length,
+  () => activePlans.value.filter((p) => !p.unchanged && !p.conflict).length,
 )
 
 async function handleExecute(): Promise<void> {
@@ -123,8 +173,15 @@ async function handleExecute(): Promise<void> {
   executing.value = true
   errorMsg.value = null
   try {
-    const res = await toolApi.executeRename(props.rootId, plans.value)
-    emit('renamed', res.moved_count)
+    const selected = activePlans.value
+    const movedMap: Record<string, string> = {}
+    for (const p of selected) {
+      if (!p.unchanged && !p.conflict) {
+        movedMap[p.from_rel_path] = p.to_rel_path
+      }
+    }
+    const res = await toolApi.executeRename(props.rootId, selected)
+    emit('renamed', res.moved_count, movedMap)
     emit('close')
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
@@ -172,6 +229,7 @@ async function handleExecute(): Promise<void> {
                   电影归档模板（对非剧集生效）
                 </span>
                 <input
+                  ref="movieInputRef"
                   v-model="templateInput"
                   type="text"
                   placeholder="{title} ({year})/{title} ({year})"
@@ -184,6 +242,7 @@ async function handleExecute(): Promise<void> {
                   剧集归档模板（对剧集 SxxExx 生效）
                 </span>
                 <input
+                  ref="episodeInputRef"
                   v-model="episodeTemplateInput"
                   type="text"
                   placeholder="{show} ({year})/Season {season:2}/{show} - S{season:2}E{episode:2} - {title}"
@@ -205,6 +264,7 @@ async function handleExecute(): Promise<void> {
           </template>
           <div v-else class="flex items-center gap-2">
             <input
+              ref="genericInputRef"
               v-model="templateInput"
               type="text"
               placeholder="输入重命名模板，例如 {track:2} - {artist} - {title}"
@@ -249,9 +309,14 @@ async function handleExecute(): Promise<void> {
           <div
             v-for="item in plans"
             :key="item.from_rel_path"
-            class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-3"
+            class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-3 transition"
+            :class="excludedPaths.has(item.from_rel_path) ? 'opacity-50' : ''"
           >
             <div class="flex flex-wrap items-center gap-2 text-xs">
+              <AppCheckbox
+                :model-value="!excludedPaths.has(item.from_rel_path)"
+                @change="toggleRowExcluded(item.from_rel_path)"
+              />
               <span class="font-mono text-[var(--ctp-subtext1)]">{{ item.from_rel_path }}</span>
               <LuArrowRight class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]" />
               <span

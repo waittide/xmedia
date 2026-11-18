@@ -58,6 +58,7 @@ const MESSAGES = {
     filters: {
       title: '完整度筛选',
       all: '全部文件',
+      complete: '元信息齐全',
       incomplete: '待补齐项',
     },
     roots: {
@@ -77,6 +78,7 @@ const MESSAGES = {
       batchRename: '批量重命名',
       refresh: '刷新',
       settings: '设置',
+      lock: '锁定',
       save: '原子写入原文件',
       saving: '正在写入…',
       saved: '已写入原文件',
@@ -138,6 +140,7 @@ const MESSAGES = {
     filters: {
       title: 'Completeness',
       all: 'All Files',
+      complete: 'Complete',
       incomplete: 'Incomplete',
     },
     roots: {
@@ -157,6 +160,7 @@ const MESSAGES = {
       batchRename: 'Batch Rename',
       refresh: 'Refresh',
       settings: 'Settings',
+      lock: 'Lock',
       save: 'Save to Source File',
       saving: 'Writing…',
       saved: 'Saved',

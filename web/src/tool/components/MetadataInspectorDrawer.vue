@@ -17,6 +17,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import { useDialogStore } from '@/stores/dialog'
 import { buildArtworkUrl, toolApi } from '../api'
 import { formatBytes, formatDuration, useToolText } from '../i18n'
 import type { MediaFileDetail, MediaMetadataPatchEnvelope } from '../types'
@@ -33,6 +34,7 @@ const emit = defineEmits<{
 }>()
 
 const txt = useToolText()
+const dialogStore = useDialogStore()
 
 const saving = ref(false)
 const saveFeedback = ref<string | null>(null)
@@ -40,7 +42,10 @@ const errorMsg = ref<string | null>(null)
 const uploadingArtwork = ref(false)
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const pendingSlot = ref<'cover' | 'poster' | 'fanart' | 'thumb'>('cover')
+const videoArtworkSlot = ref<'poster' | 'fanart' | 'thumb'>('poster')
 const lyricsTab = ref<'embedded' | 'sidecar'>('embedded')
+const baselineSnapshot = ref('')
+const skipNextHydrate = ref(false)
 
 // Book form
 const bookTitle = ref('')
@@ -98,12 +103,69 @@ const videoTmdbId = ref('')
 const videoBangumiId = ref('')
 const videoSummary = ref('')
 
-function splitCsv(raw: string): string[] {
+function splitListTokens(raw: string): string[] {
   return raw
-    .split(/[,，;；、]/)
+    .split(/[/；;、\n]/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
 }
+
+function serializeFormSnapshot(): string {
+  return JSON.stringify([
+    bookTitle.value,
+    bookAuthors.value,
+    bookIsbn.value,
+    bookPublisher.value,
+    bookPublishedAt.value,
+    bookLanguage.value,
+    bookTags.value,
+    bookDescription.value,
+    comicSeries.value,
+    comicTitle.value,
+    comicNumber.value,
+    comicVolume.value,
+    comicYear.value,
+    comicLanguage.value,
+    comicDirection.value,
+    comicWriters.value,
+    comicPencillers.value,
+    comicPublisher.value,
+    comicGenres.value,
+    comicTags.value,
+    comicSummary.value,
+    musicTitle.value,
+    musicArtist.value,
+    musicAlbumArtist.value,
+    musicAlbum.value,
+    musicTrack.value,
+    musicDisc.value,
+    musicYear.value,
+    musicGenre.value,
+    musicComment.value,
+    musicEmbeddedLyrics.value,
+    musicSidecarLrc.value,
+    videoIsEpisode.value,
+    videoTitle.value,
+    videoOriginalTitle.value,
+    videoShowTitle.value,
+    videoSeason.value,
+    videoEpisode.value,
+    videoYear.value,
+    videoRating.value,
+    videoStudio.value,
+    videoDirectors.value,
+    videoActors.value,
+    videoGenres.value,
+    videoTags.value,
+    videoTmdbId.value,
+    videoBangumiId.value,
+    videoSummary.value,
+  ])
+}
+
+const isDirty = computed(
+  () => baselineSnapshot.value !== '' && serializeFormSnapshot() !== baselineSnapshot.value,
+)
 
 function hydrateForm(d: MediaFileDetail): void {
   errorMsg.value = null
@@ -112,12 +174,12 @@ function hydrateForm(d: MediaFileDetail): void {
   if (m.kind === 'book') {
     const b = m.data
     bookTitle.value = b.title
-    bookAuthors.value = b.authors.join(', ')
+    bookAuthors.value = b.authors.join(' / ')
     bookIsbn.value = b.isbn ?? ''
     bookPublisher.value = b.publisher ?? ''
     bookPublishedAt.value = b.published_at ?? ''
     bookLanguage.value = b.language ?? ''
-    bookTags.value = b.tags.join(', ')
+    bookTags.value = b.tags.join(' / ')
     bookDescription.value = b.description ?? ''
   } else if (m.kind === 'comic') {
     const c = m.data
@@ -128,11 +190,11 @@ function hydrateForm(d: MediaFileDetail): void {
     comicYear.value = c.year !== null ? String(c.year) : ''
     comicLanguage.value = c.language_iso ?? ''
     comicDirection.value = c.reading_direction || 'rtl'
-    comicWriters.value = c.writers.join(', ')
-    comicPencillers.value = c.pencillers.join(', ')
+    comicWriters.value = c.writers.join(' / ')
+    comicPencillers.value = c.pencillers.join(' / ')
     comicPublisher.value = c.publisher ?? ''
-    comicGenres.value = c.genres.join(', ')
-    comicTags.value = c.tags.join(', ')
+    comicGenres.value = c.genres.join(' / ')
+    comicTags.value = c.tags.join(' / ')
     comicSummary.value = c.summary ?? ''
   } else if (m.kind === 'music') {
     const mu = m.data
@@ -163,23 +225,53 @@ function hydrateForm(d: MediaFileDetail): void {
     videoYear.value = v.year !== null ? String(v.year) : ''
     videoRating.value = v.rating !== null ? String(v.rating) : ''
     videoStudio.value = v.studio ?? ''
-    videoDirectors.value = v.directors.join(', ')
-    videoActors.value = v.actors.join(', ')
-    videoGenres.value = v.genres.join(', ')
-    videoTags.value = v.tags.join(', ')
+    videoDirectors.value = v.directors.join(' / ')
+    videoActors.value = v.actors.join(' / ')
+    videoGenres.value = v.genres.join(' / ')
+    videoTags.value = v.tags.join(' / ')
     videoTmdbId.value = v.tmdb_id ?? ''
     videoBangumiId.value = v.bangumi_id ?? ''
     videoSummary.value = v.summary ?? ''
+    if (v.has_poster) {
+      videoArtworkSlot.value = 'poster'
+    } else if (v.has_fanart) {
+      videoArtworkSlot.value = 'fanart'
+    } else if (v.has_thumb) {
+      videoArtworkSlot.value = 'thumb'
+    } else {
+      videoArtworkSlot.value = 'poster'
+    }
   }
+  baselineSnapshot.value = serializeFormSnapshot()
 }
 
 watch(
   () => props.detail,
-  (next) => hydrateForm(next),
+  (next) => {
+    if (skipNextHydrate.value) {
+      skipNextHydrate.value = false
+      return
+    }
+    hydrateForm(next)
+  },
   { immediate: true },
 )
 
 const artworkSrc = computed(() => {
+  if (props.detail.metadata.kind === 'video') {
+    const v = props.detail.metadata.data
+    const slot = videoArtworkSlot.value
+    const exists =
+      slot === 'poster' ? v.has_poster : slot === 'fanart' ? v.has_fanart : v.has_thumb
+    if (!exists) return null
+    return buildArtworkUrl(
+      props.detail.entry.root_id,
+      props.detail.entry.rel_path,
+      props.detail.entry.media_kind,
+      props.artworkVersion,
+      slot,
+    )
+  }
   if (!props.detail.entry.completeness.has_cover) return null
   return buildArtworkUrl(
     props.detail.entry.root_id,
@@ -222,6 +314,11 @@ async function handleArtworkPicked(ev: Event): Promise<void> {
       pendingSlot.value,
       props.detail.entry.media_kind,
     )
+    if (pendingSlot.value === 'poster' || pendingSlot.value === 'fanart' || pendingSlot.value === 'thumb') {
+      videoArtworkSlot.value = pendingSlot.value
+    }
+    // Preserve any unsaved text edits while refreshing artwork preview & server flags
+    skipNextHydrate.value = true
     emit('updated', next, true)
     saveFeedback.value = txt.value.actions.saved
     setTimeout(() => {
@@ -249,6 +346,34 @@ function parseOptInt(raw: string, fallbackZero = 0): number | undefined {
   return Number.isFinite(n) ? n : undefined
 }
 
+function parseClearableInt(raw: string): number {
+  const trimmed = raw.trim()
+  if (!trimmed) return -1
+  const n = Number.parseInt(trimmed, 10)
+  return Number.isFinite(n) && n >= 0 ? n : -1
+}
+
+async function confirmDiscardIfDirty(): Promise<boolean> {
+  if (!isDirty.value) return true
+  return dialogStore.confirm({
+    title: '放弃未保存的修改？',
+    message: '当前右侧表单有尚未写入原文件的更改，切换或关闭将丢失这些改动。',
+    confirmText: '放弃改动',
+    danger: true,
+  })
+}
+
+async function requestClose(): Promise<void> {
+  if (await confirmDiscardIfDirty()) {
+    emit('close')
+  }
+}
+
+defineExpose({
+  isDirty,
+  confirmDiscardIfDirty,
+})
+
 async function saveMetadata(syncArchivePath = false): Promise<void> {
   if (!canSaveMetadata.value || saving.value) return
   saving.value = true
@@ -263,12 +388,12 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
         kind: 'book',
         patch: {
           title: bookTitle.value,
-          authors: splitCsv(bookAuthors.value),
+          authors: splitListTokens(bookAuthors.value),
           isbn: bookIsbn.value,
           publisher: bookPublisher.value,
           published_at: bookPublishedAt.value,
           language: bookLanguage.value,
-          tags: splitCsv(bookTags.value),
+          tags: splitListTokens(bookTags.value),
           description: bookDescription.value,
         },
       }
@@ -283,11 +408,11 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
           year: parseOptInt(comicYear.value, 0),
           language_iso: comicLanguage.value,
           reading_direction: comicDirection.value,
-          writers: splitCsv(comicWriters.value),
-          pencillers: splitCsv(comicPencillers.value),
+          writers: splitListTokens(comicWriters.value),
+          pencillers: splitListTokens(comicPencillers.value),
           publisher: comicPublisher.value,
-          genres: splitCsv(comicGenres.value),
-          tags: splitCsv(comicTags.value),
+          genres: splitListTokens(comicGenres.value),
+          tags: splitListTokens(comicTags.value),
           summary: comicSummary.value,
         },
       }
@@ -311,7 +436,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
     } else {
       const parsedRating = videoRating.value.trim()
         ? Number.parseFloat(videoRating.value)
-        : undefined
+        : 0
       envelope = {
         kind: 'video',
         patch: {
@@ -319,15 +444,15 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
           title: videoTitle.value,
           original_title: videoOriginalTitle.value,
           show_title: videoShowTitle.value,
-          season_number: parseOptInt(videoSeason.value, 0),
+          season_number: parseClearableInt(videoSeason.value),
           episode_number: parseOptInt(videoEpisode.value, 0),
           year: parseOptInt(videoYear.value, 0),
-          rating: parsedRating !== undefined && Number.isFinite(parsedRating) ? parsedRating : undefined,
+          rating: Number.isFinite(parsedRating) && parsedRating > 0 ? parsedRating : 0,
           studio: videoStudio.value,
-          directors: splitCsv(videoDirectors.value),
-          actors: splitCsv(videoActors.value),
-          genres: splitCsv(videoGenres.value),
-          tags: splitCsv(videoTags.value),
+          directors: splitListTokens(videoDirectors.value),
+          actors: splitListTokens(videoActors.value),
+          genres: splitListTokens(videoGenres.value),
+          tags: splitListTokens(videoTags.value),
           tmdb_id: videoTmdbId.value,
           bangumi_id: videoBangumiId.value,
           summary: videoSummary.value,
@@ -392,8 +517,16 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
       class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--ctp-surface0)]/70 px-4 py-3"
     >
       <div class="min-w-0">
-        <div class="truncate text-xs font-bold text-[var(--ctp-text)]">
-          {{ detail.entry.file_name }}
+        <div class="flex items-center gap-1.5">
+          <span class="truncate text-xs font-bold text-[var(--ctp-text)]">
+            {{ detail.entry.file_name }}
+          </span>
+          <span
+            v-if="isDirty"
+            class="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-500"
+          >
+            未保存
+          </span>
         </div>
         <div class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
           {{ detail.entry.rel_path }} · {{ formatBytes(detail.entry.file_size) }}
@@ -412,7 +545,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
         <button
           type="button"
           class="flex h-8 w-8 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
-          @click="emit('close')"
+          @click="requestClose"
         >
           <LuX class="h-4 w-4" />
         </button>
@@ -425,25 +558,54 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
       <div
         class="flex gap-3.5 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-canvas)] p-3"
       >
-        <div
-          class="relative shrink-0 overflow-hidden rounded-xl bg-[var(--ctp-mantle)]"
-          :class="detail.entry.media_kind === 'music' ? 'h-24 w-24 album-shadow' : 'h-32 w-24 book-shadow'"
-        >
-          <img
-            v-if="artworkSrc"
-            :src="artworkSrc"
-            alt="artwork"
-            class="h-full w-full object-cover"
-          />
+        <div class="flex shrink-0 flex-col items-center gap-1.5">
           <div
-            v-else
-            class="flex h-full w-full flex-col items-center justify-center gap-1 text-[var(--ctp-subtext0)]"
+            class="relative overflow-hidden rounded-xl bg-[var(--ctp-mantle)]"
+            :class="detail.entry.media_kind === 'music' ? 'h-24 w-24 album-shadow' : 'h-32 w-24 book-shadow'"
           >
-            <LuBookOpen v-if="detail.entry.media_kind === 'book'" class="h-6 w-6 opacity-55" />
-            <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" />
-            <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" />
-            <LuClapperboard v-else class="h-6 w-6 opacity-55" />
-            <span class="text-[10px]">无封面</span>
+            <img
+              v-if="artworkSrc"
+              :src="artworkSrc"
+              alt="artwork"
+              class="h-full w-full object-cover"
+            />
+            <div
+              v-else
+              class="flex h-full w-full flex-col items-center justify-center gap-1 text-[var(--ctp-subtext0)]"
+            >
+              <LuBookOpen v-if="detail.entry.media_kind === 'book'" class="h-6 w-6 opacity-55" />
+              <LuLayers v-else-if="detail.entry.media_kind === 'comic'" class="h-6 w-6 opacity-55" />
+              <LuDisc3 v-else-if="detail.entry.media_kind === 'music'" class="h-6 w-6 opacity-55" />
+              <LuClapperboard v-else class="h-6 w-6 opacity-55" />
+              <span class="text-[10px]">无封面</span>
+            </div>
+          </div>
+
+          <!-- Video Multi-Slot Artwork Preview Tabs -->
+          <div
+            v-if="detail.metadata.kind === 'video'"
+            class="flex items-center gap-0.5 rounded-lg bg-[var(--ctp-mantle)] p-0.5 text-[10px]"
+          >
+            <button
+              v-for="slotTab in [
+                { id: 'poster' as const, label: '海报', ok: detail.metadata.data.has_poster },
+                { id: 'fanart' as const, label: '背景', ok: detail.metadata.data.has_fanart },
+                { id: 'thumb' as const, label: '剧照', ok: detail.metadata.data.has_thumb },
+              ]"
+              :key="slotTab.id"
+              type="button"
+              class="inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 font-medium transition"
+              :class="
+                videoArtworkSlot === slotTab.id
+                  ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                  : slotTab.ok
+                    ? 'text-[var(--ctp-text)]'
+                    : 'text-[var(--ctp-subtext0)]/60'
+              "
+              @click="videoArtworkSlot = slotTab.id"
+            >
+              <span>{{ slotTab.label }}</span>
+            </button>
           </div>
         </div>
 
@@ -507,7 +669,11 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               <!-- Book Specs -->
               <template v-else-if="detail.metadata.kind === 'book'">
                 <span class="rounded-md bg-[var(--ctp-mantle)] px-2 py-0.5 text-[10px] text-[var(--ctp-subtext1)]">
-                  {{ detail.metadata.data.writable ? 'EPUB OPF 可读写' : '只读格式（支持外挂封面）' }}
+                  {{
+                    detail.metadata.data.format === 'epub'
+                      ? 'EPUB OPF 内封读写'
+                      : `${detail.metadata.data.format.toUpperCase()} · 旁路 .opf 元数据与封面`
+                  }}
                 </span>
               </template>
             </div>
@@ -842,7 +1008,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
             />
           </label>
           <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">导演 (逗号分隔)</span>
+            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">导演（`/` 分隔）</span>
             <input
               v-model="videoDirectors"
               type="text"
@@ -858,7 +1024,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
             />
           </label>
           <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">演员 / 声优 (逗号分隔)</span>
+            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">演员 / 声优（`/` 分隔）</span>
             <input
               v-model="videoActors"
               type="text"
@@ -995,11 +1161,11 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
       <!-- 4. BOOK FORM -->
       <div v-else-if="detail.metadata.kind === 'book'" class="space-y-2.5">
         <div
-          v-if="!detail.metadata.data.writable"
-          class="flex items-center gap-2 rounded-xl border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-400"
+          v-if="detail.metadata.data.format !== 'epub'"
+          class="flex items-center gap-2 rounded-xl border border-[var(--ctp-accent)]/35 bg-[var(--ctp-accent-soft)]/50 px-3 py-2 text-xs text-[var(--ctp-accent)]"
         >
           <LuFileText class="h-4 w-4 shrink-0" />
-          <span>当前为 {{ detail.metadata.data.format.toUpperCase() }} 文件，支持替换同名封面与按文件名重命名；内封 OPF 元数据写回仅支持 EPUB。</span>
+          <span>当前为 {{ detail.metadata.data.format.toUpperCase() }} 文件，保存时将原子写入同名旁路 `.opf` 元数据及旁路封面，移动重命名自动同步。</span>
         </div>
 
         <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
@@ -1013,7 +1179,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
             />
           </label>
           <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">作者 (dc:creator，逗号分隔)</span>
+            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">作者 (dc:creator，`/` 分隔)</span>
             <input
               v-model="bookAuthors"
               :disabled="!detail.metadata.data.writable"
@@ -1060,7 +1226,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
             />
           </label>
           <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 / 主题 (dc:subject，逗号分隔)</span>
+            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 / 主题 (dc:subject，`/` 分隔)</span>
             <input
               v-model="bookTags"
               :disabled="!detail.metadata.data.writable"

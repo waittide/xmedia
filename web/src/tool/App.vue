@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { LuLock, LuRefreshCw, LuWrench } from 'vue-icons-plus/lu'
 import AppDialogHost from '@/components/ui/AppDialogHost.vue'
 import { useThemeStore } from '@/stores/theme'
-import { toolApi } from './api'
+import { setToolToken, toolApi } from './api'
 import ToolWorkspace from './components/ToolWorkspace.vue'
 import { useToolText } from './i18n'
 import type { ToolStatusDto } from './types'
@@ -42,8 +42,22 @@ async function handleUnlock(): Promise<void> {
   }
 }
 
-onMounted(() => {
+async function handleLock(): Promise<void> {
+  setToolToken(null)
+  await fetchStatus()
+}
+
+function handleUnauthorized(): void {
   void fetchStatus()
+}
+
+onMounted(() => {
+  window.addEventListener('xmedia-tool:unauthorized', handleUnauthorized)
+  void fetchStatus()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('xmedia-tool:unauthorized', handleUnauthorized)
 })
 </script>
 
@@ -113,7 +127,7 @@ onMounted(() => {
   </div>
 
   <!-- Main Workbench -->
-  <ToolWorkspace v-else :status="status" />
+  <ToolWorkspace v-else :status="status" @lock="handleLock" />
 
   <AppDialogHost />
 </template>

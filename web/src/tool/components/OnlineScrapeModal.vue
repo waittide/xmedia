@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import {
   LuArrowDown,
   LuArrowUp,
+  LuBan,
   LuCheck,
   LuChevronLeft,
   LuChevronRight,
@@ -10,6 +11,7 @@ import {
   LuImage,
   LuKey,
   LuLayers,
+  LuLock,
   LuRefreshCw,
   LuSearch,
   LuSparkles,
@@ -44,7 +46,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   applied: [detail: MediaFileDetail]
-  batchApplied: [lastDetail: MediaFileDetail | null]
+  batchApplied: [
+    lastDetail: MediaFileDetail | null,
+    summary?: { success: number; failed: number },
+  ]
   selectQueueIndex: [index: number]
   openSettings: []
   settingsUpdated: [settings: PublicSettingsDto]
@@ -53,6 +58,7 @@ const emit = defineEmits<{
 const targetKind = ref<ScrapeTargetKind>('music_track')
 const providers = ref<ProviderStatusDto[]>([])
 const enabledProviderIds = ref<string[]>([])
+const ignoredProviderIds = ref<Set<string>>(new Set())
 
 const keyword = ref('')
 const artistOrAuthor = ref('')
@@ -61,12 +67,14 @@ const isbn = ref('')
 const yearInput = ref('')
 const season = ref('')
 const episode = ref('')
+const durationSecs = ref<number | undefined>(undefined)
 
 const searching = ref(false)
 const candidates = ref<ScrapeCandidate[]>([])
 const activeSourceTab = ref<'merged' | string>('merged')
 const previewMode = ref<'merged' | 'single'>('merged')
 const brokenCoverUrls = ref<Set<string>>(new Set())
+const disabledFields = ref<Set<string>>(new Set())
 
 // Per-provider selected candidate & fetched detail for reactive waterfall merging
 const selectedByProvider = ref<Record<string, ScrapeCandidate>>({})
@@ -74,10 +82,16 @@ const detailsByProvider = ref<Record<string, ScrapedMetadata>>({})
 const loadingProviderId = ref<string | null>(null)
 
 const applyCover = ref(true)
+const organizeByTemplate = ref(false)
+const onlyFillMissing = ref(false)
 const writeSidecarLrc = ref(true)
 const applying = ref(false)
 const batchProgress = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
+
+let hydratingFromDetail = false
+let queueRequestSeq = 0
+let searchRequestSeq = 0
 
 const queueList = computed<MediaFileEntry[]>(() => props.queue ?? [])
 const currentQueueIdx = computed<number>(() => props.queueIndex ?? 0)
@@ -123,6 +137,7 @@ const mergedResult = computed<MergedScrapedResult | null>(() =>
     detailsByProvider.value,
     targetKind.value,
     brokenCoverUrls.value,
+    ignoredProviderIds.value,
   ),
 )
 
@@ -258,6 +273,7 @@ function buildAutoQueryFromDetail(d: MediaFileDetail): ScrapeQuery {
       artist_or_author: m.data.artist || undefined,
       album_or_series: m.data.album || undefined,
       year: m.data.year ?? undefined,
+      duration_secs: m.data.duration_secs > 0 ? m.data.duration_secs : undefined,
     }
   }
   if (m.kind === 'video') {
@@ -268,6 +284,7 @@ function buildAutoQueryFromDetail(d: MediaFileDetail): ScrapeQuery {
       year: m.data.year ?? undefined,
       season: m.data.season_number ?? undefined,
       episode: m.data.episode_number ?? undefined,
+      duration_secs: m.data.duration_secs > 0 ? m.data.duration_secs : undefined,
     }
   }
   if (m.kind === 'comic') {
@@ -292,6 +309,8 @@ function seedFromDetail(d: MediaFileDetail): void {
   candidates.value = []
   selectedByProvider.value = {}
   detailsByProvider.value = {}
+  ignoredProviderIds.value = new Set()
+  disabledFields.value = new Set()
   activeSourceTab.value = 'merged'
   previewMode.value = 'merged'
   artistOrAuthor.value = ''
@@ -302,31 +321,48 @@ function seedFromDetail(d: MediaFileDetail): void {
   episode.value = ''
 
   const q = buildAutoQueryFromDetail(d)
+  hydratingFromDetail = true
   targetKind.value = q.target ?? 'book'
   keyword.value = q.keyword
   artistOrAuthor.value = q.artist_or_author ?? ''
   albumOrSeries.value = q.album_or_series ?? ''
   isbn.value = q.isbn ?? ''
   yearInput.value = q.year ? String(q.year) : ''
-  season.value = q.season ? String(q.season) : ''
-  episode.value = q.episode ? String(q.episode) : ''
+  season.value = q.season !== undefined && q.season !== null ? String(q.season) : ''
+  episode.value = q.episode !== undefined && q.episode !== null ? String(q.episode) : ''
+  durationSecs.value = q.duration_secs ?? undefined
+  applyCover.value = d.entry.media_kind !== 'comic'
+  organizeByTemplate.value = d.entry.media_kind === 'video'
+  onlyFillMissing.value = false
 }
 
 watch(
   () => [props.open, props.detail] as const,
   async ([isOpen, d]) => {
-    if (isOpen && d) {
-      seedFromDetail(d)
-      await refreshProvidersForTarget(targetKind.value)
-      if (keyword.value.trim() || isbn.value.trim()) {
-        void runSearch()
-      }
+    if (!isOpen || !d) return
+    const reqToken = ++queueRequestSeq
+    seedFromDetail(d)
+    await refreshProvidersForTarget(targetKind.value)
+    hydratingFromDetail = false
+    if (reqToken !== queueRequestSeq) return
+    if (keyword.value.trim() || isbn.value.trim()) {
+      void runSearch()
     }
   },
 )
 
-watch(targetKind, async (next) => {
-  if (!props.open) return
+watch(targetKind, async (next, prev) => {
+  if (!props.open || hydratingFromDetail) return
+  const d = props.detail
+  if (d && d.metadata.kind === 'music') {
+    if (next === 'music_album') {
+      const alb = albumOrSeries.value.trim() || d.metadata.data.album.trim()
+      if (alb) keyword.value = alb
+    } else if (prev === 'music_album') {
+      const song = d.metadata.data.title.trim() || d.entry.display_title
+      if (song) keyword.value = song
+    }
+  }
   await refreshProvidersForTarget(next)
   if (keyword.value.trim() || isbn.value.trim()) {
     void runSearch()
@@ -397,8 +433,69 @@ function isCoverUsable(url: string | null | undefined): url is string {
   return Boolean(url && !brokenCoverUrls.value.has(url))
 }
 
+function toggleProviderIgnored(providerId: string): void {
+  const next = new Set(ignoredProviderIds.value)
+  if (next.has(providerId)) {
+    next.delete(providerId)
+  } else {
+    next.add(providerId)
+  }
+  ignoredProviderIds.value = next
+}
+
+function isFieldEnabled(key: string): boolean {
+  return !disabledFields.value.has(key)
+}
+
+function toggleFieldEnabled(key: string): void {
+  const next = new Set(disabledFields.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  disabledFields.value = next
+}
+
+function buildFilteredMetadata(meta: ScrapedMetadata): ScrapedMetadata {
+  const copy: ScrapedMetadata = { ...meta }
+  if (disabledFields.value.has('title')) copy.title = null
+  if (disabledFields.value.has('original_title')) copy.original_title = null
+  if (disabledFields.value.has('series_or_album')) copy.series_or_album = null
+  if (disabledFields.value.has('numbers')) {
+    copy.track_or_episode_number = null
+    copy.disc_or_season_number = null
+  }
+  if (disabledFields.value.has('creators')) copy.creators = []
+  if (disabledFields.value.has('illustrators_or_directors')) copy.illustrators_or_directors = []
+  if (disabledFields.value.has('cast')) copy.cast = []
+  if (disabledFields.value.has('publisher_or_studio')) copy.publisher_or_studio = null
+  if (disabledFields.value.has('year')) {
+    copy.year = null
+    copy.published_date = null
+  }
+  if (disabledFields.value.has('rating')) copy.rating = null
+  if (disabledFields.value.has('isbn')) copy.isbn = null
+  if (disabledFields.value.has('tags')) {
+    copy.genres = []
+    copy.tags = []
+  }
+  if (disabledFields.value.has('summary')) {
+    copy.summary = null
+    copy.show_summary = null
+    copy.season_title = null
+    copy.season_summary = null
+  }
+  if (disabledFields.value.has('lyrics')) {
+    copy.synced_lyrics = null
+    copy.plain_lyrics = null
+  }
+  return copy
+}
+
 async function runSearch(): Promise<void> {
   if (!keyword.value.trim() && !isbn.value.trim()) return
+  const searchSeq = ++searchRequestSeq
   searching.value = true
   errorMsg.value = null
   candidates.value = []
@@ -407,6 +504,9 @@ async function runSearch(): Promise<void> {
   brokenCoverUrls.value = new Set()
   selectedByProvider.value = {}
   detailsByProvider.value = {}
+
+  const parsedSeason = season.value.trim() ? Number.parseInt(season.value, 10) : undefined
+  const parsedEpisode = episode.value.trim() ? Number.parseInt(episode.value, 10) : undefined
 
   try {
     const agg = await toolApi.aggregateScrapers({
@@ -417,33 +517,58 @@ async function runSearch(): Promise<void> {
       album_or_series: albumOrSeries.value.trim() || undefined,
       isbn: isbn.value.trim() || undefined,
       year: yearInput.value.trim() ? Number.parseInt(yearInput.value, 10) : undefined,
-      season: season.value.trim() ? Number.parseInt(season.value, 10) : undefined,
-      episode: episode.value.trim() ? Number.parseInt(episode.value, 10) : undefined,
+      season: parsedSeason !== undefined && Number.isFinite(parsedSeason) ? parsedSeason : undefined,
+      episode: parsedEpisode !== undefined && Number.isFinite(parsedEpisode) ? parsedEpisode : undefined,
+      duration_secs: durationSecs.value,
     })
+    if (searchSeq !== searchRequestSeq) return
     candidates.value = agg.candidates
     selectedByProvider.value = agg.selected_by_provider
     detailsByProvider.value = agg.details_by_provider
   } catch (err) {
+    if (searchSeq !== searchRequestSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    searching.value = false
+    if (searchSeq === searchRequestSeq) {
+      searching.value = false
+    }
   }
 }
 
-function buildEffectiveExternalId(rawExtId: string, target: ScrapeTargetKind): string {
-  const baseId = rawExtId.split(':')[0] ?? rawExtId
-  if (target !== 'tv_show') return baseId
-  const s = season.value.trim() ? Number.parseInt(season.value, 10) : 0
-  const e = episode.value.trim() ? Number.parseInt(episode.value, 10) : 0
-  if (e > 0) {
-    return `${baseId}:S${s > 0 ? s : 1}E${e}`
+function stripSeasonEpisodeSuffix(rawExtId: string): string {
+  return rawExtId.replace(/:S\d+E\d+$/i, '')
+}
+
+function buildEffectiveExternalId(
+  rawExtId: string,
+  target: ScrapeTargetKind,
+  customSeason?: number | null,
+  customEpisode?: number | null,
+): string {
+  if (target !== 'tv_show') return rawExtId
+  const baseId = stripSeasonEpisodeSuffix(rawExtId)
+  const s =
+    customSeason !== undefined && customSeason !== null
+      ? customSeason
+      : season.value.trim()
+        ? Number.parseInt(season.value, 10)
+        : 1
+  const e =
+    customEpisode !== undefined && customEpisode !== null
+      ? customEpisode
+      : episode.value.trim()
+        ? Number.parseInt(episode.value, 10)
+        : 0
+  if (Number.isFinite(e) && e > 0) {
+    const safeS = Number.isFinite(s) && s >= 0 ? s : 1
+    return `${baseId}:S${safeS}E${e}`
   }
   return baseId
 }
 
 let seTimer: ReturnType<typeof setTimeout> | null = null
 watch([season, episode], () => {
-  if (!props.open || targetKind.value !== 'tv_show') return
+  if (!props.open || hydratingFromDetail || targetKind.value !== 'tv_show') return
   if (Object.keys(selectedByProvider.value).length === 0) return
   if (seTimer) clearTimeout(seTimer)
   seTimer = setTimeout(async () => {
@@ -496,9 +621,11 @@ async function applyMetadata(mode: 'merged' | 'single' = 'merged'): Promise<void
       props.detail.entry.root_id,
       props.detail.entry.rel_path,
       props.detail.entry.media_kind,
-      targetMeta,
+      buildFilteredMetadata(targetMeta),
       applyCover.value,
       writeSidecarLrc.value,
+      organizeByTemplate.value,
+      onlyFillMissing.value,
     )
     emit('applied', updated)
     if (hasNextInQueue.value) {
@@ -513,11 +640,130 @@ async function applyMetadata(mode: 'merged' | 'single' = 'merged'): Promise<void
   }
 }
 
+async function runLockedQueueScrape(): Promise<void> {
+  const anchorView = effectiveView.value
+  if (applying.value || queueList.value.length === 0 || !anchorView) return
+  applying.value = true
+  errorMsg.value = null
+
+  const useSingleMode =
+    activeSourceTab.value !== 'merged' && previewMode.value === 'single' && activeSingleProviderDetail.value
+  const anchorMeta = useSingleMode ? activeSingleProviderDetail.value! : anchorView.metadata
+  const lockedSelected = { ...selectedByProvider.value }
+  const anchorDetails = { ...detailsByProvider.value }
+  const anchorOrder = [...orderedActiveBriefs.value]
+  const fallbackSeason = season.value.trim() ? Number.parseInt(season.value, 10) : 1
+
+  let lastUpdated: MediaFileDetail | null = null
+  let successCount = 0
+  let failCount = 0
+
+  try {
+    const slice = queueList.value.slice(currentQueueIdx.value)
+    for (let i = 0; i < slice.length; i += 1) {
+      const entry = slice[i]!
+      batchProgress.value = `锁定作品应用中 (${currentQueueIdx.value + i + 1} / ${queueList.value.length})：${entry.file_name}`
+      try {
+        const d = await toolApi.inspectFile(entry.root_id, entry.rel_path, entry.media_kind)
+        const q = buildAutoQueryFromDetail(d)
+        let payloadToApply: ScrapedMetadata = { ...anchorMeta }
+
+        if (entry.media_kind === 'video' && targetKind.value === 'tv_show') {
+          const epS =
+            q.season !== undefined && q.season !== null
+              ? q.season
+              : Number.isFinite(fallbackSeason)
+                ? fallbackSeason
+                : 1
+          const epE = q.episode ?? null
+          if (epE && epE > 0) {
+            const perProvDetails: Record<string, ScrapedMetadata> = { ...anchorDetails }
+            await Promise.all(
+              Object.values(lockedSelected).map(async (cand) => {
+                if (cand.target !== 'tv_show') return
+                if (!useSingleMode && ignoredProviderIds.value.has(cand.provider_id)) return
+                if (useSingleMode && cand.provider_id !== anchorMeta.provider_id) return
+                const epExtId = buildEffectiveExternalId(cand.external_id, 'tv_show', epS, epE)
+                try {
+                  perProvDetails[cand.provider_id] = await toolApi.getScraperDetail(
+                    cand.provider_id,
+                    epExtId,
+                    'tv_show',
+                  )
+                } catch {
+                  // Retain series-level fallback for providers whose episode fetch fails
+                }
+              }),
+            )
+            if (useSingleMode) {
+              payloadToApply = {
+                ...(perProvDetails[anchorMeta.provider_id] ?? anchorMeta),
+                disc_or_season_number: epS,
+                track_or_episode_number: epE,
+              }
+            } else {
+              const reMerged = mergeScrapedClientSide(
+                anchorOrder,
+                perProvDetails,
+                'tv_show',
+                brokenCoverUrls.value,
+                ignoredProviderIds.value,
+              )
+              payloadToApply = {
+                ...(reMerged?.metadata ?? anchorMeta),
+                disc_or_season_number: epS,
+                track_or_episode_number: epE,
+              }
+            }
+          }
+        } else if (entry.media_kind === 'comic') {
+          // Locking a comic work applies series-level metadata while keeping each chapter's own title/number
+          payloadToApply = {
+            ...anchorMeta,
+            track_or_episode_number: null,
+            disc_or_season_number: null,
+          }
+        } else if (entry.media_kind === 'music') {
+          // Locking a music work applies album-level metadata without clobbering individual song titles/numbers
+          payloadToApply = {
+            ...anchorMeta,
+            target: 'music_album',
+            series_or_album: anchorMeta.series_or_album || anchorMeta.title,
+            track_or_episode_number: null,
+            disc_or_season_number: null,
+          }
+        }
+
+        lastUpdated = await toolApi.applyScrapedMetadata(
+          entry.root_id,
+          entry.rel_path,
+          entry.media_kind,
+          buildFilteredMetadata(payloadToApply),
+          applyCover.value,
+          writeSidecarLrc.value,
+          organizeByTemplate.value,
+          onlyFillMissing.value,
+        )
+        successCount += 1
+      } catch {
+        failCount += 1
+      }
+    }
+    emit('batchApplied', lastUpdated, { success: successCount, failed: failCount })
+    emit('close')
+  } finally {
+    batchProgress.value = null
+    applying.value = false
+  }
+}
+
 async function runBatchAutoScrape(): Promise<void> {
   if (applying.value || queueList.value.length === 0) return
   applying.value = true
   errorMsg.value = null
   let lastUpdated: MediaFileDetail | null = null
+  let successCount = 0
+  let failCount = 0
 
   try {
     const slice = queueList.value.slice(currentQueueIdx.value)
@@ -536,16 +782,21 @@ async function runBatchAutoScrape(): Promise<void> {
             entry.root_id,
             entry.rel_path,
             entry.media_kind,
-            agg.merged.metadata,
+            buildFilteredMetadata(agg.merged.metadata),
             applyCover.value,
             writeSidecarLrc.value,
+            organizeByTemplate.value,
+            onlyFillMissing.value,
           )
+          successCount += 1
+        } else {
+          failCount += 1
         }
       } catch {
-        // Continue remaining files in queue even if a single item fails
+        failCount += 1
       }
     }
-    emit('batchApplied', lastUpdated)
+    emit('batchApplied', lastUpdated, { success: successCount, failed: failCount })
     emit('close')
   } finally {
     batchProgress.value = null
@@ -608,13 +859,23 @@ async function runBatchAutoScrape(): Promise<void> {
               </button>
               <button
                 type="button"
+                :disabled="applying || !effectiveView"
+                class="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[var(--ctp-accent)]/40 bg-[var(--ctp-canvas)] px-3 text-xs font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)] disabled:opacity-50"
+                title="锁定当前选定的作品源并应用至剩余队列（剧集按SxxExx自动取分集、漫画/专辑保护分话与分轨字段）"
+                @click="runLockedQueueScrape"
+              >
+                <LuLock class="h-3.5 w-3.5" />
+                <span>锁定作品应用剩余 ({{ queueList.length - currentQueueIdx }})</span>
+              </button>
+              <button
+                type="button"
                 :disabled="applying"
                 class="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-3 text-xs font-semibold text-[var(--ctp-accent)] transition hover:opacity-90 disabled:opacity-50"
-                title="对剩余队列按各源首选聚合结果自动完成刮削写入"
+                title="对剩余队列逐个重新检索并自动写入各自首条聚合结果"
                 @click="runBatchAutoScrape"
               >
                 <LuZap class="h-3.5 w-3.5" />
-                <span>一键自动刮削剩余 ({{ queueList.length - currentQueueIdx }})</span>
+                <span>逐项重搜剩余</span>
               </button>
             </template>
 
@@ -811,7 +1072,8 @@ async function runBatchAutoScrape(): Promise<void> {
                 <div
                   v-for="(brief, idx) in orderedActiveBriefs"
                   :key="brief.id"
-                  class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-2.5"
+                  class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-2.5 transition"
+                  :class="ignoredProviderIds.has(brief.id) ? 'opacity-50' : ''"
                 >
                   <div class="flex items-center justify-between gap-2">
                     <div class="flex items-center gap-1.5">
@@ -821,9 +1083,28 @@ async function runBatchAutoScrape(): Promise<void> {
                         #{{ idx + 1 }}
                       </span>
                       <span class="text-xs font-bold text-[var(--ctp-text)]">{{ brief.name }}</span>
+                      <span
+                        v-if="ignoredProviderIds.has(brief.id)"
+                        class="rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] text-[var(--ctp-subtext0)]"
+                      >
+                        已排除
+                      </span>
                     </div>
 
                     <div class="flex items-center gap-1">
+                      <button
+                        type="button"
+                        class="flex h-6 w-6 items-center justify-center rounded-md transition"
+                        :class="
+                          ignoredProviderIds.has(brief.id)
+                            ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                            : 'text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]/70 hover:text-amber-500'
+                        "
+                        :title="ignoredProviderIds.has(brief.id) ? '恢复此源参与聚合' : '在本次聚合中排除此源'"
+                        @click="toggleProviderIgnored(brief.id)"
+                      >
+                        <LuBan class="h-3.5 w-3.5" />
+                      </button>
                       <button
                         type="button"
                         :disabled="idx === 0"
@@ -1046,19 +1327,28 @@ async function runBatchAutoScrape(): Promise<void> {
                   </span>
                 </div>
 
-                <!-- Field-by-Field Provenance List -->
+                <!-- Field-by-Field Provenance List with Inclusion Toggles -->
                 <div class="min-w-0 flex-1 space-y-2 rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/35 p-3">
                   <!-- Title -->
                   <div
                     v-if="effectiveView.metadata.title"
-                    class="flex items-start justify-between gap-2"
+                    class="flex items-start justify-between gap-2 transition"
+                    :class="!isFieldEnabled('title') ? 'opacity-45' : ''"
                   >
-                    <div class="min-w-0">
-                      <span class="text-[10px] text-[var(--ctp-subtext0)]">标题</span>
-                      <div class="text-sm font-bold text-[var(--ctp-text)]">
-                        {{ effectiveView.metadata.title }}
+                    <label class="flex min-w-0 cursor-pointer items-start gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('title')"
+                        class="mt-1 h-3.5 w-3.5 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('title')"
+                      />
+                      <div class="min-w-0">
+                        <span class="text-[10px] text-[var(--ctp-subtext0)]">标题</span>
+                        <div class="text-sm font-bold text-[var(--ctp-text)]">
+                          {{ effectiveView.metadata.title }}
+                        </div>
                       </div>
-                    </div>
+                    </label>
                     <span
                       v-if="badgeName('title')"
                       class="shrink-0 rounded-md bg-[var(--ctp-accent-soft)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
@@ -1073,12 +1363,21 @@ async function runBatchAutoScrape(): Promise<void> {
                       effectiveView.metadata.original_title &&
                       effectiveView.metadata.original_title !== effectiveView.metadata.title
                     "
-                    class="flex items-center justify-between gap-2 text-xs"
+                    class="flex items-center justify-between gap-2 text-xs transition"
+                    :class="!isFieldEnabled('original_title') ? 'opacity-45' : ''"
                   >
-                    <span class="truncate text-[var(--ctp-subtext1)]">
-                      <b class="font-medium text-[var(--ctp-subtext0)]">原名：</b>
-                      {{ effectiveView.metadata.original_title }}
-                    </span>
+                    <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('original_title')"
+                        class="h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('original_title')"
+                      />
+                      <span class="truncate text-[var(--ctp-subtext1)]">
+                        <b class="font-medium text-[var(--ctp-subtext0)]">原名：</b>
+                        {{ effectiveView.metadata.original_title }}
+                      </span>
+                    </label>
                     <span
                       v-if="badgeName('original_title')"
                       class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
@@ -1090,12 +1389,21 @@ async function runBatchAutoScrape(): Promise<void> {
                   <!-- Series / Album -->
                   <div
                     v-if="effectiveView.metadata.series_or_album"
-                    class="flex items-center justify-between gap-2 text-xs"
+                    class="flex items-center justify-between gap-2 text-xs transition"
+                    :class="!isFieldEnabled('series_or_album') ? 'opacity-45' : ''"
                   >
-                    <span class="truncate text-[var(--ctp-subtext1)]">
-                      <b class="font-medium text-[var(--ctp-subtext0)]">系列 / 专辑：</b>
-                      {{ effectiveView.metadata.series_or_album }}
-                    </span>
+                    <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('series_or_album')"
+                        class="h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('series_or_album')"
+                      />
+                      <span class="truncate text-[var(--ctp-subtext1)]">
+                        <b class="font-medium text-[var(--ctp-subtext0)]">系列 / 专辑：</b>
+                        {{ effectiveView.metadata.series_or_album }}
+                      </span>
+                    </label>
                     <span
                       v-if="badgeName('series_or_album')"
                       class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
@@ -1108,15 +1416,24 @@ async function runBatchAutoScrape(): Promise<void> {
                   <div
                     v-if="
                       effectiveView.metadata.track_or_episode_number ||
-                      effectiveView.metadata.disc_or_season_number
+                      effectiveView.metadata.disc_or_season_number !== null
                     "
-                    class="flex items-center justify-between gap-2 text-xs"
+                    class="flex items-center justify-between gap-2 text-xs transition"
+                    :class="!isFieldEnabled('numbers') ? 'opacity-45' : ''"
                   >
-                    <span class="text-[var(--ctp-subtext1)]">
-                      <b class="font-medium text-[var(--ctp-subtext0)]">季碟 / 序号：</b>
-                      #{{ effectiveView.metadata.disc_or_season_number ?? 1 }} -
-                      {{ effectiveView.metadata.track_or_episode_number ?? 1 }}
-                    </span>
+                    <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('numbers')"
+                        class="h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('numbers')"
+                      />
+                      <span class="text-[var(--ctp-subtext1)]">
+                        <b class="font-medium text-[var(--ctp-subtext0)]">季碟 / 序号：</b>
+                        #{{ effectiveView.metadata.disc_or_season_number ?? 1 }} -
+                        {{ effectiveView.metadata.track_or_episode_number ?? 1 }}
+                      </span>
+                    </label>
                     <span
                       v-if="
                         badgeName('track_or_episode_number') ||
@@ -1134,12 +1451,21 @@ async function runBatchAutoScrape(): Promise<void> {
                   <!-- Creators -->
                   <div
                     v-if="effectiveView.metadata.creators.length > 0"
-                    class="flex items-center justify-between gap-2 text-xs"
+                    class="flex items-center justify-between gap-2 text-xs transition"
+                    :class="!isFieldEnabled('creators') ? 'opacity-45' : ''"
                   >
-                    <span class="truncate text-[var(--ctp-subtext1)]">
-                      <b class="font-medium text-[var(--ctp-subtext0)]">创作者：</b>
-                      {{ effectiveView.metadata.creators.join(' / ') }}
-                    </span>
+                    <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('creators')"
+                        class="h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('creators')"
+                      />
+                      <span class="truncate text-[var(--ctp-subtext1)]">
+                        <b class="font-medium text-[var(--ctp-subtext0)]">创作者：</b>
+                        {{ effectiveView.metadata.creators.join(' / ') }}
+                      </span>
+                    </label>
                     <span
                       v-if="badgeName('creators')"
                       class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
@@ -1151,12 +1477,21 @@ async function runBatchAutoScrape(): Promise<void> {
                   <!-- Directors / Pencillers -->
                   <div
                     v-if="effectiveView.metadata.illustrators_or_directors.length > 0"
-                    class="flex items-center justify-between gap-2 text-xs"
+                    class="flex items-center justify-between gap-2 text-xs transition"
+                    :class="!isFieldEnabled('illustrators_or_directors') ? 'opacity-45' : ''"
                   >
-                    <span class="truncate text-[var(--ctp-subtext1)]">
-                      <b class="font-medium text-[var(--ctp-subtext0)]">导演 / 作画：</b>
-                      {{ effectiveView.metadata.illustrators_or_directors.join(' / ') }}
-                    </span>
+                    <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('illustrators_or_directors')"
+                        class="h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('illustrators_or_directors')"
+                      />
+                      <span class="truncate text-[var(--ctp-subtext1)]">
+                        <b class="font-medium text-[var(--ctp-subtext0)]">导演 / 作画：</b>
+                        {{ effectiveView.metadata.illustrators_or_directors.join(' / ') }}
+                      </span>
+                    </label>
                     <span
                       v-if="badgeName('illustrators_or_directors')"
                       class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
@@ -1168,12 +1503,21 @@ async function runBatchAutoScrape(): Promise<void> {
                   <!-- Cast -->
                   <div
                     v-if="effectiveView.metadata.cast.length > 0"
-                    class="flex items-center justify-between gap-2 text-xs"
+                    class="flex items-center justify-between gap-2 text-xs transition"
+                    :class="!isFieldEnabled('cast') ? 'opacity-45' : ''"
                   >
-                    <span class="truncate text-[var(--ctp-subtext1)]">
-                      <b class="font-medium text-[var(--ctp-subtext0)]">主演 / 声优：</b>
-                      {{ effectiveView.metadata.cast.slice(0, 6).join(' / ') }}
-                    </span>
+                    <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('cast')"
+                        class="h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('cast')"
+                      />
+                      <span class="truncate text-[var(--ctp-subtext1)]">
+                        <b class="font-medium text-[var(--ctp-subtext0)]">主演 / 声优：</b>
+                        {{ effectiveView.metadata.cast.slice(0, 6).join(' / ') }}
+                      </span>
+                    </label>
                     <span
                       v-if="badgeName('cast')"
                       class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
@@ -1185,12 +1529,21 @@ async function runBatchAutoScrape(): Promise<void> {
                   <!-- Publisher / Studio -->
                   <div
                     v-if="effectiveView.metadata.publisher_or_studio"
-                    class="flex items-center justify-between gap-2 text-xs"
+                    class="flex items-center justify-between gap-2 text-xs transition"
+                    :class="!isFieldEnabled('publisher_or_studio') ? 'opacity-45' : ''"
                   >
-                    <span class="truncate text-[var(--ctp-subtext1)]">
-                      <b class="font-medium text-[var(--ctp-subtext0)]">出品 / 出版社：</b>
-                      {{ effectiveView.metadata.publisher_or_studio }}
-                    </span>
+                    <label class="flex min-w-0 cursor-pointer items-center gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('publisher_or_studio')"
+                        class="h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('publisher_or_studio')"
+                      />
+                      <span class="truncate text-[var(--ctp-subtext1)]">
+                        <b class="font-medium text-[var(--ctp-subtext0)]">出品 / 出版社：</b>
+                        {{ effectiveView.metadata.publisher_or_studio }}
+                      </span>
+                    </label>
                     <span
                       v-if="badgeName('publisher_or_studio')"
                       class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
@@ -1201,33 +1554,54 @@ async function runBatchAutoScrape(): Promise<void> {
 
                   <!-- Year / Rating / ISBN -->
                   <div class="flex flex-wrap items-center gap-2 pt-0.5 text-xs">
-                    <span
+                    <label
                       v-if="effectiveView.metadata.year"
-                      class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px]"
+                      class="inline-flex cursor-pointer items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px] transition"
+                      :class="!isFieldEnabled('year') ? 'opacity-45' : ''"
                     >
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('year')"
+                        class="h-3 w-3 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('year')"
+                      />
                       <span>年份 {{ effectiveView.metadata.year }}</span>
                       <span v-if="badgeName('year')" class="text-[10px] text-[var(--ctp-accent)]">
                         · {{ badgeName('year') }}
                       </span>
-                    </span>
-                    <span
+                    </label>
+                    <label
                       v-if="effectiveView.metadata.rating"
-                      class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px]"
+                      class="inline-flex cursor-pointer items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px] transition"
+                      :class="!isFieldEnabled('rating') ? 'opacity-45' : ''"
                     >
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('rating')"
+                        class="h-3 w-3 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('rating')"
+                      />
                       <span>★ {{ effectiveView.metadata.rating.toFixed(1) }}</span>
                       <span v-if="badgeName('rating')" class="text-[10px] text-[var(--ctp-accent)]">
                         · {{ badgeName('rating') }}
                       </span>
-                    </span>
-                    <span
+                    </label>
+                    <label
                       v-if="effectiveView.metadata.isbn"
-                      class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 font-mono text-[11px]"
+                      class="inline-flex cursor-pointer items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2 py-0.5 font-mono text-[11px] transition"
+                      :class="!isFieldEnabled('isbn') ? 'opacity-45' : ''"
                     >
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('isbn')"
+                        class="h-3 w-3 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('isbn')"
+                      />
                       <span>ISBN {{ effectiveView.metadata.isbn }}</span>
                       <span v-if="badgeName('isbn')" class="font-sans text-[10px] text-[var(--ctp-accent)]">
                         · {{ badgeName('isbn') }}
                       </span>
-                    </span>
+                    </label>
                   </div>
 
                   <!-- Genres & Tags -->
@@ -1236,20 +1610,29 @@ async function runBatchAutoScrape(): Promise<void> {
                       effectiveView.metadata.genres.length > 0 ||
                       effectiveView.metadata.tags.length > 0
                     "
-                    class="flex items-start justify-between gap-2 pt-1"
+                    class="flex items-start justify-between gap-2 pt-1 transition"
+                    :class="!isFieldEnabled('tags') ? 'opacity-45' : ''"
                   >
-                    <div class="flex flex-wrap gap-1">
-                      <span
-                        v-for="tag in [
-                          ...effectiveView.metadata.genres,
-                          ...effectiveView.metadata.tags,
-                        ].slice(0, 8)"
-                        :key="tag"
-                        class="rounded-full bg-[var(--ctp-canvas)] px-2 py-0.5 text-[10px] text-[var(--ctp-subtext1)]"
-                      >
-                        {{ tag }}
-                      </span>
-                    </div>
+                    <label class="flex cursor-pointer items-start gap-2">
+                      <input
+                        type="checkbox"
+                        :checked="isFieldEnabled('tags')"
+                        class="mt-1 h-3.5 w-3.5 shrink-0 accent-[var(--ctp-accent)]"
+                        @change="toggleFieldEnabled('tags')"
+                      />
+                      <div class="flex flex-wrap gap-1">
+                        <span
+                          v-for="tag in [
+                            ...effectiveView.metadata.genres,
+                            ...effectiveView.metadata.tags,
+                          ].slice(0, 8)"
+                          :key="tag"
+                          class="rounded-full bg-[var(--ctp-canvas)] px-2 py-0.5 text-[10px] text-[var(--ctp-subtext1)]"
+                        >
+                          {{ tag }}
+                        </span>
+                      </div>
+                    </label>
                     <span
                       v-if="badgeName('genres') || badgeName('tags')"
                       class="shrink-0 rounded-md bg-[var(--ctp-canvas)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-accent)]"
@@ -1347,16 +1730,25 @@ async function runBatchAutoScrape(): Promise<void> {
               <!-- Summary Block with Provenance Badge -->
               <div
                 v-if="effectiveView.metadata.summary"
-                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/55 p-3"
+                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/55 p-3 transition"
+                :class="!isFieldEnabled('summary') ? 'opacity-45' : ''"
               >
                 <div class="mb-1.5 flex items-center justify-between gap-2">
-                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
-                    {{
-                      effectiveView.metadata.target === 'tv_show'
-                        ? '单集简介 (写入 <episodedetails>)'
-                        : '内容简介'
-                    }}
-                  </span>
+                  <label class="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      :checked="isFieldEnabled('summary')"
+                      class="h-3.5 w-3.5 accent-[var(--ctp-accent)]"
+                      @change="toggleFieldEnabled('summary')"
+                    />
+                    <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
+                      {{
+                        effectiveView.metadata.target === 'tv_show'
+                          ? '单集简介 (写入 <episodedetails>)'
+                          : '内容简介'
+                      }}
+                    </span>
+                  </label>
                   <span
                     v-if="badgeName('summary')"
                     class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
@@ -1404,14 +1796,23 @@ async function runBatchAutoScrape(): Promise<void> {
                 v-if="
                   effectiveView.metadata.synced_lyrics || effectiveView.metadata.plain_lyrics
                 "
-                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/55 p-3"
+                class="rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/55 p-3 transition"
+                :class="!isFieldEnabled('lyrics') ? 'opacity-45' : ''"
               >
                 <div class="mb-1.5 flex items-center justify-between gap-2">
-                  <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
-                    歌词预览 ({{
-                      effectiveView.metadata.synced_lyrics ? 'LRC 时间轴同步歌词' : '纯文本歌词'
-                    }})
-                  </span>
+                  <label class="flex cursor-pointer items-center gap-2">
+                    <input
+                      type="checkbox"
+                      :checked="isFieldEnabled('lyrics')"
+                      class="h-3.5 w-3.5 accent-[var(--ctp-accent)]"
+                      @change="toggleFieldEnabled('lyrics')"
+                    />
+                    <span class="text-[11px] font-semibold text-[var(--ctp-subtext0)]">
+                      歌词预览 ({{
+                        effectiveView.metadata.synced_lyrics ? 'LRC 时间轴同步歌词' : '纯文本歌词'
+                      }})
+                    </span>
+                  </label>
                   <span
                     v-if="badgeName('lyrics')"
                     class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
@@ -1449,23 +1850,29 @@ async function runBatchAutoScrape(): Promise<void> {
               v-model="applyCover"
               :label="
                 detail.entry.media_kind === 'video'
-                  ? '同步下载全套刮削图片 (poster / fanart / Season 海报 / thumb)'
-                  : '同时下载并写入封面 / 海报图片'
+                  ? '同步下载刮削图片'
+                  : '同时下载并写入封面'
               "
             />
-            <span
-              v-if="detail.entry.media_kind === 'video'"
-              class="rounded-lg bg-[var(--ctp-accent-soft)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-accent)]"
-            >
-              自动按 Jellyfin 目录与 NFO 规范建夹归档
-            </span>
+            <AppCheckbox
+              v-model="organizeByTemplate"
+              :label="
+                detail.entry.media_kind === 'video'
+                  ? '同时按 Jellyfin 模板归档移动并生成层级 NFO'
+                  : '刮削后同时按模板整理文件名/目录'
+              "
+            />
+            <AppCheckbox
+              v-model="onlyFillMissing"
+              label="仅补齐本地缺失字段"
+            />
             <AppCheckbox
               v-if="
                 detail.entry.media_kind === 'music' &&
-                (effectiveView?.metadata.synced_lyrics || effectiveView?.metadata.plain_lyrics)
+                effectiveView?.metadata.synced_lyrics
               "
               v-model="writeSidecarLrc"
-              label="同步生成同名外挂 .lrc 歌词文件"
+              label="同步生成 .lrc 时间轴歌词"
             />
           </div>
 
@@ -1478,17 +1885,29 @@ async function runBatchAutoScrape(): Promise<void> {
               取消
             </button>
 
-            <button
-              v-if="activeSourceTab !== 'merged' && previewMode === 'single' && activeSingleProviderDetail"
-              type="button"
-              :disabled="applying"
-              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
-              @click="applyMetadata('single')"
-            >
-              <span>仅写入此单源</span>
-            </button>
+            <template v-if="activeSourceTab !== 'merged' && previewMode === 'single' && activeSingleProviderDetail">
+              <button
+                type="button"
+                :disabled="!mergedResult || applying"
+                class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+                @click="applyMetadata('merged')"
+              >
+                <span>仍应用多源聚合</span>
+              </button>
+              <button
+                type="button"
+                :disabled="applying"
+                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
+                @click="applyMetadata('single')"
+              >
+                <LuRefreshCw v-if="applying" class="h-3.5 w-3.5 animate-spin" />
+                <LuExternalLink v-else class="h-3.5 w-3.5" />
+                <span>应用此单源 ({{ activeSingleBadge?.provider_name }})</span>
+              </button>
+            </template>
 
             <button
+              v-else
               type="button"
               :disabled="!mergedResult || applying"
               class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"

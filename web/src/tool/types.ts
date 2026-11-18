@@ -193,6 +193,7 @@ export interface VideoFileMeta {
   nfo_filename: string
   has_poster: boolean
   has_fanart: boolean
+  has_thumb: boolean
   duration_secs: number
   width: number | null
   height: number | null

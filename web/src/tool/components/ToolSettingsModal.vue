@@ -202,16 +202,17 @@ function moveProviderPriority(dom: MediaKind, idx: number, delta: -1 | 1): void 
 }
 
 watch(
-  () => [props.open, props.settings, props.initialTab, props.activeDomain] as const,
-  async ([isOpen, s, tab, dom]) => {
-    if (!isOpen) return
-    if (tab) activeTab.value = tab
-    newRootKind.value = dom
-    priorityDomainTab.value = dom
+  () => props.open,
+  async (isOpen, wasOpen) => {
+    if (!isOpen || wasOpen) return
+    if (props.initialTab) activeTab.value = props.initialTab
+    newRootKind.value = props.activeDomain
+    priorityDomainTab.value = props.activeDomain
     errorMsg.value = null
     savedBanner.value = false
     tmdbKeyInput.value = ''
     bangumiTokenInput.value = ''
+    const s = props.settings
     if (s) {
       proxyInput.value = s.http_proxy ?? ''
       scrapeLocale.value = s.default_scrape_locale || 'zh-CN'

@@ -61,6 +61,10 @@ async function toolRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
   }
 
   if (!res.ok) {
+    if (res.status === 401 && path !== '/auth/unlock') {
+      setToolToken(null)
+      window.dispatchEvent(new CustomEvent('xmedia-tool:unauthorized'))
+    }
     const errMsg =
       typeof parsed === 'object' &&
       parsed !== null &&
@@ -81,6 +85,7 @@ export function buildArtworkUrl(
   relPath: string,
   kind: MediaKind,
   cacheBust = 0,
+  slot?: string,
 ): string {
   const params = new URLSearchParams({
     root_id: rootId,
@@ -88,6 +93,9 @@ export function buildArtworkUrl(
     kind,
     v: String(cacheBust),
   })
+  if (slot) {
+    params.set('slot', slot)
+  }
   const tok = getToolToken()
   if (tok) {
     params.set('token', tok)
@@ -261,6 +269,8 @@ export const toolApi = {
     metadata: ScrapedMetadata,
     applyCover: boolean,
     writeSidecarLrc: boolean,
+    organizeByTemplate?: boolean,
+    onlyFillMissing = false,
   ): Promise<MediaFileDetail> {
     return toolRequest<MediaFileDetail>('/scrapers/apply', {
       method: 'POST',
@@ -271,6 +281,8 @@ export const toolApi = {
         metadata,
         apply_cover: applyCover,
         write_sidecar_lrc: writeSidecarLrc,
+        organize_by_template: organizeByTemplate,
+        only_fill_missing: onlyFillMissing,
       }),
     })
   },

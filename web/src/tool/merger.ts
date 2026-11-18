@@ -21,9 +21,11 @@ export function mergeScrapedClientSide(
   detailsByProvider: Record<string, ScrapedMetadata>,
   target: ScrapeTargetKind | null,
   brokenImageUrls: Set<string>,
+  ignoredProviderIds: Set<string> = new Set(),
 ): MergedScrapedResult | null {
   const ordered: Array<{ badge: FieldSourceBadge; data: ScrapedMetadata }> = []
   for (const p of providerOrder) {
+    if (ignoredProviderIds.has(p.id)) continue
     const d = detailsByProvider[p.id]
     if (d) {
       ordered.push({
@@ -164,10 +166,11 @@ export function mergeScrapedClientSide(
       sources.track_or_episode_number = badge
     }
 
+    const allowZeroSeason = target === 'tv_show' || src.target === 'tv_show'
     if (
       out.disc_or_season_number === null &&
       src.disc_or_season_number !== null &&
-      src.disc_or_season_number > 0
+      (src.disc_or_season_number > 0 || (allowZeroSeason && src.disc_or_season_number === 0))
     ) {
       out.disc_or_season_number = src.disc_or_season_number
       sources.disc_or_season_number = badge

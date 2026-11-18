@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from
 import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
+  LuAlertTriangle,
   LuArrowUp,
   LuBookOpen,
   LuCheckCircle2,
@@ -18,6 +19,7 @@ import {
   LuImage,
   LuLayers,
   LuList,
+  LuLock,
   LuMonitor,
   LuMoon,
   LuPanelLeftClose,
@@ -52,11 +54,21 @@ defineProps<{
   status: ToolStatusDto | null
 }>()
 
+const emit = defineEmits<{
+  lock: []
+}>()
+
 const { t } = useI18n()
 const themeStore = useThemeStore()
 const txt = useToolText()
 
-type CompletenessFilter = 'all' | 'incomplete' | 'missing_cover' | 'missing_summary' | 'missing_tag'
+type CompletenessFilter =
+  | 'all'
+  | 'complete'
+  | 'incomplete'
+  | 'missing_cover'
+  | 'missing_summary'
+  | 'missing_tag'
 
 const VALID_DOMAINS: MediaKind[] = ['book', 'comic', 'music', 'video']
 
@@ -97,8 +109,10 @@ const dirError = ref<string | null>(null)
 const selectedPaths = ref<Set<string>>(new Set())
 const inspectingPath = ref<string | null>(null)
 const activeDetail = ref<MediaFileDetail | null>(null)
+const inspectorRef = ref<InstanceType<typeof MetadataInspectorDrawer> | null>(null)
 const loadingInspector = ref(false)
 const artworkVersion = ref(1)
+const batchSummaryBanner = ref<string | null>(null)
 
 const settingsModalOpen = ref(false)
 const settingsInitialTab = ref<ToolSettingsTab>('appearance')
@@ -131,7 +145,7 @@ const themeModeTooltip = computed(() => {
 
 function isEntryComplete(e: MediaFileEntry): boolean {
   const c = e.completeness
-  return c.has_title && c.has_cover && c.has_summary_or_lyrics && c.has_nfo_or_tag_block
+  return c.has_title && c.has_creator && c.has_cover && c.has_summary_or_lyrics && c.has_nfo_or_tag_block
 }
 
 const stats = computed(() => {
@@ -189,6 +203,7 @@ const filteredFiles = computed<MediaFileEntry[]>(() => {
     if (!showRecursive && parentRelOf(f.rel_path) !== currentRelPath.value) {
       return false
     }
+    if (completenessFilter.value === 'complete' && !isEntryComplete(f)) return false
     if (completenessFilter.value === 'incomplete' && isEntryComplete(f)) return false
     if (completenessFilter.value === 'missing_cover' && f.completeness.has_cover) return false
     if (completenessFilter.value === 'missing_summary' && f.completeness.has_summary_or_lyrics)
@@ -288,6 +303,9 @@ async function switchDomain(next: MediaKind): Promise<void> {
     mobileMenuOpen.value = false
     return
   }
+  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+    return
+  }
   activeDomain.value = next
   mobileMenuOpen.value = false
   localStorage.setItem('xmedia_tool.active_domain', next)
@@ -313,15 +331,47 @@ async function loadInitial(): Promise<void> {
 async function loadDirectory(rootId: string, relPath: string): Promise<void> {
   if (!rootId) return
   const reqDomain = activeDomain.value
+  const preserveSelection = rootId === activeRootId.value && relPath === currentRelPath.value
   loadingDir.value = true
   dirError.value = null
-  selectedPaths.value = new Set()
+  if (!preserveSelection) {
+    selectedPaths.value = new Set()
+  }
+
+  let candidateRel = relPath
+  let snap: DirectorySnapshot | null = null
   try {
-    const snap = await toolApi.browse(rootId, relPath, reqDomain)
-    if (activeDomain.value !== reqDomain) return
+    // Walk up parent segments when empty source folders were removed by archive/rename
+    while (true) {
+      try {
+        snap = await toolApi.browse(rootId, candidateRel, reqDomain)
+        break
+      } catch (err) {
+        const errStatus = (err as Error & { status?: number })?.status
+        const isNotFound =
+          errStatus === 404 ||
+          (err instanceof Error && /not found|不存在|no such/i.test(err.message))
+        if (isNotFound && candidateRel) {
+          candidateRel = parentRelOf(candidateRel)
+          continue
+        }
+        throw err
+      }
+    }
+    if (activeDomain.value !== reqDomain || !snap) return
     snapshot.value = snap
     currentRelPath.value = snap.current_rel_path
     syncDomainStateToMemory(reqDomain, rootId, snap.current_rel_path)
+
+    if (preserveSelection && selectedPaths.value.size > 0) {
+      const surviving = new Set(snap.files.map((f) => f.rel_path))
+      const pruned = new Set<string>()
+      for (const p of selectedPaths.value) {
+        if (surviving.has(p)) pruned.add(p)
+      }
+      selectedPaths.value = pruned
+    }
+
     if (
       inspectingPath.value &&
       !snap.files.some((f) => f.rel_path === inspectingPath.value)
@@ -342,6 +392,9 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
 
 async function selectRoot(rootId: string): Promise<void> {
   if (activeRootId.value === rootId && currentRelPath.value === '') return
+  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+    return
+  }
   activeRootId.value = rootId
   currentRelPath.value = ''
   activeDetail.value = null
@@ -351,6 +404,9 @@ async function selectRoot(rootId: string): Promise<void> {
 }
 
 async function enterFolder(relPath: string, forceFoldersView = false): Promise<void> {
+  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+    return
+  }
   mobileMenuOpen.value = false
   if (forceFoldersView) {
     setViewMode('folders')
@@ -359,6 +415,10 @@ async function enterFolder(relPath: string, forceFoldersView = false): Promise<v
 }
 
 async function inspectEntry(entry: MediaFileEntry): Promise<void> {
+  if (activeDetail.value?.entry.rel_path === entry.rel_path) return
+  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+    return
+  }
   inspectingPath.value = entry.rel_path
   loadingInspector.value = true
   try {
@@ -397,6 +457,10 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
   if (bumpArt) {
     artworkVersion.value += 1
   }
+  // Update active refs BEFORE `loadDirectory` so moving/archiving keeps the drawer anchored
+  activeDetail.value = updated
+  inspectingPath.value = updated.entry.rel_path
+
   if (prevRel && prevRel !== updated.entry.rel_path && activeRootId.value) {
     await loadDirectory(activeRootId.value, currentRelPath.value)
   } else if (snapshot.value) {
@@ -407,22 +471,58 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
       ),
     }
   }
-  activeDetail.value = updated
-  inspectingPath.value = updated.entry.rel_path
 }
 
 async function handleScrapeApplied(updated: MediaFileDetail): Promise<void> {
   await handleDetailUpdated(updated, true)
 }
 
-async function handleBatchScrapeApplied(lastDetail: MediaFileDetail | null): Promise<void> {
+async function handleBatchScrapeApplied(
+  lastDetail: MediaFileDetail | null,
+  summary?: { success: number; failed: number },
+): Promise<void> {
   artworkVersion.value += 1
-  if (activeRootId.value) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
-  }
   if (lastDetail) {
     activeDetail.value = lastDetail
     inspectingPath.value = lastDetail.entry.rel_path
+  }
+  if (activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  }
+  if (summary) {
+    batchSummaryBanner.value =
+      summary.failed > 0
+        ? `批量刮削完成：成功 ${summary.success} 项，失败 ${summary.failed} 项`
+        : `批量刮削完成：全部 ${summary.success} 项写入成功`
+    setTimeout(() => {
+      batchSummaryBanner.value = null
+    }, 5500)
+  }
+}
+
+async function handleRenamed(
+  movedCount: number,
+  movedMap: Record<string, string>,
+): Promise<void> {
+  const prevActive = activeDetail.value
+  const mappedRel = prevActive ? movedMap[prevActive.entry.rel_path] : undefined
+  if (mappedRel && activeRootId.value) {
+    inspectingPath.value = mappedRel
+  }
+  if (activeRootId.value && movedCount > 0) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  }
+  if (mappedRel && activeRootId.value) {
+    try {
+      activeDetail.value = await toolApi.inspectFile(
+        activeRootId.value,
+        mappedRel,
+        activeDomain.value,
+      )
+      inspectingPath.value = mappedRel
+    } catch {
+      // Fall back safely if renamed file lives outside filtered branch
+    }
   }
 }
 
@@ -435,6 +535,9 @@ async function handleSelectScrapeQueueIndex(nextIdx: number): Promise<void> {
 
 async function openScrapeForEntry(entry?: MediaFileEntry): Promise<void> {
   if (entry) {
+    if (inspectorRef.value && activeDetail.value?.entry.rel_path !== entry.rel_path) {
+      if (!(await inspectorRef.value.confirmDiscardIfDirty())) return
+    }
     scrapeQueue.value = [entry]
     scrapeQueueIndex.value = 0
     if (activeDetail.value?.entry.rel_path !== entry.rel_path) {
@@ -586,8 +689,17 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- Right: 3-State Theme Mode Toggle + Settings Button (Language & Palette live inside Settings) -->
+      <!-- Right: ffprobe hint + Theme Mode + Settings + Lock -->
       <div class="flex shrink-0 items-center gap-1.5">
+        <span
+          v-if="status && !status.ffmpeg.ffprobe_available"
+          class="hidden items-center gap-1 rounded-xl border border-amber-500/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-500 sm:inline-flex"
+          title="系统未检测到 ffprobe，视频编码/分辨率/音轨与字幕流详情探测将受限"
+        >
+          <LuAlertTriangle class="h-3.5 w-3.5" />
+          <span>无 ffprobe</span>
+        </span>
+
         <button
           type="button"
           class="flex h-9 w-9 items-center justify-center rounded-xl transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
@@ -602,6 +714,17 @@ onBeforeUnmount(() => {
           <LuMonitor v-if="themeStore.themeMode === 'system'" class="h-[18px] w-[18px]" />
           <LuSun v-else-if="themeStore.themeMode === 'light'" class="h-[18px] w-[18px]" />
           <LuMoon v-else class="h-[18px] w-[18px]" />
+        </button>
+
+        <button
+          v-if="status?.requires_password"
+          type="button"
+          class="flex h-9 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/80 px-2.5 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:border-amber-500/50 hover:text-amber-500"
+          :title="txt.actions.lock"
+          @click="emit('lock')"
+        >
+          <LuLock class="h-3.5 w-3.5" />
+          <span class="hidden md:inline">{{ txt.actions.lock }}</span>
         </button>
 
         <button
@@ -664,6 +787,7 @@ onBeforeUnmount(() => {
             <button
               v-for="item in [
                 { id: 'all' as CompletenessFilter, label: txt.filters.all, count: stats.total, icon: LuLayers },
+                { id: 'complete' as CompletenessFilter, label: txt.filters.complete, count: stats.complete, icon: LuCheckCircle2 },
                 { id: 'incomplete' as CompletenessFilter, label: txt.filters.incomplete, count: stats.incomplete, icon: LuAlertCircle },
                 { id: 'missing_cover' as CompletenessFilter, label: domainLabels.missingCover, count: stats.missingCover, icon: LuImage },
                 { id: 'missing_summary' as CompletenessFilter, label: domainLabels.missingSummary, count: stats.missingSummary, icon: LuFileText },
@@ -821,7 +945,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-mantle)]/55 p-4 text-left transition hover:border-emerald-500/50"
-                @click="completenessFilter = 'all'"
+                @click="completenessFilter = 'complete'"
               >
                 <div>
                   <div class="text-xs text-[var(--ctp-subtext0)]">{{ txt.cards.completeFiles }}</div>
@@ -949,6 +1073,15 @@ onBeforeUnmount(() => {
                 />
 
                 <button
+                  v-if="selectedPaths.size > 0"
+                  type="button"
+                  class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+                  @click="selectedPaths = new Set()"
+                >
+                  {{ txt.actions.clearSelect }}
+                </button>
+
+                <button
                   type="button"
                   :disabled="filteredFiles.length === 0"
                   class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-accent)] transition hover:opacity-90 disabled:opacity-45"
@@ -983,6 +1116,20 @@ onBeforeUnmount(() => {
                   <LuRefreshCw class="h-3.5 w-3.5" :class="loadingDir ? 'animate-spin' : ''" />
                 </button>
               </div>
+            </div>
+
+            <div
+              v-if="batchSummaryBanner"
+              class="mb-4 flex items-center justify-between gap-2 rounded-2xl border border-emerald-500/35 bg-emerald-500/10 px-4 py-2.5 text-xs font-medium text-emerald-500"
+            >
+              <span>{{ batchSummaryBanner }}</span>
+              <button
+                type="button"
+                class="rounded-lg p-1 hover:bg-emerald-500/15"
+                @click="batchSummaryBanner = null"
+              >
+                <LuX class="h-3.5 w-3.5" />
+              </button>
             </div>
 
             <div
@@ -1196,11 +1343,12 @@ onBeforeUnmount(() => {
           </div>
           <MetadataInspectorDrawer
             v-else-if="activeDetail"
+            ref="inspectorRef"
             :detail="activeDetail"
             :artwork-version="artworkVersion"
             @close="activeDetail = null; inspectingPath = null"
             @updated="handleDetailUpdated"
-            @open-scrape="scrapeModalOpen = true"
+            @open-scrape="(d) => openScrapeForEntry(d.entry)"
           />
         </div>
       </main>
@@ -1228,7 +1376,7 @@ onBeforeUnmount(() => {
       :entries="selectedEntriesForRename"
       :templates="settings.rename_templates"
       @close="renameModalOpen = false"
-      @renamed="() => loadDirectory(activeRootId, currentRelPath)"
+      @renamed="handleRenamed"
     />
 
     <ToolSettingsModal
