@@ -132,8 +132,13 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
 
   function failTask(id: string, message: string): void {
     clearTaskTimer(id)
-    const found = entries.value.find((e) => e.id === id)
-    if (!found) return
+    const idx = entries.value.findIndex((e) => e.id === id)
+    if (idx < 0) return
+    const found = entries.value[idx]!
+    if (found.ephemeral) {
+      entries.value.splice(idx, 1)
+      return
+    }
     found.visible = true
     found.status = 'failed'
     found.detail = message

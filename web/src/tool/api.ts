@@ -126,8 +126,14 @@ async function toolStreamRequest<T>(
     } catch {
       if (text.trim()) errMsg = text.trim()
     }
-    const error = new Error(errMsg) as Error & { status?: number }
+    const error = new Error(errMsg) as Error & {
+      status?: number
+      streamRouteMissing?: boolean
+    }
     error.status = res.status
+    if (res.status === 404 && text.trim() === 'Not Found') {
+      error.streamRouteMissing = true
+    }
     throw error
   }
 
@@ -265,7 +271,12 @@ export const toolApi = {
         `/fs/browse/stream?${q.toString()}`,
         { method: 'GET' },
         onProgress,
-      )
+      ).catch((err: Error & { streamRouteMissing?: boolean }) => {
+        if (err?.streamRouteMissing) {
+          return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`)
+        }
+        throw err
+      })
     }
     return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`)
   },
@@ -330,7 +341,15 @@ export const toolApi = {
         '/files/rename/preview/stream',
         { method: 'POST', body },
         onProgress,
-      )
+      ).catch((err: Error & { streamRouteMissing?: boolean }) => {
+        if (err?.streamRouteMissing) {
+          return toolRequest<RenamePlanItem[]>('/files/rename/preview', {
+            method: 'POST',
+            body,
+          })
+        }
+        throw err
+      })
     }
     return toolRequest<RenamePlanItem[]>('/files/rename/preview', {
       method: 'POST',
@@ -352,7 +371,15 @@ export const toolApi = {
         '/files/rename/execute/stream',
         { method: 'POST', body },
         onProgress,
-      )
+      ).catch((err: Error & { streamRouteMissing?: boolean }) => {
+        if (err?.streamRouteMissing) {
+          return toolRequest<{ moved_count: number }>('/files/rename/execute', {
+            method: 'POST',
+            body,
+          })
+        }
+        throw err
+      })
     }
     return toolRequest<{ moved_count: number }>('/files/rename/execute', {
       method: 'POST',
