@@ -55,6 +55,11 @@ const MESSAGES = {
         searchPlaceholder: '搜索当前目录视频文件名、片名或剧集名…',
       },
     } satisfies Record<MediaKind, DomainSpecificLabels>,
+    nav: {
+      home: '首页',
+      items: '条目',
+      tasks: '任务',
+    },
     filters: {
       title: '完整度筛选',
       all: '全部文件',
@@ -62,9 +67,9 @@ const MESSAGES = {
       incomplete: '待补齐项',
     },
     roots: {
-      title: '当前领域根目录',
+      title: '媒体根目录',
       add: '添加当前领域目录',
-      foldersTitle: '当前子目录',
+      foldersTitle: '子文件夹',
       parentDir: '.. 返回上级目录',
     },
     cards: {
@@ -74,7 +79,8 @@ const MESSAGES = {
     actions: {
       selectAll: '全选',
       clearSelect: '取消选择',
-      onlineScrape: '在线刮削',
+      scrape: '刮削',
+      onlineScrape: '手动匹配刮削',
       batchRename: '批量重命名',
       refresh: '刷新',
       settings: '设置',
@@ -137,6 +143,11 @@ const MESSAGES = {
         searchPlaceholder: 'Filter videos by filename, movie or show title…',
       },
     } satisfies Record<MediaKind, DomainSpecificLabels>,
+    nav: {
+      home: 'Home',
+      items: 'Items',
+      tasks: 'Tasks',
+    },
     filters: {
       title: 'Completeness',
       all: 'All Files',
@@ -144,7 +155,7 @@ const MESSAGES = {
       incomplete: 'Incomplete',
     },
     roots: {
-      title: 'Domain Roots',
+      title: 'Media Roots',
       add: 'Add Domain Root',
       foldersTitle: 'Subfolders',
       parentDir: '.. Parent Directory',
@@ -156,7 +167,8 @@ const MESSAGES = {
     actions: {
       selectAll: 'Select All',
       clearSelect: 'Clear',
-      onlineScrape: 'Online Scrape',
+      scrape: 'Scrape',
+      onlineScrape: 'Manual Match',
       batchRename: 'Batch Rename',
       refresh: 'Refresh',
       settings: 'Settings',

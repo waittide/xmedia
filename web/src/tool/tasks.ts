@@ -1,24 +1,69 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { FloatingTaskItem } from '@/components/ui/FloatingTaskShelf.vue'
+import type { MediaKind } from '@/types/api'
+import { toolApi } from './api'
+import type { MediaFileDetail, MediaFileEntry } from './types'
+
+export interface ScrapeSubItem {
+  rootId: string
+  relPath: string
+  fileName: string
+  mediaKind: MediaKind
+  status: 'queued' | 'running' | 'matched' | 'unmatched' | 'failed' | 'cancelled'
+  error?: string
+}
 
 export interface ToolTaskEntry {
   id: string
   kind: 'browse' | 'rename' | 'scrape'
+  domain?: MediaKind
   title: string
-  status: 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'completed' | 'failed'
   processed: number
   total: number | null
+  matchedCount?: number
+  unmatchedCount?: number
+  failedCount?: number
   detail: string
   visible: boolean
   ephemeral: boolean
+  cancellable?: boolean
+  cancelled?: boolean
+  subItems?: ScrapeSubItem[]
   startedAt: number
+  finishedAt?: number
 }
+
+type FileScrapedListener = (detail: MediaFileDetail) => void
+
+const SCRAPE_CONCURRENCY = 2
 
 export const useToolTaskStore = defineStore('tool-tasks', () => {
   const entries = ref<ToolTaskEntry[]>([])
   const collapsed = ref(false)
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  const fileListeners = new Set<FileScrapedListener>()
+
+  let workerRunning = false
+  const pendingScrapeBatchIds: string[] = []
+
+  function onFileScraped(fn: FileScrapedListener): () => void {
+    fileListeners.add(fn)
+    return () => {
+      fileListeners.delete(fn)
+    }
+  }
+
+  function notifyFileScraped(detail: MediaFileDetail): void {
+    for (const fn of fileListeners) {
+      try {
+        fn(detail)
+      } catch {
+        // ignore listener error
+      }
+    }
+  }
 
   function clearTaskTimer(id: string): void {
     const existing = timers.get(id)
@@ -28,14 +73,10 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     }
   }
 
-  /**
-   * Start tracking a task.
-   * Ephemeral tasks (directory browse / rename preview) only surface in the floating
-   * panel if they take > 220ms or involve >= 30 files, avoiding visual noise on tiny folders.
-   */
   function startTask(opts: {
     id: string
     kind: 'browse' | 'rename' | 'scrape'
+    domain?: MediaKind
     title: string
     total?: number | null
     detail?: string
@@ -49,6 +90,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     const next: ToolTaskEntry = {
       id: opts.id,
       kind: opts.kind,
+      domain: opts.domain,
       title: opts.title,
       status: 'running',
       processed: 0,
@@ -89,7 +131,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     patch: { processed: number; total: number | null; detail?: string },
   ): void {
     const found = entries.value.find((e) => e.id === id)
-    if (!found || found.status !== 'running') return
+    if (!found || (found.status !== 'running' && found.status !== 'queued')) return
     found.processed = patch.processed
     found.total = patch.total
     if (patch.detail !== undefined && patch.detail !== '') {
@@ -111,6 +153,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
       return
     }
     found.status = 'completed'
+    found.finishedAt = Date.now()
     if (found.total !== null) {
       found.processed = found.total
     }
@@ -141,23 +184,216 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     }
     found.visible = true
     found.status = 'failed'
+    found.finishedAt = Date.now()
     found.detail = message
     collapsed.value = false
+  }
+
+  /**
+   * Enqueues a background waterfall scrape task:
+   * Priority order: Local non-empty metadata -> High-priority provider -> Low-priority provider
+   */
+  function enqueueScrapeTask(files: MediaFileEntry[], labelHint?: string): string | null {
+    if (files.length === 0) return null
+    const id = `scrape:queue:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const dom = files[0]?.media_kind
+    const subItems: ScrapeSubItem[] = files.map((f) => ({
+      rootId: f.root_id,
+      relPath: f.rel_path,
+      fileName: f.file_name,
+      mediaKind: f.media_kind,
+      status: 'queued',
+    }))
+
+    const title =
+      files.length === 1
+        ? `刮削 · ${files[0]!.file_name}`
+        : `刮削任务 (${files.length} 项)${labelHint ? ` · ${labelHint}` : ''}`
+
+    const entry: ToolTaskEntry = {
+      id,
+      kind: 'scrape',
+      domain: dom,
+      title,
+      status: workerRunning ? 'queued' : 'running',
+      processed: 0,
+      total: files.length,
+      matchedCount: 0,
+      unmatchedCount: 0,
+      failedCount: 0,
+      detail: workerRunning ? '排队等待执行…' : `准备刮削 ${files[0]!.file_name}…`,
+      visible: true,
+      ephemeral: false,
+      cancellable: true,
+      cancelled: false,
+      subItems,
+      startedAt: Date.now(),
+    }
+
+    entries.value.unshift(entry)
+    collapsed.value = false
+    pendingScrapeBatchIds.push(id)
+    void pumpScrapeWorker()
+    return id
+  }
+
+  async function pumpScrapeWorker(): Promise<void> {
+    if (workerRunning) return
+    workerRunning = true
+    try {
+      while (pendingScrapeBatchIds.length > 0) {
+        const batchId = pendingScrapeBatchIds.shift()!
+        const task = entries.value.find((e) => e.id === batchId)
+        if (!task || !task.subItems) continue
+        if (task.cancelled) {
+          settleBatchTask(task)
+          continue
+        }
+
+        task.status = 'running'
+        let cursor = 0
+        const items = task.subItems
+
+        async function runLane(): Promise<void> {
+          while (cursor < items.length) {
+            if (task!.cancelled) break
+            const idx = cursor
+            cursor += 1
+            const sub = items[idx]!
+            if (sub.status !== 'queued') continue
+
+            sub.status = 'running'
+            task!.detail = sub.fileName
+            try {
+              const res = await toolApi.autoScrapeFile(sub.rootId, sub.relPath, sub.mediaKind)
+              if (res.matched) {
+                sub.status = 'matched'
+                task!.matchedCount = (task!.matchedCount ?? 0) + 1
+                notifyFileScraped(res.detail)
+              } else {
+                sub.status = 'unmatched'
+                task!.unmatchedCount = (task!.unmatchedCount ?? 0) + 1
+              }
+            } catch (err) {
+              sub.status = 'failed'
+              sub.error = err instanceof Error ? err.message : String(err)
+              task!.failedCount = (task!.failedCount ?? 0) + 1
+            } finally {
+              task!.processed = items.filter(
+                (it) =>
+                  it.status === 'matched' ||
+                  it.status === 'unmatched' ||
+                  it.status === 'failed' ||
+                  it.status === 'cancelled',
+              ).length
+            }
+          }
+        }
+
+        const laneCount = Math.min(SCRAPE_CONCURRENCY, items.length)
+        await Promise.all(Array.from({ length: laneCount }, () => runLane()))
+        settleBatchTask(task)
+      }
+    } finally {
+      workerRunning = false
+    }
+  }
+
+  function settleBatchTask(task: ToolTaskEntry): void {
+    if (task.subItems && task.cancelled) {
+      for (const it of task.subItems) {
+        if (it.status === 'queued') {
+          it.status = 'cancelled'
+        }
+      }
+    }
+    const matched = task.matchedCount ?? 0
+    const unmatched = task.unmatchedCount ?? 0
+    const failed = task.failedCount ?? 0
+    const cancelledCount =
+      task.subItems?.filter((it) => it.status === 'cancelled').length ?? 0
+
+    task.finishedAt = Date.now()
+    task.cancellable = false
+
+    const parts: string[] = [`补齐 ${matched} 项`]
+    if (unmatched > 0) parts.push(`未命中 ${unmatched} 项`)
+    if (failed > 0) parts.push(`失败 ${failed} 项`)
+    if (cancelledCount > 0) parts.push(`已取消 ${cancelledCount} 项`)
+
+    task.detail = parts.join(' · ')
+    if (failed > 0 && matched === 0) {
+      task.status = 'failed'
+    } else {
+      task.status = 'completed'
+    }
+  }
+
+  function cancelTask(id: string): void {
+    const found = entries.value.find((e) => e.id === id)
+    if (!found) return
+    found.cancelled = true
+    if (found.status === 'queued') {
+      const qIdx = pendingScrapeBatchIds.indexOf(id)
+      if (qIdx >= 0) pendingScrapeBatchIds.splice(qIdx, 1)
+      settleBatchTask(found)
+    }
+  }
+
+  function retryTaskFailedOrUnmatched(id: string): void {
+    const found = entries.value.find((e) => e.id === id)
+    if (!found || !found.subItems) return
+    const retryTargets = found.subItems.filter(
+      (it) => it.status === 'failed' || it.status === 'unmatched' || it.status === 'cancelled',
+    )
+    if (retryTargets.length === 0) return
+
+    for (const it of retryTargets) {
+      it.status = 'queued'
+      it.error = undefined
+    }
+    found.cancelled = false
+    found.cancellable = true
+    found.finishedAt = undefined
+    found.unmatchedCount = 0
+    found.failedCount = 0
+    found.processed = found.subItems.filter((it) => it.status === 'matched').length
+    found.status = workerRunning ? 'queued' : 'running'
+    found.detail = '正在重试未完成项…'
+    pendingScrapeBatchIds.push(found.id)
+    void pumpScrapeWorker()
+  }
+
+  function removeTask(id: string): void {
+    clearTaskTimer(id)
+    const found = entries.value.find((e) => e.id === id)
+    if (found && (found.status === 'running' || found.status === 'queued')) {
+      cancelTask(id)
+    }
+    entries.value = entries.value.filter((e) => e.id !== id)
   }
 
   function clearCompleted(): void {
     for (const item of entries.value) {
       if (item.status === 'completed') clearTaskTimer(item.id)
     }
-    entries.value = entries.value.filter((e) => e.status === 'running' || e.status === 'failed')
+    entries.value = entries.value.filter(
+      (e) => e.status === 'running' || e.status === 'queued' || e.status === 'failed',
+    )
   }
 
   function dismissAll(): void {
     for (const item of entries.value) {
-      if (item.status !== 'running') clearTaskTimer(item.id)
+      if (item.status !== 'running' && item.status !== 'queued') clearTaskTimer(item.id)
     }
-    entries.value = entries.value.filter((e) => e.status === 'running')
+    entries.value = entries.value.filter((e) => e.status === 'running' || e.status === 'queued')
   }
+
+  const activeCount = computed(
+    () => entries.value.filter((e) => e.status === 'running' || e.status === 'queued').length,
+  )
+
+  const persistentTasks = computed(() => entries.value.filter((e) => !e.ephemeral || e.visible))
 
   const shelfItems = computed<FloatingTaskItem[]>(() =>
     entries.value
@@ -181,6 +417,8 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
           } else {
             subtitle = `正在清点目录文件 · ${e.detail}`
           }
+        } else if (e.status === 'queued') {
+          subtitle = `排队中 (${e.total ?? 0} 项)`
         }
 
         return {
@@ -190,18 +428,26 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
           subtitle,
           status: e.status,
           progress,
+          clickable: true,
         }
       }),
   )
 
   return {
     entries,
+    persistentTasks,
+    activeCount,
     collapsed,
     shelfItems,
+    onFileScraped,
     startTask,
     updateTask,
     completeTask,
     failTask,
+    enqueueScrapeTask,
+    cancelTask,
+    retryTaskFailedOrUnmatched,
+    removeTask,
     clearCompleted,
     dismissAll,
   }

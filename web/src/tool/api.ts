@@ -1,6 +1,7 @@
 import type { MediaKind } from '@/types/api'
 import type {
   AggregateScrapeResponse,
+  AutoScrapeResultDto,
   DirectorySnapshot,
   ManagedRootDto,
   MediaFileDetail,
@@ -8,6 +9,7 @@ import type {
   ProviderStatusDto,
   PublicSettingsDto,
   RenamePlanItem,
+  ScrapeCacheStatsDto,
   ScrapeCandidate,
   ScrapeQuery,
   ScrapeTargetKind,
@@ -448,6 +450,31 @@ export const toolApi = {
         only_fill_missing: onlyFillMissing,
         write_album_cover: writeAlbumCover,
       }),
+    })
+  },
+
+  autoScrapeFile(
+    rootId: string,
+    relPath: string,
+    mediaKind: MediaKind,
+  ): Promise<AutoScrapeResultDto> {
+    return toolRequest<AutoScrapeResultDto>('/scrapers/auto-apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        path: relPath,
+        media_kind: mediaKind,
+      }),
+    })
+  },
+
+  getScrapeCacheStats(): Promise<ScrapeCacheStatsDto> {
+    return toolRequest<ScrapeCacheStatsDto>('/scrapers/cache')
+  },
+
+  clearScrapeCache(): Promise<{ removed_count: number }> {
+    return toolRequest<{ removed_count: number }>('/scrapers/cache', {
+      method: 'DELETE',
     })
   },
 }

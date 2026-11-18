@@ -48,6 +48,7 @@ export interface PublicSettingsDto {
   rename_templates: RenameTemplatesDto
   scraper_priorities: ScraperPrioritiesDto
   default_scrape_locale: string
+  scrape_cache_ttl_ms: number
 }
 
 export interface UpdateToolSettingsInput {
@@ -57,6 +58,18 @@ export interface UpdateToolSettingsInput {
   rename_templates?: RenameTemplatesDto
   scraper_priorities?: ScraperPrioritiesDto
   default_scrape_locale?: string
+  scrape_cache_ttl_ms?: number
+}
+
+export interface ScrapeCacheStatsDto {
+  total_entries: number
+  valid_entries: number
+  total_bytes: number
+}
+
+export interface AutoScrapeResultDto {
+  matched: boolean
+  detail: MediaFileDetail
 }
 
 export interface CompletenessFlags {
