@@ -1,3 +1,7 @@
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, SET_COOKIE};
@@ -6,15 +10,19 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
+use bytes::Bytes;
+use futures_core::Stream;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 use xmedia_core::application::dto::FfmpegStatusDto;
-use xmedia_core::domain::error::DomainError;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{ApiError, ApiResult};
 use xmedia_core::infra::thumbnail::sniff_image_mime;
 
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
+use crate::application::workbench::WorkbenchProgress;
 use crate::domain::media::{
     DirectorySnapshot, MediaFileDetail, MediaMetadataPatch, RenamePlanItem,
 };
@@ -34,6 +42,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/roots", post(add_root))
         .route("/roots/{id}", delete(remove_root))
         .route("/fs/browse", get(browse_fs))
+        .route("/fs/browse/stream", get(browse_fs_stream))
         .route("/files/inspect", get(inspect_file))
         .route("/files/metadata", axum::routing::patch(write_metadata))
         .route(
@@ -43,7 +52,9 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
                 .layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/files/rename/preview", post(preview_rename))
+        .route("/files/rename/preview/stream", post(preview_rename_stream))
         .route("/files/rename/execute", post(execute_rename))
+        .route("/files/rename/execute/stream", post(execute_rename_stream))
         .route("/scrapers/providers", get(list_scraper_providers))
         .route("/scrapers/search", post(search_scrapers))
         .route("/scrapers/aggregate", post(aggregate_scrapers))
@@ -446,4 +457,149 @@ async fn apply_scraped_metadata(
         )
         .await?;
     Ok(Json(detail))
+}
+
+struct MpscByteStream {
+    rx: mpsc::Receiver<Result<Bytes, Infallible>>,
+}
+
+impl Stream for MpscByteStream {
+    type Item = Result<Bytes, Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.rx.poll_recv(cx)
+    }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum NdjsonFrame<T: Serialize> {
+    Progress {
+        processed: u64,
+        total: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    Done {
+        data: T,
+    },
+    Error {
+        message: String,
+    },
+}
+
+fn encode_ndjson_line<T: Serialize>(frame: &NdjsonFrame<T>) -> Bytes {
+    let mut line = serde_json::to_vec(frame).unwrap_or_default();
+    line.push(b'\n');
+    Bytes::from(line)
+}
+
+fn spawn_ndjson_stream<T, Fut, Work>(work: Work) -> Response
+where
+    T: Serialize + Send + 'static,
+    Fut: std::future::Future<Output = DomainResult<T>> + Send + 'static,
+    Work: FnOnce(mpsc::Sender<WorkbenchProgress>) -> Fut + Send + 'static,
+{
+    let (byte_tx, byte_rx) = mpsc::channel::<Result<Bytes, Infallible>>(64);
+    let (prog_tx, mut prog_rx) = mpsc::channel::<WorkbenchProgress>(64);
+
+    let progress_byte_tx = byte_tx.clone();
+    let forward_handle = tokio::spawn(async move {
+        while let Some(p) = prog_rx.recv().await {
+            let line = encode_ndjson_line::<T>(&NdjsonFrame::Progress {
+                processed: p.processed,
+                total: p.total,
+                detail: p.detail,
+            });
+            if progress_byte_tx.send(Ok(line)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        let res = work(prog_tx).await;
+        let _ = forward_handle.await;
+        let final_line = match res {
+            Ok(data) => encode_ndjson_line(&NdjsonFrame::Done { data }),
+            Err(err) => encode_ndjson_line::<T>(&NdjsonFrame::Error {
+                message: err.to_string(),
+            }),
+        };
+        let _ = byte_tx.send(Ok(final_line)).await;
+    });
+
+    let mut res = (
+        StatusCode::OK,
+        Body::from_stream(MpscByteStream { rx: byte_rx }),
+    )
+        .into_response();
+    res.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/x-ndjson; charset=utf-8"),
+    );
+    res.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    res.headers_mut()
+        .insert("x-accel-buffering", HeaderValue::from_static("no"));
+    res
+}
+
+async fn browse_fs_stream(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Query(q): Query<BrowseQuery>,
+) -> Response {
+    spawn_ndjson_stream(move |prog_tx| async move {
+        state
+            .workbench
+            .browse_directory_with_progress(
+                RootId(q.root_id),
+                &q.path,
+                q.kind,
+                q.recursive,
+                move |p| {
+                    let _ = prog_tx.try_send(p);
+                },
+            )
+            .await
+    })
+}
+
+async fn preview_rename_stream(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<PreviewRenameRequest>,
+) -> Response {
+    spawn_ndjson_stream(move |prog_tx| async move {
+        state
+            .workbench
+            .preview_rename_with_progress(
+                RootId(req.root_id),
+                &req.paths,
+                req.template.as_deref(),
+                req.episode_template.as_deref(),
+                req.kind,
+                move |p| {
+                    let _ = prog_tx.try_send(p);
+                },
+            )
+            .await
+    })
+}
+
+async fn execute_rename_stream(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<ExecuteRenameRequest>,
+) -> Response {
+    spawn_ndjson_stream(move |prog_tx| async move {
+        let moved_count = state
+            .workbench
+            .execute_rename_with_progress(RootId(req.root_id), &req.plans, move |p| {
+                let _ = prog_tx.try_send(p);
+            })
+            .await?;
+        Ok(ExecuteRenameResponse { moved_count })
+    })
 }

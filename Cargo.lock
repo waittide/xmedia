@@ -6167,6 +6167,7 @@ dependencies = [
  "clap",
  "encoding_rs",
  "form_urlencoded",
+ "futures-core",
  "hex",
  "jiff",
  "lofty",

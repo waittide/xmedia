@@ -21,6 +21,23 @@ use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::dir_has_single_video;
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WorkbenchProgress {
+    pub processed: u64,
+    pub total: Option<u64>,
+    pub detail: Option<String>,
+}
+
+fn progress_step_for(total: u64) -> u64 {
+    if total <= 100 {
+        1
+    } else if total <= 1000 {
+        5
+    } else {
+        25
+    }
+}
+
 #[derive(Clone)]
 pub struct MediaWorkbenchService {
     settings: ToolSettingsService,
@@ -68,6 +85,21 @@ impl MediaWorkbenchService {
         domain_filter: Option<MediaKind>,
         recursive: bool,
     ) -> DomainResult<DirectorySnapshot> {
+        self.browse_directory_with_progress(root_id, rel_path, domain_filter, recursive, |_| {})
+            .await
+    }
+
+    pub async fn browse_directory_with_progress<F>(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        domain_filter: Option<MediaKind>,
+        recursive: bool,
+        mut on_progress: F,
+    ) -> DomainResult<DirectorySnapshot>
+    where
+        F: FnMut(WorkbenchProgress) + Send,
+    {
         let root = self.settings.find_root(root_id).await?;
         let dir_sandbox = root.resolve_existing(rel_path)?;
         if !dir_sandbox.abs_path.is_dir() {
@@ -119,6 +151,16 @@ impl MediaWorkbenchService {
             }
         }
 
+        on_progress(WorkbenchProgress {
+            processed: 0,
+            total: None,
+            detail: Some(if current_rel.is_empty() {
+                root.name.clone()
+            } else {
+                current_rel.clone()
+            }),
+        });
+
         if recursive {
             for entry in WalkDir::new(&dir_sandbox.abs_path)
                 .follow_links(false)
@@ -138,7 +180,16 @@ impl MediaWorkbenchService {
                 if let Some(ins) = self.resolve_inspector_for_path(&p, domain_filter)
                     && domain_filter.is_none_or(|want| ins.media_kind() == want)
                 {
-                    raw_files.push((fname.to_string(), p, ins));
+                    let fname_owned = fname.to_string();
+                    raw_files.push((fname_owned.clone(), p, ins));
+                    let discovered = raw_files.len() as u64;
+                    if discovered.is_multiple_of(100) {
+                        on_progress(WorkbenchProgress {
+                            processed: discovered,
+                            total: None,
+                            detail: Some(fname_owned),
+                        });
+                    }
                 }
             }
         }
@@ -167,12 +218,28 @@ impl MediaWorkbenchService {
             });
         }
 
+        let total_files = raw_files.len() as u64;
+        let step = progress_step_for(total_files);
+        on_progress(WorkbenchProgress {
+            processed: 0,
+            total: Some(total_files),
+            detail: None,
+        });
+
         let mut files = Vec::with_capacity(raw_files.len());
-        for (fname, file_abs, inspector) in raw_files {
+        for (idx, (fname, file_abs, inspector)) in raw_files.into_iter().enumerate() {
             let entry = self
                 .build_file_entry(&root, &file_abs, &fname, inspector.as_ref())
                 .await?;
             files.push(entry);
+            let done = (idx + 1) as u64;
+            if done.is_multiple_of(step) || done == total_files {
+                on_progress(WorkbenchProgress {
+                    processed: done,
+                    total: Some(total_files),
+                    detail: Some(fname),
+                });
+            }
         }
 
         Ok(DirectorySnapshot {
@@ -281,6 +348,29 @@ impl MediaWorkbenchService {
         episode_template_override: Option<&str>,
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<Vec<RenamePlanItem>> {
+        self.preview_rename_with_progress(
+            root_id,
+            rel_paths,
+            template_override,
+            episode_template_override,
+            preferred_kind,
+            |_| {},
+        )
+        .await
+    }
+
+    pub async fn preview_rename_with_progress<F>(
+        &self,
+        root_id: RootId,
+        rel_paths: &[String],
+        template_override: Option<&str>,
+        episode_template_override: Option<&str>,
+        preferred_kind: Option<MediaKind>,
+        mut on_progress: F,
+    ) -> DomainResult<Vec<RenamePlanItem>>
+    where
+        F: FnMut(WorkbenchProgress) + Send,
+    {
         let raw_settings = self.settings.get_raw().await?;
         let root = raw_settings
             .roots
@@ -297,7 +387,15 @@ impl MediaWorkbenchService {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        for rel in rel_paths {
+        let total = rel_paths.len() as u64;
+        let step = progress_step_for(total);
+        on_progress(WorkbenchProgress {
+            processed: 0,
+            total: Some(total),
+            detail: None,
+        });
+
+        for (idx, rel) in rel_paths.iter().enumerate() {
             let sandbox = root.resolve_existing(rel)?;
             let Some(inspector) =
                 self.resolve_inspector_for_path(&sandbox.abs_path, preferred_kind)
@@ -569,6 +667,15 @@ impl MediaWorkbenchService {
                 conflict,
                 unchanged,
             });
+
+            let done = (idx + 1) as u64;
+            if done.is_multiple_of(step) || done == total {
+                on_progress(WorkbenchProgress {
+                    processed: done,
+                    total: Some(total),
+                    detail: Some(rel.clone()),
+                });
+            }
         }
 
         Ok(plans)
@@ -579,7 +686,30 @@ impl MediaWorkbenchService {
         root_id: RootId,
         plans: &[RenamePlanItem],
     ) -> DomainResult<usize> {
+        self.execute_rename_with_progress(root_id, plans, |_| {})
+            .await
+    }
+
+    pub async fn execute_rename_with_progress<F>(
+        &self,
+        root_id: RootId,
+        plans: &[RenamePlanItem],
+        mut on_progress: F,
+    ) -> DomainResult<usize>
+    where
+        F: FnMut(WorkbenchProgress) + Send,
+    {
         let root = self.settings.find_root(root_id).await?;
+        let total = plans
+            .iter()
+            .filter(|p| !p.unchanged && p.conflict.is_none())
+            .count() as u64;
+        let step = progress_step_for(total);
+        on_progress(WorkbenchProgress {
+            processed: 0,
+            total: Some(total),
+            detail: None,
+        });
         let mut moved_count = 0usize;
 
         for item in plans {
@@ -675,6 +805,15 @@ impl MediaWorkbenchService {
 
             if let Some(ref prev_dir) = old_parent {
                 cleanup_empty_parent_dirs(prev_dir, &root.path);
+            }
+
+            let done = moved_count as u64;
+            if done.is_multiple_of(step) || done == total {
+                on_progress(WorkbenchProgress {
+                    processed: done,
+                    total: Some(total),
+                    detail: Some(item.to_rel_path.clone()),
+                });
             }
         }
 
