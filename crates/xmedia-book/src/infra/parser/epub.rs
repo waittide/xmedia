@@ -267,6 +267,39 @@ fn parse_opf(opf_xml: &[u8]) -> OpfData {
     data
 }
 
+pub(crate) fn overlay_opf_sidecar(opf_xml: &[u8], parsed: &mut ParsedBook) {
+    let opf = parse_opf(opf_xml);
+    if let Some(t) = opf.title
+        && !t.trim().is_empty()
+    {
+        parsed.metadata.title = t;
+    }
+    if !opf.authors.is_empty() {
+        parsed.metadata.authors = opf.authors;
+    }
+    if opf.description.is_some() {
+        parsed.metadata.description = opf.description;
+    }
+    if opf.isbn.is_some() {
+        parsed.metadata.isbn = opf.isbn;
+    }
+    if opf.language.is_some() {
+        parsed.metadata.language = opf.language;
+    }
+    if opf.publisher.is_some() {
+        parsed.metadata.publisher = opf.publisher;
+    }
+    if opf.published_at.is_some() {
+        parsed.metadata.published_at = opf.published_at;
+    }
+    if !opf.subjects.is_empty() {
+        parsed.metadata.tags = opf.subjects;
+    }
+    if let Ok(normalized) = parsed.metadata.clone().normalized() {
+        parsed.metadata = normalized;
+    }
+}
+
 fn strip_html_tags(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut in_tag = false;

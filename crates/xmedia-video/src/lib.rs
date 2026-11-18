@@ -348,5 +348,66 @@ mod tests {
             .unwrap();
         assert_eq!(updated_show.show.watched_episode_count, 1);
         assert_eq!(updated_show.continue_episode.unwrap().id, ep2.id);
+
+        // 4. Rename & organize ep1 into Jellyfin layout with `tvshow.nfo` -> VideoId & watched progress survive,
+        //    and `tvshow.nfo` <title> populates `show_title` without overwriting episode <title>.
+        let jf_show_dir = tmp
+            .path()
+            .join("mounted_videos")
+            .join("葬送的芙莉莲 (2023)");
+        let jf_season_dir = jf_show_dir.join("Season 01");
+        std::fs::create_dir_all(&jf_season_dir).unwrap();
+        std::fs::write(
+            jf_show_dir.join("tvshow.nfo"),
+            "<tvshow><title>葬送的芙莉莲</title><year>2023</year></tvshow>",
+        )
+        .unwrap();
+        std::fs::rename(
+            show_dir.join("01 - Journey End.mp4"),
+            jf_season_dir.join("葬送的芙莉莲 - S01E01 - 旅程的终点.mp4"),
+        )
+        .unwrap();
+        std::fs::rename(
+            show_dir.join("01 - Journey End.ja.ass"),
+            jf_season_dir.join("葬送的芙莉莲 - S01E01 - 旅程的终点.ja.ass"),
+        )
+        .unwrap();
+        std::fs::write(
+            jf_season_dir.join("葬送的芙莉莲 - S01E01 - 旅程的终点.nfo"),
+            "<episodedetails><title>旅程的终点</title><season>1</season><episode>1</episode></episodedetails>",
+        )
+        .unwrap();
+
+        library_svc
+            .trigger_scan(&admin, mount_lib.id)
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            let st = library_svc.get_library(mount_lib.id).await.unwrap();
+            if matches!(st.scan_status, ScanStatus::Completed { .. }) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        let moved_ep1 = video_services
+            .catalog
+            .get_video_detail(&admin, ep1.id)
+            .await
+            .unwrap();
+        assert_eq!(moved_ep1.video.title, "旅程的终点");
+        assert_eq!(moved_ep1.video.show_title.as_deref(), Some("葬送的芙莉莲"));
+        assert!(
+            moved_ep1
+                .path
+                .contains("葬送的芙莉莲 - S01E01 - 旅程的终点.mp4")
+        );
+        assert!(
+            moved_ep1
+                .video
+                .progress
+                .as_ref()
+                .is_some_and(|p| p.completed)
+        );
     }
 }

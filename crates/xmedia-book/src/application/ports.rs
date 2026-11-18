@@ -52,6 +52,17 @@ pub trait BookParserPort: Send + Sync {
         fallback_title: &str,
     ) -> DomainResult<ParsedBook>;
 
+    fn parse_book_with_sidecars(
+        &self,
+        format: BookFormat,
+        file_bytes: &[u8],
+        fallback_title: &str,
+        _sidecar_opf: Option<&[u8]>,
+        _sidecar_cover: Option<CoverPayload>,
+    ) -> DomainResult<ParsedBook> {
+        self.parse_book(format, file_bytes, fallback_title)
+    }
+
     fn list_toc(&self, format: BookFormat, file_bytes: &[u8]) -> DomainResult<Vec<TocItem>>;
 
     fn read_txt_chapter(
@@ -109,6 +120,9 @@ pub struct ScannedBookEntry {
 pub struct LoadedMountedBook {
     pub bytes: Bytes,
     pub file_hash: String,
+    pub legacy_sha256: String,
+    pub sidecar_opf: Option<Vec<u8>>,
+    pub sidecar_cover: Option<CoverPayload>,
 }
 
 #[async_trait]

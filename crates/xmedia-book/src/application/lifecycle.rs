@@ -63,6 +63,8 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
         let entries = self.scanner.scan_entries(&root_path).await?;
         let existing_books = self.books.list_by_library(library.id).await?;
 
+        let entry_paths: HashSet<String> =
+            entries.iter().map(|e| e.relative_path.clone()).collect();
         let mut existing_by_path: HashMap<String, Book> = HashMap::new();
         for book in existing_books {
             if let BookSource::MountedFile { relative_path, .. } = &book.source {
@@ -84,30 +86,38 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                     BookSource::MountedFile { file_mtime, .. } => *file_mtime,
                     BookSource::ManagedUpload { .. } => 0,
                 };
-                let unchanged = existing.file_size == entry.file_size
-                    && stored_mtime == entry.file_mtime
-                    && !was_missing;
+                let stats_unchanged =
+                    existing.file_size == entry.file_size && stored_mtime == entry.file_mtime;
 
-                if !unchanged
-                    && let Ok(loaded) = self
-                        .scanner
-                        .read_entry(&root_path, &entry.relative_path)
-                        .await
+                if stats_unchanged && !was_missing {
+                    // Nothing changed on disk or sidecars
+                } else if stats_unchanged && was_missing {
+                    // Missing file reappeared unchanged; preserve manual DB metadata
+                    existing.mark_present(
+                        entry.file_size,
+                        existing.file_hash.clone(),
+                        Some(entry.file_mtime),
+                    );
+                    self.books.save(&existing).await?;
+                    updated += 1;
+                } else if let Ok(loaded) = self
+                    .scanner
+                    .read_entry(&root_path, &entry.relative_path)
+                    .await
                 {
-                    if existing.file_hash != loaded.file_hash
-                        && let Ok(parsed) = self.parser.parse_book(
-                            entry.format,
-                            &loaded.bytes,
-                            &entry.fallback_title,
-                        )
-                    {
+                    if let Ok(parsed) = self.parser.parse_book_with_sidecars(
+                        entry.format,
+                        &loaded.bytes,
+                        &entry.fallback_title,
+                        loaded.sidecar_opf.as_deref(),
+                        loaded.sidecar_cover,
+                    ) {
                         if let Some(cover) = &parsed.cover
                             && let Ok(cover_key) = self.storage.save_cover(existing.id, cover).await
                         {
                             existing.set_cover(Some(cover_key));
                         }
-                        existing.metadata.page_count = parsed.metadata.page_count;
-                        existing.metadata.chapter_count = parsed.metadata.chapter_count;
+                        let _ = existing.update_metadata(parsed.metadata);
                     }
 
                     existing.mark_present(
@@ -122,31 +132,68 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                 .scanner
                 .read_entry(&root_path, &entry.relative_path)
                 .await
-                && let Ok(parsed) =
-                    self.parser
-                        .parse_book(entry.format, &loaded.bytes, &entry.fallback_title)
-            {
-                let mut book = Book::new(
-                    library.id,
+                && let Ok(parsed) = self.parser.parse_book_with_sidecars(
                     entry.format,
-                    BookSource::MountedFile {
+                    &loaded.bytes,
+                    &entry.fallback_title,
+                    loaded.sidecar_opf.as_deref(),
+                    loaded.sidecar_cover,
+                )
+            {
+                // Check whether this is a moved/renamed existing book in the same library
+                let matched_old_key = existing_by_path
+                    .iter()
+                    .find(|(old_rel, old_book)| {
+                        !entry_paths.contains(*old_rel)
+                            && old_book.format == entry.format
+                            && (old_book.file_hash == loaded.file_hash
+                                || old_book.file_hash == loaded.legacy_sha256)
+                    })
+                    .map(|(k, _)| k.clone());
+
+                if let Some(old_rel) = matched_old_key
+                    && let Some(mut migrated) = existing_by_path.remove(&old_rel)
+                {
+                    migrated.source = BookSource::MountedFile {
                         relative_path: entry.relative_path,
                         file_mtime: entry.file_mtime,
-                    },
-                    entry.file_size,
-                    loaded.file_hash,
-                    None,
-                    parsed.metadata,
-                )?;
+                    };
+                    if let Some(cover) = &parsed.cover
+                        && let Ok(cover_key) = self.storage.save_cover(migrated.id, cover).await
+                    {
+                        migrated.set_cover(Some(cover_key));
+                    }
+                    let _ = migrated.update_metadata(parsed.metadata);
+                    migrated.mark_present(
+                        entry.file_size,
+                        loaded.file_hash,
+                        Some(entry.file_mtime),
+                    );
+                    self.books.save(&migrated).await?;
+                    updated += 1;
+                } else {
+                    let mut book = Book::new(
+                        library.id,
+                        entry.format,
+                        BookSource::MountedFile {
+                            relative_path: entry.relative_path,
+                            file_mtime: entry.file_mtime,
+                        },
+                        entry.file_size,
+                        loaded.file_hash,
+                        None,
+                        parsed.metadata,
+                    )?;
 
-                if let Some(cover) = &parsed.cover
-                    && let Ok(cover_key) = self.storage.save_cover(book.id, cover).await
-                {
-                    book.set_cover(Some(cover_key));
+                    if let Some(cover) = &parsed.cover
+                        && let Ok(cover_key) = self.storage.save_cover(book.id, cover).await
+                    {
+                        book.set_cover(Some(cover_key));
+                    }
+
+                    self.books.save(&book).await?;
+                    added += 1;
                 }
-
-                self.books.save(&book).await?;
-                added += 1;
             }
 
             let scanned = (idx + 1) as u64;

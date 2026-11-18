@@ -58,10 +58,11 @@ pub fn parse_comic_info_xml(xml_bytes: &[u8]) -> Option<ComicInfoMetadata> {
         return None;
     }
 
-    let is_webtoon = meta.genres.iter().chain(meta.tags.iter()).any(|item| {
-        let l = item.to_ascii_lowercase();
-        l.contains("webtoon") || l.contains("long strip") || item.contains("条漫")
-    });
+    let is_webtoon = meta.reading_direction == Some(ReadingDirection::Webtoon)
+        || meta.genres.iter().chain(meta.tags.iter()).any(|item| {
+            let l = item.to_ascii_lowercase();
+            l.contains("webtoon") || l.contains("long strip") || item.contains("条漫")
+        });
 
     if is_webtoon {
         meta.reading_direction = Some(ReadingDirection::Webtoon);
@@ -106,6 +107,13 @@ fn assign_field(
         "languageiso" => meta.language_iso = Some(value.to_owned()),
         "year" => meta.year = value.parse::<i32>().ok(),
         "pagecount" => meta.page_count = value.parse::<u32>().ok(),
+        "format" => {
+            let lower = value.to_ascii_lowercase();
+            if lower.contains("webtoon") || lower.contains("long strip") || value.contains("条漫")
+            {
+                meta.reading_direction = Some(ReadingDirection::Webtoon);
+            }
+        }
         "manga" => *manga_raw = Some(value.to_owned()),
         _ => {}
     }

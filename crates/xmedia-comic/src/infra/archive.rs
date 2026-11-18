@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::UNIX_EPOCH;
@@ -266,36 +266,7 @@ pub fn guess_image_mime(name: &str) -> String {
 }
 
 pub fn fast_file_fingerprint(path: &Path) -> DomainResult<(u64, String)> {
-    let meta = fs::metadata(path)
-        .map_err(|e| DomainError::Storage(format!("cannot stat '{}': {e}", path.display())))?;
-    let size = meta.len();
-    let mtime_secs = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(&size.to_le_bytes());
-    hasher.update(&mtime_secs.to_le_bytes());
-
-    let mut file = File::open(path)
-        .map_err(|e| DomainError::Storage(format!("cannot open '{}': {e}", path.display())))?;
-    let mut head = vec![0_u8; (size as usize).min(65536)];
-    let n = file.read(&mut head).unwrap_or(0);
-    hasher.update(&head[..n]);
-
-    if size > 65536 {
-        let tail_offset = size.saturating_sub(65536);
-        if file.seek(SeekFrom::Start(tail_offset)).is_ok() {
-            let mut tail = vec![0_u8; 65536];
-            let tn = file.read(&mut tail).unwrap_or(0);
-            hasher.update(&tail[..tn]);
-        }
-    }
-
-    Ok((size, hasher.finalize().to_hex().to_string()))
+    xmedia_core::infra::fingerprint::fast_content_fingerprint(path)
 }
 
 fn inspect_archive_file(path: &Path) -> DomainResult<(ArchiveInspection, Vec<PageEntryRef>)> {

@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -7,7 +6,9 @@ use walkdir::WalkDir;
 use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryKind};
+use xmedia_core::infra::fingerprint::{fast_bytes_fingerprint, max_mtime_secs};
 use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join, sha256_hex};
+use xmedia_core::infra::thumbnail::sniff_image_mime;
 
 use crate::application::ports::{
     BookScannerPort, BookStoragePort, CoverPayload, LoadedMountedBook, ScannedBookEntry,
@@ -100,7 +101,7 @@ impl BookStoragePort for LocalBookStorage {
     ) -> DomainResult<StoredManagedBook> {
         let file_name = format!("{}.{}", book_id.0, format.as_str());
         let full_path = self.uploads_dir.join(&file_name);
-        let file_hash = sha256_hex(&data);
+        let file_hash = fast_bytes_fingerprint(&data);
         let file_size = data.len() as u64;
 
         tokio::fs::write(&full_path, &data)
@@ -224,12 +225,16 @@ impl BookScannerPort for LocalBookScanner {
                     .collect::<Vec<_>>()
                     .join("/");
 
-                let file_mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
-                    .unwrap_or(0);
+                let file_mtime = max_mtime_secs(
+                    path,
+                    [
+                        path.with_extension("opf"),
+                        path.with_extension("jpg"),
+                        path.with_extension("jpeg"),
+                        path.with_extension("png"),
+                        path.with_extension("webp"),
+                    ],
+                );
 
                 let fallback_title = path
                     .file_stem()
@@ -263,10 +268,38 @@ impl BookScannerPort for LocalBookScanner {
         let data = tokio::fs::read(&full).await.map_err(|e| {
             DomainError::Storage(format!("failed to read file {}: {e}", full.display()))
         })?;
-        let file_hash = sha256_hex(&data);
+        let file_hash = fast_bytes_fingerprint(&data);
+        let legacy_sha256 = sha256_hex(&data);
+
+        let opf_path = full.with_extension("opf");
+        let sidecar_opf = if opf_path.is_file() {
+            tokio::fs::read(&opf_path).await.ok()
+        } else {
+            None
+        };
+
+        let mut sidecar_cover = None;
+        for ext in ["jpg", "jpeg", "png", "webp"] {
+            let cp = full.with_extension(ext);
+            if cp.is_file()
+                && let Ok(img_bytes) = tokio::fs::read(&cp).await
+                && !img_bytes.is_empty()
+            {
+                let mime_type = sniff_image_mime(&img_bytes).to_string();
+                sidecar_cover = Some(CoverPayload {
+                    bytes: Bytes::from(img_bytes),
+                    mime_type,
+                });
+                break;
+            }
+        }
+
         Ok(LoadedMountedBook {
             bytes: Bytes::from(data),
             file_hash,
+            legacy_sha256,
+            sidecar_opf,
+            sidecar_cover,
         })
     }
 }

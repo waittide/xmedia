@@ -350,6 +350,8 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
         let root_path = root_path.clone();
 
         let entries = self.scanner.scan_video_entries(&root_path).await?;
+        let entry_paths: HashSet<String> =
+            entries.iter().map(|e| e.relative_path.clone()).collect();
         let existing_videos = self.catalog_repo.list_videos_by_library(library.id).await?;
         let mut existing_by_rel: HashMap<String, VideoItem> = HashMap::new();
         for v in existing_videos {
@@ -370,8 +372,8 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
             scanned_count += 1;
             seen_rel.insert(entry.relative_path.clone());
 
-            let prev = existing_by_rel.get(&entry.relative_path);
-            if let Some(existing) = prev
+            let exact_prev = existing_by_rel.remove(&entry.relative_path);
+            if let Some(mut existing) = exact_prev.clone()
                 && let VideoSource::LocalPath {
                     file_mtime,
                     ref sidecar_subtitles,
@@ -379,44 +381,106 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                 } = existing.source
                 && file_mtime == entry.file_mtime
                 && existing.file_size == entry.file_size
-                && !existing.is_missing
                 && sidecar_subtitles == &entry.sidecar_subtitles
             {
+                if existing.is_missing {
+                    existing.is_missing = false;
+                    existing.updated_at = Timestamp::now();
+                    self.catalog_repo.save_video(&existing).await?;
+                    updated_count += 1;
+                }
                 continue;
             }
 
-            let video_id = prev.map(|v| v.id).unwrap_or_default();
-            let probed = self
-                .engine
-                .probe_video(Path::new(&entry.absolute_path))
-                .await;
-            let parsed_name = parse_video_path(&entry.relative_path);
+            let file_hash = xmedia_core::infra::fingerprint::fast_content_fingerprint(Path::new(
+                &entry.absolute_path,
+            ))
+            .map(|(_, h)| h)
+            .unwrap_or_else(|_| format!("{}:{}", entry.file_size, entry.file_mtime));
 
-            let poster_key = if let Some(ref dir_poster) = entry.directory_poster_path
-                && let Ok(Some(bytes)) = self.scanner.read_external_image(dir_poster).await
-            {
-                self.storage.save_poster_bytes(&bytes).await.ok()
-            } else if let Ok(frame_bytes) = self
-                .engine
-                .generate_poster_bytes(
-                    Path::new(&entry.absolute_path),
-                    probed.duration_secs,
-                    &parsed_name.title,
-                )
-                .await
-            {
-                self.storage.save_poster_bytes(&frame_bytes).await.ok()
-            } else {
-                prev.and_then(|v| v.poster_key.clone())
+            let exact_was_found = exact_prev.is_some();
+            let prev_item = match exact_prev {
+                Some(prev) => Some(prev),
+                None => {
+                    let matched_key = existing_by_rel
+                        .iter()
+                        .find(|(old_rel, old_v)| {
+                            !entry_paths.contains(*old_rel) && old_v.file_hash == file_hash
+                        })
+                        .map(|(k, _)| k.clone())
+                        .or_else(|| {
+                            let legacy: Vec<String> = existing_by_rel
+                                .iter()
+                                .filter(|(old_rel, old_v)| {
+                                    !entry_paths.contains(*old_rel)
+                                        && old_v.file_size == entry.file_size
+                                        && old_v.file_hash.contains(':')
+                                })
+                                .map(|(k, _)| k.clone())
+                                .collect();
+                            (legacy.len() == 1).then(|| legacy[0].clone())
+                        });
+                    matched_key.and_then(|k| existing_by_rel.remove(&k))
+                }
             };
 
-            let file_hash = format!("{}:{}", entry.file_size, entry.file_mtime);
-            let rel_path_clone = entry.relative_path.clone();
-            let item = self
-                .build_and_upsert_video(
+            let prev_ref = prev_item.as_ref();
+            let preserve_moved_edits = !exact_was_found
+                && entry.nfo.is_none()
+                && prev_ref.is_some_and(|m| {
+                    matches!(
+                        &m.source,
+                        VideoSource::LocalPath {
+                            file_mtime,
+                            sidecar_subtitles,
+                            ..
+                        } if *file_mtime == entry.file_mtime
+                            && sidecar_subtitles == &entry.sidecar_subtitles
+                    )
+                });
+            let item = if preserve_moved_edits && let Some(mut migrated) = prev_item.clone() {
+                migrated.source = VideoSource::LocalPath {
+                    relative_path: entry.relative_path,
+                    file_mtime: entry.file_mtime,
+                    sidecar_subtitles: entry.sidecar_subtitles,
+                };
+                migrated.file_hash = file_hash;
+                migrated.is_missing = false;
+                migrated.updated_at = Timestamp::now();
+                migrated
+            } else {
+                let video_id = prev_ref.map(|v| v.id).unwrap_or_default();
+                let probed = self
+                    .engine
+                    .probe_video(Path::new(&entry.absolute_path))
+                    .await;
+                let parsed_name = parse_video_path(&entry.relative_path);
+
+                let poster_key = if let Some(ref dir_poster) = entry.directory_poster_path
+                    && let Ok(Some(bytes)) = self.scanner.read_external_image(dir_poster).await
+                {
+                    self.storage.save_poster_bytes(&bytes).await.ok()
+                } else if let Some(existing_pk) = prev_ref.and_then(|v| v.poster_key.clone()) {
+                    Some(existing_pk)
+                } else if let Ok(frame_bytes) = self
+                    .engine
+                    .generate_poster_bytes(
+                        Path::new(&entry.absolute_path),
+                        probed.duration_secs,
+                        &parsed_name.title,
+                    )
+                    .await
+                {
+                    self.storage.save_poster_bytes(&frame_bytes).await.ok()
+                } else {
+                    None
+                };
+
+                let rel_path_clone = entry.relative_path.clone();
+                self.build_and_upsert_video(
                     library.id,
                     video_id,
-                    prev.map(|v| v.created_at),
+                    prev_ref.map(|v| v.created_at),
                     &rel_path_clone,
                     entry.container,
                     entry.file_size,
@@ -430,10 +494,11 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                         sidecar_subtitles: entry.sidecar_subtitles,
                     },
                 )
-                .await?;
+                .await?
+            };
 
             self.catalog_repo.save_video(&item).await?;
-            if prev.is_some() {
+            if prev_ref.is_some() {
                 updated_count += 1;
             } else {
                 added_count += 1;

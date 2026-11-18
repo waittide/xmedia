@@ -95,7 +95,12 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             .scanner
             .scan_directory(&root_path, &known_digests)
             .await?;
+        let seen_on_disk: HashSet<String> = scanned_series
+            .iter()
+            .flat_map(|s| s.chapters.iter().map(|c| c.source_path.clone()))
+            .collect();
         let mut seen_paths: HashSet<String> = HashSet::new();
+        let mut affected_series: HashSet<SeriesId> = HashSet::new();
         let mut added = 0u64;
         let mut updated = 0u64;
         let mut scanned_chapters = 0u64;
@@ -121,37 +126,79 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                 seen_paths.insert(sc.source_path.clone());
                 scanned_chapters += 1;
 
-                let mut chapter =
+                let (mut chapter, refresh_cover) =
                     if let Some(mut existing) = existing_by_path.remove(&sc.source_path) {
                         let was_missing = existing.is_missing;
                         existing.is_missing = false;
-                        if !sc.unchanged || was_missing {
+                        if !sc.unchanged {
                             existing.page_count = sc.page_count;
                             existing.file_size = sc.file_size;
                             existing.file_hash = sc.file_hash.clone();
+                            existing.title = sc.title.clone();
+                            existing.number = sc.number;
+                            existing.volume_number = sc.volume_number;
+                            existing.kind = sc.kind;
+                            if let Some(ci) = &sc.comic_info {
+                                apply_comic_info_to_chapter(&mut existing, ci);
+                            }
+                            existing.updated_at = now;
+                            updated += 1;
+                        } else if was_missing {
                             existing.updated_at = now;
                             updated += 1;
                         }
-                        existing
+                        let need_cov = existing.cover_path.is_none() || !sc.unchanged;
+                        (existing, need_cov)
                     } else {
-                        let mut created = Chapter::new(
-                            series.id,
-                            library.id,
-                            sc.kind,
-                            sc.number,
-                            sc.volume_number,
-                            sc.title.clone(),
-                            sc.page_count,
-                            sc.source_kind,
-                            sc.source_path.clone(),
-                            sc.file_size,
-                            sc.file_hash.clone(),
-                        )?;
-                        if let Some(ci) = &sc.comic_info {
-                            apply_comic_info_to_chapter(&mut created, ci);
+                        let matched_old_path = existing_by_path
+                            .iter()
+                            .find(|(old_path, old_ch)| {
+                                !seen_on_disk.contains(*old_path)
+                                    && !sc.file_hash.is_empty()
+                                    && old_ch.file_hash == sc.file_hash
+                            })
+                            .map(|(k, _)| k.clone());
+
+                        if let Some(old_path) = matched_old_path
+                            && let Some(mut migrated) = existing_by_path.remove(&old_path)
+                        {
+                            if migrated.series_id != series.id {
+                                affected_series.insert(migrated.series_id);
+                                migrated.series_id = series.id;
+                            }
+                            migrated.source_kind = sc.source_kind;
+                            migrated.source_path = sc.source_path.clone();
+                            migrated.is_missing = false;
+                            migrated.page_count = sc.page_count;
+                            migrated.file_size = sc.file_size;
+                            migrated.file_hash = sc.file_hash.clone();
+                            if let Some(ci) = &sc.comic_info {
+                                apply_comic_info_to_chapter(&mut migrated, ci);
+                            }
+                            migrated.updated_at = now;
+                            updated += 1;
+                            let need_cov = migrated.cover_path.is_none();
+                            (migrated, need_cov)
+                        } else {
+                            let mut created = Chapter::new(
+                                series.id,
+                                library.id,
+                                sc.kind,
+                                sc.number,
+                                sc.volume_number,
+                                sc.title.clone(),
+                                sc.page_count,
+                                sc.source_kind,
+                                sc.source_path.clone(),
+                                sc.file_size,
+                                sc.file_hash.clone(),
+                            )?;
+                            if let Some(ci) = &sc.comic_info {
+                                apply_comic_info_to_chapter(&mut created, ci);
+                            }
+                            added += 1;
+                            (created, true)
                         }
-                        added += 1;
-                        created
                     };
 
                 if let Some(ci) = &sc.comic_info
@@ -160,7 +207,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                     apply_comic_info_to_series(&mut series, ci);
                 }
 
-                if chapter.cover_path.is_none()
+                if refresh_cover
                     && chapter.page_count > 0
                     && let Ok(first_page) = self
                         .archives
@@ -206,7 +253,6 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         }
 
         let mut missing_count = 0u64;
-        let mut affected_series: HashSet<SeriesId> = HashSet::new();
         for (path, mut leftover) in existing_by_path {
             if !seen_paths.contains(&path) && !leftover.is_missing {
                 leftover.is_missing = true;
@@ -218,11 +264,12 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         }
 
         for sid in affected_series {
-            if let Some(mut s) = self.series.find_by_id(sid).await? {
-                let active_count = self
-                    .chapters
-                    .list_by_series(sid)
-                    .await?
+            let chapters_in_series = self.chapters.list_by_series(sid).await?;
+            if chapters_in_series.is_empty() {
+                let _ = self.reading.delete_by_series(sid).await;
+                let _ = self.series.delete(sid).await;
+            } else if let Some(mut s) = self.series.find_by_id(sid).await? {
+                let active_count = chapters_in_series
                     .into_iter()
                     .filter(|c| !c.is_missing)
                     .count() as u32;

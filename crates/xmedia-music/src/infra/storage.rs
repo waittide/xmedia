@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -8,6 +7,7 @@ use walkdir::WalkDir;
 use xmedia_core::application::ports::{BinaryPayload, ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryKind};
+use xmedia_core::infra::fingerprint::{fast_content_fingerprint, max_mtime_secs};
 use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join, sha256_hex};
 use xmedia_core::infra::thumbnail::{ThumbnailStore, sniff_image_mime};
 
@@ -253,13 +253,6 @@ impl MusicScannerPort for LocalMusicScanner {
                     .collect::<Vec<_>>()
                     .join("/");
 
-                let file_mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
-                    .unwrap_or(0);
-
                 let fallback_title = path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -284,6 +277,15 @@ impl MusicScannerPort for LocalMusicScanner {
                     .entry(parent_dir.clone())
                     .or_insert_with(|| find_directory_cover(&parent_dir))
                     .clone();
+
+                let mut sidecars: Vec<PathBuf> = Vec::new();
+                if sidecar_lrc.is_file() {
+                    sidecars.push(sidecar_lrc);
+                }
+                if let Some(ref cov) = directory_cover_path {
+                    sidecars.push(PathBuf::from(cov));
+                }
+                let file_mtime = max_mtime_secs(path, &sidecars);
 
                 out.push(ScannedAudioEntry {
                     absolute_path: path.to_string_lossy().into_owned(),
@@ -324,14 +326,9 @@ impl MusicScannerPort for LocalMusicScanner {
         Ok(Some(BinaryPayload { bytes, mime_type }))
     }
 
-    async fn compute_file_fingerprint(
-        &self,
-        relative_path: &str,
-        file_size: u64,
-        file_mtime: i64,
-    ) -> DomainResult<String> {
-        let raw = format!("{relative_path}:{file_size}:{file_mtime}");
-        Ok(sha256_hex(raw.as_bytes()))
+    async fn compute_file_fingerprint(&self, absolute_path: &str) -> DomainResult<String> {
+        let (_, hash) = fast_content_fingerprint(Path::new(absolute_path))?;
+        Ok(hash)
     }
 }
 

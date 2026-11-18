@@ -324,8 +324,8 @@ impl MusicIngestService {
                 existing.is_track_artist = true;
                 dirty = true;
             }
-            if existing.cover_key.is_none()
-                && let Some(cov) = cover_hint
+            if let Some(cov) = cover_hint
+                && existing.cover_key.as_deref() != Some(cov)
             {
                 existing.cover_key = Some(cov.to_string());
                 dirty = true;
@@ -377,16 +377,16 @@ impl MusicIngestService {
 
         if let Some(mut existing) = self.catalog_repo.find_album_by_key(&album_key).await? {
             let mut dirty = false;
-            if existing.year.is_none() && year.is_some() {
+            if year.is_some() && existing.year != year {
                 existing.year = year;
                 dirty = true;
             }
-            if existing.genre.is_none() && genre.is_some() {
+            if genre.is_some() && existing.genre.as_deref() != genre {
                 existing.genre = genre.map(str::to_string);
                 dirty = true;
             }
-            if existing.cover_key.is_none()
-                && let Some(cov) = cover_hint
+            if let Some(cov) = cover_hint
+                && existing.cover_key.as_deref() != Some(cov)
             {
                 existing.cover_key = Some(cov.to_string());
                 dirty = true;
@@ -435,6 +435,8 @@ impl MediaDomainLifecycle for MusicIngestService {
         let root_path = root_path.clone();
 
         let entries = self.scanner.scan_audio_entries(&root_path).await?;
+        let entry_paths: HashSet<String> =
+            entries.iter().map(|e| e.relative_path.clone()).collect();
         let existing_tracks = self.catalog_repo.list_tracks_by_library(library.id).await?;
         let mut existing_by_rel: HashMap<String, Track> = HashMap::new();
         for tr in existing_tracks {
@@ -457,7 +459,8 @@ impl MediaDomainLifecycle for MusicIngestService {
             seen_rel.insert(entry.relative_path.clone());
             let has_sidecar = entry.sidecar_lrc_relative_path.is_some();
 
-            if let Some(mut prev) = existing_by_rel.get(&entry.relative_path).cloned()
+            let exact_prev = existing_by_rel.remove(&entry.relative_path);
+            if let Some(mut prev) = exact_prev.clone()
                 && let TrackSource::LocalPath {
                     file_mtime,
                     ref sidecar_lrc_path,
@@ -476,6 +479,24 @@ impl MediaDomainLifecycle for MusicIngestService {
                 continue;
             }
 
+            let file_hash = self
+                .scanner
+                .compute_file_fingerprint(&entry.absolute_path)
+                .await?;
+
+            let prev_track = match exact_prev {
+                Some(prev) => Some(prev),
+                None => {
+                    let moved_key = existing_by_rel
+                        .iter()
+                        .find(|(old_rel, old_tr)| {
+                            !entry_paths.contains(*old_rel) && old_tr.file_hash == file_hash
+                        })
+                        .map(|(k, _)| k.clone());
+                    moved_key.and_then(|k| existing_by_rel.remove(&k))
+                }
+            };
+
             let probed = match self.probe.probe_audio_file(
                 &entry.absolute_path,
                 &entry.ext_hint,
@@ -485,13 +506,7 @@ impl MediaDomainLifecycle for MusicIngestService {
                 Err(_) => continue,
             };
 
-            let file_hash = self
-                .scanner
-                .compute_file_fingerprint(&entry.relative_path, entry.file_size, entry.file_mtime)
-                .await?;
-
-            let prev_track = existing_by_rel.get(&entry.relative_path);
-            let track_id = prev_track.map(|t| t.id).unwrap_or_default();
+            let track_id = prev_track.as_ref().map(|t| t.id).unwrap_or_default();
 
             let mut cover_key: Option<String> = None;
             if let Some(ref embedded_cover) = probed.cover {
@@ -529,7 +544,7 @@ impl MediaDomainLifecycle for MusicIngestService {
                 .upsert_probed_track(
                     library.id,
                     track_id,
-                    prev_track.map(|t| t.created_at),
+                    prev_track.as_ref().map(|t| t.created_at),
                     probed,
                     entry.file_size,
                     file_hash,

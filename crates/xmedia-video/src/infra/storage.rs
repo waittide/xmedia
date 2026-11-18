@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -10,9 +9,8 @@ use walkdir::WalkDir;
 use xmedia_core::application::ports::{BinaryPayload, ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryKind};
-use xmedia_core::infra::stream::{
-    decode_text_smart, open_file_range_stream_spec, sanitize_join, sha256_hex,
-};
+use xmedia_core::infra::fingerprint::{fast_bytes_fingerprint, max_mtime_secs};
+use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join};
 use xmedia_core::infra::thumbnail::ThumbnailStore;
 
 use crate::application::ports::{
@@ -75,7 +73,7 @@ impl VideoStoragePort for LocalVideoStorage {
     ) -> DomainResult<StoredManagedVideo> {
         let storage_key = format!("{}.{}", video_id.0, container.extension());
         let dest = self.uploads_dir.join(&storage_key);
-        let file_hash = sha256_hex(&bytes);
+        let file_hash = fast_bytes_fingerprint(&bytes);
         let file_size = bytes.len() as u64;
 
         tokio::fs::write(&dest, &bytes)
@@ -194,6 +192,7 @@ impl VideoScannerPort for LocalVideoScanner {
             }
 
             let mut dir_posters: HashMap<PathBuf, Option<String>> = HashMap::new();
+            let mut single_video_dirs: HashMap<PathBuf, bool> = HashMap::new();
             let mut out = Vec::new();
 
             for entry in WalkDir::new(&root)
@@ -225,20 +224,31 @@ impl VideoScannerPort for LocalVideoScanner {
                     continue;
                 };
                 let relative_path = path_to_slash(rel);
-                let file_mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
-                    .unwrap_or(0);
-
                 let parent_dir = path.parent().unwrap_or(&root).to_path_buf();
                 let video_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("video");
+                let single_video_dir = *single_video_dirs
+                    .entry(parent_dir.clone())
+                    .or_insert_with(|| dir_has_single_video(&parent_dir));
 
                 let sidecar_subtitles = discover_sidecar_subtitles(&root, &parent_dir, video_stem);
-                let directory_poster_path =
-                    discover_video_poster(&root, &parent_dir, video_stem, &mut dir_posters);
-                let nfo = discover_and_parse_nfo(&root, &parent_dir, video_stem);
+                let directory_poster_path = discover_video_poster(
+                    &root,
+                    &parent_dir,
+                    video_stem,
+                    single_video_dir,
+                    &mut dir_posters,
+                );
+                let nfo = discover_and_parse_nfo(&root, &parent_dir, video_stem, single_video_dir);
+
+                let mut tracked_sidecars: Vec<PathBuf> =
+                    nfo_candidate_paths(&root, &parent_dir, video_stem, single_video_dir);
+                if let Some(ref poster_p) = directory_poster_path {
+                    tracked_sidecars.push(PathBuf::from(poster_p));
+                }
+                for sub in &sidecar_subtitles {
+                    tracked_sidecars.push(root.join(&sub.path_or_key));
+                }
+                let file_mtime = max_mtime_secs(path, &tracked_sidecars);
 
                 out.push(ScannedVideoEntry {
                     absolute_path: path.to_string_lossy().into_owned(),
@@ -331,10 +341,44 @@ fn discover_sidecar_subtitles(
         .collect()
 }
 
+fn dir_has_single_video(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut count = 0usize;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .and_then(VideoContainer::from_extension)
+                .is_some()
+        {
+            count += 1;
+            if count > 1 {
+                return false;
+            }
+        }
+    }
+    count == 1
+}
+
+fn is_season_dir_name(dir: &Path) -> bool {
+    let Some(name) = dir.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let l = name.trim().to_ascii_lowercase();
+    l == "specials"
+        || l.starts_with("season")
+        || (l.starts_with('s') && l.len() <= 4 && l[1..].chars().all(|c| c.is_ascii_digit()))
+        || (l.starts_with('第') && l.ends_with('季'))
+}
+
 fn discover_video_poster(
     root: &Path,
     parent_dir: &Path,
     video_stem: &str,
+    single_video_dir: bool,
     dir_cache: &mut HashMap<PathBuf, Option<String>>,
 ) -> Option<String> {
     for ext in ["jpg", "jpeg", "png", "webp"] {
@@ -352,32 +396,41 @@ fn discover_video_poster(
 
     let poster_names = [
         "poster.jpg",
+        "poster.jpeg",
         "poster.png",
         "poster.webp",
         "folder.jpg",
         "folder.png",
+        "folder.webp",
         "cover.jpg",
         "cover.png",
+        "cover.webp",
     ];
 
-    let found_in_dir = dir_cache
-        .entry(parent_dir.to_path_buf())
-        .or_insert_with(|| {
-            for name in poster_names {
-                let p = parent_dir.join(name);
-                if p.is_file() {
-                    return Some(p.to_string_lossy().into_owned());
+    let allow_dir_poster = single_video_dir
+        || parent_dir.join("tvshow.nfo").is_file()
+        || is_season_dir_name(parent_dir);
+    if allow_dir_poster {
+        let found_in_dir = dir_cache
+            .entry(parent_dir.to_path_buf())
+            .or_insert_with(|| {
+                for name in poster_names {
+                    let p = parent_dir.join(name);
+                    if p.is_file() {
+                        return Some(p.to_string_lossy().into_owned());
+                    }
                 }
-            }
-            None
-        })
-        .clone();
-    if found_in_dir.is_some() {
-        return found_in_dir;
+                None
+            })
+            .clone();
+        if found_in_dir.is_some() {
+            return found_in_dir;
+        }
     }
 
-    // Jellyfin `Show/Season XX/` fallback: look up series-level `poster.jpg` in parent show directory
-    if parent_dir != root
+    // Jellyfin `Show/Season XX/` fallback: look up series-level `poster.*` in parent show directory
+    if (is_season_dir_name(parent_dir) || parent_dir.join("season.nfo").is_file())
+        && parent_dir != root
         && let Some(show_dir) = parent_dir.parent()
         && show_dir != root
         && show_dir.starts_with(root)
@@ -399,16 +452,18 @@ fn discover_video_poster(
     None
 }
 
-fn discover_and_parse_nfo(
+fn nfo_candidate_paths(
     root: &Path,
     parent_dir: &Path,
     video_stem: &str,
-) -> Option<ParsedNfoMetadata> {
-    let mut candidates = vec![
-        parent_dir.join(format!("{video_stem}.nfo")),
-        parent_dir.join("movie.nfo"),
-        parent_dir.join("tvshow.nfo"),
-    ];
+    single_video_dir: bool,
+) -> Vec<PathBuf> {
+    let mut candidates = vec![parent_dir.join(format!("{video_stem}.nfo"))];
+    if single_video_dir {
+        candidates.push(parent_dir.join("movie.nfo"));
+    }
+    candidates.push(parent_dir.join("season.nfo"));
+    candidates.push(parent_dir.join("tvshow.nfo"));
     if parent_dir != root
         && let Some(show_dir) = parent_dir.parent()
         && show_dir != root
@@ -416,16 +471,25 @@ fn discover_and_parse_nfo(
     {
         candidates.push(show_dir.join("tvshow.nfo"));
     }
+    candidates
+}
+
+fn discover_and_parse_nfo(
+    root: &Path,
+    parent_dir: &Path,
+    video_stem: &str,
+    single_video_dir: bool,
+) -> Option<ParsedNfoMetadata> {
+    let candidates = nfo_candidate_paths(root, parent_dir, video_stem, single_video_dir);
 
     let mut primary: Option<ParsedNfoMetadata> = None;
     for p in candidates {
         if p.is_file()
             && let Ok(bytes) = std::fs::read(&p)
         {
-            let (xml, _) = decode_text_smart(&bytes);
+            let (xml, _) = xmedia_core::infra::stream::decode_text_smart(&bytes);
             if let Some(parsed) = parse_nfo_xml(&xml) {
                 if let Some(ref mut base) = primary {
-                    // Merge missing series-level genres/tags/year from `tvshow.nfo`
                     if base.show_title.is_none() {
                         base.show_title = parsed.show_title.or(parsed.title);
                     }
@@ -452,13 +516,18 @@ fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {
     reader.config_mut().trim_text(true);
 
     let mut meta = ParsedNfoMetadata::default();
+    let mut root_tag: Option<String> = None;
     let mut current_tag = String::new();
     let mut any_found = false;
 
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) => {
-                current_tag = e.local_name().as_ref().to_ascii_lowercase();
+                let tag = e.local_name().as_ref().to_ascii_lowercase();
+                if root_tag.is_none() {
+                    root_tag = Some(tag.clone());
+                }
+                current_tag = tag;
             }
             Ok(Event::End(_)) => {
                 current_tag.clear();
@@ -468,7 +537,16 @@ fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {
                 if val.is_empty() {
                     continue;
                 }
+                let is_tvshow = root_tag.as_deref() == Some("tvshow");
+                let is_season = root_tag.as_deref() == Some("season");
                 match current_tag.as_str() {
+                    "title" if is_tvshow => {
+                        if meta.show_title.is_none() {
+                            meta.show_title = Some(val);
+                            any_found = true;
+                        }
+                    }
+                    "title" if is_season => {}
                     "title" if meta.title.is_none() => {
                         meta.title = Some(val);
                         any_found = true;
@@ -488,10 +566,16 @@ fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {
                         }
                     }
                     "season" if meta.season.is_none() => {
-                        meta.season = val.parse::<u32>().ok();
+                        if let Ok(s) = val.parse::<u32>() {
+                            meta.season = Some(s);
+                            any_found = true;
+                        }
                     }
                     "episode" if meta.episode.is_none() => {
-                        meta.episode = val.parse::<u32>().ok();
+                        if let Ok(ep) = val.parse::<u32>() {
+                            meta.episode = Some(ep);
+                            any_found = true;
+                        }
                     }
                     "genre" if !meta.genres.contains(&val) => {
                         meta.genres.push(val);

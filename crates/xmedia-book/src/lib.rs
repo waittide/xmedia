@@ -340,7 +340,7 @@ mod tests {
                 .unwrap();
         assert_eq!(opds2_json["metadata"]["numberOfItems"], 2);
 
-        // 5. Verify local mount scan via LibraryService
+        // 5. Verify local mount scan with sidecar .opf + cover & rename preservation
         let mount_dir = tmp.path().join("mounted_books");
         std::fs::create_dir_all(&mount_dir).unwrap();
         std::fs::write(
@@ -348,6 +348,19 @@ mod tests {
             b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF",
         )
         .unwrap();
+        std::fs::write(
+            mount_dir.join("three_body.opf"),
+            r#"<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>三体</dc:title><dc:creator>刘慈欣</dc:creator></metadata></package>"#,
+        )
+        .unwrap();
+        const TINY_PNG: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        std::fs::write(mount_dir.join("three_body.png"), TINY_PNG).unwrap();
 
         let created_lib = library_svc
             .create_local_mount(
@@ -367,7 +380,10 @@ mod tests {
 
         for _ in 0..40 {
             let lib_now = library_svc.get_library(created_lib.id).await.unwrap();
-            if lib_now.item_count == 1 {
+            if matches!(
+                lib_now.scan_status,
+                xmedia_core::domain::library::ScanStatus::Completed { .. }
+            ) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -380,5 +396,93 @@ mod tests {
                 .item_count,
             1
         );
+
+        let search_filter = crate::application::dto::CatalogSearchFilter {
+            library_id: Some(created_lib.id),
+            ..Default::default()
+        };
+        let page1 = book_services
+            .catalog
+            .search_books(Some(&admin_user), search_filter.clone())
+            .await
+            .unwrap();
+        assert_eq!(page1.items.len(), 1);
+        let original_book = &page1.items[0];
+        assert_eq!(original_book.metadata.title, "三体");
+        assert_eq!(original_book.metadata.authors, vec!["刘慈欣"]);
+        let cover_payload = book_services
+            .catalog
+            .get_cover(original_book.id)
+            .await
+            .unwrap();
+        assert_eq!(cover_payload.mime_type, "image/png");
+
+        // Attach a bookmark before moving/renaming the file
+        book_services
+            .reading
+            .create_bookmark(
+                &admin_user,
+                original_book.id,
+                crate::application::reading::CreateBookmarkCommand {
+                    title: "Key Moment".into(),
+                    note: None,
+                    progress_percent: 42.0,
+                    locator: "page:1".into(),
+                    chapter_index: None,
+                    page_number: Some(1),
+                    scroll_ratio: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Rename book + sidecars and update .opf metadata
+        std::fs::rename(
+            mount_dir.join("three_body.pdf"),
+            mount_dir.join("刘慈欣 - 三体.pdf"),
+        )
+        .unwrap();
+        std::fs::remove_file(mount_dir.join("three_body.opf")).unwrap();
+        std::fs::rename(
+            mount_dir.join("three_body.png"),
+            mount_dir.join("刘慈欣 - 三体.png"),
+        )
+        .unwrap();
+        let renamed_opf = mount_dir.join("刘慈欣 - 三体.opf");
+        std::fs::write(
+            &renamed_opf,
+            r#"<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>三体（纪念版）</dc:title><dc:creator>刘慈欣</dc:creator></metadata></package>"#,
+        )
+        .unwrap();
+
+        library_svc
+            .trigger_scan(&admin_user, created_lib.id)
+            .await
+            .unwrap();
+        for _ in 0..40 {
+            let lib_now = library_svc.get_library(created_lib.id).await.unwrap();
+            if matches!(
+                lib_now.scan_status,
+                xmedia_core::domain::library::ScanStatus::Completed { .. }
+            ) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+
+        let page2 = book_services
+            .catalog
+            .search_books(Some(&admin_user), search_filter)
+            .await
+            .unwrap();
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.items[0].id, original_book.id);
+        assert_eq!(page2.items[0].metadata.title, "三体（纪念版）");
+        let bms = book_services
+            .reading
+            .list_bookmarks(&admin_user, original_book.id)
+            .await
+            .unwrap();
+        assert_eq!(bms.len(), 1);
     }
 }

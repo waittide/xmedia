@@ -198,10 +198,5 @@ pub trait MusicScannerPort: Send + Sync {
         &self,
         absolute_cover_path: &str,
     ) -> DomainResult<Option<BinaryPayload>>;
-    async fn compute_file_fingerprint(
-        &self,
-        relative_path: &str,
-        file_size: u64,
-        file_mtime: i64,
-    ) -> DomainResult<String>;
+    async fn compute_file_fingerprint(&self, absolute_path: &str) -> DomainResult<String>;
 }

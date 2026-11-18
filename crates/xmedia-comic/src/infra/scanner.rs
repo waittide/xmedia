@@ -204,6 +204,8 @@ impl SmartComicScanner {
             && size == prev.file_size
             && hash == prev.file_hash
             && prev.page_count > 0
+            && xmedia_core::infra::fingerprint::file_mtime_secs(path)
+                .is_none_or(|m| m <= prev.updated_at.as_second())
         {
             return Some(ScannedChapterEntry {
                 kind: parsed.kind,
@@ -229,9 +231,13 @@ impl SmartComicScanner {
             return None;
         }
 
-        let unchanged = known_chapters
-            .get(&source_path)
-            .is_some_and(|prev| prev.file_hash == inspection.file_hash);
+        let unchanged = known_chapters.get(&source_path).is_some_and(|prev| {
+            prev.file_size == inspection.file_size
+                && prev.file_hash == inspection.file_hash
+                && prev.page_count == inspection.page_count
+                && xmedia_core::infra::fingerprint::file_mtime_secs(path)
+                    .is_none_or(|m| m <= prev.updated_at.as_second())
+        });
 
         Some(ScannedChapterEntry {
             kind: parsed.kind,
