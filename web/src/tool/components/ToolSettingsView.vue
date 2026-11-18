@@ -125,7 +125,18 @@ const cacheStats = ref<ScrapeCacheStatsDto | null>(null)
 const clearingCache = ref(false)
 const allProviders = ref<ProviderStatusDto[]>([])
 const priorities = ref<ScraperPrioritiesDto>({
-  book: ['bangumi', 'openlibrary'],
+  book: [
+    'qidian',
+    'fanqie',
+    'qimao',
+    '17k',
+    'ciweimao',
+    'sfacg',
+    'faloo',
+    'jjwxc',
+    'bangumi',
+    'openlibrary',
+  ],
   comic: ['bangumi'],
   music: ['itunes', 'musicbrainz', 'lrclib'],
   video: ['tmdb', 'bangumi'],

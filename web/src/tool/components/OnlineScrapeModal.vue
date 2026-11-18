@@ -142,6 +142,11 @@ const mergedResult = computed<MergedScrapedResult | null>(() =>
     targetKind.value,
     brokenCoverUrls.value,
     ignoredProviderIds.value,
+    {
+      keyword: keyword.value,
+      author: artistOrAuthor.value,
+      isbn: isbn.value,
+    },
   ),
 )
 

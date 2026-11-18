@@ -11,9 +11,136 @@ function nonEmptyStr(val: string | null | undefined): string | null {
   return trimmed && trimmed.length > 0 ? trimmed : null
 }
 
+function normalizeForMatch(raw: string | null | undefined): string {
+  if (!raw) return ''
+  return Array.from(raw.toLowerCase())
+    .filter((ch) => /[\p{L}\p{N}]/u.test(ch))
+    .join('')
+}
+
+function normalizeIsbn(raw: string | null | undefined): string {
+  if (!raw) return ''
+  return raw.replace(/[^0-9xX]/g, '').toUpperCase()
+}
+
+function isAsciiOnly(s: string): boolean {
+  for (let i = 0; i < s.length; i += 1) {
+    if (s.charCodeAt(i) > 127) return false
+  }
+  return true
+}
+
+function promoteExactMatchAnchor(
+  sources: Array<{ badge: FieldSourceBadge; data: ScrapedMetadata }>,
+  keyword?: string,
+  authorHint?: string,
+  isbnHint?: string,
+): void {
+  if (sources.length <= 1) return
+  if (isbnHint && isbnHint.trim().length > 0) return
+  const kwNorm = normalizeForMatch(keyword)
+  if (!kwNorm) return
+  const authorNorm = normalizeForMatch(authorHint)
+
+  const exactTitle = (m: ScrapedMetadata): boolean =>
+    [m.title, m.original_title, m.series_or_album].some(
+      (t) => Boolean(t) && normalizeForMatch(t) === kwNorm,
+    )
+  const exactAuthor = (m: ScrapedMetadata): boolean =>
+    Boolean(authorNorm) && m.creators.some((c) => normalizeForMatch(c) === authorNorm)
+
+  if (authorNorm) {
+    if (exactTitle(sources[0]!.data) && exactAuthor(sources[0]!.data)) return
+    const idx = sources.findIndex((s) => exactTitle(s.data) && exactAuthor(s.data))
+    if (idx > 0) {
+      const [item] = sources.splice(idx, 1)
+      sources.unshift(item!)
+      return
+    }
+  }
+
+  if (exactTitle(sources[0]!.data)) return
+  const idx = sources.findIndex((s) => exactTitle(s.data))
+  if (idx > 0) {
+    const [item] = sources.splice(idx, 1)
+    sources.unshift(item!)
+  }
+}
+
+function isCompatibleSecondarySource(
+  primary: ScrapedMetadata,
+  secondary: ScrapedMetadata,
+  target: ScrapeTargetKind | null,
+): boolean {
+  const i1 = normalizeIsbn(primary.isbn)
+  const i2 = normalizeIsbn(secondary.isbn)
+  if (i1 && i2 && i1 !== i2) return false
+
+  const effTarget = target ?? primary.target ?? secondary.target
+  if (
+    (effTarget === 'movie' ||
+      effTarget === 'tv_show' ||
+      effTarget === 'music_track' ||
+      effTarget === 'music_album') &&
+    primary.year !== null &&
+    secondary.year !== null &&
+    Math.abs(primary.year - secondary.year) > 2
+  ) {
+    return false
+  }
+
+  const collectTitles = (m: ScrapedMetadata): string[] =>
+    [m.title, m.original_title, m.series_or_album]
+      .map((s) => normalizeForMatch(s))
+      .filter((s) => s.length > 0)
+
+  const pTitles = collectTitles(primary)
+  const sTitles = collectTitles(secondary)
+  if (pTitles.length > 0 && sTitles.length > 0) {
+    const overlap = pTitles.some((pt) =>
+      sTitles.some(
+        (st) =>
+          pt === st ||
+          (Array.from(pt).length >= 2 &&
+            Array.from(st).length >= 2 &&
+            (pt.includes(st) || st.includes(pt))),
+      ),
+    )
+    if (!overlap) {
+      const pAscii = pTitles.every(isAsciiOnly)
+      const sAscii = sTitles.every(isAsciiOnly)
+      if (pAscii && sAscii) {
+        const pCreators = primary.creators.map(normalizeForMatch).filter(Boolean)
+        const sCreators = secondary.creators.map(normalizeForMatch).filter(Boolean)
+        const creatorMatch = pCreators.some((pc) =>
+          sCreators.some(
+            (sc) => pc === sc || (pc.length >= 2 && sc.length >= 2 && (pc.includes(sc) || sc.includes(pc))),
+          ),
+        )
+        if (!creatorMatch) return false
+      }
+    }
+  }
+
+  if (effTarget === 'book' && primary.creators.length > 0 && secondary.creators.length > 0) {
+    const pCreators = primary.creators.map(normalizeForMatch).filter(Boolean)
+    const sCreators = secondary.creators.map(normalizeForMatch).filter(Boolean)
+    const pAscii = pCreators.every(isAsciiOnly)
+    const sAscii = sCreators.every(isAsciiOnly)
+    if (pCreators.length > 0 && sCreators.length > 0 && pAscii === sAscii) {
+      const sameAuthor = pCreators.some((pc) =>
+        sCreators.some((sc) => pc === sc || pc.includes(sc) || sc.includes(pc)),
+      )
+      if (!sameAuthor) return false
+    }
+  }
+
+  return true
+}
+
 /**
- * Pure domain waterfall merger mirroring backend `merge_scraped_by_priority`,
- * with additional awareness of `brokenImageUrls` so a 404 cover in source #1
+ * Pure domain waterfall merger mirroring backend merge_scraped_by_priority,
+ * with additional awareness of brokenImageUrls so a 404 cover in source #1
  * automatically falls back to source #2's cover in real time.
  */
 export function mergeScrapedClientSide(
@@ -22,21 +149,32 @@ export function mergeScrapedClientSide(
   target: ScrapeTargetKind | null,
   brokenImageUrls: Set<string>,
   ignoredProviderIds: Set<string> = new Set(),
+  queryHints?: { keyword?: string; author?: string; isbn?: string },
 ): MergedScrapedResult | null {
-  const ordered: Array<{ badge: FieldSourceBadge; data: ScrapedMetadata }> = []
+  const rawOrdered: Array<{ badge: FieldSourceBadge; data: ScrapedMetadata }> = []
   for (const p of providerOrder) {
     if (ignoredProviderIds.has(p.id)) continue
     const d = detailsByProvider[p.id]
     if (d) {
-      ordered.push({
+      rawOrdered.push({
         badge: { provider_id: p.id, provider_name: p.name },
         data: d,
       })
     }
   }
-  if (ordered.length === 0) {
+  if (rawOrdered.length === 0) {
     return null
   }
+  if (queryHints) {
+    promoteExactMatchAnchor(rawOrdered, queryHints.keyword, queryHints.author, queryHints.isbn)
+  }
+  const primaryMeta = rawOrdered[0]!.data
+  const ordered =
+    rawOrdered.length > 1
+      ? rawOrdered.filter(
+          (entry, idx) => idx === 0 || isCompatibleSecondarySource(primaryMeta, entry.data, target),
+        )
+      : rawOrdered
 
   const externalIds: Record<string, string> = {}
   const out: ScrapedMetadata = {
