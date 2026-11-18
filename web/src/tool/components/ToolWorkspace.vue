@@ -32,10 +32,12 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import FloatingTaskShelf from '@/components/ui/FloatingTaskShelf.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl, toolApi } from '../api'
+import { useToolTaskStore } from '../tasks'
 import { formatBytes, useToolText } from '../i18n'
 import type {
   DirectorySnapshot,
@@ -60,6 +62,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const themeStore = useThemeStore()
+const taskStore = useToolTaskStore()
 const txt = useToolText()
 
 type CompletenessFilter =
@@ -338,13 +341,26 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
     selectedPaths.value = new Set()
   }
 
+  const rootLabel =
+    settings.value?.roots.find((r) => r.id === rootId)?.name || '媒体目录'
+  const taskId = `browse:${reqDomain}`
+  taskStore.startTask({
+    id: taskId,
+    kind: 'browse',
+    title: `读取目录 · ${relPath || rootLabel}`,
+    detail: relPath || rootLabel,
+    ephemeral: true,
+  })
+
   let candidateRel = relPath
   let snap: DirectorySnapshot | null = null
   try {
     // Walk up parent segments when empty source folders were removed by archive/rename
     while (true) {
       try {
-        snap = await toolApi.browse(rootId, candidateRel, reqDomain)
+        snap = await toolApi.browse(rootId, candidateRel, reqDomain, true, (prog) => {
+          taskStore.updateTask(taskId, prog)
+        })
         break
       } catch (err) {
         const errStatus = (err as Error & { status?: number })?.status
@@ -358,7 +374,12 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
         throw err
       }
     }
-    if (activeDomain.value !== reqDomain || !snap) return
+    if (!snap) {
+      taskStore.completeTask(taskId, '已取消')
+      return
+    }
+    taskStore.completeTask(taskId, `已加载 ${snap.files.length.toLocaleString()} 个媒体文件`)
+    if (activeDomain.value !== reqDomain) return
     snapshot.value = snap
     currentRelPath.value = snap.current_rel_path
     syncDomainStateToMemory(reqDomain, rootId, snap.current_rel_path)
@@ -380,8 +401,10 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
       activeDetail.value = null
     }
   } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    taskStore.failTask(taskId, msg)
     if (activeDomain.value === reqDomain) {
-      dirError.value = err instanceof Error ? err.message : String(err)
+      dirError.value = msg
     }
   } finally {
     if (activeDomain.value === reqDomain) {
@@ -1383,6 +1406,16 @@ onBeforeUnmount(() => {
       :initial-tab="settingsInitialTab"
       @close="settingsModalOpen = false"
       @updated="handleSettingsUpdated"
+    />
+
+    <!-- Bottom-Right Floating Task Progress Panel -->
+    <FloatingTaskShelf
+      high-z-index
+      :tasks="taskStore.shelfItems"
+      :collapsed="taskStore.collapsed"
+      @update:collapsed="taskStore.collapsed = $event"
+      @clear-completed="taskStore.clearCompleted"
+      @dismiss-all="taskStore.dismissAll"
     />
   </div>
 </template>

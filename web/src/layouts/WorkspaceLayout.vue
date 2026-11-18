@@ -1294,6 +1294,14 @@ const themeModeTooltip = computed(() => {
 const topScanLabel = computed(() => {
   const active = eventsStore.firstActiveScan
   if (!active) return ''
+  if (active.total && active.total > 0) {
+    const pct = Math.min(100, Math.round((active.scanned / active.total) * 100))
+    return t('admin.scanningWithTotal', {
+      scanned: active.scanned,
+      total: active.total,
+      pct,
+    })
+  }
   return t('admin.scanning', { scanned: active.scanned })
 })
 
@@ -1500,13 +1508,15 @@ onBeforeUnmount(() => {
 
       <!-- Right: Scan Indicator + Upload Button + 3-State Theme Button + Avatar Menu -->
       <div class="flex shrink-0 items-center gap-1.5">
-        <span
+        <button
           v-if="eventsStore.anyScanning"
-          class="mr-1 hidden items-center gap-1.5 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-1 text-xs font-medium text-[var(--ctp-accent)] xl:inline-flex"
+          type="button"
+          class="mr-1 hidden items-center gap-1.5 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-1 text-xs font-medium text-[var(--ctp-accent)] transition hover:opacity-90 xl:inline-flex"
+          @click="uploadStore.collapsed = false"
         >
           <LuRefreshCw class="h-3.5 w-3.5 animate-spin" />
           <span>{{ topScanLabel }}</span>
-        </span>
+        </button>
 
         <button
           v-if="authStore.isAdmin"
@@ -1898,8 +1908,8 @@ onBeforeUnmount(() => {
     <!-- Reserve Space for Persistent Global PlayerBar Rendered in App.vue -->
     <div v-if="showMusicBar" class="h-20 shrink-0" aria-hidden="true" />
 
-    <!-- Non-Blocking Multi-Domain Upload Queue Shelf -->
-    <UploadShelf />
+    <!-- Non-Blocking Multi-Domain Scan & Upload Task Shelf -->
+    <UploadShelf :elevated-bottom="showMusicBar" />
 
     <!-- Sidebar Layout Customizer Modal -->
     <LayoutCustomizerModal

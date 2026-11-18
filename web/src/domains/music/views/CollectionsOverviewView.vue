@@ -209,6 +209,10 @@ async function removePlaylist(pl: PlaylistSummaryDto): Promise<void> {
 function formatLibraryScanText(lib: LibraryDto): string {
   const s = lib.scan_status
   if (s.state === 'scanning') {
+    if (s.total && s.total > 0) {
+      const pct = Math.min(100, Math.round((s.scanned / s.total) * 100))
+      return t('admin.scanningWithTotal', { scanned: s.scanned, total: s.total, pct })
+    }
     return t('admin.scanning', { scanned: s.scanned })
   }
   if (s.state === 'completed') {

@@ -21,6 +21,7 @@ import {
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { toolApi } from '../api'
 import { mergeScrapedClientSide } from '../merger'
+import { useToolTaskStore } from '../tasks'
 import type {
   FieldSourceBadge,
   MediaFileDetail,
@@ -86,8 +87,10 @@ const writeAlbumCover = ref(false)
 const organizeByTemplate = ref(false)
 const onlyFillMissing = ref(false)
 const writeSidecarLrc = ref(true)
+const taskStore = useToolTaskStore()
 const applying = ref(false)
 const batchProgress = ref<string | null>(null)
+const batchProgressPct = ref<number | null>(null)
 const errorMsg = ref<string | null>(null)
 
 let hydratingFromDetail = false
@@ -663,9 +666,23 @@ async function runLockedQueueScrape(): Promise<void> {
 
   try {
     const slice = queueList.value.slice(currentQueueIdx.value)
+    const taskId = `scrape:locked:${Date.now()}`
+    taskStore.startTask({
+      id: taskId,
+      kind: 'scrape',
+      title: `锁定作品批量刮削 (${slice.length} 项)`,
+      total: slice.length,
+      ephemeral: false,
+    })
     for (let i = 0; i < slice.length; i += 1) {
       const entry = slice[i]!
       batchProgress.value = `锁定作品应用中 (${currentQueueIdx.value + i + 1} / ${queueList.value.length})：${entry.file_name}`
+      batchProgressPct.value = Math.min(100, Math.round((i / slice.length) * 100))
+      taskStore.updateTask(taskId, {
+        processed: i,
+        total: slice.length,
+        detail: entry.file_name,
+      })
       try {
         const d = await toolApi.inspectFile(entry.root_id, entry.rel_path, entry.media_kind)
         const q = buildAutoQueryFromDetail(d)
@@ -752,11 +769,22 @@ async function runLockedQueueScrape(): Promise<void> {
       } catch {
         failCount += 1
       }
+      taskStore.updateTask(taskId, {
+        processed: i + 1,
+        total: slice.length,
+        detail: entry.file_name,
+      })
+      batchProgressPct.value = Math.min(100, Math.round(((i + 1) / slice.length) * 100))
     }
+    taskStore.completeTask(
+      taskId,
+      `成功写入 ${successCount} 项${failCount > 0 ? `，跳过/失败 ${failCount} 项` : ''}`,
+    )
     emit('batchApplied', lastUpdated, { success: successCount, failed: failCount })
     emit('close')
   } finally {
     batchProgress.value = null
+    batchProgressPct.value = null
     applying.value = false
   }
 }
@@ -768,12 +796,26 @@ async function runBatchAutoScrape(): Promise<void> {
   let lastUpdated: MediaFileDetail | null = null
   let successCount = 0
   let failCount = 0
+  const slice = queueList.value.slice(currentQueueIdx.value)
+  const taskId = `scrape:auto:${Date.now()}`
+  taskStore.startTask({
+    id: taskId,
+    kind: 'scrape',
+    title: `全自动批量刮削 (${slice.length} 项)`,
+    total: slice.length,
+    ephemeral: false,
+  })
 
   try {
-    const slice = queueList.value.slice(currentQueueIdx.value)
     for (let i = 0; i < slice.length; i += 1) {
       const entry = slice[i]!
       batchProgress.value = `正在自动刮削 (${currentQueueIdx.value + i + 1} / ${queueList.value.length})：${entry.file_name}`
+      batchProgressPct.value = Math.min(100, Math.round((i / slice.length) * 100))
+      taskStore.updateTask(taskId, {
+        processed: i,
+        total: slice.length,
+        detail: entry.file_name,
+      })
       try {
         const d = await toolApi.inspectFile(entry.root_id, entry.rel_path, entry.media_kind)
         const q = buildAutoQueryFromDetail(d)
@@ -800,11 +842,22 @@ async function runBatchAutoScrape(): Promise<void> {
       } catch {
         failCount += 1
       }
+      taskStore.updateTask(taskId, {
+        processed: i + 1,
+        total: slice.length,
+        detail: entry.file_name,
+      })
+      batchProgressPct.value = Math.min(100, Math.round(((i + 1) / slice.length) * 100))
     }
+    taskStore.completeTask(
+      taskId,
+      `成功刮削 ${successCount} 项${failCount > 0 ? `，未命中/失败 ${failCount} 项` : ''}`,
+    )
     emit('batchApplied', lastUpdated, { success: successCount, failed: failCount })
     emit('close')
   } finally {
     batchProgress.value = null
+    batchProgressPct.value = null
     applying.value = false
   }
 }
@@ -892,6 +945,16 @@ async function runBatchAutoScrape(): Promise<void> {
               <LuX class="h-4 w-4" />
             </button>
           </div>
+        </div>
+
+        <div
+          v-if="batchProgressPct !== null"
+          class="h-1 w-full shrink-0 overflow-hidden bg-[var(--ctp-surface0)]"
+        >
+          <div
+            class="h-full bg-[var(--ctp-accent)] transition-all duration-150"
+            :style="{ width: `${batchProgressPct}%` }"
+          />
         </div>
 
         <!-- Target Tabs + Ordered Provider Pills + Query Bar -->

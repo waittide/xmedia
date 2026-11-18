@@ -16,6 +16,19 @@ import type {
   UpdateToolSettingsInput,
 } from './types'
 
+export interface StreamProgressPayload {
+  processed: number
+  total: number | null
+  detail?: string
+}
+
+export type StreamProgressCallback = (progress: StreamProgressPayload) => void
+
+type NdjsonStreamFrame<T> =
+  | { type: 'progress'; processed: number; total: number | null; detail?: string }
+  | { type: 'done'; data: T }
+  | { type: 'error'; message: string }
+
 const TOKEN_STORAGE_KEY = 'xmedia_tool.token'
 
 export function getToolToken(): string | null {
@@ -78,6 +91,99 @@ async function toolRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
   }
 
   return parsed as T
+}
+
+async function toolStreamRequest<T>(
+  path: string,
+  init: RequestInit,
+  onProgress: StreamProgressCallback,
+): Promise<T> {
+  const headers = new Headers(init.headers)
+  const token = getToolToken()
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  const res = await fetch(`/api/v1/tool${path}`, {
+    ...init,
+    headers,
+    credentials: 'same-origin',
+  })
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      setToolToken(null)
+      window.dispatchEvent(new CustomEvent('xmedia-tool:unauthorized'))
+    }
+    const text = await res.text()
+    let errMsg = `HTTP ${res.status}`
+    try {
+      const parsed = JSON.parse(text) as { error?: { message?: string } }
+      if (parsed?.error?.message) errMsg = parsed.error.message
+    } catch {
+      if (text.trim()) errMsg = text.trim()
+    }
+    const error = new Error(errMsg) as Error & { status?: number }
+    error.status = res.status
+    throw error
+  }
+
+  if (!res.body) {
+    throw new Error('Streaming response body unavailable')
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let finalData: T | undefined
+  let receivedDone = false
+
+  function handleLine(rawLine: string): void {
+    const trimmed = rawLine.trim()
+    if (!trimmed) return
+    const frame = JSON.parse(trimmed) as NdjsonStreamFrame<T>
+    if (frame.type === 'progress') {
+      onProgress({
+        processed: frame.processed,
+        total: frame.total ?? null,
+        detail: frame.detail,
+      })
+    } else if (frame.type === 'done') {
+      finalData = frame.data
+      receivedDone = true
+    } else if (frame.type === 'error') {
+      const error = new Error(frame.message) as Error & { status?: number }
+      if (/not found|不存在|not a directory/i.test(frame.message)) {
+        error.status = 404
+      }
+      throw error
+    }
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let nl = buffer.indexOf('\n')
+    while (nl >= 0) {
+      const line = buffer.slice(0, nl)
+      buffer = buffer.slice(nl + 1)
+      handleLine(line)
+      nl = buffer.indexOf('\n')
+    }
+  }
+  buffer += decoder.decode()
+  if (buffer.trim()) {
+    handleLine(buffer)
+  }
+
+  if (!receivedDone) {
+    throw new Error('Stream ended before completion')
+  }
+  return finalData as T
 }
 
 export function buildArtworkUrl(
@@ -146,6 +252,7 @@ export const toolApi = {
     relPath: string,
     kind: MediaKind | null,
     recursive = true,
+    onProgress?: StreamProgressCallback,
   ): Promise<DirectorySnapshot> {
     const q = new URLSearchParams({
       root_id: rootId,
@@ -153,6 +260,13 @@ export const toolApi = {
       recursive: recursive ? 'true' : 'false',
     })
     if (kind) q.set('kind', kind)
+    if (onProgress) {
+      return toolStreamRequest<DirectorySnapshot>(
+        `/fs/browse/stream?${q.toString()}`,
+        { method: 'GET' },
+        onProgress,
+      )
+    }
     return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`)
   },
 
@@ -202,26 +316,47 @@ export const toolApi = {
     template: string | null,
     kind: MediaKind | null,
     episodeTemplate?: string | null,
+    onProgress?: StreamProgressCallback,
   ): Promise<RenamePlanItem[]> {
+    const body = JSON.stringify({
+      root_id: rootId,
+      paths,
+      template: template || undefined,
+      episode_template: episodeTemplate || undefined,
+      kind: kind || undefined,
+    })
+    if (onProgress) {
+      return toolStreamRequest<RenamePlanItem[]>(
+        '/files/rename/preview/stream',
+        { method: 'POST', body },
+        onProgress,
+      )
+    }
     return toolRequest<RenamePlanItem[]>('/files/rename/preview', {
       method: 'POST',
-      body: JSON.stringify({
-        root_id: rootId,
-        paths,
-        template: template || undefined,
-        episode_template: episodeTemplate || undefined,
-        kind: kind || undefined,
-      }),
+      body,
     })
   },
 
-  executeRename(rootId: string, plans: RenamePlanItem[]): Promise<{ moved_count: number }> {
+  executeRename(
+    rootId: string,
+    plans: RenamePlanItem[],
+    onProgress?: StreamProgressCallback,
+  ): Promise<{ moved_count: number }> {
+    const body = JSON.stringify({
+      root_id: rootId,
+      plans,
+    })
+    if (onProgress) {
+      return toolStreamRequest<{ moved_count: number }>(
+        '/files/rename/execute/stream',
+        { method: 'POST', body },
+        onProgress,
+      )
+    }
     return toolRequest<{ moved_count: number }>('/files/rename/execute', {
       method: 'POST',
-      body: JSON.stringify({
-        root_id: rootId,
-        plans,
-      }),
+      body,
     })
   },
 

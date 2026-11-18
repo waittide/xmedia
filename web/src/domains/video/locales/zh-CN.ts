@@ -151,6 +151,7 @@ export default {
     rescanBtn: '增量扫描',
     scanIdle: '空闲未扫描',
     scanning: '正在扫描 ({scanned})…',
+    scanningWithTotal: '正在扫描 ({scanned} / {total} · {pct}%)',
     scanCompleted: '扫描 {scanned} 项 · 新增 {added} · 更新 {updated} · 缺失 {missing}',
     scanFailed: '扫描失败：{message}',
   },

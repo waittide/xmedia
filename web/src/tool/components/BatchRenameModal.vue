@@ -12,6 +12,7 @@ import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { useActionFeedback } from '@/composables/useActionFeedback'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
+import { useToolTaskStore } from '../tasks'
 import type { MediaFileEntry, RenamePlanItem, RenameTemplatesDto } from '../types'
 
 const props = defineProps<{
@@ -34,10 +35,12 @@ const episodeInputRef = ref<HTMLInputElement | null>(null)
 const genericInputRef = ref<HTMLInputElement | null>(null)
 const plans = ref<RenamePlanItem[]>([])
 const excludedPaths = ref<Set<string>>(new Set())
+const taskStore = useToolTaskStore()
 const loadingPreview = ref(false)
 const previewFeedback = useActionFeedback()
 const previewSpinning = computed(() => loadingPreview.value || previewFeedback.running.value)
 const executing = ref(false)
+const inlineProgressPct = ref<number | null>(null)
 const errorMsg = ref<string | null>(null)
 
 const dominantKind = computed<MediaKind>(() => props.entries[0]?.media_kind ?? 'music')
@@ -115,7 +118,16 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null
 async function runPreview(): Promise<void> {
   if (!props.open || props.entries.length === 0) return
   loadingPreview.value = true
+  inlineProgressPct.value = 0
   errorMsg.value = null
+  const taskId = 'rename:preview'
+  taskStore.startTask({
+    id: taskId,
+    kind: 'rename',
+    title: `生成重命名预览 (${props.entries.length} 项)`,
+    total: props.entries.length,
+    ephemeral: true,
+  })
   try {
     plans.value = await toolApi.previewRename(
       props.rootId,
@@ -123,11 +135,21 @@ async function runPreview(): Promise<void> {
       templateInput.value.trim() || null,
       dominantKind.value,
       dominantKind.value === 'video' ? episodeTemplateInput.value.trim() || null : undefined,
+      (prog) => {
+        taskStore.updateTask(taskId, prog)
+        if (prog.total && prog.total > 0) {
+          inlineProgressPct.value = Math.min(100, Math.round((prog.processed / prog.total) * 100))
+        }
+      },
     )
+    taskStore.completeTask(taskId, `已生成 ${plans.value.length.toLocaleString()} 条预览方案`)
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    const msg = err instanceof Error ? err.message : String(err)
+    errorMsg.value = msg
+    taskStore.failTask(taskId, msg)
   } finally {
     loadingPreview.value = false
+    inlineProgressPct.value = null
   }
 }
 
@@ -200,7 +222,17 @@ const actionableCount = computed(
 async function handleExecute(): Promise<void> {
   if (actionableCount.value === 0 || executing.value) return
   executing.value = true
+  inlineProgressPct.value = 0
   errorMsg.value = null
+  const totalToMove = actionableCount.value
+  const taskId = `rename:execute:${Date.now()}`
+  taskStore.startTask({
+    id: taskId,
+    kind: 'rename',
+    title: `批量重命名归档 (${totalToMove} 项)`,
+    total: totalToMove,
+    ephemeral: false,
+  })
   try {
     const selected = activePlans.value
     const movedMap: Record<string, string> = {}
@@ -209,13 +241,22 @@ async function handleExecute(): Promise<void> {
         movedMap[p.from_rel_path] = p.to_rel_path
       }
     }
-    const res = await toolApi.executeRename(props.rootId, selected)
+    const res = await toolApi.executeRename(props.rootId, selected, (prog) => {
+      taskStore.updateTask(taskId, prog)
+      if (prog.total && prog.total > 0) {
+        inlineProgressPct.value = Math.min(100, Math.round((prog.processed / prog.total) * 100))
+      }
+    })
+    taskStore.completeTask(taskId, `已完成 ${res.moved_count.toLocaleString()} 个文件的重命名与归档`)
     emit('renamed', res.moved_count, movedMap)
     emit('close')
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    const msg = err instanceof Error ? err.message : String(err)
+    errorMsg.value = msg
+    taskStore.failTask(taskId, msg)
   } finally {
     executing.value = false
+    inlineProgressPct.value = null
   }
 }
 </script>
@@ -247,6 +288,16 @@ async function handleExecute(): Promise<void> {
           >
             <LuX class="h-4 w-4" />
           </button>
+        </div>
+
+        <div
+          v-if="(loadingPreview || executing) && inlineProgressPct !== null"
+          class="h-1 w-full shrink-0 overflow-hidden bg-[var(--ctp-surface0)]"
+        >
+          <div
+            class="h-full bg-[var(--ctp-accent)] transition-all duration-150"
+            :style="{ width: `${inlineProgressPct}%` }"
+          />
         </div>
 
         <!-- Template Editor -->

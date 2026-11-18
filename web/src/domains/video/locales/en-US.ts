@@ -151,6 +151,7 @@ export default {
     rescanBtn: 'Incremental Scan',
     scanIdle: 'Idle',
     scanning: 'Scanning ({scanned})…',
+    scanningWithTotal: 'Scanning ({scanned} / {total} · {pct}%)',
     scanCompleted: 'Scanned {scanned} · +{added} new · {updated} updated · {missing} missing',
     scanFailed: 'Scan failed: {message}',
   },

@@ -432,7 +432,13 @@ async function handleDeleteLibrary(lib: CoreLibraryDto): Promise<void> {
 
 function formatScanStatus(lib: CoreLibraryDto): string {
   const s = lib.scan_status
-  if (s.state === 'scanning') return t('admin.scanning', { scanned: s.scanned })
+  if (s.state === 'scanning') {
+    if (s.total && s.total > 0) {
+      const pct = Math.min(100, Math.round((s.scanned / s.total) * 100))
+      return t('admin.scanningWithTotal', { scanned: s.scanned, total: s.total, pct })
+    }
+    return t('admin.scanning', { scanned: s.scanned })
+  }
   if (s.state === 'completed') {
     return t('admin.scanCompleted', {
       scanned: s.scanned,

@@ -114,7 +114,7 @@ export type CoreLibraryKind =
 
 export type CoreScanStatus =
   | { state: 'idle' }
-  | { state: 'scanning'; scanned: number }
+  | { state: 'scanning'; scanned: number; total?: number | null }
   | { state: 'completed'; scanned: number; added: number; updated: number; missing: number }
   | { state: 'failed'; message: string }
 

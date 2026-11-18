@@ -29,7 +29,11 @@ export function mapBookLibrary(raw: CoreLibraryDto): LibraryDto {
         : { type: 'mounted', root_path: raw.kind.root_path },
     scan_status:
       raw.scan_status.state === 'scanning'
-        ? { state: 'scanning', processed: raw.scan_status.scanned }
+        ? {
+            state: 'scanning',
+            processed: raw.scan_status.scanned,
+            total: raw.scan_status.total ?? undefined,
+          }
         : raw.scan_status,
     last_scanned_at: raw.last_scanned_at,
     book_count: raw.item_count,
