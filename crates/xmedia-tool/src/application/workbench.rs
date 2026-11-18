@@ -19,7 +19,7 @@ use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars
 use crate::infra::inspectors::book::dir_has_single_book;
 use crate::infra::inspectors::book_content::{
     BookContentDocumentDto, EditableBookChapterDto, SaveBookChapterInput, convert_txt_to_epub,
-    read_book_content, resegment_txt_file, save_book_content,
+    read_book_content, read_epub_internal_asset, resegment_txt_file, save_book_content,
 };
 use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::music::is_generic_music_folder;
@@ -822,6 +822,22 @@ impl MediaWorkbenchService {
         }
 
         Ok(moved_count)
+    }
+
+    pub async fn read_epub_asset(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        asset_path: &str,
+    ) -> DomainResult<BinaryPayload> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .await?;
+        let abs = sandbox.abs_path;
+        let asset_owned = asset_path.to_string();
+        tokio::task::spawn_blocking(move || read_epub_internal_asset(&abs, &asset_owned))
+            .await
+            .map_err(|e| DomainError::Storage(format!("epub asset read task failed: {e}")))?
     }
 
     pub async fn get_book_content(

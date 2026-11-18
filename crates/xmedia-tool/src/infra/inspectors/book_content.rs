@@ -10,6 +10,7 @@ use quick_xml::events::Event;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::stream::decode_text_smart;
 use xmedia_core::infra::thumbnail::sniff_image_mime;
@@ -92,6 +93,8 @@ pub struct BookContentDocumentDto {
     pub format: String,
     pub title: String,
     pub authors: Vec<String>,
+    #[serde(default)]
+    pub stylesheets: Vec<String>,
     pub chapters: Vec<EditableBookChapterDto>,
 }
 
@@ -128,15 +131,17 @@ pub fn read_book_content(path: &Path) -> DomainResult<BookContentDocumentDto> {
                 format: "txt".to_string(),
                 title: meta.title,
                 authors: meta.authors,
+                stylesheets: Vec::new(),
                 chapters,
             })
         }
         "epub" => {
-            let chapters = read_epub_chapters(path)?;
+            let (chapters, stylesheets) = read_epub_chapters_and_styles(path)?;
             Ok(BookContentDocumentDto {
                 format: "epub".to_string(),
                 title: meta.title,
                 authors: meta.authors,
+                stylesheets,
                 chapters,
             })
         }
@@ -843,7 +848,60 @@ fn is_cover_wrapper_doc(
     looks_cover_named && plain.chars().count() < 20 && detect_rich_media_in_xhtml(body_xhtml)
 }
 
-fn read_epub_chapters(epub_path: &Path) -> DomainResult<Vec<EditableBookChapterDto>> {
+pub fn read_epub_internal_asset(
+    epub_path: &Path,
+    raw_asset_path: &str,
+) -> DomainResult<BinaryPayload> {
+    let normalized = normalize_zip_rel(Path::new(""), raw_asset_path.trim_start_matches('/'));
+    if normalized.is_empty() {
+        return Err(DomainError::Validation("empty epub asset path".into()));
+    }
+    let f = File::open(epub_path)
+        .map_err(|e| DomainError::Storage(format!("failed opening epub: {e}")))?;
+    let mut archive = ZipArchive::new(BufReader::new(f))
+        .map_err(|e| DomainError::Validation(format!("invalid epub archive: {e}")))?;
+    let bytes = read_zip_bytes(&mut archive, &normalized).ok_or_else(|| {
+        DomainError::NotFound(format!("epub internal asset '{normalized}' not found"))
+    })?;
+    let guessed = mime_guess::from_path(&normalized).first_raw();
+    let mime_type = match guessed {
+        Some(m) if !m.starts_with("image/") => m.to_string(),
+        Some(m) => {
+            let sniffed = sniff_image_mime(&bytes);
+            if sniffed.starts_with("image/") {
+                sniffed.to_string()
+            } else {
+                m.to_string()
+            }
+        }
+        None => sniff_image_mime(&bytes).to_string(),
+    };
+    Ok(BinaryPayload { bytes, mime_type })
+}
+
+fn sanitize_xhtml_fragment(raw: &str) -> String {
+    static VOID_TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)<(?P<tag>br|hr|img|meta|link|col|input)(?P<attrs>[^>]*?)(?P<slash>/?)>")
+            .expect("valid void tag regex")
+    });
+    let replaced_entities = raw.replace("&nbsp;", "&#160;");
+    VOID_TAG_RE
+        .replace_all(&replaced_entities, |caps: &regex::Captures<'_>| {
+            let tag = caps.name("tag").map(|m| m.as_str()).unwrap_or("br");
+            let attrs = caps.name("attrs").map(|m| m.as_str()).unwrap_or("");
+            let slash = caps.name("slash").map(|m| m.as_str()).unwrap_or("");
+            if slash == "/" || attrs.trim_end().ends_with('/') {
+                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
+            } else {
+                format!("<{tag}{attrs}/>")
+            }
+        })
+        .into_owned()
+}
+
+fn read_epub_chapters_and_styles(
+    epub_path: &Path,
+) -> DomainResult<(Vec<EditableBookChapterDto>, Vec<String>)> {
     let f = File::open(epub_path)
         .map_err(|e| DomainError::Storage(format!("failed opening epub: {e}")))?;
     let mut archive = ZipArchive::new(BufReader::new(f))
@@ -921,7 +979,19 @@ fn read_epub_chapters(epub_path: &Path) -> DomainResult<Vec<EditableBookChapterD
         });
     }
 
-    Ok(chapters)
+    let mut stylesheets = Vec::new();
+    for m in &info.manifest {
+        if m.media_type.eq_ignore_ascii_case("text/css")
+            && let Some(css_bytes) = read_zip_bytes(&mut archive, &m.full_path)
+        {
+            let css_str = String::from_utf8_lossy(&css_bytes).trim().to_string();
+            if !css_str.is_empty() {
+                stylesheets.push(css_str);
+            }
+        }
+    }
+
+    Ok((chapters, stylesheets))
 }
 
 fn relative_href_from_dir(from_dir: &Path, target_full_path: &str) -> String {
@@ -1271,7 +1341,7 @@ fn save_epub_content(epub_path: &Path, chapters: &[SaveBookChapterInput]) -> Dom
                 if ch.xhtml_body.trim().is_empty() {
                     plain_to_xhtml_body(&title, &ch.plain_text)
                 } else {
-                    ch.xhtml_body.clone()
+                    sanitize_xhtml_fragment(&ch.xhtml_body)
                 }
             }
         };
@@ -1644,7 +1714,7 @@ pub fn convert_txt_to_epub(
                     if ch.xhtml_body.trim().is_empty() {
                         plain_to_xhtml_body(&title, &ch.plain_text)
                     } else {
-                        ch.xhtml_body.clone()
+                        sanitize_xhtml_fragment(&ch.xhtml_body)
                     }
                 }
             };

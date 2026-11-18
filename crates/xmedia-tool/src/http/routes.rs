@@ -76,6 +76,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
                 .put(put_book_content)
                 .layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
+        .route("/books/epub-asset", get(get_book_epub_asset))
         .route("/books/resegment-txt", post(resegment_txt_book))
         .route(
             "/books/convert-epub",
@@ -668,6 +669,33 @@ async fn execute_rename_stream(
 struct BookContentQuery {
     root_id: Uuid,
     path: String,
+}
+
+#[derive(Deserialize)]
+struct BookEpubAssetQuery {
+    root_id: Uuid,
+    path: String,
+    asset: String,
+}
+
+async fn get_book_epub_asset(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Query(q): Query<BookEpubAssetQuery>,
+) -> ApiResult<Response> {
+    let payload = state
+        .workbench
+        .read_epub_asset(RootId(q.root_id), &q.path, &q.asset)
+        .await?;
+    let mut res = (StatusCode::OK, Body::from(payload.bytes)).into_response();
+    if let Ok(ct) = HeaderValue::from_str(&payload.mime_type) {
+        res.headers_mut().insert(CONTENT_TYPE, ct);
+    }
+    res.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=300"),
+    );
+    Ok(res)
 }
 
 async fn get_book_content(
