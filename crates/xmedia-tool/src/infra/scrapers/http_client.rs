@@ -17,6 +17,7 @@ pub fn build_http_client(creds: &ProviderCredentials) -> DomainResult<Client> {
 
     let mut builder = Client::builder()
         .user_agent(ua)
+        .http1_ignore_invalid_headers_in_responses(true)
         .timeout(Duration::from_secs(20))
         .connect_timeout(Duration::from_secs(10));
 

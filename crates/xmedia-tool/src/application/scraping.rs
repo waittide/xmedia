@@ -19,7 +19,7 @@ use crate::domain::ports::ScraperProviderPort;
 use crate::domain::scraper::{
     AggregateScrapeResponse, FieldSourceBadge, ProviderBriefDto, ProviderStatusDto,
     ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
-    is_compatible_secondary_source, merge_scraped_by_priority,
+    is_compatible_secondary_source, merge_scraped_by_priority, promote_exact_match_anchor,
 };
 use crate::domain::template::render_template_target;
 use crate::domain::workspace::RootId;
@@ -411,8 +411,9 @@ impl ScrapingOrchestratorService {
             }
         }
 
-        let raw_active: Vec<(FieldSourceBadge, ScrapedMetadata)> =
+        let mut raw_active: Vec<(FieldSourceBadge, ScrapedMetadata)> =
             ordered_details.into_iter().flatten().collect();
+        promote_exact_match_anchor(&mut raw_active, &query);
         let active_sources: Vec<(FieldSourceBadge, ScrapedMetadata)> = if raw_active.len() > 1 {
             let primary_meta = raw_active[0].1.clone();
             let target_hint = query.target;

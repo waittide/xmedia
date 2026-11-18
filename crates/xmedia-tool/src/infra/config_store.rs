@@ -53,6 +53,9 @@ impl JsonFileConfigRepository {
         if settings.rename_templates.upgrade_legacy_defaults() {
             changed = true;
         }
+        if settings.scraper_priorities.upgrade_legacy_defaults() {
+            changed = true;
+        }
         for raw_dir in cli_roots {
             if let Ok(root) = ManagedRoot::new("", raw_dir, None)
                 && !settings

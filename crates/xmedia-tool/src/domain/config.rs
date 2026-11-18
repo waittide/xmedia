@@ -112,7 +112,18 @@ pub struct ScraperPriorities {
 }
 
 fn default_book_priority() -> Vec<String> {
-    vec!["bangumi".to_string(), "openlibrary".to_string()]
+    vec![
+        "qidian".to_string(),
+        "fanqie".to_string(),
+        "qimao".to_string(),
+        "17k".to_string(),
+        "ciweimao".to_string(),
+        "sfacg".to_string(),
+        "faloo".to_string(),
+        "jjwxc".to_string(),
+        "bangumi".to_string(),
+        "openlibrary".to_string(),
+    ]
 }
 
 fn default_comic_priority() -> Vec<String> {
@@ -143,6 +154,16 @@ impl Default for ScraperPriorities {
 }
 
 impl ScraperPriorities {
+    /// Upgrades untouched v1 book priority list (`["bangumi", "openlibrary"]`) so newly added
+    /// Chinese webnovel scrapers take precedence in the configured default order.
+    pub fn upgrade_legacy_defaults(&mut self) -> bool {
+        if self.book == ["bangumi", "openlibrary"] {
+            self.book = default_book_priority();
+            return true;
+        }
+        false
+    }
+
     pub fn order_for(&self, kind: MediaKind) -> &[String] {
         match kind {
             MediaKind::Book => &self.book,

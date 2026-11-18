@@ -458,6 +458,40 @@ pub fn is_compatible_secondary_source(
         }
     }
 
+    if matches!(
+        target.or(primary.target).or(secondary.target),
+        Some(ScrapeTargetKind::Book)
+    ) && !primary.creators.is_empty()
+        && !secondary.creators.is_empty()
+    {
+        let p_creators: Vec<String> = primary
+            .creators
+            .iter()
+            .map(|c| normalize_title_for_match(c))
+            .filter(|c| !c.is_empty())
+            .collect();
+        let s_creators: Vec<String> = secondary
+            .creators
+            .iter()
+            .map(|c| normalize_title_for_match(c))
+            .filter(|c| !c.is_empty())
+            .collect();
+        let p_ascii = p_creators.iter().all(|c| c.is_ascii());
+        let s_ascii = s_creators.iter().all(|c| c.is_ascii());
+        // Compare authors when both sides use the same script (e.g. both CJK webnovel platforms);
+        // cross-script pairs like "刘慈欣" vs "Cixin Liu" remain allowed for ISBN/cover fallback.
+        if !p_creators.is_empty() && !s_creators.is_empty() && p_ascii == s_ascii {
+            let same_author = p_creators.iter().any(|pc| {
+                s_creators
+                    .iter()
+                    .any(|sc| pc == sc || pc.contains(sc) || sc.contains(pc))
+            });
+            if !same_author {
+                return false;
+            }
+        }
+    }
+
     true
 }
 
@@ -533,6 +567,69 @@ pub fn score_candidate_relevance(
     score
 }
 
+/// Promotes the highest-priority provider that achieved an exact normalized title (and optional
+/// author) match to index `0` when the top-priority provider only returned a fuzzy/derivative hit.
+/// Prevents platform-exclusive webnovels from being overshadowed by fanfics on higher-priority sites.
+pub fn promote_exact_match_anchor(
+    sources: &mut Vec<(FieldSourceBadge, ScrapedMetadata)>,
+    query: &ScrapeQuery,
+) {
+    if sources.len() <= 1 {
+        return;
+    }
+    if query.isbn.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        return;
+    }
+    let kw_norm = normalize_title_for_match(&query.keyword);
+    if kw_norm.is_empty() {
+        return;
+    }
+    let author_norm = query
+        .artist_or_author
+        .as_deref()
+        .map(normalize_title_for_match)
+        .unwrap_or_default();
+
+    let exact_title = |m: &ScrapedMetadata| -> bool {
+        [&m.title, &m.original_title, &m.series_or_album]
+            .into_iter()
+            .flatten()
+            .any(|t| normalize_title_for_match(t) == kw_norm)
+    };
+    let exact_author = |m: &ScrapedMetadata| -> bool {
+        !author_norm.is_empty()
+            && m.creators
+                .iter()
+                .any(|c| normalize_title_for_match(c) == author_norm)
+    };
+
+    if !author_norm.is_empty() {
+        if exact_title(&sources[0].1) && exact_author(&sources[0].1) {
+            return;
+        }
+        if let Some(idx) = sources
+            .iter()
+            .position(|(_, m)| exact_title(m) && exact_author(m))
+        {
+            if idx > 0 {
+                let item = sources.remove(idx);
+                sources.insert(0, item);
+            }
+            return;
+        }
+    }
+
+    if exact_title(&sources[0].1) {
+        return;
+    }
+    if let Some(idx) = sources.iter().position(|(_, m)| exact_title(m))
+        && idx > 0
+    {
+        let item = sources.remove(idx);
+        sources.insert(0, item);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FieldSourceBadge, ScrapeTargetKind, ScrapedMetadata, merge_scraped_by_priority};
@@ -586,5 +683,54 @@ mod tests {
         assert_eq!(merged.metadata.isbn.as_deref(), Some("9787536692930"));
         assert_eq!(merged.field_sources["cover_url"].provider_id, "openlibrary");
         assert_eq!(merged.field_sources["isbn"].provider_id, "openlibrary");
+    }
+
+    #[test]
+    fn promote_exact_match_anchor_elevates_canonical_exclusive_novel_over_fanfic() {
+        use super::{ScrapeQuery, is_compatible_secondary_source, promote_exact_match_anchor};
+
+        let mut raw = vec![
+            (
+                FieldSourceBadge {
+                    provider_id: "qidian".into(),
+                    provider_name: "起点中文网".into(),
+                },
+                ScrapedMetadata {
+                    provider_id: "qidian".into(),
+                    external_id: "999".into(),
+                    title: Some("十日终焉：我在异界斩神".into()),
+                    creators: vec!["路人甲".into()],
+                    ..Default::default()
+                },
+            ),
+            (
+                FieldSourceBadge {
+                    provider_id: "fanqie".into(),
+                    provider_name: "番茄小说".into(),
+                },
+                ScrapedMetadata {
+                    provider_id: "fanqie".into(),
+                    external_id: "7143038691944959011".into(),
+                    title: Some("十日终焉".into()),
+                    creators: vec!["杀虫队队员".into()],
+                    ..Default::default()
+                },
+            ),
+        ];
+
+        let query = ScrapeQuery {
+            keyword: "十日终焉".into(),
+            target: Some(ScrapeTargetKind::Book),
+            ..Default::default()
+        };
+        promote_exact_match_anchor(&mut raw, &query);
+        assert_eq!(raw[0].0.provider_id, "fanqie");
+        assert_eq!(raw[0].1.title.as_deref(), Some("十日终焉"));
+        // Different CJK author & fanfic title is rejected as incompatible secondary source
+        assert!(!is_compatible_secondary_source(
+            &raw[0].1,
+            &raw[1].1,
+            Some(ScrapeTargetKind::Book)
+        ));
     }
 }

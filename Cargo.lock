@@ -6166,6 +6166,7 @@ dependencies = [
  "bytes",
  "clap",
  "encoding_rs",
+ "flate2",
  "form_urlencoded",
  "futures-core",
  "hex",
