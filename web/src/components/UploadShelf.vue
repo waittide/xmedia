@@ -40,10 +40,7 @@ function formatSize(bytes: number): string {
 const routeByTaskId = computed<Record<string, string>>(() => {
   const map: Record<string, string> = {}
   for (const sc of eventsStore.scanTaskList) {
-    map[`scan:${sc.library_id}`] =
-      sc.media_kind === 'comic'
-        ? '/comic/libraries'
-        : `/${sc.media_kind}/collections/libraries`
+    map[`scan:${sc.library_id}`] = `/${sc.media_kind}/libraries`
   }
   for (const up of uploadStore.tasks) {
     if (up.targetRoute) {
