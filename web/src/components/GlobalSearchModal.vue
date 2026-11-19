@@ -255,96 +255,102 @@ function handleKeydown(ev: KeyboardEvent): void {
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="open"
-      class="fixed inset-0 z-[9990] flex items-start justify-center bg-black/50 px-4 pt-[12vh] backdrop-blur-xs"
-      @mousedown.self="emit('close')"
-    >
+    <Transition name="md-fade">
       <div
-        class="w-full max-w-xl overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
-        @keydown="handleKeydown"
+        v-if="open"
+        class="fixed inset-0 z-[9990] flex items-start justify-center bg-black/45 px-4 pt-[10vh] backdrop-blur-[2px]"
+        @mousedown.self="emit('close')"
       >
-        <!-- Search Input Header -->
-        <div class="flex items-center gap-3 border-b border-[var(--ctp-surface0)] px-4 py-3">
-          <LuLoader2
-            v-if="loading"
-            class="h-4 w-4 shrink-0 animate-spin text-[var(--ctp-accent)]"
-          />
-          <LuSearch v-else class="h-4 w-4 shrink-0 text-[var(--ctp-subtext0)]" />
-
-          <input
-            ref="inputRef"
-            v-model="query"
-            type="text"
-            :placeholder="`${t('common.search')} (${authStore.enabledModules.map((m) => t(`app.domains.${m}`)).join(' / ')})…`"
-            class="min-w-0 flex-1 bg-transparent text-sm text-[var(--ctp-text)] outline-none placeholder:text-[var(--ctp-subtext0)]"
-          />
-
-          <button
-            v-if="query"
-            type="button"
-            class="rounded-lg p-1 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-            @click="query = ''"
-          >
-            <LuX class="h-4 w-4" />
-          </button>
-
-          <kbd
-            class="hidden rounded-md border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--ctp-subtext0)] sm:inline"
-          >
-            ESC
-          </kbd>
-        </div>
-
-        <!-- Results Body -->
-        <div class="max-h-[55vh] overflow-y-auto p-2">
+        <Transition name="md-dialog" appear>
           <div
-            v-if="!loading && query.trim() && displayItems.length === 0"
-            class="py-10 text-center text-xs text-[var(--ctp-subtext0)]"
+            role="dialog"
+            aria-modal="true"
+            class="w-full max-w-xl overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
+            @keydown="handleKeydown"
           >
-            {{ t('common.noResults') }}
-          </div>
+            <!-- MD3 Search Input Header -->
+            <div class="flex items-center gap-3 border-b border-[var(--md-sys-color-outline-variant)]/50 px-5 py-4">
+              <LuLoader2
+                v-if="loading"
+                class="h-5 w-5 shrink-0 animate-spin text-[var(--md-sys-color-primary)]"
+              />
+              <LuSearch v-else class="h-5 w-5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
 
-          <button
-            v-for="(item, idx) in displayItems"
-            :key="item.id"
-            type="button"
-            class="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition"
-            :class="
-              idx === activeIndex
-                ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                : 'text-[var(--ctp-text)] hover:bg-[var(--ctp-mantle)]'
-            "
-            @mouseenter="activeIndex = idx"
-            @click="selectItem(item)"
-          >
-            <component
-              :is="item.icon"
-              class="h-4 w-4 shrink-0"
-              :class="idx === activeIndex ? 'text-[var(--ctp-accent)]' : 'text-[var(--ctp-subtext0)]'"
-            />
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-xs font-semibold">{{ item.title }}</p>
-              <p
-                v-if="item.subtitle"
-                class="truncate text-[11px] text-[var(--ctp-subtext0)]"
+              <input
+                ref="inputRef"
+                v-model="query"
+                type="text"
+                :placeholder="t('common.search') + ' (' + authStore.enabledModules.map((m) => t('app.domains.' + m)).join(' / ') + ')…'"
+                class="min-w-0 flex-1 bg-transparent text-sm text-[var(--md-sys-color-on-surface)] outline-none placeholder:text-[var(--md-sys-color-on-surface-variant)]"
+              />
+
+              <button
+                v-if="query"
+                type="button"
+                class="md-icon-btn md-icon-btn-sm md-state"
+                @click="query = ''"
               >
-                {{ item.subtitle }}
-              </p>
+                <LuX class="h-4 w-4" />
+              </button>
+
+              <kbd
+                class="hidden rounded-full bg-[var(--md-sys-color-surface-container)] px-2.5 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)] sm:inline"
+              >
+                ESC
+              </kbd>
             </div>
-            <span
-              v-if="item.group !== 'nav'"
-              class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/70 px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)]"
-            >
-              {{ t(`app.domains.${item.group}`) }}
-            </span>
-            <LuCornerDownLeft
-              v-if="idx === activeIndex"
-              class="h-3.5 w-3.5 shrink-0 opacity-75"
-            />
-          </button>
-        </div>
+
+            <!-- Results Body -->
+            <div class="max-h-[56vh] space-y-0.5 overflow-y-auto p-3">
+              <div
+                v-if="!loading && query.trim() && displayItems.length === 0"
+                class="py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+              >
+                {{ t('common.noResults') }}
+              </div>
+
+              <button
+                v-for="(item, idx) in displayItems"
+                :key="item.id"
+                type="button"
+                class="md-state flex w-full items-center gap-3 rounded-full px-4 py-2.5 text-left"
+                :class="
+                  idx === activeIndex
+                    ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                    : 'text-[var(--md-sys-color-on-surface)]'
+                "
+                @mouseenter="activeIndex = idx"
+                @click="selectItem(item)"
+              >
+                <component
+                  :is="item.icon"
+                  class="h-4 w-4 shrink-0"
+                  :class="idx === activeIndex ? '' : 'text-[var(--md-sys-color-on-surface-variant)]'"
+                />
+                <div class="min-w-0 flex-1">
+                  <p class="truncate text-xs font-semibold">{{ item.title }}</p>
+                  <p
+                    v-if="item.subtitle"
+                    class="truncate text-[11px] opacity-75"
+                  >
+                    {{ item.subtitle }}
+                  </p>
+                </div>
+                <span
+                  v-if="item.group !== 'nav'"
+                  class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+                >
+                  {{ t('app.domains.' + item.group) }}
+                </span>
+                <LuCornerDownLeft
+                  v-if="idx === activeIndex"
+                  class="h-3.5 w-3.5 shrink-0 opacity-75"
+                />
+              </button>
+            </div>
+          </div>
+        </Transition>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>

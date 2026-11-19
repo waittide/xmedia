@@ -134,7 +134,7 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
           <button
             v-if="incompleteFiles.length > 0"
             type="button"
-            class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+            class="md-btn md-btn-sm md-btn-filled md-state"
             title="按「本地已有信息 → 高优先级源 → 低优先级源」顺序自动添加后台刮削任务"
             @click="emit('scrapeFiles', incompleteFiles, '待补齐项')"
           >
@@ -145,28 +145,28 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
           <button
             v-if="stats.total > 0"
             type="button"
-            class="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
             @click="emit('openRenameAll')"
           >
-            <LuFileSignature class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+            <LuFileSignature class="h-3.5 w-3.5" />
             <span>{{ txt.actions.batchRename }}</span>
           </button>
         </div>
       </div>
 
-      <!-- 4 Stat Overview Cards (Aligned with Server HomeView) -->
+      <!-- 4 MD3 Tonal Metric Cards -->
       <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <button
           type="button"
-          class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-shell)] p-4 text-left transition hover:border-[var(--ctp-accent)]"
+          class="md-card-filled md-state flex items-center justify-between p-4 text-left"
           @click="emit('openItems', 'all')"
         >
           <div>
-            <div class="text-xs text-[var(--ctp-subtext0)]">{{ txt.cards.totalFiles }}</div>
-            <div class="mt-1 text-2xl font-bold tracking-tight">{{ stats.total }}</div>
+            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ txt.cards.totalFiles }}</div>
+            <div class="mt-1 text-2xl font-semibold tracking-tight">{{ stats.total }}</div>
           </div>
           <div
-            class="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
           >
             <LuBookOpen v-if="activeDomain === 'book'" class="h-5 w-5" />
             <LuLayers v-else-if="activeDomain === 'comic'" class="h-5 w-5" />
@@ -177,20 +177,20 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
 
         <button
           type="button"
-          class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-shell)] p-4 text-left transition hover:border-emerald-500/50"
+          class="md-card-filled md-state flex items-center justify-between p-4 text-left"
           @click="emit('openItems', 'complete')"
         >
           <div>
-            <div class="text-xs text-[var(--ctp-subtext0)]">{{ txt.cards.completeFiles }}</div>
+            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ txt.cards.completeFiles }}</div>
             <div class="mt-1 flex items-baseline gap-1.5">
-              <span class="text-2xl font-bold tracking-tight text-emerald-500">
+              <span class="text-2xl font-semibold tracking-tight text-[var(--md-sys-color-success)]">
                 {{ stats.complete }}
               </span>
-              <span class="font-mono text-xs text-[var(--ctp-subtext0)]">{{ completionPct }}%</span>
+              <span class="font-mono text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ completionPct }}%</span>
             </div>
           </div>
           <div
-            class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/15 text-emerald-500"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]"
           >
             <LuCheckCircle2 class="h-5 w-5" />
           </div>
@@ -198,17 +198,17 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
 
         <button
           type="button"
-          class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-shell)] p-4 text-left transition hover:border-amber-500/50"
+          class="md-card-filled md-state flex items-center justify-between p-4 text-left"
           @click="emit('openItems', 'missing_cover')"
         >
           <div>
-            <div class="text-xs text-[var(--ctp-subtext0)]">{{ domainLabels.missingCover }}</div>
-            <div class="mt-1 text-2xl font-bold tracking-tight text-amber-500">
+            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ domainLabels.missingCover }}</div>
+            <div class="mt-1 text-2xl font-semibold tracking-tight text-[var(--md-sys-color-warning)]">
               {{ stats.missingCover }}
             </div>
           </div>
           <div
-            class="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-500/15 text-amber-500"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]"
           >
             <LuImage class="h-5 w-5" />
           </div>
@@ -216,17 +216,17 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
 
         <button
           type="button"
-          class="card-soft flex items-center justify-between rounded-2xl bg-[var(--ctp-shell)] p-4 text-left transition hover:border-[var(--ctp-accent)]/50"
+          class="md-card-filled md-state flex items-center justify-between p-4 text-left"
           @click="emit('openItems', 'missing_summary')"
         >
           <div>
-            <div class="text-xs text-[var(--ctp-subtext0)]">{{ domainLabels.missingSummary }}</div>
-            <div class="mt-1 text-2xl font-bold tracking-tight text-[var(--ctp-accent)]">
+            <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ domainLabels.missingSummary }}</div>
+            <div class="mt-1 text-2xl font-semibold tracking-tight text-[var(--md-sys-color-primary)]">
               {{ stats.missingSummary }}
             </div>
           </div>
           <div
-            class="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+            class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]"
           >
             <LuFileText class="h-5 w-5" />
           </div>
@@ -234,7 +234,7 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
       </div>
 
       <!-- Metadata Completeness Progress Card -->
-      <section class="card-soft space-y-2.5 rounded-2xl bg-[var(--ctp-shell)] p-5">
+      <section class="md-card-filled space-y-2.5 p-5">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2">
             <span class="text-xs font-bold text-[var(--ctp-text)]">元信息完整率</span>

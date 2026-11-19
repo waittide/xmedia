@@ -12,8 +12,8 @@ import {
   LuRotateCcw,
   LuUndo2,
   LuWand2,
-  LuX,
 } from 'vue-icons-plus/lu'
+import MdDialog from '@/components/ui/MdDialog.vue'
 
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
@@ -312,56 +312,29 @@ async function handleUndoLastBatch(): Promise<void> {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
-      @click.self="emit('close')"
-    >
-      <div
-        class="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
+  <MdDialog
+    :open="open"
+    :title="'批量元数据编辑 · ' + domainFieldLabels.domainName"
+    :subtitle="'将作用于已选 ' + entries.length + ' 个文件 · 仅修改非空字段，写入前自动保存可回滚快照'"
+    max-width="max-w-2xl"
+    @close="emit('close')"
+  >
+    <template #icon>
+      <LuPencil class="h-5 w-5" />
+    </template>
+
+    <template #headerActions>
+      <button
+        type="button"
+        class="md-btn md-btn-sm md-btn-tonal md-state"
+        @click="emit('openHistory')"
       >
-        <!-- Header -->
-        <div
-          class="flex items-center justify-between gap-3 border-b border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/60 px-6 py-4"
-        >
-          <div class="flex items-center gap-3">
-            <div
-              class="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
-            >
-              <LuPencil class="h-5 w-5" />
-            </div>
-            <div>
-              <h3 class="text-base font-bold text-[var(--ctp-text)]">
-                批量元数据编辑 · {{ domainFieldLabels.domainName }}
-              </h3>
-              <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">
-                将作用于已选 <strong class="text-[var(--ctp-text)]">{{ entries.length }}</strong> 个文件 · 仅修改非空字段，修改前自动保存可回滚快照
-              </p>
-            </div>
-          </div>
+        <LuUndo2 class="h-3.5 w-3.5" />
+        <span>变更历史</span>
+      </button>
+    </template>
 
-          <div class="flex items-center gap-1.5">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-              @click="emit('openHistory')"
-            >
-              <LuUndo2 class="h-3.5 w-3.5" />
-              <span>变更历史</span>
-            </button>
-            <button
-              type="button"
-              class="rounded-xl p-1.5 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-              @click="emit('close')"
-            >
-              <LuX class="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        <!-- Body -->
-        <div class="flex-1 space-y-5 overflow-y-auto px-6 py-5">
+    <div class="space-y-5 py-2">
           <!-- Selected Files Collapsible Preview -->
           <div class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/40">
             <button
@@ -696,42 +669,37 @@ async function handleUndoLastBatch(): Promise<void> {
               </button>
             </div>
           </section>
-        </div>
-
-        <!-- Footer -->
-        <div
-          class="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/50 px-6 py-4"
-        >
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-            @click="resetForm"
-          >
-            <LuRotateCcw class="h-3.5 w-3.5" />
-            <span>重置表单</span>
-          </button>
-
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-2 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
-              @click="emit('close')"
-            >
-              关闭
-            </button>
-            <button
-              type="button"
-              :disabled="submitting || !hasAnyRule || entries.length === 0"
-              class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-5 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-45"
-              @click="handleSubmit"
-            >
-              <LuLoader2 v-if="submitting" class="h-3.5 w-3.5 animate-spin" />
-              <LuWand2 v-else class="h-3.5 w-3.5" />
-              <span>{{ submitting ? '写入中...' : `应用到 ${entries.length} 个文件` }}</span>
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
-  </Teleport>
+
+    <template #footer>
+      <button
+        type="button"
+        class="md-btn md-btn-sm md-btn-text md-state"
+        @click="resetForm"
+      >
+        <LuRotateCcw class="h-3.5 w-3.5" />
+        <span>重置表单</span>
+      </button>
+
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-text md-state"
+          @click="emit('close')"
+        >
+          关闭
+        </button>
+        <button
+          type="button"
+          :disabled="submitting || !hasAnyRule || entries.length === 0"
+          class="md-btn md-btn-sm md-btn-filled md-state"
+          @click="handleSubmit"
+        >
+          <LuLoader2 v-if="submitting" class="h-3.5 w-3.5 animate-spin" />
+          <LuWand2 v-else class="h-3.5 w-3.5" />
+          <span>{{ submitting ? '写入中...' : '应用到 ' + entries.length + ' 个文件' }}</span>
+        </button>
+      </div>
+    </template>
+  </MdDialog>
 </template>

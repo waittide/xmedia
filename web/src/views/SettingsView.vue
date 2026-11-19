@@ -62,15 +62,15 @@ function selectTab(tab: SettingsTab): void {
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_1fr]">
-      <!-- Left Settings Category Rail -->
-      <nav class="flex gap-1.5 overflow-x-auto lg:flex-col">
+      <!-- Left Settings Category Rail (MD3 Full-Pill Active Indicator) -->
+      <nav class="flex gap-1 overflow-x-auto lg:flex-col">
         <button
           type="button"
-          class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'appearance'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="selectTab('appearance')"
         >
@@ -80,11 +80,11 @@ function selectTab(tab: SettingsTab): void {
 
         <button
           type="button"
-          class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'preferences'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="selectTab('preferences')"
         >
@@ -94,11 +94,11 @@ function selectTab(tab: SettingsTab): void {
 
         <button
           type="button"
-          class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'account'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="selectTab('account')"
         >
@@ -107,15 +107,15 @@ function selectTab(tab: SettingsTab): void {
         </button>
 
         <template v-if="authStore.isAdmin">
-          <div class="my-2 hidden border-t border-[var(--ctp-surface0)]/60 lg:block" />
+          <div class="my-2 hidden h-px bg-[var(--md-sys-color-outline-variant)]/50 lg:block" />
 
           <button
             type="button"
-            class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+            class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
             :class="
               activeTab === 'libraries'
-                ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
             "
             @click="selectTab('libraries')"
           >
@@ -125,11 +125,11 @@ function selectTab(tab: SettingsTab): void {
 
           <button
             type="button"
-            class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+            class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
             :class="
               activeTab === 'users'
-                ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
             "
             @click="selectTab('users')"
           >
@@ -152,7 +152,7 @@ function selectTab(tab: SettingsTab): void {
         <template v-if="activeTab === 'appearance'">
           <AppearanceSettingsPanel />
 
-          <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
+          <section class="md-card-filled p-6">
             <h2 class="text-sm font-bold">{{ t('layout.settingsSectionTitle') }}</h2>
             <p class="mt-1 mb-4 text-xs text-[var(--ctp-subtext0)]">
               {{ t('layout.settingsSectionDesc') }}

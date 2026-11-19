@@ -95,23 +95,23 @@ const summaryText = computed(() => {
 <template>
   <section
     v-if="tasks.length > 0"
-    class="fixed right-4 w-[min(25rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl transition-all"
+    class="fixed right-4 w-[min(24rem,calc(100vw-2rem))] overflow-hidden rounded-[24px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] transition-all"
     :class="[elevatedBottom ? 'bottom-24' : 'bottom-5', highZIndex ? 'z-[60]' : 'z-40']"
   >
     <!-- Header -->
     <div
-      class="flex cursor-pointer items-center justify-between gap-2 bg-[var(--ctp-mantle)] px-4 py-3 select-none"
+      class="md-state flex cursor-pointer items-center justify-between gap-2 px-4 py-3 select-none"
       @click="emit('update:collapsed', !collapsed)"
     >
       <div class="flex min-w-0 items-center gap-2.5">
         <div
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
           :class="
             activeTasks.length > 0
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+              ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
               : failedCount > 0
-                ? 'bg-red-500/15 text-[var(--ctp-red)]'
-                : 'bg-emerald-500/15 text-[var(--ctp-green)]'
+                ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+                : 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
           "
         >
           <LuLoader2 v-if="activeTasks.length > 0" class="h-4 w-4 animate-spin" />

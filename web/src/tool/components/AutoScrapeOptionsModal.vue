@@ -6,8 +6,8 @@ import {
   LuSearchCheck,
   LuShieldCheck,
   LuSparkles,
-  LuX,
 } from 'vue-icons-plus/lu'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
@@ -180,45 +180,18 @@ function handleStart(): void {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
-      @click.self="emit('close')"
-    >
-      <div
-        class="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
-      >
-        <!-- Header -->
-        <div
-          class="flex items-center justify-between gap-3 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/60 px-5 py-4"
-        >
-          <div class="flex items-center gap-2.5">
-            <div
-              class="flex h-9 w-9 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
-            >
-              <LuSparkles class="h-4 w-4" />
-            </div>
-            <div>
-              <h2 class="text-sm font-bold text-[var(--ctp-text)]">
-                批量自动刮削策略 · {{ domainNameMap[domain] }}（{{ entries.length }} 项）
-              </h2>
-              <p class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
-                未命中或低于置信度阈值的项目将自动归入任务清单，可一键聚焦并在右侧对照在线候选精修
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            class="flex h-8 w-8 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
-            @click="emit('close')"
-          >
-            <LuX class="h-4 w-4" />
-          </button>
-        </div>
+  <MdDialog
+    :open="open"
+    :title="'批量自动刮削策略 · ' + domainNameMap[domain] + '（' + entries.length + ' 项）'"
+    subtitle="未命中或低于置信度阈值的项目将自动归入任务清单，可一键聚焦并在右侧对照在线候选精修"
+    max-width="max-w-xl"
+    @close="emit('close')"
+  >
+    <template #icon>
+      <LuSparkles class="h-5 w-5" />
+    </template>
 
-        <!-- Body -->
-        <div class="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+    <div class="space-y-5 py-2">
           <!-- 1. Match Strictness Mode -->
           <div class="space-y-2">
             <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--ctp-text)]">
@@ -362,41 +335,36 @@ function handleStart(): void {
               </button>
             </div>
           </div>
-        </div>
-
-        <!-- Footer -->
-        <div
-          class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/50 px-5 py-3.5"
-        >
-          <button
-            type="button"
-            class="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
-            @click="emit('openDryRun', entries)"
-          >
-            <LuSearchCheck class="h-3.5 w-3.5" />
-            <span>先预演置信度</span>
-          </button>
-
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="h-9 rounded-xl border border-[var(--ctp-surface0)] px-4 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/50"
-              @click="emit('close')"
-            >
-              取消
-            </button>
-            <button
-              type="button"
-              :disabled="entries.length === 0 || !hasAnyFieldSelected"
-              class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-45"
-              @click="handleStart"
-            >
-              <LuSparkles class="h-3.5 w-3.5" />
-              <span>开始自动刮削 ({{ entries.length }})</span>
-            </button>
-          </div>
-        </div>
-      </div>
     </div>
-  </Teleport>
+
+    <template #footer>
+      <button
+        type="button"
+        class="md-btn md-btn-sm md-btn-outlined md-state"
+        @click="emit('openDryRun', entries)"
+      >
+        <LuSearchCheck class="h-3.5 w-3.5" />
+        <span>先预演置信度</span>
+      </button>
+
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-text md-state"
+          @click="emit('close')"
+        >
+          取消
+        </button>
+        <button
+          type="button"
+          :disabled="entries.length === 0 || !hasAnyFieldSelected"
+          class="md-btn md-btn-sm md-btn-filled md-state"
+          @click="handleStart"
+        >
+          <LuSparkles class="h-3.5 w-3.5" />
+          <span>开始自动刮削 ({{ entries.length }})</span>
+        </button>
+      </div>
+    </template>
+  </MdDialog>
 </template>

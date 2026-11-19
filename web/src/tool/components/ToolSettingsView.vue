@@ -91,7 +91,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
       </div>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 py-2 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+        class="md-btn md-btn-sm md-btn-tonal md-state"
         @click="emit('back')"
       >
         <LuArrowLeft class="h-3.5 w-3.5" />
@@ -100,15 +100,15 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
     </div>
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_1fr]">
-      <!-- Left Settings Category Rail -->
-      <nav class="flex gap-1.5 overflow-x-auto lg:flex-col">
+      <!-- Left Settings Category Rail (MD3 Full-Pill Active Indicator) -->
+      <nav class="flex gap-1 overflow-x-auto lg:flex-col">
         <button
           type="button"
-          class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'appearance'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="activeTab = 'appearance'"
         >
@@ -118,11 +118,11 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
 
         <button
           type="button"
-          class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'scrapers'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="activeTab = 'scrapers'"
         >
@@ -130,15 +130,15 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
           <span>刮削源与缓存</span>
         </button>
 
-        <div class="my-1.5 hidden border-t border-[var(--ctp-surface0)]/60 lg:block" />
+        <div class="my-2 hidden h-px bg-[var(--md-sys-color-outline-variant)]/50 lg:block" />
 
         <button
           type="button"
-          class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'roots'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="activeTab = 'roots'"
         >
@@ -148,11 +148,11 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
 
         <button
           type="button"
-          class="flex shrink-0 items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left text-xs font-semibold transition"
+          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
           :class="
             activeTab === 'templates'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-shell)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="activeTab = 'templates'"
         >

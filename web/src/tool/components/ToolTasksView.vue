@@ -15,6 +15,7 @@ import {
   LuSparkles,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import type { MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem, type ToolTaskEntry } from '../tasks'
@@ -132,7 +133,7 @@ function formatTime(ms: number): string {
         <button
           v-if="hasCompleted"
           type="button"
-          class="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+          class="md-btn md-btn-sm md-btn-outlined md-state"
           @click="taskStore.clearCompleted()"
         >
           <LuTrash2 class="h-3.5 w-3.5" />
@@ -141,47 +142,37 @@ function formatTime(ms: number): string {
       </div>
     </div>
 
-    <!-- Filter Tabs -->
-    <div class="inline-flex flex-wrap gap-1 rounded-2xl bg-[var(--ctp-shell)] p-1">
-      <button
-        v-for="tab in [
-          { id: 'all' as const, label: `全部 (${taskStore.persistentTasks.length})` },
-          { id: 'active' as const, label: `进行中 (${taskStore.activeCount})` },
-          { id: 'completed' as const, label: '已完成' },
-          { id: 'failed' as const, label: '未命中 / 异常' },
-        ]"
-        :key="tab.id"
-        type="button"
-        class="rounded-xl px-3.5 py-1.5 text-xs font-semibold transition"
-        :class="
-          statusFilter === tab.id
-            ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-        "
-        @click="statusFilter = tab.id"
-      >
-        {{ tab.label }}
-      </button>
-    </div>
+    <!-- MD3 Segmented Filter Tabs -->
+    <MdSegmentedButton
+      v-model="statusFilter"
+      :options="[
+        { value: 'all', label: '全部 (' + taskStore.persistentTasks.length + ')' },
+        { value: 'active', label: '进行中 (' + taskStore.activeCount + ')' },
+        { value: 'completed', label: '已完成' },
+        { value: 'failed', label: '未命中 / 异常' },
+      ]"
+      size="sm"
+      show-check
+    />
 
     <!-- Empty State -->
     <div
       v-if="filteredTasks.length === 0"
-      class="rounded-3xl border border-dashed border-[var(--ctp-surface1)] bg-[var(--ctp-shell)]/55 py-16 text-center"
+      class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-16 text-center"
     >
-      <LuClock class="mx-auto mb-3 h-7 w-7 text-[var(--ctp-subtext0)]" />
-      <p class="text-sm font-semibold text-[var(--ctp-text)]">{{ txt.tasks.emptyTitle }}</p>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+      <LuClock class="mx-auto mb-3 h-7 w-7 text-[var(--md-sys-color-on-surface-variant)]" />
+      <p class="text-sm font-semibold">{{ txt.tasks.emptyTitle }}</p>
+      <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
         {{ txt.tasks.emptyDesc }}
       </p>
     </div>
 
-    <!-- Task Cards -->
+    <!-- MD3 Tonal Task Cards -->
     <div v-else class="space-y-3">
       <div
         v-for="task in filteredTasks"
         :key="task.id"
-        class="card-soft overflow-hidden rounded-2xl bg-[var(--ctp-shell)]"
+        class="md-card-filled overflow-hidden"
       >
         <div class="space-y-3 p-4 sm:p-5">
           <div class="flex flex-wrap items-start justify-between gap-3">
