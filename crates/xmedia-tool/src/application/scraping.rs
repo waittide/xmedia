@@ -1674,6 +1674,7 @@ fn map_scraped_to_patch(
                     .get("bangumi")
                     .cloned()
                     .or_else(|| (s.provider_id == "bangumi").then(|| s.external_id.clone())),
+                ..Default::default()
             })
         }
     }

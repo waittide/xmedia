@@ -136,13 +136,19 @@ pub struct VideoFileMeta {
     pub actors: Vec<String>,
     pub directors: Vec<String>,
     pub studio: Option<String>,
+    #[serde(default)]
+    pub collection_set: Option<String>,
     pub tmdb_id: Option<String>,
     pub bangumi_id: Option<String>,
+    #[serde(default)]
+    pub locked_fields: Vec<String>,
     pub has_nfo: bool,
     pub nfo_filename: String,
     pub has_poster: bool,
     pub has_fanart: bool,
     pub has_thumb: bool,
+    #[serde(default)]
+    pub has_clearlogo: bool,
     pub duration_secs: u32,
     pub width: Option<u32>,
     pub height: Option<u32>,
@@ -251,8 +257,12 @@ pub struct VideoMetaPatch {
     pub actors: Option<Vec<String>>,
     pub directors: Option<Vec<String>>,
     pub studio: Option<String>,
+    #[serde(default)]
+    pub collection_set: Option<String>,
     pub tmdb_id: Option<String>,
     pub bangumi_id: Option<String>,
+    #[serde(default)]
+    pub locked_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

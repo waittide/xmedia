@@ -10,7 +10,7 @@ use xmedia_core::domain::library::MediaKind;
 use crate::application::settings::ToolSettingsService;
 use crate::domain::media::{
     ComicMetaPatch, DirectorySnapshot, FolderEntryDto, MediaFileDetail, MediaFileEntry,
-    MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch, RenamePlanItem,
+    MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch, RenamePlanItem, VideoMetaPatch,
 };
 use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
@@ -37,7 +37,14 @@ use crate::infra::inspectors::music_ops::{
     ReplayGainReportDto, apply_replaygain_batch, optimize_music_cover, process_music_lyrics,
     split_cue_album,
 };
-use crate::infra::inspectors::video::dir_has_single_video;
+use crate::infra::inspectors::video::{
+    dir_has_single_video, read_base_video_meta, render_season_nfo_xml,
+};
+use crate::infra::inspectors::video_ops::{
+    BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
+    ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
+    extract_embedded_subtitle, list_video_subtitles, process_video_subtitle,
+};
 use crate::infra::inspectors::zh_text::BookTextTransformOptions;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1276,6 +1283,137 @@ impl MediaWorkbenchService {
         }
 
         Ok(BatchMusicAlbumSyncReportDto {
+            updated_count,
+            failed_paths,
+        })
+    }
+
+    pub async fn list_video_subtitles(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+    ) -> DomainResult<Vec<VideoSubtitleInfoDto>> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Video))
+            .await?;
+        let abs = sandbox.abs_path;
+        tokio::task::spawn_blocking(move || list_video_subtitles(&abs))
+            .await
+            .map_err(|e| DomainError::Storage(format!("list video subtitles task failed: {e}")))?
+    }
+
+    pub async fn process_video_subtitle(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        input: ProcessSubtitleInput,
+    ) -> DomainResult<(ProcessSubtitleReportDto, MediaFileDetail)> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Video))
+            .await?;
+        let abs = sandbox.abs_path;
+        let report = tokio::task::spawn_blocking(move || process_video_subtitle(&abs, &input))
+            .await
+            .map_err(|e| DomainError::Storage(format!("process subtitle task failed: {e}")))??;
+        let detail = self
+            .inspect_file(root_id, rel_path, Some(MediaKind::Video))
+            .await?;
+        Ok((report, detail))
+    }
+
+    pub async fn extract_video_embedded_subtitle(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        stream_index: u32,
+        language_tag: Option<String>,
+        output_ext: String,
+        ffmpeg_bin: String,
+    ) -> DomainResult<(ExtractSubtitleReportDto, MediaFileDetail)> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Video))
+            .await?;
+        let abs = sandbox.abs_path;
+        let report = tokio::task::spawn_blocking(move || {
+            extract_embedded_subtitle(
+                &abs,
+                stream_index,
+                language_tag.as_deref(),
+                &output_ext,
+                &ffmpeg_bin,
+            )
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("extract subtitle task failed: {e}")))??;
+        let detail = self
+            .inspect_file(root_id, rel_path, Some(MediaKind::Video))
+            .await?;
+        Ok((report, detail))
+    }
+
+    pub async fn batch_remap_video_episodes(
+        &self,
+        root_id: RootId,
+        paths: Vec<String>,
+        input: BatchRemapEpisodesInput,
+    ) -> DomainResult<BatchRemapEpisodesReportDto> {
+        let root = self.settings.find_root(root_id).await?;
+        let mut updated_count = 0usize;
+        let mut failed_paths = Vec::new();
+        let mut wrote_season_nfo = false;
+
+        for (idx, rel_path) in paths.iter().enumerate() {
+            let sb = match root.resolve_existing(rel_path) {
+                Ok(sb) => sb,
+                Err(_) => {
+                    failed_paths.push(rel_path.clone());
+                    continue;
+                }
+            };
+            let base = read_base_video_meta(&sb.abs_path);
+            let new_ep = if input.mode == "absolute_offset" {
+                let cur = base.episode_number.unwrap_or((idx + 1) as u32) as i32;
+                (cur + input.episode_offset).max(1) as u32
+            } else {
+                input.start_episode + idx as u32
+            };
+
+            let patch = MediaMetadataPatch::Video(VideoMetaPatch {
+                is_episode: Some(true),
+                show_title: input.show_title.clone(),
+                season_number: input.season_number.map(|s| s as i32),
+                episode_number: Some(new_ep),
+                ..Default::default()
+            });
+
+            match self.write_metadata(root_id, rel_path, patch).await {
+                Ok(_) => {
+                    updated_count += 1;
+                    if input.write_season_nfo
+                        && !wrote_season_nfo
+                        && let Some(season_num) = input.season_number
+                        && let Some(parent) = sb.abs_path.parent()
+                    {
+                        let nfo = render_season_nfo_xml(
+                            season_num,
+                            None,
+                            base.year,
+                            None,
+                            base.tmdb_id.as_deref(),
+                            base.bangumi_id.as_deref(),
+                        );
+                        let _ = crate::infra::atomic_fs::atomic_write_bytes(
+                            &parent.join("season.nfo"),
+                            nfo.as_bytes(),
+                        );
+                        wrote_season_nfo = true;
+                    }
+                }
+                Err(_) => failed_paths.push(rel_path.clone()),
+            }
+        }
+
+        Ok(BatchRemapEpisodesReportDto {
             updated_count,
             failed_paths,
         })

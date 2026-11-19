@@ -514,6 +514,20 @@ fn parse_nfo_into(xml_bytes: &[u8], meta: &mut VideoFileMeta) {
                                 }
                             }
                             "studio" => meta.studio = Some(trimmed.to_string()),
+                            "name" if parent == "set" => {
+                                meta.collection_set = Some(trimmed.to_string());
+                            }
+                            "set" if meta.collection_set.is_none() => {
+                                meta.collection_set = Some(trimmed.to_string());
+                            }
+                            "lockedfields" => {
+                                for f in trimmed.split('|') {
+                                    let lf = f.trim().to_ascii_lowercase();
+                                    if !lf.is_empty() && !meta.locked_fields.contains(&lf) {
+                                        meta.locked_fields.push(lf);
+                                    }
+                                }
+                            }
                             "tmdbid" => meta.tmdb_id = Some(trimmed.to_string()),
                             "uniqueid" => match current_unique_type.as_deref() {
                                 Some("tmdb") => meta.tmdb_id = Some(trimmed.to_string()),
@@ -616,13 +630,97 @@ pub(crate) fn render_video_nfo_xml(meta: &VideoFileMeta) -> String {
             xml.push_str("  </actor>\n");
         }
     }
+    if !meta.is_episode
+        && let Some(ref set_name) = meta.collection_set
+        && !set_name.trim().is_empty()
+    {
+        xml.push_str("  <set>\n");
+        xml.push_str(&format!("    <name>{}</name>\n", escape(set_name.trim())));
+        xml.push_str("  </set>\n");
+    }
+    if !meta.locked_fields.is_empty() {
+        xml.push_str(&format!(
+            "  <lockedfields>{}</lockedfields>\n",
+            escape(meta.locked_fields.join("|"))
+        ));
+    }
     append_unique_ids_xml(
         &mut xml,
         meta.tmdb_id.as_deref(),
         meta.bangumi_id.as_deref(),
     );
+    if meta.width.is_some()
+        || meta.video_codec.is_some()
+        || !meta.audio_streams.is_empty()
+        || !meta.subtitle_streams.is_empty()
+    {
+        xml.push_str("  <fileinfo>\n    <streamdetails>\n");
+        if meta.width.is_some() || meta.video_codec.is_some() {
+            xml.push_str("      <video>\n");
+            if let Some(ref codec) = meta.video_codec {
+                xml.push_str(&format!("        <codec>{}</codec>\n", escape(codec)));
+            }
+            if let Some(w) = meta.width {
+                xml.push_str(&format!("        <width>{w}</width>\n"));
+            }
+            if let Some(h) = meta.height {
+                xml.push_str(&format!("        <height>{h}</height>\n"));
+            }
+            if meta.duration_secs > 0 {
+                xml.push_str(&format!(
+                    "        <durationinseconds>{}</durationinseconds>\n",
+                    meta.duration_secs
+                ));
+            }
+            xml.push_str("      </video>\n");
+        }
+        for a in &meta.audio_streams {
+            xml.push_str("      <audio>\n");
+            if !a.codec.trim().is_empty() {
+                xml.push_str(&format!(
+                    "        <codec>{}</codec>\n",
+                    escape(a.codec.trim())
+                ));
+            }
+            if let Some(ref lang) = a.language {
+                xml.push_str(&format!("        <language>{}</language>\n", escape(lang)));
+            }
+            if a.channels > 0 {
+                xml.push_str(&format!("        <channels>{}</channels>\n", a.channels));
+            }
+            xml.push_str("      </audio>\n");
+        }
+        for s in &meta.subtitle_streams {
+            if let Some(ref lang) = s.language {
+                xml.push_str("      <subtitle>\n");
+                xml.push_str(&format!("        <language>{}</language>\n", escape(lang)));
+                xml.push_str("      </subtitle>\n");
+            }
+        }
+        xml.push_str("    </streamdetails>\n  </fileinfo>\n");
+    }
     xml.push_str(&format!("</{root_tag}>\n"));
     xml
+}
+
+fn find_clearlogo_path(video_path: &Path) -> Option<PathBuf> {
+    let parent = video_path.parent()?;
+    let stem = video_path.file_stem()?.to_str()?;
+    for ext in ["png", "webp", "jpg"] {
+        let p = parent.join(format!("{stem}-clearlogo.{ext}"));
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if allow_dir_level_artwork(parent) {
+        for ext in ["png", "webp", "jpg"] {
+            let p = parent.join(format!("clearlogo.{ext}"));
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 fn clean_id(raw: &str) -> &str {
@@ -773,6 +871,7 @@ pub(crate) fn read_base_video_meta(path: &Path) -> VideoFileMeta {
         has_poster: find_poster_path(path).is_some(),
         has_fanart: find_fanart_path(path).is_some(),
         has_thumb: find_thumb_path(path).is_some(),
+        has_clearlogo: find_clearlogo_path(path).is_some(),
         sidecar_subtitles: list_sidecar_subtitles(path),
         ..Default::default()
     };
@@ -884,6 +983,19 @@ pub(crate) fn apply_video_patch_onto(meta: &mut VideoFileMeta, vp: VideoMetaPatc
     }
     if let Some(bgm) = vp.bangumi_id {
         meta.bangumi_id = (!bgm.trim().is_empty()).then(|| bgm.trim().to_string());
+    }
+    if let Some(set_name) = vp.collection_set {
+        meta.collection_set = (!set_name.trim().is_empty()).then(|| set_name.trim().to_string());
+    }
+    if let Some(locks) = vp.locked_fields {
+        let mut clean = Vec::new();
+        for f in locks {
+            let low = f.trim().to_ascii_lowercase();
+            if !low.is_empty() && !clean.contains(&low) {
+                clean.push(low);
+            }
+        }
+        meta.locked_fields = clean;
     }
 }
 
@@ -1064,6 +1176,7 @@ impl MediaInspectorPort for VideoNfoInspector {
             let resolved = match slot_owned.as_deref() {
                 Some("fanart") | Some("backdrop") => find_fanart_path(&p),
                 Some("thumb") => find_thumb_path(&p),
+                Some("clearlogo") | Some("logo") => find_clearlogo_path(&p),
                 Some("poster") | Some("cover") => find_poster_path(&p),
                 _ => find_poster_path(&p)
                     .or_else(|| find_fanart_path(&p))
@@ -1122,10 +1235,18 @@ impl MediaInspectorPort for VideoNfoInspector {
         let use_dir_artwork = is_jellyfin_movie_dir || is_jellyfin_season || is_jellyfin_show;
 
         let is_thumb = slot.eq_ignore_ascii_case("thumb");
+        let is_clearlogo =
+            slot.eq_ignore_ascii_case("clearlogo") || slot.eq_ignore_ascii_case("logo");
         let is_fanart =
             slot.eq_ignore_ascii_case("fanart") || slot.eq_ignore_ascii_case("backdrop");
         let stem_base = if is_thumb {
             format!("{stem}-thumb")
+        } else if is_clearlogo {
+            if use_dir_artwork {
+                "clearlogo".to_string()
+            } else {
+                format!("{stem}-clearlogo")
+            }
         } else if is_fanart {
             if use_dir_artwork {
                 "fanart".to_string()

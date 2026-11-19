@@ -47,6 +47,10 @@ use crate::infra::inspectors::music_ops::{
     MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
     ReplayGainReportDto,
 };
+use crate::infra::inspectors::video_ops::{
+    BatchRemapEpisodesInput, BatchRemapEpisodesReportDto, ExtractSubtitleReportDto,
+    ProcessSubtitleInput, ProcessSubtitleReportDto, VideoSubtitleInfoDto,
+};
 use crate::infra::inspectors::zh_text::BookTextTransformOptions;
 use crate::infra::scrape_cache::ScrapeCacheStatsDto;
 
@@ -113,6 +117,19 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/music/replaygain", post(apply_music_replaygain))
         .route("/music/split-cue", post(split_music_cue))
         .route("/music/batch-sync", post(batch_sync_music_album))
+        .route("/video/subtitles", get(list_video_subtitles_route))
+        .route(
+            "/video/subtitles/process",
+            post(process_video_subtitle_route),
+        )
+        .route(
+            "/video/subtitles/extract",
+            post(extract_video_subtitle_route),
+        )
+        .route(
+            "/video/episodes/batch-remap",
+            post(batch_remap_episodes_route),
+        )
 }
 
 #[derive(Serialize)]
@@ -1258,6 +1275,103 @@ async fn batch_sync_music_album(
     let report = state
         .workbench
         .batch_sync_music_album(RootId(req.root_id), req.paths, req.input)
+        .await?;
+    Ok(Json(report))
+}
+
+async fn list_video_subtitles_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Query(q): Query<FileTargetQuery>,
+) -> ApiResult<Json<Vec<VideoSubtitleInfoDto>>> {
+    let items = state
+        .workbench
+        .list_video_subtitles(RootId(q.root_id), &q.path)
+        .await?;
+    Ok(Json(items))
+}
+
+#[derive(Deserialize)]
+struct ProcessVideoSubtitleRequest {
+    root_id: Uuid,
+    path: String,
+    #[serde(flatten)]
+    input: ProcessSubtitleInput,
+}
+
+#[derive(Serialize)]
+struct ProcessVideoSubtitleResponse {
+    report: ProcessSubtitleReportDto,
+    detail: MediaFileDetail,
+}
+
+async fn process_video_subtitle_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<ProcessVideoSubtitleRequest>,
+) -> ApiResult<Json<ProcessVideoSubtitleResponse>> {
+    let (report, detail) = state
+        .workbench
+        .process_video_subtitle(RootId(req.root_id), &req.path, req.input)
+        .await?;
+    Ok(Json(ProcessVideoSubtitleResponse { report, detail }))
+}
+
+#[derive(Deserialize)]
+struct ExtractVideoSubtitleRequest {
+    root_id: Uuid,
+    path: String,
+    stream_index: u32,
+    language_tag: Option<String>,
+    #[serde(default = "default_sub_ext")]
+    output_ext: String,
+}
+
+fn default_sub_ext() -> String {
+    "srt".to_string()
+}
+
+#[derive(Serialize)]
+struct ExtractVideoSubtitleResponse {
+    report: ExtractSubtitleReportDto,
+    detail: MediaFileDetail,
+}
+
+async fn extract_video_subtitle_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<ExtractVideoSubtitleRequest>,
+) -> ApiResult<Json<ExtractVideoSubtitleResponse>> {
+    let (report, detail) = state
+        .workbench
+        .extract_video_embedded_subtitle(
+            RootId(req.root_id),
+            &req.path,
+            req.stream_index,
+            req.language_tag,
+            req.output_ext,
+            state.ffmpeg.ffmpeg_bin().to_string(),
+        )
+        .await?;
+    Ok(Json(ExtractVideoSubtitleResponse { report, detail }))
+}
+
+#[derive(Deserialize)]
+struct BatchRemapEpisodesRequest {
+    root_id: Uuid,
+    paths: Vec<String>,
+    #[serde(flatten)]
+    input: BatchRemapEpisodesInput,
+}
+
+async fn batch_remap_episodes_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<BatchRemapEpisodesRequest>,
+) -> ApiResult<Json<BatchRemapEpisodesReportDto>> {
+    let report = state
+        .workbench
+        .batch_remap_video_episodes(RootId(req.root_id), req.paths, req.input)
         .await?;
     Ok(Json(report))
 }
