@@ -23,6 +23,17 @@ function normalizeIsbn(raw: string | null | undefined): string {
   return raw.replace(/[^0-9xX]/g, '').toUpperCase()
 }
 
+const CN_WEBNOVEL_PROVIDERS = new Set([
+  'qidian',
+  'fanqie',
+  'qimao',
+  '17k',
+  'ciweimao',
+  'sfacg',
+  'faloo',
+  'jjwxc',
+])
+
 function isAsciiOnly(s: string): boolean {
   for (let i = 0; i < s.length; i += 1) {
     if (s.charCodeAt(i) > 127) return false
@@ -40,22 +51,46 @@ function promoteExactMatchAnchor(
   if (isbnHint && isbnHint.trim().length > 0) return
   const kwNorm = normalizeForMatch(keyword)
   if (!kwNorm) return
+  const kwLen = Array.from(kwNorm).length
   const authorNorm = normalizeForMatch(authorHint)
+  const authorLen = Array.from(authorNorm).length
 
   const exactTitle = (m: ScrapedMetadata): boolean =>
     [m.title, m.original_title, m.series_or_album].some(
       (t) => Boolean(t) && normalizeForMatch(t) === kwNorm,
     )
-  const exactAuthor = (m: ScrapedMetadata): boolean =>
-    Boolean(authorNorm) && m.creators.some((c) => normalizeForMatch(c) === authorNorm)
+  const prefixTitle = (m: ScrapedMetadata): boolean =>
+    [m.title, m.original_title, m.series_or_album].some((t) => {
+      if (!t) return false
+      const nt = normalizeForMatch(t)
+      const ntLen = Array.from(nt).length
+      return (
+        nt === kwNorm ||
+        (kwLen >= 3 && (nt.includes(kwNorm) || (ntLen >= 3 && kwNorm.includes(nt))))
+      )
+    })
+  const matchAuthor = (m: ScrapedMetadata): boolean =>
+    Boolean(authorNorm) &&
+    [...m.creators, ...m.illustrators_or_directors].some((c) => {
+      const nc = normalizeForMatch(c)
+      return nc === authorNorm || (authorLen >= 2 && nc.includes(authorNorm))
+    })
 
   if (authorNorm) {
-    if (exactTitle(sources[0]!.data) && exactAuthor(sources[0]!.data)) return
-    const idx = sources.findIndex((s) => exactTitle(s.data) && exactAuthor(s.data))
-    if (idx > 0) {
-      const [item] = sources.splice(idx, 1)
+    if (exactTitle(sources[0]!.data) && matchAuthor(sources[0]!.data)) return
+    const exactIdx = sources.findIndex((s) => exactTitle(s.data) && matchAuthor(s.data))
+    if (exactIdx > 0) {
+      const [item] = sources.splice(exactIdx, 1)
       sources.unshift(item!)
       return
+    }
+    if (!(prefixTitle(sources[0]!.data) && matchAuthor(sources[0]!.data))) {
+      const prefixIdx = sources.findIndex((s) => prefixTitle(s.data) && matchAuthor(s.data))
+      if (prefixIdx > 0) {
+        const [item] = sources.splice(prefixIdx, 1)
+        sources.unshift(item!)
+        return
+      }
     }
   }
 
@@ -117,6 +152,12 @@ function isCompatibleSecondarySource(
       ),
     )
     if (!overlap) {
+      if (
+        CN_WEBNOVEL_PROVIDERS.has(primary.provider_id) ||
+        CN_WEBNOVEL_PROVIDERS.has(secondary.provider_id)
+      ) {
+        return false
+      }
       const pAscii = pTitles.every(isAsciiOnly)
       const sAscii = sTitles.every(isAsciiOnly)
       if (pAscii && sAscii) {
@@ -134,6 +175,7 @@ function isCompatibleSecondarySource(
 
   if (
     (effTarget === 'book' ||
+      effTarget === 'comic' ||
       effTarget === 'music_track' ||
       effTarget === 'music_album' ||
       effTarget === 'lyrics') &&
@@ -144,7 +186,10 @@ function isCompatibleSecondarySource(
     const sCreators = secondary.creators.map(normalizeForMatch).filter(Boolean)
     const pAscii = pCreators.every(isAsciiOnly)
     const sAscii = sCreators.every(isAsciiOnly)
-    if (pCreators.length > 0 && sCreators.length > 0 && pAscii === sAscii) {
+    const involvesCnWebnovel =
+      CN_WEBNOVEL_PROVIDERS.has(primary.provider_id) ||
+      CN_WEBNOVEL_PROVIDERS.has(secondary.provider_id)
+    if (pCreators.length > 0 && sCreators.length > 0 && (pAscii === sAscii || involvesCnWebnovel)) {
       const sameAuthor = pCreators.some((pc) =>
         sCreators.some((sc) => pc === sc || pc.includes(sc) || sc.includes(pc)),
       )
