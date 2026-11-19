@@ -89,6 +89,16 @@ function isCompatibleSecondarySource(
     return false
   }
 
+  if (effTarget === 'music_track' || effTarget === 'music_album' || effTarget === 'lyrics') {
+    const pLow = (primary.title ?? '').toLowerCase()
+    const sLow = (secondary.title ?? '').toLowerCase()
+    for (const marker of ['翻唱', '原唱', '伴奏', 'ktv', 'karaoke', '铃声']) {
+      if (sLow.includes(marker) && !pLow.includes(marker)) {
+        return false
+      }
+    }
+  }
+
   const collectTitles = (m: ScrapedMetadata): string[] =>
     [m.title, m.original_title, m.series_or_album]
       .map((s) => normalizeForMatch(s))
@@ -122,7 +132,14 @@ function isCompatibleSecondarySource(
     }
   }
 
-  if (effTarget === 'book' && primary.creators.length > 0 && secondary.creators.length > 0) {
+  if (
+    (effTarget === 'book' ||
+      effTarget === 'music_track' ||
+      effTarget === 'music_album' ||
+      effTarget === 'lyrics') &&
+    primary.creators.length > 0 &&
+    secondary.creators.length > 0
+  ) {
     const pCreators = primary.creators.map(normalizeForMatch).filter(Boolean)
     const sCreators = secondary.creators.map(normalizeForMatch).filter(Boolean)
     const pAscii = pCreators.every(isAsciiOnly)
