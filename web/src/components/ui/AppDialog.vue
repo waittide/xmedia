@@ -24,35 +24,41 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <Teleport to="body">
-    <div
-      v-if="open"
-      class="fixed inset-0 z-[9980] flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
-      @mousedown.self="emit('close')"
-    >
+    <Transition name="md-fade">
       <div
-        class="w-full overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] shadow-2xl"
-        :class="maxWidthClass || 'max-w-lg'"
+        v-if="open"
+        class="fixed inset-0 z-[9980] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+        @mousedown.self="emit('close')"
       >
-        <div class="flex items-center justify-between border-b border-[var(--border-subtle)] px-5 py-4">
-          <h3 class="text-base font-semibold text-[var(--text-primary)]">{{ title }}</h3>
-          <button
-            type="button"
-            class="rounded-lg p-1.5 text-[var(--text-secondary)] transition hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)]"
-            @click="emit('close')"
+        <Transition name="md-dialog" appear>
+          <div
+            role="dialog"
+            aria-modal="true"
+            class="w-full overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
+            :class="maxWidthClass || 'max-w-lg'"
           >
-            <LuX class="h-4 w-4" />
-          </button>
-        </div>
-        <div class="max-h-[80vh] overflow-y-auto p-5">
-          <slot />
-        </div>
-        <div
-          v-if="$slots.footer"
-          class="flex items-center justify-end gap-2.5 border-t border-[var(--border-subtle)] bg-[var(--bg-mantle)]/45 px-5 py-3.5"
-        >
-          <slot name="footer" />
-        </div>
+            <div class="flex items-center justify-between px-6 pt-6 pb-3">
+              <h3 class="text-lg font-semibold tracking-tight">{{ title }}</h3>
+              <button
+                type="button"
+                class="md-icon-btn md-icon-btn-sm md-state"
+                @click="emit('close')"
+              >
+                <LuX class="h-4 w-4" />
+              </button>
+            </div>
+            <div class="max-h-[78vh] overflow-y-auto px-6 py-2">
+              <slot />
+            </div>
+            <div
+              v-if="$slots.footer"
+              class="flex items-center justify-end gap-2 px-6 pt-3 pb-5"
+            >
+              <slot name="footer" />
+            </div>
+          </div>
+        </Transition>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>

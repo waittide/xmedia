@@ -254,6 +254,8 @@ export default {
     accentModeCatppuccin: 'Catppuccin 14 色',
     accentModeCustom: '自定义色值',
     presets: {
+      'material-you-light': 'Material You 浅色',
+      'material-you-dark': 'Material You 深色',
       'catppuccin-latte': 'Catppuccin Latte',
       'warm-paper': '暖纸书卷 Warm Paper',
       'rose-pine-dawn': 'Rosé Pine Dawn',

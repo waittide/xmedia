@@ -254,6 +254,8 @@ export default {
     accentModeCatppuccin: 'Catppuccin 14',
     accentModeCustom: 'Custom Hex',
     presets: {
+      'material-you-light': 'Material You Light',
+      'material-you-dark': 'Material You Dark',
       'catppuccin-latte': 'Catppuccin Latte',
       'warm-paper': 'Warm Paper',
       'rose-pine-dawn': 'Rosé Pine Dawn',

@@ -7,6 +7,7 @@ import { useEventsStore } from '@/stores/events'
 import { useThemeStore } from '@/stores/theme'
 import { usePlayerStore } from '@/domains/music/player'
 import AppDialogHost from '@/components/ui/AppDialogHost.vue'
+import MdSnackbarHost from '@/components/ui/MdSnackbarHost.vue'
 import PlayerBar from '@/domains/music/components/PlayerBar.vue'
 import QueueDrawer from '@/domains/music/components/QueueDrawer.vue'
 import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
@@ -64,4 +65,5 @@ const showMusicBar = computed(
     <LyricsOverlay />
   </template>
   <AppDialogHost />
+  <MdSnackbarHost />
 </template>

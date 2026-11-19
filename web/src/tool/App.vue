@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { LuAlertCircle, LuLock, LuRefreshCw, LuWrench } from 'vue-icons-plus/lu'
 import AppDialogHost from '@/components/ui/AppDialogHost.vue'
+import MdSnackbarHost from '@/components/ui/MdSnackbarHost.vue'
 import { useThemeStore } from '@/stores/theme'
 import { setToolToken, toolApi } from './api'
 import ToolWorkspace from './components/ToolWorkspace.vue'
@@ -177,4 +178,5 @@ onBeforeUnmount(() => {
   <ToolWorkspace v-else :status="status" @lock="handleLock" />
 
   <AppDialogHost />
+  <MdSnackbarHost />
 </template>

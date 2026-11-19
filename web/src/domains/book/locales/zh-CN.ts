@@ -111,6 +111,8 @@ export default {
     languageDesc: '选择 Web 工作台与阅读器控件的显示语言，即时生效并同步至账号偏好。',
     toggleQuick: '切换明暗主题',
     presets: {
+      'material-you-light': 'Material You 浅色',
+      'material-you-dark': 'Material You 深色',
       'catppuccin-latte': 'Catppuccin Latte',
       'warm-paper': '暖纸书卷 Warm Paper',
       'rose-pine-dawn': 'Rosé Pine Dawn',

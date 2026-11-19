@@ -112,6 +112,19 @@ export const CATPPUCCIN_ACCENT_HEX: Record<
 
 export const LIGHT_PALETTE_PRESETS: readonly PalettePreset[] = [
   {
+    id: 'material-you-light',
+    kind: 'light',
+    defaultAccent: '#0b57d0',
+    tokens: {
+      canvas: '#fdfcff',
+      shell: '#f0f4f9',
+      surface: '#dfe3ec',
+      text: '#1b1b1f',
+      subtext: '#44474f',
+    },
+    semantic: { red: '#ba1a1a', green: '#146c2e', yellow: '#9a5b00' },
+  },
+  {
     id: 'catppuccin-latte',
     kind: 'light',
     defaultAccent: '#1e66f5',
@@ -180,6 +193,19 @@ export const LIGHT_PALETTE_PRESETS: readonly PalettePreset[] = [
 ] as const
 
 export const DARK_PALETTE_PRESETS: readonly PalettePreset[] = [
+  {
+    id: 'material-you-dark',
+    kind: 'dark',
+    defaultAccent: '#a8c7fa',
+    tokens: {
+      canvas: '#111318',
+      shell: '#1a1d24',
+      surface: '#2b2f3a',
+      text: '#e2e2e9',
+      subtext: '#c4c6d0',
+    },
+    semantic: { red: '#ffb4ab', green: '#81c995', yellow: '#fdd663' },
+  },
   {
     id: 'catppuccin-mocha',
     kind: 'dark',
@@ -398,11 +424,133 @@ export function applyResolvedPaletteToDom(
   root.style.setProperty('--ctp-green', resolved.green)
   root.style.setProperty('--ctp-yellow', resolved.yellow)
 
+  // Material Design 3 (Material You) dynamic tonal surface & container tokens
+  const surface = resolved.canvas
+  const surfaceDim = isDark
+    ? mixHex(surface, '#000000', 0.86)
+    : mixHex(surface, resolved.surface0, 0.62)
+  const surfaceBright = isDark
+    ? mixHex(surface, '#ffffff', 0.86)
+    : mixHex(surface, '#ffffff', 0.25)
+
+  const containerLowest = isDark
+    ? mixHex(surface, '#000000', 0.72)
+    : mixHex(surface, '#ffffff', 0.15)
+  const containerLow = isDark
+    ? mixHex(mixHex(surface, resolved.shell, 0.35), resolved.accent, 0.96)
+    : mixHex(mixHex(surface, resolved.shell, 0.45), resolved.accent, 0.97)
+  const containerDefault = isDark
+    ? mixHex(resolved.shell, resolved.accent, 0.94)
+    : mixHex(resolved.shell, resolved.accent, 0.95)
+  const containerHigh = isDark
+    ? mixHex(mixHex(resolved.shell, resolved.surface0, 0.5), resolved.accent, 0.91)
+    : mixHex(mixHex(resolved.shell, resolved.surface0, 0.62), resolved.accent, 0.93)
+  const containerHighest = isDark
+    ? mixHex(resolved.surface0, resolved.accent, 0.88)
+    : mixHex(resolved.surface0, resolved.accent, 0.90)
+
+  const primaryContainer = isDark
+    ? mixHex(resolved.accent, surface, 0.34)
+    : mixHex(resolved.accent, '#ffffff', 0.18)
+  const onPrimaryContainer = isDark
+    ? mixHex(resolved.accent, '#ffffff', 0.22)
+    : mixHex(resolved.accent, '#081020', 0.45)
+
+  const secondaryContainer = isDark
+    ? mixHex(resolved.accent, containerHighest, 0.24)
+    : mixHex(resolved.accent, containerHigh, 0.16)
+  const onSecondaryContainer = isDark
+    ? mixHex(resolved.text, '#ffffff', 0.78)
+    : mixHex(resolved.accent, '#10141c', 0.32)
+
+  const tertiarySeed = isDark ? resolved.yellow : resolved.green
+  const tertiaryContainer = isDark
+    ? mixHex(tertiarySeed, surface, 0.24)
+    : mixHex(tertiarySeed, '#ffffff', 0.16)
+  const onTertiaryContainer = isDark
+    ? mixHex(tertiarySeed, '#ffffff', 0.25)
+    : mixHex(tertiarySeed, '#0e1a12', 0.45)
+
+  const errorContainer = isDark
+    ? mixHex(resolved.red, surface, 0.28)
+    : mixHex(resolved.red, '#ffffff', 0.14)
+  const onErrorContainer = isDark
+    ? mixHex(resolved.red, '#ffffff', 0.2)
+    : mixHex(resolved.red, '#2b0609', 0.45)
+
+  const successContainer = isDark
+    ? mixHex(resolved.green, surface, 0.24)
+    : mixHex(resolved.green, '#ffffff', 0.16)
+  const onSuccessContainer = isDark
+    ? mixHex(resolved.green, '#ffffff', 0.2)
+    : mixHex(resolved.green, '#09210e', 0.42)
+
+  const warningContainer = isDark
+    ? mixHex(resolved.yellow, surface, 0.24)
+    : mixHex(resolved.yellow, '#ffffff', 0.18)
+  const onWarningContainer = isDark
+    ? mixHex(resolved.yellow, '#ffffff', 0.22)
+    : mixHex(resolved.yellow, '#2c1900', 0.42)
+
+  const outline = mixHex(resolved.subtext0, surface, 0.65)
+  const outlineVariant = mixHex(resolved.surface0, surface, 0.72)
+
+  const inverseSurface = isDark ? '#e3e2e9' : '#2e3038'
+  const inverseOnSurface = isDark ? '#1b1b1f' : '#f2f0f7'
+  const inversePrimary = isDark
+    ? mixHex(resolved.accent, '#000000', 0.52)
+    : mixHex(resolved.accent, '#ffffff', 0.42)
+
+  const [tr, tg, tb] = parseHexRgb(resolved.text)
+  const onSurfaceRgb = [tr, tg, tb].join(' ')
+
+  root.style.setProperty('--md-sys-color-surface', surface)
+  root.style.setProperty('--md-sys-color-surface-dim', surfaceDim)
+  root.style.setProperty('--md-sys-color-surface-bright', surfaceBright)
+  root.style.setProperty('--md-sys-color-surface-container-lowest', containerLowest)
+  root.style.setProperty('--md-sys-color-surface-container-low', containerLow)
+  root.style.setProperty('--md-sys-color-surface-container', containerDefault)
+  root.style.setProperty('--md-sys-color-surface-container-high', containerHigh)
+  root.style.setProperty('--md-sys-color-surface-container-highest', containerHighest)
+  root.style.setProperty('--md-sys-color-on-surface', resolved.text)
+  root.style.setProperty('--md-sys-color-on-surface-rgb', onSurfaceRgb)
+  root.style.setProperty('--md-sys-color-on-surface-variant', resolved.subtext0)
+  root.style.setProperty('--md-sys-color-outline', outline)
+  root.style.setProperty('--md-sys-color-outline-variant', outlineVariant)
+
+  root.style.setProperty('--md-sys-color-primary', resolved.accent)
+  root.style.setProperty('--md-sys-color-on-primary', resolved.onAccent)
+  root.style.setProperty('--md-sys-color-primary-container', primaryContainer)
+  root.style.setProperty('--md-sys-color-on-primary-container', onPrimaryContainer)
+  root.style.setProperty('--md-sys-color-secondary-container', secondaryContainer)
+  root.style.setProperty('--md-sys-color-on-secondary-container', onSecondaryContainer)
+  root.style.setProperty('--md-sys-color-tertiary-container', tertiaryContainer)
+  root.style.setProperty('--md-sys-color-on-tertiary-container', onTertiaryContainer)
+
+  root.style.setProperty('--md-sys-color-error', resolved.red)
+  root.style.setProperty('--md-sys-color-error-container', errorContainer)
+  root.style.setProperty('--md-sys-color-on-error-container', onErrorContainer)
+  root.style.setProperty('--md-sys-color-success', resolved.green)
+  root.style.setProperty('--md-sys-color-success-container', successContainer)
+  root.style.setProperty('--md-sys-color-on-success-container', onSuccessContainer)
+  root.style.setProperty('--md-sys-color-warning', resolved.yellow)
+  root.style.setProperty('--md-sys-color-warning-container', warningContainer)
+  root.style.setProperty('--md-sys-color-on-warning-container', onWarningContainer)
+
+  root.style.setProperty('--md-sys-color-inverse-surface', inverseSurface)
+  root.style.setProperty('--md-sys-color-inverse-on-surface', inverseOnSurface)
+  root.style.setProperty('--md-sys-color-inverse-primary', inversePrimary)
+
+  // Keep legacy --ctp-shell / --ctp-mantle harmonized with MD3 tonal containers
+  root.style.setProperty('--ctp-shell', containerDefault)
+  root.style.setProperty('--ctp-mantle', containerLow)
+  root.style.setProperty('--ctp-search', containerHigh)
+
   // Synchronize xcomic semantic tokens to the exact same resolved palette
   root.style.colorScheme = isDark ? 'dark' : 'light'
-  root.style.setProperty('--bg-base', resolved.canvas)
-  root.style.setProperty('--bg-mantle', resolved.shell)
-  root.style.setProperty('--bg-surface', isDark ? resolved.mantle : '#ffffff')
+  root.style.setProperty('--bg-base', surface)
+  root.style.setProperty('--bg-mantle', containerDefault)
+  root.style.setProperty('--bg-surface', containerLow)
   root.style.setProperty('--text-primary', resolved.text)
   root.style.setProperty('--text-secondary', resolved.subtext0)
   root.style.setProperty('--accent', resolved.accent)

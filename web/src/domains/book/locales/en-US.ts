@@ -111,6 +111,8 @@ export default {
     languageDesc: 'Choose the display language for menus, settings, and reader controls.',
     toggleQuick: 'Toggle color theme',
     presets: {
+      'material-you-light': 'Material You Light',
+      'material-you-dark': 'Material You Dark',
       'catppuccin-latte': 'Catppuccin Latte',
       'warm-paper': 'Warm Paper',
       'rose-pine-dawn': 'Rosé Pine Dawn',

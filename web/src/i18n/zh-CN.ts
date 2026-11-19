@@ -270,6 +270,8 @@ export default {
     pickColor: '选择颜色',
     hexInputLabel: '十六进制色值',
     presets: {
+      'material-you-light': 'Material You 浅色',
+      'material-you-dark': 'Material You 深色',
       'catppuccin-latte': 'Catppuccin Latte',
       'warm-paper': '暖米纸张 Warm Paper',
       'rose-pine-dawn': 'Rosé Pine Dawn',

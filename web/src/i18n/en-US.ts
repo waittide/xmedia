@@ -270,6 +270,8 @@ export default {
     pickColor: 'Pick Color',
     hexInputLabel: 'Hex Color',
     presets: {
+      'material-you-light': 'Material You Light',
+      'material-you-dark': 'Material You Dark',
       'catppuccin-latte': 'Catppuccin Latte',
       'warm-paper': 'Warm Paper',
       'rose-pine-dawn': 'Rosé Pine Dawn',

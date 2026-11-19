@@ -66,10 +66,10 @@ const DEFAULT_VIDEO_PREFS: VideoPlaybackPreferences = {
 function loadLocalPrefs(): UserPreferences {
   const fallback: UserPreferences = {
     theme_mode: 'system',
-    light_preset: 'catppuccin-latte',
-    dark_preset: 'catppuccin-mocha',
+    light_preset: 'material-you-light',
+    dark_preset: 'material-you-dark',
     dark_flavor: 'mocha',
-    accent_mode: 'catppuccin',
+    accent_mode: 'preset',
     accent: 'blue',
     custom_accent: '#3b82f6',
     custom_light: { ...DEFAULT_CUSTOM_LIGHT },
@@ -204,8 +204,8 @@ export const useThemeStore = defineStore('theme', () => {
 
   function hydrateFromUser(prefs: UserPreferences): void {
     themeMode.value = prefs.theme_mode
-    lightPreset.value = prefs.light_preset || 'catppuccin-latte'
-    darkPreset.value = prefs.dark_preset || 'catppuccin-mocha'
+    lightPreset.value = prefs.light_preset || 'material-you-light'
+    darkPreset.value = prefs.dark_preset || 'material-you-dark'
     accentMode.value =
       prefs.accent_mode === 'preset' ||
       prefs.accent_mode === 'catppuccin' ||
@@ -297,8 +297,8 @@ export const useThemeStore = defineStore('theme', () => {
   }
 
   function resetPalettesToDefault(): void {
-    lightPreset.value = 'catppuccin-latte'
-    darkPreset.value = 'catppuccin-mocha'
+    lightPreset.value = 'material-you-light'
+    darkPreset.value = 'material-you-dark'
     accentMode.value = 'catppuccin'
     accent.value = 'blue'
     customLight.value = { ...DEFAULT_CUSTOM_LIGHT }
