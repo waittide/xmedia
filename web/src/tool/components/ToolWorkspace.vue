@@ -18,6 +18,7 @@ import { useToolText } from '../i18n'
 import { useToolTaskStore } from '../tasks'
 import type {
   AutoScrapeOptionsDto,
+  BatchMetadataEditReportDto,
   DirectorySnapshot,
   ManagedRootDto,
   MediaFileDetail,
@@ -26,7 +27,9 @@ import type {
   ToolStatusDto,
 } from '../types'
 import AutoScrapeOptionsModal from './AutoScrapeOptionsModal.vue'
+import BatchMetadataModal from './BatchMetadataModal.vue'
 import BatchRenameModal from './BatchRenameModal.vue'
+import MetadataHistoryModal from './MetadataHistoryModal.vue'
 import BookContentEditorModal from './BookContentEditorModal.vue'
 import ComicPageManagerModal from './ComicPageManagerModal.vue'
 import ComicSeriesToolsModal from './ComicSeriesToolsModal.vue'
@@ -187,6 +190,8 @@ const scrapeModalOpen = ref(false)
 const scrapeQueue = ref<MediaFileEntry[]>([])
 const scrapeQueueIndex = ref(0)
 const renameModalOpen = ref(false)
+const batchMetadataModalOpen = ref(false)
+const historyModalOpen = ref(false)
 const bookEditorOpen = ref(false)
 const bookEditorEntry = ref<MediaFileEntry | null>(null)
 const comicPageManagerOpen = ref(false)
@@ -823,6 +828,47 @@ function handleAutoScrapeToDryRun(entries: MediaFileEntry[]): void {
   dryRunModalOpen.value = true
 }
 
+async function handleBatchMetadataCompleted(
+  report: BatchMetadataEditReportDto,
+): Promise<void> {
+  artworkVersion.value += 1
+  if (activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  }
+  if (activeDetail.value) {
+    const stillHere = (snapshot.value?.files ?? []).find(
+      (f) => f.rel_path === activeDetail.value?.entry.rel_path,
+    )
+    if (stillHere) {
+      void inspectEntry(stillHere)
+    }
+  }
+  batchSummaryBanner.value = `批量元数据编辑完成：已更新 ${report.updated_count} 项（跳过 ${report.skipped_count} 项${
+    report.failed_count > 0 ? `，失败 ${report.failed_count} 项` : ''
+  }）`
+  setTimeout(() => {
+    batchSummaryBanner.value = null
+  }, 5000)
+}
+
+async function handleHistoryRestored(): Promise<void> {
+  artworkVersion.value += 1
+  if (activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  }
+  if (activeDetail.value) {
+    const stillHere = (snapshot.value?.files ?? []).find(
+      (f) => f.rel_path === activeDetail.value?.entry.rel_path,
+    )
+    if (stillHere) {
+      void inspectEntry(stillHere)
+    } else {
+      activeDetail.value = null
+      inspectingPath.value = null
+    }
+  }
+}
+
 async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<void> {
   if (payload.relPaths.length === 0) return
   if (activeDomain.value !== payload.domain) {
@@ -1258,6 +1304,8 @@ onBeforeUnmount(() => {
             @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
             @enqueue-scrape-selection="enqueueScrapeForSelection"
             @open-dry-run="dryRunModalOpen = true"
+            @open-batch-metadata="batchMetadataModalOpen = true"
+            @open-history="historyModalOpen = true"
             @open-rename="renameModalOpen = true"
             @open-advanced-scrape="(d) => openManualScrapeModal(d.entry)"
             @open-book-content-editor="openBookContentEditor"
@@ -1309,6 +1357,8 @@ onBeforeUnmount(() => {
             @open-music-toolbox="openMusicToolbox"
             @open-video-toolbox="openVideoToolbox"
             @open-dry-run="dryRunModalOpen = true"
+            @open-batch-metadata="batchMetadataModalOpen = true"
+            @open-history="historyModalOpen = true"
             @open-rename="renameModalOpen = true"
             @trigger-rescan="triggerManualRescan"
             @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
@@ -1367,6 +1417,24 @@ onBeforeUnmount(() => {
       @select-queue-index="handleSelectScrapeQueueIndex"
       @open-settings="scrapeModalOpen = false; openSettingsTab('scrapers')"
       @settings-updated="handleSettingsUpdated"
+    />
+
+    <BatchMetadataModal
+      v-if="activeRootId"
+      :open="batchMetadataModalOpen"
+      :root-id="activeRootId"
+      :domain="activeDomain"
+      :entries="selectedEntriesForRename"
+      @close="batchMetadataModalOpen = false"
+      @completed="handleBatchMetadataCompleted"
+      @open-history="batchMetadataModalOpen = false; historyModalOpen = true"
+    />
+
+    <MetadataHistoryModal
+      :open="historyModalOpen"
+      :root-id="activeRootId"
+      @close="historyModalOpen = false"
+      @restored="handleHistoryRestored"
     />
 
     <BatchRenameModal

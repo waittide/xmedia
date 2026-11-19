@@ -21,6 +21,10 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{ApiError, ApiResult};
 use xmedia_core::infra::thumbnail::sniff_image_mime;
 
+use crate::application::batch_metadata::{
+    BatchMetadataEditInput, BatchMetadataEditReportDto, MetadataHistoryBatchDto,
+    UndoMetadataReportDto,
+};
 use crate::application::inbox::{InboxScanReportDto, scan_and_import_inbox};
 use crate::application::scraping::{AutoScrapeOptions, AutoScrapeResultDto, DryRunScrapeItemDto};
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
@@ -77,6 +81,9 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/fs/browse/stream", get(browse_fs_stream))
         .route("/files/inspect", get(inspect_file))
         .route("/files/metadata", axum::routing::patch(write_metadata))
+        .route("/files/metadata/batch", post(batch_edit_metadata_route))
+        .route("/files/metadata/history", get(list_metadata_history_route))
+        .route("/files/metadata/undo", post(undo_metadata_batch_route))
         .route(
             "/files/artwork",
             get(get_artwork)
@@ -1518,6 +1525,46 @@ async fn undo_rename_batch(
     Json(req): Json<UndoRenameRequest>,
 ) -> ApiResult<Json<UndoRenameReportDto>> {
     let report = state.workbench.undo_rename_batch(req.batch_id).await?;
+    Ok(Json(report))
+}
+
+#[derive(Deserialize)]
+struct BatchMetadataEditRequest {
+    root_id: Uuid,
+    #[serde(flatten)]
+    input: BatchMetadataEditInput,
+}
+
+async fn batch_edit_metadata_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<BatchMetadataEditRequest>,
+) -> ApiResult<Json<BatchMetadataEditReportDto>> {
+    let report = state
+        .workbench
+        .batch_edit_metadata(RootId(req.root_id), req.input)
+        .await?;
+    Ok(Json(report))
+}
+
+async fn list_metadata_history_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Query(q): Query<RenameHistoryQuery>,
+) -> ApiResult<Json<Vec<MetadataHistoryBatchDto>>> {
+    let items = state
+        .workbench
+        .list_metadata_history(q.root_id.map(RootId))
+        .await;
+    Ok(Json(items))
+}
+
+async fn undo_metadata_batch_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<UndoRenameRequest>,
+) -> ApiResult<Json<UndoMetadataReportDto>> {
+    let report = state.workbench.undo_metadata_batch(req.batch_id).await?;
     Ok(Json(report))
 }
 

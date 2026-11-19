@@ -3,6 +3,10 @@ import type {
   AggregateScrapeResponse,
   AutoScrapeOptionsDto,
   AutoScrapeResultDto,
+  BatchMetadataEditInputDto,
+  BatchMetadataEditReportDto,
+  MetadataHistoryBatchDto,
+  UndoMetadataReportDto,
   BookContentDocumentDto,
   BatchComicSeriesSyncInput,
   BatchComicSeriesSyncReportDto,
@@ -395,6 +399,31 @@ export const toolApi = {
         path: relPath,
         ...envelope,
       }),
+    })
+  },
+
+  batchEditMetadata(
+    rootId: string,
+    input: BatchMetadataEditInputDto,
+  ): Promise<BatchMetadataEditReportDto> {
+    return toolRequest<BatchMetadataEditReportDto>('/files/metadata/batch', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        ...input,
+      }),
+    })
+  },
+
+  listMetadataHistory(rootId?: string): Promise<MetadataHistoryBatchDto[]> {
+    const qs = rootId ? '?root_id=' + encodeURIComponent(rootId) : ''
+    return toolRequest<MetadataHistoryBatchDto[]>('/files/metadata/history' + qs)
+  },
+
+  undoMetadataBatch(batchId: string): Promise<UndoMetadataReportDto> {
+    return toolRequest<UndoMetadataReportDto>('/files/metadata/undo', {
+      method: 'POST',
+      body: JSON.stringify({ batch_id: batchId }),
     })
   },
 

@@ -18,9 +18,11 @@ import {
   LuLayers,
   LuList,
   LuLoader2,
+  LuPencil,
   LuSave,
   LuSearch,
   LuSparkles,
+  LuUndo2,
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
@@ -86,6 +88,8 @@ const emit = defineEmits<{
   refreshDir: []
   enqueueScrapeSelection: []
   openDryRun: []
+  openBatchMetadata: []
+  openHistory: []
   openRename: []
   openAdvancedScrape: [detail: MediaFileDetail]
   openBookContentEditor: [entry: MediaFileEntry]
@@ -579,6 +583,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
             </button>
           </div>
 
+          <button
+            type="button"
+            class="inline-flex h-8 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 text-[11px] font-semibold text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+            title="查看并一键撤销最近的元数据修改与重命名记录"
+            @click="emit('openHistory')"
+          >
+            <LuUndo2 class="h-3.5 w-3.5" />
+            <span class="hidden sm:inline">撤销历史</span>
+          </button>
+
           <RefreshButton :action="() => emit('refreshDir')" />
         </div>
       </div>
@@ -849,6 +863,18 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
                 <div>
                   <div class="text-xs font-bold">刮削置信度预演</div>
                   <div class="text-[11px] text-[var(--ctp-subtext0)]">先试跑匹配分数，确认后再写入</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                class="flex items-center gap-3 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/60 px-4 py-3 text-left text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+                @click="emit('openBatchMetadata')"
+              >
+                <LuPencil class="h-5 w-5 shrink-0 text-[var(--ctp-accent)]" />
+                <div>
+                  <div class="text-xs font-bold">批量编辑元数据</div>
+                  <div class="text-[11px] text-[var(--ctp-subtext0)]">标题模板、标签增删、正则去水印与繁简转换</div>
                 </div>
               </button>
 

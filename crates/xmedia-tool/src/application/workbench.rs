@@ -10,6 +10,11 @@ use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
+use crate::application::batch_metadata::{
+    BatchMetadataEditInput, BatchMetadataEditReportDto, MetadataHistoryBatchDto,
+    MetadataSnapshotRecord, UndoMetadataReportDto, build_batch_patch_for_payload,
+    payload_to_restore_patch,
+};
 use crate::application::settings::ToolSettingsService;
 use crate::application::webhook::notify_xmedia_rescan;
 use crate::domain::media::{
@@ -96,6 +101,7 @@ pub struct MediaWorkbenchService {
     settings: ToolSettingsService,
     inspectors: Vec<Arc<dyn MediaInspectorPort>>,
     rename_history: Arc<RwLock<Vec<RenameHistoryBatchDto>>>,
+    metadata_history: Arc<RwLock<Vec<MetadataHistoryBatchDto>>>,
 }
 
 impl MediaWorkbenchService {
@@ -107,7 +113,167 @@ impl MediaWorkbenchService {
             settings,
             inspectors,
             rename_history: Arc::new(RwLock::new(Vec::new())),
+            metadata_history: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    async fn push_metadata_history(&self, batch: MetadataHistoryBatchDto) {
+        let mut guard = self.metadata_history.write().await;
+        guard.push(batch);
+        if guard.len() > 60 {
+            let drain_count = guard.len() - 60;
+            guard.drain(0..drain_count);
+        }
+    }
+
+    pub async fn list_metadata_history(
+        &self,
+        root_id: Option<RootId>,
+    ) -> Vec<MetadataHistoryBatchDto> {
+        let guard = self.metadata_history.read().await;
+        guard
+            .iter()
+            .rev()
+            .filter(|b| root_id.is_none_or(|rid| b.root_id == rid.0))
+            .cloned()
+            .collect()
+    }
+
+    pub async fn undo_metadata_batch(&self, batch_id: Uuid) -> DomainResult<UndoMetadataReportDto> {
+        let batch = {
+            let guard = self.metadata_history.read().await;
+            guard
+                .iter()
+                .find(|b| b.batch_id == batch_id)
+                .cloned()
+                .ok_or_else(|| {
+                    DomainError::NotFound(format!("metadata history batch {batch_id} not found"))
+                })?
+        };
+
+        let mut restored_count = 0usize;
+        let mut failed_paths = Vec::new();
+        for rec in batch.records.iter().rev() {
+            let restore_patch = payload_to_restore_patch(&rec.previous);
+            match self
+                .write_metadata_inner(RootId(batch.root_id), &rec.rel_path, restore_patch, None)
+                .await
+            {
+                Ok(_) => restored_count += 1,
+                Err(_) => failed_paths.push(rec.rel_path.clone()),
+            }
+        }
+
+        if restored_count > 0 {
+            let mut guard = self.metadata_history.write().await;
+            guard.retain(|b| b.batch_id != batch_id);
+        }
+
+        Ok(UndoMetadataReportDto {
+            batch_id,
+            restored_count,
+            failed_paths,
+        })
+    }
+
+    pub async fn batch_edit_metadata(
+        &self,
+        root_id: RootId,
+        input: BatchMetadataEditInput,
+    ) -> DomainResult<BatchMetadataEditReportDto> {
+        let mut updated_count = 0usize;
+        let mut skipped_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut errors = Vec::new();
+        let mut snapshots = Vec::new();
+
+        for (idx, rel_path) in input.paths.iter().enumerate() {
+            let resolved = self
+                .resolve_writable_media_file(root_id, rel_path, Some(input.media_kind))
+                .await;
+            let (_root, sandbox, inspector) = match resolved {
+                Ok(v) => v,
+                Err(e) => {
+                    failed_count += 1;
+                    errors.push(format!("{rel_path}: {e}"));
+                    continue;
+                }
+            };
+            let current = match inspector.inspect_file(&sandbox.abs_path).await {
+                Ok(m) => m,
+                Err(e) => {
+                    failed_count += 1;
+                    errors.push(format!("{rel_path}: {e}"));
+                    continue;
+                }
+            };
+            let file_name = sandbox
+                .abs_path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let file_stem = sandbox
+                .abs_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| file_name.clone());
+
+            let maybe_patch =
+                match build_batch_patch_for_payload(&current, &file_stem, idx + 1, &input) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return Err(e);
+                    }
+                };
+            let Some(patch) = maybe_patch else {
+                skipped_count += 1;
+                continue;
+            };
+
+            match inspector.write_metadata(&sandbox.abs_path, &patch).await {
+                Ok(_) => {
+                    updated_count += 1;
+                    snapshots.push(MetadataSnapshotRecord {
+                        rel_path: rel_path.clone(),
+                        file_name,
+                        previous: current,
+                    });
+                }
+                Err(e) => {
+                    failed_count += 1;
+                    errors.push(format!("{rel_path}: {e}"));
+                }
+            }
+        }
+
+        let batch_id = if !snapshots.is_empty() {
+            let id = Uuid::new_v4();
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            self.push_metadata_history(MetadataHistoryBatchDto {
+                batch_id: id,
+                root_id: root_id.0,
+                media_kind: input.media_kind,
+                label: format!("批量编辑 ({updated_count} 项)"),
+                created_at_unix: now,
+                updated_count,
+                records: snapshots,
+            })
+            .await;
+            Some(id)
+        } else {
+            None
+        };
+
+        Ok(BatchMetadataEditReportDto {
+            batch_id,
+            updated_count,
+            skipped_count,
+            failed_count,
+            errors,
+        })
     }
 
     pub async fn list_rename_history(&self, root_id: Option<RootId>) -> Vec<RenameHistoryBatchDto> {
@@ -411,21 +577,57 @@ impl MediaWorkbenchService {
         rel_path: &str,
         patch: MediaMetadataPatch,
     ) -> DomainResult<MediaFileDetail> {
-        let preferred_kind = Some(match &patch {
+        self.write_metadata_inner(root_id, rel_path, patch, Some("编辑/刮削写入"))
+            .await
+    }
+
+    async fn write_metadata_inner(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        patch: MediaMetadataPatch,
+        history_label: Option<&str>,
+    ) -> DomainResult<MediaFileDetail> {
+        let media_kind = match &patch {
             MediaMetadataPatch::Book(_) => MediaKind::Book,
             MediaMetadataPatch::Comic(_) => MediaKind::Comic,
             MediaMetadataPatch::Music(_) => MediaKind::Music,
             MediaMetadataPatch::Video(_) => MediaKind::Video,
-        });
+        };
         let (root, sandbox, inspector) = self
-            .resolve_writable_media_file(root_id, rel_path, preferred_kind)
+            .resolve_writable_media_file(root_id, rel_path, Some(media_kind))
             .await?;
+        let previous = if history_label.is_some() {
+            inspector.inspect_file(&sandbox.abs_path).await.ok()
+        } else {
+            None
+        };
         let metadata = inspector.write_metadata(&sandbox.abs_path, &patch).await?;
         let fname = sandbox
             .abs_path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        if let (Some(label), Some(prev)) = (history_label, previous) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            self.push_metadata_history(MetadataHistoryBatchDto {
+                batch_id: Uuid::new_v4(),
+                root_id: root_id.0,
+                media_kind,
+                label: format!("{label} · {fname}"),
+                created_at_unix: now,
+                updated_count: 1,
+                records: vec![MetadataSnapshotRecord {
+                    rel_path: rel_path.to_string(),
+                    file_name: fname.clone(),
+                    previous: prev,
+                }],
+            })
+            .await;
+        }
         let entry = self
             .build_file_entry(&root, &sandbox.abs_path, &fname, inspector.as_ref())
             .await?;

@@ -17,9 +17,11 @@ import {
   LuLayers,
   LuList,
   LuMusic,
+  LuPencil,
   LuRadio,
   LuRefreshCw,
   LuSparkles,
+  LuUndo2,
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
@@ -78,6 +80,8 @@ const emit = defineEmits<{
   openMusicToolbox: [entries: MediaFileEntry[]]
   openVideoToolbox: [entries: MediaFileEntry[]]
   openDryRun: []
+  openBatchMetadata: []
+  openHistory: []
   openRename: []
   triggerRescan: []
   refreshDir: []
@@ -312,10 +316,31 @@ function relativeDirBadge(relPath: string): string | null {
           type="button"
           :disabled="selectedEntriesForRename.length === 0"
           class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
+          title="批量修改字段、标题模板、标签增删、正则去水印与繁简转换"
+          @click="emit('openBatchMetadata')"
+        >
+          <LuPencil class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+          <span>批量编辑 ({{ selectedEntriesForRename.length }})</span>
+        </button>
+
+        <button
+          type="button"
+          :disabled="selectedEntriesForRename.length === 0"
+          class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
           @click="emit('openRename')"
         >
           <LuFileSignature class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
           <span>{{ txt.actions.batchRename }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1.5 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+          title="查看并一键撤销最近的元数据编辑与重命名批次"
+          @click="emit('openHistory')"
+        >
+          <LuUndo2 class="h-3.5 w-3.5" />
+          <span>撤销历史</span>
         </button>
 
         <button

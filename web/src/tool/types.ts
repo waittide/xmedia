@@ -129,6 +129,58 @@ export interface AutoScrapeOptionsDto {
   field_groups?: string[]
 }
 
+export interface BatchTextReplaceRuleDto {
+  find: string
+  replace: string
+  use_regex: boolean
+  fields: string[]
+}
+
+export interface BatchMetadataEditInputDto {
+  paths: string[]
+  media_kind: MediaKind
+  title_template?: string
+  creator?: string
+  series_or_album?: string
+  publisher_or_studio?: string
+  year?: number | null
+  language?: string
+  genre?: string
+  add_tags?: string[]
+  remove_tags?: string[]
+  replace_rule?: BatchTextReplaceRuleDto
+  zh_direction?: 't2s' | 's2t' | null
+}
+
+export interface BatchMetadataEditReportDto {
+  batch_id: string | null
+  updated_count: number
+  skipped_count: number
+  failed_count: number
+  errors: string[]
+}
+
+export interface MetadataSnapshotRecordDto {
+  rel_path: string
+  file_name: string
+}
+
+export interface MetadataHistoryBatchDto {
+  batch_id: string
+  root_id: string
+  media_kind: MediaKind
+  label: string
+  created_at_unix: number
+  updated_count: number
+  records: MetadataSnapshotRecordDto[]
+}
+
+export interface UndoMetadataReportDto {
+  batch_id: string
+  restored_count: number
+  failed_paths: string[]
+}
+
 export interface AutoScrapeResultDto {
   matched: boolean
   confidence?: number
