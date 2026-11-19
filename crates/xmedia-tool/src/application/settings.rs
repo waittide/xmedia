@@ -6,7 +6,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
 use crate::domain::config::{
-    ProviderCredentials, RenameTemplates, ScraperPriorities, ToolSettings,
+    InboxConfig, ProviderCredentials, RenameTemplates, ScraperPriorities, ToolSettings,
 };
 use crate::domain::ports::ConfigRepositoryPort;
 use crate::domain::workspace::{ManagedRoot, RootId};
@@ -23,6 +23,14 @@ pub struct PublicSettingsDto {
     pub scraper_priorities: ScraperPriorities,
     pub default_scrape_locale: String,
     pub scrape_cache_ttl_ms: u64,
+    pub inbox: InboxConfig,
+    pub xmedia_webhook_enabled: bool,
+    pub xmedia_webhook_base_url: String,
+    pub has_xmedia_webhook_api_key: bool,
+    pub xmedia_webhook_api_key_masked: Option<String>,
+    pub xmedia_webhook_notify_on_rename: bool,
+    pub xmedia_webhook_notify_on_scrape: bool,
+    pub xmedia_webhook_notify_on_inbox: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -34,6 +42,13 @@ pub struct UpdateSettingsInput {
     pub scraper_priorities: Option<ScraperPriorities>,
     pub default_scrape_locale: Option<String>,
     pub scrape_cache_ttl_ms: Option<u64>,
+    pub inbox: Option<InboxConfig>,
+    pub xmedia_webhook_enabled: Option<bool>,
+    pub xmedia_webhook_base_url: Option<String>,
+    pub xmedia_webhook_api_key: Option<String>,
+    pub xmedia_webhook_notify_on_rename: Option<bool>,
+    pub xmedia_webhook_notify_on_scrape: Option<bool>,
+    pub xmedia_webhook_notify_on_inbox: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -73,7 +88,19 @@ impl ToolSettingsService {
         path: String,
         default_kind: Option<MediaKind>,
     ) -> DomainResult<ManagedRoot> {
-        let root = ManagedRoot::new(name, PathBuf::from(path.trim()), default_kind)?;
+        self.add_root_with_options(name, path, default_kind, false)
+            .await
+    }
+
+    pub async fn add_root_with_options(
+        &self,
+        name: String,
+        path: String,
+        default_kind: Option<MediaKind>,
+        read_only: bool,
+    ) -> DomainResult<ManagedRoot> {
+        let root = ManagedRoot::new(name, PathBuf::from(path.trim()), default_kind)?
+            .with_read_only(read_only);
         let mut settings = self.repo.load().await?;
         if let Some(existing) = settings
             .roots
@@ -85,6 +112,23 @@ impl ToolSettingsService {
         settings.roots.push(root.clone());
         self.repo.save(&settings).await?;
         Ok(root)
+    }
+
+    pub async fn set_root_read_only(
+        &self,
+        root_id: RootId,
+        read_only: bool,
+    ) -> DomainResult<ManagedRoot> {
+        let mut settings = self.repo.load().await?;
+        let target = settings
+            .roots
+            .iter_mut()
+            .find(|r| r.id == root_id)
+            .ok_or_else(|| DomainError::NotFound(format!("root '{root_id}' not found")))?;
+        target.read_only = read_only;
+        let updated = target.clone();
+        self.repo.save(&settings).await?;
+        Ok(updated)
     }
 
     pub async fn remove_root(&self, root_id: RootId) -> DomainResult<()> {
@@ -129,6 +173,28 @@ impl ToolSettingsService {
         if let Some(ttl_ms) = input.scrape_cache_ttl_ms {
             settings.scrape_cache_ttl_ms = ttl_ms;
         }
+        if let Some(inbox) = input.inbox {
+            settings.inbox = inbox;
+        }
+        if let Some(enabled) = input.xmedia_webhook_enabled {
+            settings.xmedia_webhook.enabled = enabled;
+        }
+        if let Some(base_url) = input.xmedia_webhook_base_url {
+            settings.xmedia_webhook.base_url = base_url.trim().to_string();
+        }
+        if let Some(api_key) = input.xmedia_webhook_api_key {
+            let trimmed = api_key.trim();
+            settings.xmedia_webhook.api_key = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+        if let Some(v) = input.xmedia_webhook_notify_on_rename {
+            settings.xmedia_webhook.notify_on_rename = v;
+        }
+        if let Some(v) = input.xmedia_webhook_notify_on_scrape {
+            settings.xmedia_webhook.notify_on_scrape = v;
+        }
+        if let Some(v) = input.xmedia_webhook_notify_on_inbox {
+            settings.xmedia_webhook.notify_on_inbox = v;
+        }
         self.repo.save(&settings).await?;
         Ok(Self::to_public(settings))
     }
@@ -149,6 +215,18 @@ impl ToolSettingsService {
             scraper_priorities: s.scraper_priorities,
             default_scrape_locale: s.default_scrape_locale,
             scrape_cache_ttl_ms: s.scrape_cache_ttl_ms,
+            inbox: s.inbox,
+            xmedia_webhook_enabled: s.xmedia_webhook.enabled,
+            xmedia_webhook_base_url: s.xmedia_webhook.base_url,
+            has_xmedia_webhook_api_key: s
+                .xmedia_webhook
+                .api_key
+                .as_deref()
+                .is_some_and(|k| !k.trim().is_empty()),
+            xmedia_webhook_api_key_masked: mask_secret(s.xmedia_webhook.api_key.as_deref()),
+            xmedia_webhook_notify_on_rename: s.xmedia_webhook.notify_on_rename,
+            xmedia_webhook_notify_on_scrape: s.xmedia_webhook.notify_on_scrape,
+            xmedia_webhook_notify_on_inbox: s.xmedia_webhook.notify_on_inbox,
         }
     }
 }

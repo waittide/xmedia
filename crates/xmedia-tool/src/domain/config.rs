@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use xmedia_core::domain::library::MediaKind;
 
-use crate::domain::workspace::ManagedRoot;
+use crate::domain::workspace::{ManagedRoot, RootId};
 
 /// Credentials and network options passed to pluggable scraper providers.
 /// Includes both well-known fields and a flexible `extra` map so newly added providers
@@ -234,6 +234,77 @@ fn default_scrape_cache_ttl_ms() -> u64 {
     DEFAULT_SCRAPE_CACHE_TTL_MS
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// Watch Folder / Inbox import configuration (Paperless-ngx / Calibre / TRaSH style).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub inbox_path: Option<String>,
+    #[serde(default)]
+    pub target_root_id: Option<RootId>,
+    /// Prefer same-filesystem hardlink (preserves PT seeding with zero extra disk usage).
+    #[serde(default = "default_true")]
+    pub use_hardlink: bool,
+    /// Delete source file in inbox after import (falls back to atomic rename when same-fs).
+    #[serde(default)]
+    pub delete_source: bool,
+    /// Automatically run scrape & metadata write after importing into target root.
+    #[serde(default)]
+    pub auto_scrape: bool,
+    /// Organize imported & scraped files according to rename templates.
+    #[serde(default = "default_true")]
+    pub organize_by_template: bool,
+}
+
+impl Default for InboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            inbox_path: None,
+            target_root_id: None,
+            use_hardlink: true,
+            delete_source: false,
+            auto_scrape: false,
+            organize_by_template: true,
+        }
+    }
+}
+
+/// Optional webhook linking `xmedia-tool` to the main `xmedia` server for instant library rescan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XmediaWebhookConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default = "default_true")]
+    pub notify_on_rename: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_scrape: bool,
+    #[serde(default = "default_true")]
+    pub notify_on_inbox: bool,
+}
+
+impl Default for XmediaWebhookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: String::new(),
+            api_key: None,
+            notify_on_rename: true,
+            notify_on_scrape: true,
+            notify_on_inbox: true,
+        }
+    }
+}
+
 /// Persistent configuration aggregate for `xmedia-tool`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSettings {
@@ -250,6 +321,10 @@ pub struct ToolSettings {
     /// Metadata cache TTL in milliseconds (`0` disables caching).
     #[serde(default = "default_scrape_cache_ttl_ms")]
     pub scrape_cache_ttl_ms: u64,
+    #[serde(default)]
+    pub inbox: InboxConfig,
+    #[serde(default)]
+    pub xmedia_webhook: XmediaWebhookConfig,
 }
 
 impl Default for ToolSettings {
@@ -261,6 +336,8 @@ impl Default for ToolSettings {
             scraper_priorities: ScraperPriorities::default(),
             default_scrape_locale: default_locale(),
             scrape_cache_ttl_ms: default_scrape_cache_ttl_ms(),
+            inbox: InboxConfig::default(),
+            xmedia_webhook: XmediaWebhookConfig::default(),
         }
     }
 }

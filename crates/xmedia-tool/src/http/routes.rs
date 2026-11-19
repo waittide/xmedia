@@ -8,7 +8,7 @@ use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use bytes::Bytes;
 use futures_core::Stream;
@@ -21,8 +21,10 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{ApiError, ApiResult};
 use xmedia_core::infra::thumbnail::sniff_image_mime;
 
+use crate::application::inbox::{InboxScanReportDto, scan_and_import_inbox};
 use crate::application::scraping::{AutoScrapeResultDto, DryRunScrapeItemDto};
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
+use crate::application::webhook::{WebhookTestReportDto, test_xmedia_webhook};
 use crate::application::workbench::{
     RenameHistoryBatchDto, UndoRenameReportDto, WorkbenchProgress,
 };
@@ -61,8 +63,13 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/status", get(get_tool_status))
         .route("/auth/unlock", post(unlock_tool))
         .route("/settings", get(get_settings).patch(update_settings))
+        .route("/settings/test-webhook", post(test_webhook_route))
+        .route("/inbox/scan", post(scan_inbox_route))
         .route("/roots", post(add_root))
-        .route("/roots/{id}", delete(remove_root))
+        .route(
+            "/roots/{id}",
+            axum::routing::patch(update_root).delete(remove_root),
+        )
         .route("/fs/browse", get(browse_fs))
         .route("/fs/browse/stream", get(browse_fs_stream))
         .route("/files/inspect", get(inspect_file))
@@ -201,6 +208,8 @@ struct AddRootRequest {
     name: String,
     path: String,
     default_kind: Option<MediaKind>,
+    #[serde(default)]
+    read_only: bool,
 }
 
 async fn add_root(
@@ -210,9 +219,45 @@ async fn add_root(
 ) -> ApiResult<(StatusCode, Json<ManagedRoot>)> {
     let root = state
         .settings
-        .add_root(req.name, req.path, req.default_kind)
+        .add_root_with_options(req.name, req.path, req.default_kind, req.read_only)
         .await?;
     Ok((StatusCode::CREATED, Json(root)))
+}
+
+#[derive(Deserialize)]
+struct UpdateRootRequest {
+    read_only: bool,
+}
+
+async fn update_root(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateRootRequest>,
+) -> ApiResult<Json<ManagedRoot>> {
+    let root = state
+        .settings
+        .set_root_read_only(RootId(id), req.read_only)
+        .await?;
+    Ok(Json(root))
+}
+
+async fn test_webhook_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+) -> ApiResult<Json<WebhookTestReportDto>> {
+    let settings = state.settings.get_raw().await?;
+    let report = test_xmedia_webhook(&settings.xmedia_webhook).await?;
+    Ok(Json(report))
+}
+
+async fn scan_inbox_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+) -> ApiResult<Json<InboxScanReportDto>> {
+    let report =
+        scan_and_import_inbox(&state.settings, &state.workbench, &state.scraping, 3).await?;
+    Ok(Json(report))
 }
 
 async fn remove_root(

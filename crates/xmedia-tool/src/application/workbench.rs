@@ -11,6 +11,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
 use crate::application::settings::ToolSettingsService;
+use crate::application::webhook::notify_xmedia_rescan;
 use crate::domain::media::{
     ComicMetaPatch, DirectorySnapshot, FolderEntryDto, MediaFileDetail, MediaFileEntry,
     MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch, RenamePlanItem, VideoMetaPatch,
@@ -131,6 +132,7 @@ impl MediaWorkbenchService {
                 })?
         };
         let root = self.settings.find_root(RootId(batch.root_id)).await?;
+        root.ensure_writable()?;
         let mut restored_count = 0usize;
         let mut skipped_conflicts = Vec::new();
 
@@ -416,7 +418,7 @@ impl MediaWorkbenchService {
             MediaMetadataPatch::Video(_) => MediaKind::Video,
         });
         let (root, sandbox, inspector) = self
-            .resolve_media_file(root_id, rel_path, preferred_kind)
+            .resolve_writable_media_file(root_id, rel_path, preferred_kind)
             .await?;
         let metadata = inspector.write_metadata(&sandbox.abs_path, &patch).await?;
         let fname = sandbox
@@ -453,7 +455,7 @@ impl MediaWorkbenchService {
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<MediaFileDetail> {
         let (root, sandbox, inspector) = self
-            .resolve_media_file(root_id, rel_path, preferred_kind)
+            .resolve_writable_media_file(root_id, rel_path, preferred_kind)
             .await?;
         inspector
             .write_artwork(&sandbox.abs_path, bytes, mime_type, slot)
@@ -831,6 +833,7 @@ impl MediaWorkbenchService {
         F: FnMut(WorkbenchProgress) + Send,
     {
         let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
         let total = plans
             .iter()
             .filter(|p| !p.unchanged && p.conflict.is_none())
@@ -973,6 +976,15 @@ impl MediaWorkbenchService {
                 let drop_n = guard.len() - 30;
                 guard.drain(0..drop_n);
             }
+            if let Ok(settings) = self.settings.get_raw().await
+                && settings.xmedia_webhook.notify_on_rename
+            {
+                let webhook_cfg = settings.xmedia_webhook;
+                let root_path = root.path.clone();
+                tokio::spawn(async move {
+                    notify_xmedia_rescan(&webhook_cfg, &root_path).await;
+                });
+            }
         }
 
         Ok(moved_count)
@@ -1035,7 +1047,7 @@ impl MediaWorkbenchService {
         force_horizontal_spine: bool,
     ) -> DomainResult<MediaFileDetail> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path.clone();
         tokio::task::spawn_blocking(move || {
@@ -1061,7 +1073,7 @@ impl MediaWorkbenchService {
         delete_source_txt: bool,
     ) -> DomainResult<MediaFileDetail> {
         let (root, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path.clone();
         let epub_abs = tokio::task::spawn_blocking(move || {
@@ -1105,7 +1117,7 @@ impl MediaWorkbenchService {
         mime_hint: Option<String>,
     ) -> DomainResult<InsertedEpubImageDto> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path;
         tokio::task::spawn_blocking(move || {
@@ -1126,7 +1138,7 @@ impl MediaWorkbenchService {
         rel_path: &str,
     ) -> DomainResult<(PolishBookReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Book))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         let abs = sandbox.abs_path;
         let report = tokio::task::spawn_blocking(move || polish_epub_book(&abs))
@@ -1179,7 +1191,7 @@ impl MediaWorkbenchService {
         max_width: Option<u32>,
     ) -> DomainResult<(ComicOptimizeReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Comic))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Comic))
             .await?;
         let abs = sandbox.abs_path;
         let report = tokio::task::spawn_blocking(move || {
@@ -1202,7 +1214,7 @@ impl MediaWorkbenchService {
         max_width: Option<u32>,
     ) -> DomainResult<(ComicOptimizeReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Comic))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Comic))
             .await?;
         let abs = sandbox.abs_path;
         let report = tokio::task::spawn_blocking(move || {
@@ -1226,6 +1238,7 @@ impl MediaWorkbenchService {
         volume: Option<i32>,
     ) -> DomainResult<(MergeComicsReportDto, MediaFileDetail)> {
         let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
         let mut abs_sources = Vec::with_capacity(source_paths.len());
         for rel in &source_paths {
             let sb = root.resolve_existing(rel)?;
@@ -1310,7 +1323,7 @@ impl MediaWorkbenchService {
         input: MusicLyricsToolInput,
     ) -> DomainResult<(MusicLyricsToolReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Music))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Music))
             .await?;
         let abs = sandbox.abs_path;
         let report = tokio::task::spawn_blocking(move || process_music_lyrics(&abs, &input))
@@ -1330,7 +1343,7 @@ impl MediaWorkbenchService {
         jpeg_quality: u8,
     ) -> DomainResult<(MusicCoverOptimizeReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Music))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Music))
             .await?;
         let abs = sandbox.abs_path;
         let report = tokio::task::spawn_blocking(move || {
@@ -1351,6 +1364,7 @@ impl MediaWorkbenchService {
         ffmpeg_bin: String,
     ) -> DomainResult<ReplayGainReportDto> {
         let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
         let mut resolved = Vec::with_capacity(paths.len());
         for rel in paths {
             if let Ok(sb) = root.resolve_existing(&rel)
@@ -1371,6 +1385,7 @@ impl MediaWorkbenchService {
         ffmpeg_bin: String,
     ) -> DomainResult<CueSplitReportDto> {
         let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
         let sb = root.resolve_existing(rel_path)?;
         let abs = sb.abs_path;
         tokio::task::spawn_blocking(move || split_cue_album(&abs, &ffmpeg_bin))
@@ -1439,7 +1454,7 @@ impl MediaWorkbenchService {
         input: ProcessSubtitleInput,
     ) -> DomainResult<(ProcessSubtitleReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Video))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Video))
             .await?;
         let abs = sandbox.abs_path;
         let report = tokio::task::spawn_blocking(move || process_video_subtitle(&abs, &input))
@@ -1461,7 +1476,7 @@ impl MediaWorkbenchService {
         ffmpeg_bin: String,
     ) -> DomainResult<(ExtractSubtitleReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
-            .resolve_media_file(root_id, rel_path, Some(MediaKind::Video))
+            .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Video))
             .await?;
         let abs = sandbox.abs_path;
         let report = tokio::task::spawn_blocking(move || {
@@ -1547,6 +1562,19 @@ impl MediaWorkbenchService {
             updated_count,
             failed_paths,
         })
+    }
+
+    async fn resolve_writable_media_file(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        preferred_kind: Option<MediaKind>,
+    ) -> DomainResult<(ManagedRoot, SandboxPath, Arc<dyn MediaInspectorPort>)> {
+        let (root, sandbox, inspector) = self
+            .resolve_media_file(root_id, rel_path, preferred_kind)
+            .await?;
+        root.ensure_writable()?;
+        Ok((root, sandbox, inspector))
     }
 
     async fn resolve_media_file(

@@ -36,6 +36,9 @@ pub struct ManagedRoot {
     /// Optional domain hint (when `None`, all 4 domains can browse files inside this root).
     #[serde(default)]
     pub default_kind: Option<MediaKind>,
+    /// When true, blocks all metadata writes, renames, artwork mutations, and archive edits.
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 impl ManagedRoot {
@@ -73,7 +76,23 @@ impl ManagedRoot {
             name: clean_name,
             path: canonical,
             default_kind,
+            read_only: false,
         })
+    }
+
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    pub fn ensure_writable(&self) -> DomainResult<()> {
+        if self.read_only {
+            return Err(DomainError::Forbidden(format!(
+                "root '{}' is mounted read-only; disable read-only mode in settings to modify files",
+                self.name
+            )));
+        }
+        Ok(())
     }
 
     /// Resolves a relative path within this root, strictly preventing `..` or symlink traversal

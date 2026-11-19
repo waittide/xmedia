@@ -9,6 +9,7 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::infra::thumbnail::sniff_image_mime;
 
 use crate::application::settings::ToolSettingsService;
+use crate::application::webhook::notify_xmedia_rescan;
 use crate::application::workbench::MediaWorkbenchService;
 use crate::domain::config::ScraperPriorities;
 use crate::domain::media::{
@@ -1089,6 +1090,17 @@ impl ScrapingOrchestratorService {
                         .await?;
                 }
             }
+        }
+
+        if let Ok(settings) = self.settings.get_raw().await
+            && settings.xmedia_webhook.notify_on_scrape
+            && let Ok(root) = self.settings.find_root(root_id).await
+        {
+            let webhook_cfg = settings.xmedia_webhook;
+            let root_path = root.path;
+            tokio::spawn(async move {
+                notify_xmedia_rescan(&webhook_cfg, &root_path).await;
+            });
         }
 
         Ok(detail)
