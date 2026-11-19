@@ -56,6 +56,7 @@ import BookContentEditorModal from './BookContentEditorModal.vue'
 import ComicPageManagerModal from './ComicPageManagerModal.vue'
 import ComicSeriesToolsModal from './ComicSeriesToolsModal.vue'
 import MusicToolboxModal from './MusicToolboxModal.vue'
+import DryRunScrapeModal from './DryRunScrapeModal.vue'
 import VideoToolboxModal from './VideoToolboxModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
@@ -161,6 +162,7 @@ const musicToolsOpen = ref(false)
 const musicToolsEntries = ref<MediaFileEntry[]>([])
 const videoToolsOpen = ref(false)
 const videoToolsEntries = ref<MediaFileEntry[]>([])
+const dryRunModalOpen = ref(false)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -1400,6 +1402,17 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
+                    v-if="selectedEntriesForRename.length > 0"
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+                    title="只读预检拟匹配结果与置信度，低置信度项自动标黄供人工确认"
+                    @click="dryRunModalOpen = true"
+                  >
+                    <LuSparkles class="h-3.5 w-3.5 text-amber-500" />
+                    <span>预检刮削 ({{ selectedEntriesForRename.length }})</span>
+                  </button>
+
+                  <button
                     type="button"
                     :disabled="selectedEntriesForRename.length === 0"
                     class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
@@ -1771,6 +1784,14 @@ onBeforeUnmount(() => {
       @close="videoToolsOpen = false"
       @updated="(d) => handleDetailUpdated(d, true)"
       @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
+    />
+
+    <DryRunScrapeModal
+      :open="dryRunModalOpen"
+      :root-id="activeRootId"
+      :entries="selectedEntriesForRename"
+      @close="dryRunModalOpen = false"
+      @confirm="(entries) => enqueueScrapeFiles(entries)"
     />
 
     <!-- Bottom-Right Floating Task Progress Panel (Click task jumps to Tasks View) -->

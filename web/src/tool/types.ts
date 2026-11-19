@@ -640,3 +640,37 @@ export interface BatchRemapEpisodesReportDto {
   updated_count: number
   failed_paths: string[]
 }
+
+export interface RenameMoveRecord {
+  from_rel_path: string
+  to_rel_path: string
+  companion_moves: [string, string][]
+}
+
+export interface RenameHistoryBatchDto {
+  batch_id: string
+  root_id: string
+  created_at_unix: number
+  moved_count: number
+  moves: RenameMoveRecord[]
+}
+
+export interface UndoRenameReportDto {
+  batch_id: string
+  restored_count: number
+  skipped_conflicts: string[]
+}
+
+export interface DryRunScrapeItemDto {
+  rel_path: string
+  display_title: string
+  query_keyword: string
+  matched: boolean
+  matched_title: string | null
+  matched_creator: string | null
+  matched_year: number | null
+  matched_provider: string | null
+  confidence: number
+  low_confidence: boolean
+  error: string | null
+}

@@ -9,6 +9,7 @@ import type {
   BatchMusicAlbumSyncReportDto,
   BatchRemapEpisodesInput,
   BatchRemapEpisodesReportDto,
+  DryRunScrapeItemDto,
   ExtractSubtitleReportDto,
   ProcessSubtitleInput,
   ProcessSubtitleReportDto,
@@ -34,7 +35,9 @@ import type {
   MediaMetadataPatchEnvelope,
   ProviderStatusDto,
   PublicSettingsDto,
+  RenameHistoryBatchDto,
   RenamePlanItem,
+  UndoRenameReportDto,
   SaveBookChapterInput,
   ScrapeCacheStatsDto,
   TransformBookContentResultDto,
@@ -863,6 +866,33 @@ export const toolApi = {
         root_id: rootId,
         paths,
         ...input,
+      }),
+    })
+  },
+
+  listRenameHistory(rootId?: string | null): Promise<RenameHistoryBatchDto[]> {
+    const q = rootId ? '?root_id=' + encodeURIComponent(rootId) : ''
+    return toolRequest<RenameHistoryBatchDto[]>('/files/rename/history' + q)
+  },
+
+  undoRenameBatch(batchId: string): Promise<UndoRenameReportDto> {
+    return toolRequest<UndoRenameReportDto>('/files/rename/undo', {
+      method: 'POST',
+      body: JSON.stringify({ batch_id: batchId }),
+    })
+  },
+
+  dryRunScrape(
+    rootId: string,
+    paths: string[],
+    locale?: string,
+  ): Promise<DryRunScrapeItemDto[]> {
+    return toolRequest<DryRunScrapeItemDto[]>('/scrapers/dry-run', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        paths,
+        locale: locale || undefined,
       }),
     })
   },

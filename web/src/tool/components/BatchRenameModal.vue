@@ -13,7 +13,12 @@ import { useActionFeedback } from '@/composables/useActionFeedback'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import { useToolTaskStore } from '../tasks'
-import type { MediaFileEntry, RenamePlanItem, RenameTemplatesDto } from '../types'
+import type {
+  MediaFileEntry,
+  RenameHistoryBatchDto,
+  RenamePlanItem,
+  RenameTemplatesDto,
+} from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -42,6 +47,34 @@ const previewSpinning = computed(() => loadingPreview.value || previewFeedback.r
 const executing = ref(false)
 const inlineProgressPct = ref<number | null>(null)
 const errorMsg = ref<string | null>(null)
+const undoHistory = ref<RenameHistoryBatchDto[]>([])
+const showUndoHistory = ref(false)
+const undoingBatchId = ref<string | null>(null)
+const undoNotice = ref<string | null>(null)
+
+async function loadUndoHistory(): Promise<void> {
+  try {
+    undoHistory.value = await toolApi.listRenameHistory(props.rootId)
+  } catch {
+    // ignore history load failure
+  }
+}
+
+async function handleUndoBatch(batchId: string): Promise<void> {
+  undoingBatchId.value = batchId
+  errorMsg.value = null
+  undoNotice.value = null
+  try {
+    const rep = await toolApi.undoRenameBatch(batchId)
+    undoNotice.value = '已撤销并恢复 ' + rep.restored_count + ' 个文件' + (rep.skipped_conflicts.length > 0 ? '（跳过 ' + rep.skipped_conflicts.length + ' 个冲突项）' : '')
+    await loadUndoHistory()
+    emit('renamed', rep.restored_count, {})
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    undoingBatchId.value = null
+  }
+}
 
 const dominantKind = computed<MediaKind>(() => props.entries[0]?.media_kind ?? 'music')
 
@@ -160,6 +193,7 @@ watch(
       excludedPaths.value = new Set()
       seedTemplatesForEntries()
       void runPreview()
+      void loadUndoHistory()
     }
   },
 )
@@ -450,13 +484,61 @@ async function handleExecute(): Promise<void> {
           </div>
         </div>
 
+        <!-- Undo History Drawer -->
+        <div
+          v-if="showUndoHistory"
+          class="max-h-44 shrink-0 overflow-y-auto border-t border-[var(--ctp-surface0)]/80 bg-[var(--ctp-canvas)]/85 px-5 py-3 text-xs"
+        >
+          <div class="mb-2 flex items-center justify-between">
+            <span class="font-semibold">最近批量重命名记录（一键回滚原路径）</span>
+            <span v-if="undoNotice" class="text-emerald-500">{{ undoNotice }}</span>
+          </div>
+          <div v-if="undoHistory.length === 0" class="text-[11px] text-[var(--ctp-subtext0)]">
+            暂无可撤销的重命名记录。
+          </div>
+          <div v-else class="space-y-1.5">
+            <div
+              v-for="batch in undoHistory"
+              :key="batch.batch_id"
+              class="flex items-center justify-between gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-3 py-2"
+            >
+              <div class="min-w-0">
+                <div class="font-medium">
+                  已移动 {{ batch.moved_count }} 项 · {{ new Date(batch.created_at_unix * 1000).toLocaleString() }}
+                </div>
+                <div class="truncate text-[10px] text-[var(--ctp-subtext0)]">
+                  示例：{{ batch.moves[0]?.from_rel_path }} → {{ batch.moves[0]?.to_rel_path }}
+                </div>
+              </div>
+              <button
+                type="button"
+                :disabled="undoingBatchId === batch.batch_id"
+                class="shrink-0 rounded-lg border border-amber-500/45 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-500 hover:bg-amber-500/20 disabled:opacity-50"
+                @click="handleUndoBatch(batch.batch_id)"
+              >
+                {{ undoingBatchId === batch.batch_id ? '回滚中…' : '一键撤销' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
         <!-- Footer -->
         <div
           class="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 px-5 py-3.5"
         >
-          <span class="text-xs text-[var(--ctp-subtext0)]">
-            共 {{ actionableCount }} 项待改名（冲突项与未变化项会自动跳过）
-          </span>
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-[var(--ctp-subtext0)]">
+              共 {{ actionableCount }} 项待改名（冲突项与未变化项会自动跳过）
+            </span>
+            <button
+              v-if="undoHistory.length > 0"
+              type="button"
+              class="rounded-lg border border-[var(--ctp-surface0)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)]"
+              @click="showUndoHistory = !showUndoHistory"
+            >
+              {{ showUndoHistory ? '收起撤销历史' : '撤销历史 (' + undoHistory.length + ')' }}
+            </button>
+          </div>
           <div class="flex items-center gap-2">
             <button
               type="button"
