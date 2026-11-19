@@ -19,6 +19,7 @@ hex.workspace = true
 jiff.workspace = true
 lofty.workspace = true
 lopdf.workspace = true
+md-5.workspace = true
 mime_guess.workspace = true
 quick-xml.workspace = true
 regex.workspace = true

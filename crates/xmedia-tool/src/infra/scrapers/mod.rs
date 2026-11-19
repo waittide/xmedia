@@ -11,13 +11,16 @@ pub mod k17;
 pub mod kugou;
 pub mod kuwo;
 pub mod lrclib;
+pub mod migu;
 pub mod musicbrainz;
 pub mod netease;
 pub mod openlibrary;
 pub mod qidian;
 pub mod qimao;
+pub mod qishui;
 pub mod qq_music;
 pub mod sfacg;
+pub mod taihe;
 pub mod tmdb;
 
 use std::sync::Arc;
@@ -45,6 +48,9 @@ pub fn build_default_scraper_providers() -> Vec<Arc<dyn ScraperProviderPort>> {
         Arc::new(netease::NeteaseMusicProvider),
         Arc::new(kugou::KugouMusicProvider),
         Arc::new(kuwo::KuwoMusicProvider),
+        Arc::new(migu::MiguMusicProvider),
+        Arc::new(taihe::TaiheMusicProvider),
+        Arc::new(qishui::QishuiMusicProvider),
         Arc::new(itunes::ItunesMusicProvider),
         Arc::new(musicbrainz::MusicBrainzProvider),
         Arc::new(lrclib::LrclibProvider),
@@ -69,9 +75,9 @@ mod tests {
     };
 
     #[test]
-    fn default_registry_exposes_eighteen_providers_and_checks_tmdb_credentials() {
+    fn default_registry_exposes_twenty_one_providers_and_checks_tmdb_credentials() {
         let providers = build_default_scraper_providers();
-        assert_eq!(providers.len(), 18);
+        assert_eq!(providers.len(), 21);
 
         let empty_creds = ProviderCredentials::default();
         let configured_ids: Vec<String> = providers
@@ -94,6 +100,9 @@ mod tests {
                 "netease",
                 "kugou",
                 "kuwo",
+                "migu",
+                "taihe",
+                "qishui",
                 "itunes",
                 "musicbrainz",
                 "lrclib",
@@ -688,6 +697,156 @@ mod tests {
             kw_meta.synced_lyrics.as_deref(),
             Some("[00:28.90]故事的小黄花")
         );
+
+        // 5. Migu, Taihe, Qishui, and Bangumi MusicTrack mappers
+        use crate::infra::scrapers::migu::{
+            MiguAlbumResource, MiguImgItem, MiguSongResource, map_migu_song_detail,
+        };
+        use crate::infra::scrapers::qishui::{
+            QsAlbumInfo, QsAlbumTrackRef, QsArtist, QsLyricPayload, QsSeoTrackEnvelope,
+            QsSeoTrackWrap, QsTrackCore, QsUrlCover, map_qishui_seo_track,
+        };
+        use crate::infra::scrapers::taihe::{
+            TaiheArtist, TaiheTrackItem, build_taihe_signed_params, map_taihe_song_detail,
+        };
+
+        let migu_meta = map_migu_song_detail(
+            "3790007:8592",
+            ScrapeTargetKind::MusicTrack,
+            MiguSongResource {
+                song_name: "晴天".into(),
+                singer: "周杰伦".into(),
+                album: "叶惠美".into(),
+                track_number: Some(serde_json::json!(3)),
+                disc: Some(serde_json::json!("1")),
+                album_imgs: vec![MiguImgItem {
+                    img_size_type: "03".into(),
+                    img: "https://d.musicapp.migu.cn/cover.webp".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            Some(MiguAlbumResource {
+                album_id: "8592".into(),
+                publish_date: "2003-07-31".into(),
+                publish_company: "杰威尔音乐".into(),
+                ..Default::default()
+            }),
+            Some("[00:01.00]晴天 - 周杰伦"),
+        );
+        assert_eq!(migu_meta.track_or_episode_number, Some(3));
+        assert_eq!(migu_meta.disc_or_season_number, Some(1));
+        assert_eq!(migu_meta.year, Some(2003));
+        assert_eq!(migu_meta.publisher_or_studio.as_deref(), Some("杰威尔音乐"));
+
+        let signed = build_taihe_signed_params(&[("TSID", "T1001")], 1700000000);
+        assert!(signed.iter().any(|(k, v)| k == "sign" && v.len() == 32));
+        let taihe_meta = map_taihe_song_detail(
+            TaiheTrackItem {
+                tsid: "T1001".into(),
+                title: "千百度".into(),
+                artist: vec![
+                    TaiheArtist {
+                        name: "作词人".into(),
+                        artist_type: 4,
+                        artist_type_name: "作词者".into(),
+                    },
+                    TaiheArtist {
+                        name: "许嵩".into(),
+                        artist_type: 38,
+                        artist_type_name: "歌手".into(),
+                    },
+                ],
+                album_title: "苏格拉没有底".into(),
+                release_date: "2011-04-01T00:00:00.000Z".into(),
+                sort: Some(2),
+                pic: "https://img01.dmhmusic.com/cover.jpg".into(),
+                ..Default::default()
+            },
+            "T1001",
+            ScrapeTargetKind::MusicTrack,
+            Some("[00:10.00]关外野店"),
+        );
+        assert_eq!(taihe_meta.creators, vec!["许嵩".to_string()]);
+        assert_eq!(taihe_meta.track_or_episode_number, Some(2));
+        assert_eq!(taihe_meta.year, Some(2011));
+
+        let qs_meta = map_qishui_seo_track(
+            QsSeoTrackEnvelope {
+                seo_track: Some(QsSeoTrackWrap {
+                    track: Some(QsTrackCore {
+                        id: "7651571345679583248".into(),
+                        name: "粗糙".into(),
+                        artists: vec![QsArtist {
+                            name: "许嵩".into(),
+                        }],
+                        album: Some(QsAlbumInfo {
+                            id: "7651571345679566864".into(),
+                            name: "安泊猜想".into(),
+                            release_date: 1781539200,
+                            url_cover: Some(QsUrlCover {
+                                uri: "tos-cn-v-2774c002/demo".into(),
+                                urls: vec!["https://p3-luna.douyinpic.com/img/".into()],
+                            }),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }),
+                    genre_tag: "摇滚".into(),
+                }),
+                lyric: Some(QsLyricPayload {
+                    content: "[9560,1950]<0,180,0>我<180,170,0>们<400,180,0>一<580,170,0>起".into(),
+                }),
+                album_tracks: vec![
+                    QsAlbumTrackRef {
+                        id: "1".into(),
+                        track: None,
+                    },
+                    QsAlbumTrackRef {
+                        id: "7651571345679583248".into(),
+                        track: None,
+                    },
+                ],
+            },
+            "7651571345679583248",
+            ScrapeTargetKind::MusicTrack,
+        )
+        .unwrap();
+        assert_eq!(qs_meta.track_or_episode_number, Some(2));
+        assert_eq!(qs_meta.synced_lyrics.as_deref(), Some("[00:09.56]我们一起"));
+        assert_eq!(
+            qs_meta.cover_url.as_deref(),
+            Some("https://p3-luna.douyinpic.com/img/tos-cn-v-2774c002/demo~c5_1000x1000.jpg")
+        );
+
+        let bgm_music_meta = map_bgm_detail(
+            BgmSubject {
+                id: 46023,
+                subject_type: 3,
+                name: "紅蓮華 音楽全集".into(),
+                date: Some("2012-09-28".into()),
+                ..Default::default()
+            },
+            ScrapeTargetKind::MusicTrack,
+            None,
+            Some(crate::infra::scrapers::bangumi::BgmEpisodeItem {
+                id: 189876,
+                ep: Some(1.0),
+                sort: 1.0,
+                disc: 2,
+                name: "BLAZE MOMENT".into(),
+                name_cn: "佐咲紗花".into(),
+                ..Default::default()
+            }),
+        );
+        assert_eq!(bgm_music_meta.title.as_deref(), Some("BLAZE MOMENT"));
+        assert_eq!(
+            bgm_music_meta.series_or_album.as_deref(),
+            Some("紅蓮華 音楽全集")
+        );
+        assert_eq!(bgm_music_meta.track_or_episode_number, Some(1));
+        assert_eq!(bgm_music_meta.disc_or_season_number, Some(2));
+        assert_eq!(bgm_music_meta.creators, vec!["佐咲紗花".to_string()]);
     }
 
     #[tokio::test]
@@ -836,6 +995,173 @@ mod tests {
                 "{name} album missing cover_url"
             );
         }
+
+        // Additional live smoke checks: Migu, Taihe, Qishui (direct link/ID), and Bangumi MusicTrack
+        use crate::infra::scrapers::{
+            bangumi::BangumiProvider, migu::MiguMusicProvider, qishui::QishuiMusicProvider,
+            taihe::TaiheMusicProvider,
+        };
+
+        for (mname, mprov, skw, akw, alb_kw) in [
+            (
+                "migu",
+                Box::new(MiguMusicProvider) as Box<dyn ScraperProviderPort>,
+                "晴天",
+                "周杰伦",
+                "叶惠美",
+            ),
+            (
+                "taihe",
+                Box::new(TaiheMusicProvider) as Box<dyn ScraperProviderPort>,
+                "许嵩",
+                "",
+                "许嵩",
+            ),
+        ] {
+            let tc = mprov
+                .search(
+                    &ScrapeQuery {
+                        keyword: skw.to_string(),
+                        artist_or_author: (!akw.is_empty()).then(|| akw.to_string()),
+                        target: Some(ScrapeTargetKind::MusicTrack),
+                        ..Default::default()
+                    },
+                    &creds,
+                )
+                .await
+                .unwrap();
+            assert!(!tc.is_empty(), "{mname} track search empty");
+            let td = mprov
+                .fetch_detail(
+                    &tc[0].external_id,
+                    ScrapeTargetKind::MusicTrack,
+                    "zh-CN",
+                    &creds,
+                )
+                .await
+                .unwrap();
+            println!(
+                "[{mname} TRACK] id={} title={:?} creators={:?} album={:?} year={:?} cover={:?} lrc_len={}",
+                td.external_id,
+                td.title,
+                td.creators,
+                td.series_or_album,
+                td.year,
+                td.cover_url,
+                td.synced_lyrics.as_deref().map_or(0, str::len)
+            );
+            assert!(td.title.is_some(), "{mname} missing title");
+
+            let ac = mprov
+                .search(
+                    &ScrapeQuery {
+                        keyword: alb_kw.to_string(),
+                        artist_or_author: (!akw.is_empty()).then(|| akw.to_string()),
+                        target: Some(ScrapeTargetKind::MusicAlbum),
+                        ..Default::default()
+                    },
+                    &creds,
+                )
+                .await
+                .unwrap();
+            assert!(!ac.is_empty(), "{mname} album search empty");
+            let ad = mprov
+                .fetch_detail(
+                    &ac[0].external_id,
+                    ScrapeTargetKind::MusicAlbum,
+                    "zh-CN",
+                    &creds,
+                )
+                .await
+                .unwrap();
+            println!(
+                "[{mname} ALBUM] id={} title={:?} year={:?} cover={:?}",
+                ad.external_id, ad.title, ad.year, ad.cover_url
+            );
+            assert!(ad.title.is_some(), "{mname} album missing title");
+        }
+
+        // Qishui track + album via share URL / ID
+        let qs_prov = QishuiMusicProvider;
+        let qs_cands = qs_prov
+            .search(
+                &ScrapeQuery {
+                    keyword:
+                        "https://music.douyin.com/qishui/share/track?track_id=7651571345679583248"
+                            .into(),
+                    target: Some(ScrapeTargetKind::MusicTrack),
+                    ..Default::default()
+                },
+                &creds,
+            )
+            .await
+            .unwrap();
+        assert_eq!(qs_cands.len(), 1);
+        let qs_td = qs_prov
+            .fetch_detail(
+                "7651571345679583248",
+                ScrapeTargetKind::MusicTrack,
+                "zh-CN",
+                &creds,
+            )
+            .await
+            .unwrap();
+        println!(
+            "[qishui TRACK] title={:?} creators={:?} album={:?} lrc_len={}",
+            qs_td.title,
+            qs_td.creators,
+            qs_td.series_or_album,
+            qs_td.synced_lyrics.as_deref().map_or(0, str::len)
+        );
+        assert!(qs_td.synced_lyrics.is_some());
+
+        let qs_ad = qs_prov
+            .fetch_detail(
+                "7651571345679566864",
+                ScrapeTargetKind::MusicAlbum,
+                "zh-CN",
+                &creds,
+            )
+            .await
+            .unwrap();
+        println!(
+            "[qishui ALBUM] title={:?} company={:?} year={:?}",
+            qs_ad.title, qs_ad.publisher_or_studio, qs_ad.year
+        );
+        assert_eq!(qs_ad.title.as_deref(), Some("安泊猜想"));
+
+        // Bangumi MusicTrack episode matching
+        let bgm_prov = BangumiProvider;
+        let bgm_tc = bgm_prov
+            .search(
+                &ScrapeQuery {
+                    keyword: "BLAZE MOMENT".into(),
+                    album_or_series: Some("紅蓮華".into()),
+                    target: Some(ScrapeTargetKind::MusicTrack),
+                    ..Default::default()
+                },
+                &creds,
+            )
+            .await
+            .unwrap();
+        assert!(!bgm_tc.is_empty());
+        let bgm_td = bgm_prov
+            .fetch_detail(
+                &bgm_tc[0].external_id,
+                ScrapeTargetKind::MusicTrack,
+                "zh-CN",
+                &creds,
+            )
+            .await
+            .unwrap();
+        println!(
+            "[bangumi TRACK] id={} title={:?} album={:?} track={:?}",
+            bgm_td.external_id,
+            bgm_td.title,
+            bgm_td.series_or_album,
+            bgm_td.track_or_episode_number
+        );
+        assert!(bgm_td.track_or_episode_number.is_some());
     }
 
     #[tokio::test]

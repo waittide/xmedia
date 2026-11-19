@@ -127,9 +127,13 @@ pub(crate) struct BgmSearchResp {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct BgmEpisodeItem {
     #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
     pub ep: Option<f64>,
     #[serde(default)]
     pub sort: f64,
+    #[serde(default)]
+    pub disc: u32,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -146,14 +150,20 @@ struct BgmEpisodesResp {
     data: Vec<BgmEpisodeItem>,
 }
 
-fn parse_bgm_external_id(raw: &str) -> (&str, Option<(u32, u32)>) {
-    if let Some((base, se_part)) = raw.trim().split_once(":S")
+fn parse_bgm_external_id(raw: &str) -> (&str, Option<(u32, u32)>, Option<u64>) {
+    let trimmed = raw.trim();
+    if let Some((base, ep_part)) = trimmed.split_once(":ep:")
+        && let Ok(ep_id) = ep_part.parse::<u64>()
+    {
+        return (base, None, Some(ep_id));
+    }
+    if let Some((base, se_part)) = trimmed.split_once(":S")
         && let Some((s_str, e_str)) = se_part.split_once('E')
         && let (Ok(s), Ok(e)) = (s_str.parse::<u32>(), e_str.parse::<u32>())
     {
-        return (base, Some((s, e)));
+        return (base, Some((s, e)), None);
     }
-    (raw.trim(), None)
+    (trimmed, None, None)
 }
 
 fn subject_types_for_target(target: Option<ScrapeTargetKind>) -> Vec<u8> {
@@ -296,6 +306,10 @@ pub(crate) fn map_bgm_detail(
     });
     let year = parse_year(sub.date.as_deref());
 
+    let mut music_track_no: Option<u32> = None;
+    let mut music_disc_no: Option<u32> = None;
+    let mut external_id_out = sub.id.to_string();
+
     let (final_title, final_summary, pub_date) = if target == ScrapeTargetKind::TvShow
         && let Some(ep) = episode
     {
@@ -314,6 +328,36 @@ pub(crate) fn map_bgm_detail(
             .filter(|d| !d.trim().is_empty())
             .or_else(|| sub.date.clone());
         (ep_title, ep_desc, ep_air)
+    } else if target == ScrapeTargetKind::MusicTrack
+        && let Some(ep) = episode
+    {
+        if ep.id > 0 {
+            external_id_out = format!("{}:ep:{}", sub.id, ep.id);
+        }
+        let tr_title = if !ep.name.trim().is_empty() {
+            Some(ep.name.trim().to_string())
+        } else if !ep.name_cn.trim().is_empty() {
+            Some(ep.name_cn.trim().to_string())
+        } else {
+            subject_title.clone()
+        };
+        if creators.is_empty()
+            && !ep.name_cn.trim().is_empty()
+            && Some(ep.name_cn.trim()) != tr_title.as_deref()
+        {
+            creators.push(ep.name_cn.trim().to_string());
+        }
+        let raw_ord = ep.ep.filter(|&v| v > 0.0).unwrap_or(ep.sort);
+        if raw_ord > 0.0 {
+            music_track_no = Some(raw_ord.round() as u32);
+        }
+        if ep.disc > 0 {
+            music_disc_no = Some(ep.disc);
+        }
+        let ep_desc = (!ep.desc.trim().is_empty())
+            .then(|| ep.desc.trim().to_string())
+            .or_else(|| subject_summary.clone());
+        (tr_title, ep_desc, sub.date)
     } else {
         (subject_title.clone(), subject_summary.clone(), sub.date)
     };
@@ -324,15 +368,29 @@ pub(crate) fn map_bgm_detail(
         .then(|| season_ep.map(|(_, e)| e))
         .flatten();
 
+    let track_or_ep = if target == ScrapeTargetKind::MusicTrack {
+        music_track_no
+    } else {
+        ep_num
+    };
+    let disc_or_season = if target == ScrapeTargetKind::MusicTrack {
+        music_disc_no
+    } else {
+        season_num
+    };
+
     ScrapedMetadata {
         provider_id: "bangumi".to_string(),
-        external_id: sub.id.to_string(),
+        external_id: external_id_out,
         target: Some(target),
         title: final_title,
         original_title,
         series_or_album: matches!(
             target,
-            ScrapeTargetKind::Comic | ScrapeTargetKind::TvShow | ScrapeTargetKind::MusicAlbum
+            ScrapeTargetKind::Comic
+                | ScrapeTargetKind::TvShow
+                | ScrapeTargetKind::MusicAlbum
+                | ScrapeTargetKind::MusicTrack
         )
         .then_some(subject_title)
         .flatten(),
@@ -344,8 +402,8 @@ pub(crate) fn map_bgm_detail(
         language: Some("zh".to_string()),
         isbn,
         rating: sub.rating.and_then(|r| r.score),
-        track_or_episode_number: ep_num,
-        disc_or_season_number: season_num,
+        track_or_episode_number: track_or_ep,
+        disc_or_season_number: disc_or_season,
         summary: final_summary,
         show_summary: (target == ScrapeTargetKind::TvShow)
             .then(|| subject_summary.clone())
@@ -376,13 +434,14 @@ impl ScraperProviderPort for BangumiProvider {
         ProviderDescriptor {
             id: "bangumi".to_string(),
             name: "Bangumi 番组计划".to_string(),
-            description: "中文 ACGN 权威资料库（支持漫画、轻小说/图书、番剧动画与音乐专辑刮削；免密钥可用，可选配置 Access Token）".to_string(),
+            description: "中文 ACGN 权威资料库（支持漫画、轻小说/图书、番剧动画及 OST/同人音乐单曲与专辑刮削；免密钥可用，可选配置 Access Token）".to_string(),
             website: "https://bgm.tv".to_string(),
             supported_targets: vec![
                 ScrapeTargetKind::Comic,
                 ScrapeTargetKind::Book,
                 ScrapeTargetKind::TvShow,
                 ScrapeTargetKind::Movie,
+                ScrapeTargetKind::MusicTrack,
                 ScrapeTargetKind::MusicAlbum,
             ],
             requires_api_key: false,
@@ -395,22 +454,34 @@ impl ScraperProviderPort for BangumiProvider {
         creds: &ProviderCredentials,
     ) -> DomainResult<Vec<ScrapeCandidate>> {
         let client = build_http_client(creds)?;
+        let search_kw = if query.target == Some(ScrapeTargetKind::MusicTrack)
+            && let Some(alb) = query
+                .album_or_series
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        {
+            alb
+        } else {
+            query.keyword.trim()
+        };
         let payload = BgmSearchPayload {
-            keyword: query.keyword.trim(),
+            keyword: search_kw,
             filter: BgmSearchFilter {
                 subject_types: subject_types_for_target(query.target),
             },
         };
 
-        let mut req = client
-            .post("https://api.bgm.tv/v0/search/subjects?limit=12")
-            .json(&payload);
-        if let Some(tok) = creds
+        let tok_opt = creds
             .bangumi_access_token
             .as_deref()
             .map(str::trim)
-            .filter(|t| !t.is_empty())
-        {
+            .filter(|t| !t.is_empty());
+
+        let mut req = client
+            .post("https://api.bgm.tv/v0/search/subjects?limit=12")
+            .json(&payload);
+        if let Some(tok) = tok_opt {
             req = req.bearer_auth(tok);
         }
 
@@ -422,6 +493,82 @@ impl ScraperProviderPort for BangumiProvider {
             return Ok(Vec::new());
         }
         let body: BgmSearchResp = resp.json().await.unwrap_or_default();
+
+        if query.target == Some(ScrapeTargetKind::MusicTrack) {
+            let mut ep_scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
+            let mut fallback_subs: Vec<ScrapeCandidate> = Vec::new();
+
+            for (s_idx, s) in body.data.into_iter().take(4).enumerate() {
+                let sub_id = s.id;
+                let votes = s.rating.as_ref().map(|r| r.total).unwrap_or(0);
+                let sub_cand = map_bgm_to_candidate(s, Some(ScrapeTargetKind::MusicTrack), None);
+                let alb_title = sub_cand.title.clone();
+                let cover = sub_cand.cover_url.clone();
+                let yr = sub_cand.year;
+                fallback_subs.push(sub_cand);
+
+                let ep_url =
+                    format!("https://api.bgm.tv/v0/episodes?subject_id={sub_id}&limit=100");
+                let mut ep_req = client.get(&ep_url);
+                if let Some(tok) = tok_opt {
+                    ep_req = ep_req.bearer_auth(tok);
+                }
+                if let Ok(ep_resp) = ep_req.send().await
+                    && ep_resp.status().is_success()
+                    && let Ok(ep_list) = ep_resp.json::<BgmEpisodesResp>().await
+                {
+                    for (e_idx, ep) in ep_list.data.into_iter().enumerate() {
+                        if ep.id == 0 || ep.name.trim().is_empty() {
+                            continue;
+                        }
+                        let tr_name = ep.name.trim().to_string();
+                        let alt = (!ep.name_cn.trim().is_empty()).then_some(ep.name_cn.trim());
+                        let rel = score_candidate_relevance(
+                            &query.keyword,
+                            query.year,
+                            &tr_name,
+                            alt,
+                            yr,
+                            votes,
+                        );
+                        if rel <= 0 && !ep_scored.is_empty() {
+                            continue;
+                        }
+                        let ord = ep.ep.filter(|&v| v > 0.0).unwrap_or(ep.sort);
+                        let mut sub_parts = vec![alb_title.clone()];
+                        if ep.disc > 0 {
+                            sub_parts.push(format!("Disc {}", ep.disc));
+                        }
+                        if ord > 0.0 {
+                            sub_parts.push(format!("#{:02}", ord.round() as u32));
+                        }
+                        ep_scored.push((
+                            rel,
+                            s_idx * 100 + e_idx,
+                            ScrapeCandidate {
+                                provider_id: "bangumi".to_string(),
+                                provider_name: "Bangumi 番组计划".to_string(),
+                                external_id: format!("{sub_id}:ep:{}", ep.id),
+                                target: ScrapeTargetKind::MusicTrack,
+                                title: tr_name,
+                                subtitle: Some(sub_parts.join(" · ")),
+                                year: yr,
+                                summary: None,
+                                cover_url: cover.clone(),
+                                synced_lyrics: None,
+                                plain_lyrics: None,
+                            },
+                        ));
+                    }
+                }
+            }
+
+            if !ep_scored.is_empty() {
+                ep_scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+                return Ok(ep_scored.into_iter().take(15).map(|(_, _, c)| c).collect());
+            }
+            return Ok(fallback_subs);
+        }
         let season_ep = match (query.season, query.episode) {
             (Some(s), Some(e)) => Some((s, e)),
             (None, Some(e)) => Some((1, e)),
@@ -459,7 +606,7 @@ impl ScraperProviderPort for BangumiProvider {
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
         let client = build_http_client(creds)?;
-        let (base_id, season_ep) = parse_bgm_external_id(external_id);
+        let (base_id, season_ep, music_ep_id) = parse_bgm_external_id(external_id);
         let tok_opt = creds
             .bangumi_access_token
             .as_deref()
@@ -509,6 +656,22 @@ impl ScraperProviderPort for BangumiProvider {
                     item.ep.is_some_and(|v| (v - want).abs() < f64::EPSILON)
                         || (item.sort - want).abs() < f64::EPSILON
                 });
+            }
+        } else if target == ScrapeTargetKind::MusicTrack {
+            let ep_url = format!("https://api.bgm.tv/v0/episodes?subject_id={base_id}&limit=100");
+            let mut ep_req = client.get(&ep_url);
+            if let Some(tok) = tok_opt {
+                ep_req = ep_req.bearer_auth(tok);
+            }
+            if let Ok(ep_resp) = ep_req.send().await
+                && ep_resp.status().is_success()
+                && let Ok(ep_list) = ep_resp.json::<BgmEpisodesResp>().await
+            {
+                matched_ep = if let Some(want_id) = music_ep_id {
+                    ep_list.data.into_iter().find(|item| item.id == want_id)
+                } else {
+                    ep_list.data.into_iter().next()
+                };
             }
         }
 

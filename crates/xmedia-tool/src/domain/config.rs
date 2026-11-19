@@ -136,7 +136,11 @@ fn default_music_priority() -> Vec<String> {
         "netease".to_string(),
         "kugou".to_string(),
         "kuwo".to_string(),
+        "migu".to_string(),
+        "taihe".to_string(),
+        "qishui".to_string(),
         "itunes".to_string(),
+        "bangumi".to_string(),
         "musicbrainz".to_string(),
         "lrclib".to_string(),
     ]
@@ -168,6 +172,16 @@ impl ScraperPriorities {
         }
         if self.music == ["itunes", "musicbrainz", "lrclib"]
             || self.music == ["musicbrainz", "lrclib"]
+            || self.music
+                == [
+                    "qq",
+                    "netease",
+                    "kugou",
+                    "kuwo",
+                    "itunes",
+                    "musicbrainz",
+                    "lrclib",
+                ]
         {
             self.music = default_music_priority();
             changed = true;
