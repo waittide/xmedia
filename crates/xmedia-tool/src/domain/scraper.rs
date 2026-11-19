@@ -495,6 +495,7 @@ pub fn is_compatible_secondary_source(
         eff_target,
         Some(
             ScrapeTargetKind::Book
+                | ScrapeTargetKind::Comic
                 | ScrapeTargetKind::MusicTrack
                 | ScrapeTargetKind::MusicAlbum
                 | ScrapeTargetKind::Lyrics
@@ -645,20 +646,47 @@ pub fn promote_exact_match_anchor(
             .flatten()
             .any(|t| normalize_title_for_match(t) == kw_norm)
     };
-    let exact_author = |m: &ScrapedMetadata| -> bool {
+    let prefix_title = |m: &ScrapedMetadata| -> bool {
+        [&m.title, &m.original_title, &m.series_or_album]
+            .into_iter()
+            .flatten()
+            .any(|t| {
+                let nt = normalize_title_for_match(t);
+                nt == kw_norm
+                    || (kw_norm.chars().count() >= 3
+                        && (nt.contains(&kw_norm) || kw_norm.contains(&nt)))
+            })
+    };
+    let match_author = |m: &ScrapedMetadata| -> bool {
         !author_norm.is_empty()
             && m.creators
                 .iter()
-                .any(|c| normalize_title_for_match(c) == author_norm)
+                .chain(m.illustrators_or_directors.iter())
+                .any(|c| {
+                    let nc = normalize_title_for_match(c);
+                    nc == author_norm
+                        || (author_norm.chars().count() >= 2 && nc.contains(&author_norm))
+                })
     };
 
     if !author_norm.is_empty() {
-        if exact_title(&sources[0].1) && exact_author(&sources[0].1) {
+        if exact_title(&sources[0].1) && match_author(&sources[0].1) {
             return;
         }
         if let Some(idx) = sources
             .iter()
-            .position(|(_, m)| exact_title(m) && exact_author(m))
+            .position(|(_, m)| exact_title(m) && match_author(m))
+        {
+            if idx > 0 {
+                let item = sources.remove(idx);
+                sources.insert(0, item);
+            }
+            return;
+        }
+        if !(prefix_title(&sources[0].1) && match_author(&sources[0].1))
+            && let Some(idx) = sources
+                .iter()
+                .position(|(_, m)| prefix_title(m) && match_author(m))
         {
             if idx > 0 {
                 let item = sources.remove(idx);

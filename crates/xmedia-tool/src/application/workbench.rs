@@ -129,6 +129,7 @@ impl MediaWorkbenchService {
             )
         };
 
+        let effective_pref = domain_filter.or(root.default_kind);
         let mut raw_dirs = Vec::new();
         let mut raw_files = Vec::new();
 
@@ -151,7 +152,7 @@ impl MediaWorkbenchService {
                 raw_dirs.push((fname.to_string(), p));
             } else if !recursive
                 && p.is_file()
-                && let Some(ins) = self.resolve_inspector_for_path(&p, domain_filter)
+                && let Some(ins) = self.resolve_inspector_for_path(&p, effective_pref)
                 && domain_filter.is_none_or(|want| ins.media_kind() == want)
             {
                 raw_files.push((fname.to_string(), p, ins));
@@ -184,7 +185,7 @@ impl MediaWorkbenchService {
                 let Some(fname) = p.file_name().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if let Some(ins) = self.resolve_inspector_for_path(&p, domain_filter)
+                if let Some(ins) = self.resolve_inspector_for_path(&p, effective_pref)
                     && domain_filter.is_none_or(|want| ins.media_kind() == want)
                 {
                     let fname_owned = fname.to_string();
@@ -402,10 +403,11 @@ impl MediaWorkbenchService {
             detail: None,
         });
 
+        let effective_pref = preferred_kind.or(root.default_kind);
         for (idx, rel) in rel_paths.iter().enumerate() {
             let sandbox = root.resolve_existing(rel)?;
             let Some(inspector) =
-                self.resolve_inspector_for_path(&sandbox.abs_path, preferred_kind)
+                self.resolve_inspector_for_path(&sandbox.abs_path, effective_pref)
             else {
                 continue;
             };
@@ -1001,8 +1003,9 @@ impl MediaWorkbenchService {
                 sandbox.rel_slash_string()
             )));
         }
+        let effective_pref = preferred_kind.or(root.default_kind);
         let inspector = self
-            .resolve_inspector_for_path(&sandbox.abs_path, preferred_kind)
+            .resolve_inspector_for_path(&sandbox.abs_path, effective_pref)
             .ok_or_else(|| {
                 DomainError::UnsupportedFormat(format!(
                     "unsupported media file '{}'",

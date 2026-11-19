@@ -19,11 +19,12 @@ use crate::domain::media::{
 };
 use crate::domain::ports::{MediaInspectorPort, QuickFileSummary};
 use crate::infra::atomic_fs::atomic_write_via_temp;
+use crate::infra::inspectors::book::attr_value;
 use crate::infra::inspectors::video::write_image_replacing_opposite_ext;
 
 pub struct CbzComicInspector;
 
-const COMIC_EXTENSIONS: &[&str] = &["cbz", "zip"];
+const COMIC_EXTENSIONS: &[&str] = &["cbz", "zip", "epub"];
 
 fn is_image_entry(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -36,6 +37,166 @@ fn is_image_entry(name: &str) -> bool {
         || lower.ends_with(".webp")
         || lower.ends_with(".gif")
         || lower.ends_with(".avif")
+        || lower.ends_with(".bmp")
+}
+
+fn natural_sort_key(name: &str) -> (u8, Vec<(bool, u64, String)>) {
+    let lower = name.to_ascii_lowercase();
+    let base = lower.rsplit('/').next().unwrap_or(&lower);
+    let priority = if base.starts_with("000_cover.") || base.starts_with("cover.") {
+        0
+    } else {
+        1
+    };
+    let mut parts = Vec::new();
+    let mut cur_digits = String::new();
+    let mut cur_text = String::new();
+    for ch in lower.chars() {
+        if ch.is_ascii_digit() {
+            if !cur_text.is_empty() {
+                parts.push((false, 0, std::mem::take(&mut cur_text)));
+            }
+            cur_digits.push(ch);
+        } else {
+            if !cur_digits.is_empty() {
+                let n = cur_digits.parse::<u64>().unwrap_or(0);
+                cur_digits.clear();
+                parts.push((true, n, String::new()));
+            }
+            cur_text.push(ch);
+        }
+    }
+    if !cur_digits.is_empty() {
+        let n = cur_digits.parse::<u64>().unwrap_or(0);
+        parts.push((true, n, String::new()));
+    }
+    if !cur_text.is_empty() {
+        parts.push((false, 0, cur_text));
+    }
+    (priority, parts)
+}
+
+fn apply_epub_opf_fallback_into_comic(opf_bytes: &[u8], meta: &mut ComicFileMeta) {
+    let xml_str = String::from_utf8_lossy(opf_bytes);
+    let mut reader = Reader::from_str(&xml_str);
+    reader.config_mut().trim_text(false);
+
+    let mut cur_tag: Option<String> = None;
+    let mut cur_meta_prop: Option<String> = None;
+    let mut text_acc = String::new();
+    let mut spine_dir: Option<String> = None;
+    let mut rendition_flow: Option<String> = None;
+    let mut opf_title: Option<String> = None;
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(ref e)) => {
+                let local = e.local_name().as_ref().to_ascii_lowercase();
+                if local == "spine" {
+                    spine_dir = attr_value(e, "page-progression-direction");
+                } else if local == "meta" {
+                    cur_meta_prop = attr_value(e, "property");
+                    if attr_value(e, "name")
+                        .is_some_and(|n| n.eq_ignore_ascii_case("calibre:series"))
+                        && let Some(c) = attr_value(e, "content").filter(|s| !s.trim().is_empty())
+                    {
+                        meta.series = Some(c.trim().to_string());
+                    }
+                }
+                cur_tag = Some(local);
+                text_acc.clear();
+            }
+            Ok(Event::Empty(ref e)) => {
+                let local = e.local_name().as_ref().to_ascii_lowercase();
+                if local == "spine" {
+                    spine_dir = attr_value(e, "page-progression-direction");
+                } else if local == "meta"
+                    && attr_value(e, "name")
+                        .is_some_and(|n| n.eq_ignore_ascii_case("calibre:series"))
+                    && let Some(c) = attr_value(e, "content").filter(|s| !s.trim().is_empty())
+                {
+                    meta.series = Some(c.trim().to_string());
+                }
+            }
+            Ok(Event::Text(t)) if cur_tag.is_some() => {
+                text_acc.push_str(&t.xml10_content());
+            }
+            Ok(Event::GeneralRef(r)) if cur_tag.is_some() => {
+                super::append_xml_ref(&mut text_acc, &r);
+            }
+            Ok(Event::End(_)) => {
+                if let Some(tag) = cur_tag.take() {
+                    let trimmed = text_acc.trim();
+                    if !trimmed.is_empty() {
+                        match tag.as_str() {
+                            "title" if opf_title.is_none() => {
+                                opf_title = Some(trimmed.to_string());
+                            }
+                            "creator" if !meta.writers.iter().any(|w| w == trimmed) => {
+                                meta.writers.push(trimmed.to_string());
+                            }
+                            "publisher" if meta.publisher.is_none() => {
+                                meta.publisher = Some(trimmed.to_string());
+                            }
+                            "description" if meta.summary.is_none() => {
+                                meta.summary = Some(trimmed.to_string());
+                            }
+                            "language" if meta.language_iso.is_none() => {
+                                meta.language_iso = Some(trimmed.to_string());
+                            }
+                            "subject" if !meta.genres.iter().any(|g| g == trimmed) => {
+                                meta.genres.push(trimmed.to_string());
+                            }
+                            "date" if meta.year.is_none() => {
+                                meta.year = trimmed.get(0..4).and_then(|y| y.parse::<i32>().ok());
+                            }
+                            "meta" => {
+                                if let Some(prop) = cur_meta_prop.as_deref() {
+                                    let pl = prop.trim().to_ascii_lowercase();
+                                    if pl == "belongs-to-collection" && meta.series.is_none() {
+                                        meta.series = Some(trimmed.to_string());
+                                    } else if pl == "rendition:flow" {
+                                        rendition_flow = Some(trimmed.to_ascii_lowercase());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                cur_meta_prop = None;
+                text_acc.clear();
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+
+    if let Some(t) = opf_title {
+        if meta.series.is_none() {
+            meta.series = Some(t.clone());
+        }
+        meta.title = Some(t);
+    }
+
+    if rendition_flow
+        .as_deref()
+        .is_some_and(|f| f.contains("scrolled"))
+    {
+        meta.reading_direction = "webtoon".to_string();
+    } else if let Some(dir) = spine_dir {
+        if dir.eq_ignore_ascii_case("ltr") {
+            meta.reading_direction = "ltr".to_string();
+        } else if dir.eq_ignore_ascii_case("rtl") {
+            meta.reading_direction = "rtl".to_string();
+        }
+    } else if meta
+        .language_iso
+        .as_deref()
+        .is_some_and(|l| matches!(l.get(0..2).unwrap_or(""), "en" | "fr" | "es" | "de"))
+    {
+        meta.reading_direction = "ltr".to_string();
+    }
 }
 
 fn split_csv(raw: &str) -> Vec<String> {
@@ -408,6 +569,7 @@ fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
 
     let mut page_count = 0u32;
     let mut comic_info_bytes: Option<Vec<u8>> = None;
+    let mut opf_bytes: Option<Vec<u8>> = None;
 
     for idx in 0..archive.len() {
         let Ok(mut entry) = archive.by_index(idx) else {
@@ -417,14 +579,18 @@ fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
             continue;
         };
         let name = name_raw.to_string();
+        let lower = name.to_ascii_lowercase();
         if is_image_entry(&name) {
             page_count += 1;
-        } else if name.eq_ignore_ascii_case("comicinfo.xml")
-            || name.to_ascii_lowercase().ends_with("/comicinfo.xml")
-        {
+        } else if lower == "comicinfo.xml" || lower.ends_with("/comicinfo.xml") {
             let mut buf = Vec::new();
             if entry.read_to_end(&mut buf).is_ok() {
                 comic_info_bytes = Some(buf);
+            }
+        } else if ext == "epub" && opf_bytes.is_none() && lower.ends_with(".opf") {
+            let mut buf = Vec::new();
+            if entry.read_to_end(&mut buf).is_ok() {
+                opf_bytes = Some(buf);
             }
         }
     }
@@ -449,6 +615,9 @@ fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
         ..Default::default()
     };
 
+    if let Some(ref opf) = opf_bytes {
+        apply_epub_opf_fallback_into_comic(opf, &mut meta);
+    }
     if let Some(ref xml) = comic_info_bytes {
         parse_comic_info_into(xml, &mut meta);
     }
@@ -469,6 +638,22 @@ fn rewrite_zip_with_replacements(
         let out_file = File::create(staging)
             .map_err(|e| DomainError::Storage(format!("failed creating staging zip: {e}")))?;
         let mut writer = ZipWriter::new(BufWriter::new(out_file));
+
+        let mut preserved_mimetype = false;
+        if let Ok(mut mt_entry) = src_archive.by_name("mimetype") {
+            let mut mt_bytes = Vec::new();
+            if mt_entry.read_to_end(&mut mt_bytes).is_ok() {
+                let stored =
+                    SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+                writer
+                    .start_file("mimetype", stored)
+                    .map_err(|e| DomainError::Storage(format!("zip mimetype start error: {e}")))?;
+                writer
+                    .write_all(&mt_bytes)
+                    .map_err(|e| DomainError::Storage(format!("zip mimetype write error: {e}")))?;
+                preserved_mimetype = true;
+            }
+        }
 
         for (rep_name, rep_data) in &replacements {
             let method = if is_image_entry(rep_name) {
@@ -493,7 +678,8 @@ fn rewrite_zip_with_replacements(
                 continue;
             };
             let name = name_ref.to_string();
-            if entry.is_dir() || skip_predicate(&name) {
+            if entry.is_dir() || (preserved_mimetype && name == "mimetype") || skip_predicate(&name)
+            {
                 continue;
             }
             writer
@@ -700,7 +886,7 @@ impl MediaInspectorPort for CbzComicInspector {
                     image_names.push(name.into_owned());
                 }
             }
-            image_names.sort();
+            image_names.sort_by_key(|n| natural_sort_key(n));
             let Some(first_img) = image_names.first() else {
                 return Ok(None);
             };
@@ -802,5 +988,75 @@ mod tests {
             guess_comic_from_filename(Path::new("/data/samples/comic/003.cbz"));
         assert_eq!(series4, None);
         assert_eq!(number4.as_deref(), Some("3"));
+    }
+
+    #[tokio::test]
+    async fn epub_manga_opf_rendition_detection_and_ocf_mimetype_preservation() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+        use zip::{CompressionMethod, ZipArchive, ZipWriter};
+
+        use super::CbzComicInspector;
+        use crate::domain::media::{ComicMetaPatch, MediaMetadataPatch, MediaMetadataPayload};
+        use crate::domain::ports::MediaInspectorPort;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let epub_path = tmp.path().join("テスト条漫.epub");
+        {
+            let f = std::fs::File::create(&epub_path).unwrap();
+            let mut zw = ZipWriter::new(f);
+            let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            let deflated =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zw.start_file("mimetype", stored).unwrap();
+            zw.write_all(b"application/epub+zip").unwrap();
+            zw.start_file("OEBPS/content.opf", deflated).unwrap();
+            zw.write_all(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>縦スクロール漫画</dc:title>
+    <dc:creator>佐藤太郎</dc:creator>
+    <meta property="rendition:flow">scrolled-continuous</meta>
+  </metadata>
+  <manifest><item id="p1" href="img/1.png" media-type="image/png"/></manifest>
+  <spine><itemref idref="p1"/></spine>
+</package>"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("OEBPS/img/1.png", stored).unwrap();
+            zw.write_all(b"\x89PNG\r\n\x1a\nfake").unwrap();
+            zw.finish().unwrap();
+        }
+
+        let inspector = CbzComicInspector;
+        let payload = inspector.inspect_file(&epub_path).await.unwrap();
+        let MediaMetadataPayload::Comic(meta) = payload else {
+            panic!("expected comic payload");
+        };
+        assert_eq!(meta.format, "epub");
+        assert_eq!(meta.reading_direction, "webtoon");
+        assert_eq!(meta.writers, vec!["佐藤太郎"]);
+        assert_eq!(meta.page_count, 1);
+
+        // Writing ComicInfo.xml into EPUB manga preserves uncompressed `mimetype` as entry #0
+        inspector
+            .write_metadata(
+                &epub_path,
+                &MediaMetadataPatch::Comic(ComicMetaPatch {
+                    series: Some("縦スクロール漫画".into()),
+                    number: Some("1".into()),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        let rf = std::fs::File::open(&epub_path).unwrap();
+        let mut za = ZipArchive::new(rf).unwrap();
+        let first = za.by_index(0).unwrap();
+        assert_eq!(first.name().unwrap(), "mimetype");
+        assert_eq!(first.compression(), CompressionMethod::Stored);
     }
 }
