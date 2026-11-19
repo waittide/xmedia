@@ -41,6 +41,7 @@ const emit = defineEmits<{
   openContentEditor: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
   openMusicTools: [entry: MediaFileEntry]
+  openVideoTools: [entry: MediaFileEntry]
 }>()
 
 const txt = useToolText()
@@ -870,6 +871,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                 <LuMusic class="h-3.5 w-3.5" />
                 <span>歌词 / 响度 / 封面工具</span>
               </button>
+
               <button
                 v-if="detail.entry.media_kind === 'book' && detail.entry.extension === 'epub'"
                 type="button"
@@ -884,6 +886,14 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               </button>
             </template>
             <template v-else>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
+                @click="emit('openVideoTools', detail.entry)"
+              >
+                <LuFilm class="h-3.5 w-3.5" />
+                <span>字幕精校 / 抽取 / 剧集工具</span>
+              </button>
               <button
                 type="button"
                 :disabled="uploadingArtwork"

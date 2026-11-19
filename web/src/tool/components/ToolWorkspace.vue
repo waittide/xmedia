@@ -56,6 +56,7 @@ import BookContentEditorModal from './BookContentEditorModal.vue'
 import ComicPageManagerModal from './ComicPageManagerModal.vue'
 import ComicSeriesToolsModal from './ComicSeriesToolsModal.vue'
 import MusicToolboxModal from './MusicToolboxModal.vue'
+import VideoToolboxModal from './VideoToolboxModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
 import ToolHomeView from './ToolHomeView.vue'
@@ -158,6 +159,8 @@ const comicPageManagerEntry = ref<MediaFileEntry | null>(null)
 const comicSeriesToolsOpen = ref(false)
 const musicToolsOpen = ref(false)
 const musicToolsEntries = ref<MediaFileEntry[]>([])
+const videoToolsOpen = ref(false)
+const videoToolsEntries = ref<MediaFileEntry[]>([])
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -668,6 +671,15 @@ const selectedMusicEntries = computed(() =>
 function openMusicToolbox(entries: MediaFileEntry[]): void {
   musicToolsEntries.value = entries
   musicToolsOpen.value = true
+}
+
+const selectedVideoEntries = computed(() =>
+  selectedEntriesForRename.value.filter((e) => e.media_kind === 'video'),
+)
+
+function openVideoToolbox(entries: MediaFileEntry[]): void {
+  videoToolsEntries.value = entries
+  videoToolsOpen.value = true
 }
 
 async function handleBookContentSaved(updated: MediaFileDetail): Promise<void> {
@@ -1378,6 +1390,16 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
+                    v-if="selectedVideoEntries.length > 0"
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+                    @click="openVideoToolbox(selectedVideoEntries)"
+                  >
+                    <LuFilm class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                    <span>整季剧集映射 ({{ selectedVideoEntries.length }})</span>
+                  </button>
+
+                  <button
                     type="button"
                     :disabled="selectedEntriesForRename.length === 0"
                     class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
@@ -1634,6 +1656,16 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
+                    v-if="file.media_kind === 'video'"
+                    type="button"
+                    class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                    title="字幕精校 / 内封字幕抽取 / 剧集映射工具箱"
+                    @click.stop="openVideoToolbox([file])"
+                  >
+                    <LuFilm class="h-4 w-4" />
+                  </button>
+
+                  <button
                     type="button"
                     class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
                     title="添加刮削任务（本地信息 → 高优先级源 → 低优先级源）"
@@ -1669,6 +1701,7 @@ onBeforeUnmount(() => {
             @open-content-editor="openBookContentEditor"
             @open-comic-pages="openComicPageManager"
             @open-music-tools="(e) => openMusicToolbox([e])"
+            @open-video-tools="(e) => openVideoToolbox([e])"
           />
         </div>
       </main>
@@ -1727,6 +1760,15 @@ onBeforeUnmount(() => {
       :root-id="activeRootId"
       :entries="musicToolsEntries"
       @close="musicToolsOpen = false"
+      @updated="(d) => handleDetailUpdated(d, true)"
+      @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
+    />
+
+    <VideoToolboxModal
+      :open="videoToolsOpen"
+      :root-id="activeRootId"
+      :entries="videoToolsEntries"
+      @close="videoToolsOpen = false"
       @updated="(d) => handleDetailUpdated(d, true)"
       @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
     />

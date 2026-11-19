@@ -270,13 +270,16 @@ export interface VideoFileMeta {
   actors: string[]
   directors: string[]
   studio: string | null
+  collection_set?: string | null
   tmdb_id: string | null
   bangumi_id: string | null
+  locked_fields?: string[]
   has_nfo: boolean
   nfo_filename: string
   has_poster: boolean
   has_fanart: boolean
   has_thumb: boolean
+  has_clearlogo?: boolean
   duration_secs: number
   width: number | null
   height: number | null
@@ -359,8 +362,10 @@ export interface VideoMetaPatch {
   actors?: string[]
   directors?: string[]
   studio?: string
+  collection_set?: string
   tmdb_id?: string
   bangumi_id?: string
+  locked_fields?: string[]
 }
 
 export type MediaMetadataPatchEnvelope =
@@ -586,6 +591,52 @@ export interface BatchMusicAlbumSyncInput {
 }
 
 export interface BatchMusicAlbumSyncReportDto {
+  updated_count: number
+  failed_paths: string[]
+}
+
+export interface VideoSubtitleInfoDto {
+  filename: string
+  extension: string
+  file_size: number
+  detected_encoding: string
+  is_utf8: boolean
+  language_tag: string | null
+  forced: boolean
+}
+
+export interface ProcessSubtitleInput {
+  subtitle_filename: string
+  convert_utf8?: boolean
+  offset_ms?: number
+  zh_direction?: 't2s' | 's2t' | null
+  rename_language?: string
+  forced?: boolean
+}
+
+export interface ProcessSubtitleReportDto {
+  original_filename: string
+  final_filename: string
+  original_encoding: string
+  shifted_cues: number
+  converted_utf8: boolean
+}
+
+export interface ExtractSubtitleReportDto {
+  created_filename: string
+  file_size: number
+}
+
+export interface BatchRemapEpisodesInput {
+  show_title?: string
+  season_number?: number | null
+  mode?: 'sequential' | 'absolute_offset'
+  start_episode?: number
+  episode_offset?: number
+  write_season_nfo?: boolean
+}
+
+export interface BatchRemapEpisodesReportDto {
   updated_count: number
   failed_paths: string[]
 }
