@@ -34,6 +34,7 @@ import DryRunScrapeModal from './DryRunScrapeModal.vue'
 import VideoToolboxModal from './VideoToolboxModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
+import ScrapeWorkbenchView from './ScrapeWorkbenchView.vue'
 import ToolHomeView from './ToolHomeView.vue'
 import ToolItemsBrowser from './ToolItemsBrowser.vue'
 import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
@@ -54,7 +55,7 @@ const taskStore = useToolTaskStore()
 const txt = useToolText()
 
 type PrimaryNavKey = 'home' | 'items' | 'tasks' | 'settings'
-type BrowseViewMode = 'flat' | 'folders'
+type BrowseViewMode = 'flat' | 'folders' | 'workbench'
 type SortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
 type SortDir = 'asc' | 'desc'
 type CompletenessFilter =
@@ -137,9 +138,12 @@ const previousWorkspaceNav = ref<'home' | 'items' | 'tasks'>(
   activeNav.value === 'settings' ? 'home' : activeNav.value,
 )
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
-const viewMode = ref<BrowseViewMode>(
-  localStorage.getItem('xmedia_tool.view_mode') === 'folders' ? 'folders' : 'flat',
-)
+function loadSavedViewMode(): BrowseViewMode {
+  const saved = localStorage.getItem('xmedia_tool.view_mode')
+  if (saved === 'folders' || saved === 'workbench') return saved
+  return 'flat'
+}
+const viewMode = ref<BrowseViewMode>(loadSavedViewMode())
 const sortField = ref<SortField>(loadSavedSortField())
 const sortDir = ref<SortDir>(
   localStorage.getItem('xmedia_tool.sort_dir') === 'desc' ? 'desc' : 'asc',
@@ -344,7 +348,10 @@ function completenessScore(e: MediaFileEntry): number {
 const filteredFiles = computed<MediaFileEntry[]>(() => {
   const base = snapshot.value?.files ?? []
   const q = searchQuery.value.trim().toLowerCase()
-  const showRecursive = viewMode.value === 'flat' || hasActiveSearchOrFilter.value
+  const showRecursive =
+    viewMode.value === 'flat' ||
+    viewMode.value === 'workbench' ||
+    hasActiveSearchOrFilter.value
 
   const list = base.filter((f) => {
     if (!showRecursive && parentRelOf(f.rel_path) !== currentRelPath.value) {
@@ -1144,7 +1151,10 @@ onBeforeUnmount(() => {
       <main
         class="flex min-w-0 flex-1 overflow-hidden border-t border-[var(--ctp-surface0)]/65 bg-[var(--ctp-canvas)] md:rounded-tl-3xl md:border-l"
       >
-        <div class="min-w-0 flex-1 overflow-y-auto">
+        <div
+          class="min-w-0 flex-1"
+          :class="activeNav === 'items' && viewMode === 'workbench' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'"
+        >
           <!-- VIEW 1: IN-PAGE SETTINGS (Server SettingsView Left-Right Layout + Domain Tabs) -->
           <ToolSettingsView
             v-if="activeNav === 'settings'"
@@ -1179,7 +1189,48 @@ onBeforeUnmount(() => {
             @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
           />
 
-          <!-- VIEW 4: ITEMS BROWSER -->
+          <!-- VIEW 4A: 3-PANE SCRAPE WORKBENCH -->
+          <ScrapeWorkbenchView
+            v-else-if="viewMode === 'workbench'"
+            :active-domain="activeDomain"
+            :current-rel-path="currentRelPath"
+            :domain-roots="domainRoots"
+            :domain-labels="domainLabels"
+            :breadcrumbs="breadcrumbs"
+            :view-mode="viewMode"
+            :filtered-files="filteredFiles"
+            :selected-paths="selectedPaths"
+            :checked-files="checkedFiles"
+            :selected-comic-entries="selectedComicEntries"
+            :selected-music-entries="selectedMusicEntries"
+            :selected-video-entries="selectedVideoEntries"
+            :loading-dir="loadingDir"
+            :dir-error="dirError"
+            :snapshot="snapshot"
+            :active-detail="activeDetail"
+            :artwork-version="artworkVersion"
+            @open-settings-roots="openSettingsTab('roots')"
+            @open-settings-scrapers="openSettingsTab('scrapers')"
+            @enter-folder="(rel) => enterFolder(rel)"
+            @set-view-mode="setViewMode"
+            @toggle-select-all="toggleSelectAllFiltered"
+            @clear-selection="selectedPaths = new Set(); lastSelectedRelPath = null"
+            @toggle-select-file="toggleSelectFile"
+            @inspect-file="inspectEntry"
+            @updated-detail="handleDetailUpdated"
+            @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
+            @enqueue-scrape-selection="enqueueScrapeForSelection"
+            @open-dry-run="dryRunModalOpen = true"
+            @open-rename="renameModalOpen = true"
+            @open-advanced-scrape="(d) => openManualScrapeModal(d.entry)"
+            @open-book-content-editor="openBookContentEditor"
+            @open-comic-page-manager="openComicPageManager"
+            @open-comic-series-tools="comicSeriesToolsOpen = true"
+            @open-music-toolbox="openMusicToolbox"
+            @open-video-toolbox="openVideoToolbox"
+          />
+
+          <!-- VIEW 4B: ITEMS BROWSER -->
           <ToolItemsBrowser
             v-else
             :active-domain="activeDomain"
@@ -1235,9 +1286,12 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <!-- Right Drawer: Metadata & Stream Inspector (Available on Home & Items) -->
+        <!-- Right Drawer: Metadata & Stream Inspector (Available on Home & non-workbench Items) -->
         <div
-          v-if="(activeNav === 'home' || activeNav === 'items') && (activeDetail || loadingInspector)"
+          v-if="
+            (activeNav === 'home' || (activeNav === 'items' && viewMode !== 'workbench')) &&
+            (activeDetail || loadingInspector)
+          "
           class="fixed inset-y-0 right-0 z-40 flex w-full max-w-full bg-[var(--ctp-canvas)] shadow-2xl lg:static lg:z-auto lg:w-auto lg:shadow-none"
         >
           <div

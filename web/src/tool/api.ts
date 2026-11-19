@@ -416,6 +416,25 @@ export const toolApi = {
     })
   },
 
+  uploadArtworkFromUrl(
+    rootId: string,
+    relPath: string,
+    url: string,
+    slot: 'cover' | 'series_cover' | 'album_cover' | 'poster' | 'fanart' | 'thumb' | 'clearlogo',
+    kind: MediaKind,
+  ): Promise<MediaFileDetail> {
+    return toolRequest<MediaFileDetail>('/files/artwork/from-url', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        path: relPath,
+        url,
+        slot,
+        kind,
+      }),
+    })
+  },
+
   previewRename(
     rootId: string,
     paths: string[],

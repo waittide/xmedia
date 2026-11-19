@@ -5,6 +5,7 @@ import {
   LuBookOpen,
   LuChevronRight,
   LuClapperboard,
+  LuColumns3,
   LuDisc3,
   LuFileSignature,
   LuFileText,
@@ -40,7 +41,7 @@ const props = defineProps<{
     emptyRootsDesc: string
   }
   breadcrumbs: Array<{ label: string; relPath: string }>
-  viewMode: 'flat' | 'folders'
+  viewMode: 'flat' | 'folders' | 'workbench'
   hasActiveSearchOrFilter: boolean
   filteredFiles: MediaFileEntry[]
   visibleFiles: MediaFileEntry[]
@@ -67,7 +68,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   openSettingsRoots: []
   enterFolder: [relPath: string, switchToItems?: boolean]
-  setViewMode: [mode: 'flat' | 'folders']
+  setViewMode: [mode: 'flat' | 'folders' | 'workbench']
   toggleSelectAll: []
   clearSelection: []
   setSortField: [field: ToolSortField]
@@ -190,6 +191,20 @@ function relativeDirBadge(relPath: string): string | null {
           >
             <LuFolder class="h-3.5 w-3.5" />
             <span>文件夹</span>
+          </button>
+          <button
+            type="button"
+            class="inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
+            :class="
+              viewMode === 'workbench'
+                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+            "
+            title="三栏同屏刮削工作台：左栏文件列表、中栏常驻编辑、右栏在线候选单字段回填"
+            @click="emit('setViewMode', 'workbench')"
+          >
+            <LuColumns3 class="h-3.5 w-3.5" />
+            <span>三栏刮削台</span>
           </button>
         </div>
 

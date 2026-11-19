@@ -83,6 +83,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
                 .post(upload_artwork)
                 .layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
+        .route("/files/artwork/from-url", post(upload_artwork_from_url))
         .route("/files/rename/preview", post(preview_rename))
         .route("/files/rename/preview/stream", post(preview_rename_stream))
         .route("/files/rename/execute", post(execute_rename))
@@ -451,6 +452,39 @@ async fn upload_artwork(
             &mime,
             &slot,
             preferred_kind,
+        )
+        .await?;
+    Ok(Json(detail))
+}
+
+#[derive(Deserialize)]
+struct UploadArtworkFromUrlRequest {
+    root_id: Uuid,
+    path: String,
+    url: String,
+    #[serde(default = "default_artwork_slot")]
+    slot: String,
+    #[serde(default)]
+    kind: Option<MediaKind>,
+}
+
+fn default_artwork_slot() -> String {
+    "cover".to_string()
+}
+
+async fn upload_artwork_from_url(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<UploadArtworkFromUrlRequest>,
+) -> ApiResult<Json<MediaFileDetail>> {
+    let detail = state
+        .scraping
+        .apply_remote_artwork(
+            RootId(req.root_id),
+            &req.path,
+            &req.url,
+            &req.slot,
+            req.kind,
         )
         .await?;
     Ok(Json(detail))

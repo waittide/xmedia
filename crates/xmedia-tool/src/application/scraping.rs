@@ -1471,6 +1471,46 @@ impl ScrapingOrchestratorService {
         let client = build_http_client(&creds)?;
         download_image_bytes(&client, parsed.as_str()).await
     }
+
+    /// Downloads a remote artwork image (e.g. from a scraper candidate) using configured proxy/UA
+    /// and writes it into the target media file via the workbench.
+    pub async fn apply_remote_artwork(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        raw_url: &str,
+        slot: &str,
+        preferred_kind: Option<MediaKind>,
+    ) -> DomainResult<MediaFileDetail> {
+        let parsed = reqwest::Url::parse(raw_url.trim())
+            .map_err(|_| DomainError::Validation("invalid artwork URL".into()))?;
+        if !matches!(parsed.scheme(), "http" | "https") || !parsed.username().is_empty() {
+            return Err(DomainError::Validation(
+                "artwork URL must use http or https".into(),
+            ));
+        }
+        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+        if host.is_empty()
+            || host == "localhost"
+            || host.ends_with(".local")
+            || host.starts_with("127.")
+            || host.starts_with("10.")
+            || host.starts_with("192.168.")
+            || host.starts_with("169.254.")
+            || host == "::1"
+            || host == "[::1]"
+        {
+            return Err(DomainError::Validation(
+                "disallowed local/private artwork host".into(),
+            ));
+        }
+        let creds = self.settings.get_credentials().await?;
+        let client = build_http_client(&creds)?;
+        let (bytes, mime) = download_image_bytes(&client, parsed.as_str()).await?;
+        self.workbench
+            .write_artwork(root_id, rel_path, &bytes, &mime, slot, preferred_kind)
+            .await
+    }
 }
 
 fn is_webnovel_serial_only_provider(id: &str) -> bool {
