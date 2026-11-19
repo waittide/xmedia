@@ -26,7 +26,7 @@ pub struct CbzComicInspector;
 
 const COMIC_EXTENSIONS: &[&str] = &["cbz", "zip", "epub"];
 
-fn is_image_entry(name: &str) -> bool {
+pub(crate) fn is_image_entry(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     if lower.ends_with('/') || lower.contains("__macosx") {
         return false;
@@ -40,7 +40,7 @@ fn is_image_entry(name: &str) -> bool {
         || lower.ends_with(".bmp")
 }
 
-fn natural_sort_key(name: &str) -> (u8, Vec<(bool, u64, String)>) {
+pub(crate) fn natural_sort_key(name: &str) -> (u8, Vec<(bool, u64, String)>) {
     let lower = name.to_ascii_lowercase();
     let base = lower.rsplit('/').next().unwrap_or(&lower);
     let priority = if base.starts_with("000_cover.") || base.starts_with("cover.") {
@@ -301,7 +301,14 @@ fn parse_comic_info_into(xml_bytes: &[u8], meta: &mut ComicFileMeta) {
     }
 }
 
-fn render_comic_info_xml(meta: &ComicFileMeta) -> String {
+pub(crate) fn render_comic_info_xml(meta: &ComicFileMeta) -> String {
+    render_comic_info_xml_with_pages(meta, None)
+}
+
+pub(crate) fn render_comic_info_xml_with_pages(
+    meta: &ComicFileMeta,
+    pages_xml: Option<&str>,
+) -> String {
     let mut xml = String::with_capacity(768);
     xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
     xml.push_str("<ComicInfo xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\n");
@@ -389,6 +396,14 @@ fn render_comic_info_xml(meta: &ComicFileMeta) -> String {
     xml.push_str(&format!("  <Manga>{manga_tag}</Manga>\n"));
     if meta.reading_direction == "webtoon" {
         xml.push_str("  <Format>Webtoon</Format>\n");
+    }
+    if let Some(pages_block) = pages_xml
+        && !pages_block.trim().is_empty()
+    {
+        xml.push_str(pages_block);
+        if !pages_block.ends_with('\n') {
+            xml.push('\n');
+        }
     }
     xml.push_str("</ComicInfo>\n");
     xml
@@ -549,7 +564,7 @@ pub(crate) fn guess_comic_from_filename(
     (series, number, volume)
 }
 
-fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
+pub(crate) fn read_comic_meta(path: &Path) -> DomainResult<ComicFileMeta> {
     let ext = path
         .extension()
         .and_then(|s| s.to_str())

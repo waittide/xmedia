@@ -9,8 +9,8 @@ use xmedia_core::domain::library::MediaKind;
 
 use crate::application::settings::ToolSettingsService;
 use crate::domain::media::{
-    DirectorySnapshot, FolderEntryDto, MediaFileDetail, MediaFileEntry, MediaMetadataPatch,
-    MediaMetadataPayload, RenamePlanItem,
+    ComicMetaPatch, DirectorySnapshot, FolderEntryDto, MediaFileDetail, MediaFileEntry,
+    MediaMetadataPatch, MediaMetadataPayload, RenamePlanItem,
 };
 use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
@@ -24,6 +24,12 @@ use crate::infra::inspectors::book_content::{
     save_book_content, transform_book_content_batch,
 };
 use crate::infra::inspectors::comic::is_generic_comic_folder;
+use crate::infra::inspectors::comic_ops::{
+    BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
+    ComicOptimizeReportDto, ComicPagesSnapshotDto, MergeComicsReportDto, SaveComicPageInput,
+    list_comic_pages, merge_comics_to_cbz, optimize_comic_cbz, read_comic_page_image,
+    save_comic_pages,
+};
 use crate::infra::inspectors::music::is_generic_music_folder;
 use crate::infra::inspectors::video::dir_has_single_video;
 use crate::infra::inspectors::zh_text::BookTextTransformOptions;
@@ -987,6 +993,171 @@ impl MediaWorkbenchService {
             .inspect_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         Ok((report, detail))
+    }
+
+    pub async fn get_comic_pages(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+    ) -> DomainResult<ComicPagesSnapshotDto> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Comic))
+            .await?;
+        let abs = sandbox.abs_path;
+        tokio::task::spawn_blocking(move || list_comic_pages(&abs))
+            .await
+            .map_err(|e| DomainError::Storage(format!("list comic pages task failed: {e}")))?
+    }
+
+    pub async fn read_comic_page(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        entry_name: &str,
+        max_width: Option<u32>,
+    ) -> DomainResult<BinaryPayload> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Comic))
+            .await?;
+        let abs = sandbox.abs_path;
+        let entry = entry_name.to_string();
+        tokio::task::spawn_blocking(move || read_comic_page_image(&abs, &entry, max_width))
+            .await
+            .map_err(|e| DomainError::Storage(format!("read comic page task failed: {e}")))?
+    }
+
+    pub async fn save_comic_pages(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        pages: Vec<SaveComicPageInput>,
+        reencode: ComicImageReencodeFormat,
+        jpeg_quality: u8,
+        max_width: Option<u32>,
+    ) -> DomainResult<(ComicOptimizeReportDto, MediaFileDetail)> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Comic))
+            .await?;
+        let abs = sandbox.abs_path;
+        let report = tokio::task::spawn_blocking(move || {
+            save_comic_pages(&abs, &pages, reencode, jpeg_quality, max_width)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("save comic pages task failed: {e}")))??;
+        let detail = self
+            .inspect_file(root_id, rel_path, Some(MediaKind::Comic))
+            .await?;
+        Ok((report, detail))
+    }
+
+    pub async fn optimize_comic(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        reencode: ComicImageReencodeFormat,
+        jpeg_quality: u8,
+        max_width: Option<u32>,
+    ) -> DomainResult<(ComicOptimizeReportDto, MediaFileDetail)> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Comic))
+            .await?;
+        let abs = sandbox.abs_path;
+        let report = tokio::task::spawn_blocking(move || {
+            optimize_comic_cbz(&abs, reencode, jpeg_quality, max_width)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("optimize comic task failed: {e}")))??;
+        let detail = self
+            .inspect_file(root_id, rel_path, Some(MediaKind::Comic))
+            .await?;
+        Ok((report, detail))
+    }
+
+    pub async fn merge_comics(
+        &self,
+        root_id: RootId,
+        source_paths: Vec<String>,
+        output_rel_path: &str,
+        series: Option<String>,
+        title: Option<String>,
+        volume: Option<i32>,
+    ) -> DomainResult<(MergeComicsReportDto, MediaFileDetail)> {
+        let root = self.settings.find_root(root_id).await?;
+        let mut abs_sources = Vec::with_capacity(source_paths.len());
+        for rel in &source_paths {
+            let sb = root.resolve_existing(rel)?;
+            abs_sources.push(sb.abs_path);
+        }
+        let target_rel = if output_rel_path.to_ascii_lowercase().ends_with(".cbz") {
+            output_rel_path.to_string()
+        } else {
+            format!("{output_rel_path}.cbz")
+        };
+        let target_abs = root.resolve_target(&target_rel)?;
+        if let Some(parent) = target_abs.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                DomainError::Storage(format!("create merge output dir failed: {e}"))
+            })?;
+        }
+        let target_rel_slash = target_abs
+            .strip_prefix(&root.path)
+            .map(path_to_slash)
+            .unwrap_or_else(|_| target_rel.clone());
+        let report_rel = target_rel_slash.clone();
+        let report = tokio::task::spawn_blocking(move || {
+            merge_comics_to_cbz(&abs_sources, &target_abs, report_rel, series, title, volume)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("merge comics task failed: {e}")))??;
+        let detail = self
+            .inspect_file(root_id, &target_rel_slash, Some(MediaKind::Comic))
+            .await?;
+        Ok((report, detail))
+    }
+
+    pub async fn batch_sync_comic_series(
+        &self,
+        root_id: RootId,
+        paths: Vec<String>,
+        input: BatchComicSeriesSyncInput,
+    ) -> DomainResult<BatchComicSeriesSyncReportDto> {
+        let mut updated_count = 0usize;
+        let mut failed_paths = Vec::new();
+        let width = input.pad_width.clamp(1, 6);
+
+        for (idx, rel_path) in paths.iter().enumerate() {
+            let seq = input.start_index + idx as i32;
+            let (number, volume) = match input.numbering_mode.as_str() {
+                "chapter" => (Some(format!("{seq:0width$}")), None),
+                "volume" => (None, Some(seq)),
+                _ => (None, None),
+            };
+            let patch = MediaMetadataPatch::Comic(ComicMetaPatch {
+                series: input.series.clone(),
+                series_group: input.series_group.clone(),
+                title: None,
+                number,
+                volume,
+                summary: None,
+                writers: input.writers.clone(),
+                pencillers: input.pencillers.clone(),
+                publisher: input.publisher.clone(),
+                genres: input.genres.clone(),
+                tags: input.tags.clone(),
+                year: None,
+                language_iso: None,
+                reading_direction: input.reading_direction.clone(),
+            });
+            match self.write_metadata(root_id, rel_path, patch).await {
+                Ok(_) => updated_count += 1,
+                Err(_) => failed_paths.push(rel_path.clone()),
+            }
+        }
+
+        Ok(BatchComicSeriesSyncReportDto {
+            updated_count,
+            failed_paths,
+        })
     }
 
     async fn resolve_media_file(

@@ -13,6 +13,7 @@ pub mod k17;
 pub mod kugou;
 pub mod kuwo;
 pub mod lrclib;
+pub mod mangadex;
 pub mod migu;
 pub mod musicbrainz;
 pub mod neodb;
@@ -64,6 +65,7 @@ pub fn build_default_scraper_providers() -> Vec<Arc<dyn ScraperProviderPort>> {
         Arc::new(openlibrary::OpenLibraryProvider),
         Arc::new(bangumi::BangumiProvider),
         Arc::new(anilist::AniListProvider),
+        Arc::new(mangadex::MangaDexProvider),
         Arc::new(tmdb::TmdbProvider),
     ]
 }
@@ -83,9 +85,9 @@ mod tests {
     };
 
     #[test]
-    fn default_registry_exposes_twenty_five_providers_and_checks_tmdb_credentials() {
+    fn default_registry_exposes_twenty_six_providers_and_checks_tmdb_credentials() {
         let providers = build_default_scraper_providers();
-        assert_eq!(providers.len(), 25);
+        assert_eq!(providers.len(), 26);
 
         let empty_creds = ProviderCredentials::default();
         let configured_ids: Vec<String> = providers
@@ -119,7 +121,8 @@ mod tests {
                 "lrclib",
                 "openlibrary",
                 "bangumi",
-                "anilist"
+                "anilist",
+                "mangadex"
             ]
         );
 

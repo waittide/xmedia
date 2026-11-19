@@ -136,6 +136,7 @@ fn default_comic_priority() -> Vec<String> {
         "douban".to_string(),
         "neodb".to_string(),
         "anilist".to_string(),
+        "mangadex".to_string(),
     ]
 }
 
