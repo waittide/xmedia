@@ -80,11 +80,11 @@ fn find_album_cover_path(audio_path: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-fn sidecar_lrc_path(audio_path: &Path) -> PathBuf {
+pub(crate) fn sidecar_lrc_path(audio_path: &Path) -> PathBuf {
     audio_path.with_extension("lrc")
 }
 
-fn read_sidecar_lrc(audio_path: &Path) -> Option<String> {
+pub(crate) fn read_sidecar_lrc(audio_path: &Path) -> Option<String> {
     let lrc_path = sidecar_lrc_path(audio_path);
     let raw = std::fs::read(&lrc_path).ok()?;
     let (decoded, _) = decode_text_smart(&raw);
@@ -92,7 +92,7 @@ fn read_sidecar_lrc(audio_path: &Path) -> Option<String> {
     (!trimmed.is_empty()).then_some(decoded)
 }
 
-fn open_tagged(path: &Path) -> DomainResult<TaggedFile> {
+pub(crate) fn open_tagged(path: &Path) -> DomainResult<TaggedFile> {
     let file = File::open(path)
         .map_err(|e| DomainError::Storage(format!("failed opening '{}': {e}", path.display())))?;
     let reader = BufReader::new(file);
@@ -213,7 +213,7 @@ fn parse_music_meta(path: &Path) -> DomainResult<MusicFileMeta> {
     })
 }
 
-fn ensure_mutable_primary_tag(tagged: &mut TaggedFile) -> &mut Tag {
+pub(crate) fn ensure_mutable_primary_tag(tagged: &mut TaggedFile) -> &mut Tag {
     let preferred_type = if tagged.file_type() == FileType::Wav {
         TagType::Id3v2
     } else {

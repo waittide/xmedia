@@ -3,6 +3,7 @@ pub mod book_content;
 pub mod comic;
 pub mod comic_ops;
 pub mod music;
+pub mod music_ops;
 pub mod video;
 pub mod zh_text;
 

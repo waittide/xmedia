@@ -10,7 +10,7 @@ use xmedia_core::domain::library::MediaKind;
 use crate::application::settings::ToolSettingsService;
 use crate::domain::media::{
     ComicMetaPatch, DirectorySnapshot, FolderEntryDto, MediaFileDetail, MediaFileEntry,
-    MediaMetadataPatch, MediaMetadataPayload, RenamePlanItem,
+    MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch, RenamePlanItem,
 };
 use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
@@ -31,6 +31,12 @@ use crate::infra::inspectors::comic_ops::{
     save_comic_pages,
 };
 use crate::infra::inspectors::music::is_generic_music_folder;
+use crate::infra::inspectors::music_ops::{
+    BatchMusicAlbumSyncInput, BatchMusicAlbumSyncReportDto, CueSplitReportDto,
+    MusicCoverOptimizeReportDto, MusicLyricsToolInput, MusicLyricsToolReportDto,
+    ReplayGainReportDto, apply_replaygain_batch, optimize_music_cover, process_music_lyrics,
+    split_cue_album,
+};
 use crate::infra::inspectors::video::dir_has_single_video;
 use crate::infra::inspectors::zh_text::BookTextTransformOptions;
 
@@ -1155,6 +1161,121 @@ impl MediaWorkbenchService {
         }
 
         Ok(BatchComicSeriesSyncReportDto {
+            updated_count,
+            failed_paths,
+        })
+    }
+
+    pub async fn run_music_lyrics_tool(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        input: MusicLyricsToolInput,
+    ) -> DomainResult<(MusicLyricsToolReportDto, MediaFileDetail)> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Music))
+            .await?;
+        let abs = sandbox.abs_path;
+        let report = tokio::task::spawn_blocking(move || process_music_lyrics(&abs, &input))
+            .await
+            .map_err(|e| DomainError::Storage(format!("music lyrics tool task failed: {e}")))??;
+        let detail = self
+            .inspect_file(root_id, rel_path, Some(MediaKind::Music))
+            .await?;
+        Ok((report, detail))
+    }
+
+    pub async fn optimize_music_cover(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        max_dimension: u32,
+        jpeg_quality: u8,
+    ) -> DomainResult<(MusicCoverOptimizeReportDto, MediaFileDetail)> {
+        let (_, sandbox, _) = self
+            .resolve_media_file(root_id, rel_path, Some(MediaKind::Music))
+            .await?;
+        let abs = sandbox.abs_path;
+        let report = tokio::task::spawn_blocking(move || {
+            optimize_music_cover(&abs, max_dimension, jpeg_quality)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("optimize music cover task failed: {e}")))??;
+        let detail = self
+            .inspect_file(root_id, rel_path, Some(MediaKind::Music))
+            .await?;
+        Ok((report, detail))
+    }
+
+    pub async fn apply_music_replaygain(
+        &self,
+        root_id: RootId,
+        paths: Vec<String>,
+        ffmpeg_bin: String,
+    ) -> DomainResult<ReplayGainReportDto> {
+        let root = self.settings.find_root(root_id).await?;
+        let mut resolved = Vec::with_capacity(paths.len());
+        for rel in paths {
+            if let Ok(sb) = root.resolve_existing(&rel)
+                && sb.abs_path.is_file()
+            {
+                resolved.push((sb.rel_slash_string(), sb.abs_path));
+            }
+        }
+        tokio::task::spawn_blocking(move || apply_replaygain_batch(&resolved, &ffmpeg_bin))
+            .await
+            .map_err(|e| DomainError::Storage(format!("replaygain task failed: {e}")))?
+    }
+
+    pub async fn split_music_cue(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        ffmpeg_bin: String,
+    ) -> DomainResult<CueSplitReportDto> {
+        let root = self.settings.find_root(root_id).await?;
+        let sb = root.resolve_existing(rel_path)?;
+        let abs = sb.abs_path;
+        tokio::task::spawn_blocking(move || split_cue_album(&abs, &ffmpeg_bin))
+            .await
+            .map_err(|e| DomainError::Storage(format!("split cue task failed: {e}")))?
+    }
+
+    pub async fn batch_sync_music_album(
+        &self,
+        root_id: RootId,
+        paths: Vec<String>,
+        input: BatchMusicAlbumSyncInput,
+    ) -> DomainResult<BatchMusicAlbumSyncReportDto> {
+        let mut updated_count = 0usize;
+        let mut failed_paths = Vec::new();
+
+        for (idx, rel_path) in paths.iter().enumerate() {
+            let track_number = if input.auto_number_tracks {
+                Some(input.start_track + idx as u32)
+            } else {
+                None
+            };
+            let patch = MediaMetadataPatch::Music(MusicMetaPatch {
+                title: None,
+                artist: input.artist.clone(),
+                album_artist: input.album_artist.clone(),
+                album: input.album.clone(),
+                track_number,
+                disc_number: input.disc_number,
+                year: input.year,
+                genre: input.genre.clone(),
+                comment: None,
+                embedded_lyrics: None,
+                sidecar_lrc: None,
+            });
+            match self.write_metadata(root_id, rel_path, patch).await {
+                Ok(_) => updated_count += 1,
+                Err(_) => failed_paths.push(rel_path.clone()),
+            }
+        }
+
+        Ok(BatchMusicAlbumSyncReportDto {
             updated_count,
             failed_paths,
         })
