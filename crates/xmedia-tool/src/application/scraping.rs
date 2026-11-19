@@ -37,6 +37,21 @@ use crate::infra::scrape_cache::{ScrapeCacheStatsDto, ScrapeMetadataCache};
 use crate::infra::scrapers::http_client::build_http_client;
 
 #[derive(Debug, Clone, serde::Serialize)]
+pub struct DryRunScrapeItemDto {
+    pub rel_path: String,
+    pub display_title: String,
+    pub query_keyword: String,
+    pub matched: bool,
+    pub matched_title: Option<String>,
+    pub matched_creator: Option<String>,
+    pub matched_year: Option<i32>,
+    pub matched_provider: Option<String>,
+    pub confidence: u8,
+    pub low_confidence: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct AutoScrapeResultDto {
     pub matched: bool,
     pub detail: MediaFileDetail,
@@ -516,6 +531,102 @@ impl ScrapingOrchestratorService {
 
     /// Automatic waterfall scrape for background task queue:
     /// Priority order: Local non-empty metadata -> #1 Priority Provider -> #2 Priority Provider -> ...
+    pub async fn dry_run_files(
+        &self,
+        root_id: RootId,
+        paths: Vec<String>,
+        locale: Option<String>,
+    ) -> DomainResult<Vec<DryRunScrapeItemDto>> {
+        let mut results = Vec::with_capacity(paths.len());
+        for rel_path in paths {
+            let detail = match self.workbench.inspect_file(root_id, &rel_path, None).await {
+                Ok(d) => d,
+                Err(e) => {
+                    results.push(DryRunScrapeItemDto {
+                        rel_path: rel_path.clone(),
+                        display_title: rel_path,
+                        query_keyword: String::new(),
+                        matched: false,
+                        matched_title: None,
+                        matched_creator: None,
+                        matched_year: None,
+                        matched_provider: None,
+                        confidence: 0,
+                        low_confidence: true,
+                        error: Some(e.to_string()),
+                    });
+                    continue;
+                }
+            };
+            let mut query = build_auto_query_from_detail(&detail);
+            if locale.is_some() {
+                query.locale = locale.clone();
+            }
+            let kw = query.keyword.clone();
+            match self.aggregate(query.clone()).await {
+                Ok(agg) => {
+                    let meta = agg.merged.metadata;
+                    let matched = meta.title.is_some();
+                    let matched_provider = agg
+                        .merged
+                        .field_sources
+                        .get("title")
+                        .map(|b| b.provider_name.clone())
+                        .or_else(|| agg.provider_order.first().map(|p| p.name.clone()));
+
+                    let mut score: i32 = if matched { 45 } else { 0 };
+                    if let Some(ref mt) = meta.title {
+                        let a = kw.to_lowercase();
+                        let b = mt.to_lowercase();
+                        if a == b {
+                            score += 35;
+                        } else if b.contains(&a) || a.contains(&b) {
+                            score += 22;
+                        }
+                    }
+                    if let (Some(qy), Some(my)) = (query.year, meta.year)
+                        && (qy - my).abs() <= 1
+                    {
+                        score += 10;
+                    }
+                    if agg.details_by_provider.len() >= 2 {
+                        score += 10;
+                    }
+                    let confidence = score.clamp(0, 100) as u8;
+                    results.push(DryRunScrapeItemDto {
+                        rel_path,
+                        display_title: detail.entry.display_title,
+                        query_keyword: kw,
+                        matched,
+                        matched_title: meta.title,
+                        matched_creator: meta.creators.first().cloned(),
+                        matched_year: meta.year,
+                        matched_provider,
+                        confidence,
+                        low_confidence: !matched || confidence < 65,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    results.push(DryRunScrapeItemDto {
+                        rel_path,
+                        display_title: detail.entry.display_title,
+                        query_keyword: kw,
+                        matched: false,
+                        matched_title: None,
+                        matched_creator: None,
+                        matched_year: None,
+                        matched_provider: None,
+                        confidence: 0,
+                        low_confidence: true,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+        Ok(results)
+    }
+
     pub async fn auto_scrape_file(
         &self,
         root_id: RootId,
@@ -708,6 +819,59 @@ impl ScrapingOrchestratorService {
                 }
             }
             if is_locked("cover") {
+                effective_apply_cover = false;
+            }
+        }
+
+        if let Some(MediaMetadataPayload::Video(existing_video)) =
+            existing_detail.as_ref().map(|d| &d.metadata)
+            && !existing_video.locked_fields.is_empty()
+        {
+            let is_locked = |name: &str| {
+                existing_video
+                    .locked_fields
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case(name))
+            };
+            if let MediaMetadataPatch::Video(ref mut vp) = patch {
+                if is_locked("title") {
+                    vp.title = None;
+                }
+                if is_locked("original_title") {
+                    vp.original_title = None;
+                }
+                if is_locked("show_title") {
+                    vp.show_title = None;
+                }
+                if is_locked("summary") || is_locked("overview") {
+                    vp.summary = None;
+                }
+                if is_locked("genres") {
+                    vp.genres = None;
+                }
+                if is_locked("tags") {
+                    vp.tags = None;
+                }
+                if is_locked("actors") || is_locked("cast") {
+                    vp.actors = None;
+                }
+                if is_locked("directors") {
+                    vp.directors = None;
+                }
+                if is_locked("studio") {
+                    vp.studio = None;
+                }
+                if is_locked("year") {
+                    vp.year = None;
+                }
+                if is_locked("rating") {
+                    vp.rating = None;
+                }
+                if is_locked("collection_set") || is_locked("set") {
+                    vp.collection_set = None;
+                }
+            }
+            if is_locked("cover") || is_locked("poster") {
                 effective_apply_cover = false;
             }
         }

@@ -21,9 +21,11 @@ use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{ApiError, ApiResult};
 use xmedia_core::infra::thumbnail::sniff_image_mime;
 
-use crate::application::scraping::AutoScrapeResultDto;
+use crate::application::scraping::{AutoScrapeResultDto, DryRunScrapeItemDto};
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
-use crate::application::workbench::WorkbenchProgress;
+use crate::application::workbench::{
+    RenameHistoryBatchDto, UndoRenameReportDto, WorkbenchProgress,
+};
 use crate::domain::media::{
     DirectorySnapshot, MediaFileDetail, MediaMetadataPatch, RenamePlanItem,
 };
@@ -75,6 +77,8 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/files/rename/preview/stream", post(preview_rename_stream))
         .route("/files/rename/execute", post(execute_rename))
         .route("/files/rename/execute/stream", post(execute_rename_stream))
+        .route("/files/rename/history", get(list_rename_history))
+        .route("/files/rename/undo", post(undo_rename_batch))
         .route("/scrapers/providers", get(list_scraper_providers))
         .route("/scrapers/search", post(search_scrapers))
         .route("/scrapers/aggregate", post(aggregate_scrapers))
@@ -82,6 +86,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/scrapers/image-proxy", get(proxy_scraper_image))
         .route("/scrapers/apply", post(apply_scraped_metadata))
         .route("/scrapers/auto-apply", post(auto_apply_scraped_metadata))
+        .route("/scrapers/dry-run", post(dry_run_scrape_files))
         .route(
             "/scrapers/cache",
             get(get_scrape_cache_stats).delete(clear_scrape_cache),
@@ -1374,4 +1379,54 @@ async fn batch_remap_episodes_route(
         .batch_remap_video_episodes(RootId(req.root_id), req.paths, req.input)
         .await?;
     Ok(Json(report))
+}
+
+#[derive(Deserialize)]
+struct RenameHistoryQuery {
+    root_id: Option<Uuid>,
+}
+
+async fn list_rename_history(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Query(q): Query<RenameHistoryQuery>,
+) -> ApiResult<Json<Vec<RenameHistoryBatchDto>>> {
+    let items = state
+        .workbench
+        .list_rename_history(q.root_id.map(RootId))
+        .await;
+    Ok(Json(items))
+}
+
+#[derive(Deserialize)]
+struct UndoRenameRequest {
+    batch_id: Uuid,
+}
+
+async fn undo_rename_batch(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<UndoRenameRequest>,
+) -> ApiResult<Json<UndoRenameReportDto>> {
+    let report = state.workbench.undo_rename_batch(req.batch_id).await?;
+    Ok(Json(report))
+}
+
+#[derive(Deserialize)]
+struct DryRunScrapeRequest {
+    root_id: Uuid,
+    paths: Vec<String>,
+    locale: Option<String>,
+}
+
+async fn dry_run_scrape_files(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<DryRunScrapeRequest>,
+) -> ApiResult<Json<Vec<DryRunScrapeItemDto>>> {
+    let items = state
+        .scraping
+        .dry_run_files(RootId(req.root_id), req.paths, req.locale)
+        .await?;
+    Ok(Json(items))
 }

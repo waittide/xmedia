@@ -1,6 +1,9 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::sync::RwLock;
+use uuid::Uuid;
 
 use walkdir::WalkDir;
 use xmedia_core::application::ports::BinaryPayload;
@@ -64,10 +67,34 @@ fn progress_step_for(total: u64) -> u64 {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RenameMoveRecord {
+    pub from_rel_path: String,
+    pub to_rel_path: String,
+    pub companion_moves: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RenameHistoryBatchDto {
+    pub batch_id: Uuid,
+    pub root_id: Uuid,
+    pub created_at_unix: i64,
+    pub moved_count: usize,
+    pub moves: Vec<RenameMoveRecord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct UndoRenameReportDto {
+    pub batch_id: Uuid,
+    pub restored_count: usize,
+    pub skipped_conflicts: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct MediaWorkbenchService {
     settings: ToolSettingsService,
     inspectors: Vec<Arc<dyn MediaInspectorPort>>,
+    rename_history: Arc<RwLock<Vec<RenameHistoryBatchDto>>>,
 }
 
 impl MediaWorkbenchService {
@@ -78,7 +105,83 @@ impl MediaWorkbenchService {
         Self {
             settings,
             inspectors,
+            rename_history: Arc::new(RwLock::new(Vec::new())),
         }
+    }
+
+    pub async fn list_rename_history(&self, root_id: Option<RootId>) -> Vec<RenameHistoryBatchDto> {
+        let guard = self.rename_history.read().await;
+        guard
+            .iter()
+            .rev()
+            .filter(|b| root_id.is_none_or(|rid| b.root_id == rid.0))
+            .cloned()
+            .collect()
+    }
+
+    pub async fn undo_rename_batch(&self, batch_id: Uuid) -> DomainResult<UndoRenameReportDto> {
+        let batch = {
+            let guard = self.rename_history.read().await;
+            guard
+                .iter()
+                .find(|b| b.batch_id == batch_id)
+                .cloned()
+                .ok_or_else(|| {
+                    DomainError::NotFound(format!("rename history batch {batch_id} not found"))
+                })?
+        };
+        let root = self.settings.find_root(RootId(batch.root_id)).await?;
+        let mut restored_count = 0usize;
+        let mut skipped_conflicts = Vec::new();
+
+        for mv in batch.moves.iter().rev() {
+            let Ok(cur) = root.resolve_existing(&mv.to_rel_path) else {
+                skipped_conflicts.push(mv.to_rel_path.clone());
+                continue;
+            };
+            let Ok(orig) = root.resolve_target(&mv.from_rel_path) else {
+                skipped_conflicts.push(mv.from_rel_path.clone());
+                continue;
+            };
+            if orig.exists() && orig != cur.abs_path {
+                skipped_conflicts.push(mv.from_rel_path.clone());
+                continue;
+            }
+            let cur_parent = cur.abs_path.parent().map(Path::to_path_buf);
+            if let Some(p) = orig.parent() {
+                let _ = std::fs::create_dir_all(p);
+            }
+            if std::fs::rename(&cur.abs_path, &orig).is_err() {
+                skipped_conflicts.push(mv.to_rel_path.clone());
+                continue;
+            }
+            restored_count += 1;
+
+            for (comp_from, comp_to) in mv.companion_moves.iter().rev() {
+                if let Ok(comp_cur) = root.resolve_existing(comp_to)
+                    && let Ok(comp_orig) = root.resolve_target(comp_from)
+                    && !comp_orig.exists()
+                {
+                    if let Some(p) = comp_orig.parent() {
+                        let _ = std::fs::create_dir_all(p);
+                    }
+                    let _ = std::fs::rename(&comp_cur.abs_path, &comp_orig);
+                }
+            }
+
+            if let Some(ref prev_dir) = cur_parent {
+                cleanup_empty_parent_dirs(prev_dir, &root.path);
+            }
+        }
+
+        let mut guard = self.rename_history.write().await;
+        guard.retain(|b| b.batch_id != batch_id);
+
+        Ok(UndoRenameReportDto {
+            batch_id,
+            restored_count,
+            skipped_conflicts,
+        })
     }
 
     pub fn resolve_inspector_for_path(
@@ -739,6 +842,7 @@ impl MediaWorkbenchService {
             detail: None,
         });
         let mut moved_count = 0usize;
+        let mut recorded_moves: Vec<RenameMoveRecord> = Vec::new();
 
         for item in plans {
             if item.unchanged || item.conflict.is_some() {
@@ -765,6 +869,7 @@ impl MediaWorkbenchService {
             })?;
             moved_count += 1;
 
+            let mut moved_companions: Vec<(String, String)> = Vec::new();
             let mut migrated_shared_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)> =
                 Vec::new();
             for (comp_from, comp_to) in &item.companion_moves {
@@ -812,8 +917,8 @@ impl MediaWorkbenchService {
                             let _ = std::fs::copy(&comp_src.abs_path, &comp_dst);
                             migrated_shared_dirs
                                 .push((comp_src.abs_path.clone(), comp_dst.clone()));
-                        } else {
-                            let _ = std::fs::rename(&comp_src.abs_path, &comp_dst);
+                        } else if std::fs::rename(&comp_src.abs_path, &comp_dst).is_ok() {
+                            moved_companions.push((comp_from.clone(), comp_to.clone()));
                         }
                     } else if is_shared_dir_sidecar {
                         migrated_shared_dirs.push((comp_src.abs_path.clone(), comp_dst));
@@ -835,6 +940,12 @@ impl MediaWorkbenchService {
                 cleanup_empty_parent_dirs(prev_dir, &root.path);
             }
 
+            recorded_moves.push(RenameMoveRecord {
+                from_rel_path: item.from_rel_path.clone(),
+                to_rel_path: item.to_rel_path.clone(),
+                companion_moves: moved_companions,
+            });
+
             let done = moved_count as u64;
             if done.is_multiple_of(step) || done == total {
                 on_progress(WorkbenchProgress {
@@ -842,6 +953,25 @@ impl MediaWorkbenchService {
                     total: Some(total),
                     detail: Some(item.to_rel_path.clone()),
                 });
+            }
+        }
+
+        if !recorded_moves.is_empty() {
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let mut guard = self.rename_history.write().await;
+            guard.push(RenameHistoryBatchDto {
+                batch_id: Uuid::new_v4(),
+                root_id: root_id.0,
+                created_at_unix: now_unix,
+                moved_count,
+                moves: recorded_moves,
+            });
+            if guard.len() > 30 {
+                let drop_n = guard.len() - 30;
+                guard.drain(0..drop_n);
             }
         }
 
