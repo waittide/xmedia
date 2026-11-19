@@ -40,6 +40,7 @@ const emit = defineEmits<{
   openScrape: [detail: MediaFileDetail]
   openContentEditor: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
+  openMusicTools: [entry: MediaFileEntry]
 }>()
 
 const txt = useToolText()
@@ -858,6 +859,16 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               >
                 <LuImage class="h-3.5 w-3.5" />
                 <span>页面管理与瘦身</span>
+              </button>
+
+              <button
+                v-if="detail.entry.media_kind === 'music'"
+                type="button"
+                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
+                @click="emit('openMusicTools', detail.entry)"
+              >
+                <LuMusic class="h-3.5 w-3.5" />
+                <span>歌词 / 响度 / 封面工具</span>
               </button>
               <button
                 v-if="detail.entry.media_kind === 'book' && detail.entry.extension === 'epub'"

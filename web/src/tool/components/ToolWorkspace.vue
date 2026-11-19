@@ -55,6 +55,7 @@ import BatchRenameModal from './BatchRenameModal.vue'
 import BookContentEditorModal from './BookContentEditorModal.vue'
 import ComicPageManagerModal from './ComicPageManagerModal.vue'
 import ComicSeriesToolsModal from './ComicSeriesToolsModal.vue'
+import MusicToolboxModal from './MusicToolboxModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
 import ToolHomeView from './ToolHomeView.vue'
@@ -155,6 +156,8 @@ const bookEditorEntry = ref<MediaFileEntry | null>(null)
 const comicPageManagerOpen = ref(false)
 const comicPageManagerEntry = ref<MediaFileEntry | null>(null)
 const comicSeriesToolsOpen = ref(false)
+const musicToolsOpen = ref(false)
+const musicToolsEntries = ref<MediaFileEntry[]>([])
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -657,6 +660,15 @@ function openComicPageManager(entry: MediaFileEntry): void {
 const selectedComicEntries = computed(() =>
   selectedEntriesForRename.value.filter((e) => e.media_kind === 'comic'),
 )
+
+const selectedMusicEntries = computed(() =>
+  selectedEntriesForRename.value.filter((e) => e.media_kind === 'music'),
+)
+
+function openMusicToolbox(entries: MediaFileEntry[]): void {
+  musicToolsEntries.value = entries
+  musicToolsOpen.value = true
+}
 
 async function handleBookContentSaved(updated: MediaFileDetail): Promise<void> {
   await handleDetailUpdated(updated, true)
@@ -1356,6 +1368,16 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
+                    v-if="selectedMusicEntries.length > 0"
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+                    @click="openMusicToolbox(selectedMusicEntries)"
+                  >
+                    <LuMusic class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                    <span>专辑/响度工具 ({{ selectedMusicEntries.length }})</span>
+                  </button>
+
+                  <button
                     type="button"
                     :disabled="selectedEntriesForRename.length === 0"
                     class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
@@ -1602,6 +1624,16 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
+                    v-if="file.media_kind === 'music'"
+                    type="button"
+                    class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                    title="歌词精校 / 响度 / 封面 / CUE 工具箱"
+                    @click.stop="openMusicToolbox([file])"
+                  >
+                    <LuMusic class="h-4 w-4" />
+                  </button>
+
+                  <button
                     type="button"
                     class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
                     title="添加刮削任务（本地信息 → 高优先级源 → 低优先级源）"
@@ -1636,6 +1668,7 @@ onBeforeUnmount(() => {
             @open-scrape="(d) => openManualScrapeModal(d.entry)"
             @open-content-editor="openBookContentEditor"
             @open-comic-pages="openComicPageManager"
+            @open-music-tools="(e) => openMusicToolbox([e])"
           />
         </div>
       </main>
@@ -1686,6 +1719,15 @@ onBeforeUnmount(() => {
       :root-id="activeRootId"
       :entries="selectedComicEntries"
       @close="comicSeriesToolsOpen = false"
+      @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
+    />
+
+    <MusicToolboxModal
+      :open="musicToolsOpen"
+      :root-id="activeRootId"
+      :entries="musicToolsEntries"
+      @close="musicToolsOpen = false"
+      @updated="(d) => handleDetailUpdated(d, true)"
       @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
     />
 
