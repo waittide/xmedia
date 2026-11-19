@@ -174,12 +174,19 @@ impl ScrapingOrchestratorService {
             &query.providers,
         );
 
+        let has_isbn_hint = query.isbn.as_deref().is_some_and(|s| !s.trim().is_empty());
         let selected: Vec<Arc<dyn ScraperProviderPort>> = ordered
             .into_iter()
             .filter(|p| {
                 let desc = p.descriptor();
                 if let Some(target) = query.target
                     && !desc.supported_targets.contains(&target)
+                {
+                    return false;
+                }
+                if has_isbn_hint
+                    && is_webnovel_serial_only_provider(&desc.id)
+                    && query.providers.is_empty()
                 {
                     return false;
                 }
@@ -267,12 +274,19 @@ impl ScrapingOrchestratorService {
             &query.providers,
         );
 
+        let has_isbn_hint = query.isbn.as_deref().is_some_and(|s| !s.trim().is_empty());
         let selected: Vec<Arc<dyn ScraperProviderPort>> = ordered
             .into_iter()
             .filter(|p| {
                 let desc = p.descriptor();
                 if let Some(target) = query.target
                     && !desc.supported_targets.contains(&target)
+                {
+                    return false;
+                }
+                if has_isbn_hint
+                    && is_webnovel_serial_only_provider(&desc.id)
+                    && query.providers.is_empty()
                 {
                     return false;
                 }
@@ -1198,14 +1212,47 @@ impl ScrapingOrchestratorService {
             .inspect_file(root_id, &target_rel_path, Some(MediaKind::Video))
             .await
     }
+
+    pub async fn proxy_scraper_image(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
+        let parsed = reqwest::Url::parse(raw_url.trim())
+            .map_err(|_| DomainError::Validation("invalid image URL".into()))?;
+        if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.port().is_some() {
+            return Err(DomainError::Validation(
+                "disallowed image URL scheme or port".into(),
+            ));
+        }
+        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+        let allowed = host.ends_with(".doubanio.com")
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+        if !allowed {
+            return Err(DomainError::Validation(format!(
+                "host '{host}' is not on the scraper image proxy allowlist"
+            )));
+        }
+        let creds = self.settings.get_credentials().await?;
+        let client = build_http_client(&creds)?;
+        download_image_bytes(&client, parsed.as_str()).await
+    }
+}
+
+fn is_webnovel_serial_only_provider(id: &str) -> bool {
+    matches!(
+        id,
+        "qidian" | "fanqie" | "qimao" | "17k" | "ciweimao" | "sfacg" | "faloo" | "jjwxc"
+    )
 }
 
 async fn download_image_bytes(
     client: &reqwest::Client,
     url: &str,
 ) -> DomainResult<(Vec<u8>, String)> {
-    let resp = client
-        .get(url)
+    let mut req = client.get(url);
+    if url.contains(".doubanio.com/") {
+        req = req.header(reqwest::header::REFERER, "https://book.douban.com/");
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| DomainError::Storage(format!("failed downloading image '{url}': {e}")))?;

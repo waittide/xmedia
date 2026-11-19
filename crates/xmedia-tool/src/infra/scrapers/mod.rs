@@ -1,7 +1,9 @@
+pub mod anilist;
 pub mod bangumi;
 pub mod ciweimao;
 pub mod cn_music_common;
 pub mod cn_novel_common;
+pub mod douban;
 pub mod faloo;
 pub mod fanqie;
 pub mod http_client;
@@ -13,6 +15,7 @@ pub mod kuwo;
 pub mod lrclib;
 pub mod migu;
 pub mod musicbrainz;
+pub mod neodb;
 pub mod netease;
 pub mod openlibrary;
 pub mod qidian;
@@ -22,6 +25,7 @@ pub mod qq_music;
 pub mod sfacg;
 pub mod taihe;
 pub mod tmdb;
+pub mod xinhua;
 
 use std::sync::Arc;
 
@@ -36,6 +40,9 @@ use crate::domain::ports::ScraperProviderPort;
 /// Both the HTTP API (`/api/v1/tool/scrapers/providers`) and the Web UI discover new sources automatically.
 pub fn build_default_scraper_providers() -> Vec<Arc<dyn ScraperProviderPort>> {
     vec![
+        Arc::new(douban::DoubanBookProvider),
+        Arc::new(neodb::NeoDbProvider),
+        Arc::new(xinhua::XinhuaBookProvider),
         Arc::new(qidian::QidianProvider),
         Arc::new(fanqie::FanqieProvider),
         Arc::new(qimao::QimaoProvider),
@@ -56,6 +63,7 @@ pub fn build_default_scraper_providers() -> Vec<Arc<dyn ScraperProviderPort>> {
         Arc::new(lrclib::LrclibProvider),
         Arc::new(openlibrary::OpenLibraryProvider),
         Arc::new(bangumi::BangumiProvider),
+        Arc::new(anilist::AniListProvider),
         Arc::new(tmdb::TmdbProvider),
     ]
 }
@@ -75,9 +83,9 @@ mod tests {
     };
 
     #[test]
-    fn default_registry_exposes_twenty_one_providers_and_checks_tmdb_credentials() {
+    fn default_registry_exposes_twenty_five_providers_and_checks_tmdb_credentials() {
         let providers = build_default_scraper_providers();
-        assert_eq!(providers.len(), 21);
+        assert_eq!(providers.len(), 25);
 
         let empty_creds = ProviderCredentials::default();
         let configured_ids: Vec<String> = providers
@@ -88,6 +96,9 @@ mod tests {
         assert_eq!(
             configured_ids,
             vec![
+                "douban",
+                "neodb",
+                "xinhua",
                 "qidian",
                 "fanqie",
                 "qimao",
@@ -107,7 +118,8 @@ mod tests {
                 "musicbrainz",
                 "lrclib",
                 "openlibrary",
-                "bangumi"
+                "bangumi",
+                "anilist"
             ]
         );
 
@@ -847,6 +859,129 @@ mod tests {
         assert_eq!(bgm_music_meta.track_or_episode_number, Some(1));
         assert_eq!(bgm_music_meta.disc_or_season_number, Some(2));
         assert_eq!(bgm_music_meta.creators, vec!["佐咲紗花".to_string()]);
+
+        // 6. Douban, NeoDB, Xinhua, and AniList mappers
+        use crate::infra::scrapers::anilist::{
+            AlCover, AlDate, AlMedia, AlPersonName, AlStaffConnection, AlStaffEdge, AlStaffNode,
+            AlTitle, map_anilist_detail,
+        };
+        use crate::infra::scrapers::douban::parse_douban_subject_html;
+        use crate::infra::scrapers::neodb::{NeoDbBookItem, map_neodb_detail};
+        use crate::infra::scrapers::xinhua::parse_xinhua_detail_html;
+
+        let db_html = r#"
+            <html>
+            <head>
+              <script type="application/ld+json">
+              {"@type":"Book","name":"三体","author":[{"name":"刘慈欣"}],"isbn":"9787536692930"}
+              </script>
+            </head>
+            <body>
+              <a class="nbg" href="https://img3.doubanio.com/view/subject/s/public/s2768378.jpg"></a>
+              <div id="info">
+                <span class="pl">出版社:</span> 重庆出版社<br/>
+                <span class="pl">出版年:</span> 2008-1<br/>
+                <span class="pl">丛书:</span> 科幻世界·中国科幻基石丛书<br/>
+              </div>
+              <strong property="v:average">8.9</strong>
+              <div id="link-report"><div class="intro"><p>文化大革命如火如荼进行的同时。</p></div></div>
+              <script>var criteria = '7:科幻|7:刘慈欣';</script>
+            </body>
+            </html>
+        "#;
+        let db_meta =
+            parse_douban_subject_html("2567698", db_html, ScrapeTargetKind::Book).unwrap();
+        assert_eq!(db_meta.title.as_deref(), Some("三体"));
+        assert_eq!(db_meta.isbn.as_deref(), Some("9787536692930"));
+        assert_eq!(db_meta.year, Some(2008));
+        assert_eq!(db_meta.published_date.as_deref(), Some("2008-01-01"));
+        assert_eq!(
+            db_meta.cover_url.as_deref(),
+            Some("https://img3.doubanio.com/view/subject/l/public/s2768378.jpg")
+        );
+        assert!(db_meta.tags.contains(&"科幻".to_string()));
+
+        let neo_meta = map_neodb_detail(
+            NeoDbBookItem {
+                uuid: "7OGqnJkxiQZImAxD9aAgMr".into(),
+                title: "三体".into(),
+                subtitle: Some(serde_json::json!("地球往事")),
+                author: serde_json::json!(["刘慈欣"]),
+                pub_house: Some(serde_json::json!("重庆出版社")),
+                pub_year: Some(2008),
+                pub_month: Some(1),
+                isbn: Some(serde_json::json!("9787536692930")),
+                rating: Some(8.6),
+                ..Default::default()
+            },
+            ScrapeTargetKind::Book,
+        );
+        assert_eq!(neo_meta.title.as_deref(), Some("三体：地球往事"));
+        assert_eq!(neo_meta.published_date.as_deref(), Some("2008-01-01"));
+
+        let xh_html = r#"
+            <div class="item-title" data-item="{&quot;name&quot;:&quot;三体&quot;,&quot;mainImage&quot;:&quot;//img1.xinhuashudian.com/book.jpg&quot;,&quot;extra&quot;:{&quot;author&quot;:&quot;刘慈欣&quot;}}"></div>
+            <li class="attribute-li"><span class="attr-label">商品编码（ISBN）</span><span class="attr-val">9787536692930</span></li>
+            <li class="attribute-li"><span class="attr-label">出版社</span><span class="attr-val">重庆出版社</span></li>
+            <li class="attribute-li"><span class="attr-label">中图分类号</span><span class="attr-val">I247.5</span></li>
+        "#;
+        let xh_meta = parse_xinhua_detail_html("1001", xh_html).unwrap();
+        assert_eq!(xh_meta.isbn.as_deref(), Some("9787536692930"));
+        assert!(xh_meta.genres.contains(&"中国当代小说".to_string()));
+
+        let al_meta = map_anilist_detail(
+            AlMedia {
+                id: 118586,
+                country_of_origin: Some("JP".into()),
+                title: AlTitle {
+                    native: Some("葬送のフリーレン".into()),
+                    english: Some("Frieren: Beyond Journey's End".into()),
+                    romaji: Some("Sousou no Frieren".into()),
+                },
+                synonyms: vec!["葬送的芙莉莲".into()],
+                start_date: Some(AlDate {
+                    year: Some(2020),
+                    month: Some(4),
+                    day: Some(28),
+                }),
+                average_score: Some(91.0),
+                cover_image: Some(AlCover {
+                    extra_large: Some("https://s4.anilist.co/cover.jpg".into()),
+                    large: None,
+                }),
+                staff: Some(AlStaffConnection {
+                    edges: vec![
+                        AlStaffEdge {
+                            role: "Story".into(),
+                            node: AlStaffNode {
+                                name: AlPersonName {
+                                    native: Some("山田鐘人".into()),
+                                    full: None,
+                                },
+                            },
+                        },
+                        AlStaffEdge {
+                            role: "Art".into(),
+                            node: AlStaffNode {
+                                name: AlPersonName {
+                                    native: Some("アベツカサ".into()),
+                                    full: None,
+                                },
+                            },
+                        },
+                    ],
+                }),
+                ..Default::default()
+            },
+            ScrapeTargetKind::Comic,
+            "zh-CN",
+        );
+        assert_eq!(al_meta.title.as_deref(), Some("葬送的芙莉莲"));
+        assert_eq!(al_meta.creators, vec!["山田鐘人".to_string()]);
+        assert_eq!(
+            al_meta.illustrators_or_directors,
+            vec!["アベツカサ".to_string()]
+        );
     }
 
     #[tokio::test]
@@ -1162,6 +1297,153 @@ mod tests {
             bgm_td.track_or_episode_number
         );
         assert!(bgm_td.track_or_episode_number.is_some());
+    }
+
+    #[tokio::test]
+    #[ignore = "live network smoke check across Douban, NeoDB, Xinhua, and AniList"]
+    async fn live_smoke_check_published_book_and_comic_providers() {
+        use crate::domain::ports::ScraperProviderPort;
+        use crate::domain::scraper::ScrapeQuery;
+        use crate::infra::scrapers::{
+            anilist::AniListProvider, douban::DoubanBookProvider, neodb::NeoDbProvider,
+            xinhua::XinhuaBookProvider,
+        };
+
+        let creds = ProviderCredentials::default();
+
+        // 1. NeoDB
+        let neo = NeoDbProvider;
+        let neo_cands = neo
+            .search(
+                &ScrapeQuery {
+                    keyword: "三体".into(),
+                    isbn: Some("9787536692930".into()),
+                    target: Some(ScrapeTargetKind::Book),
+                    ..Default::default()
+                },
+                &creds,
+            )
+            .await
+            .unwrap();
+        assert!(!neo_cands.is_empty(), "NeoDB returned empty search");
+        let neo_det = neo
+            .fetch_detail(
+                &neo_cands[0].external_id,
+                ScrapeTargetKind::Book,
+                "zh-CN",
+                &creds,
+            )
+            .await
+            .unwrap();
+        println!(
+            "[neodb] title={:?} creators={:?} isbn={:?} rating={:?} cover={:?}",
+            neo_det.title, neo_det.creators, neo_det.isbn, neo_det.rating, neo_det.cover_url
+        );
+        assert!(neo_det.title.is_some());
+
+        // 2. Douban
+        let db = DoubanBookProvider;
+        let db_cands = db
+            .search(
+                &ScrapeQuery {
+                    keyword: "三体".into(),
+                    target: Some(ScrapeTargetKind::Book),
+                    ..Default::default()
+                },
+                &creds,
+            )
+            .await
+            .unwrap();
+        assert!(!db_cands.is_empty(), "Douban returned empty search");
+        let db_det = db
+            .fetch_detail(
+                &db_cands[0].external_id,
+                ScrapeTargetKind::Book,
+                "zh-CN",
+                &creds,
+            )
+            .await
+            .unwrap();
+        println!(
+            "[douban] id={} title={:?} creators={:?} isbn={:?} rating={:?} cover={:?}",
+            db_det.external_id,
+            db_det.title,
+            db_det.creators,
+            db_det.isbn,
+            db_det.rating,
+            db_det.cover_url
+        );
+        assert!(db_det.title.is_some());
+
+        // 3. Xinhua Bookstore
+        let xh = XinhuaBookProvider;
+        let xh_cands = xh
+            .search(
+                &ScrapeQuery {
+                    keyword: "三体".into(),
+                    isbn: Some("9787536692930".into()),
+                    target: Some(ScrapeTargetKind::Book),
+                    ..Default::default()
+                },
+                &creds,
+            )
+            .await
+            .unwrap();
+        assert!(!xh_cands.is_empty(), "Xinhua returned empty search");
+        let xh_det = xh
+            .fetch_detail(
+                &xh_cands[0].external_id,
+                ScrapeTargetKind::Book,
+                "zh-CN",
+                &creds,
+            )
+            .await
+            .unwrap();
+        println!(
+            "[xinhua] id={} title={:?} publisher={:?} isbn={:?} genres={:?} cover={:?}",
+            xh_det.external_id,
+            xh_det.title,
+            xh_det.publisher_or_studio,
+            xh_det.isbn,
+            xh_det.genres,
+            xh_det.cover_url
+        );
+        assert!(xh_det.title.is_some());
+
+        // 4. AniList
+        let al = AniListProvider;
+        let al_cands = al
+            .search(
+                &ScrapeQuery {
+                    keyword: "Frieren".into(),
+                    target: Some(ScrapeTargetKind::Comic),
+                    locale: Some("zh-CN".into()),
+                    ..Default::default()
+                },
+                &creds,
+            )
+            .await
+            .unwrap();
+        assert!(!al_cands.is_empty(), "AniList returned empty search");
+        let al_det = al
+            .fetch_detail(
+                &al_cands[0].external_id,
+                ScrapeTargetKind::Comic,
+                "zh-CN",
+                &creds,
+            )
+            .await
+            .unwrap();
+        println!(
+            "[anilist] id={} title={:?} creators={:?} illustrators={:?} rating={:?} cover={:?}",
+            al_det.external_id,
+            al_det.title,
+            al_det.creators,
+            al_det.illustrators_or_directors,
+            al_det.rating,
+            al_det.cover_url
+        );
+        assert!(al_det.title.is_some());
     }
 
     #[tokio::test]

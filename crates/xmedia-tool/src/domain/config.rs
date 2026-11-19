@@ -113,6 +113,9 @@ pub struct ScraperPriorities {
 
 fn default_book_priority() -> Vec<String> {
     vec![
+        "douban".to_string(),
+        "neodb".to_string(),
+        "xinhua".to_string(),
         "qidian".to_string(),
         "fanqie".to_string(),
         "qimao".to_string(),
@@ -122,12 +125,18 @@ fn default_book_priority() -> Vec<String> {
         "faloo".to_string(),
         "jjwxc".to_string(),
         "bangumi".to_string(),
+        "anilist".to_string(),
         "openlibrary".to_string(),
     ]
 }
 
 fn default_comic_priority() -> Vec<String> {
-    vec!["bangumi".to_string()]
+    vec![
+        "bangumi".to_string(),
+        "douban".to_string(),
+        "neodb".to_string(),
+        "anilist".to_string(),
+    ]
 }
 
 fn default_music_priority() -> Vec<String> {
@@ -166,8 +175,26 @@ impl ScraperPriorities {
     /// and Chinese music scrapers take precedence in the configured default order.
     pub fn upgrade_legacy_defaults(&mut self) -> bool {
         let mut changed = false;
-        if self.book == ["bangumi", "openlibrary"] {
+        if self.book == ["bangumi", "openlibrary"]
+            || self.book
+                == [
+                    "qidian",
+                    "fanqie",
+                    "qimao",
+                    "17k",
+                    "ciweimao",
+                    "sfacg",
+                    "faloo",
+                    "jjwxc",
+                    "bangumi",
+                    "openlibrary",
+                ]
+        {
             self.book = default_book_priority();
+            changed = true;
+        }
+        if self.comic == ["bangumi"] {
+            self.comic = default_comic_priority();
             changed = true;
         }
         if self.music == ["itunes", "musicbrainz", "lrclib"]

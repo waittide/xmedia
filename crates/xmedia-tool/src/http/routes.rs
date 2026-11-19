@@ -64,6 +64,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/scrapers/search", post(search_scrapers))
         .route("/scrapers/aggregate", post(aggregate_scrapers))
         .route("/scrapers/detail", get(get_scraper_detail))
+        .route("/scrapers/image-proxy", get(proxy_scraper_image))
         .route("/scrapers/apply", post(apply_scraped_metadata))
         .route("/scrapers/auto-apply", post(auto_apply_scraped_metadata))
         .route(
@@ -518,6 +519,28 @@ async fn clear_scrape_cache(
 ) -> ApiResult<Json<ClearScrapeCacheResponse>> {
     let removed_count = state.scraping.clear_cache()?;
     Ok(Json(ClearScrapeCacheResponse { removed_count }))
+}
+
+#[derive(Deserialize)]
+struct ImageProxyQuery {
+    url: String,
+}
+
+async fn proxy_scraper_image(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Query(q): Query<ImageProxyQuery>,
+) -> ApiResult<Response> {
+    let (bytes, mime) = state.scraping.proxy_scraper_image(&q.url).await?;
+    let mut res = (StatusCode::OK, bytes).into_response();
+    if let Ok(hv) = HeaderValue::from_str(&mime) {
+        res.headers_mut().insert(CONTENT_TYPE, hv);
+    }
+    res.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=86400"),
+    );
+    Ok(res)
 }
 
 struct MpscByteStream {
