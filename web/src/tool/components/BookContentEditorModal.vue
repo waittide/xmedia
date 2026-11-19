@@ -9,6 +9,7 @@ import {
   watch,
 } from 'vue'
 import {
+  LuAlertTriangle,
   LuBookOpen,
   LuBold,
   LuCheck,
@@ -22,10 +23,14 @@ import {
   LuHeading1,
   LuHeading2,
   LuHeading3,
+  LuImage,
   LuItalic,
+  LuLanguages,
+  LuListTree,
   LuLoader2,
   LuMerge,
   LuMinus,
+  LuPalette,
   LuPencil,
   LuPilcrow,
   LuPlus,
@@ -41,6 +46,7 @@ import {
   LuTrash2,
   LuUnderline,
   LuUndo2,
+  LuWand2,
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
@@ -48,6 +54,7 @@ import { useDialogStore } from '@/stores/dialog'
 import { useThemeStore } from '@/stores/theme'
 import { buildEpubAssetUrl, toolApi } from '../api'
 import type {
+  BookTextTransformOptions,
   EditableBookChapterDto,
   MediaFileDetail,
   MediaFileEntry,
@@ -85,6 +92,9 @@ const loading = ref(false)
 const saving = ref(false)
 const converting = ref(false)
 const resegmenting = ref(false)
+const transforming = ref(false)
+const polishing = ref(false)
+const uploadingImage = ref(false)
 const errorMsg = ref<string | null>(null)
 const savedBadge = ref(false)
 const statusToast = ref<string | null>(null)
@@ -93,6 +103,8 @@ const docFormat = ref<'txt' | 'epub'>('epub')
 const docTitle = ref('')
 const docAuthors = ref<string[]>([])
 const docStylesheets = shallowRef<string[]>([])
+const forceHorizontalSpine = ref(false)
+const primaryCssDraft = ref('')
 
 // Shallow array avoids deep reactive proxy overhead on 1,000+ chapters
 const chapters = shallowRef<ChapterRecord[]>([])
@@ -118,6 +130,8 @@ let keySeq = 1
 
 // Left TOC Sidebar state
 const tocSearchQuery = ref('')
+const onlyShowAnomalies = ref(false)
+const tocToolsOpen = ref(false)
 const renamingIdx = ref<number | null>(null)
 const renameDraft = ref('')
 const dragFromIdx = ref<number | null>(null)
@@ -138,6 +152,53 @@ const findScope = ref<'chapter' | 'book'>('chapter')
 const findUseRegex = ref(false)
 const findCaseSensitive = ref(false)
 const findInputRef = ref<HTMLInputElement | null>(null)
+
+// Proofreading & Chinese Conversion Toolbox + CSS Theme Drawer + Image Upload
+const proofreadPanelOpen = ref(false)
+const cssPanelOpen = ref(false)
+const transformScope = ref<'book' | 'chapter'>('book')
+const cleanWebnovelAds = ref(true)
+const normalizePunctuation = ref(true)
+const convertCornerQuotes = ref(false)
+const customStripRulesOpen = ref(false)
+const CUSTOM_RULES_STORAGE_KEY = 'xmedia.book.customStripPatterns.v1'
+const customStripRulesText = ref(
+  typeof window !== 'undefined' ? window.localStorage.getItem(CUSTOM_RULES_STORAGE_KEY) ?? '' : '',
+)
+const epubImageInputRef = ref<HTMLInputElement | null>(null)
+
+watch(customStripRulesText, (val) => {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(CUSTOM_RULES_STORAGE_KEY, val)
+  }
+})
+
+const cssPresets = [
+  {
+    id: 'balanced',
+    label: '默认均衡衬线',
+    desc: '正文宋体/思源宋体 · 1.85 行高 · 首行缩进 2 字',
+    css: `body {\n  font-family: "Noto Serif CJK SC", "Songti SC", "PingFang SC", Georgia, serif;\n  line-height: 1.85;\n  margin: 0;\n  padding: 1.2em 1.4em;\n  word-wrap: break-word;\n}\nh1, h2, h3 {\n  line-height: 1.35;\n  margin: 1.2em 0 0.8em;\n  font-weight: 700;\n}\np {\n  margin: 0 0 0.85em;\n  text-indent: 2em;\n  text-align: justify;\n}\nfigure, .cover-wrap {\n  text-align: center;\n  margin: 1em 0;\n}\nimg {\n  max-width: 100%;\n  height: auto;\n}`,
+  },
+  {
+    id: 'classic',
+    label: '古典宣纸宋刻',
+    desc: '章题底纹装饰 · 宽松舒朗段距 · 典籍与古风长篇优选',
+    css: `body {\n  font-family: "Songti SC", "STSong", "Noto Serif CJK SC", "SimSun", serif;\n  line-height: 2.0;\n  letter-spacing: 0.03em;\n  margin: 0;\n  padding: 1.4em 1.6em;\n}\nh1, h2 {\n  font-weight: 700;\n  text-align: center;\n  line-height: 1.4;\n  margin: 1.5em 0 1.1em;\n  padding-bottom: 0.45em;\n  border-bottom: 1px solid rgba(128, 128, 128, 0.28);\n}\np {\n  margin: 0 0 0.95em;\n  text-indent: 2em;\n  text-align: justify;\n}\nblockquote {\n  font-family: "Kaiti SC", "STKaiti", "FangSong", serif;\n  margin: 1em 1.2em;\n  padding-left: 0.8em;\n  border-left: 2px solid rgba(128, 128, 128, 0.4);\n}`,
+  },
+  {
+    id: 'modern',
+    label: '现代屏显黑体',
+    desc: '苹方/鸿蒙黑体 · 无衬线高清晰屏显 · 社科技术图书优选',
+    css: `body {\n  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;\n  line-height: 1.8;\n  margin: 0;\n  padding: 1.2em 1.5em;\n}\nh1, h2, h3 {\n  font-weight: 700;\n  line-height: 1.35;\n  margin: 1.3em 0 0.75em;\n}\np {\n  margin: 0 0 0.9em;\n  text-indent: 2em;\n  text-align: justify;\n}\ncode, pre {\n  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\n  font-size: 0.9em;\n}`,
+  },
+  {
+    id: 'lightnovel',
+    label: '轻小说插图全屏',
+    desc: '插图自适应整屏防截断 · 紧凑对话节奏 · 日轻/网文优选',
+    css: `body {\n  font-family: "PingFang SC", "Noto Serif CJK SC", "Hiragino Sans GB", serif;\n  line-height: 1.82;\n  margin: 0;\n  padding: 1em 1.25em;\n}\nh1, h2 {\n  font-weight: 700;\n  line-height: 1.35;\n  margin: 1.1em 0 0.8em;\n}\np {\n  margin: 0 0 0.7em;\n  text-indent: 2em;\n}\nfigure {\n  margin: 0.8em auto;\n  text-align: center;\n  page-break-inside: avoid;\n  break-inside: avoid;\n}\nfigure img, img {\n  max-width: 100%;\n  max-height: 95vh;\n  object-fit: contain;\n  display: block;\n  margin: 0 auto;\n}`,
+  },
+]
 
 const regexPresets = [
   { label: '默认中英卷章', chapter: '', volume: '' },
@@ -464,11 +525,27 @@ const totalCharCount = computed(() =>
   }, 0),
 )
 
+function getChapterAnomaly(ch: ChapterRecord, idx: number): 'short' | 'long' | null {
+  const count = idx === activeIndex.value ? activeCharCount.value : ch.charCount
+  if (count > 20000) return 'long'
+  if (count < 80 && !ch.hasRichMedia && ch.title !== '书籍简介') return 'short'
+  return null
+}
+
+const anomalyCount = computed(() =>
+  chapters.value.reduce((acc, ch, idx) => (getChapterAnomaly(ch, idx) ? acc + 1 : acc), 0),
+)
+
 const filteredTocItems = computed(() => {
   const q = tocSearchQuery.value.trim().toLowerCase()
-  const all = chapters.value.map((ch, idx) => ({ ch, idx }))
-  if (!q) return all
-  return all.filter(({ ch, idx }) => {
+  const all = chapters.value.map((ch, idx) => ({
+    ch,
+    idx,
+    anomaly: getChapterAnomaly(ch, idx),
+  }))
+  return all.filter(({ ch, idx, anomaly }) => {
+    if (onlyShowAnomalies.value && !anomaly) return false
+    if (!q) return true
     const label = (ch.title || `第 ${idx + 1} 章`).toLowerCase()
     return label.includes(q)
   })
@@ -869,6 +946,261 @@ function toggleLevel(idx: number): void {
   triggerRef(chapters)
 }
 
+function autoDetectTocHierarchy(): void {
+  flushActiveSurfaceToRecord()
+  const volRe =
+    /^\s*(?:第[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+[卷部集册篇](?:[\s：:、—\-].*)?|卷[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+.*|(?:volume|vol\.?|book|part)\s+[0-9ivxlcdm]+.*)$/i
+  let seenVol = false
+  let volCount = 0
+  for (const ch of chapters.value) {
+    if (ch.title === '书籍简介') {
+      ch.level = 0
+      continue
+    }
+    if (volRe.test(ch.title.trim())) {
+      ch.level = 0
+      seenVol = true
+      volCount += 1
+    } else {
+      ch.level = seenVol ? 1 : 0
+    }
+  }
+  hasUnsavedEdits.value = true
+  triggerRef(chapters)
+  showToast(
+    volCount > 0
+      ? `已自动识别 ${volCount} 个分卷并缩进下属章节`
+      : '未检测到显式「第X卷/部」标题，已保持一级平铺',
+  )
+}
+
+function flattenAllTocLevels(): void {
+  flushActiveSurfaceToRecord()
+  for (const ch of chapters.value) {
+    ch.level = 0
+  }
+  hasUnsavedEdits.value = true
+  triggerRef(chapters)
+  showToast('已将全部章节平铺为一级目录')
+}
+
+function syncTocTitlesFromBodyHeadings(): void {
+  flushActiveSurfaceToRecord()
+  let updated = 0
+  for (let i = 0; i < chapters.value.length; i += 1) {
+    const ch = chapters.value[i]
+    if (!ch) continue
+    const doc = new DOMParser().parseFromString(`<body>${ch.xhtmlBody}</body>`, 'text/html')
+    const h = doc.body.querySelector('h1, h2, h3')
+    const text = (h?.textContent ?? '').replace(/\s+/g, ' ').trim()
+    if (text && text.length <= 80 && text !== ch.title) {
+      ch.title = text
+      if (i === activeIndex.value) {
+        activeTitle.value = text
+      }
+      updated += 1
+    }
+  }
+  if (updated > 0) {
+    hasUnsavedEdits.value = true
+    triggerRef(chapters)
+  }
+  showToast(updated > 0 ? `已从正文标题同步更新 ${updated} 个章节名` : '目录标题已与正文标题一致')
+}
+
+function applyCssPreset(cssCode: string, label: string): void {
+  primaryCssDraft.value = cssCode
+  syncPrimaryCssDraftToStylesheets()
+  showToast(`已应用「${label}」排版样式预设`)
+}
+
+function syncPrimaryCssDraftToStylesheets(): void {
+  const next = [...docStylesheets.value]
+  if (next.length === 0) {
+    next.push(primaryCssDraft.value)
+  } else {
+    next[0] = primaryCssDraft.value
+  }
+  docStylesheets.value = next
+  hasUnsavedEdits.value = true
+  if (showLivePreview.value && currentRecord.value) {
+    flushActiveSurfaceToRecord()
+    previewSrcdoc.value = buildLivePreviewSrcdoc(
+      currentRecord.value.xhtmlBody,
+      currentRecord.value.sourceHref,
+    )
+  }
+}
+
+async function runBackendTextTransform(
+  options: BookTextTransformOptions,
+  summaryLabel: string,
+): Promise<void> {
+  if (transforming.value || chapters.value.length === 0) return
+  flushActiveSurfaceToRecord()
+  transforming.value = true
+  errorMsg.value = null
+  try {
+    const targetIndices =
+      transformScope.value === 'chapter' && !options.vertical_to_horizontal
+        ? [activeIndex.value]
+        : chapters.value.map((_, i) => i)
+
+    const inputDtos: EditableBookChapterDto[] = targetIndices.map((idx) => {
+      const ch = chapters.value[idx]!
+      return {
+        id: ch.key,
+        title: ch.title,
+        level: ch.level,
+        plain_text: ch.plainCache,
+        xhtml_body: ch.xhtmlBody,
+        has_rich_media: ch.hasRichMedia,
+        source_href: ch.sourceHref,
+      }
+    })
+
+    const res = await toolApi.transformBookContent(inputDtos, docStylesheets.value, options)
+    res.chapters.forEach((dto, pos) => {
+      const idx = targetIndices[pos]
+      const rec = idx !== undefined ? chapters.value[idx] : undefined
+      if (!rec) return
+      rec.title = dto.title
+      rec.xhtmlBody = dto.xhtml_body
+      rec.plainCache = extractPlainFromXhtml(dto.xhtml_body, dto.title)
+      rec.charCount = countNonWhitespace(rec.plainCache)
+      if (idx === activeIndex.value) {
+        activeTitle.value = rec.title
+      }
+    })
+
+    if (options.vertical_to_horizontal) {
+      docStylesheets.value = res.stylesheets
+      primaryCssDraft.value = res.stylesheets[0] ?? primaryCssDraft.value
+      forceHorizontalSpine.value = true
+    }
+
+    hasUnsavedEdits.value = true
+    triggerRef(chapters)
+    await mountActiveChapterIntoSurface()
+    showToast(`${summaryLabel}完成（共更新 ${res.changed_chapters} 章）`)
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    transforming.value = false
+  }
+}
+
+function handleRunProofreadClean(): void {
+  const customPatterns = customStripRulesText.value
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  void runBackendTextTransform(
+    {
+      clean_webnovel_ads: cleanWebnovelAds.value,
+      normalize_punctuation: normalizePunctuation.value,
+      convert_quotes_to_horizontal: convertCornerQuotes.value,
+      custom_strip_patterns: customPatterns,
+    },
+    '精校净化',
+  )
+}
+
+function triggerEpubImageUpload(): void {
+  if (docFormat.value !== 'epub' || uploadingImage.value) return
+  epubImageInputRef.value?.click()
+}
+
+async function onEpubImagePicked(ev: Event): Promise<void> {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !props.entry || !currentRecord.value) return
+
+  uploadingImage.value = true
+  errorMsg.value = null
+  try {
+    flushActiveSurfaceToRecord()
+    const inserted = await toolApi.uploadBookEpubImage(
+      props.entry.root_id,
+      props.entry.rel_path,
+      file,
+      currentRecord.value.sourceHref,
+    )
+    const browserUrl = buildEpubAssetUrl(
+      props.entry.root_id,
+      props.entry.rel_path,
+      inserted.asset_path,
+    )
+    const altText = escapeXml(file.name.replace(/\.[^.]+$/, '') || '插图')
+
+    if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
+      wysiwygRef.value.focus()
+      document.execCommand(
+        'insertHTML',
+        false,
+        `<figure><img src="${escapeXml(browserUrl)}" data-epub-src="${escapeXml(inserted.chapter_rel_href)}" alt="${altText}"/></figure><p><br/></p>`,
+      )
+      flushActiveSurfaceToRecord()
+    } else {
+      const snippet = `\n  <figure><img src="${escapeXml(inserted.chapter_rel_href)}" alt="${altText}"/></figure>\n`
+      if (sourceTextareaRef.value) {
+        const pos = sourceTextareaRef.value.selectionStart ?? sourceBuffer.value.length
+        sourceBuffer.value = `${sourceBuffer.value.slice(0, pos)}${snippet}${sourceBuffer.value.slice(pos)}`
+      } else {
+        sourceBuffer.value = `${sourceBuffer.value}${snippet}`
+      }
+      flushActiveSurfaceToRecord()
+    }
+
+    currentRecord.value.hasRichMedia = true
+    hasUnsavedEdits.value = true
+    triggerRef(chapters)
+    if (showLivePreview.value) {
+      previewSrcdoc.value = buildLivePreviewSrcdoc(
+        currentRecord.value.xhtmlBody,
+        currentRecord.value.sourceHref,
+      )
+    }
+    showToast('图片已写入 EPUB 资源包并插入当前章节')
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    uploadingImage.value = false
+  }
+}
+
+async function handlePolishInEditor(): Promise<void> {
+  if (!props.entry || docFormat.value !== 'epub' || polishing.value || saving.value) return
+  polishing.value = true
+  errorMsg.value = null
+  try {
+    if (hasUnsavedEdits.value && chapters.value.length > 0) {
+      await toolApi.saveBookContent(
+        props.entry.root_id,
+        props.entry.rel_path,
+        buildSavePayload(),
+        docStylesheets.value.length > 0 ? docStylesheets.value : undefined,
+        forceHorizontalSpine.value,
+      )
+      hasUnsavedEdits.value = false
+      forceHorizontalSpine.value = false
+    }
+    const res = await toolApi.polishBook(props.entry.root_id, props.entry.rel_path)
+    emit('saved', res.detail)
+    await loadDocument()
+    showToast(
+      res.removed_orphan_files > 0
+        ? `抛光完成：已生成内封简介页并清理 ${res.removed_orphan_files} 个冗余资源`
+        : '抛光完成：已更新内封简介页并同步双目录',
+    )
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    polishing.value = false
+  }
+}
+
 async function insertChapterBelow(idx: number): Promise<void> {
   flushActiveSurfaceToRecord()
   const refLevel = chapters.value[idx]?.level ?? 0
@@ -1134,7 +1466,10 @@ async function loadDocument(): Promise<void> {
   hasUnsavedEdits.value = false
   savedBadge.value = false
   tocSearchQuery.value = ''
+  onlyShowAnomalies.value = false
+  tocToolsOpen.value = false
   regexPanelOpen.value = false
+  forceHorizontalSpine.value = false
 
   try {
     const doc = await toolApi.getBookContent(props.entry.root_id, props.entry.rel_path)
@@ -1142,6 +1477,7 @@ async function loadDocument(): Promise<void> {
     docTitle.value = doc.title
     docAuthors.value = doc.authors
     docStylesheets.value = doc.stylesheets ?? []
+    primaryCssDraft.value = doc.stylesheets?.[0] ?? cssPresets[0]!.css
     chapters.value = mapDtoList(doc.chapters)
     activeIndex.value = 0
     surfaceMode.value = 'wysiwyg'
@@ -1218,8 +1554,11 @@ async function handleSaveInPlace(): Promise<void> {
       props.entry.root_id,
       props.entry.rel_path,
       buildSavePayload(),
+      docStylesheets.value.length > 0 ? docStylesheets.value : undefined,
+      forceHorizontalSpine.value,
     )
     hasUnsavedEdits.value = false
+    forceHorizontalSpine.value = false
     savedBadge.value = true
     if (savedBadgeTimer) clearTimeout(savedBadgeTimer)
     savedBadgeTimer = setTimeout(() => {
@@ -1243,6 +1582,7 @@ async function handleConvertToEpub(): Promise<void> {
       props.entry.rel_path,
       buildSavePayload(),
       deleteSourceTxt.value,
+      docStylesheets.value.length > 0 ? docStylesheets.value : undefined,
     )
     hasUnsavedEdits.value = false
     emit('converted', res.detail, res.deleted_source_txt)
@@ -1389,7 +1729,19 @@ onBeforeUnmount(() => {
           <template v-else>
             <button
               type="button"
-              :disabled="saving || chapters.length === 0"
+              :disabled="polishing || saving || chapters.length === 0"
+              class="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[var(--ctp-accent)]/35 bg-[var(--ctp-canvas)] px-3 text-xs font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)] disabled:opacity-50"
+              title="自动生成/刷新内封简介页、同步 EPUB2/3 双目录并清理未引用冗余资源"
+              @click="handlePolishInEditor"
+            >
+              <LuRefreshCw v-if="polishing" class="h-3.5 w-3.5 animate-spin" />
+              <LuWand2 v-else class="h-3.5 w-3.5" />
+              <span class="hidden sm:inline">{{ polishing ? '抛光中…' : '书籍抛光' }}</span>
+            </button>
+
+            <button
+              type="button"
+              :disabled="saving || polishing || chapters.length === 0"
               class="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-xs transition hover:opacity-95 disabled:opacity-50"
               title="原地保存目录与正文到 EPUB，不关闭编辑器 (Ctrl+S)"
               @click="handleSaveInPlace"
@@ -1398,6 +1750,14 @@ onBeforeUnmount(() => {
               <span>{{ saving ? '保存中…' : '保存 (Ctrl+S)' }}</span>
             </button>
           </template>
+
+          <input
+            ref="epubImageInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden"
+            @change="onEpubImagePicked"
+          />
 
           <button
             type="button"
@@ -1445,6 +1805,21 @@ onBeforeUnmount(() => {
 
               <div class="flex items-center gap-1">
                 <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition"
+                  :class="
+                    tocToolsOpen
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]'
+                  "
+                  title="目录层级批量整理与正文标题同步"
+                  @click="tocToolsOpen = !tocToolsOpen"
+                >
+                  <LuListTree class="h-3 w-3" />
+                  <span>整理</span>
+                </button>
+
+                <button
                   v-if="docFormat === 'txt'"
                   type="button"
                   class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
@@ -1467,25 +1842,73 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
-            <div class="relative">
-              <LuSearch
-                class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
-              />
-              <input
-                v-model="tocSearchQuery"
-                type="text"
-                placeholder="搜索定位章节标题…"
-                class="h-8 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pr-7 pl-8 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
+            <div class="flex items-center gap-1.5">
+              <div class="relative min-w-0 flex-1">
+                <LuSearch
+                  class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+                />
+                <input
+                  v-model="tocSearchQuery"
+                  type="text"
+                  placeholder="搜索定位章节标题…"
+                  class="h-8 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pr-7 pl-8 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+                />
+                <button
+                  v-if="tocSearchQuery"
+                  type="button"
+                  class="absolute top-1/2 right-2 -translate-y-1/2 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+                  @click="tocSearchQuery = ''"
+                >
+                  <LuX class="h-3 w-3" />
+                </button>
+              </div>
+
               <button
-                v-if="tocSearchQuery"
+                v-if="anomalyCount > 0 || onlyShowAnomalies"
                 type="button"
-                class="absolute top-1/2 right-2 -translate-y-1/2 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
-                @click="tocSearchQuery = ''"
+                class="inline-flex h-8 shrink-0 items-center gap-1 rounded-xl border px-2 text-[11px] font-semibold transition"
+                :class="
+                  onlyShowAnomalies
+                    ? 'border-amber-500 bg-amber-500/15 text-amber-500'
+                    : 'border-amber-500/35 bg-amber-500/8 text-amber-500 hover:bg-amber-500/15'
+                "
+                title="筛选过短残章 (<80字) 或超长疑似漏分章 (>20000字)"
+                @click="onlyShowAnomalies = !onlyShowAnomalies"
               >
-                <LuX class="h-3 w-3" />
+                <LuAlertTriangle class="h-3 w-3" />
+                <span>{{ anomalyCount }}</span>
               </button>
             </div>
+          </div>
+
+          <!-- Collapsible Batch TOC Hierarchy & Sync Panel -->
+          <div
+            v-if="tocToolsOpen"
+            class="space-y-1.5 border-b border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/65 p-2 text-[11px]"
+          >
+            <div class="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1.5 font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+                @click="autoDetectTocHierarchy"
+              >
+                自动识别卷/章层级
+              </button>
+              <button
+                type="button"
+                class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1.5 font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+                @click="flattenAllTocLevels"
+              >
+                全部平铺为一级
+              </button>
+            </div>
+            <button
+              type="button"
+              class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1.5 font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+              @click="syncTocTitlesFromBodyHeadings"
+            >
+              从各章正文 H1~H3 标题同步目录名
+            </button>
           </div>
 
           <!-- Collapsible TXT Regex Panel -->
@@ -1530,9 +1953,9 @@ onBeforeUnmount(() => {
           <!-- Fixed-Height Draggable Chapter Rows (Zero Vertical Jump) -->
           <div class="flex-1 space-y-0.5 overflow-y-auto p-1.5">
             <div
-              v-for="{ ch, idx } in filteredTocItems"
+              v-for="{ ch, idx, anomaly } in filteredTocItems"
               :key="ch.key"
-              :draggable="!tocSearchQuery && renamingIdx !== idx"
+              :draggable="!tocSearchQuery && !onlyShowAnomalies && renamingIdx !== idx"
               class="group relative flex h-9 items-center gap-1 rounded-xl px-2 transition"
               :class="[
                 ch.level > 0 ? 'pl-5' : '',
@@ -1591,6 +2014,19 @@ onBeforeUnmount(() => {
                 :title="`${ch.title}（双击可直接重命名，拖拽可排序）`"
               >
                 {{ ch.title || `第 ${idx + 1} 章` }}
+              </span>
+
+              <span
+                v-if="anomaly && renamingIdx !== idx"
+                class="shrink-0 rounded px-1 py-0.2 text-[9px] font-bold group-hover:hidden"
+                :class="
+                  anomaly === 'short'
+                    ? 'bg-amber-500/15 text-amber-500'
+                    : 'bg-rose-500/15 text-rose-400'
+                "
+                :title="anomaly === 'short' ? '疑似残章/空章 (<80字)' : '疑似漏分超长章 (>20000字)'"
+              >
+                {{ anomaly === 'short' ? '短' : '长' }}
               </span>
 
               <!-- Hover Compact Inline Actions (No Height Shift) -->
@@ -1776,6 +2212,48 @@ onBeforeUnmount(() => {
               </button>
 
               <button
+                v-if="docFormat === 'epub'"
+                type="button"
+                :disabled="uploadingImage"
+                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)] disabled:opacity-50"
+                title="上传图片写入 EPUB 资源包并插入当前光标处"
+                @mousedown.prevent="triggerEpubImageUpload"
+              >
+                <LuImage class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                <span>{{ uploadingImage ? '上传中…' : '插入图片' }}</span>
+              </button>
+
+              <button
+                type="button"
+                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
+                :class="
+                  proofreadPanelOpen
+                    ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                    : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]'
+                "
+                title="简繁转换、台版竖排转横排、网文求票净化与中文标点智能规整"
+                @click="proofreadPanelOpen = !proofreadPanelOpen; if (proofreadPanelOpen) cssPanelOpen = false"
+              >
+                <LuLanguages class="h-3.5 w-3.5" />
+                <span>简繁与精校</span>
+              </button>
+
+              <button
+                type="button"
+                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
+                :class="
+                  cssPanelOpen
+                    ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                    : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]'
+                "
+                title="切换中文排版 CSS 预设与编辑全局样式表"
+                @click="cssPanelOpen = !cssPanelOpen; if (cssPanelOpen) proofreadPanelOpen = false"
+              >
+                <LuPalette class="h-3.5 w-3.5" />
+                <span>排版样式</span>
+              </button>
+
+              <button
                 type="button"
                 class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
                 :class="
@@ -1853,6 +2331,142 @@ onBeforeUnmount(() => {
                 <span class="hidden sm:inline">预览分屏</span>
               </button>
             </div>
+          </div>
+
+          <!-- Collapsible Proofreading & Zh/Vertical Conversion Toolbox -->
+          <div
+            v-if="proofreadPanelOpen"
+            class="space-y-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] px-4 py-2.5 text-xs"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <div class="inline-flex rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-0.5">
+                  <button
+                    type="button"
+                    class="rounded px-2 py-0.5 text-[11px] font-semibold"
+                    :class="transformScope === 'book' ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]' : 'text-[var(--ctp-subtext1)]'"
+                    @click="transformScope = 'book'"
+                  >
+                    全书范围
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded px-2 py-0.5 text-[11px] font-semibold"
+                    :class="transformScope === 'chapter' ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]' : 'text-[var(--ctp-subtext1)]'"
+                    @click="transformScope = 'chapter'"
+                  >
+                    仅当前章
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  :disabled="transforming"
+                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
+                  title="OpenCC 级繁转简（含台港词汇转换，保护 XHTML 标签）"
+                  @click="runBackendTextTransform({ zh_direction: 't2s' }, '繁转简')"
+                >
+                  繁 → 简 (台港词库)
+                </button>
+                <button
+                  type="button"
+                  :disabled="transforming"
+                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
+                  title="简转繁（内置多音字词组消歧，避免后/发/干/里误转）"
+                  @click="runBackendTextTransform({ zh_direction: 's2t' }, '简转繁')"
+                >
+                  简 → 繁 (词组消歧)
+                </button>
+                <button
+                  type="button"
+                  :disabled="transforming"
+                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
+                  title="将台版/日版竖排 CSS 改为横排、直角引号「」改为弯引号，并在保存时同步 LTR 翻页方向"
+                  @click="runBackendTextTransform({ vertical_to_horizontal: true, convert_quotes_to_horizontal: true }, '竖排转横排')"
+                >
+                  竖排 → 横排 (CSS + 引号)
+                </button>
+              </div>
+
+              <button
+                type="button"
+                class="rounded p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+                @click="proofreadPanelOpen = false"
+              >
+                <LuX class="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            <div class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--ctp-surface0)]/55 pt-2">
+              <div class="flex flex-wrap items-center gap-3">
+                <AppCheckbox v-model="cleanWebnovelAds" label="去网文求票/域名水印行" />
+                <AppCheckbox v-model="normalizePunctuation" label="中文标点规整 (弯引号/省略号/破折号)" />
+                <AppCheckbox v-model="convertCornerQuotes" label="直角引号「」→“”" />
+                <button
+                  type="button"
+                  class="text-[11px] font-medium text-[var(--ctp-accent)] hover:underline"
+                  @click="customStripRulesOpen = !customStripRulesOpen"
+                >
+                  {{ customStripRulesOpen ? '收起自定义正则' : '自定义净化正则' }}
+                </button>
+              </div>
+
+              <button
+                type="button"
+                :disabled="transforming"
+                class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-3 py-1 text-[11px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95 disabled:opacity-50"
+                @click="handleRunProofreadClean"
+              >
+                <LuSparkles class="h-3 w-3" />
+                <span>{{ transforming ? '处理中…' : '执行精校净化' }}</span>
+              </button>
+            </div>
+
+            <div v-if="customStripRulesOpen" class="pt-1">
+              <textarea
+                v-model="customStripRulesText"
+                rows="3"
+                placeholder="每行输入一条整行匹配剔除正则（自动保存在浏览器本地），例如：^.*本书由某某论坛整理.*$"
+                class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 font-mono text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+              />
+            </div>
+          </div>
+
+          <!-- Collapsible Global EPUB CSS Presets & Stylesheet Editor -->
+          <div
+            v-if="cssPanelOpen"
+            class="space-y-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] px-4 py-2.5 text-xs"
+          >
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="font-semibold text-[var(--ctp-subtext1)]">中文排版预设：</span>
+                <button
+                  v-for="preset in cssPresets"
+                  :key="preset.id"
+                  type="button"
+                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+                  :title="preset.desc"
+                  @click="applyCssPreset(preset.css, preset.label)"
+                >
+                  {{ preset.label }}
+                </button>
+              </div>
+              <button
+                type="button"
+                class="rounded p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+                @click="cssPanelOpen = false"
+              >
+                <LuX class="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <textarea
+              v-model="primaryCssDraft"
+              rows="5"
+              spellcheck="false"
+              placeholder="编辑全局 EPUB CSS 样式表（保存 EPUB 或 TXT 转 EPUB 时自动写入样式文件，右侧预览分屏实时生效）…"
+              class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 font-mono text-[11px] leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+              @input="syncPrimaryCssDraftToStylesheets"
+            />
           </div>
 
           <!-- Collapsible Find & Replace Bar -->

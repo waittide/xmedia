@@ -106,6 +106,35 @@ export interface ConvertTxtToEpubResponseDto {
   deleted_source_txt: boolean
 }
 
+export type ZhConvertDirection = 't2s' | 's2t'
+
+export interface BookTextTransformOptions {
+  zh_direction?: ZhConvertDirection | null
+  convert_quotes_to_horizontal?: boolean
+  vertical_to_horizontal?: boolean
+  clean_webnovel_ads?: boolean
+  normalize_punctuation?: boolean
+  custom_strip_patterns?: string[]
+}
+
+export interface TransformBookContentResultDto {
+  chapters: EditableBookChapterDto[]
+  stylesheets: string[]
+  changed_chapters: number
+}
+
+export interface InsertedEpubImageDto {
+  asset_path: string
+  chapter_rel_href: string
+  mime_type: string
+}
+
+export interface PolishBookResponseDto {
+  jacket_updated: boolean
+  removed_orphan_files: number
+  detail: MediaFileDetail
+}
+
 export interface CompletenessFlags {
   has_title: boolean
   has_creator: boolean
@@ -157,6 +186,7 @@ export interface BookFileMeta {
   language: string | null
   isbn: string | null
   tags: string[]
+  locked_fields: string[]
   has_cover: boolean
   writable: boolean
 }
@@ -280,6 +310,7 @@ export interface BookMetaPatch {
   language?: string
   isbn?: string
   tags?: string[]
+  locked_fields?: string[]
 }
 
 export interface ComicMetaPatch {

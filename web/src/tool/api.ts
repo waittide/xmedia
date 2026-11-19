@@ -3,9 +3,12 @@ import type {
   AggregateScrapeResponse,
   AutoScrapeResultDto,
   BookContentDocumentDto,
+  BookTextTransformOptions,
   ConvertTxtToEpubResponseDto,
   DirectorySnapshot,
   EditableBookChapterDto,
+  InsertedEpubImageDto,
+  PolishBookResponseDto,
   ManagedRootDto,
   MediaFileDetail,
   MediaMetadataPatchEnvelope,
@@ -14,6 +17,7 @@ import type {
   RenamePlanItem,
   SaveBookChapterInput,
   ScrapeCacheStatsDto,
+  TransformBookContentResultDto,
   ScrapeCandidate,
   ScrapeQuery,
   ScrapeTargetKind,
@@ -534,6 +538,8 @@ export const toolApi = {
     rootId: string,
     relPath: string,
     chapters: SaveBookChapterInput[],
+    stylesheets?: string[],
+    forceHorizontalSpine = false,
   ): Promise<MediaFileDetail> {
     return toolRequest<MediaFileDetail>('/books/content', {
       method: 'PUT',
@@ -541,7 +547,53 @@ export const toolApi = {
         root_id: rootId,
         path: relPath,
         chapters,
+        stylesheets,
+        force_horizontal_spine: forceHorizontalSpine,
       }),
+    })
+  },
+
+  transformBookContent(
+    chapters: EditableBookChapterDto[],
+    stylesheets: string[],
+    options: BookTextTransformOptions,
+  ): Promise<TransformBookContentResultDto> {
+    return toolRequest<TransformBookContentResultDto>('/books/transform', {
+      method: 'POST',
+      body: JSON.stringify({
+        chapters,
+        stylesheets,
+        options,
+      }),
+    })
+  },
+
+  polishBook(rootId: string, relPath: string): Promise<PolishBookResponseDto> {
+    return toolRequest<PolishBookResponseDto>('/books/polish', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        path: relPath,
+      }),
+    })
+  },
+
+  uploadBookEpubImage(
+    rootId: string,
+    relPath: string,
+    file: File,
+    chapterSourceHref?: string | null,
+  ): Promise<InsertedEpubImageDto> {
+    const fd = new FormData()
+    fd.append('root_id', rootId)
+    fd.append('path', relPath)
+    if (chapterSourceHref) {
+      fd.append('chapter_source_href', chapterSourceHref)
+    }
+    fd.append('file', file)
+    return toolRequest<InsertedEpubImageDto>('/books/epub-image', {
+      method: 'POST',
+      body: fd,
     })
   },
 
@@ -550,6 +602,7 @@ export const toolApi = {
     relPath: string,
     chapters: SaveBookChapterInput[] | undefined,
     deleteSourceTxt: boolean,
+    stylesheets?: string[],
   ): Promise<ConvertTxtToEpubResponseDto> {
     return toolRequest<ConvertTxtToEpubResponseDto>('/books/convert-epub', {
       method: 'POST',
@@ -557,6 +610,7 @@ export const toolApi = {
         root_id: rootId,
         path: relPath,
         chapters,
+        stylesheets,
         delete_source_txt: deleteSourceTxt,
       }),
     })

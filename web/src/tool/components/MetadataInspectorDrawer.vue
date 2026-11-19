@@ -10,10 +10,13 @@ import {
   LuFileText,
   LuImage,
   LuLayers,
+  LuLock,
   LuRefreshCw,
   LuSave,
   LuSparkles,
+  LuUnlock,
   LuUpload,
+  LuWand2,
   LuX,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
@@ -64,6 +67,64 @@ const bookPublishedAt = ref('')
 const bookLanguage = ref('')
 const bookTags = ref('')
 const bookDescription = ref('')
+const bookLockedFields = ref<string[]>([])
+const polishingBook = ref(false)
+
+function isBookFieldLocked(field: string): boolean {
+  return bookLockedFields.value.includes(field)
+}
+
+function toggleBookFieldLock(field: string): void {
+  if (bookLockedFields.value.includes(field)) {
+    bookLockedFields.value = bookLockedFields.value.filter((f) => f !== field)
+  } else {
+    bookLockedFields.value = [...bookLockedFields.value, field]
+  }
+}
+
+function lockFilledBookFields(): void {
+  const next = new Set(bookLockedFields.value)
+  if (bookTitle.value.trim()) next.add('title')
+  if (bookAuthors.value.trim()) next.add('authors')
+  if (bookSeries.value.trim()) next.add('series')
+  if (bookSubseries.value.trim()) next.add('subseries')
+  if (bookSeriesIndex.value.trim()) next.add('series_index')
+  if (bookIsbn.value.trim()) next.add('isbn')
+  if (bookPublisher.value.trim()) next.add('publisher')
+  if (bookPublishedAt.value.trim()) next.add('published_at')
+  if (bookLanguage.value.trim()) next.add('language')
+  if (bookTags.value.trim()) next.add('tags')
+  if (bookDescription.value.trim()) next.add('description')
+  if (props.detail.metadata.kind === 'book' && props.detail.metadata.data.has_cover) {
+    next.add('cover')
+  }
+  bookLockedFields.value = Array.from(next)
+}
+
+async function handlePolishBook(): Promise<void> {
+  if (polishingBook.value || props.detail.entry.extension !== 'epub') return
+  polishingBook.value = true
+  errorMsg.value = null
+  saveFeedback.value = null
+  try {
+    if (isDirty.value) {
+      await saveMetadata(false)
+    }
+    const res = await toolApi.polishBook(
+      props.detail.entry.root_id,
+      props.detail.entry.rel_path,
+    )
+    emit('updated', res.detail, false)
+    saveFeedback.value =
+      res.removed_orphan_files > 0
+        ? `已更新内封简介页，清理 ${res.removed_orphan_files} 项冗余资源`
+        : '已生成/更新 EPUB 内封简介页并同步双目录'
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    polishingBook.value = false
+  }
+}
 
 // Comic form
 const comicSeries = ref('')
@@ -132,6 +193,7 @@ function serializeFormSnapshot(): string {
     bookLanguage.value,
     bookTags.value,
     bookDescription.value,
+    [...bookLockedFields.value].sort().join(','),
     comicSeries.value,
     comicSeriesGroup.value,
     comicTitle.value,
@@ -197,6 +259,7 @@ function hydrateForm(d: MediaFileDetail): void {
     bookLanguage.value = b.language ?? ''
     bookTags.value = b.tags.join(' / ')
     bookDescription.value = b.description ?? ''
+    bookLockedFields.value = [...(b.locked_fields ?? [])]
   } else if (m.kind === 'comic') {
     const c = m.data
     comicSeries.value = c.series ?? ''
@@ -417,6 +480,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
           language: bookLanguage.value,
           tags: splitListTokens(bookTags.value),
           description: bookDescription.value,
+          locked_fields: bookLockedFields.value,
         },
       }
     } else if (kind === 'comic') {
@@ -753,6 +817,22 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                 <span>上传系列封面</span>
               </button>
               <button
+                v-if="detail.metadata.kind === 'book' && detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-medium transition"
+                :class="
+                  isBookFieldLocked('cover')
+                    ? 'border-amber-500/45 bg-amber-500/12 text-amber-500'
+                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]'
+                "
+                title="锁定封面后，单本或批量刮削将跳过覆盖当前封面"
+                @click="toggleBookFieldLock('cover')"
+              >
+                <LuLock v-if="isBookFieldLocked('cover')" class="h-3.5 w-3.5" />
+                <LuUnlock v-else class="h-3.5 w-3.5" />
+                <span>{{ isBookFieldLocked('cover') ? '封面已锁' : '锁封面' }}</span>
+              </button>
+              <button
                 v-if="
                   detail.entry.media_kind === 'book' &&
                   (detail.entry.extension === 'txt' || detail.entry.extension === 'epub')
@@ -767,6 +847,18 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                     ? '编辑目录与正文 · 转 EPUB'
                     : '编辑目录与正文'
                 }}</span>
+              </button>
+              <button
+                v-if="detail.entry.media_kind === 'book' && detail.entry.extension === 'epub'"
+                type="button"
+                :disabled="polishingBook"
+                class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-accent)]/35 bg-[var(--ctp-mantle)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)] disabled:opacity-50"
+                title="自动在正文前生成/更新内封书籍简介页，同步 EPUB2/3 双目录，并清理未引用冗余资源"
+                @click="handlePolishBook"
+              >
+                <LuRefreshCw v-if="polishingBook" class="h-3.5 w-3.5 animate-spin" />
+                <LuWand2 v-else class="h-3.5 w-3.5" />
+                <span>{{ polishingBook ? '抛光中…' : '书籍抛光' }}</span>
               </button>
             </template>
             <template v-else>
@@ -1231,28 +1323,98 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
           <span>当前为 {{ detail.metadata.data.format.toUpperCase() }} 文件，单书目录按 Calibre 规范写入 metadata.opf / cover，多书混放目录写入同名旁路文件，归档移动自动同步。</span>
         </div>
 
+        <div
+          v-if="detail.metadata.data.writable"
+          class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/55 px-3 py-1.5 text-[11px]"
+        >
+          <span class="flex items-center gap-1.5 text-[var(--ctp-subtext1)]">
+            <LuLock class="h-3.5 w-3.5 text-amber-500" />
+            <span>
+              防刮削字段锁：已锁
+              <strong class="text-[var(--ctp-text)]">{{ bookLockedFields.length }}</strong>
+              项（保存后单本/批量刮削均跳过被锁字段）
+            </span>
+          </span>
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              class="rounded-md px-2 py-0.5 font-medium text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)]"
+              @click="lockFilledBookFields"
+            >
+              锁非空项
+            </button>
+            <button
+              v-if="bookLockedFields.length > 0"
+              type="button"
+              class="rounded-md px-2 py-0.5 font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
+              @click="bookLockedFields = []"
+            >
+              全部解锁
+            </button>
+          </div>
+        </div>
+
         <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">书名 (dc:title)</span>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">书名 (dc:title)</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁书名字段"
+                @click="toggleBookFieldLock('title')"
+              >
+                <LuLock v-if="isBookFieldLocked('title')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="bookTitle"
               :disabled="!detail.metadata.data.writable"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">作者 (dc:creator，`/` 分隔)</span>
+          </div>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">作者 (dc:creator，`/` 分隔)</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('authors') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁作者字段"
+                @click="toggleBookFieldLock('authors')"
+              >
+                <LuLock v-if="isBookFieldLocked('authors')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="bookAuthors"
               :disabled="!detail.metadata.data.writable"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
+          </div>
           <div class="grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-12">
-            <label class="block sm:col-span-5">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">系列 / 丛书 (Series)</span>
+            <div class="block sm:col-span-5">
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">系列 / 丛书 (Series)</span>
+                <button
+                  v-if="detail.metadata.data.writable"
+                  type="button"
+                  class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                  :class="isBookFieldLocked('series') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                  title="锁定/解锁系列字段"
+                  @click="toggleBookFieldLock('series')"
+                >
+                  <LuLock v-if="isBookFieldLocked('series')" class="h-3 w-3" />
+                  <LuUnlock v-else class="h-3 w-3" />
+                </button>
+              </div>
               <input
                 v-model="bookSeries"
                 :disabled="!detail.metadata.data.writable"
@@ -1260,9 +1422,22 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                 placeholder="如：三体 / 魔法禁书目录"
                 class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
               />
-            </label>
-            <label class="block sm:col-span-4">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">部 / 子系列 (Subseries)</span>
+            </div>
+            <div class="block sm:col-span-4">
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">部 / 子系列 (Subseries)</span>
+                <button
+                  v-if="detail.metadata.data.writable"
+                  type="button"
+                  class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                  :class="isBookFieldLocked('subseries') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                  title="锁定/解锁子系列字段"
+                  @click="toggleBookFieldLock('subseries')"
+                >
+                  <LuLock v-if="isBookFieldLocked('subseries')" class="h-3 w-3" />
+                  <LuUnlock v-else class="h-3 w-3" />
+                </button>
+              </div>
               <input
                 v-model="bookSubseries"
                 :disabled="!detail.metadata.data.writable"
@@ -1270,9 +1445,22 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                 placeholder="选填，如：新约"
                 class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
               />
-            </label>
-            <label class="block sm:col-span-3">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">卷 / 册号 (Volume)</span>
+            </div>
+            <div class="block sm:col-span-3">
+              <div class="mb-1 flex items-center justify-between">
+                <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">卷 / 册号 (Volume)</span>
+                <button
+                  v-if="detail.metadata.data.writable"
+                  type="button"
+                  class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                  :class="isBookFieldLocked('series_index') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                  title="锁定/解锁卷册号字段"
+                  @click="toggleBookFieldLock('series_index')"
+                >
+                  <LuLock v-if="isBookFieldLocked('series_index')" class="h-3 w-3" />
+                  <LuUnlock v-else class="h-3 w-3" />
+                </button>
+              </div>
               <input
                 v-model="bookSeriesIndex"
                 :disabled="!detail.metadata.data.writable"
@@ -1280,28 +1468,67 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                 placeholder="如：1 / 2.5"
                 class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
               />
-            </label>
+            </div>
           </div>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">ISBN</span>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">ISBN</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('isbn') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁 ISBN"
+                @click="toggleBookFieldLock('isbn')"
+              >
+                <LuLock v-if="isBookFieldLocked('isbn')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="bookIsbn"
               :disabled="!detail.metadata.data.writable"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">出版社 (dc:publisher)</span>
+          </div>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">出版社 (dc:publisher)</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('publisher') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁出版社"
+                @click="toggleBookFieldLock('publisher')"
+              >
+                <LuLock v-if="isBookFieldLocked('publisher')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="bookPublisher"
               :disabled="!detail.metadata.data.writable"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">出版日期 (dc:date)</span>
+          </div>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">出版日期 (dc:date)</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('published_at') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁出版日期"
+                @click="toggleBookFieldLock('published_at')"
+              >
+                <LuLock v-if="isBookFieldLocked('published_at')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="bookPublishedAt"
               :disabled="!detail.metadata.data.writable"
@@ -1309,9 +1536,22 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               placeholder="YYYY-MM-DD"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">语言 (dc:language)</span>
+          </div>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">语言 (dc:language)</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('language') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁语言"
+                @click="toggleBookFieldLock('language')"
+              >
+                <LuLock v-if="isBookFieldLocked('language')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="bookLanguage"
               :disabled="!detail.metadata.data.writable"
@@ -1319,25 +1559,51 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               placeholder="zh / en / ja"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 / 主题 (dc:subject，`/` 分隔)</span>
+          </div>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 / 主题 (dc:subject，`/` 分隔)</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('tags') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁标签"
+                @click="toggleBookFieldLock('tags')"
+              >
+                <LuLock v-if="isBookFieldLocked('tags')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="bookTags"
               :disabled="!detail.metadata.data.writable"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">内容简介 (dc:description)</span>
+          </div>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">内容简介 (dc:description)</span>
+              <button
+                v-if="detail.metadata.data.writable"
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isBookFieldLocked('description') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁内容简介"
+                @click="toggleBookFieldLock('description')"
+              >
+                <LuLock v-if="isBookFieldLocked('description')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <textarea
               v-model="bookDescription"
               :disabled="!detail.metadata.data.writable"
               rows="5"
               class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2.5 text-xs leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
             />
-          </label>
+          </div>
         </div>
       </div>
     </div>
