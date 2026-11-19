@@ -19,7 +19,7 @@ import {
   LuZap,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import { toolApi } from '../api'
+import { resolveScraperCoverUrl, toolApi } from '../api'
 import { mergeScrapedClientSide } from '../merger'
 import { useToolTaskStore } from '../tasks'
 import type {
@@ -1217,7 +1217,7 @@ async function runBatchAutoScrape(): Promise<void> {
                     >
                       <img
                         v-if="isCoverUsable(selectedByProvider[brief.id]?.cover_url)"
-                        :src="selectedByProvider[brief.id]!.cover_url!"
+                        :src="resolveScraperCoverUrl(selectedByProvider[brief.id]!.cover_url)"
                         alt=""
                         class="h-full w-full object-cover"
                         loading="lazy"
@@ -1269,7 +1269,7 @@ async function runBatchAutoScrape(): Promise<void> {
                   >
                     <img
                       v-if="isCoverUsable(cand.cover_url)"
-                      :src="cand.cover_url"
+                      :src="resolveScraperCoverUrl(cand.cover_url)"
                       alt=""
                       class="h-full w-full object-cover"
                       loading="lazy"
@@ -1373,7 +1373,7 @@ async function runBatchAutoScrape(): Promise<void> {
                   >
                     <img
                       v-if="isCoverUsable(effectiveView.metadata.cover_url)"
-                      :src="effectiveView.metadata.cover_url"
+                      :src="resolveScraperCoverUrl(effectiveView.metadata.cover_url)"
                       alt=""
                       class="h-full w-full object-cover"
                       @error="markCoverBroken(effectiveView.metadata.cover_url)"

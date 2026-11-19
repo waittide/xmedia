@@ -126,6 +126,9 @@ const clearingCache = ref(false)
 const allProviders = ref<ProviderStatusDto[]>([])
 const priorities = ref<ScraperPrioritiesDto>({
   book: [
+    'douban',
+    'neodb',
+    'xinhua',
     'qidian',
     'fanqie',
     'qimao',
@@ -135,9 +138,10 @@ const priorities = ref<ScraperPrioritiesDto>({
     'faloo',
     'jjwxc',
     'bangumi',
+    'anilist',
     'openlibrary',
   ],
-  comic: ['bangumi'],
+  comic: ['bangumi', 'douban', 'neodb', 'anilist'],
   music: ['qq', 'netease', 'kugou', 'kuwo', 'migu', 'taihe', 'qishui', 'itunes', 'bangumi', 'musicbrainz', 'lrclib'],
   video: ['tmdb', 'bangumi'],
 })

@@ -234,6 +234,19 @@ export function buildEpubAssetUrl(rootId: string, relPath: string, assetPath: st
   return `/api/v1/tool/books/epub-asset?${params.toString()}`
 }
 
+export function resolveScraperCoverUrl(rawUrl: string | null | undefined): string {
+  if (!rawUrl) return ''
+  if (rawUrl.includes('.doubanio.com/')) {
+    const params = new URLSearchParams({ url: rawUrl })
+    const tok = getToolToken()
+    if (tok) {
+      params.set('token', tok)
+    }
+    return `/api/v1/tool/scrapers/image-proxy?${params.toString()}`
+  }
+  return rawUrl
+}
+
 export const toolApi = {
   getStatus(): Promise<ToolStatusDto> {
     return toolRequest<ToolStatusDto>('/status')
