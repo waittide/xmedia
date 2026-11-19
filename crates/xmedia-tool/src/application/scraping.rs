@@ -630,6 +630,7 @@ impl ScrapingOrchestratorService {
         }
 
         let need_existing = only_fill_missing
+            || media_kind == MediaKind::Book
             || (media_kind == MediaKind::Music
                 && scraped.target == Some(ScrapeTargetKind::MusicAlbum));
         let existing_detail = if need_existing {
@@ -660,6 +661,57 @@ impl ScrapingOrchestratorService {
             filter_patch_for_missing(&mut patch, &cur.metadata, fallback_stem);
         }
 
+        let mut effective_apply_cover = apply_cover;
+        if let Some(MediaMetadataPayload::Book(existing_book)) =
+            existing_detail.as_ref().map(|d| &d.metadata)
+            && !existing_book.locked_fields.is_empty()
+        {
+            let is_locked = |name: &str| {
+                existing_book
+                    .locked_fields
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case(name))
+            };
+            if let MediaMetadataPatch::Book(ref mut bp) = patch {
+                if is_locked("title") {
+                    bp.title = None;
+                }
+                if is_locked("authors") {
+                    bp.authors = None;
+                }
+                if is_locked("series") {
+                    bp.series = None;
+                }
+                if is_locked("subseries") {
+                    bp.subseries = None;
+                }
+                if is_locked("series_index") {
+                    bp.series_index = None;
+                }
+                if is_locked("isbn") {
+                    bp.isbn = None;
+                }
+                if is_locked("publisher") {
+                    bp.publisher = None;
+                }
+                if is_locked("published_at") {
+                    bp.published_at = None;
+                }
+                if is_locked("language") {
+                    bp.language = None;
+                }
+                if is_locked("tags") {
+                    bp.tags = None;
+                }
+                if is_locked("description") {
+                    bp.description = None;
+                }
+            }
+            if is_locked("cover") {
+                effective_apply_cover = false;
+            }
+        }
+
         let mut detail = self
             .workbench
             .write_metadata(root_id, rel_path, patch)
@@ -669,7 +721,7 @@ impl ScrapingOrchestratorService {
             && should_organize
             && !detail.entry.extension.eq_ignore_ascii_case("epub");
         let mut cached_cover_download: Option<(Vec<u8>, String)> = None;
-        if apply_cover && media_kind != MediaKind::Comic && !defer_non_epub_book_cover {
+        if effective_apply_cover && media_kind != MediaKind::Comic && !defer_non_epub_book_cover {
             let creds = self.settings.get_credentials().await?;
             let client = build_http_client(&creds)?;
 
@@ -777,7 +829,7 @@ impl ScrapingOrchestratorService {
             }
         }
 
-        if apply_cover && defer_non_epub_book_cover {
+        if effective_apply_cover && defer_non_epub_book_cover {
             let already_has_cover = existing_detail
                 .as_ref()
                 .is_some_and(|d| existing_artwork_present(&d.metadata));
@@ -805,7 +857,7 @@ impl ScrapingOrchestratorService {
         }
 
         // Optional Music album directory `cover.*` (user opt-in, default false)
-        if apply_cover
+        if effective_apply_cover
             && write_album_cover
             && media_kind == MediaKind::Music
             && let Some((bytes, mime)) = cached_cover_download
@@ -1518,6 +1570,7 @@ fn map_scraped_to_patch(
                 }
                 (!merged.is_empty()).then_some(merged)
             },
+            locked_fields: None,
         }),
         MediaKind::Comic => {
             let is_chapter_scrape = s.track_or_episode_number.is_some();

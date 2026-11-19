@@ -3,6 +3,7 @@ pub mod book_content;
 pub mod comic;
 pub mod music;
 pub mod video;
+pub mod zh_text;
 
 use std::sync::Arc;
 

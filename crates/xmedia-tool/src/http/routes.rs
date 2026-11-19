@@ -35,8 +35,10 @@ use crate::domain::workspace::{ManagedRoot, RootId};
 use crate::http::ToolHttpState;
 use crate::http::auth::{ToolAuthGuard, build_tool_session_cookie, extract_tool_token};
 use crate::infra::inspectors::book_content::{
-    BookContentDocumentDto, EditableBookChapterDto, SaveBookChapterInput,
+    BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto, SaveBookChapterInput,
+    TransformBookContentResultDto,
 };
+use crate::infra::inspectors::zh_text::BookTextTransformOptions;
 use crate::infra::scrape_cache::ScrapeCacheStatsDto;
 
 pub fn tool_api_router() -> Router<ToolHttpState> {
@@ -78,7 +80,16 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
                 .layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route("/books/epub-asset", get(get_book_epub_asset))
+        .route(
+            "/books/epub-image",
+            post(upload_book_epub_image).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
+        )
         .route("/books/resegment-txt", post(resegment_txt_book))
+        .route(
+            "/books/transform",
+            post(transform_book_content).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
+        )
+        .route("/books/polish", post(polish_book))
         .route(
             "/books/convert-epub",
             post(convert_txt_book_to_epub).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
@@ -765,6 +776,10 @@ struct SaveBookContentRequest {
     root_id: Uuid,
     path: String,
     chapters: Vec<SaveBookChapterInput>,
+    #[serde(default)]
+    stylesheets: Option<Vec<String>>,
+    #[serde(default)]
+    force_horizontal_spine: bool,
 }
 
 async fn put_book_content(
@@ -774,9 +789,127 @@ async fn put_book_content(
 ) -> ApiResult<Json<MediaFileDetail>> {
     let detail = state
         .workbench
-        .save_book_content(RootId(req.root_id), &req.path, req.chapters)
+        .save_book_content(
+            RootId(req.root_id),
+            &req.path,
+            req.chapters,
+            req.stylesheets,
+            req.force_horizontal_spine,
+        )
         .await?;
     Ok(Json(detail))
+}
+
+#[derive(Deserialize)]
+struct TransformBookContentRequest {
+    chapters: Vec<EditableBookChapterDto>,
+    #[serde(default)]
+    stylesheets: Vec<String>,
+    options: BookTextTransformOptions,
+}
+
+async fn transform_book_content(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<TransformBookContentRequest>,
+) -> ApiResult<Json<TransformBookContentResultDto>> {
+    let out = state
+        .workbench
+        .transform_book_content(req.chapters, req.stylesheets, req.options)
+        .await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct PolishBookRequest {
+    root_id: Uuid,
+    path: String,
+}
+
+#[derive(Serialize)]
+struct PolishBookResponse {
+    jacket_updated: bool,
+    removed_orphan_files: usize,
+    detail: MediaFileDetail,
+}
+
+async fn polish_book(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<PolishBookRequest>,
+) -> ApiResult<Json<PolishBookResponse>> {
+    let (report, detail) = state
+        .workbench
+        .polish_book(RootId(req.root_id), &req.path)
+        .await?;
+    Ok(Json(PolishBookResponse {
+        jacket_updated: report.jacket_updated,
+        removed_orphan_files: report.removed_orphan_files,
+        detail,
+    }))
+}
+
+async fn upload_book_epub_image(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    mut multipart: Multipart,
+) -> ApiResult<Json<InsertedEpubImageDto>> {
+    let mut root_id: Option<Uuid> = None;
+    let mut rel_path: Option<String> = None;
+    let mut chapter_source_href: Option<String> = None;
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut file_mime: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError(DomainError::Validation(format!("multipart error: {e}"))))?
+    {
+        let name = field.name().unwrap_or_default().to_string();
+        match name.as_str() {
+            "root_id" => {
+                let text = field.text().await.unwrap_or_default();
+                root_id = Uuid::parse_str(text.trim()).ok();
+            }
+            "path" => {
+                rel_path = Some(field.text().await.unwrap_or_default());
+            }
+            "chapter_source_href" => {
+                let text = field.text().await.unwrap_or_default();
+                if !text.trim().is_empty() {
+                    chapter_source_href = Some(text.trim().to_string());
+                }
+            }
+            "file" => {
+                file_mime = field.content_type().map(|s| s.to_string());
+                let raw = field.bytes().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!("upload read error: {e}")))
+                })?;
+                file_bytes = Some(raw.to_vec());
+            }
+            _ => {}
+        }
+    }
+
+    let root_uuid =
+        root_id.ok_or_else(|| ApiError(DomainError::Validation("missing root_id".into())))?;
+    let path_str =
+        rel_path.ok_or_else(|| ApiError(DomainError::Validation("missing path".into())))?;
+    let bytes = file_bytes
+        .filter(|b| !b.is_empty())
+        .ok_or_else(|| ApiError(DomainError::Validation("missing image file".into())))?;
+
+    let inserted = state
+        .workbench
+        .insert_epub_chapter_image(
+            RootId(root_uuid),
+            &path_str,
+            chapter_source_href,
+            bytes,
+            file_mime,
+        )
+        .await?;
+    Ok(Json(inserted))
 }
 
 #[derive(Deserialize)]
@@ -785,6 +918,8 @@ struct ConvertTxtToEpubRequest {
     path: String,
     #[serde(default)]
     chapters: Option<Vec<SaveBookChapterInput>>,
+    #[serde(default)]
+    stylesheets: Option<Vec<String>>,
     #[serde(default)]
     delete_source_txt: bool,
 }
@@ -806,6 +941,7 @@ async fn convert_txt_book_to_epub(
             RootId(req.root_id),
             &req.path,
             req.chapters,
+            req.stylesheets,
             req.delete_source_txt,
         )
         .await?;

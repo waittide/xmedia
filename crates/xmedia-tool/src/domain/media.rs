@@ -63,6 +63,8 @@ pub struct BookFileMeta {
     pub language: Option<String>,
     pub isbn: Option<String>,
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub locked_fields: Vec<String>,
     pub has_cover: bool,
     pub writable: bool,
 }
@@ -192,6 +194,8 @@ pub struct BookMetaPatch {
     pub language: Option<String>,
     pub isbn: Option<String>,
     pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub locked_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

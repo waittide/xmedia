@@ -24,6 +24,9 @@ use crate::infra::inspectors::book::{
     attr_value, find_opf_path_in_container, find_sidecar_cover, normalize_zip_rel,
     read_book_meta_any, replace_opf_metadata_block, rewrite_epub_entries,
 };
+use crate::infra::inspectors::zh_text::{
+    BookTextTransformOptions, apply_text_transforms_to_chapter, rewrite_css_vertical_to_horizontal,
+};
 
 static DEFAULT_VOLUME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -111,6 +114,73 @@ pub struct SaveBookChapterInput {
     pub xhtml_body: String,
     #[serde(default)]
     pub source_href: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransformBookContentResultDto {
+    pub chapters: Vec<EditableBookChapterDto>,
+    pub stylesheets: Vec<String>,
+    pub changed_chapters: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InsertedEpubImageDto {
+    pub asset_path: String,
+    pub chapter_rel_href: String,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolishBookReportDto {
+    pub jacket_updated: bool,
+    pub removed_orphan_files: usize,
+}
+
+pub fn transform_book_content_batch(
+    mut chapters: Vec<EditableBookChapterDto>,
+    mut stylesheets: Vec<String>,
+    opts: &BookTextTransformOptions,
+) -> DomainResult<TransformBookContentResultDto> {
+    let mut compiled_custom = Vec::new();
+    for pat in &opts.custom_strip_patterns {
+        let trimmed = pat.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let re = Regex::new(trimmed).map_err(|e| {
+            DomainError::Validation(format!("自定义净化正则表达式无效 '{trimmed}': {e}"))
+        })?;
+        compiled_custom.push(re);
+    }
+
+    let mut changed_chapters = 0usize;
+    for ch in &mut chapters {
+        let (new_title, new_plain, new_xhtml) = apply_text_transforms_to_chapter(
+            &ch.title,
+            &ch.plain_text,
+            &ch.xhtml_body,
+            opts,
+            &compiled_custom,
+        );
+        if new_title != ch.title || new_plain != ch.plain_text || new_xhtml != ch.xhtml_body {
+            changed_chapters += 1;
+            ch.title = new_title;
+            ch.plain_text = new_plain;
+            ch.xhtml_body = new_xhtml;
+        }
+    }
+
+    if opts.vertical_to_horizontal {
+        for css in &mut stylesheets {
+            *css = rewrite_css_vertical_to_horizontal(css);
+        }
+    }
+
+    Ok(TransformBookContentResultDto {
+        chapters,
+        stylesheets,
+        changed_chapters,
+    })
 }
 
 pub fn read_book_content(path: &Path) -> DomainResult<BookContentDocumentDto> {
@@ -581,6 +651,8 @@ struct EpubStructureInfo {
     package_version: String,
     unique_id: String,
     toc_ncx_attr: Option<String>,
+    spine_page_progression: Option<String>,
+    cover_meta_id: Option<String>,
     manifest: Vec<ManifestNode>,
     spine_idrefs: Vec<String>,
 }
@@ -616,6 +688,8 @@ fn parse_epub_structure<R: Read + std::io::Seek>(
     let mut package_version = "3.0".to_string();
     let mut unique_id = "bookid".to_string();
     let mut toc_ncx_attr = None;
+    let mut spine_page_progression = None;
+    let mut cover_meta_id = None;
     let mut manifest = Vec::new();
     let mut spine_idrefs = Vec::new();
 
@@ -630,6 +704,15 @@ fn parse_epub_structure<R: Read + std::io::Seek>(
                         }
                         if let Some(uid) = attr_value(e, "unique-identifier") {
                             unique_id = uid;
+                        }
+                    }
+                    "meta" => {
+                        if attr_value(e, "name")
+                            .is_some_and(|n| n.trim().eq_ignore_ascii_case("cover"))
+                        {
+                            cover_meta_id = attr_value(e, "content")
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty());
                         }
                     }
                     "item" => {
@@ -649,6 +732,7 @@ fn parse_epub_structure<R: Read + std::io::Seek>(
                     }
                     "spine" => {
                         toc_ncx_attr = attr_value(e, "toc");
+                        spine_page_progression = attr_value(e, "page-progression-direction");
                     }
                     "itemref" => {
                         if let Some(idref) = attr_value(e, "idref") {
@@ -670,6 +754,8 @@ fn parse_epub_structure<R: Read + std::io::Seek>(
         package_version,
         unique_id,
         toc_ncx_attr,
+        spine_page_progression,
+        cover_meta_id,
         manifest,
         spine_idrefs,
     })
@@ -1150,7 +1236,12 @@ fn render_toc_ncx(
     )
 }
 
-pub fn save_book_content(path: &Path, chapters: &[SaveBookChapterInput]) -> DomainResult<()> {
+pub fn save_book_content(
+    path: &Path,
+    chapters: &[SaveBookChapterInput],
+    stylesheets: Option<&[String]>,
+    force_horizontal_spine: bool,
+) -> DomainResult<()> {
     if chapters.is_empty() {
         return Err(DomainError::Validation("图书至少需要保留一个章节".into()));
     }
@@ -1162,7 +1253,7 @@ pub fn save_book_content(path: &Path, chapters: &[SaveBookChapterInput]) -> Doma
 
     match ext.as_str() {
         "txt" => save_txt_content(path, chapters),
-        "epub" => save_epub_content(path, chapters),
+        "epub" => save_epub_content(path, chapters, stylesheets, force_horizontal_spine),
         _ => Err(DomainError::UnsupportedFormat(format!(
             "book content saving only supports TXT and EPUB (got '.{ext}')"
         ))),
@@ -1191,7 +1282,12 @@ fn save_txt_content(path: &Path, chapters: &[SaveBookChapterInput]) -> DomainRes
     atomic_write_bytes(path, joined.as_bytes())
 }
 
-fn save_epub_content(epub_path: &Path, chapters: &[SaveBookChapterInput]) -> DomainResult<()> {
+fn save_epub_content(
+    epub_path: &Path,
+    chapters: &[SaveBookChapterInput],
+    stylesheets: Option<&[String]>,
+    force_horizontal_spine: bool,
+) -> DomainResult<()> {
     let meta = read_book_meta_any(epub_path)?;
     let lang = meta.language.as_deref().unwrap_or("zh-CN");
 
@@ -1246,22 +1342,59 @@ fn save_epub_content(epub_path: &Path, chapters: &[SaveBookChapterInput]) -> Dom
         old_editable_paths.insert(node.full_path.clone());
     }
 
-    // Locate or create stylesheet for newly inserted chapters
-    let existing_css_full = info
+    // Locate or create stylesheet for newly inserted chapters & persist edited CSS stylesheets
+    let existing_css_nodes: Vec<&ManifestNode> = info
         .manifest
         .iter()
-        .find(|m| m.media_type.eq_ignore_ascii_case("text/css"))
-        .map(|m| m.full_path.clone());
+        .filter(|m| m.media_type.eq_ignore_ascii_case("text/css"))
+        .collect();
+    let had_no_existing_css = existing_css_nodes.is_empty();
 
     let mut replacements: Vec<(String, Vec<u8>)> = Vec::new();
     let mut extra_manifest_nodes: Vec<ManifestNode> = Vec::new();
 
-    let effective_css_full = if let Some(css) = existing_css_full {
-        css
+    let effective_css_full = if let Some(first_css) = existing_css_nodes.first() {
+        if let Some(edited_list) = stylesheets {
+            for (idx, css_node) in existing_css_nodes.iter().enumerate() {
+                if let Some(raw_css) = edited_list.get(idx) {
+                    let final_css = if force_horizontal_spine {
+                        rewrite_css_vertical_to_horizontal(raw_css)
+                    } else {
+                        raw_css.clone()
+                    };
+                    replacements.push((css_node.full_path.clone(), final_css.into_bytes()));
+                } else if force_horizontal_spine
+                    && let Some(orig_bytes) = read_zip_bytes(&mut archive, &css_node.full_path)
+                {
+                    let orig_str = String::from_utf8_lossy(&orig_bytes);
+                    let rewritten = rewrite_css_vertical_to_horizontal(&orig_str);
+                    replacements.push((css_node.full_path.clone(), rewritten.into_bytes()));
+                }
+            }
+        } else if force_horizontal_spine {
+            for css_node in &existing_css_nodes {
+                if let Some(orig_bytes) = read_zip_bytes(&mut archive, &css_node.full_path) {
+                    let orig_str = String::from_utf8_lossy(&orig_bytes);
+                    let rewritten = rewrite_css_vertical_to_horizontal(&orig_str);
+                    replacements.push((css_node.full_path.clone(), rewritten.into_bytes()));
+                }
+            }
+        }
+        first_css.full_path.clone()
     } else {
         let css_full = normalize_zip_rel(&info.opf_dir, "Styles/xmedia_style.css");
         let css_href = relative_href_from_dir(&info.opf_dir, &css_full);
-        replacements.push((css_full.clone(), DEFAULT_EPUB_CSS.as_bytes().to_vec()));
+        let initial_css = stylesheets
+            .and_then(|s| s.first())
+            .map(String::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(DEFAULT_EPUB_CSS);
+        let final_css = if force_horizontal_spine {
+            rewrite_css_vertical_to_horizontal(initial_css)
+        } else {
+            initial_css.to_string()
+        };
+        replacements.push((css_full.clone(), final_css.into_bytes()));
         extra_manifest_nodes.push(ManifestNode {
             id: "xmedia-default-css".to_string(),
             href: css_href,
@@ -1346,10 +1479,28 @@ fn save_epub_content(epub_path: &Path, chapters: &[SaveBookChapterInput]) -> Dom
             }
         };
 
+        let effective_head = preserved_head.map(|mut h| {
+            if force_horizontal_spine {
+                h = rewrite_css_vertical_to_horizontal(&h);
+            }
+            if had_no_existing_css
+                && stylesheets.is_some_and(|s| s.first().is_some_and(|c| !c.trim().is_empty()))
+                && !h.to_ascii_lowercase().contains("stylesheet")
+                && let Some(pos) = h.to_ascii_lowercase().rfind("</head>")
+            {
+                let link_tag = format!(
+                    "  <link rel=\"stylesheet\" type=\"text/css\" href=\"{}\"/>\n",
+                    escape(&css_rel)
+                );
+                h.insert_str(pos, &link_tag);
+            }
+            h
+        });
+
         let full_doc = wrap_full_xhtml_document(
             &title,
             lang,
-            preserved_head.as_deref(),
+            effective_head.as_deref(),
             Some(&css_rel),
             &body_inner,
         );
@@ -1433,11 +1584,18 @@ fn save_epub_content(epub_path: &Path, chapters: &[SaveBookChapterInput]) -> Dom
         spine_ids.push(mid.clone());
     }
 
+    let effective_spine_dir = if force_horizontal_spine {
+        None
+    } else {
+        info.spine_page_progression.as_deref()
+    };
+
     let updated_opf = rebuild_opf_manifest_and_spine(
         &info.raw_opf,
         &merged_manifest,
         &spine_ids,
         &ncx_id,
+        effective_spine_dir,
         &meta,
         &info.unique_id,
         &info.package_version,
@@ -1447,11 +1605,13 @@ fn save_epub_content(epub_path: &Path, chapters: &[SaveBookChapterInput]) -> Dom
     rewrite_epub_entries(epub_path, replacements, &removed_paths)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn rebuild_opf_manifest_and_spine(
     raw_opf: &str,
     manifest: &[ManifestNode],
     spine_ids: &[String],
     ncx_id: &str,
+    spine_page_progression: Option<&str>,
     meta: &BookFileMeta,
     unique_id: &str,
     package_version: &str,
@@ -1495,7 +1655,12 @@ fn rebuild_opf_manifest_and_spine(
     }
     manifest_xml.push_str("  </manifest>");
 
-    let mut spine_xml = format!("<spine toc=\"{}\">\n", escape(ncx_id));
+    let dir_attr = spine_page_progression
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|d| format!(" page-progression-direction=\"{}\"", escape(d)))
+        .unwrap_or_default();
+    let mut spine_xml = format!("<spine toc=\"{}\"{dir_attr}>\n", escape(ncx_id));
     for idref in spine_ids {
         spine_xml.push_str(&format!("    <itemref idref=\"{}\"/>\n", escape(idref)));
     }
@@ -1514,6 +1679,7 @@ fn rebuild_opf_manifest_and_spine(
 pub fn convert_txt_to_epub(
     txt_path: &Path,
     chapters_override: Option<&[SaveBookChapterInput]>,
+    stylesheets_override: Option<&[String]>,
     delete_source_txt: bool,
 ) -> DomainResult<PathBuf> {
     let ext = txt_path
@@ -1615,11 +1781,16 @@ pub fn convert_txt_to_epub(
             .map_err(|e| DomainError::Storage(format!("epub container write error: {e}")))?;
 
         // 3. Stylesheet
+        let chosen_css = stylesheets_override
+            .and_then(|s| s.first())
+            .map(String::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(DEFAULT_EPUB_CSS);
         writer
             .start_file("OEBPS/Styles/style.css", deflated)
             .map_err(|e| DomainError::Storage(format!("epub css error: {e}")))?;
         writer
-            .write_all(DEFAULT_EPUB_CSS.as_bytes())
+            .write_all(chosen_css.as_bytes())
             .map_err(|e| DomainError::Storage(format!("epub css write error: {e}")))?;
 
         let mut manifest_nodes = vec![
@@ -1773,6 +1944,7 @@ pub fn convert_txt_to_epub(
             &manifest_nodes,
             &spine_ids,
             "ncx",
+            None,
             &meta,
             "bookid",
             "3.0",
@@ -1796,6 +1968,576 @@ pub fn convert_txt_to_epub(
     }
 
     Ok(epub_path)
+}
+
+pub fn insert_epub_image(
+    epub_path: &Path,
+    chapter_source_href: Option<&str>,
+    bytes: &[u8],
+    mime_hint: Option<&str>,
+) -> DomainResult<InsertedEpubImageDto> {
+    if bytes.is_empty() {
+        return Err(DomainError::Validation("上传的图片文件为空".into()));
+    }
+    let ext_check = epub_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ext_check != "epub" {
+        return Err(DomainError::Validation(
+            "仅 EPUB 图书支持章节内插入图片".into(),
+        ));
+    }
+
+    let sniffed = sniff_image_mime(bytes);
+    let mime_type = if sniffed.starts_with("image/") {
+        sniffed.to_string()
+    } else if let Some(hint) = mime_hint.filter(|m| m.starts_with("image/")) {
+        hint.to_string()
+    } else {
+        return Err(DomainError::Validation(
+            "不支持的图片格式，请上传 JPG/PNG/WebP/GIF/SVG".into(),
+        ));
+    };
+
+    let img_ext = match mime_type.as_str() {
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/svg+xml" => "svg",
+        _ => "jpg",
+    };
+
+    let f = File::open(epub_path)
+        .map_err(|e| DomainError::Storage(format!("failed opening epub: {e}")))?;
+    let mut archive = ZipArchive::new(BufReader::new(f))
+        .map_err(|e| DomainError::Validation(format!("invalid epub archive: {e}")))?;
+    let info = parse_epub_structure(&mut archive)?;
+    drop(archive);
+
+    let short_id = &Uuid::now_v7().simple().to_string()[..12];
+    let rel_img = format!("Images/ximg_{short_id}.{img_ext}");
+    let full_img = normalize_zip_rel(&info.opf_dir, &rel_img);
+    let href_in_opf = relative_href_from_dir(&info.opf_dir, &full_img);
+    let item_id = format!("ximg-{short_id}");
+
+    static CLOSE_MANIFEST_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)</(?:\w+:)?manifest>").expect("valid manifest end regex")
+    });
+
+    let item_line = format!(
+        "    <item id=\"{}\" href=\"{}\" media-type=\"{}\"/>\n  ",
+        escape(&item_id),
+        escape(&href_in_opf),
+        escape(&mime_type)
+    );
+    let updated_opf = if let Some(m) = CLOSE_MANIFEST_RE.find(&info.raw_opf) {
+        let mut s = info.raw_opf.clone();
+        s.insert_str(m.start(), &item_line);
+        s
+    } else {
+        return Err(DomainError::Validation(
+            "EPUB OPF 缺少 <manifest> 节点".into(),
+        ));
+    };
+
+    rewrite_epub_entries(
+        epub_path,
+        vec![
+            (full_img.clone(), bytes.to_vec()),
+            (info.opf_path, updated_opf.into_bytes()),
+        ],
+        &[],
+    )?;
+
+    let fallback_ch_full = normalize_zip_rel(&info.opf_dir, "Text/chapter.xhtml");
+    let ch_ref_full = chapter_source_href
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&fallback_ch_full);
+    let ch_dir = Path::new(ch_ref_full)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let chapter_rel_href = relative_href_from_dir(ch_dir, &full_img);
+
+    Ok(InsertedEpubImageDto {
+        asset_path: full_img,
+        chapter_rel_href,
+        mime_type,
+    })
+}
+
+fn render_book_jacket_xhtml(
+    meta: &BookFileMeta,
+    cover_rel_href: Option<&str>,
+    css_rel_href: Option<&str>,
+) -> String {
+    let lang = meta
+        .language
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("zh-CN");
+    let css_link = css_rel_href
+        .map(|h| {
+            format!(
+                "  <link rel=\"stylesheet\" type=\"text/css\" href=\"{}\"/>\n",
+                escape(h)
+            )
+        })
+        .unwrap_or_default();
+
+    let jacket_css = r#"  <style type="text/css">
+    .xmedia-jacket { max-width: 38em; margin: 1.2em auto; padding: 1.2em 1.4em; border: 1px solid rgba(128,128,128,0.28); border-radius: 10px; line-height: 1.75; }
+    .xmedia-jacket-head { text-align: center; margin-bottom: 1.2em; }
+    .xmedia-jacket-cover { margin: 0 auto 1em; text-align: center; }
+    .xmedia-jacket-cover img { max-height: 14em; max-width: 65%; border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,0.16); }
+    .xmedia-jacket-title { font-size: 1.45em; font-weight: 700; margin: 0.2em 0 0.35em; line-height: 1.3; text-indent: 0; }
+    .xmedia-jacket-author { font-size: 1em; opacity: 0.85; margin: 0 0 0.5em; text-indent: 0; }
+    .xmedia-jacket-series { display: inline-block; font-size: 0.88em; padding: 0.15em 0.7em; border-radius: 999px; background: rgba(128,128,128,0.14); margin-bottom: 0.5em; }
+    .xmedia-jacket-meta { font-size: 0.88em; opacity: 0.82; margin: 0.8em 0; padding: 0.65em 0.9em; background: rgba(128,128,128,0.08); border-radius: 6px; }
+    .xmedia-jacket-meta div { margin: 0.2em 0; text-indent: 0; }
+    .xmedia-jacket-tags { margin: 0.7em 0; text-align: center; }
+    .xmedia-jacket-tag { display: inline-block; font-size: 0.8em; padding: 0.12em 0.55em; margin: 0.15em; border: 1px solid rgba(128,128,128,0.3); border-radius: 4px; }
+    .xmedia-jacket-hr { border: 0; border-top: 1px solid rgba(128,128,128,0.24); margin: 1em 0; }
+    .xmedia-jacket-desc p { margin: 0 0 0.75em; text-indent: 2em; text-align: justify; }
+  </style>"#;
+
+    let mut body = String::from(
+        "  <section class=\"xmedia-jacket\" epub:type=\"frontmatter\">\n    <div class=\"xmedia-jacket-head\">\n",
+    );
+    if let Some(cov) = cover_rel_href {
+        body.push_str(&format!(
+            "      <div class=\"xmedia-jacket-cover\"><img src=\"{}\" alt=\"封面\"/></div>\n",
+            escape(cov)
+        ));
+    }
+    body.push_str(&format!(
+        "      <h1 class=\"xmedia-jacket-title\">{}</h1>\n",
+        escape(meta.title.trim())
+    ));
+    if !meta.authors.is_empty() {
+        let joined = meta.authors.join(" / ");
+        body.push_str(&format!(
+            "      <p class=\"xmedia-jacket-author\">{}</p>\n",
+            escape(&joined)
+        ));
+    }
+    if let Some(ser) = meta
+        .series
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let mut badge = ser.to_string();
+        if let Some(sub) = meta
+            .subseries
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            badge.push_str(" · ");
+            badge.push_str(sub);
+        }
+        if let Some(idx) = meta
+            .series_index
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            badge.push_str(&format!(" #{idx}"));
+        }
+        body.push_str(&format!(
+            "      <div class=\"xmedia-jacket-series\">{}</div>\n",
+            escape(&badge)
+        ));
+    }
+    body.push_str("    </div>\n");
+
+    if !meta.tags.is_empty() {
+        body.push_str("    <div class=\"xmedia-jacket-tags\">\n");
+        for tag in &meta.tags {
+            let t = tag.trim();
+            if !t.is_empty() {
+                body.push_str(&format!(
+                    "      <span class=\"xmedia-jacket-tag\">{}</span>\n",
+                    escape(t)
+                ));
+            }
+        }
+        body.push_str("    </div>\n");
+    }
+
+    let mut meta_lines = Vec::new();
+    if let Some(p) = meta
+        .publisher
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        meta_lines.push(format!("出版社：{}", escape(p)));
+    }
+    if let Some(d) = meta
+        .published_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        meta_lines.push(format!("出版日期：{}", escape(d)));
+    }
+    if let Some(i) = meta
+        .isbn
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        meta_lines.push(format!("ISBN：{}", escape(i)));
+    }
+    if !meta_lines.is_empty() {
+        body.push_str("    <div class=\"xmedia-jacket-meta\">\n");
+        for line in meta_lines {
+            body.push_str(&format!("      <div>{line}</div>\n"));
+        }
+        body.push_str("    </div>\n");
+    }
+
+    if let Some(desc) = meta
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        body.push_str(
+            "    <hr class=\"xmedia-jacket-hr\"/>\n    <div class=\"xmedia-jacket-desc\">\n",
+        );
+        for para in desc.lines() {
+            let t = para.trim();
+            if !t.is_empty() {
+                body.push_str(&format!("      <p>{}</p>\n", escape(t)));
+            }
+        }
+        body.push_str("    </div>\n");
+    }
+
+    body.push_str("  </section>");
+
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE html>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xml:lang=\"{l}\" lang=\"{l}\">\n<head>\n  <meta charset=\"utf-8\"/>\n  <title>书籍简介 - {t}</title>\n{css_link}{jacket_css}\n</head>\n<body>\n{body}\n</body>\n</html>\n",
+        l = escape(lang),
+        t = escape(meta.title.trim()),
+    )
+}
+
+pub fn polish_epub_book(epub_path: &Path) -> DomainResult<PolishBookReportDto> {
+    let ext_check = epub_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if ext_check != "epub" {
+        return Err(DomainError::Validation("仅 EPUB 图书支持一键抛光".into()));
+    }
+
+    let meta = read_book_meta_any(epub_path)?;
+    let lang = meta.language.as_deref().unwrap_or("zh-CN");
+
+    let f = File::open(epub_path)
+        .map_err(|e| DomainError::Storage(format!("failed opening epub: {e}")))?;
+    let mut archive = ZipArchive::new(BufReader::new(f))
+        .map_err(|e| DomainError::Validation(format!("invalid epub archive: {e}")))?;
+    let info = parse_epub_structure(&mut archive)?;
+
+    // Existing TOC map for preserving TOC hierarchy & titles
+    let mut toc_map: HashMap<String, (String, u8)> = HashMap::new();
+    if let Some(nav_node) = info.manifest.iter().find(|m| is_nav_manifest_node(m))
+        && let Some(nav_bytes) = read_zip_bytes(&mut archive, &nav_node.full_path)
+    {
+        let nav_dir = Path::new(&nav_node.full_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+        toc_map = parse_nav_toc_map(&nav_bytes, nav_dir);
+    }
+    if toc_map.is_empty()
+        && let Some(ncx_node) = info.manifest.iter().find(|m| {
+            info.toc_ncx_attr.as_deref() == Some(m.id.as_str())
+                || m.media_type
+                    .eq_ignore_ascii_case("application/x-dtbncx+xml")
+        })
+        && let Some(ncx_bytes) = read_zip_bytes(&mut archive, &ncx_node.full_path)
+    {
+        let ncx_dir = Path::new(&ncx_node.full_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+        toc_map = parse_ncx_toc_map(&ncx_bytes, ncx_dir);
+    }
+
+    // Locate cover image in manifest if available
+    let cover_img_node = info
+        .manifest
+        .iter()
+        .find(|m| {
+            m.media_type.starts_with("image/")
+                && (m
+                    .properties
+                    .as_deref()
+                    .is_some_and(|p| p.split_whitespace().any(|t| t == "cover-image"))
+                    || info.cover_meta_id.as_deref() == Some(m.id.as_str()))
+        })
+        .or_else(|| {
+            info.manifest.iter().find(|m| {
+                m.media_type.starts_with("image/")
+                    && (m.id.to_ascii_lowercase().contains("cover")
+                        || m.href.to_ascii_lowercase().contains("cover"))
+            })
+        });
+    let cover_img_id = cover_img_node.map(|m| m.id.clone());
+    let cover_img_full = cover_img_node.map(|m| m.full_path.clone());
+
+    let primary_css_full = info
+        .manifest
+        .iter()
+        .find(|m| m.media_type.eq_ignore_ascii_case("text/css"))
+        .map(|m| m.full_path.clone());
+
+    let mut extra_manifest_nodes: Vec<ManifestNode> = Vec::new();
+    let mut replacements: Vec<(String, Vec<u8>)> = Vec::new();
+
+    // Create or update xmedia_jacket.xhtml
+    let (jacket_id, jacket_full_path) = if let Some(existing_jacket) = info
+        .manifest
+        .iter()
+        .find(|m| m.id == "xmedia-jacket" || m.href.ends_with("xmedia_jacket.xhtml"))
+    {
+        (
+            existing_jacket.id.clone(),
+            existing_jacket.full_path.clone(),
+        )
+    } else {
+        let jf = normalize_zip_rel(&info.opf_dir, "Text/xmedia_jacket.xhtml");
+        let jh = relative_href_from_dir(&info.opf_dir, &jf);
+        let jid = "xmedia-jacket".to_string();
+        extra_manifest_nodes.push(ManifestNode {
+            id: jid.clone(),
+            href: jh,
+            full_path: jf.clone(),
+            media_type: "application/xhtml+xml".to_string(),
+            properties: None,
+        });
+        (jid, jf)
+    };
+
+    let jacket_dir = Path::new(&jacket_full_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let jacket_cover_rel = cover_img_full
+        .as_deref()
+        .map(|cf| relative_href_from_dir(jacket_dir, cf));
+    let jacket_css_rel = primary_css_full
+        .as_deref()
+        .map(|sf| relative_href_from_dir(jacket_dir, sf));
+    let jacket_xhtml = render_book_jacket_xhtml(
+        &meta,
+        jacket_cover_rel.as_deref(),
+        jacket_css_rel.as_deref(),
+    );
+    replacements.push((jacket_full_path.clone(), jacket_xhtml.clone().into_bytes()));
+
+    let manifest_by_id: HashMap<&str, &ManifestNode> =
+        info.manifest.iter().map(|m| (m.id.as_str(), m)).collect();
+
+    // Determine whether spine[0] is a cover wrapper page
+    let mut leading_cover_wrapper_id: Option<String> = None;
+    if let Some(first_id) = info.spine_idrefs.first()
+        && let Some(first_node) = manifest_by_id.get(first_id.as_str()).copied()
+        && first_node.id != jacket_id
+        && let Some(bytes) = read_zip_bytes(&mut archive, &first_node.full_path)
+    {
+        let full_str = String::from_utf8_lossy(&bytes);
+        let (_, body_inner) = split_xhtml_head_and_body(&full_str);
+        let plain = xhtml_body_to_plain(&body_inner, None);
+        if is_cover_wrapper_doc(first_node, &toc_map, &plain, &body_inner) {
+            leading_cover_wrapper_id = Some(first_node.id.clone());
+        }
+    }
+
+    // Build normalized spine_ids with jacket right after cover wrapper (or at index 0)
+    let mut spine_ids: Vec<String> = Vec::with_capacity(info.spine_idrefs.len() + 1);
+    if let Some(ref cov_id) = leading_cover_wrapper_id {
+        spine_ids.push(cov_id.clone());
+    }
+    spine_ids.push(jacket_id.clone());
+    for idref in &info.spine_idrefs {
+        if idref == &jacket_id || leading_cover_wrapper_id.as_deref() == Some(idref.as_str()) {
+            continue;
+        }
+        if manifest_by_id.contains_key(idref.as_str()) {
+            spine_ids.push(idref.clone());
+        }
+    }
+
+    // Build synchronized TOC triples for nav.xhtml and toc.ncx
+    let mut toc_triples: Vec<(String, String, u8)> = Vec::new();
+    toc_triples.push(("书籍简介".to_string(), jacket_full_path.clone(), 0));
+
+    for (idx, idref) in spine_ids.iter().enumerate() {
+        if idref == &jacket_id || leading_cover_wrapper_id.as_deref() == Some(idref.as_str()) {
+            continue;
+        }
+        let Some(node) = manifest_by_id.get(idref.as_str()).copied() else {
+            continue;
+        };
+        if is_nav_manifest_node(node) {
+            continue;
+        }
+        if let Some((t, lvl)) = toc_map.get(&node.full_path) {
+            toc_triples.push((t.clone(), node.full_path.clone(), *lvl));
+        } else if let Some(bytes) = read_zip_bytes(&mut archive, &node.full_path) {
+            let s = String::from_utf8_lossy(&bytes);
+            let title =
+                extract_heading_from_xhtml(&s).unwrap_or_else(|| format!("第 {} 章", idx + 1));
+            toc_triples.push((title, node.full_path.clone(), 0));
+        }
+    }
+
+    // Collect all text/xhtml/svg/css content to detect unreferenced non-cover images
+    let mut all_doc_sources = String::new();
+    all_doc_sources.push_str(&jacket_xhtml);
+    for m in &info.manifest {
+        if m.full_path == jacket_full_path {
+            continue;
+        }
+        let mt = m.media_type.to_ascii_lowercase();
+        if (mt.contains("html") || mt.contains("xml") || mt.contains("css") || mt.contains("svg"))
+            && let Some(bytes) = read_zip_bytes(&mut archive, &m.full_path)
+        {
+            all_doc_sources.push_str(&String::from_utf8_lossy(&bytes));
+            all_doc_sources.push('\n');
+        }
+    }
+
+    // Identify all entries currently in the ZIP archive
+    let mut all_zip_files = Vec::new();
+    for i in 0..archive.len() {
+        if let Ok(zf) = archive.by_index(i)
+            && let Ok(name_ref) = zf.name()
+        {
+            let name = name_ref.into_owned();
+            if !name.ends_with('/') {
+                all_zip_files.push(name);
+            }
+        }
+    }
+    drop(archive);
+
+    // Ensure nav.xhtml and toc.ncx exist and are updated
+    let nav_full_path =
+        if let Some(existing_nav) = info.manifest.iter().find(|m| is_nav_manifest_node(m)) {
+            existing_nav.full_path.clone()
+        } else {
+            let nf = normalize_zip_rel(&info.opf_dir, "nav.xhtml");
+            let nh = relative_href_from_dir(&info.opf_dir, &nf);
+            extra_manifest_nodes.push(ManifestNode {
+                id: "xmedia-nav".to_string(),
+                href: nh,
+                full_path: nf.clone(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: Some("nav".to_string()),
+            });
+            nf
+        };
+    let nav_dir = Path::new(&nav_full_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let nav_xml = render_nav_xhtml(&meta.title, lang, &toc_triples, nav_dir);
+    replacements.push((nav_full_path, nav_xml.into_bytes()));
+
+    let (ncx_id, ncx_full_path) = if let Some(existing_ncx) = info.manifest.iter().find(|m| {
+        info.toc_ncx_attr.as_deref() == Some(m.id.as_str())
+            || m.media_type
+                .eq_ignore_ascii_case("application/x-dtbncx+xml")
+    }) {
+        (existing_ncx.id.clone(), existing_ncx.full_path.clone())
+    } else {
+        let nf = normalize_zip_rel(&info.opf_dir, "toc.ncx");
+        let nh = relative_href_from_dir(&info.opf_dir, &nf);
+        let nid = "xmedia-ncx".to_string();
+        extra_manifest_nodes.push(ManifestNode {
+            id: nid.clone(),
+            href: nh,
+            full_path: nf.clone(),
+            media_type: "application/x-dtbncx+xml".to_string(),
+            properties: None,
+        });
+        (nid, nf)
+    };
+    let ncx_dir = Path::new(&ncx_full_path)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let ncx_xml = render_toc_ncx(&info.unique_id, &meta.title, &toc_triples, ncx_dir);
+    replacements.push((ncx_full_path, ncx_xml.into_bytes()));
+
+    // Prune unused non-cover images from manifest
+    let mut unused_manifest_paths: HashSet<String> = HashSet::new();
+    let mut merged_manifest: Vec<ManifestNode> =
+        Vec::with_capacity(info.manifest.len() + extra_manifest_nodes.len());
+    for m in info.manifest {
+        let is_cover_img = cover_img_id.as_deref() == Some(m.id.as_str())
+            || m.id.to_ascii_lowercase().contains("cover")
+            || m.href.to_ascii_lowercase().contains("cover");
+        if m.media_type.starts_with("image/") && !is_cover_img {
+            let basename = Path::new(&m.full_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if !basename.is_empty() && !all_doc_sources.contains(basename) {
+                unused_manifest_paths.insert(m.full_path);
+                continue;
+            }
+        }
+        merged_manifest.push(m);
+    }
+    merged_manifest.extend(extra_manifest_nodes);
+
+    // Compute orphan files in ZIP archive (unmanifested junk + pruned unused images)
+    let mut valid_zip_paths: HashSet<String> = HashSet::new();
+    valid_zip_paths.insert("mimetype".to_string());
+    valid_zip_paths.insert(info.opf_path.clone());
+    for m in &merged_manifest {
+        valid_zip_paths.insert(m.full_path.clone());
+        if m.full_path.contains("%20") {
+            valid_zip_paths.insert(m.full_path.replace("%20", " "));
+        }
+    }
+
+    let mut orphan_paths: Vec<String> = Vec::new();
+    for zpath in all_zip_files {
+        if zpath.starts_with("META-INF/") || zpath.eq_ignore_ascii_case("mimetype") {
+            continue;
+        }
+        if !valid_zip_paths.contains(&zpath) || unused_manifest_paths.contains(&zpath) {
+            orphan_paths.push(zpath);
+        }
+    }
+
+    let updated_opf = rebuild_opf_manifest_and_spine(
+        &info.raw_opf,
+        &merged_manifest,
+        &spine_ids,
+        &ncx_id,
+        info.spine_page_progression.as_deref(),
+        &meta,
+        &info.unique_id,
+        &info.package_version,
+    );
+    replacements.push((info.opf_path, updated_opf.into_bytes()));
+
+    let removed_orphan_files = orphan_paths.len();
+    rewrite_epub_entries(epub_path, replacements, &orphan_paths)?;
+
+    Ok(PolishBookReportDto {
+        jacket_updated: true,
+        removed_orphan_files,
+    })
 }
 
 #[cfg(test)]
@@ -1842,7 +2584,7 @@ mod tests {
         assert_eq!(txt_doc.chapters[2].level, 1);
 
         // 2. Convert TXT -> EPUB (keeping source TXT first)
-        let epub_path = convert_txt_to_epub(&txt_path, None, false).unwrap();
+        let epub_path = convert_txt_to_epub(&txt_path, None, None, false).unwrap();
         assert!(epub_path.is_file());
         assert!(txt_path.is_file());
 
@@ -1883,7 +2625,7 @@ mod tests {
                 source_href: None,
             },
         ];
-        save_book_content(&epub_path, &edited_inputs).unwrap();
+        save_book_content(&epub_path, &edited_inputs, None, false).unwrap();
 
         // 4. Reload EPUB and verify TOC hierarchy + plain & XHTML edits persisted cleanly
         let reloaded = read_book_content(&epub_path).unwrap();
@@ -1904,5 +2646,91 @@ mod tests {
         assert_eq!(reloaded.chapters[2].title, "第二章 新增番外");
         assert_eq!(reloaded.chapters[2].level, 1);
         assert_eq!(reloaded.chapters[2].plain_text, "这是新插入的一章正文。");
+
+        // 5. Insert two images into EPUB; reference only the first in chapter 1, leave the second orphaned
+        let png_1x1: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, b'I', b'D', b'A', b'T', 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let img_used = insert_epub_image(
+            &epub_path,
+            reloaded.chapters[0].source_href.as_deref(),
+            png_1x1,
+            Some("image/png"),
+        )
+        .unwrap();
+        let img_orphan = insert_epub_image(
+            &epub_path,
+            reloaded.chapters[0].source_href.as_deref(),
+            png_1x1,
+            Some("image/png"),
+        )
+        .unwrap();
+        assert!(img_used.chapter_rel_href.contains("Images/ximg_"));
+
+        let with_img_inputs = vec![SaveBookChapterInput {
+            title: "第一卷 含插图章".into(),
+            level: 0,
+            mode: ChapterEditMode::Xhtml,
+            plain_text: String::new(),
+            xhtml_body: format!(
+                "  <h2>第一卷 含插图章</h2>\n  <figure><img src=\"{}\" alt=\"插图\"/></figure>\n  <p>「軟體測試」</p>",
+                img_used.chapter_rel_href
+            ),
+            source_href: reloaded.chapters[0].source_href.clone(),
+        }];
+        let custom_css = vec!["body { writing-mode: vertical-rl; font-size: 18px; }".to_string()];
+        save_book_content(&epub_path, &with_img_inputs, Some(&custom_css), false).unwrap();
+
+        // 6. Batch transform: T2S + vertical_to_horizontal
+        let before_tf = read_book_content(&epub_path).unwrap();
+        let tf_res = transform_book_content_batch(
+            before_tf.chapters,
+            before_tf.stylesheets,
+            &BookTextTransformOptions {
+                zh_direction: Some(crate::infra::inspectors::zh_text::ZhConvertDirection::T2s),
+                vertical_to_horizontal: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(tf_res.changed_chapters, 1);
+        assert!(tf_res.chapters[0].xhtml_body.contains("“软件测试”"));
+        assert!(tf_res.stylesheets[0].contains("writing-mode: horizontal-tb"));
+
+        // 7. Polish EPUB: generates xmedia_jacket.xhtml and cleans up unreferenced img_orphan!
+        let polish_res = polish_epub_book(&epub_path).unwrap();
+        assert!(polish_res.jacket_updated);
+        assert_eq!(polish_res.removed_orphan_files, 1);
+        assert!(read_epub_internal_asset(&epub_path, &img_used.asset_path).is_ok());
+        assert!(read_epub_internal_asset(&epub_path, &img_orphan.asset_path).is_err());
+
+        // Idempotent second polish removes 0 orphans and updates jacket in-place
+        let polish_again = polish_epub_book(&epub_path).unwrap();
+        assert_eq!(polish_again.removed_orphan_files, 0);
+        let after_polish = read_book_content(&epub_path).unwrap();
+        assert_eq!(after_polish.chapters[0].title, "书籍简介");
+        assert!(
+            after_polish.chapters[0]
+                .plain_text
+                .contains("地球往事三部曲")
+        );
+
+        // 8. Verify locked_fields persistence in OPF
+        inspector
+            .write_metadata(
+                &epub_path,
+                &MediaMetadataPatch::Book(BookMetaPatch {
+                    locked_fields: Some(vec!["title".into(), "series".into(), "cover".into()]),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+        let locked_meta = read_book_meta_any(&epub_path).unwrap();
+        assert_eq!(locked_meta.locked_fields, vec!["title", "series", "cover"]);
     }
 }

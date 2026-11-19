@@ -139,6 +139,16 @@ fn parse_opf_bytes(opf_bytes: &[u8], format: &str, fallback_title: &str) -> Pars
                 "calibre:series" => calibre_series = content,
                 "calibre:subseries" => calibre_subseries = content,
                 "calibre:series_index" => calibre_series_index = content,
+                "xmedia:locked_fields" => {
+                    if let Some(c) = content {
+                        for item in c.split(',') {
+                            let f = item.trim().to_ascii_lowercase();
+                            if !f.is_empty() && !meta.locked_fields.contains(&f) {
+                                meta.locked_fields.push(f);
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -525,6 +535,7 @@ pub(crate) fn replace_opf_metadata_block(
                             | "calibre:subseries"
                             | "calibre:series_index"
                             | "calibre:subseries_index"
+                            | "xmedia:locked_fields"
                     )
                 }) {
                     if let Some(elem_id_val) = id {
@@ -808,6 +819,20 @@ pub(crate) fn replace_opf_metadata_block(
                 escape(idx)
             ));
         }
+    }
+
+    let clean_locked: Vec<&str> = meta
+        .locked_fields
+        .iter()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !clean_locked.is_empty() {
+        block.push_str(&format!(
+            "    <meta name=\"xmedia:locked_fields\" content=\"{}\"/>\n",
+            escape(clean_locked.join(","))
+        ));
     }
 
     if let Some(cid) = cover_id_hint {
@@ -1140,6 +1165,9 @@ pub(crate) fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
             if !sidecar.tags.is_empty() {
                 meta.tags = sidecar.tags;
             }
+            if !sidecar.locked_fields.is_empty() {
+                meta.locked_fields = sidecar.locked_fields;
+            }
         }
         meta.has_cover = meta.has_cover || find_sidecar_cover(path).is_some();
         return Ok(meta);
@@ -1301,6 +1329,16 @@ impl MediaInspectorPort for EpubBookInspector {
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
+                }
+                if let Some(locked) = patch.locked_fields {
+                    let mut deduped = Vec::new();
+                    for item in locked {
+                        let f = item.trim().to_ascii_lowercase();
+                        if !f.is_empty() && !deduped.contains(&f) {
+                            deduped.push(f);
+                        }
+                    }
+                    meta.locked_fields = deduped;
                 }
             };
 

@@ -2017,5 +2017,58 @@ The Dark Forest.
         } else {
             panic!("expected book payload");
         }
+
+        // 3. Field lock (`locked_fields`) protects locked book fields even when `only_fill_missing = false`
+        let cur_rel = txt_detail.entry.rel_path.clone();
+        app.workbench
+            .write_metadata(
+                root_id,
+                &cur_rel,
+                MediaMetadataPatch::Book(BookMetaPatch {
+                    locked_fields: Some(vec![
+                        "title".into(),
+                        "series".into(),
+                        "series_index".into(),
+                    ]),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        let rescraped = app
+            .scraping
+            .apply_to_file(
+                root_id,
+                &cur_rel,
+                MediaKind::Book,
+                ScrapedMetadata {
+                    provider_id: "douban".into(),
+                    external_id: "db-df".into(),
+                    target: Some(ScrapeTargetKind::Book),
+                    title: Some("被错误覆盖的书名".into()),
+                    creators: vec!["刘慈欣".into()],
+                    series_or_album: Some("错误丛书".into()),
+                    track_or_episode_number: Some(99),
+                    publisher_or_studio: Some("重庆出版社".into()),
+                    ..Default::default()
+                },
+                false,
+                false,
+                Some(false),
+                false,
+            )
+            .await
+            .unwrap();
+
+        if let MediaMetadataPayload::Book(b) = &rescraped.metadata {
+            assert_eq!(b.title, "黑暗森林");
+            assert_eq!(b.series.as_deref(), Some("三体"));
+            assert_eq!(b.series_index.as_deref(), Some("2"));
+            assert_eq!(b.publisher.as_deref(), Some("重庆出版社"));
+            assert_eq!(b.locked_fields, vec!["title", "series", "series_index"]);
+        } else {
+            panic!("expected book payload");
+        }
     }
 }
