@@ -277,11 +277,11 @@ function formatTime(ms: number): string {
                 v-if="hasRetryableSubItems(task)"
                 type="button"
                 class="inline-flex h-8 items-center gap-1 rounded-xl bg-[var(--ctp-accent-soft)] px-2.5 text-xs font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
-                title="一键仅筛选未命中/失败项并进入三栏工作台逐条精修"
+                title="一键聚焦未命中/失败项并在右侧展开在线候选对照精修"
                 @click="reviewTaskUnmatched(task)"
               >
                 <LuColumns3 class="h-3.5 w-3.5" />
-                <span>三栏精修未命中项</span>
+                <span>聚焦精修未命中项</span>
               </button>
 
               <button

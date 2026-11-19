@@ -12,6 +12,7 @@ import {
   LuSparkles,
 } from 'vue-icons-plus/lu'
 import FloatingTaskShelf from '@/components/ui/FloatingTaskShelf.vue'
+import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import { useToolText } from '../i18n'
@@ -38,7 +39,6 @@ import DryRunScrapeModal from './DryRunScrapeModal.vue'
 import VideoToolboxModal from './VideoToolboxModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
-import ScrapeWorkbenchView from './ScrapeWorkbenchView.vue'
 import ToolHomeView from './ToolHomeView.vue'
 import ToolItemsBrowser from './ToolItemsBrowser.vue'
 import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
@@ -55,10 +55,11 @@ const emit = defineEmits<{
 }>()
 
 const taskStore = useToolTaskStore()
+const snackbar = useSnackbarStore()
 const txt = useToolText()
 
 type PrimaryNavKey = 'home' | 'items' | 'tasks' | 'settings'
-type BrowseViewMode = 'flat' | 'folders' | 'workbench'
+type BrowseViewMode = 'flat' | 'folders'
 type SortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
 type SortDir = 'asc' | 'desc'
 type CompletenessFilter =
@@ -143,10 +144,19 @@ const previousWorkspaceNav = ref<'home' | 'items' | 'tasks'>(
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
 function loadSavedViewMode(): BrowseViewMode {
   const saved = localStorage.getItem('xmedia_tool.view_mode')
-  if (saved === 'folders' || saved === 'workbench') return saved
+  if (saved === 'folders') return 'folders'
   return 'flat'
 }
 const viewMode = ref<BrowseViewMode>(loadSavedViewMode())
+const inspectorCandidatesOpen = ref(
+  localStorage.getItem('xmedia_tool.inspector_candidates') === '1' ||
+    localStorage.getItem('xmedia_tool.view_mode') === 'workbench',
+)
+
+function setInspectorCandidatesOpen(open: boolean): void {
+  inspectorCandidatesOpen.value = open
+  localStorage.setItem('xmedia_tool.inspector_candidates', open ? '1' : '0')
+}
 const sortField = ref<SortField>(loadSavedSortField())
 const sortDir = ref<SortDir>(
   localStorage.getItem('xmedia_tool.sort_dir') === 'desc' ? 'desc' : 'asc',
@@ -183,7 +193,6 @@ const activeDetail = ref<MediaFileDetail | null>(null)
 const inspectorRef = ref<InstanceType<typeof MetadataInspectorDrawer> | null>(null)
 const loadingInspector = ref(false)
 const artworkVersion = ref(1)
-const batchSummaryBanner = ref<string | null>(null)
 
 const settingsInitialTab = ref<ToolSettingsTab>(initialHash.settingsTab ?? 'appearance')
 const scrapeModalOpen = ref(false)
@@ -356,12 +365,16 @@ function completenessScore(e: MediaFileEntry): number {
 const filteredFiles = computed<MediaFileEntry[]>(() => {
   const base = snapshot.value?.files ?? []
   const q = searchQuery.value.trim().toLowerCase()
+  const focus = workbenchFocusPaths.value
   const showRecursive =
     viewMode.value === 'flat' ||
-    viewMode.value === 'workbench' ||
-    hasActiveSearchOrFilter.value
+    hasActiveSearchOrFilter.value ||
+    Boolean(focus && focus.size > 0)
 
   const list = base.filter((f) => {
+    if (focus && focus.size > 0 && !focus.has(f.rel_path)) {
+      return false
+    }
     if (!showRecursive && parentRelOf(f.rel_path) !== currentRelPath.value) {
       return false
     }
@@ -754,13 +767,16 @@ async function handleBatchScrapeApplied(
     await loadDirectory(activeRootId.value, currentRelPath.value)
   }
   if (summary) {
-    batchSummaryBanner.value =
-      summary.failed > 0
-        ? `批量刮削完成：成功 ${summary.success} 项，失败 ${summary.failed} 项`
-        : `批量刮削完成：全部 ${summary.success} 项写入成功`
-    setTimeout(() => {
-      batchSummaryBanner.value = null
-    }, 5500)
+    snackbar.show({
+      message:
+        summary.failed > 0
+          ? `批量刮削完成：成功 ${summary.success} 项，失败 ${summary.failed} 项`
+          : `批量刮削完成：全部 ${summary.success} 项写入成功`,
+      actionLabel: '变更历史',
+      onAction: () => {
+        historyModalOpen.value = true
+      },
+    })
   }
 }
 
@@ -775,6 +791,13 @@ async function handleRenamed(
   }
   if (activeRootId.value && movedCount > 0) {
     await loadDirectory(activeRootId.value, currentRelPath.value)
+    snackbar.show({
+      message: `已完成 ${movedCount} 个文件的重命名与归档`,
+      actionLabel: '撤销历史',
+      onAction: () => {
+        historyModalOpen.value = true
+      },
+    })
   }
   if (mappedRel && activeRootId.value) {
     try {
@@ -801,10 +824,11 @@ function enqueueScrapeFiles(
 ): void {
   if (files.length === 0) return
   taskStore.enqueueScrapeTask(files, labelHint, options)
-  batchSummaryBanner.value = `已添加 ${files.length} 个自动刮削任务，可在任务中心查看进度并一键精修未命中项`
-  setTimeout(() => {
-    batchSummaryBanner.value = null
-  }, 4000)
+  snackbar.show({
+    message: `已添加 ${files.length} 个自动刮削任务`,
+    actionLabel: '查看任务',
+    onAction: () => navigatePrimary('tasks'),
+  })
 }
 
 function enqueueScrapeForSelection(): void {
@@ -843,12 +867,22 @@ async function handleBatchMetadataCompleted(
       void inspectEntry(stillHere)
     }
   }
-  batchSummaryBanner.value = `批量元数据编辑完成：已更新 ${report.updated_count} 项（跳过 ${report.skipped_count} 项${
-    report.failed_count > 0 ? `，失败 ${report.failed_count} 项` : ''
-  }）`
-  setTimeout(() => {
-    batchSummaryBanner.value = null
-  }, 5000)
+  const batchId = report.batch_id
+  snackbar.show({
+    message: `批量编辑完成：更新 ${report.updated_count} 项${
+      report.skipped_count > 0 ? `，跳过 ${report.skipped_count} 项` : ''
+    }${report.failed_count > 0 ? `，失败 ${report.failed_count} 项` : ''}`,
+    actionLabel: batchId ? '撤销' : '历史',
+    onAction: async () => {
+      if (batchId) {
+        const res = await toolApi.undoMetadataBatch(batchId)
+        await handleHistoryRestored()
+        snackbar.show(`已撤销本次批量修改，恢复 ${res.restored_count} 个文件`)
+      } else {
+        historyModalOpen.value = true
+      }
+    },
+  })
 }
 
 async function handleHistoryRestored(): Promise<void> {
@@ -883,7 +917,8 @@ async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<
     await loadDirectory(payload.rootId, '')
   }
   workbenchFocusPaths.value = new Set(payload.relPaths)
-  setViewMode('workbench')
+  setViewMode('flat')
+  setInspectorCandidatesOpen(true)
   activeNav.value = 'items'
   const firstEntry = (snapshot.value?.files ?? []).find((f) => payload.relPaths.includes(f.rel_path))
   if (firstEntry) {
@@ -891,15 +926,33 @@ async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<
   }
 }
 
+const inspectingIndex = computed(() => {
+  if (!inspectingPath.value) return -1
+  return filteredFiles.value.findIndex((f) => f.rel_path === inspectingPath.value)
+})
+
+const hasPrevInspect = computed(() => inspectingIndex.value > 0)
+const hasNextInspect = computed(
+  () => inspectingIndex.value >= 0 && inspectingIndex.value < filteredFiles.value.length - 1,
+)
+const inspectPositionLabel = computed(() => {
+  if (inspectingIndex.value < 0) return ''
+  return `${inspectingIndex.value + 1} / ${filteredFiles.value.length}`
+})
+
+async function stepInspectingFile(delta: -1 | 1): Promise<void> {
+  const nextIdx = inspectingIndex.value + delta
+  const target = filteredFiles.value[nextIdx]
+  if (!target) return
+  await inspectEntry(target)
+}
+
 async function triggerManualRescan(): Promise<void> {
   if (notifyingRescan.value) return
   notifyingRescan.value = true
   try {
     const rep = await toolApi.triggerWebhookRescan(activeRootId.value || undefined)
-    batchSummaryBanner.value = rep.message
-    setTimeout(() => {
-      batchSummaryBanner.value = null
-    }, 5000)
+    snackbar.show(rep.message)
   } catch (err) {
     dirError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -948,10 +1001,7 @@ function openVideoToolbox(entries: MediaFileEntry[]): void {
 
 async function handleBookContentSaved(updated: MediaFileDetail): Promise<void> {
   await handleDetailUpdated(updated, true)
-  batchSummaryBanner.value = `已保存章节目录与正文：${updated.entry.file_name}`
-  setTimeout(() => {
-    batchSummaryBanner.value = null
-  }, 4000)
+  snackbar.show(`已保存章节目录与正文：${updated.entry.file_name}`)
 }
 
 async function handleTxtConvertedToEpub(
@@ -965,12 +1015,11 @@ async function handleTxtConvertedToEpub(
   activeDetail.value = epubDetail
   inspectingPath.value = epubDetail.entry.rel_path
   bookEditorEntry.value = epubDetail.entry
-  batchSummaryBanner.value = deletedSourceTxt
-    ? `已转换为 EPUB 并移除原 TXT：${epubDetail.entry.file_name}`
-    : `已生成标准 EPUB：${epubDetail.entry.file_name}`
-  setTimeout(() => {
-    batchSummaryBanner.value = null
-  }, 5000)
+  snackbar.show(
+    deletedSourceTxt
+      ? `已转换为 EPUB 并移除原 TXT：${epubDetail.entry.file_name}`
+      : `已生成标准 EPUB：${epubDetail.entry.file_name}`,
+  )
 }
 
 async function openManualScrapeModal(entry: MediaFileEntry): Promise<void> {
@@ -1029,6 +1078,9 @@ const anyModalOpen = computed(
   () =>
     scrapeModalOpen.value ||
     renameModalOpen.value ||
+    batchMetadataModalOpen.value ||
+    historyModalOpen.value ||
+    autoScrapeModalOpen.value ||
     bookEditorOpen.value ||
     comicPageManagerOpen.value ||
     comicSeriesToolsOpen.value ||
@@ -1229,10 +1281,7 @@ onBeforeUnmount(() => {
       <main
         class="flex min-w-0 flex-1 overflow-hidden bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
       >
-        <div
-          class="min-w-0 flex-1"
-          :class="activeNav === 'items' && viewMode === 'workbench' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'"
-        >
+        <div class="min-w-0 flex-1 overflow-y-auto">
           <!-- VIEW 1: IN-PAGE SETTINGS (Server SettingsView Left-Right Layout + Domain Tabs) -->
           <ToolSettingsView
             v-if="activeNav === 'settings'"
@@ -1270,52 +1319,7 @@ onBeforeUnmount(() => {
             @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
           />
 
-          <!-- VIEW 4A: 3-PANE SCRAPE WORKBENCH -->
-          <ScrapeWorkbenchView
-            v-else-if="viewMode === 'workbench'"
-            :active-domain="activeDomain"
-            :current-rel-path="currentRelPath"
-            :domain-roots="domainRoots"
-            :domain-labels="domainLabels"
-            :breadcrumbs="breadcrumbs"
-            :view-mode="viewMode"
-            :filtered-files="filteredFiles"
-            :selected-paths="selectedPaths"
-            :checked-files="checkedFiles"
-            :selected-comic-entries="selectedComicEntries"
-            :selected-music-entries="selectedMusicEntries"
-            :selected-video-entries="selectedVideoEntries"
-            :loading-dir="loadingDir"
-            :dir-error="dirError"
-            :snapshot="snapshot"
-            :active-detail="activeDetail"
-            :artwork-version="artworkVersion"
-            :focus-paths="workbenchFocusPaths"
-            @clear-focus-paths="workbenchFocusPaths = null"
-            @open-settings-roots="openSettingsTab('roots')"
-            @open-settings-scrapers="openSettingsTab('scrapers')"
-            @enter-folder="(rel) => enterFolder(rel)"
-            @set-view-mode="setViewMode"
-            @toggle-select-all="toggleSelectAllFiltered"
-            @clear-selection="selectedPaths = new Set(); lastSelectedRelPath = null"
-            @toggle-select-file="toggleSelectFile"
-            @inspect-file="inspectEntry"
-            @updated-detail="handleDetailUpdated"
-            @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
-            @enqueue-scrape-selection="enqueueScrapeForSelection"
-            @open-dry-run="dryRunModalOpen = true"
-            @open-batch-metadata="batchMetadataModalOpen = true"
-            @open-history="historyModalOpen = true"
-            @open-rename="renameModalOpen = true"
-            @open-advanced-scrape="(d) => openManualScrapeModal(d.entry)"
-            @open-book-content-editor="openBookContentEditor"
-            @open-comic-page-manager="openComicPageManager"
-            @open-comic-series-tools="comicSeriesToolsOpen = true"
-            @open-music-toolbox="openMusicToolbox"
-            @open-video-toolbox="openVideoToolbox"
-          />
-
-          <!-- VIEW 4B: ITEMS BROWSER -->
+          <!-- VIEW 4: UNIFIED ITEMS BROWSER -->
           <ToolItemsBrowser
             v-else
             :active-domain="activeDomain"
@@ -1325,6 +1329,9 @@ onBeforeUnmount(() => {
             :breadcrumbs="breadcrumbs"
             :view-mode="viewMode"
             :has-active-search-or-filter="hasActiveSearchOrFilter"
+            :completeness-filter="completenessFilter"
+            :filter-items="filterItems"
+            :focus-paths="workbenchFocusPaths"
             :filtered-files="filteredFiles"
             :visible-files="visibleFiles"
             :all-filtered-selected="allFilteredSelected"
@@ -1341,13 +1348,14 @@ onBeforeUnmount(() => {
             :notifying-rescan="notifyingRescan"
             :loading-dir="loadingDir"
             :dir-error="dirError"
-            :batch-summary-banner="batchSummaryBanner"
             :snapshot="snapshot"
             :inspecting-path="inspectingPath"
             :artwork-version="artworkVersion"
             @open-settings-roots="openSettingsTab('roots')"
             @enter-folder="enterFolder"
             @set-view-mode="setViewMode"
+            @select-completeness-filter="selectCompletenessFilter"
+            @clear-focus-paths="workbenchFocusPaths = null"
             @toggle-select-all="toggleSelectAllFiltered"
             @clear-selection="selectedPaths = new Set(); lastSelectedRelPath = null"
             @set-sort-field="setSortField"
@@ -1362,7 +1370,6 @@ onBeforeUnmount(() => {
             @open-rename="renameModalOpen = true"
             @trigger-rescan="triggerManualRescan"
             @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
-            @dismiss-banner="batchSummaryBanner = null"
             @inspect-file="inspectEntry"
             @toggle-select-file="toggleSelectFile"
             @open-book-content-editor="openBookContentEditor"
@@ -1373,34 +1380,44 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <!-- Right Drawer: Metadata & Stream Inspector (Available on Home & non-workbench Items) -->
-        <div
-          v-if="
-            (activeNav === 'home' || (activeNav === 'items' && viewMode !== 'workbench')) &&
-            (activeDetail || loadingInspector)
-          "
-          class="fixed inset-y-0 right-0 z-40 flex w-full max-w-full bg-[var(--ctp-canvas)] shadow-2xl lg:static lg:z-auto lg:w-auto lg:shadow-none"
-        >
+        <!-- Unified MD3 Supporting Pane: Edit + Seamless Expandable Online Candidate Comparison -->
+        <Transition name="md-sheet-right">
           <div
-            v-if="loadingInspector && !activeDetail"
-            class="flex h-full w-full items-center justify-center px-12 text-xs text-[var(--ctp-subtext0)] lg:w-[440px]"
+            v-if="
+              (activeNav === 'home' || activeNav === 'items') &&
+              (activeDetail || loadingInspector)
+            "
+            class="fixed inset-y-0 right-0 z-40 flex w-full max-w-full bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] lg:static lg:z-auto lg:w-auto lg:shadow-none"
           >
-            正在解析原文件流与元数据…
+            <div
+              v-if="loadingInspector && !activeDetail"
+              class="flex h-full w-full items-center justify-center px-12 text-xs text-[var(--md-sys-color-on-surface-variant)] lg:w-[440px]"
+            >
+              正在解析原文件流与元数据…
+            </div>
+            <MetadataInspectorDrawer
+              v-else-if="activeDetail"
+              ref="inspectorRef"
+              :detail="activeDetail"
+              :artwork-version="artworkVersion"
+              :show-candidates="inspectorCandidatesOpen"
+              :has-prev="hasPrevInspect"
+              :has-next="hasNextInspect"
+              :position-label="inspectPositionLabel"
+              @update:show-candidates="setInspectorCandidatesOpen"
+              @step="stepInspectingFile"
+              @close="activeDetail = null; inspectingPath = null"
+              @updated="handleDetailUpdated"
+              @open-scrape="(d) => openManualScrapeModal(d.entry)"
+              @open-settings-scrapers="openSettingsTab('scrapers')"
+              @open-content-editor="openBookContentEditor"
+              @open-comic-pages="openComicPageManager"
+              @open-music-tools="(e) => openMusicToolbox([e])"
+              @open-video-tools="(e) => openVideoToolbox([e])"
+              @open-history="historyModalOpen = true"
+            />
           </div>
-          <MetadataInspectorDrawer
-            v-else-if="activeDetail"
-            ref="inspectorRef"
-            :detail="activeDetail"
-            :artwork-version="artworkVersion"
-            @close="activeDetail = null; inspectingPath = null"
-            @updated="handleDetailUpdated"
-            @open-scrape="(d) => openManualScrapeModal(d.entry)"
-            @open-content-editor="openBookContentEditor"
-            @open-comic-pages="openComicPageManager"
-            @open-music-tools="(e) => openMusicToolbox([e])"
-            @open-video-tools="(e) => openVideoToolbox([e])"
-          />
-        </div>
+        </Transition>
       </main>
     </div>
 

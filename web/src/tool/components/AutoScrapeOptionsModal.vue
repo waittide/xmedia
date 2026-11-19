@@ -204,7 +204,7 @@ function handleStart(): void {
                 批量自动刮削策略 · {{ domainNameMap[domain] }}（{{ entries.length }} 项）
               </h2>
               <p class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
-                未命中或低于置信度阈值的项目将自动归入任务清单，可一键回流至三栏工作台集中精修
+                未命中或低于置信度阈值的项目将自动归入任务清单，可一键聚焦并在右侧对照在线候选精修
               </p>
             </div>
           </div>
