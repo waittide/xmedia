@@ -10,10 +10,12 @@ import type {
   BatchRemapEpisodesInput,
   BatchRemapEpisodesReportDto,
   DryRunScrapeItemDto,
+  InboxScanReportDto,
   ExtractSubtitleReportDto,
   ProcessSubtitleInput,
   ProcessSubtitleReportDto,
   VideoSubtitleInfoDto,
+  WebhookTestReportDto,
   CueSplitReportDto,
   MusicCoverOptimizeReportDto,
   MusicLyricsToolInput,
@@ -299,11 +301,31 @@ export const toolApi = {
     })
   },
 
-  addRoot(name: string, path: string, defaultKind: MediaKind | null): Promise<ManagedRootDto> {
+  addRoot(
+    name: string,
+    path: string,
+    defaultKind: MediaKind | null,
+    readOnly = false,
+  ): Promise<ManagedRootDto> {
     return toolRequest<ManagedRootDto>('/roots', {
       method: 'POST',
-      body: JSON.stringify({ name, path, default_kind: defaultKind }),
+      body: JSON.stringify({ name, path, default_kind: defaultKind, read_only: readOnly }),
     })
+  },
+
+  setRootReadOnly(id: string, readOnly: boolean): Promise<ManagedRootDto> {
+    return toolRequest<ManagedRootDto>('/roots/' + encodeURIComponent(id), {
+      method: 'PATCH',
+      body: JSON.stringify({ read_only: readOnly }),
+    })
+  },
+
+  scanInbox(): Promise<InboxScanReportDto> {
+    return toolRequest<InboxScanReportDto>('/inbox/scan', { method: 'POST' })
+  },
+
+  testWebhook(): Promise<WebhookTestReportDto> {
+    return toolRequest<WebhookTestReportDto>('/settings/test-webhook', { method: 'POST' })
   },
 
   removeRoot(id: string): Promise<void> {
