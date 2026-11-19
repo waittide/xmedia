@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   LuCheck,
   LuDisc3,
@@ -12,6 +12,8 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import { toolApi } from '../api'
 import type { MediaFileDetail, MediaFileEntry } from '../types'
 
@@ -46,8 +48,42 @@ const zhDirection = ref<'t2s' | 's2t' | ''>('')
 const syncMode = ref<'both' | 'sidecar_to_embedded' | 'embedded_to_sidecar' | 'none'>('both')
 
 // Cover optimize state
-const coverMaxDim = ref(1000)
+const coverMaxDimStr = ref('1000')
 const coverQuality = ref(86)
+
+const zhOptions = [
+  { value: '', label: '不转换' },
+  { value: 't2s', label: '繁 → 简' },
+  { value: 's2t', label: '简 → 繁' },
+]
+const syncModeOptions = [
+  { value: 'both', label: '同时同步内嵌 + 侧车 .lrc' },
+  { value: 'sidecar_to_embedded', label: '仅写入音频内嵌标签' },
+  { value: 'embedded_to_sidecar', label: '仅导出侧车 .lrc 文件' },
+]
+const coverDimOptions = [
+  { value: '1200', label: '1200 px' },
+  { value: '1000', label: '1000 px（推荐）' },
+  { value: '800', label: '800 px' },
+]
+
+function handleKeydown(ev: KeyboardEvent): void {
+  if (props.open && ev.key === 'Escape') {
+    ev.preventDefault()
+    emit('close')
+  }
+}
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) window.addEventListener('keydown', handleKeydown)
+    else window.removeEventListener('keydown', handleKeydown)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 // Album batch sync state
 const albumName = ref('')
@@ -131,7 +167,7 @@ async function handleOptimizeCover(): Promise<void> {
     const res = await toolApi.optimizeMusicCover(
       primaryEntry.value.root_id,
       primaryEntry.value.rel_path,
-      coverMaxDim.value,
+      Number(coverMaxDimStr.value) || 1000,
       coverQuality.value,
     )
     if (!res.report.had_cover) {
@@ -327,26 +363,29 @@ async function handleBatchSyncAlbum(): Promise<void> {
             </div>
 
             <div class="flex flex-wrap items-center gap-4">
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="stripCreditNoise" type="checkbox" class="rounded" />
-                <span>清理头部作词/作曲/版权噪声行</span>
-              </label>
-              <label class="inline-flex items-center gap-1.5">
+              <AppCheckbox v-model="stripCreditNoise" label="清理头部作词/作曲/版权噪声行" />
+              <div class="inline-flex items-center gap-1.5">
                 <span class="text-[var(--ctp-subtext0)]">简繁转换</span>
-                <select v-model="zhDirection" class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1">
-                  <option value="">不转换</option>
-                  <option value="t2s">繁 → 简</option>
-                  <option value="s2t">简 → 繁</option>
-                </select>
-              </label>
-              <label class="inline-flex items-center gap-1.5">
+                <div class="w-28">
+                  <AppSelect
+                    :model-value="zhDirection"
+                    :options="zhOptions"
+                    variant="compact"
+                    @update:model-value="(v) => (zhDirection = v as '' | 't2s' | 's2t')"
+                  />
+                </div>
+              </div>
+              <div class="inline-flex items-center gap-1.5">
                 <span class="text-[var(--ctp-subtext0)]">写入目标</span>
-                <select v-model="syncMode" class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1">
-                  <option value="both">同时同步内嵌 + 侧车 .lrc</option>
-                  <option value="sidecar_to_embedded">仅写入音频内嵌标签</option>
-                  <option value="embedded_to_sidecar">仅导出侧车 .lrc 文件</option>
-                </select>
-              </label>
+                <div class="w-48">
+                  <AppSelect
+                    :model-value="syncMode"
+                    :options="syncModeOptions"
+                    variant="compact"
+                    @update:model-value="(v) => (syncMode = v as 'both' | 'sidecar_to_embedded' | 'embedded_to_sidecar' | 'none')"
+                  />
+                </div>
+              </div>
             </div>
 
             <textarea
@@ -399,14 +438,12 @@ async function handleBatchSyncAlbum(): Promise<void> {
                 检测超大内嵌封面并等比缩放为高画质 JPEG，显著加速播放器加载与扫码。
               </p>
               <div class="flex flex-wrap items-center gap-3">
-                <label class="inline-flex items-center gap-1.5">
+                <div class="inline-flex items-center gap-1.5">
                   <span>最大边长</span>
-                  <select v-model.number="coverMaxDim" class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1">
-                    <option :value="1200">1200 px</option>
-                    <option :value="1000">1000 px（推荐）</option>
-                    <option :value="800">800 px</option>
-                  </select>
-                </label>
+                  <div class="w-36">
+                    <AppSelect v-model="coverMaxDimStr" :options="coverDimOptions" variant="compact" />
+                  </div>
+                </div>
                 <button
                   type="button"
                   :disabled="busy"
@@ -468,10 +505,7 @@ async function handleBatchSyncAlbum(): Promise<void> {
               </label>
             </div>
             <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-3">
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="autoNumberTracks" type="checkbox" class="rounded" />
-                <span>按文件名自然序自动重编音轨号 (Track 1..N)</span>
-              </label>
+              <AppCheckbox v-model="autoNumberTracks" label="按文件名自然序自动重编音轨号 (Track 1..N)" />
               <label v-if="autoNumberTracks" class="inline-flex items-center gap-1.5">
                 <span>起始曲目号</span>
                 <input v-model.number="startTrack" type="number" min="1" class="w-16 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1" />

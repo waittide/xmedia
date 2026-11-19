@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   LuAlertTriangle,
   LuCheckCircle2,
@@ -9,6 +9,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { toolApi } from '../api'
 import type { DryRunScrapeItemDto, MediaFileEntry } from '../types'
 
@@ -66,15 +67,27 @@ async function runDryCheck(): Promise<void> {
   }
 }
 
+function handleKeydown(ev: KeyboardEvent): void {
+  if (props.open && ev.key === 'Escape') {
+    ev.preventDefault()
+    emit('close')
+  }
+}
+
 watch(
   () => props.open,
   (isOpen) => {
     if (isOpen) {
+      window.addEventListener('keydown', handleKeydown)
       void runDryCheck()
+    } else {
+      window.removeEventListener('keydown', handleKeydown)
     }
   },
   { immediate: true },
 )
+
+onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 function togglePath(path: string): void {
   const next = new Set(checkedPaths.value)
@@ -175,12 +188,12 @@ function handleConfirm(): void {
               "
             >
               <div class="flex min-w-0 items-start gap-2.5">
-                <input
-                  type="checkbox"
-                  class="mt-0.5 rounded"
-                  :checked="checkedPaths.has(item.rel_path)"
-                  @change="togglePath(item.rel_path)"
-                />
+                <div class="pt-0.5">
+                  <AppCheckbox
+                    :model-value="checkedPaths.has(item.rel_path)"
+                    @update:model-value="() => togglePath(item.rel_path)"
+                  />
+                </div>
                 <div class="min-w-0">
                   <div class="truncate font-medium">{{ item.display_title }}</div>
                   <div class="truncate text-[11px] text-[var(--ctp-subtext0)]">{{ item.rel_path }}</div>

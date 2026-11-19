@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   LuCheck,
   LuDownload,
@@ -10,6 +10,8 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import { toolApi } from '../api'
 import type {
   MediaFileDetail,
@@ -60,6 +62,45 @@ const remapMode = ref<'sequential' | 'absolute_offset'>('sequential')
 const startEpisode = ref(1)
 const episodeOffset = ref(-24)
 const writeSeasonNfo = ref(true)
+
+const zhSubOptions = [
+  { value: '', label: '不转换' },
+  { value: 't2s', label: '繁 → 简（保留 ASS 特效）' },
+  { value: 's2t', label: '简 → 繁（保留 ASS 特效）' },
+]
+const renameLangOptions = [
+  { value: '', label: '保持原文件名' },
+  { value: 'zh-CN', label: '.zh-CN（简体中文）' },
+  { value: 'zh-TW', label: '.zh-TW（繁体中文）' },
+  { value: 'en', label: '.en（英语）' },
+  { value: 'ja', label: '.ja（日语）' },
+]
+const extractExtOptions = [
+  { value: 'srt', label: '抽取为 .srt' },
+  { value: 'ass', label: '抽取为 .ass' },
+]
+const remapModeOptions = [
+  { value: 'sequential', label: '按文件名自然序顺序重编 (E01, E02...)' },
+  { value: 'absolute_offset', label: '番剧绝对集数偏移映射 (如 EP25 - 24 → S02E01)' },
+]
+
+function handleKeydown(ev: KeyboardEvent): void {
+  if (props.open && ev.key === 'Escape') {
+    ev.preventDefault()
+    emit('close')
+  }
+}
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) window.addEventListener('keydown', handleKeydown)
+    else window.removeEventListener('keydown', handleKeydown)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 async function loadVideoContext(): Promise<void> {
   if (!primaryEntry.value) return
@@ -288,37 +329,30 @@ async function handleBatchRemap(): Promise<void> {
                   </div>
 
                   <div class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-                    <label class="inline-flex items-center gap-2">
-                      <input v-model="convertUtf8" type="checkbox" class="rounded" />
-                      <span>强制转为无 BOM UTF-8（防乱码）</span>
-                    </label>
-                    <label class="inline-flex items-center gap-2">
+                    <AppCheckbox v-model="convertUtf8" label="强制转为无 BOM UTF-8（防乱码）" />
+                    <div class="inline-flex items-center gap-2">
                       <span class="text-[var(--ctp-subtext0)]">简繁转换</span>
-                      <select v-model="subZhDir" class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1">
-                        <option value="">不转换</option>
-                        <option value="t2s">繁 → 简（保留 ASS 特效）</option>
-                        <option value="s2t">简 → 繁（保留 ASS 特效）</option>
-                      </select>
-                    </label>
+                      <div class="w-48">
+                        <AppSelect
+                          :model-value="subZhDir"
+                          :options="zhSubOptions"
+                          variant="compact"
+                          @update:model-value="(v) => (subZhDir = v as '' | 't2s' | 's2t')"
+                        />
+                      </div>
+                    </div>
                     <div class="flex items-center gap-1.5 sm:col-span-2">
                       <span class="text-[var(--ctp-subtext0)]">时间轴平移 (ms)：</span>
-                      <button type="button" class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1" @click="subOffsetMs -= 500">-0.5s</button>
+                      <button type="button" class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:border-[var(--ctp-accent)]" @click="subOffsetMs -= 500">-0.5s</button>
                       <input v-model.number="subOffsetMs" type="number" step="100" class="w-24 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1 text-center" />
-                      <button type="button" class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1" @click="subOffsetMs += 500">+0.5s</button>
+                      <button type="button" class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:border-[var(--ctp-accent)]" @click="subOffsetMs += 500">+0.5s</button>
                     </div>
                     <div class="flex flex-wrap items-center gap-2 sm:col-span-2">
                       <span class="text-[var(--ctp-subtext0)]">规范重命名语言后缀：</span>
-                      <select v-model="renameLang" class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1">
-                        <option value="">保持原文件名</option>
-                        <option value="zh-CN">.zh-CN（简体中文）</option>
-                        <option value="zh-TW">.zh-TW（繁体中文）</option>
-                        <option value="en">.en（英语）</option>
-                        <option value="ja">.ja（日语）</option>
-                      </select>
-                      <label v-if="renameLang" class="inline-flex items-center gap-1.5">
-                        <input v-model="subForced" type="checkbox" class="rounded" />
-                        <span>.forced 强制字幕</span>
-                      </label>
+                      <div class="w-44">
+                        <AppSelect v-model="renameLang" :options="renameLangOptions" variant="compact" />
+                      </div>
+                      <AppCheckbox v-if="renameLang" v-model="subForced" label=".forced 强制字幕" />
                     </div>
                   </div>
 
@@ -340,10 +374,14 @@ async function handleBatchRemap(): Promise<void> {
               <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-4">
                 <div class="mb-2 flex items-center justify-between">
                   <span class="font-semibold">内封字幕流抽取（共 {{ embeddedStreams.length }} 轨）</span>
-                  <select v-model="extractExt" class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1 text-[11px]">
-                    <option value="srt">抽取为 .srt</option>
-                    <option value="ass">抽取为 .ass</option>
-                  </select>
+                  <div class="w-32">
+                    <AppSelect
+                      :model-value="extractExt"
+                      :options="extractExtOptions"
+                      variant="compact"
+                      @update:model-value="(v) => (extractExt = v as 'srt' | 'ass')"
+                    />
+                  </div>
                 </div>
                 <div v-if="embeddedStreams.length === 0" class="text-[11px] text-[var(--ctp-subtext0)]">
                   该视频文件未检测到内封文本字幕轨。
@@ -391,10 +429,14 @@ async function handleBatchRemap(): Promise<void> {
             <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-3.5 space-y-2.5">
               <div class="font-medium text-[11px] text-[var(--ctp-subtext0)]">集数映射策略</div>
               <div class="flex flex-wrap items-center gap-3">
-                <select v-model="remapMode" class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2.5 py-1.5">
-                  <option value="sequential">按文件名自然序顺序重编 (E01, E02...)</option>
-                  <option value="absolute_offset">番剧绝对集数偏移映射 (如 EP25 - 24 → S02E01)</option>
-                </select>
+                <div class="w-72">
+                  <AppSelect
+                    :model-value="remapMode"
+                    :options="remapModeOptions"
+                    variant="compact"
+                    @update:model-value="(v) => (remapMode = v as 'sequential' | 'absolute_offset')"
+                  />
+                </div>
                 <label v-if="remapMode === 'sequential'" class="inline-flex items-center gap-1.5">
                   <span>起始集号</span>
                   <input v-model.number="startEpisode" type="number" min="1" class="w-16 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1" />
@@ -404,10 +446,9 @@ async function handleBatchRemap(): Promise<void> {
                   <input v-model.number="episodeOffset" type="number" class="w-20 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1" />
                 </label>
               </div>
-              <label class="inline-flex items-center gap-2 pt-1">
-                <input v-model="writeSeasonNfo" type="checkbox" class="rounded" />
-                <span>同时在当前目录生成/更新标准 season.nfo</span>
-              </label>
+              <div class="pt-1">
+                <AppCheckbox v-model="writeSeasonNfo" label="同时在当前目录生成/更新标准 season.nfo" />
+              </div>
             </div>
 
             <div class="flex justify-end">

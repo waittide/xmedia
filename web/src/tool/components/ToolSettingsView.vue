@@ -36,8 +36,10 @@ import {
   type CatppuccinAccent,
   type CustomPaletteTokens,
 } from '@/theme/catppuccin'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppColorPicker from '@/components/ui/AppColorPicker.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import AppSwitch from '@/components/ui/AppSwitch.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { FfmpegStatusDto, LocaleCode, MediaKind } from '@/types/api'
@@ -165,6 +167,13 @@ const errorMsg = ref<string | null>(null)
 const newRootReadOnly = ref(false)
 const inboxPath = ref('')
 const inboxTargetRootId = ref('')
+const inboxRootOptions = computed(() => [
+  { value: '', label: '请选择已登记的根目录' },
+  ...(props.settings?.roots ?? []).map((r) => ({
+    value: r.id,
+    label: `${r.name} (${r.path})`,
+  })),
+])
 const inboxUseHardlink = ref(true)
 const inboxDeleteSource = ref(false)
 const inboxAutoScrape = ref(false)
@@ -1505,32 +1514,15 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
                   class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
                 />
               </label>
-              <label class="block">
+              <div class="block">
                 <span class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">目标导入根目录</span>
-                <select
-                  v-model="inboxTargetRootId"
-                  class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-                >
-                  <option value="">请选择已登记的根目录</option>
-                  <option v-for="r in props.settings?.roots ?? []" :key="r.id" :value="r.id">
-                    {{ r.name }} ({{ r.path }})
-                  </option>
-                </select>
-              </label>
+                <AppSelect v-model="inboxTargetRootId" :options="inboxRootOptions" />
+              </div>
             </div>
-            <div class="flex flex-wrap items-center gap-4 text-xs text-[var(--ctp-subtext1)]">
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="inboxUseHardlink" type="checkbox" class="rounded" />
-                <span>优先硬链接（同卷保种零复制）</span>
-              </label>
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="inboxDeleteSource" type="checkbox" class="rounded" />
-                <span>导入后移除收件箱源文件</span>
-              </label>
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="inboxAutoScrape" type="checkbox" class="rounded" />
-                <span>导入后自动刮削归档</span>
-              </label>
+            <div class="flex flex-wrap items-center gap-5">
+              <AppCheckbox v-model="inboxUseHardlink" label="优先硬链接（同卷保种零复制）" />
+              <AppCheckbox v-model="inboxDeleteSource" label="导入后移除收件箱源文件" />
+              <AppCheckbox v-model="inboxAutoScrape" label="导入后自动刮削归档" />
             </div>
             <div v-if="inboxNotice" class="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs text-emerald-500">
               {{ inboxNotice }}
@@ -1568,10 +1560,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
                   整理工具完成重命名、刮削或收件箱导入后，自动通知 xmedia 主站对匹配的挂载媒体库执行增量扫描。
                 </p>
               </div>
-              <label class="inline-flex items-center gap-2 text-xs font-semibold">
-                <input v-model="webhookEnabled" type="checkbox" class="rounded" />
-                <span>启用联动</span>
-              </label>
+              <AppSwitch v-model="webhookEnabled" label="启用联动" />
             </div>
             <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <label class="block">
@@ -1598,19 +1587,10 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
                 />
               </label>
             </div>
-            <div class="flex flex-wrap items-center gap-4 text-xs text-[var(--ctp-subtext1)]">
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="webhookNotifyRename" type="checkbox" class="rounded" />
-                <span>批量重命名后通知</span>
-              </label>
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="webhookNotifyScrape" type="checkbox" class="rounded" />
-                <span>刮削落盘后通知</span>
-              </label>
-              <label class="inline-flex items-center gap-1.5">
-                <input v-model="webhookNotifyInbox" type="checkbox" class="rounded" />
-                <span>收件箱导入后通知</span>
-              </label>
+            <div class="flex flex-wrap items-center gap-5">
+              <AppCheckbox v-model="webhookNotifyRename" label="批量重命名后通知" />
+              <AppCheckbox v-model="webhookNotifyScrape" label="刮削落盘后通知" />
+              <AppCheckbox v-model="webhookNotifyInbox" label="收件箱导入后通知" />
             </div>
             <div v-if="webhookNotice" class="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs text-emerald-500">
               {{ webhookNotice }}

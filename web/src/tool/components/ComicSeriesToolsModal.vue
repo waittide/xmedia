@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { LuCheck, LuCombine, LuLayers, LuLoader2, LuX } from 'vue-icons-plus/lu'
 
+import AppSelect from '@/components/ui/AppSelect.vue'
 import { toolApi } from '../api'
 import type { MediaFileEntry } from '../types'
 
@@ -31,6 +32,36 @@ const genres = ref('')
 const tags = ref('')
 const readingDirection = ref('')
 const numberingMode = ref<'none' | 'chapter' | 'volume'>('chapter')
+
+const directionOptions = [
+  { value: '', label: '保持原样' },
+  { value: 'rtl', label: '日漫右向左 (RTL)' },
+  { value: 'ltr', label: '欧美漫左向右 (LTR)' },
+  { value: 'webtoon', label: '条漫竖向滚动 (Webtoon)' },
+]
+const numberingOptions = [
+  { value: 'none', label: '不修改编号' },
+  { value: 'chapter', label: '顺序写入话号 (Number: 01, 02...)' },
+  { value: 'volume', label: '顺序写入卷号 (Volume: 1, 2...)' },
+]
+
+function handleKeydown(ev: KeyboardEvent): void {
+  if (props.open && ev.key === 'Escape') {
+    ev.preventDefault()
+    emit('close')
+  }
+}
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) window.addEventListener('keydown', handleKeydown)
+    else window.removeEventListener('keydown', handleKeydown)
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 const startIndex = ref(1)
 const padWidth = ref(2)
 
@@ -234,18 +265,10 @@ async function handleMerge(): Promise<void> {
                 class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]"
               />
             </label>
-            <label class="block">
+            <div class="block">
               <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">阅读方向</span>
-              <select
-                v-model="readingDirection"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]"
-              >
-                <option value="">保持原样</option>
-                <option value="rtl">日漫右向左 (RTL)</option>
-                <option value="ltr">欧美漫左向右 (LTR)</option>
-                <option value="webtoon">条漫竖向滚动 (Webtoon)</option>
-              </select>
-            </label>
+              <AppSelect v-model="readingDirection" :options="directionOptions" />
+            </div>
             <label class="block">
               <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">分类 (Genre)</span>
               <input
@@ -266,14 +289,14 @@ async function handleMerge(): Promise<void> {
             <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-3 sm:col-span-2">
               <div class="mb-2 text-[11px] font-medium text-[var(--ctp-subtext0)]">顺序重编号（按文件名自然序）</div>
               <div class="flex flex-wrap items-center gap-3">
-                <select
-                  v-model="numberingMode"
-                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2.5 py-1.5 text-xs"
-                >
-                  <option value="none">不修改编号</option>
-                  <option value="chapter">顺序写入话号 (Number: 01, 02...)</option>
-                  <option value="volume">顺序写入卷号 (Volume: 1, 2...)</option>
-                </select>
+                <div class="w-60">
+                  <AppSelect
+                    :model-value="numberingMode"
+                    :options="numberingOptions"
+                    variant="compact"
+                    @update:model-value="(v) => (numberingMode = v as 'none' | 'chapter' | 'volume')"
+                  />
+                </div>
                 <label v-if="numberingMode !== 'none'" class="inline-flex items-center gap-1.5">
                   <span>起始序号</span>
                   <input
