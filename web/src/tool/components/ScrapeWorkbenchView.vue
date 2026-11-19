@@ -69,9 +69,11 @@ const props = defineProps<{
   snapshot: DirectorySnapshot | null
   activeDetail: MediaFileDetail | null
   artworkVersion: number
+  focusPaths?: Set<string> | null
 }>()
 
 const emit = defineEmits<{
+  clearFocusPaths: []
   openSettingsRoots: []
   openSettingsScrapers: []
   enterFolder: [relPath: string]
@@ -141,7 +143,9 @@ function completenessPercent(f: MediaFileEntry): number {
 
 const workbenchFiles = computed<MediaFileEntry[]>(() => {
   const q = leftFilterText.value.trim().toLowerCase()
+  const focus = props.focusPaths
   return props.filteredFiles.filter((f) => {
+    if (focus && focus.size > 0 && !focus.has(f.rel_path)) return false
     if (leftQuickFilter.value === 'incomplete' && completenessPercent(f) >= 100) return false
     if (leftQuickFilter.value === 'missing_cover' && f.completeness.has_cover) return false
     if (!q) return true
@@ -593,6 +597,19 @@ onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
         <section
           class="flex min-h-0 flex-col border-b border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/25 lg:border-r lg:border-b-0"
         >
+          <div
+            v-if="focusPaths && focusPaths.size > 0"
+            class="flex shrink-0 items-center justify-between gap-2 border-b border-amber-500/35 bg-amber-500/12 px-3 py-2 text-[11px] text-amber-500"
+          >
+            <span class="font-semibold">正在精修未命中项 ({{ workbenchFiles.length }})</span>
+            <button
+              type="button"
+              class="rounded-md border border-amber-500/40 px-1.5 py-0.5 text-[10px] font-semibold transition hover:bg-amber-500/20"
+              @click="emit('clearFocusPaths')"
+            >
+              退出聚焦
+            </button>
+          </div>
           <div class="shrink-0 space-y-2 border-b border-[var(--ctp-surface0)]/75 p-2.5">
             <div class="relative">
               <LuSearch

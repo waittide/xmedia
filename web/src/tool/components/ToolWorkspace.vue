@@ -12,12 +12,12 @@ import {
   LuSparkles,
 } from 'vue-icons-plus/lu'
 import FloatingTaskShelf from '@/components/ui/FloatingTaskShelf.vue'
-import { useDialogStore } from '@/stores/dialog'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
 import { useToolText } from '../i18n'
 import { useToolTaskStore } from '../tasks'
 import type {
+  AutoScrapeOptionsDto,
   DirectorySnapshot,
   ManagedRootDto,
   MediaFileDetail,
@@ -25,6 +25,7 @@ import type {
   PublicSettingsDto,
   ToolStatusDto,
 } from '../types'
+import AutoScrapeOptionsModal from './AutoScrapeOptionsModal.vue'
 import BatchRenameModal from './BatchRenameModal.vue'
 import BookContentEditorModal from './BookContentEditorModal.vue'
 import ComicPageManagerModal from './ComicPageManagerModal.vue'
@@ -39,7 +40,7 @@ import ToolHomeView from './ToolHomeView.vue'
 import ToolItemsBrowser from './ToolItemsBrowser.vue'
 import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
 import ToolSidebar from './ToolSidebar.vue'
-import ToolTasksView from './ToolTasksView.vue'
+import ToolTasksView, { type ReviewItemsPayload } from './ToolTasksView.vue'
 import ToolTopHeader from './ToolTopHeader.vue'
 
 defineProps<{
@@ -50,7 +51,6 @@ const emit = defineEmits<{
   lock: []
 }>()
 
-const dialogStore = useDialogStore()
 const taskStore = useToolTaskStore()
 const txt = useToolText()
 
@@ -197,6 +197,9 @@ const musicToolsEntries = ref<MediaFileEntry[]>([])
 const videoToolsOpen = ref(false)
 const videoToolsEntries = ref<MediaFileEntry[]>([])
 const dryRunModalOpen = ref(false)
+const autoScrapeModalOpen = ref(false)
+const autoScrapeTargetEntries = ref<MediaFileEntry[]>([])
+const workbenchFocusPaths = ref<Set<string> | null>(null)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -786,31 +789,60 @@ async function handleRenamed(
  * Adds background scrape tasks following:
  * Local non-empty metadata -> High-priority provider -> Low-priority provider
  */
-function enqueueScrapeFiles(files: MediaFileEntry[], labelHint?: string): void {
+function enqueueScrapeFiles(
+  files: MediaFileEntry[],
+  labelHint?: string,
+  options?: AutoScrapeOptionsDto,
+): void {
   if (files.length === 0) return
-  taskStore.enqueueScrapeTask(files, labelHint)
-  batchSummaryBanner.value = `已添加 ${files.length} 个刮削任务（按 本地信息 → 高优先级源 → 低优先级源 自动补齐）`
+  taskStore.enqueueScrapeTask(files, labelHint, options)
+  batchSummaryBanner.value = `已添加 ${files.length} 个自动刮削任务，可在任务中心查看进度并一键精修未命中项`
   setTimeout(() => {
     batchSummaryBanner.value = null
   }, 4000)
 }
 
-async function enqueueScrapeForSelection(): Promise<void> {
-  if (checkedFiles.value.length > 0) {
-    enqueueScrapeFiles(checkedFiles.value)
-    return
+function enqueueScrapeForSelection(): void {
+  const targets = checkedFiles.value.length > 0 ? [...checkedFiles.value] : [...filteredFiles.value]
+  if (targets.length === 0) return
+  autoScrapeTargetEntries.value = targets
+  autoScrapeModalOpen.value = true
+}
+
+function handleAutoScrapeConfirmed(
+  entries: MediaFileEntry[],
+  options: AutoScrapeOptionsDto,
+): void {
+  autoScrapeModalOpen.value = false
+  enqueueScrapeFiles(entries, undefined, options)
+}
+
+function handleAutoScrapeToDryRun(entries: MediaFileEntry[]): void {
+  autoScrapeModalOpen.value = false
+  selectedPaths.value = new Set(entries.map((e) => e.rel_path))
+  dryRunModalOpen.value = true
+}
+
+async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<void> {
+  if (payload.relPaths.length === 0) return
+  if (activeDomain.value !== payload.domain) {
+    await switchDomain(payload.domain)
   }
-  const all = filteredFiles.value
-  if (all.length === 0) return
-  if (all.length > 1) {
-    const ok = await dialogStore.confirm({
-      title: txt.value.batch.scrapeAllConfirmTitle,
-      message: txt.value.batch.scrapeAllConfirmMsg.replace('{count}', String(all.length)),
-      confirmText: txt.value.batch.scrapeAllConfirmBtn,
-    })
-    if (!ok) return
+  if (activeRootId.value !== payload.rootId) {
+    activeRootId.value = payload.rootId
+    currentRelPath.value = ''
+    await loadDirectory(payload.rootId, '')
+  } else if (currentRelPath.value !== '') {
+    currentRelPath.value = ''
+    await loadDirectory(payload.rootId, '')
   }
-  enqueueScrapeFiles([...all])
+  workbenchFocusPaths.value = new Set(payload.relPaths)
+  setViewMode('workbench')
+  activeNav.value = 'items'
+  const firstEntry = (snapshot.value?.files ?? []).find((f) => payload.relPaths.includes(f.rel_path))
+  if (firstEntry) {
+    void inspectEntry(firstEntry)
+  }
 }
 
 async function triggerManualRescan(): Promise<void> {
@@ -1168,7 +1200,10 @@ onBeforeUnmount(() => {
           />
 
           <!-- VIEW 2: TASKS CENTER -->
-          <ToolTasksView v-else-if="activeNav === 'tasks'" />
+          <ToolTasksView
+            v-else-if="activeNav === 'tasks'"
+            @review-items="handleReviewUnmatchedItems"
+          />
 
           <!-- VIEW 3: DOMAIN HOME OVERVIEW -->
           <ToolHomeView
@@ -1209,6 +1244,8 @@ onBeforeUnmount(() => {
             :snapshot="snapshot"
             :active-detail="activeDetail"
             :artwork-version="artworkVersion"
+            :focus-paths="workbenchFocusPaths"
+            @clear-focus-paths="workbenchFocusPaths = null"
             @open-settings-roots="openSettingsTab('roots')"
             @open-settings-scrapers="openSettingsTab('scrapers')"
             @enter-folder="(rel) => enterFolder(rel)"
@@ -1381,6 +1418,16 @@ onBeforeUnmount(() => {
       @close="videoToolsOpen = false"
       @updated="(d) => handleDetailUpdated(d, true)"
       @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
+    />
+
+    <AutoScrapeOptionsModal
+      :open="autoScrapeModalOpen"
+      :domain="activeDomain"
+      :entries="autoScrapeTargetEntries"
+      @close="autoScrapeModalOpen = false"
+      @start="handleAutoScrapeConfirmed"
+      @open-dry-run="handleAutoScrapeToDryRun"
+      @open-settings="autoScrapeModalOpen = false; openSettingsTab('scrapers')"
     />
 
     <DryRunScrapeModal

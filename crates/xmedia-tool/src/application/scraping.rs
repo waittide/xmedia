@@ -52,9 +52,56 @@ pub struct DryRunScrapeItemDto {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoScrapeMatchMode {
+    #[default]
+    Standard,
+    Strict,
+    Loose,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AutoScrapeOptions {
+    #[serde(default)]
+    pub match_mode: AutoScrapeMatchMode,
+    #[serde(default = "default_true")]
+    pub only_fill_missing: bool,
+    #[serde(default = "default_true")]
+    pub apply_cover: bool,
+    #[serde(default = "default_true")]
+    pub write_sidecar_lrc: bool,
+    #[serde(default)]
+    pub organize_by_template: bool,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    /// Optional whitelist of field groups: "basic", "summary", "tags", "lyrics". Empty = all groups.
+    #[serde(default)]
+    pub field_groups: Vec<String>,
+}
+
+impl Default for AutoScrapeOptions {
+    fn default() -> Self {
+        Self {
+            match_mode: AutoScrapeMatchMode::Standard,
+            only_fill_missing: true,
+            apply_cover: true,
+            write_sidecar_lrc: true,
+            organize_by_template: false,
+            providers: Vec::new(),
+            field_groups: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AutoScrapeResultDto {
     pub matched: bool,
+    pub confidence: u8,
     pub detail: MediaFileDetail,
 }
 
@@ -566,6 +613,7 @@ impl ScrapingOrchestratorService {
             let kw = query.keyword.clone();
             match self.aggregate(query.clone()).await {
                 Ok(agg) => {
+                    let confidence = compute_scrape_confidence(&query, &agg);
                     let meta = agg.merged.metadata;
                     let matched = meta.title.is_some();
                     let matched_provider = agg
@@ -574,26 +622,6 @@ impl ScrapingOrchestratorService {
                         .get("title")
                         .map(|b| b.provider_name.clone())
                         .or_else(|| agg.provider_order.first().map(|p| p.name.clone()));
-
-                    let mut score: i32 = if matched { 45 } else { 0 };
-                    if let Some(ref mt) = meta.title {
-                        let a = kw.to_lowercase();
-                        let b = mt.to_lowercase();
-                        if a == b {
-                            score += 35;
-                        } else if b.contains(&a) || a.contains(&b) {
-                            score += 22;
-                        }
-                    }
-                    if let (Some(qy), Some(my)) = (query.year, meta.year)
-                        && (qy - my).abs() <= 1
-                    {
-                        score += 10;
-                    }
-                    if agg.details_by_provider.len() >= 2 {
-                        score += 10;
-                    }
-                    let confidence = score.clamp(0, 100) as u8;
                     results.push(DryRunScrapeItemDto {
                         rel_path,
                         display_title: detail.entry.display_title,
@@ -634,20 +662,41 @@ impl ScrapingOrchestratorService {
         rel_path: &str,
         media_kind: MediaKind,
     ) -> DomainResult<AutoScrapeResultDto> {
+        self.auto_scrape_file_with_options(
+            root_id,
+            rel_path,
+            media_kind,
+            AutoScrapeOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn auto_scrape_file_with_options(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        media_kind: MediaKind,
+        opts: AutoScrapeOptions,
+    ) -> DomainResult<AutoScrapeResultDto> {
         let local_detail = self
             .workbench
             .inspect_file(root_id, rel_path, Some(media_kind))
             .await?;
-        let query = build_auto_query_from_detail(&local_detail);
+        let mut query = build_auto_query_from_detail(&local_detail);
+        if !opts.providers.is_empty() {
+            query.providers = opts.providers.clone();
+        }
         if query.keyword.trim().is_empty() && query.isbn.as_deref().unwrap_or("").trim().is_empty()
         {
             return Ok(AutoScrapeResultDto {
                 matched: false,
+                confidence: 0,
                 detail: local_detail,
             });
         }
 
-        let agg = self.aggregate(query).await?;
+        let agg = self.aggregate(query.clone()).await?;
+        let confidence = compute_scrape_confidence(&query, &agg);
         let has_hit = agg
             .merged
             .metadata
@@ -659,29 +708,40 @@ impl ScrapingOrchestratorService {
             || agg.merged.metadata.plain_lyrics.is_some()
             || agg.merged.metadata.summary.is_some();
 
-        if !has_hit {
+        let passes_mode = match opts.match_mode {
+            AutoScrapeMatchMode::Strict => has_hit && confidence >= 70,
+            AutoScrapeMatchMode::Standard => has_hit && confidence >= 45,
+            AutoScrapeMatchMode::Loose => has_hit,
+        };
+
+        if !passes_mode {
             return Ok(AutoScrapeResultDto {
                 matched: false,
+                confidence,
                 detail: local_detail,
             });
         }
+
+        let filtered_meta =
+            filter_scraped_metadata_by_groups(agg.merged.metadata, &opts.field_groups);
 
         let updated = self
             .apply_to_file_ext(
                 root_id,
                 rel_path,
                 media_kind,
-                agg.merged.metadata,
-                true,
-                true,
-                Some(false),
-                true,
+                filtered_meta,
+                opts.apply_cover,
+                opts.write_sidecar_lrc,
+                Some(opts.organize_by_template),
+                opts.only_fill_missing,
                 false,
             )
             .await?;
 
         Ok(AutoScrapeResultDto {
             matched: true,
+            confidence,
             detail: updated,
         })
     }
@@ -1513,6 +1573,85 @@ impl ScrapingOrchestratorService {
     }
 }
 
+pub(crate) fn compute_scrape_confidence(query: &ScrapeQuery, agg: &AggregateScrapeResponse) -> u8 {
+    let meta = &agg.merged.metadata;
+    let matched = meta.title.as_deref().is_some_and(|s| !s.trim().is_empty());
+    let mut score: i32 = if matched { 45 } else { 0 };
+    let kw = query.keyword.trim().to_lowercase();
+    if let Some(ref mt) = meta.title {
+        let b = mt.trim().to_lowercase();
+        if !kw.is_empty() && !b.is_empty() {
+            if kw == b {
+                score += 35;
+            } else if b.contains(&kw) || kw.contains(&b) {
+                score += 22;
+            }
+        }
+    }
+    if let Some(qa) = query.artist_or_author.as_deref().map(str::trim)
+        && !qa.is_empty()
+    {
+        let qa_low = qa.to_lowercase();
+        let creator_match = meta.creators.iter().any(|c| {
+            let cl = c.trim().to_lowercase();
+            !cl.is_empty() && (cl == qa_low || cl.contains(&qa_low) || qa_low.contains(&cl))
+        });
+        if creator_match {
+            score += 12;
+        }
+    }
+    if let (Some(qy), Some(my)) = (query.year, meta.year)
+        && (qy - my).abs() <= 1
+    {
+        score += 10;
+    }
+    if agg.details_by_provider.len() >= 2 {
+        score += 10;
+    }
+    score.clamp(0, 100) as u8
+}
+
+pub(crate) fn filter_scraped_metadata_by_groups(
+    mut meta: ScrapedMetadata,
+    groups: &[String],
+) -> ScrapedMetadata {
+    if groups.is_empty() {
+        return meta;
+    }
+    let has = |g: &str| groups.iter().any(|item| item.eq_ignore_ascii_case(g));
+    if !has("basic") {
+        meta.title = None;
+        meta.original_title = None;
+        meta.series_or_album = None;
+        meta.creators.clear();
+        meta.illustrators_or_directors.clear();
+        meta.cast.clear();
+        meta.publisher_or_studio = None;
+        meta.year = None;
+        meta.published_date = None;
+        meta.language = None;
+        meta.isbn = None;
+        meta.rating = None;
+        meta.track_or_episode_number = None;
+        meta.disc_or_season_number = None;
+    }
+    if !has("summary") {
+        meta.summary = None;
+        meta.show_summary = None;
+        meta.season_title = None;
+        meta.season_summary = None;
+    }
+    if !has("tags") {
+        meta.genres.clear();
+        meta.tags.clear();
+    }
+    if !has("lyrics") {
+        meta.synced_lyrics = None;
+        meta.plain_lyrics = None;
+    }
+    meta
+}
+
 fn is_webnovel_serial_only_provider(id: &str) -> bool {
     matches!(
         id,
@@ -2036,5 +2175,77 @@ fn build_auto_query_from_detail(d: &MediaFileDetail) -> ScrapeQuery {
                 ..Default::default()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::scraper::MergedScrapedResult;
+
+    #[test]
+    fn compute_confidence_rewards_exact_title_creator_and_year() {
+        let query = ScrapeQuery {
+            keyword: "三体".into(),
+            artist_or_author: Some("刘慈欣".into()),
+            year: Some(2008),
+            ..Default::default()
+        };
+        let agg = AggregateScrapeResponse {
+            provider_order: vec![],
+            candidates: vec![],
+            selected_by_provider: BTreeMap::new(),
+            details_by_provider: BTreeMap::new(),
+            merged: MergedScrapedResult {
+                metadata: ScrapedMetadata {
+                    title: Some("三体".into()),
+                    creators: vec!["刘慈欣".into()],
+                    year: Some(2008),
+                    ..Default::default()
+                },
+                field_sources: BTreeMap::new(),
+            },
+        };
+        assert!(compute_scrape_confidence(&query, &agg) >= 90);
+
+        let unrelated = AggregateScrapeResponse {
+            merged: MergedScrapedResult {
+                metadata: ScrapedMetadata {
+                    title: Some("完全不同的书".into()),
+                    ..Default::default()
+                },
+                field_sources: BTreeMap::new(),
+            },
+            ..agg
+        };
+        assert!(compute_scrape_confidence(&query, &unrelated) < 70);
+    }
+
+    #[test]
+    fn filter_metadata_by_groups_preserves_selected_groups_only() {
+        let raw = ScrapedMetadata {
+            title: Some("Test".into()),
+            creators: vec!["Author".into()],
+            summary: Some("Plot".into()),
+            tags: vec!["Sci-Fi".into()],
+            synced_lyrics: Some("[00:01.00]Hello".into()),
+            cover_url: Some("https://example.com/c.jpg".into()),
+            ..Default::default()
+        };
+        let only_summary_and_tags =
+            filter_scraped_metadata_by_groups(raw.clone(), &["summary".into(), "tags".into()]);
+        assert!(only_summary_and_tags.title.is_none());
+        assert!(only_summary_and_tags.creators.is_empty());
+        assert_eq!(only_summary_and_tags.summary.as_deref(), Some("Plot"));
+        assert_eq!(only_summary_and_tags.tags, vec!["Sci-Fi"]);
+        assert!(only_summary_and_tags.synced_lyrics.is_none());
+        assert_eq!(
+            only_summary_and_tags.cover_url.as_deref(),
+            Some("https://example.com/c.jpg")
+        );
+
+        let empty_means_all = filter_scraped_metadata_by_groups(raw, &[]);
+        assert_eq!(empty_means_all.title.as_deref(), Some("Test"));
+        assert!(empty_means_all.synced_lyrics.is_some());
     }
 }

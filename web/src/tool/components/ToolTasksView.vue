@@ -7,6 +7,7 @@ import {
   LuChevronDown,
   LuChevronUp,
   LuClock,
+  LuColumns3,
   LuFileSignature,
   LuFolderSearch,
   LuLoader2,
@@ -14,10 +15,21 @@ import {
   LuSparkles,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import type { MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
-import { useToolTaskStore, type ToolTaskEntry } from '../tasks'
+import { useToolTaskStore, type ScrapeSubItem, type ToolTaskEntry } from '../tasks'
 
 type TaskStatusFilter = 'all' | 'active' | 'completed' | 'failed'
+
+export interface ReviewItemsPayload {
+  domain: MediaKind
+  rootId: string
+  relPaths: string[]
+}
+
+const emit = defineEmits<{
+  reviewItems: [payload: ReviewItemsPayload]
+}>()
 
 const txt = useToolText()
 const taskStore = useToolTaskStore()
@@ -73,6 +85,27 @@ function hasRetryableSubItems(task: ToolTaskEntry): boolean {
         it.status === 'failed' || it.status === 'unmatched' || it.status === 'cancelled',
     ),
   )
+}
+
+function reviewTaskUnmatched(task: ToolTaskEntry): void {
+  const targets = (task.subItems ?? []).filter(
+    (it) => it.status === 'unmatched' || it.status === 'failed',
+  )
+  if (targets.length === 0) return
+  const first = targets[0]!
+  emit('reviewItems', {
+    domain: first.mediaKind,
+    rootId: first.rootId,
+    relPaths: targets.filter((t) => t.rootId === first.rootId).map((t) => t.relPath),
+  })
+}
+
+function reviewSingleSubItem(sub: ScrapeSubItem): void {
+  emit('reviewItems', {
+    domain: sub.mediaKind,
+    rootId: sub.rootId,
+    relPaths: [sub.relPath],
+  })
 }
 
 function formatTime(ms: number): string {
@@ -198,6 +231,12 @@ function formatTime(ms: number): string {
                             : '已完成'
                     }}
                   </span>
+                  <span
+                    v-if="task.strategyLabel"
+                    class="rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)]"
+                  >
+                    {{ task.strategyLabel }}
+                  </span>
                   <span class="font-mono text-[11px] text-[var(--ctp-subtext0)]">
                     {{ formatTime(task.startedAt) }}
                   </span>
@@ -232,6 +271,17 @@ function formatTime(ms: number): string {
               >
                 <LuBan class="h-3.5 w-3.5" />
                 <span>{{ txt.tasks.cancel }}</span>
+              </button>
+
+              <button
+                v-if="hasRetryableSubItems(task)"
+                type="button"
+                class="inline-flex h-8 items-center gap-1 rounded-xl bg-[var(--ctp-accent-soft)] px-2.5 text-xs font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
+                title="一键仅筛选未命中/失败项并进入三栏工作台逐条精修"
+                @click="reviewTaskUnmatched(task)"
+              >
+                <LuColumns3 class="h-3.5 w-3.5" />
+                <span>三栏精修未命中项</span>
               </button>
 
               <button
@@ -301,7 +351,14 @@ function formatTime(ms: number): string {
               </p>
             </div>
 
-            <div class="flex shrink-0 items-center gap-1.5">
+            <div class="flex shrink-0 items-center gap-2">
+              <span
+                v-if="typeof sub.confidence === 'number'"
+                class="rounded-md bg-[var(--ctp-surface0)]/70 px-1.5 py-0.5 font-mono text-[10px] text-[var(--ctp-subtext1)]"
+                title="自动匹配置信度"
+              >
+                {{ sub.confidence }}%
+              </span>
               <span
                 v-if="sub.status === 'matched'"
                 class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-500"
@@ -338,6 +395,14 @@ function formatTime(ms: number): string {
                 {{ txt.tasks.statusCancelled }}
               </span>
               <span v-else class="text-[11px] text-[var(--ctp-subtext0)]">{{ txt.tasks.statusQueued }}</span>
+              <button
+                v-if="sub.status === 'unmatched' || sub.status === 'failed' || sub.status === 'matched'"
+                type="button"
+                class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-2 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+                @click="reviewSingleSubItem(sub)"
+              >
+                精修
+              </button>
             </div>
           </div>
         </div>

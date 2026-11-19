@@ -22,7 +22,7 @@ use xmedia_core::http::{ApiError, ApiResult};
 use xmedia_core::infra::thumbnail::sniff_image_mime;
 
 use crate::application::inbox::{InboxScanReportDto, scan_and_import_inbox};
-use crate::application::scraping::{AutoScrapeResultDto, DryRunScrapeItemDto};
+use crate::application::scraping::{AutoScrapeOptions, AutoScrapeResultDto, DryRunScrapeItemDto};
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
 use crate::application::webhook::{
     WebhookTestReportDto, test_xmedia_webhook, trigger_xmedia_rescan,
@@ -646,6 +646,8 @@ struct AutoApplyScrapeRequest {
     root_id: Uuid,
     path: String,
     media_kind: MediaKind,
+    #[serde(flatten)]
+    options: AutoScrapeOptions,
 }
 
 async fn auto_apply_scraped_metadata(
@@ -655,7 +657,7 @@ async fn auto_apply_scraped_metadata(
 ) -> ApiResult<Json<AutoScrapeResultDto>> {
     let res = state
         .scraping
-        .auto_scrape_file(RootId(req.root_id), &req.path, req.media_kind)
+        .auto_scrape_file_with_options(RootId(req.root_id), &req.path, req.media_kind, req.options)
         .await?;
     Ok(Json(res))
 }

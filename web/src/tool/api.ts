@@ -1,6 +1,7 @@
 import type { MediaKind } from '@/types/api'
 import type {
   AggregateScrapeResponse,
+  AutoScrapeOptionsDto,
   AutoScrapeResultDto,
   BookContentDocumentDto,
   BatchComicSeriesSyncInput,
@@ -569,6 +570,7 @@ export const toolApi = {
     rootId: string,
     relPath: string,
     mediaKind: MediaKind,
+    options?: AutoScrapeOptionsDto,
   ): Promise<AutoScrapeResultDto> {
     return toolRequest<AutoScrapeResultDto>('/scrapers/auto-apply', {
       method: 'POST',
@@ -576,6 +578,7 @@ export const toolApi = {
         root_id: rootId,
         path: relPath,
         media_kind: mediaKind,
+        ...(options ?? {}),
       }),
     })
   },

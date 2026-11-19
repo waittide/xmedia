@@ -117,8 +117,21 @@ export interface ScrapeCacheStatsDto {
   total_bytes: number
 }
 
+export type AutoScrapeMatchMode = 'strict' | 'standard' | 'loose'
+
+export interface AutoScrapeOptionsDto {
+  match_mode?: AutoScrapeMatchMode
+  only_fill_missing?: boolean
+  apply_cover?: boolean
+  write_sidecar_lrc?: boolean
+  organize_by_template?: boolean
+  providers?: string[]
+  field_groups?: string[]
+}
+
 export interface AutoScrapeResultDto {
   matched: boolean
+  confidence?: number
   detail: MediaFileDetail
 }
 

@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import type { FloatingTaskItem } from '@/components/ui/FloatingTaskShelf.vue'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from './api'
-import type { MediaFileDetail, MediaFileEntry } from './types'
+import type { AutoScrapeOptionsDto, MediaFileDetail, MediaFileEntry } from './types'
 
 export interface ScrapeSubItem {
   rootId: string
@@ -11,6 +11,7 @@ export interface ScrapeSubItem {
   fileName: string
   mediaKind: MediaKind
   status: 'queued' | 'running' | 'matched' | 'unmatched' | 'failed' | 'cancelled'
+  confidence?: number
   error?: string
 }
 
@@ -19,6 +20,8 @@ export interface ToolTaskEntry {
   kind: 'browse' | 'rename' | 'scrape'
   domain?: MediaKind
   title: string
+  strategyLabel?: string
+  scrapeOptions?: AutoScrapeOptionsDto
   status: 'queued' | 'running' | 'completed' | 'failed'
   processed: number
   total: number | null
@@ -193,7 +196,24 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
    * Enqueues a background waterfall scrape task:
    * Priority order: Local non-empty metadata -> High-priority provider -> Low-priority provider
    */
-  function enqueueScrapeTask(files: MediaFileEntry[], labelHint?: string): string | null {
+  function formatStrategyLabel(opts?: AutoScrapeOptionsDto): string | undefined {
+    if (!opts) return undefined
+    const modeMap: Record<string, string> = {
+      strict: '严格',
+      standard: '标准',
+      loose: '宽松',
+    }
+    const parts: string[] = [modeMap[opts.match_mode ?? 'standard'] ?? '标准']
+    parts.push(opts.only_fill_missing === false ? '强制覆盖' : '仅补空')
+    if (opts.organize_by_template) parts.push('自动归档')
+    return parts.join(' · ')
+  }
+
+  function enqueueScrapeTask(
+    files: MediaFileEntry[],
+    labelHint?: string,
+    options?: AutoScrapeOptionsDto,
+  ): string | null {
     if (files.length === 0) return null
     const id = `scrape:queue:${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const dom = files[0]?.media_kind
@@ -215,6 +235,8 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
       kind: 'scrape',
       domain: dom,
       title,
+      strategyLabel: formatStrategyLabel(options),
+      scrapeOptions: options,
       status: workerRunning ? 'queued' : 'running',
       processed: 0,
       total: files.length,
@@ -265,7 +287,13 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
             sub.status = 'running'
             task!.detail = sub.fileName
             try {
-              const res = await toolApi.autoScrapeFile(sub.rootId, sub.relPath, sub.mediaKind)
+              const res = await toolApi.autoScrapeFile(
+                sub.rootId,
+                sub.relPath,
+                sub.mediaKind,
+                task!.scrapeOptions,
+              )
+              sub.confidence = res.confidence
               if (res.matched) {
                 sub.status = 'matched'
                 task!.matchedCount = (task!.matchedCount ?? 0) + 1
