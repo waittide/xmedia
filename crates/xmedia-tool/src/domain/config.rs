@@ -132,6 +132,10 @@ fn default_comic_priority() -> Vec<String> {
 
 fn default_music_priority() -> Vec<String> {
     vec![
+        "qq".to_string(),
+        "netease".to_string(),
+        "kugou".to_string(),
+        "kuwo".to_string(),
         "itunes".to_string(),
         "musicbrainz".to_string(),
         "lrclib".to_string(),
@@ -154,14 +158,21 @@ impl Default for ScraperPriorities {
 }
 
 impl ScraperPriorities {
-    /// Upgrades untouched v1 book priority list (`["bangumi", "openlibrary"]`) so newly added
-    /// Chinese webnovel scrapers take precedence in the configured default order.
+    /// Upgrades untouched legacy book/music priority lists so newly added Chinese webnovel
+    /// and Chinese music scrapers take precedence in the configured default order.
     pub fn upgrade_legacy_defaults(&mut self) -> bool {
+        let mut changed = false;
         if self.book == ["bangumi", "openlibrary"] {
             self.book = default_book_priority();
-            return true;
+            changed = true;
         }
-        false
+        if self.music == ["itunes", "musicbrainz", "lrclib"]
+            || self.music == ["musicbrainz", "lrclib"]
+        {
+            self.music = default_music_priority();
+            changed = true;
+        }
+        changed
     }
 
     pub fn order_for(&self, kind: MediaKind) -> &[String] {

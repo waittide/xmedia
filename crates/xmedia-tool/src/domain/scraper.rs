@@ -394,8 +394,10 @@ pub fn is_compatible_secondary_source(
         }
     }
 
+    let eff_target = target.or(primary.target).or(secondary.target);
+
     if matches!(
-        target.or(primary.target).or(secondary.target),
+        eff_target,
         Some(
             ScrapeTargetKind::Movie
                 | ScrapeTargetKind::TvShow
@@ -406,6 +408,21 @@ pub fn is_compatible_secondary_source(
         && (y1 - y2).abs() > 2
     {
         return false;
+    }
+
+    if matches!(
+        eff_target,
+        Some(
+            ScrapeTargetKind::MusicTrack | ScrapeTargetKind::MusicAlbum | ScrapeTargetKind::Lyrics
+        )
+    ) {
+        let p_title_low = primary.title.as_deref().unwrap_or("").to_lowercase();
+        let s_title_low = secondary.title.as_deref().unwrap_or("").to_lowercase();
+        for cover_marker in ["翻唱", "原唱", "伴奏", "ktv", "karaoke", "铃声"] {
+            if s_title_low.contains(cover_marker) && !p_title_low.contains(cover_marker) {
+                return false;
+            }
+        }
     }
 
     let collect_titles = |m: &ScrapedMetadata| -> Vec<String> {
@@ -459,8 +476,13 @@ pub fn is_compatible_secondary_source(
     }
 
     if matches!(
-        target.or(primary.target).or(secondary.target),
-        Some(ScrapeTargetKind::Book)
+        eff_target,
+        Some(
+            ScrapeTargetKind::Book
+                | ScrapeTargetKind::MusicTrack
+                | ScrapeTargetKind::MusicAlbum
+                | ScrapeTargetKind::Lyrics
+        )
     ) && !primary.creators.is_empty()
         && !secondary.creators.is_empty()
     {
@@ -731,6 +753,65 @@ mod tests {
             &raw[0].1,
             &raw[1].1,
             Some(ScrapeTargetKind::Book)
+        ));
+    }
+
+    #[test]
+    fn music_secondary_source_blocks_cover_singer_and_allows_cross_script_artist() {
+        use super::is_compatible_secondary_source;
+
+        let qq_primary = ScrapedMetadata {
+            provider_id: "qq".into(),
+            external_id: "0039MnYb0qxYhV".into(),
+            target: Some(ScrapeTargetKind::MusicTrack),
+            title: Some("晴天".into()),
+            series_or_album: Some("叶惠美".into()),
+            creators: vec!["周杰伦".into()],
+            year: Some(2003),
+            ..Default::default()
+        };
+
+        let cover_song = ScrapedMetadata {
+            provider_id: "netease".into(),
+            external_id: "2668397359".into(),
+            target: Some(ScrapeTargetKind::MusicTrack),
+            title: Some("晴天 (原唱 周杰伦)".into()),
+            creators: vec!["RyaVocal".into()],
+            ..Default::default()
+        };
+        assert!(!is_compatible_secondary_source(
+            &qq_primary,
+            &cover_song,
+            Some(ScrapeTargetKind::MusicTrack)
+        ));
+
+        let other_cjk_singer = ScrapedMetadata {
+            provider_id: "lrclib".into(),
+            external_id: "123".into(),
+            target: Some(ScrapeTargetKind::MusicTrack),
+            title: Some("晴天".into()),
+            creators: vec!["别的歌手".into()],
+            ..Default::default()
+        };
+        assert!(!is_compatible_secondary_source(
+            &qq_primary,
+            &other_cjk_singer,
+            Some(ScrapeTargetKind::MusicTrack)
+        ));
+
+        let cross_script_same_artist = ScrapedMetadata {
+            provider_id: "itunes".into(),
+            external_id: "US:1".into(),
+            target: Some(ScrapeTargetKind::MusicTrack),
+            title: Some("晴天".into()),
+            creators: vec!["Jay Chou".into()],
+            year: Some(2003),
+            ..Default::default()
+        };
+        assert!(is_compatible_secondary_source(
+            &qq_primary,
+            &cross_script_same_artist,
+            Some(ScrapeTargetKind::MusicTrack)
         ));
     }
 }

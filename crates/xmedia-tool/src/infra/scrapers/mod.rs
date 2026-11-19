@@ -1,5 +1,6 @@
 pub mod bangumi;
 pub mod ciweimao;
+pub mod cn_music_common;
 pub mod cn_novel_common;
 pub mod faloo;
 pub mod fanqie;
@@ -7,11 +8,15 @@ pub mod http_client;
 pub mod itunes;
 pub mod jjwxc;
 pub mod k17;
+pub mod kugou;
+pub mod kuwo;
 pub mod lrclib;
 pub mod musicbrainz;
+pub mod netease;
 pub mod openlibrary;
 pub mod qidian;
 pub mod qimao;
+pub mod qq_music;
 pub mod sfacg;
 pub mod tmdb;
 
@@ -36,6 +41,10 @@ pub fn build_default_scraper_providers() -> Vec<Arc<dyn ScraperProviderPort>> {
         Arc::new(sfacg::SfacgProvider),
         Arc::new(faloo::FalooProvider),
         Arc::new(jjwxc::JjwxcProvider),
+        Arc::new(qq_music::QqMusicProvider),
+        Arc::new(netease::NeteaseMusicProvider),
+        Arc::new(kugou::KugouMusicProvider),
+        Arc::new(kuwo::KuwoMusicProvider),
         Arc::new(itunes::ItunesMusicProvider),
         Arc::new(musicbrainz::MusicBrainzProvider),
         Arc::new(lrclib::LrclibProvider),
@@ -60,9 +69,9 @@ mod tests {
     };
 
     #[test]
-    fn default_registry_exposes_fourteen_providers_and_checks_tmdb_credentials() {
+    fn default_registry_exposes_eighteen_providers_and_checks_tmdb_credentials() {
         let providers = build_default_scraper_providers();
-        assert_eq!(providers.len(), 14);
+        assert_eq!(providers.len(), 18);
 
         let empty_creds = ProviderCredentials::default();
         let configured_ids: Vec<String> = providers
@@ -81,6 +90,10 @@ mod tests {
                 "sfacg",
                 "faloo",
                 "jjwxc",
+                "qq",
+                "netease",
+                "kugou",
+                "kuwo",
                 "itunes",
                 "musicbrainz",
                 "lrclib",
@@ -468,6 +481,361 @@ mod tests {
         assert_eq!(jj_meta.series_or_album.as_deref(), Some("天官"));
         assert_eq!(jj_meta.rating, Some(9.8));
         assert!(jj_meta.summary.as_deref().unwrap().contains('\n'));
+    }
+
+    #[test]
+    fn chinese_music_parsers_normalize_all_four_platforms_and_bilingual_lrc() {
+        use base64::Engine;
+        use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+
+        use crate::infra::scrapers::kugou::{KgAlbumItem, KgPlaySongInfo, map_kugou_song_detail};
+        use crate::infra::scrapers::kuwo::{
+            KwAlbumSearchItem, KwAlbumTrackItem, KwLrcItem, KwSongAndLrcData, KwSongDetailInfo,
+            map_kuwo_song_detail,
+        };
+        use crate::infra::scrapers::netease::{
+            NeAlbumInfo, NeArtist, NeLyricBlock, NeLyricEnvelope, NeSearchSong,
+            map_netease_album_detail, map_netease_song_detail,
+        };
+        use crate::infra::scrapers::qq_music::{
+            QqAlbumBrief, QqInfoContentEntry, QqInfoField, QqLyricResp, QqSinger, QqSongDetailData,
+            QqSongExtraInfo, QqSongItem, map_qq_song_detail,
+        };
+
+        // 1. QQ Music (track + bilingual Base64 LRC + HTML entity unescaping)
+        let qq_orig_b64 =
+            BASE64_STANDARD.encode("[ti:Lemon]\n[00:00.85]夢ならばどれほどよかったでしょう\n[00:06.65]未だにあなたのことを夢にみる");
+        let qq_trans_b64 =
+            BASE64_STANDARD.encode("[00:00.85]如果这一切都是梦境该有多好\n[00:06.65]//");
+        let qq_meta = map_qq_song_detail(
+            QqSongDetailData {
+                track_info: QqSongItem {
+                    id: 1,
+                    mid: "0039MnYb0qxYhV".into(),
+                    name: "Lemon".into(),
+                    index_album: Some(1),
+                    index_cd: Some(0),
+                    time_public: "2018-03-14".into(),
+                    singer: vec![QqSinger {
+                        name: "米津玄師".into(),
+                        ..Default::default()
+                    }],
+                    album: QqAlbumBrief {
+                        mid: "000MkMni19ClKG".into(),
+                        name: "Lemon".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                info: QqSongExtraInfo {
+                    company: Some(QqInfoField {
+                        content: vec![QqInfoContentEntry {
+                            value: "Sony Music".into(),
+                        }],
+                    }),
+                    genre: Some(QqInfoField {
+                        content: vec![QqInfoContentEntry {
+                            value: "J-Pop".into(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            },
+            "0039MnYb0qxYhV",
+            ScrapeTargetKind::MusicTrack,
+            Some(QqLyricResp {
+                retcode: 0,
+                lyric: qq_orig_b64,
+                trans: qq_trans_b64,
+            }),
+        );
+        assert_eq!(qq_meta.title.as_deref(), Some("Lemon"));
+        assert_eq!(qq_meta.track_or_episode_number, Some(1));
+        assert_eq!(qq_meta.disc_or_season_number, Some(1));
+        assert_eq!(qq_meta.year, Some(2018));
+        assert_eq!(
+            qq_meta.cover_url.as_deref(),
+            Some("https://y.gtimg.cn/music/photo_new/T002R800x800M000000MkMni19ClKG.jpg")
+        );
+        let synced = qq_meta.synced_lyrics.as_deref().unwrap();
+        assert!(synced.contains("[00:00.85]夢ならばどれほどよかったでしょう"));
+        assert!(synced.contains("[00:00.85]如果这一切都是梦境该有多好"));
+        assert!(!synced.contains("//"));
+
+        // 2. NetEase Cloud Music (track + CST midnight publishTime + album)
+        let ne_song = map_netease_song_detail(
+            NeSearchSong {
+                id: 536622304,
+                name: "新的心跳".into(),
+                artists: vec![NeArtist {
+                    name: "G.E.M.邓紫棋".into(),
+                }],
+                album: Some(NeAlbumInfo {
+                    id: 3189002,
+                    name: "新的心跳".into(),
+                    pic_url: Some("http://p2.music.126.net/abc/123.jpg".into()),
+                    publish_time: Some(1446739200007), // 2015-11-06 00:00:00 +08:00
+                    company: Some("蜂鸟音乐".into()),
+                    ..Default::default()
+                }),
+                no: Some(2),
+                disc: Some("01".into()),
+                ..Default::default()
+            },
+            "536622304",
+            ScrapeTargetKind::MusicTrack,
+            Some(NeLyricEnvelope {
+                lrc: Some(NeLyricBlock {
+                    lyric: "[00:12.34]心跳".into(),
+                }),
+                tlyric: None,
+            }),
+        );
+        assert_eq!(ne_song.year, Some(2015));
+        assert_eq!(ne_song.published_date.as_deref(), Some("2015-11-06"));
+        assert_eq!(ne_song.track_or_episode_number, Some(2));
+        assert_eq!(ne_song.disc_or_season_number, Some(1));
+        assert_eq!(
+            ne_song.cover_url.as_deref(),
+            Some("https://p2.music.126.net/abc/123.jpg?param=1000y1000")
+        );
+
+        let ne_alb = map_netease_album_detail(
+            NeAlbumInfo {
+                id: 3189002,
+                name: "新的心跳".into(),
+                description: Some("全创作视听专辑".into()),
+                ..Default::default()
+            },
+            "3189002",
+        );
+        assert_eq!(ne_alb.target, Some(ScrapeTargetKind::MusicAlbum));
+        assert_eq!(ne_alb.summary.as_deref(), Some("全创作视听专辑"));
+
+        // 3. Kugou Music (track + `{size}` cover upgrade + LRC)
+        let kg_meta = map_kugou_song_detail(
+            "b3a52a7a958bf0aed0ebfba2e9a818b7:966846",
+            ScrapeTargetKind::MusicTrack,
+            KgPlaySongInfo {
+                song_name: "晴天".into(),
+                singer_name: "周杰伦".into(),
+                album_img: "http://imge.kugou.com/stdmusic/{size}/20230920/test.jpg".into(),
+                ..Default::default()
+            },
+            Some(KgAlbumItem {
+                albumid: serde_json::json!(966846),
+                albumname: "叶惠美".into(),
+                publishtime: "2003-07-31 00:00:00".into(),
+                imgurl: "http://imge.kugou.com/stdmusic/{size}/20230920/test.jpg".into(),
+                ..Default::default()
+            }),
+            Some(3),
+            Some("[ti:晴天]\r\n[00:28.90]故事的小黄花"),
+        );
+        assert_eq!(kg_meta.track_or_episode_number, Some(3));
+        assert_eq!(kg_meta.year, Some(2003));
+        assert_eq!(
+            kg_meta.cover_url.as_deref(),
+            Some("https://imge.kugou.com/stdmusic/1000/20230920/test.jpg")
+        );
+        assert_eq!(kg_meta.plain_lyrics.as_deref(), Some("故事的小黄花"));
+
+        // 4. Kuwo Music (`lrclist` float seconds -> `[mm:ss.xx]` + track order + 1000px cover)
+        let kw_meta = map_kuwo_song_detail(
+            "228908",
+            ScrapeTargetKind::MusicTrack,
+            KwSongAndLrcData {
+                songinfo: Some(KwSongDetailInfo {
+                    id: "228908".into(),
+                    song_name: "晴天".into(),
+                    artist: "周杰伦".into(),
+                    album: "叶惠美".into(),
+                    album_id: "1293".into(),
+                    pic: "http://img1.kwcdn.kuwo.cn/star/albumcover/240/s3s94/93/211513640.jpg"
+                        .into(),
+                    ..Default::default()
+                }),
+                lrclist: Some(vec![KwLrcItem {
+                    time: "28.9".into(),
+                    line_lyric: "故事的小黄花".into(),
+                }]),
+            },
+            Some(KwAlbumSearchItem {
+                albumid: "1293".into(),
+                name: "叶惠美".into(),
+                pub_date: "2003-07-31".into(),
+                company: "杰威尔音乐有限公司".into(),
+                musiclist: vec![KwAlbumTrackItem {
+                    id: "228908".into(),
+                    track: "3".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            None,
+        );
+        assert_eq!(kw_meta.track_or_episode_number, Some(3));
+        assert_eq!(kw_meta.year, Some(2003));
+        assert_eq!(
+            kw_meta.publisher_or_studio.as_deref(),
+            Some("杰威尔音乐有限公司")
+        );
+        assert_eq!(
+            kw_meta.cover_url.as_deref(),
+            Some("https://img1.kwcdn.kuwo.cn/star/albumcover/1000/s3s94/93/211513640.jpg")
+        );
+        assert_eq!(
+            kw_meta.synced_lyrics.as_deref(),
+            Some("[00:28.90]故事的小黄花")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "live network smoke check across QQ, NetEase, Kugou, and Kuwo music providers"]
+    async fn live_smoke_check_four_chinese_music_providers() {
+        use crate::domain::ports::ScraperProviderPort;
+        use crate::domain::scraper::ScrapeQuery;
+        use crate::infra::scrapers::{
+            kugou::KugouMusicProvider, kuwo::KuwoMusicProvider, netease::NeteaseMusicProvider,
+            qq_music::QqMusicProvider,
+        };
+
+        struct MusicSmokeCase {
+            name: &'static str,
+            prov: Box<dyn ScraperProviderPort>,
+            song_kw: &'static str,
+            artist_kw: &'static str,
+            album_kw: &'static str,
+        }
+
+        let creds = ProviderCredentials::default();
+        let cases = vec![
+            MusicSmokeCase {
+                name: "qq",
+                prov: Box::new(QqMusicProvider),
+                song_kw: "晴天",
+                artist_kw: "周杰伦",
+                album_kw: "叶惠美",
+            },
+            MusicSmokeCase {
+                name: "netease",
+                prov: Box::new(NeteaseMusicProvider),
+                song_kw: "泡沫",
+                artist_kw: "邓紫棋",
+                album_kw: "新的心跳",
+            },
+            MusicSmokeCase {
+                name: "kugou",
+                prov: Box::new(KugouMusicProvider),
+                song_kw: "晴天",
+                artist_kw: "周杰伦",
+                album_kw: "叶惠美",
+            },
+            MusicSmokeCase {
+                name: "kuwo",
+                prov: Box::new(KuwoMusicProvider),
+                song_kw: "晴天",
+                artist_kw: "周杰伦",
+                album_kw: "叶惠美",
+            },
+        ];
+
+        for MusicSmokeCase {
+            name,
+            prov,
+            song_kw,
+            artist_kw,
+            album_kw,
+        } in cases
+        {
+            let track_cands = prov
+                .search(
+                    &ScrapeQuery {
+                        keyword: song_kw.to_string(),
+                        artist_or_author: Some(artist_kw.to_string()),
+                        target: Some(ScrapeTargetKind::MusicTrack),
+                        ..Default::default()
+                    },
+                    &creds,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{name} track search failed: {e}"));
+            assert!(
+                !track_cands.is_empty(),
+                "{name} returned empty track search for '{song_kw}'"
+            );
+            let top = &track_cands[0];
+            let track_detail = prov
+                .fetch_detail(
+                    &top.external_id,
+                    ScrapeTargetKind::MusicTrack,
+                    "zh-CN",
+                    &creds,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{name} track detail failed: {e}"));
+            println!(
+                "[{name} TRACK] id={} title={:?} creators={:?} album={:?} track={:?} year={:?} cover={:?} synced_lrc_len={}",
+                track_detail.external_id,
+                track_detail.title,
+                track_detail.creators,
+                track_detail.series_or_album,
+                track_detail.track_or_episode_number,
+                track_detail.year,
+                track_detail.cover_url,
+                track_detail.synced_lyrics.as_deref().map_or(0, str::len)
+            );
+            assert!(track_detail.title.is_some(), "{name} track missing title");
+            assert!(
+                track_detail.cover_url.is_some(),
+                "{name} track missing cover_url"
+            );
+            assert!(
+                track_detail.synced_lyrics.is_some(),
+                "{name} track missing synced_lyrics"
+            );
+
+            let album_cands = prov
+                .search(
+                    &ScrapeQuery {
+                        keyword: album_kw.to_string(),
+                        artist_or_author: Some(artist_kw.to_string()),
+                        target: Some(ScrapeTargetKind::MusicAlbum),
+                        ..Default::default()
+                    },
+                    &creds,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{name} album search failed: {e}"));
+            assert!(
+                !album_cands.is_empty(),
+                "{name} returned empty album search for '{album_kw}'"
+            );
+            let top_alb = &album_cands[0];
+            let alb_detail = prov
+                .fetch_detail(
+                    &top_alb.external_id,
+                    ScrapeTargetKind::MusicAlbum,
+                    "zh-CN",
+                    &creds,
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{name} album detail failed: {e}"));
+            println!(
+                "[{name} ALBUM] id={} title={:?} creators={:?} year={:?} company={:?} cover={:?}",
+                alb_detail.external_id,
+                alb_detail.title,
+                alb_detail.creators,
+                alb_detail.year,
+                alb_detail.publisher_or_studio,
+                alb_detail.cover_url
+            );
+            assert!(alb_detail.title.is_some(), "{name} album missing title");
+            assert!(
+                alb_detail.cover_url.is_some(),
+                "{name} album missing cover_url"
+            );
+        }
     }
 
     #[tokio::test]
