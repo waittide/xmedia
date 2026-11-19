@@ -169,6 +169,10 @@ impl LibraryService {
             .canonicalize()
             .map_err(|e| DomainError::Storage(format!("failed to canonicalize path: {e}")))?;
 
+        if let Ok(raw_allowlist) = std::env::var("XMEDIA_ALLOWED_MOUNT_PREFIXES") {
+            verify_mount_allowlist(&canonical_path, &raw_allowlist)?;
+        }
+
         if let Some(ref data_dir) = self.data_dir {
             let data_canonical = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
             if paths_overlap(&canonical_path, &data_canonical) {
@@ -244,6 +248,11 @@ impl LibraryService {
                 lib.media_kind.as_str()
             ))
         })?;
+
+        if let LibraryKind::LocalMount { ref root_path } = lib.kind {
+            let existing_count = self.count_items(&lib).await.unwrap_or(0);
+            verify_mount_root_alive(Path::new(root_path), existing_count)?;
+        }
 
         let scan_seq = self.next_scan_seq.fetch_add(1, Ordering::Relaxed);
         {
@@ -449,6 +458,57 @@ fn paths_overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }
 
+/// Validates that `canonical_path` falls under at least one allowed prefix when
+/// `XMEDIA_ALLOWED_MOUNT_PREFIXES` is configured (colon or comma separated).
+fn verify_mount_allowlist(canonical_path: &Path, raw_allowlist: &str) -> DomainResult<()> {
+    let prefixes: Vec<PathBuf> = raw_allowlist
+        .split([':', ','])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|p| {
+            let pb = PathBuf::from(p);
+            pb.canonicalize().unwrap_or(pb)
+        })
+        .collect();
+    if prefixes.is_empty() {
+        return Ok(());
+    }
+    if prefixes.iter().any(|p| canonical_path.starts_with(p)) {
+        return Ok(());
+    }
+    Err(DomainError::Forbidden(format!(
+        "mount path '{}' is outside XMEDIA_ALLOWED_MOUNT_PREFIXES",
+        canonical_path.display()
+    )))
+}
+
+/// Unmount / offline-NAS protection: aborts scan before mutating index if the mount
+/// directory vanished or became completely empty when previously populated.
+fn verify_mount_root_alive(root_path: &Path, existing_item_count: u64) -> DomainResult<()> {
+    if !root_path.exists() || !root_path.is_dir() {
+        return Err(DomainError::Storage(format!(
+            "mount directory '{}' is offline or missing; scan aborted to protect existing index",
+            root_path.display()
+        )));
+    }
+    if existing_item_count > 0 {
+        let mut rd = std::fs::read_dir(root_path).map_err(|e| {
+            DomainError::Storage(format!(
+                "mount directory '{}' is unreadable ({e}); scan aborted",
+                root_path.display()
+            ))
+        })?;
+        if rd.next().is_none() {
+            return Err(DomainError::Storage(format!(
+                "mount directory '{}' appears empty while {} items are indexed (suspected unmounted NAS/USB); scan aborted to protect library data",
+                root_path.display(),
+                existing_item_count
+            )));
+        }
+    }
+    Ok(())
+}
+
 async fn settle_scan_failure(
     libraries_repo: &Arc<dyn LibraryRepository>,
     events: &Arc<dyn RealtimeEventPort>,
@@ -467,5 +527,34 @@ async fn settle_scan_failure(
             media_kind,
             message,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mount_allowlist_and_unmount_guard_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("media");
+        let sub = allowed.join("movies");
+        let outside = tmp.path().join("etc");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let allowlist = allowed.to_string_lossy().to_string();
+        assert!(verify_mount_allowlist(&sub.canonicalize().unwrap(), &allowlist).is_ok());
+        assert!(verify_mount_allowlist(&outside.canonicalize().unwrap(), &allowlist).is_err());
+
+        // Empty directory is allowed when library has 0 indexed items
+        assert!(verify_mount_root_alive(&sub, 0).is_ok());
+        // Empty directory is rejected when library already has indexed items (unmount protection)
+        assert!(verify_mount_root_alive(&sub, 12).is_err());
+        // Non-empty directory passes
+        std::fs::write(sub.join("sample.mkv"), b"ok").unwrap();
+        assert!(verify_mount_root_alive(&sub, 12).is_ok());
+        // Missing directory always fails
+        assert!(verify_mount_root_alive(&tmp.path().join("missing"), 0).is_err());
     }
 }
