@@ -74,6 +74,7 @@ import { useVideoStore } from '@/domains/video/store'
 import type { VideoShelfDto } from '@/domains/video/types'
 
 import { fetchHomeOverview } from '@/config/homeCache'
+import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import UploadShelf from '@/components/UploadShelf.vue'
 
@@ -105,6 +106,7 @@ const collapsed = ref(localStorage.getItem('xmedia.sidebar_collapsed') === '1')
 const mobileMenuOpen = ref(false)
 const accountMenuOpen = ref(false)
 const layoutCustomizerOpen = ref(false)
+const commandPaletteOpen = ref(false)
 const dragDepth = ref(0)
 
 const filePickerRef = ref<HTMLInputElement | null>(null)
@@ -347,11 +349,21 @@ async function submitGlobalSearch(): Promise<void> {
   const d = domainStore.activeDomain
   comicSearchFocused.value = false
   if (d === 'book') {
+    const q = bookStore.keyword.trim()
     bookStore.page = 1
     if (route.name !== 'book-catalog') {
       bookStore.activeSection = 'all'
-      await router.push('/book/catalog')
     }
+    const nextQuery: Record<string, string> = {}
+    if (route.name === 'book-catalog') {
+      for (const [k, v] of Object.entries(route.query)) {
+        if (typeof v === 'string' && k !== 'q' && k !== 'page') {
+          nextQuery[k] = v
+        }
+      }
+    }
+    if (q) nextQuery.q = q
+    await router.push({ path: '/book/catalog', query: nextQuery })
     await bookStore.fetchBooks()
   } else if (d === 'comic') {
     const q = comicSearchQuery.value.trim()
@@ -370,12 +382,28 @@ async function submitGlobalSearch(): Promise<void> {
 function clearGlobalSearch(): void {
   const d = domainStore.activeDomain
   if (d === 'book') {
-    bookStore.resetFilters()
+    bookStore.keyword = ''
+    bookStore.page = 1
+    if (route.name === 'book-catalog') {
+      const nextQuery = { ...route.query }
+      delete nextQuery.q
+      delete nextQuery.page
+      void router.replace({ path: '/book/catalog', query: nextQuery })
+      void bookStore.fetchBooks()
+    }
   } else if (d === 'comic') {
     comicSearchQuery.value = ''
     comicSearchResults.value = []
+    if (route.name === 'comic-series-list' && route.query.q) {
+      const nextQuery = { ...route.query }
+      delete nextQuery.q
+      void router.replace({ path: '/comic/series', query: nextQuery })
+    }
   } else if (d === 'music') {
     musicStore.globalSearchQuery = ''
+    if (route.name === 'music-search') {
+      void router.push('/music/songs')
+    }
   } else {
     videoSearchQuery.value = ''
     if (route.name === 'video-catalog' && route.query.q) {
@@ -405,9 +433,13 @@ function isBookSectionActive(section: BookNavSection, id = ''): boolean {
 async function openBookSection(section: BookNavSection, id = ''): Promise<void> {
   mobileMenuOpen.value = false
   bookStore.selectSection(section, id)
-  if (route.name !== 'book-catalog') {
-    await router.push('/book/catalog')
-  }
+  const query: Record<string, string> = {}
+  if (section !== 'all') query.section = section
+  if (section === 'library' && id) query.library = id
+  if (section === 'shelf' && id) query.shelf = id
+  if (section === 'tag' && id) query.tag = id
+  if (section === 'author' && id) query.author = id
+  await router.push({ path: '/book/catalog', query })
 }
 
 function openBookBookmark(item: BookBookmarkItemDto): void {
@@ -1335,12 +1367,12 @@ function handleOutsideClick(ev: MouseEvent): void {
 function handleGlobalKeydown(ev: KeyboardEvent): void {
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
     ev.preventDefault()
-    searchInputRef.value?.focus()
-    searchInputRef.value?.select()
+    commandPaletteOpen.value = !commandPaletteOpen.value
   } else if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'b') {
     ev.preventDefault()
     handleSidebarButtonClick()
   } else if (ev.key === 'Escape') {
+    commandPaletteOpen.value = false
     mobileMenuOpen.value = false
     accountMenuOpen.value = false
     layoutCustomizerOpen.value = false
@@ -1490,12 +1522,15 @@ onBeforeUnmount(() => {
           class="h-10 w-full rounded-full border border-[var(--ctp-surface0)]/90 bg-[var(--ctp-mantle)]/70 pr-14 pl-10 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none transition focus:border-[var(--ctp-accent)] focus:bg-[var(--ctp-canvas)]"
           @focus="onSearchFocus"
         />
-        <kbd
+        <button
           v-if="!activeSearchValue"
-          class="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded-md border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)]/80 px-1.5 py-0.5 font-mono text-[10px] text-[var(--ctp-subtext0)] sm:inline"
+          type="button"
+          class="absolute top-1/2 right-3 hidden -translate-y-1/2 rounded-md border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)]/80 px-1.5 py-0.5 font-mono text-[10px] text-[var(--ctp-subtext0)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)] sm:inline"
+          :title="`${t('common.search')} (⌘K)`"
+          @click="commandPaletteOpen = true"
         >
           ⌘K
-        </kbd>
+        </button>
         <button
           v-else
           type="button"
@@ -1917,6 +1952,12 @@ onBeforeUnmount(() => {
       :domain="domainStore.activeDomain"
       initial-tab="sidebar"
       @close="layoutCustomizerOpen = false"
+    />
+
+    <!-- Cross-Domain Quick Search / Command Palette (⌘K) -->
+    <GlobalSearchModal
+      :open="commandPaletteOpen"
+      @close="commandPaletteOpen = false"
     />
   </div>
 </template>

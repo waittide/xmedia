@@ -16,7 +16,7 @@ import {
 } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
 import { useAuthStore } from '@/stores/auth'
-import { useCatalogStore } from '@/domains/book/store'
+import { useCatalogStore, type NavSection } from '@/domains/book/store'
 import { useDialogStore } from '@/stores/dialog'
 import type { BookFormat, BookSortField, BookSummaryDto } from '@/domains/book/types'
 import BookCard from '@/domains/book/components/BookCard.vue'
@@ -33,22 +33,117 @@ const catalogStore = useCatalogStore()
 const dialogStore = useDialogStore()
 
 const showFilters = ref(false)
+let syncingRouteQuery = false
+
+function buildQueryFromStore(): Record<string, string> {
+  const q: Record<string, string> = {}
+  if (catalogStore.activeSection !== 'all') {
+    q.section = catalogStore.activeSection
+  }
+  if (catalogStore.activeSection === 'library' && catalogStore.activeLibraryId) {
+    q.library = catalogStore.activeLibraryId
+  }
+  if (catalogStore.activeSection === 'shelf' && catalogStore.activeShelfId) {
+    q.shelf = catalogStore.activeShelfId
+  }
+  if (catalogStore.keyword.trim()) {
+    q.q = catalogStore.keyword.trim()
+  }
+  if (catalogStore.filterAuthors.length === 1) {
+    q.author = catalogStore.filterAuthors[0]!
+  }
+  if (catalogStore.filterTags.length === 1) {
+    q.tag = catalogStore.filterTags[0]!
+  }
+  if (catalogStore.filterFormats.length === 1) {
+    q.format = catalogStore.filterFormats[0]!
+  }
+  if (catalogStore.sortBy !== 'created_at') {
+    q.sort_by = catalogStore.sortBy
+  }
+  if (catalogStore.sortOrder !== 'desc') {
+    q.sort_order = catalogStore.sortOrder
+  }
+  if (catalogStore.page > 1) {
+    q.page = String(catalogStore.page)
+  }
+  return q
+}
+
+function syncStoreToRouteQuery(): void {
+  const next = buildQueryFromStore()
+  const cur = route.query
+  const same =
+    Object.keys(next).length === Object.keys(cur).length &&
+    Object.entries(next).every(([k, v]) => cur[k] === v)
+  if (same) return
+  syncingRouteQuery = true
+  void router.replace({ path: '/book/catalog', query: next }).finally(() => {
+    syncingRouteQuery = false
+  })
+}
 
 function applyQueryParamsFromRoute(): void {
+  const qSection = typeof route.query.section === 'string' ? route.query.section : ''
+  const qLibrary = typeof route.query.library === 'string' ? route.query.library : ''
+  const qShelf = typeof route.query.shelf === 'string' ? route.query.shelf : ''
+  const qKeyword = typeof route.query.q === 'string' ? route.query.q : ''
   const qAuthor = typeof route.query.author === 'string' ? route.query.author : ''
   const qTag = typeof route.query.tag === 'string' ? route.query.tag : ''
   const qFormat = typeof route.query.format === 'string' ? route.query.format : ''
-  if (qAuthor && !catalogStore.filterAuthors.includes(qAuthor)) {
-    catalogStore.filterAuthors = [qAuthor]
+  const qSortBy = typeof route.query.sort_by === 'string' ? route.query.sort_by : ''
+  const qSortOrder = typeof route.query.sort_order === 'string' ? route.query.sort_order : ''
+  const qPage = typeof route.query.page === 'string' ? Number.parseInt(route.query.page, 10) : NaN
+
+  if (
+    qSection === 'all' ||
+    qSection === 'recent' ||
+    qSection === 'favorites' ||
+    qSection === 'library' ||
+    qSection === 'shelf' ||
+    qSection === 'tag' ||
+    qSection === 'author'
+  ) {
+    catalogStore.activeSection = qSection as NavSection
+  } else if (qLibrary) {
+    catalogStore.activeSection = 'library'
+  } else if (qShelf) {
+    catalogStore.activeSection = 'shelf'
+  } else if (Object.keys(route.query).length > 0) {
+    catalogStore.activeSection = 'all'
   }
-  if (qTag && !catalogStore.filterTags.includes(qTag)) {
+
+  if (qLibrary) catalogStore.activeLibraryId = qLibrary
+  if (qShelf) catalogStore.activeShelfId = qShelf
+  if ('q' in route.query) {
+    catalogStore.keyword = qKeyword
+  }
+  if (qAuthor) {
+    catalogStore.filterAuthors = [qAuthor]
+  } else if (catalogStore.activeSection === 'all' && Object.keys(route.query).length > 0 && !('author' in route.query)) {
+    catalogStore.filterAuthors = []
+  }
+  if (qTag) {
     catalogStore.filterTags = [qTag]
+  } else if (catalogStore.activeSection === 'all' && Object.keys(route.query).length > 0 && !('tag' in route.query)) {
+    catalogStore.filterTags = []
+  }
+  if (qFormat === 'epub' || qFormat === 'txt' || qFormat === 'pdf') {
+    catalogStore.filterFormats = [qFormat]
   }
   if (
-    (qFormat === 'epub' || qFormat === 'txt' || qFormat === 'pdf') &&
-    !catalogStore.filterFormats.includes(qFormat)
+    qSortBy === 'created_at' ||
+    qSortBy === 'updated_at' ||
+    qSortBy === 'title' ||
+    qSortBy === 'file_size'
   ) {
-    catalogStore.filterFormats = [qFormat]
+    catalogStore.sortBy = qSortBy
+  }
+  if (qSortOrder === 'asc' || qSortOrder === 'desc') {
+    catalogStore.sortOrder = qSortOrder
+  }
+  if (Number.isFinite(qPage) && qPage >= 1) {
+    catalogStore.page = qPage
   }
 }
 
@@ -60,6 +155,7 @@ onMounted(() => {
 watch(
   () => route.query,
   () => {
+    if (syncingRouteQuery) return
     applyQueryParamsFromRoute()
     void catalogStore.fetchBooks()
   },
@@ -192,12 +288,14 @@ async function batchAddTag(): Promise<void> {
 
 function triggerRefetch(): void {
   catalogStore.page = 1
+  syncStoreToRouteQuery()
   void catalogStore.fetchBooks()
 }
 
 function goPage(nextPage: number): void {
   if (nextPage < 1 || nextPage > totalPages.value) return
   catalogStore.page = nextPage
+  syncStoreToRouteQuery()
   void catalogStore.fetchBooks()
 }
 

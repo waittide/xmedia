@@ -90,11 +90,41 @@ onMounted(async () => {
   }
   currentLocation.value = initialLocation.value
   loading.value = false
+  window.addEventListener('keydown', handleReaderKeydown)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleReaderKeydown)
   void flushPendingProgress()
 })
+
+function handleReaderKeydown(ev: KeyboardEvent): void {
+  const target = ev.target
+  const isTyping =
+    target instanceof HTMLElement &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable)
+
+  if (ev.key === 'Escape') {
+    ev.preventDefault()
+    if (activePanel.value !== 'none') {
+      activePanel.value = 'none'
+    } else {
+      void exitReader()
+    }
+    return
+  }
+  if (isTyping || ev.metaKey || ev.ctrlKey || ev.altKey) return
+  if (ev.key.toLowerCase() === 'b') {
+    ev.preventDefault()
+    togglePanel('bookmarks')
+  } else if (ev.key.toLowerCase() === 't') {
+    ev.preventDefault()
+    togglePanel('toc')
+  }
+}
 
 async function exitReader(): Promise<void> {
   await flushPendingProgress()
