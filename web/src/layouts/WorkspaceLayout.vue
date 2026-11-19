@@ -41,6 +41,7 @@ import { useVideoStore } from '@/domains/video/store'
 import { fetchHomeOverview } from '@/config/homeCache'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import UploadShelf from '@/components/UploadShelf.vue'
 import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
 
@@ -511,82 +512,70 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <!-- Full-Width Unified Top Bar -->
+    <!-- Full-Width MD3 Top App Bar -->
     <header
-      class="flex h-16 shrink-0 items-center justify-between gap-3 bg-[var(--ctp-shell)] px-4 select-none sm:px-5"
+      class="flex h-16 shrink-0 items-center justify-between gap-3 bg-[var(--md-sys-color-surface-container)] px-3 select-none sm:px-4"
     >
-      <!-- Left: Sidebar Toggle + Rounded Accent Brand Icon + Domain Capsule Switcher -->
-      <div class="flex shrink-0 items-center gap-2.5">
+      <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Switcher -->
+      <div class="flex shrink-0 items-center gap-2">
         <button
           type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+          class="md-icon-btn md-state"
           :title="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
           @click="handleSidebarButtonClick"
         >
-          <LuPanelLeftOpen v-if="isCompact" class="h-[18px] w-[18px]" />
-          <LuPanelLeftClose v-else class="h-[18px] w-[18px]" />
+          <LuPanelLeftOpen v-if="isCompact" class="h-5 w-5" />
+          <LuPanelLeftClose v-else class="h-5 w-5" />
         </button>
 
         <RouterLink
-          :to="`/${domainStore.activeDomain}`"
-          class="flex items-center gap-2.5 outline-none transition hover:opacity-90"
+          :to="'/' + domainStore.activeDomain"
+          class="md-state flex items-center gap-2.5 rounded-full py-1 pr-2.5 pl-1 outline-none"
           @click="mobileMenuOpen = false"
         >
           <div
-            class="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm"
+            class="flex h-9 w-9 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
           >
             <LuLayers class="h-[18px] w-[18px]" />
           </div>
-          <span class="hidden text-base font-bold tracking-tight lg:inline">
+          <span class="hidden text-base font-semibold tracking-tight text-[var(--md-sys-color-on-surface)] lg:inline">
             {{ t('app.name') }}
           </span>
         </RouterLink>
 
-        <!-- Unified 4-Domain Capsule Switcher -->
-        <div
-          v-if="domainTabs.length > 1"
-          class="ml-1 hidden items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/70 p-1 md:flex"
-        >
-          <button
-            v-for="tab in domainTabs"
-            :key="tab.kind"
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition"
-            :class="
-              domainStore.activeDomain === tab.kind
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-xs'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
-            "
-            @click="switchDomain(tab.kind)"
-          >
-            <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
-            <span>{{ tab.label }}</span>
-          </button>
+        <!-- MD3 Segmented Domain Switcher -->
+        <div v-if="domainTabs.length > 1" class="ml-1 hidden md:block">
+          <MdSegmentedButton
+            :model-value="domainStore.activeDomain"
+            :options="domainTabs.map((tab) => ({ value: tab.kind, label: tab.label, icon: tab.icon }))"
+            size="sm"
+            @update:model-value="switchDomain($event)"
+          />
         </div>
       </div>
 
-      <!-- Center: Pill-Shaped Global Search Bar with ⌘K Badge -->
+      <!-- Center: Authentic MD3 Search Bar -->
       <form
         ref="searchWrapRef"
         class="relative mx-auto max-w-md flex-1 lg:max-w-lg"
         @submit.prevent="submitGlobalSearch"
       >
         <LuSearch
-          class="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+          class="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
         />
         <input
           ref="searchInputRef"
           v-model="activeSearchValue"
           type="text"
           :placeholder="searchPlaceholder"
-          class="h-10 w-full rounded-full border border-[var(--ctp-surface0)]/90 bg-[var(--ctp-mantle)]/70 pr-14 pl-10 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none transition focus:border-[var(--ctp-accent)] focus:bg-[var(--ctp-canvas)]"
+          class="h-11 w-full rounded-full bg-[var(--md-sys-color-surface-container-high)] pr-14 pl-11 text-[13px] text-[var(--md-sys-color-on-surface)] placeholder-[var(--md-sys-color-on-surface-variant)] outline-none transition duration-200 focus:bg-[var(--md-sys-color-surface-container-lowest)] focus:shadow-[var(--md-sys-elevation-2)]"
           @focus="onSearchFocus"
         />
         <button
           v-if="!activeSearchValue"
           type="button"
-          class="absolute top-1/2 right-3 hidden -translate-y-1/2 rounded-md border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)]/80 px-1.5 py-0.5 font-mono text-[10px] text-[var(--ctp-subtext0)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)] sm:inline"
-          :title="`${t('common.search')} (⌘K)`"
+          class="md-state absolute top-1/2 right-3 hidden -translate-y-1/2 rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)] sm:inline"
+          :title="t('common.search') + ' (⌘K)'"
           @click="commandPaletteOpen = true"
         >
           ⌘K
@@ -594,19 +583,19 @@ onBeforeUnmount(() => {
         <button
           v-else
           type="button"
-          class="absolute top-1/2 right-3 -translate-y-1/2 rounded-full p-0.5 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+          class="md-icon-btn md-icon-btn-sm md-state absolute top-1/2 right-1.5 -translate-y-1/2"
           @click="clearGlobalSearch"
         >
-          <LuX class="h-3.5 w-3.5" />
+          <LuX class="h-4 w-4" />
         </button>
       </form>
 
-      <!-- Right: Scan Indicator + Upload Button + 3-State Theme Button + Avatar Menu -->
-      <div class="flex shrink-0 items-center gap-1.5">
+      <!-- Right: Scan Chip + Circular MD3 Icon Buttons + Avatar Menu -->
+      <div class="flex shrink-0 items-center gap-1">
         <button
           v-if="eventsStore.anyScanning"
           type="button"
-          class="mr-1 hidden items-center gap-1.5 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-1 text-xs font-medium text-[var(--ctp-accent)] transition hover:opacity-90 xl:inline-flex"
+          class="md-btn md-btn-sm md-btn-tonal md-state mr-1 hidden xl:inline-flex"
           @click="uploadStore.collapsed = false"
         >
           <LuRefreshCw class="h-3.5 w-3.5 animate-spin" />
@@ -616,24 +605,24 @@ onBeforeUnmount(() => {
         <button
           v-if="authStore.isAdmin"
           type="button"
-          class="relative flex h-9 w-9 items-center justify-center rounded-xl text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+          class="md-icon-btn md-state relative"
           :title="t('common.uploadMedia')"
           @click="triggerUploadPicker"
         >
           <LuUpload class="h-[18px] w-[18px]" />
           <span
             v-if="uploadStore.activeCount > 0"
-            class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-[var(--ctp-accent)]"
+            class="absolute top-2 right-2 h-2 w-2 rounded-full bg-[var(--md-sys-color-primary)]"
           />
         </button>
 
         <button
           type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-xl transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
+          class="md-icon-btn md-state"
           :class="
             themeStore.themeMode === 'system'
-              ? 'bg-[var(--ctp-surface0)]/55 text-[var(--ctp-text)]'
-              : 'text-[var(--ctp-subtext1)]'
+              ? 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)]'
+              : ''
           "
           :title="themeModeTooltip"
           @click="cycleThemeMode"
@@ -646,46 +635,48 @@ onBeforeUnmount(() => {
         <div ref="accountMenuRef" class="relative ml-1">
           <button
             type="button"
-            class="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-surface0)]/65 text-xs font-bold text-[var(--ctp-accent)] transition hover:border-[var(--ctp-accent)]"
+            class="md-state flex h-9 w-9 items-center justify-center rounded-full bg-[var(--md-sys-color-primary-container)] text-xs font-bold text-[var(--md-sys-color-on-primary-container)]"
             @click="accountMenuOpen = !accountMenuOpen"
           >
             {{ userInitials }}
           </button>
 
-          <div
-            v-if="accountMenuOpen"
-            class="absolute top-11 right-0 z-50 w-56 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 shadow-2xl"
-          >
-            <div class="px-3 py-2">
-              <p class="truncate text-xs font-semibold text-[var(--ctp-text)]">
-                {{ authStore.user?.display_name || authStore.user?.username }}
-              </p>
-              <p class="truncate text-[11px] text-[var(--ctp-subtext0)]">
-                @{{ authStore.user?.username }} ·
-                {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
-              </p>
+          <Transition name="md-dialog">
+            <div
+              v-if="accountMenuOpen"
+              class="absolute top-12 right-0 z-50 w-56 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
+            >
+              <div class="px-3 py-2">
+                <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+                  {{ authStore.user?.display_name || authStore.user?.username }}
+                </p>
+                <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                  @{{ authStore.user?.username }} ·
+                  {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
+                </p>
+              </div>
+
+              <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/50" />
+
+              <RouterLink
+                to="/settings"
+                class="md-state flex items-center gap-2.5 rounded-full px-3 py-2 text-xs font-medium text-[var(--md-sys-color-on-surface)]"
+                @click="accountMenuOpen = false; mobileMenuOpen = false"
+              >
+                <LuSettings class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+                <span>{{ t('nav.settings') }}</span>
+              </RouterLink>
+
+              <button
+                type="button"
+                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-error)]"
+                @click="handleSignOut"
+              >
+                <LuLogOut class="h-4 w-4" />
+                <span>{{ t('auth.signOut') }}</span>
+              </button>
             </div>
-
-            <div class="my-1 h-px bg-[var(--ctp-surface0)]" />
-
-            <RouterLink
-              to="/settings"
-              class="flex items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-medium text-[var(--ctp-text)] transition hover:bg-[var(--ctp-mantle)]"
-              @click="accountMenuOpen = false; mobileMenuOpen = false"
-            >
-              <LuSettings class="h-4 w-4 text-[var(--ctp-subtext0)]" />
-              <span>{{ t('nav.settings') }}</span>
-            </RouterLink>
-
-            <button
-              type="button"
-              class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--ctp-red)] transition hover:bg-[var(--ctp-red)]/10"
-              @click="handleSignOut"
-            >
-              <LuLogOut class="h-4 w-4" />
-              <span>{{ t('auth.signOut') }}</span>
-            </button>
-          </div>
+          </Transition>
         </div>
       </div>
 
@@ -766,10 +757,10 @@ onBeforeUnmount(() => {
         @open-customizer="layoutCustomizerOpen = true"
       />
 
-      <!-- Main Route Viewport (Flush Rounded Top-Left Canvas) -->
+      <!-- Main Route Viewport (MD3 Tonal Surface Container without harsh borders) -->
       <main
         ref="mainScrollRef"
-        class="min-w-0 flex-1 overflow-y-auto border-t border-[var(--ctp-surface0)]/65 bg-[var(--ctp-canvas)] md:rounded-tl-3xl md:border-l"
+        class="min-w-0 flex-1 overflow-y-auto bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
       >
         <RouterView v-slot="{ Component }">
           <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">

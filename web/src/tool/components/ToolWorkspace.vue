@@ -1180,7 +1180,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--ctp-shell)] text-[var(--ctp-text)]"
+    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)]"
   >
     <!-- Full-Width Top Bar -->
     <ToolTopHeader
@@ -1225,9 +1225,9 @@ onBeforeUnmount(() => {
         @select-completeness-filter="selectCompletenessFilter"
       />
 
-      <!-- Main Rounded Canvas + Optional Right Metadata Inspector Drawer -->
+      <!-- Main Rounded Canvas + Supporting Pane (MD3 Tonal Surface without harsh borders) -->
       <main
-        class="flex min-w-0 flex-1 overflow-hidden border-t border-[var(--ctp-surface0)]/65 bg-[var(--ctp-canvas)] md:rounded-tl-3xl md:border-l"
+        class="flex min-w-0 flex-1 overflow-hidden bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
       >
         <div
           class="min-w-0 flex-1"
