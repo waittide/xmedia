@@ -175,6 +175,29 @@ const videoTags = ref('')
 const videoTmdbId = ref('')
 const videoBangumiId = ref('')
 const videoSummary = ref('')
+const videoLockedFields = ref<string[]>([])
+
+function isVideoFieldLocked(field: string): boolean {
+  const f = field.toLowerCase()
+  return videoLockedFields.value.some((x) => {
+    const lx = x.toLowerCase()
+    if (f === 'poster') return lx === 'poster' || lx === 'cover'
+    return lx === f
+  })
+}
+
+function toggleVideoFieldLock(field: string): void {
+  const f = field.toLowerCase()
+  if (isVideoFieldLocked(f)) {
+    videoLockedFields.value = videoLockedFields.value.filter((x) => {
+      const lx = x.toLowerCase()
+      if (f === 'poster') return lx !== 'poster' && lx !== 'cover'
+      return lx !== f
+    })
+  } else {
+    videoLockedFields.value = [...videoLockedFields.value, f]
+  }
+}
 
 function splitListTokens(raw: string): string[] {
   return raw
@@ -238,6 +261,7 @@ function serializeFormSnapshot(): string {
     videoTmdbId.value,
     videoBangumiId.value,
     videoSummary.value,
+    [...videoLockedFields.value].sort().join(','),
   ])
 }
 
@@ -315,6 +339,7 @@ function hydrateForm(d: MediaFileDetail): void {
     videoTmdbId.value = v.tmdb_id ?? ''
     videoBangumiId.value = v.bangumi_id ?? ''
     videoSummary.value = v.summary ?? ''
+    videoLockedFields.value = [...(v.locked_fields ?? [])]
     if (v.has_poster) {
       videoArtworkSlot.value = 'poster'
     } else if (v.has_fanart) {
@@ -546,6 +571,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
           tmdb_id: videoTmdbId.value,
           bangumi_id: videoBangumiId.value,
           summary: videoSummary.value,
+          locked_fields: videoLockedFields.value,
         },
       }
     }
@@ -922,6 +948,21 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                 <LuImage class="h-3.5 w-3.5" />
                 <span>单集剧照</span>
               </button>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 rounded-xl border px-2.5 py-1.5 text-[11px] font-medium transition"
+                :class="
+                  isVideoFieldLocked('poster')
+                    ? 'border-amber-500/45 bg-amber-500/12 text-amber-500'
+                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]'
+                "
+                title="锁定海报后，后续刮削将跳过覆盖当前海报与背景图"
+                @click="toggleVideoFieldLock('poster')"
+              >
+                <LuLock v-if="isVideoFieldLocked('poster')" class="h-3.5 w-3.5" />
+                <LuUnlock v-else class="h-3.5 w-3.5" />
+                <span>{{ isVideoFieldLocked('poster') ? '海报已锁' : '锁海报' }}</span>
+              </button>
             </template>
           </div>
         </div>
@@ -1104,32 +1145,69 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
         </div>
 
         <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">
-              {{ videoIsEpisode ? '单集标题 (Episode Title)' : '电影标题 (Title)' }}
-            </span>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">
+                {{ videoIsEpisode ? '单集标题 (Episode Title)' : '电影标题 (Title)' }}
+              </span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁标题（锁定后刮削跳过覆盖，写入 NFO lockedfields）"
+                @click="toggleVideoFieldLock('title')"
+              >
+                <LuLock v-if="isVideoFieldLocked('title')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+                <span>{{ isVideoFieldLocked('title') ? '已锁定' : '' }}</span>
+              </button>
+            </div>
             <input
               v-model="videoTitle"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label v-if="videoIsEpisode" class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">所属剧集名 (Show Title)</span>
+          </div>
+          <div v-if="videoIsEpisode" class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">所属剧集名 (Show Title)</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('show_title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁剧集名"
+                @click="toggleVideoFieldLock('show_title')"
+              >
+                <LuLock v-if="isVideoFieldLocked('show_title')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoShowTitle"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">原名 (Original Title)</span>
+          </div>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">原名 (Original Title)</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('original_title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁原名"
+                @click="toggleVideoFieldLock('original_title')"
+              >
+                <LuLock v-if="isVideoFieldLocked('original_title')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoOriginalTitle"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
+          </div>
 
           <div v-if="videoIsEpisode" class="grid grid-cols-2 gap-2 sm:col-span-2">
             <label class="block">
@@ -1152,23 +1230,47 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
             </label>
           </div>
 
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">年份 (Year)</span>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">年份 (Year)</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('year') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁年份"
+                @click="toggleVideoFieldLock('year')"
+              >
+                <LuLock v-if="isVideoFieldLocked('year')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoYear"
               type="number"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">评分 (Rating)</span>
+          </div>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">评分 (Rating)</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('rating') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁评分"
+                @click="toggleVideoFieldLock('rating')"
+              >
+                <LuLock v-if="isVideoFieldLocked('rating')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoRating"
               type="number"
               step="0.1"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
+          </div>
           <label class="block">
             <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">TMDB ID</span>
             <input
@@ -1185,54 +1287,126 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
           </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">导演（`/` 分隔）</span>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">导演（`/` 分隔）</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('directors') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁导演"
+                @click="toggleVideoFieldLock('directors')"
+              >
+                <LuLock v-if="isVideoFieldLocked('directors')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoDirectors"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">制片厂 / 动画制作</span>
+          </div>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">制片厂 / 动画制作</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('studio') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁制片厂"
+                @click="toggleVideoFieldLock('studio')"
+              >
+                <LuLock v-if="isVideoFieldLocked('studio')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoStudio"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">演员 / 声优（`/` 分隔）</span>
+          </div>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">演员 / 声优（`/` 分隔）</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('actors') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁演员"
+                @click="toggleVideoFieldLock('actors')"
+              >
+                <LuLock v-if="isVideoFieldLocked('actors')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoActors"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">类型 (Genres)</span>
+          </div>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">类型 (Genres)</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('genres') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁类型"
+                @click="toggleVideoFieldLock('genres')"
+              >
+                <LuLock v-if="isVideoFieldLocked('genres')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoGenres"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 (Tags)</span>
+          </div>
+          <div class="block">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 (Tags)</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('tags') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁标签"
+                @click="toggleVideoFieldLock('tags')"
+              >
+                <LuLock v-if="isVideoFieldLocked('tags')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <input
               v-model="videoTags"
               type="text"
               class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">剧情简介 (Plot)</span>
+          </div>
+          <div class="block sm:col-span-2">
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">剧情简介 (Plot)</span>
+              <button
+                type="button"
+                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
+                :class="isVideoFieldLocked('summary') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
+                title="锁定/解锁简介"
+                @click="toggleVideoFieldLock('summary')"
+              >
+                <LuLock v-if="isVideoFieldLocked('summary')" class="h-3 w-3" />
+                <LuUnlock v-else class="h-3 w-3" />
+              </button>
+            </div>
             <textarea
               v-model="videoSummary"
               rows="5"
               class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2.5 text-xs leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
             />
-          </label>
+          </div>
         </div>
       </div>
 
