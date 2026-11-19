@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import {
   LuBookOpen,
   LuCheck,
   LuClapperboard,
-  LuCopy,
   LuDisc3,
   LuFileSignature,
-  LuFileText,
   LuImage,
   LuLayers,
   LuLock,
@@ -19,7 +17,18 @@ import {
   LuWand2,
   LuX,
 } from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
+import InspectorBookForm from './inspector/InspectorBookForm.vue'
+import InspectorComicForm from './inspector/InspectorComicForm.vue'
+import InspectorMusicForm from './inspector/InspectorMusicForm.vue'
+import InspectorVideoForm from './inspector/InspectorVideoForm.vue'
+import {
+  isVideoFieldLockedIn,
+  toggleVideoFieldLockIn,
+  type BookInspectorForm,
+  type ComicInspectorForm,
+  type MusicInspectorForm,
+  type VideoInspectorForm,
+} from './inspector/types'
 import { useDialogStore } from '@/stores/dialog'
 import { buildArtworkUrl, toolApi } from '../api'
 import { formatBytes, formatDuration, useToolText } from '../i18n'
@@ -54,54 +63,96 @@ const uploadingArtwork = ref(false)
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
 const videoArtworkSlot = ref<'poster' | 'fanart' | 'thumb'>('poster')
-const lyricsTab = ref<'embedded' | 'sidecar'>('embedded')
 const baselineSnapshot = ref('')
 const skipNextHydrate = ref(false)
 
-// Book form
-const bookTitle = ref('')
-const bookAuthors = ref('')
-const bookSeries = ref('')
-const bookSubseries = ref('')
-const bookSeriesIndex = ref('')
-const bookIsbn = ref('')
-const bookPublisher = ref('')
-const bookPublishedAt = ref('')
-const bookLanguage = ref('')
-const bookTags = ref('')
-const bookDescription = ref('')
-const bookLockedFields = ref<string[]>([])
+// Domain-specific reactive form models
 const polishingBook = ref(false)
 
+const bookForm = reactive<BookInspectorForm>({
+  title: '',
+  authors: '',
+  series: '',
+  subseries: '',
+  seriesIndex: '',
+  isbn: '',
+  publisher: '',
+  publishedAt: '',
+  language: '',
+  tags: '',
+  description: '',
+  lockedFields: [],
+})
+
+const comicForm = reactive<ComicInspectorForm>({
+  series: '',
+  seriesGroup: '',
+  title: '',
+  number: '',
+  volume: '',
+  year: '',
+  language: '',
+  direction: 'rtl',
+  writers: '',
+  pencillers: '',
+  publisher: '',
+  genres: '',
+  tags: '',
+  summary: '',
+})
+
+const musicForm = reactive<MusicInspectorForm>({
+  title: '',
+  artist: '',
+  albumArtist: '',
+  album: '',
+  track: '',
+  disc: '',
+  year: '',
+  genre: '',
+  comment: '',
+  embeddedLyrics: '',
+  sidecarLrc: '',
+})
+
+const videoForm = reactive<VideoInspectorForm>({
+  isEpisode: false,
+  title: '',
+  originalTitle: '',
+  showTitle: '',
+  season: '',
+  episode: '',
+  year: '',
+  rating: '',
+  studio: '',
+  directors: '',
+  actors: '',
+  genres: '',
+  tags: '',
+  tmdbId: '',
+  bangumiId: '',
+  summary: '',
+  lockedFields: [],
+})
+
 function isBookFieldLocked(field: string): boolean {
-  return bookLockedFields.value.includes(field)
+  return bookForm.lockedFields.includes(field)
 }
 
 function toggleBookFieldLock(field: string): void {
-  if (bookLockedFields.value.includes(field)) {
-    bookLockedFields.value = bookLockedFields.value.filter((f) => f !== field)
+  if (bookForm.lockedFields.includes(field)) {
+    bookForm.lockedFields = bookForm.lockedFields.filter((f) => f !== field)
   } else {
-    bookLockedFields.value = [...bookLockedFields.value, field]
+    bookForm.lockedFields = [...bookForm.lockedFields, field]
   }
 }
 
-function lockFilledBookFields(): void {
-  const next = new Set(bookLockedFields.value)
-  if (bookTitle.value.trim()) next.add('title')
-  if (bookAuthors.value.trim()) next.add('authors')
-  if (bookSeries.value.trim()) next.add('series')
-  if (bookSubseries.value.trim()) next.add('subseries')
-  if (bookSeriesIndex.value.trim()) next.add('series_index')
-  if (bookIsbn.value.trim()) next.add('isbn')
-  if (bookPublisher.value.trim()) next.add('publisher')
-  if (bookPublishedAt.value.trim()) next.add('published_at')
-  if (bookLanguage.value.trim()) next.add('language')
-  if (bookTags.value.trim()) next.add('tags')
-  if (bookDescription.value.trim()) next.add('description')
-  if (props.detail.metadata.kind === 'book' && props.detail.metadata.data.has_cover) {
-    next.add('cover')
-  }
-  bookLockedFields.value = Array.from(next)
+function isVideoFieldLocked(field: string): boolean {
+  return isVideoFieldLockedIn(videoForm.lockedFields, field)
+}
+
+function toggleVideoFieldLock(field: string): void {
+  videoForm.lockedFields = toggleVideoFieldLockIn(videoForm.lockedFields, field)
 }
 
 async function handlePolishBook(): Promise<void> {
@@ -129,76 +180,6 @@ async function handlePolishBook(): Promise<void> {
   }
 }
 
-// Comic form
-const comicSeries = ref('')
-const comicSeriesGroup = ref('')
-const comicTitle = ref('')
-const comicNumber = ref('')
-const comicVolume = ref('')
-const comicYear = ref('')
-const comicLanguage = ref('')
-const comicDirection = ref('rtl')
-const comicWriters = ref('')
-const comicPencillers = ref('')
-const comicPublisher = ref('')
-const comicGenres = ref('')
-const comicTags = ref('')
-const comicSummary = ref('')
-
-// Music form
-const musicTitle = ref('')
-const musicArtist = ref('')
-const musicAlbumArtist = ref('')
-const musicAlbum = ref('')
-const musicTrack = ref('')
-const musicDisc = ref('')
-const musicYear = ref('')
-const musicGenre = ref('')
-const musicComment = ref('')
-const musicEmbeddedLyrics = ref('')
-const musicSidecarLrc = ref('')
-
-// Video form
-const videoIsEpisode = ref(false)
-const videoTitle = ref('')
-const videoOriginalTitle = ref('')
-const videoShowTitle = ref('')
-const videoSeason = ref('')
-const videoEpisode = ref('')
-const videoYear = ref('')
-const videoRating = ref('')
-const videoStudio = ref('')
-const videoDirectors = ref('')
-const videoActors = ref('')
-const videoGenres = ref('')
-const videoTags = ref('')
-const videoTmdbId = ref('')
-const videoBangumiId = ref('')
-const videoSummary = ref('')
-const videoLockedFields = ref<string[]>([])
-
-function isVideoFieldLocked(field: string): boolean {
-  const f = field.toLowerCase()
-  return videoLockedFields.value.some((x) => {
-    const lx = x.toLowerCase()
-    if (f === 'poster') return lx === 'poster' || lx === 'cover'
-    return lx === f
-  })
-}
-
-function toggleVideoFieldLock(field: string): void {
-  const f = field.toLowerCase()
-  if (isVideoFieldLocked(f)) {
-    videoLockedFields.value = videoLockedFields.value.filter((x) => {
-      const lx = x.toLowerCase()
-      if (f === 'poster') return lx !== 'poster' && lx !== 'cover'
-      return lx !== f
-    })
-  } else {
-    videoLockedFields.value = [...videoLockedFields.value, f]
-  }
-}
-
 function splitListTokens(raw: string): string[] {
   return raw
     .split(/[/；;、\n]/)
@@ -208,60 +189,12 @@ function splitListTokens(raw: string): string[] {
 
 function serializeFormSnapshot(): string {
   return JSON.stringify([
-    bookTitle.value,
-    bookAuthors.value,
-    bookSeries.value,
-    bookSubseries.value,
-    bookSeriesIndex.value,
-    bookIsbn.value,
-    bookPublisher.value,
-    bookPublishedAt.value,
-    bookLanguage.value,
-    bookTags.value,
-    bookDescription.value,
-    [...bookLockedFields.value].sort().join(','),
-    comicSeries.value,
-    comicSeriesGroup.value,
-    comicTitle.value,
-    comicNumber.value,
-    comicVolume.value,
-    comicYear.value,
-    comicLanguage.value,
-    comicDirection.value,
-    comicWriters.value,
-    comicPencillers.value,
-    comicPublisher.value,
-    comicGenres.value,
-    comicTags.value,
-    comicSummary.value,
-    musicTitle.value,
-    musicArtist.value,
-    musicAlbumArtist.value,
-    musicAlbum.value,
-    musicTrack.value,
-    musicDisc.value,
-    musicYear.value,
-    musicGenre.value,
-    musicComment.value,
-    musicEmbeddedLyrics.value,
-    musicSidecarLrc.value,
-    videoIsEpisode.value,
-    videoTitle.value,
-    videoOriginalTitle.value,
-    videoShowTitle.value,
-    videoSeason.value,
-    videoEpisode.value,
-    videoYear.value,
-    videoRating.value,
-    videoStudio.value,
-    videoDirectors.value,
-    videoActors.value,
-    videoGenres.value,
-    videoTags.value,
-    videoTmdbId.value,
-    videoBangumiId.value,
-    videoSummary.value,
-    [...videoLockedFields.value].sort().join(','),
+    bookForm,
+    [...bookForm.lockedFields].sort().join(','),
+    comicForm,
+    musicForm,
+    videoForm,
+    [...videoForm.lockedFields].sort().join(','),
   ])
 }
 
@@ -275,71 +208,66 @@ function hydrateForm(d: MediaFileDetail): void {
   const m = d.metadata
   if (m.kind === 'book') {
     const b = m.data
-    bookTitle.value = b.title
-    bookAuthors.value = b.authors.join(' / ')
-    bookSeries.value = b.series ?? ''
-    bookSubseries.value = b.subseries ?? ''
-    bookSeriesIndex.value = b.series_index ?? ''
-    bookIsbn.value = b.isbn ?? ''
-    bookPublisher.value = b.publisher ?? ''
-    bookPublishedAt.value = b.published_at ?? ''
-    bookLanguage.value = b.language ?? ''
-    bookTags.value = b.tags.join(' / ')
-    bookDescription.value = b.description ?? ''
-    bookLockedFields.value = [...(b.locked_fields ?? [])]
+    bookForm.title = b.title
+    bookForm.authors = b.authors.join(' / ')
+    bookForm.series = b.series ?? ''
+    bookForm.subseries = b.subseries ?? ''
+    bookForm.seriesIndex = b.series_index ?? ''
+    bookForm.isbn = b.isbn ?? ''
+    bookForm.publisher = b.publisher ?? ''
+    bookForm.publishedAt = b.published_at ?? ''
+    bookForm.language = b.language ?? ''
+    bookForm.tags = b.tags.join(' / ')
+    bookForm.description = b.description ?? ''
+    bookForm.lockedFields = [...(b.locked_fields ?? [])]
   } else if (m.kind === 'comic') {
     const c = m.data
-    comicSeries.value = c.series ?? ''
-    comicSeriesGroup.value = c.series_group ?? ''
-    comicTitle.value = c.title ?? ''
-    comicNumber.value = c.number ?? ''
-    comicVolume.value = c.volume !== null ? String(c.volume) : ''
-    comicYear.value = c.year !== null ? String(c.year) : ''
-    comicLanguage.value = c.language_iso ?? ''
-    comicDirection.value = c.reading_direction || 'rtl'
-    comicWriters.value = c.writers.join(' / ')
-    comicPencillers.value = c.pencillers.join(' / ')
-    comicPublisher.value = c.publisher ?? ''
-    comicGenres.value = c.genres.join(' / ')
-    comicTags.value = c.tags.join(' / ')
-    comicSummary.value = c.summary ?? ''
+    comicForm.series = c.series ?? ''
+    comicForm.seriesGroup = c.series_group ?? ''
+    comicForm.title = c.title ?? ''
+    comicForm.number = c.number ?? ''
+    comicForm.volume = c.volume !== null ? String(c.volume) : ''
+    comicForm.year = c.year !== null ? String(c.year) : ''
+    comicForm.language = c.language_iso ?? ''
+    comicForm.direction = c.reading_direction || 'rtl'
+    comicForm.writers = c.writers.join(' / ')
+    comicForm.pencillers = c.pencillers.join(' / ')
+    comicForm.publisher = c.publisher ?? ''
+    comicForm.genres = c.genres.join(' / ')
+    comicForm.tags = c.tags.join(' / ')
+    comicForm.summary = c.summary ?? ''
   } else if (m.kind === 'music') {
     const mu = m.data
-    musicTitle.value = mu.title
-    musicArtist.value = mu.artist
-    musicAlbumArtist.value = mu.album_artist ?? ''
-    musicAlbum.value = mu.album
-    musicTrack.value = mu.track_number !== null ? String(mu.track_number) : ''
-    musicDisc.value = mu.disc_number !== null ? String(mu.disc_number) : ''
-    musicYear.value = mu.year !== null ? String(mu.year) : ''
-    musicGenre.value = mu.genre ?? ''
-    musicComment.value = mu.comment ?? ''
-    musicEmbeddedLyrics.value = mu.embedded_lyrics ?? ''
-    musicSidecarLrc.value = mu.sidecar_lrc ?? ''
-    if (!mu.embedded_lyrics && mu.sidecar_lrc) {
-      lyricsTab.value = 'sidecar'
-    } else {
-      lyricsTab.value = 'embedded'
-    }
+    musicForm.title = mu.title
+    musicForm.artist = mu.artist
+    musicForm.albumArtist = mu.album_artist ?? ''
+    musicForm.album = mu.album
+    musicForm.track = mu.track_number !== null ? String(mu.track_number) : ''
+    musicForm.disc = mu.disc_number !== null ? String(mu.disc_number) : ''
+    musicForm.year = mu.year !== null ? String(mu.year) : ''
+    musicForm.genre = mu.genre ?? ''
+    musicForm.comment = mu.comment ?? ''
+    musicForm.embeddedLyrics = mu.embedded_lyrics ?? ''
+    musicForm.sidecarLrc = mu.sidecar_lrc ?? ''
   } else if (m.kind === 'video') {
     const v = m.data
-    videoIsEpisode.value = v.is_episode
-    videoTitle.value = v.title
-    videoOriginalTitle.value = v.original_title ?? ''
-    videoShowTitle.value = v.show_title ?? ''
-    videoSeason.value = v.season_number !== null ? String(v.season_number) : ''
-    videoEpisode.value = v.episode_number !== null ? String(v.episode_number) : ''
-    videoYear.value = v.year !== null ? String(v.year) : ''
-    videoRating.value = v.rating !== null ? String(v.rating) : ''
-    videoStudio.value = v.studio ?? ''
-    videoDirectors.value = v.directors.join(' / ')
-    videoActors.value = v.actors.join(' / ')
-    videoGenres.value = v.genres.join(' / ')
-    videoTags.value = v.tags.join(' / ')
-    videoTmdbId.value = v.tmdb_id ?? ''
-    videoBangumiId.value = v.bangumi_id ?? ''
-    videoSummary.value = v.summary ?? ''
-    videoLockedFields.value = [...(v.locked_fields ?? [])]
+    videoForm.isEpisode = v.is_episode
+    videoForm.title = v.title
+    videoForm.originalTitle = v.original_title ?? ''
+    videoForm.showTitle = v.show_title ?? ''
+    videoForm.season = v.season_number !== null ? String(v.season_number) : ''
+    videoForm.episode = v.episode_number !== null ? String(v.episode_number) : ''
+    videoForm.year = v.year !== null ? String(v.year) : ''
+    videoForm.rating = v.rating !== null ? String(v.rating) : ''
+    videoForm.studio = v.studio ?? ''
+    videoForm.directors = v.directors.join(' / ')
+    videoForm.actors = v.actors.join(' / ')
+    videoForm.genres = v.genres.join(' / ')
+    videoForm.tags = v.tags.join(' / ')
+    videoForm.tmdbId = v.tmdb_id ?? ''
+    videoForm.bangumiId = v.bangumi_id ?? ''
+    videoForm.summary = v.summary ?? ''
+    videoForm.lockedFields = [...(v.locked_fields ?? [])]
     if (v.has_poster) {
       videoArtworkSlot.value = 'poster'
     } else if (v.has_fanart) {
@@ -396,12 +324,6 @@ const canSaveMetadata = computed(() => {
   return true
 })
 
-const directionOptions = [
-  { value: 'rtl', label: '日漫右翻 (RTL)' },
-  { value: 'ltr', label: '美漫左翻 (LTR)' },
-  { value: 'webtoon', label: '条漫竖滑 (Webtoon)' },
-]
-
 function triggerArtworkUpload(
   slot: 'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb',
 ): void {
@@ -438,14 +360,6 @@ async function handleArtworkPicked(ev: Event): Promise<void> {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
     uploadingArtwork.value = false
-  }
-}
-
-function syncLyricsBothWays(): void {
-  if (lyricsTab.value === 'embedded') {
-    musicSidecarLrc.value = musicEmbeddedLyrics.value
-  } else {
-    musicEmbeddedLyrics.value = musicSidecarLrc.value
   }
 }
 
@@ -499,81 +413,81 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
       envelope = {
         kind: 'book',
         patch: {
-          title: bookTitle.value,
-          authors: splitListTokens(bookAuthors.value),
-          series: bookSeries.value,
-          subseries: bookSubseries.value,
-          series_index: bookSeriesIndex.value,
-          isbn: bookIsbn.value,
-          publisher: bookPublisher.value,
-          published_at: bookPublishedAt.value,
-          language: bookLanguage.value,
-          tags: splitListTokens(bookTags.value),
-          description: bookDescription.value,
-          locked_fields: bookLockedFields.value,
+          title: bookForm.title,
+          authors: splitListTokens(bookForm.authors),
+          series: bookForm.series,
+          subseries: bookForm.subseries,
+          series_index: bookForm.seriesIndex,
+          isbn: bookForm.isbn,
+          publisher: bookForm.publisher,
+          published_at: bookForm.publishedAt,
+          language: bookForm.language,
+          tags: splitListTokens(bookForm.tags),
+          description: bookForm.description,
+          locked_fields: bookForm.lockedFields,
         },
       }
     } else if (kind === 'comic') {
       envelope = {
         kind: 'comic',
         patch: {
-          series: comicSeries.value,
-          series_group: comicSeriesGroup.value,
-          title: comicTitle.value,
-          number: comicNumber.value,
-          volume: comicVolume.value.trim() ? Number.parseInt(comicVolume.value, 10) : -1,
-          year: parseOptInt(comicYear.value, 0),
-          language_iso: comicLanguage.value,
-          reading_direction: comicDirection.value,
-          writers: splitListTokens(comicWriters.value),
-          pencillers: splitListTokens(comicPencillers.value),
-          publisher: comicPublisher.value,
-          genres: splitListTokens(comicGenres.value),
-          tags: splitListTokens(comicTags.value),
-          summary: comicSummary.value,
+          series: comicForm.series,
+          series_group: comicForm.seriesGroup,
+          title: comicForm.title,
+          number: comicForm.number,
+          volume: comicForm.volume.trim() ? Number.parseInt(comicForm.volume, 10) : -1,
+          year: parseOptInt(comicForm.year, 0),
+          language_iso: comicForm.language,
+          reading_direction: comicForm.direction,
+          writers: splitListTokens(comicForm.writers),
+          pencillers: splitListTokens(comicForm.pencillers),
+          publisher: comicForm.publisher,
+          genres: splitListTokens(comicForm.genres),
+          tags: splitListTokens(comicForm.tags),
+          summary: comicForm.summary,
         },
       }
     } else if (kind === 'music') {
       envelope = {
         kind: 'music',
         patch: {
-          title: musicTitle.value,
-          artist: musicArtist.value,
-          album_artist: musicAlbumArtist.value,
-          album: musicAlbum.value,
-          track_number: parseOptInt(musicTrack.value, 0),
-          disc_number: parseOptInt(musicDisc.value, 0),
-          year: parseOptInt(musicYear.value, 0),
-          genre: musicGenre.value,
-          comment: musicComment.value,
-          embedded_lyrics: musicEmbeddedLyrics.value,
-          sidecar_lrc: musicSidecarLrc.value,
+          title: musicForm.title,
+          artist: musicForm.artist,
+          album_artist: musicForm.albumArtist,
+          album: musicForm.album,
+          track_number: parseOptInt(musicForm.track, 0),
+          disc_number: parseOptInt(musicForm.disc, 0),
+          year: parseOptInt(musicForm.year, 0),
+          genre: musicForm.genre,
+          comment: musicForm.comment,
+          embedded_lyrics: musicForm.embeddedLyrics,
+          sidecar_lrc: musicForm.sidecarLrc,
         },
       }
     } else {
-      const parsedRating = videoRating.value.trim()
-        ? Number.parseFloat(videoRating.value)
+      const parsedRating = videoForm.rating.trim()
+        ? Number.parseFloat(videoForm.rating)
         : 0
       envelope = {
         kind: 'video',
         patch: {
-          is_episode: videoIsEpisode.value,
-          title: videoTitle.value,
-          original_title: videoOriginalTitle.value,
-          show_title: videoShowTitle.value,
-          season_number: parseClearableInt(videoSeason.value),
-          episode_number: parseOptInt(videoEpisode.value, 0),
-          year: parseOptInt(videoYear.value, 0),
+          is_episode: videoForm.isEpisode,
+          title: videoForm.title,
+          original_title: videoForm.originalTitle,
+          show_title: videoForm.showTitle,
+          season_number: parseClearableInt(videoForm.season),
+          episode_number: parseOptInt(videoForm.episode, 0),
+          year: parseOptInt(videoForm.year, 0),
           rating: Number.isFinite(parsedRating) && parsedRating > 0 ? parsedRating : 0,
-          studio: videoStudio.value,
-          directors: splitListTokens(videoDirectors.value),
-          actors: splitListTokens(videoActors.value),
-          genres: splitListTokens(videoGenres.value),
-          tags: splitListTokens(videoTags.value),
-          tmdb_id: videoTmdbId.value,
-          bangumi_id: videoBangumiId.value,
-          summary: videoSummary.value,
-          locked_fields: videoLockedFields.value,
+          studio: videoForm.studio,
+          directors: splitListTokens(videoForm.directors),
+          actors: splitListTokens(videoForm.actors),
+          genres: splitListTokens(videoForm.genres),
+          tags: splitListTokens(videoForm.tags),
+          tmdb_id: videoForm.tmdbId,
+          bangumi_id: videoForm.bangumiId,
+          summary: videoForm.summary,
+          locked_fields: videoForm.lockedFields,
         },
       }
     }
@@ -941,7 +855,7 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
                 <span>{{ txt.actions.uploadFanart }}</span>
               </button>
               <button
-                v-if="videoIsEpisode"
+                v-if="videoForm.isEpisode"
                 type="button"
                 :disabled="uploadingArtwork"
                 class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
@@ -977,843 +891,34 @@ async function saveMetadata(syncArchivePath = false): Promise<void> {
         {{ errorMsg }}
       </div>
 
-      <!-- 1. MUSIC FORM -->
-      <div v-if="detail.metadata.kind === 'music'" class="space-y-3">
-        <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">曲目标题 (Title)</span>
-            <input
-              v-model="musicTitle"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">歌手 / 艺术家 (Artist)</span>
-            <input
-              v-model="musicArtist"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">专辑艺术家 (Album Artist)</span>
-            <input
-              v-model="musicAlbumArtist"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">专辑名称 (Album)</span>
-            <input
-              v-model="musicAlbum"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <div class="grid grid-cols-3 gap-2 sm:col-span-2">
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">音轨号</span>
-              <input
-                v-model="musicTrack"
-                type="number"
-                min="0"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">碟号</span>
-              <input
-                v-model="musicDisc"
-                type="number"
-                min="0"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">发行年份</span>
-              <input
-                v-model="musicYear"
-                type="number"
-                min="0"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-          </div>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">音乐流派 (Genre)</span>
-            <input
-              v-model="musicGenre"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">备注 (Comment)</span>
-            <input
-              v-model="musicComment"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-        </div>
+      <!-- Domain Metadata Forms -->
+      <InspectorMusicForm
+        v-if="detail.metadata.kind === 'music'"
+        :form="musicForm"
+        :sidecar-lrc-filename="detail.metadata.data.sidecar_lrc_filename"
+        :file-key="`${detail.entry.root_id}:${detail.entry.rel_path}`"
+      />
 
-        <!-- Dual Lyrics Editor (Embedded + Sidecar .lrc) -->
-        <div class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-canvas)] p-3">
-          <div class="mb-2 flex items-center justify-between gap-2">
-            <div class="flex items-center gap-1 rounded-xl bg-[var(--ctp-mantle)] p-1">
-              <button
-                type="button"
-                class="rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
-                :class="
-                  lyricsTab === 'embedded'
-                    ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                    : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-                "
-                @click="lyricsTab = 'embedded'"
-              >
-                内嵌歌词 ({{ musicEmbeddedLyrics.trim() ? '已有' : '空' }})
-              </button>
-              <button
-                type="button"
-                class="rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
-                :class="
-                  lyricsTab === 'sidecar'
-                    ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                    : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-                "
-                @click="lyricsTab = 'sidecar'"
-              >
-                外挂 .lrc ({{ musicSidecarLrc.trim() ? '已有' : '空' }})
-              </button>
-            </div>
+      <InspectorVideoForm
+        v-else-if="detail.metadata.kind === 'video'"
+        :form="videoForm"
+      />
 
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)]"
-              title="将当前面板歌词同步复制到另一侧"
-              @click="syncLyricsBothWays"
-            >
-              <LuCopy class="h-3 w-3" />
-              <span>同步到{{ lyricsTab === 'embedded' ? ' .lrc' : '内嵌' }}</span>
-            </button>
-          </div>
+      <InspectorComicForm
+        v-else-if="detail.metadata.kind === 'comic'"
+        :form="comicForm"
+      />
 
-          <textarea
-            v-if="lyricsTab === 'embedded'"
-            v-model="musicEmbeddedLyrics"
-            rows="7"
-            placeholder="[00:12.30] 支持直接写入音频文件内嵌 USLT / Vorbis Lyrics 标签…"
-            class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/45 p-2.5 font-mono text-xs leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-          />
-          <textarea
-            v-else
-            v-model="musicSidecarLrc"
-            rows="7"
-            :placeholder="`保存时将原子写入同名歌词文件 ${detail.metadata.data.sidecar_lrc_filename}（留空则删除外挂 .lrc）…`"
-            class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/45 p-2.5 font-mono text-xs leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-          />
-        </div>
-      </div>
-
-      <!-- 2. VIDEO FORM -->
-      <div v-else-if="detail.metadata.kind === 'video'" class="space-y-3">
-        <div class="flex items-center gap-1 rounded-xl bg-[var(--ctp-canvas)] p-1 border border-[var(--ctp-surface0)]/75">
-          <button
-            type="button"
-            class="flex-1 rounded-lg py-1.5 text-xs font-semibold transition"
-            :class="
-              !videoIsEpisode
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-            "
-            @click="videoIsEpisode = false"
-          >
-            电影 NFO (&lt;movie&gt;)
-          </button>
-          <button
-            type="button"
-            class="flex-1 rounded-lg py-1.5 text-xs font-semibold transition"
-            :class="
-              videoIsEpisode
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-            "
-            @click="videoIsEpisode = true"
-          >
-            剧集单集 NFO (&lt;episodedetails&gt;)
-          </button>
-        </div>
-
-        <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">
-                {{ videoIsEpisode ? '单集标题 (Episode Title)' : '电影标题 (Title)' }}
-              </span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁标题（锁定后刮削跳过覆盖，写入 NFO lockedfields）"
-                @click="toggleVideoFieldLock('title')"
-              >
-                <LuLock v-if="isVideoFieldLocked('title')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-                <span>{{ isVideoFieldLocked('title') ? '已锁定' : '' }}</span>
-              </button>
-            </div>
-            <input
-              v-model="videoTitle"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div v-if="videoIsEpisode" class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">所属剧集名 (Show Title)</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('show_title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁剧集名"
-                @click="toggleVideoFieldLock('show_title')"
-              >
-                <LuLock v-if="isVideoFieldLocked('show_title')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoShowTitle"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">原名 (Original Title)</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('original_title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁原名"
-                @click="toggleVideoFieldLock('original_title')"
-              >
-                <LuLock v-if="isVideoFieldLocked('original_title')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoOriginalTitle"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-
-          <div v-if="videoIsEpisode" class="grid grid-cols-2 gap-2 sm:col-span-2">
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">季号 (Season)</span>
-              <input
-                v-model="videoSeason"
-                type="number"
-                min="0"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">集号 (Episode)</span>
-              <input
-                v-model="videoEpisode"
-                type="number"
-                min="0"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-          </div>
-
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">年份 (Year)</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('year') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁年份"
-                @click="toggleVideoFieldLock('year')"
-              >
-                <LuLock v-if="isVideoFieldLocked('year')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoYear"
-              type="number"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">评分 (Rating)</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('rating') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁评分"
-                @click="toggleVideoFieldLock('rating')"
-              >
-                <LuLock v-if="isVideoFieldLocked('rating')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoRating"
-              type="number"
-              step="0.1"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">TMDB ID</span>
-            <input
-              v-model="videoTmdbId"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">Bangumi ID</span>
-            <input
-              v-model="videoBangumiId"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">导演（`/` 分隔）</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('directors') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁导演"
-                @click="toggleVideoFieldLock('directors')"
-              >
-                <LuLock v-if="isVideoFieldLocked('directors')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoDirectors"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">制片厂 / 动画制作</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('studio') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁制片厂"
-                @click="toggleVideoFieldLock('studio')"
-              >
-                <LuLock v-if="isVideoFieldLocked('studio')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoStudio"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">演员 / 声优（`/` 分隔）</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('actors') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁演员"
-                @click="toggleVideoFieldLock('actors')"
-              >
-                <LuLock v-if="isVideoFieldLocked('actors')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoActors"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">类型 (Genres)</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('genres') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁类型"
-                @click="toggleVideoFieldLock('genres')"
-              >
-                <LuLock v-if="isVideoFieldLocked('genres')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoGenres"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 (Tags)</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('tags') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁标签"
-                @click="toggleVideoFieldLock('tags')"
-              >
-                <LuLock v-if="isVideoFieldLocked('tags')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="videoTags"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">剧情简介 (Plot)</span>
-              <button
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isVideoFieldLocked('summary') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁简介"
-                @click="toggleVideoFieldLock('summary')"
-              >
-                <LuLock v-if="isVideoFieldLocked('summary')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <textarea
-              v-model="videoSummary"
-              rows="5"
-              class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2.5 text-xs leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-        </div>
-      </div>
-
-      <!-- 3. COMIC FORM -->
-      <div v-else-if="detail.metadata.kind === 'comic'" class="space-y-2.5">
-        <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">系列 / 部名 (Series，对应一级连载目录)</span>
-            <input
-              v-model="comicSeries"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">总系列 / 系列组 (SeriesGroup，分多部作品选填)</span>
-            <input
-              v-model="comicSeriesGroup"
-              type="text"
-              placeholder="如：JOJO的奇妙冒险（单部作品留空）"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">话/卷标题 (Title)</span>
-            <input
-              v-model="comicTitle"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <div class="grid grid-cols-3 gap-2 sm:col-span-2">
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">话号 (Number)</span>
-              <input
-                v-model="comicNumber"
-                type="text"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">卷号 (Volume)</span>
-              <input
-                v-model="comicVolume"
-                type="number"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">年份</span>
-              <input
-                v-model="comicYear"
-                type="number"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </label>
-          </div>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">原作者 / 编剧 (Writer)</span>
-            <input
-              v-model="comicWriters"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">作画 (Penciller)</span>
-            <input
-              v-model="comicPencillers"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">出版社</span>
-            <input
-              v-model="comicPublisher"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <div class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">阅读方向</span>
-            <AppSelect v-model="comicDirection" :options="directionOptions" />
-          </div>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">分类 (Genre)</span>
-            <input
-              v-model="comicGenres"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 (Tags)</span>
-            <input
-              v-model="comicTags"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-          <label class="block sm:col-span-2">
-            <span class="mb-1 block text-[11px] font-medium text-[var(--ctp-subtext0)]">简介 (Summary)</span>
-            <textarea
-              v-model="comicSummary"
-              rows="5"
-              class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2.5 text-xs leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </label>
-        </div>
-      </div>
-
-      <!-- 4. BOOK FORM -->
-      <div v-else-if="detail.metadata.kind === 'book'" class="space-y-2.5">
-        <div
-          v-if="detail.metadata.data.format !== 'epub'"
-          class="flex items-center gap-2 rounded-xl border border-[var(--ctp-accent)]/35 bg-[var(--ctp-accent-soft)]/50 px-3 py-2 text-xs text-[var(--ctp-accent)]"
-        >
-          <LuFileText class="h-4 w-4 shrink-0" />
-          <span>当前为 {{ detail.metadata.data.format.toUpperCase() }} 文件，单书目录按 Calibre 规范写入 metadata.opf / cover，多书混放目录写入同名旁路文件，归档移动自动同步。</span>
-        </div>
-
-        <div
-          v-if="detail.metadata.data.writable"
-          class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/55 px-3 py-1.5 text-[11px]"
-        >
-          <span class="flex items-center gap-1.5 text-[var(--ctp-subtext1)]">
-            <LuLock class="h-3.5 w-3.5 text-amber-500" />
-            <span>
-              防刮削字段锁：已锁
-              <strong class="text-[var(--ctp-text)]">{{ bookLockedFields.length }}</strong>
-              项（保存后单本/批量刮削均跳过被锁字段）
-            </span>
-          </span>
-          <div class="flex items-center gap-1.5">
-            <button
-              type="button"
-              class="rounded-md px-2 py-0.5 font-medium text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)]"
-              @click="lockFilledBookFields"
-            >
-              锁非空项
-            </button>
-            <button
-              v-if="bookLockedFields.length > 0"
-              type="button"
-              class="rounded-md px-2 py-0.5 font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
-              @click="bookLockedFields = []"
-            >
-              全部解锁
-            </button>
-          </div>
-        </div>
-
-        <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">书名 (dc:title)</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('title') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁书名字段"
-                @click="toggleBookFieldLock('title')"
-              >
-                <LuLock v-if="isBookFieldLocked('title')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="bookTitle"
-              :disabled="!detail.metadata.data.writable"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">作者 (dc:creator，`/` 分隔)</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('authors') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁作者字段"
-                @click="toggleBookFieldLock('authors')"
-              >
-                <LuLock v-if="isBookFieldLocked('authors')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="bookAuthors"
-              :disabled="!detail.metadata.data.writable"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-          <div class="grid grid-cols-1 gap-2 sm:col-span-2 sm:grid-cols-12">
-            <div class="block sm:col-span-5">
-              <div class="mb-1 flex items-center justify-between">
-                <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">系列 / 丛书 (Series)</span>
-                <button
-                  v-if="detail.metadata.data.writable"
-                  type="button"
-                  class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                  :class="isBookFieldLocked('series') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                  title="锁定/解锁系列字段"
-                  @click="toggleBookFieldLock('series')"
-                >
-                  <LuLock v-if="isBookFieldLocked('series')" class="h-3 w-3" />
-                  <LuUnlock v-else class="h-3 w-3" />
-                </button>
-              </div>
-              <input
-                v-model="bookSeries"
-                :disabled="!detail.metadata.data.writable"
-                type="text"
-                placeholder="如：三体 / 魔法禁书目录"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-              />
-            </div>
-            <div class="block sm:col-span-4">
-              <div class="mb-1 flex items-center justify-between">
-                <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">部 / 子系列 (Subseries)</span>
-                <button
-                  v-if="detail.metadata.data.writable"
-                  type="button"
-                  class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                  :class="isBookFieldLocked('subseries') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                  title="锁定/解锁子系列字段"
-                  @click="toggleBookFieldLock('subseries')"
-                >
-                  <LuLock v-if="isBookFieldLocked('subseries')" class="h-3 w-3" />
-                  <LuUnlock v-else class="h-3 w-3" />
-                </button>
-              </div>
-              <input
-                v-model="bookSubseries"
-                :disabled="!detail.metadata.data.writable"
-                type="text"
-                placeholder="选填，如：新约"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-              />
-            </div>
-            <div class="block sm:col-span-3">
-              <div class="mb-1 flex items-center justify-between">
-                <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">卷 / 册号 (Volume)</span>
-                <button
-                  v-if="detail.metadata.data.writable"
-                  type="button"
-                  class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                  :class="isBookFieldLocked('series_index') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                  title="锁定/解锁卷册号字段"
-                  @click="toggleBookFieldLock('series_index')"
-                >
-                  <LuLock v-if="isBookFieldLocked('series_index')" class="h-3 w-3" />
-                  <LuUnlock v-else class="h-3 w-3" />
-                </button>
-              </div>
-              <input
-                v-model="bookSeriesIndex"
-                :disabled="!detail.metadata.data.writable"
-                type="text"
-                placeholder="如：1 / 2.5"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-              />
-            </div>
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">ISBN</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('isbn') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁 ISBN"
-                @click="toggleBookFieldLock('isbn')"
-              >
-                <LuLock v-if="isBookFieldLocked('isbn')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="bookIsbn"
-              :disabled="!detail.metadata.data.writable"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">出版社 (dc:publisher)</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('publisher') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁出版社"
-                @click="toggleBookFieldLock('publisher')"
-              >
-                <LuLock v-if="isBookFieldLocked('publisher')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="bookPublisher"
-              :disabled="!detail.metadata.data.writable"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">出版日期 (dc:date)</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('published_at') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁出版日期"
-                @click="toggleBookFieldLock('published_at')"
-              >
-                <LuLock v-if="isBookFieldLocked('published_at')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="bookPublishedAt"
-              :disabled="!detail.metadata.data.writable"
-              type="text"
-              placeholder="YYYY-MM-DD"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-          <div class="block">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">语言 (dc:language)</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('language') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁语言"
-                @click="toggleBookFieldLock('language')"
-              >
-                <LuLock v-if="isBookFieldLocked('language')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="bookLanguage"
-              :disabled="!detail.metadata.data.writable"
-              type="text"
-              placeholder="zh / en / ja"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">标签 / 主题 (dc:subject，`/` 分隔)</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('tags') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁标签"
-                @click="toggleBookFieldLock('tags')"
-              >
-                <LuLock v-if="isBookFieldLocked('tags')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <input
-              v-model="bookTags"
-              :disabled="!detail.metadata.data.writable"
-              type="text"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-          <div class="block sm:col-span-2">
-            <div class="mb-1 flex items-center justify-between">
-              <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">内容简介 (dc:description)</span>
-              <button
-                v-if="detail.metadata.data.writable"
-                type="button"
-                class="inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[10px] transition"
-                :class="isBookFieldLocked('description') ? 'bg-amber-500/15 font-semibold text-amber-500' : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'"
-                title="锁定/解锁内容简介"
-                @click="toggleBookFieldLock('description')"
-              >
-                <LuLock v-if="isBookFieldLocked('description')" class="h-3 w-3" />
-                <LuUnlock v-else class="h-3 w-3" />
-              </button>
-            </div>
-            <textarea
-              v-model="bookDescription"
-              :disabled="!detail.metadata.data.writable"
-              rows="5"
-              class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2.5 text-xs leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-55"
-            />
-          </div>
-        </div>
-      </div>
+      <InspectorBookForm
+        v-else-if="detail.metadata.kind === 'book'"
+        :form="bookForm"
+        :book-format="detail.metadata.data.format"
+        :writable="detail.metadata.data.writable"
+        :is-epub="detail.entry.extension === 'epub'"
+        :has-cover="detail.metadata.data.has_cover"
+        :polishing-book="polishingBook"
+        @polish="handlePolishBook"
+      />
     </div>
 
     <!-- Bottom Sticky Save Bar -->
