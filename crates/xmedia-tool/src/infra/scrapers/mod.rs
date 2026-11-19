@@ -6,6 +6,7 @@ pub mod cn_novel_common;
 pub mod douban;
 pub mod faloo;
 pub mod fanqie;
+pub mod hanime1;
 pub mod http_client;
 pub mod itunes;
 pub mod jjwxc;
@@ -18,6 +19,7 @@ pub mod migu;
 pub mod musicbrainz;
 pub mod neodb;
 pub mod netease;
+pub mod nhentai;
 pub mod openlibrary;
 pub mod qidian;
 pub mod qimao;
@@ -66,7 +68,9 @@ pub fn build_default_scraper_providers() -> Vec<Arc<dyn ScraperProviderPort>> {
         Arc::new(bangumi::BangumiProvider),
         Arc::new(anilist::AniListProvider),
         Arc::new(mangadex::MangaDexProvider),
+        Arc::new(nhentai::NhentaiProvider),
         Arc::new(tmdb::TmdbProvider),
+        Arc::new(hanime1::Hanime1Provider),
     ]
 }
 
@@ -85,9 +89,9 @@ mod tests {
     };
 
     #[test]
-    fn default_registry_exposes_twenty_six_providers_and_checks_tmdb_credentials() {
+    fn default_registry_exposes_twenty_eight_providers_and_checks_credentials_and_adult_gate() {
         let providers = build_default_scraper_providers();
-        assert_eq!(providers.len(), 26);
+        assert_eq!(providers.len(), 28);
 
         let empty_creds = ProviderCredentials::default();
         let configured_ids: Vec<String> = providers
@@ -130,7 +134,19 @@ mod tests {
             tmdb_api_key: Some("0123456789abcdef0123456789abcdef".into()),
             ..Default::default()
         };
-        assert!(providers.iter().all(|p| p.is_configured(&with_tmdb)));
+        let without_adult_ids: Vec<String> = providers
+            .iter()
+            .filter(|p| !p.is_configured(&with_tmdb))
+            .map(|p| p.descriptor().id)
+            .collect();
+        assert_eq!(without_adult_ids, vec!["nhentai", "hanime1"]);
+
+        let with_all = ProviderCredentials {
+            tmdb_api_key: Some("0123456789abcdef0123456789abcdef".into()),
+            enable_adult_scrapers: true,
+            ..Default::default()
+        };
+        assert!(providers.iter().all(|p| p.is_configured(&with_all)));
     }
 
     #[test]

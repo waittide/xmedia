@@ -9,6 +9,7 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import AppSwitch from '@/components/ui/AppSwitch.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
 import { toolApi } from '../../api'
 import { formatBytes } from '../../i18n'
@@ -59,6 +60,7 @@ const cachePresets = [
 const tmdbKeyInput = ref('')
 const bangumiTokenInput = ref('')
 const proxyInput = ref('')
+const enableAdultScrapers = ref(false)
 const scrapeLocale = ref('zh-CN')
 const cacheDays = ref(7)
 const cacheHours = ref(0)
@@ -84,9 +86,9 @@ const priorities = ref<ScraperPrioritiesDto>({
     'anilist',
     'openlibrary',
   ],
-  comic: ['bangumi', 'douban', 'neodb', 'anilist'],
+  comic: ['bangumi', 'douban', 'neodb', 'anilist', 'mangadex', 'nhentai'],
   music: ['qq', 'netease', 'kugou', 'kuwo', 'migu', 'taihe', 'qishui', 'itunes', 'bangumi', 'musicbrainz', 'lrclib'],
-  video: ['tmdb', 'bangumi'],
+  video: ['tmdb', 'bangumi', 'hanime1'],
 })
 
 const computedCacheTtlMs = computed<number>(() => {
@@ -120,6 +122,7 @@ watch(
   (s) => {
     if (!s) return
     proxyInput.value = s.http_proxy ?? ''
+    enableAdultScrapers.value = Boolean(s.enable_adult_scrapers)
     scrapeLocale.value = s.default_scrape_locale || 'zh-CN'
     hydrateCacheDurationFromMs(s.scrape_cache_ttl_ms)
     priorities.value = {
@@ -225,6 +228,7 @@ async function handleSaveSettings(): Promise<void> {
         ? bangumiTokenInput.value.trim()
         : undefined,
       http_proxy: proxyInput.value,
+      enable_adult_scrapers: enableAdultScrapers.value,
       default_scrape_locale: scrapeLocale.value,
       scrape_cache_ttl_ms: computedCacheTtlMs.value,
       scraper_priorities: normalizedPrio,
@@ -299,7 +303,7 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
                     : 'bg-amber-500/15 text-amber-500'
                 "
               >
-                {{ prov.configured ? '已就绪' : '需配置密钥' }}
+                {{ prov.configured ? '已就绪' : prov.requires_api_key ? '需配置密钥' : '未启用' }}
               </span>
             </div>
             <p class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
@@ -517,6 +521,21 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
         placeholder="输入 Bangumi 个人令牌（留空保持不变）"
         class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/60 px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
       />
+    </div>
+
+    <!-- R18 / Adult Scrapers Opt-in Toggle -->
+    <div
+      class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-3.5"
+    >
+      <div class="min-w-0 flex-1">
+        <div class="text-xs font-bold text-[var(--ctp-text)]">
+          启用 R18 / 成人向刮削源（nhentai / Hanime1）
+        </div>
+        <div class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
+          默认关闭以避免普通漫画与剧集批量刮削误匹配；开启后支持 nhentai（漫画）与 Hanime1（动漫），建议配合上方 HTTP 代理使用
+        </div>
+      </div>
+      <AppSwitch v-model="enableAdultScrapers" />
     </div>
 
     <!-- FFprobe Status -->

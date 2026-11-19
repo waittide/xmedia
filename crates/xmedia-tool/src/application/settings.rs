@@ -19,6 +19,7 @@ pub struct PublicSettingsDto {
     pub has_bangumi_token: bool,
     pub bangumi_token_masked: Option<String>,
     pub http_proxy: Option<String>,
+    pub enable_adult_scrapers: bool,
     pub rename_templates: RenameTemplates,
     pub scraper_priorities: ScraperPriorities,
     pub default_scrape_locale: String,
@@ -38,6 +39,7 @@ pub struct UpdateSettingsInput {
     pub tmdb_api_key: Option<String>,
     pub bangumi_access_token: Option<String>,
     pub http_proxy: Option<String>,
+    pub enable_adult_scrapers: Option<bool>,
     pub rename_templates: Option<RenameTemplates>,
     pub scraper_priorities: Option<ScraperPriorities>,
     pub default_scrape_locale: Option<String>,
@@ -159,6 +161,9 @@ impl ToolSettingsService {
             let trimmed = proxy.trim();
             settings.credentials.http_proxy = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
+        if let Some(enable_adult) = input.enable_adult_scrapers {
+            settings.credentials.enable_adult_scrapers = enable_adult;
+        }
         if let Some(tpl) = input.rename_templates {
             settings.rename_templates = tpl;
         }
@@ -211,6 +216,7 @@ impl ToolSettingsService {
                 .is_some_and(|t| !t.trim().is_empty()),
             bangumi_token_masked: mask_secret(s.credentials.bangumi_access_token.as_deref()),
             http_proxy: s.credentials.http_proxy,
+            enable_adult_scrapers: s.credentials.enable_adult_scrapers,
             rename_templates: s.rename_templates,
             scraper_priorities: s.scraper_priorities,
             default_scrape_locale: s.default_scrape_locale,

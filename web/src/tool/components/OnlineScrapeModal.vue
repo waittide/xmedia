@@ -989,9 +989,9 @@ async function runBatchAutoScrape(): Promise<void> {
                 >
                   #{{ enabledProviderIds.indexOf(prov.id) + 1 }}
                 </span>
-                <LuKey v-else-if="!prov.configured" class="h-3 w-3" />
+                <LuKey v-else-if="!prov.configured && prov.requires_api_key" class="h-3 w-3" />
                 <span>{{ prov.name }}</span>
-                <span v-if="!prov.configured" class="text-[10px]">(去配置)</span>
+                <span v-if="!prov.configured" class="text-[10px]">{{ prov.requires_api_key ? '(去配置)' : '(去启用)' }}</span>
               </button>
             </div>
           </div>

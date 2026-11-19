@@ -78,6 +78,7 @@ export interface PublicSettingsDto {
   has_bangumi_token: boolean
   bangumi_token_masked: string | null
   http_proxy: string | null
+  enable_adult_scrapers?: boolean
   rename_templates: RenameTemplatesDto
   scraper_priorities: ScraperPrioritiesDto
   default_scrape_locale: string
@@ -96,6 +97,7 @@ export interface UpdateToolSettingsInput {
   tmdb_api_key?: string
   bangumi_access_token?: string
   http_proxy?: string
+  enable_adult_scrapers?: boolean
   rename_templates?: RenameTemplatesDto
   scraper_priorities?: ScraperPrioritiesDto
   default_scrape_locale?: string

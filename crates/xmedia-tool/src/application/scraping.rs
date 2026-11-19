@@ -1450,7 +1450,15 @@ impl ScrapingOrchestratorService {
             ));
         }
         let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
-        let allowed = host.ends_with(".doubanio.com")
+        let allowed_domain = host.ends_with(".doubanio.com")
+            || host == "nhentai.net"
+            || host.ends_with(".nhentai.net")
+            || host == "hanime1.me"
+            || host.ends_with(".hanime1.me")
+            || host == "hembed.com"
+            || host.ends_with(".hembed.com")
+            || host.ends_with(".hanime1.com");
+        let allowed = allowed_domain
             && host
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
@@ -1479,6 +1487,13 @@ async fn download_image_bytes(
     let mut req = client.get(url);
     if url.contains(".doubanio.com/") {
         req = req.header(reqwest::header::REFERER, "https://book.douban.com/");
+    } else if url.contains(".nhentai.net/") || url.contains("://nhentai.net/") {
+        req = req.header(reqwest::header::REFERER, "https://nhentai.net/");
+    } else if url.contains("hanime1.me/")
+        || url.contains(".hembed.com/")
+        || url.contains(".hanime1.com/")
+    {
+        req = req.header(reqwest::header::REFERER, "https://hanime1.me/");
     }
     let resp = req
         .send()

@@ -265,7 +265,14 @@ export function buildEpubAssetUrl(rootId: string, relPath: string, assetPath: st
 
 export function resolveScraperCoverUrl(rawUrl: string | null | undefined): string {
   if (!rawUrl) return ''
-  if (rawUrl.includes('.doubanio.com/')) {
+  if (
+    rawUrl.includes('.doubanio.com/') ||
+    rawUrl.includes('.nhentai.net/') ||
+    rawUrl.includes('://nhentai.net/') ||
+    rawUrl.includes('hanime1.me/') ||
+    rawUrl.includes('.hembed.com/') ||
+    rawUrl.includes('.hanime1.com/')
+  ) {
     const params = new URLSearchParams({ url: rawUrl })
     const tok = getToolToken()
     if (tok) {

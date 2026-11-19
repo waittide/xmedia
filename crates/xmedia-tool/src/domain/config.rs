@@ -18,6 +18,9 @@ pub struct ProviderCredentials {
     pub http_proxy: Option<String>,
     #[serde(default)]
     pub user_agent: Option<String>,
+    /// Opt-in gate for adult/R18 metadata scrapers (e.g. nhentai, Hanime1). Default: false.
+    #[serde(default)]
+    pub enable_adult_scrapers: bool,
     #[serde(default)]
     pub extra: BTreeMap<String, String>,
 }
@@ -27,6 +30,10 @@ impl ProviderCredentials {
         self.tmdb_api_key
             .as_deref()
             .is_some_and(|k| !k.trim().is_empty())
+    }
+
+    pub fn adult_scrapers_enabled(&self) -> bool {
+        self.enable_adult_scrapers
     }
 
     pub fn get_extra(&self, key: &str) -> Option<&str> {
@@ -137,6 +144,7 @@ fn default_comic_priority() -> Vec<String> {
         "neodb".to_string(),
         "anilist".to_string(),
         "mangadex".to_string(),
+        "nhentai".to_string(),
     ]
 }
 
@@ -157,7 +165,11 @@ fn default_music_priority() -> Vec<String> {
 }
 
 fn default_video_priority() -> Vec<String> {
-    vec!["tmdb".to_string(), "bangumi".to_string()]
+    vec![
+        "tmdb".to_string(),
+        "bangumi".to_string(),
+        "hanime1".to_string(),
+    ]
 }
 
 impl Default for ScraperPriorities {
