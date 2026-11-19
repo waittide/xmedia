@@ -29,8 +29,6 @@ import {
   LuQuote,
   LuRedo2,
   LuRefreshCw,
-  LuReplace,
-  LuReplaceAll,
   LuSave,
   LuScissors,
   LuSearch,
@@ -44,6 +42,9 @@ import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useThemeStore } from '@/stores/theme'
 import { buildEpubAssetUrl, toolApi } from '../api'
+import BookEditorCssPanel, { cssPresets } from './book-editor/BookEditorCssPanel.vue'
+import BookEditorFindReplaceBar from './book-editor/BookEditorFindReplaceBar.vue'
+import BookEditorProofreadPanel from './book-editor/BookEditorProofreadPanel.vue'
 import BookEditorTocSidebar from './book-editor/BookEditorTocSidebar.vue'
 import {
   countNonWhitespace,
@@ -140,55 +141,13 @@ const replaceQuery = ref('')
 const findScope = ref<'chapter' | 'book'>('chapter')
 const findUseRegex = ref(false)
 const findCaseSensitive = ref(false)
-const findInputRef = ref<HTMLInputElement | null>(null)
+const findBarRef = ref<InstanceType<typeof BookEditorFindReplaceBar> | null>(null)
 
 // Proofreading & Chinese Conversion Toolbox + CSS Theme Drawer + Image Upload
 const proofreadPanelOpen = ref(false)
 const cssPanelOpen = ref(false)
 const transformScope = ref<'book' | 'chapter'>('book')
-const cleanWebnovelAds = ref(true)
-const normalizePunctuation = ref(true)
-const convertCornerQuotes = ref(false)
-const customStripRulesOpen = ref(false)
-const CUSTOM_RULES_STORAGE_KEY = 'xmedia.book.customStripPatterns.v1'
-const customStripRulesText = ref(
-  typeof window !== 'undefined' ? window.localStorage.getItem(CUSTOM_RULES_STORAGE_KEY) ?? '' : '',
-)
 const epubImageInputRef = ref<HTMLInputElement | null>(null)
-
-watch(customStripRulesText, (val) => {
-  if (typeof window !== 'undefined') {
-    window.localStorage.setItem(CUSTOM_RULES_STORAGE_KEY, val)
-  }
-})
-
-const cssPresets = [
-  {
-    id: 'balanced',
-    label: '默认均衡衬线',
-    desc: '正文宋体/思源宋体 · 1.85 行高 · 首行缩进 2 字',
-    css: `body {\n  font-family: "Noto Serif CJK SC", "Songti SC", "PingFang SC", Georgia, serif;\n  line-height: 1.85;\n  margin: 0;\n  padding: 1.2em 1.4em;\n  word-wrap: break-word;\n}\nh1, h2, h3 {\n  line-height: 1.35;\n  margin: 1.2em 0 0.8em;\n  font-weight: 700;\n}\np {\n  margin: 0 0 0.85em;\n  text-indent: 2em;\n  text-align: justify;\n}\nfigure, .cover-wrap {\n  text-align: center;\n  margin: 1em 0;\n}\nimg {\n  max-width: 100%;\n  height: auto;\n}`,
-  },
-  {
-    id: 'classic',
-    label: '古典宣纸宋刻',
-    desc: '章题底纹装饰 · 宽松舒朗段距 · 典籍与古风长篇优选',
-    css: `body {\n  font-family: "Songti SC", "STSong", "Noto Serif CJK SC", "SimSun", serif;\n  line-height: 2.0;\n  letter-spacing: 0.03em;\n  margin: 0;\n  padding: 1.4em 1.6em;\n}\nh1, h2 {\n  font-weight: 700;\n  text-align: center;\n  line-height: 1.4;\n  margin: 1.5em 0 1.1em;\n  padding-bottom: 0.45em;\n  border-bottom: 1px solid rgba(128, 128, 128, 0.28);\n}\np {\n  margin: 0 0 0.95em;\n  text-indent: 2em;\n  text-align: justify;\n}\nblockquote {\n  font-family: "Kaiti SC", "STKaiti", "FangSong", serif;\n  margin: 1em 1.2em;\n  padding-left: 0.8em;\n  border-left: 2px solid rgba(128, 128, 128, 0.4);\n}`,
-  },
-  {
-    id: 'modern',
-    label: '现代屏显黑体',
-    desc: '苹方/鸿蒙黑体 · 无衬线高清晰屏显 · 社科技术图书优选',
-    css: `body {\n  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;\n  line-height: 1.8;\n  margin: 0;\n  padding: 1.2em 1.5em;\n}\nh1, h2, h3 {\n  font-weight: 700;\n  line-height: 1.35;\n  margin: 1.3em 0 0.75em;\n}\np {\n  margin: 0 0 0.9em;\n  text-indent: 2em;\n  text-align: justify;\n}\ncode, pre {\n  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;\n  font-size: 0.9em;\n}`,
-  },
-  {
-    id: 'lightnovel',
-    label: '轻小说插图全屏',
-    desc: '插图自适应整屏防截断 · 紧凑对话节奏 · 日轻/网文优选',
-    css: `body {\n  font-family: "PingFang SC", "Noto Serif CJK SC", "Hiragino Sans GB", serif;\n  line-height: 1.82;\n  margin: 0;\n  padding: 1em 1.25em;\n}\nh1, h2 {\n  font-weight: 700;\n  line-height: 1.35;\n  margin: 1.1em 0 0.8em;\n}\np {\n  margin: 0 0 0.7em;\n  text-indent: 2em;\n}\nfigure {\n  margin: 0.8em auto;\n  text-align: center;\n  page-break-inside: avoid;\n  break-inside: avoid;\n}\nfigure img, img {\n  max-width: 100%;\n  max-height: 95vh;\n  object-fit: contain;\n  display: block;\n  margin: 0 auto;\n}`,
-  },
-]
-
 function showToast(msg: string): void {
   statusToast.value = msg
   if (toastTimer) clearTimeout(toastTimer)
@@ -793,22 +752,6 @@ async function runBackendTextTransform(
   }
 }
 
-function handleRunProofreadClean(): void {
-  const customPatterns = customStripRulesText.value
-    .split('\n')
-    .map((l) => l.trim())
-    .filter(Boolean)
-  void runBackendTextTransform(
-    {
-      clean_webnovel_ads: cleanWebnovelAds.value,
-      normalize_punctuation: normalizePunctuation.value,
-      convert_quotes_to_horizontal: convertCornerQuotes.value,
-      custom_strip_patterns: customPatterns,
-    },
-    '精校净化',
-  )
-}
-
 function triggerEpubImageUpload(): void {
   if (docFormat.value !== 'epub' || uploadingImage.value) return
   epubImageInputRef.value?.click()
@@ -1274,7 +1217,7 @@ function handleWorkbenchKeydown(ev: KeyboardEvent): void {
   } else if (mod && key === 'f') {
     ev.preventDefault()
     findBarOpen.value = true
-    void nextTick(() => findInputRef.value?.focus())
+    void nextTick(() => findBarRef.value?.focusFind())
   } else if (mod && ev.shiftKey && ev.key === 'Enter') {
     ev.preventDefault()
     void splitChapterAtCursor()
@@ -1739,246 +1682,43 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- Collapsible Proofreading & Zh/Vertical Conversion Toolbox -->
-          <div
+          <BookEditorProofreadPanel
             v-if="proofreadPanelOpen"
-            class="space-y-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] px-4 py-2.5 text-xs"
-          >
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <div class="inline-flex rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-0.5">
-                  <button
-                    type="button"
-                    class="rounded px-2 py-0.5 text-[11px] font-semibold"
-                    :class="transformScope === 'book' ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]' : 'text-[var(--ctp-subtext1)]'"
-                    @click="transformScope = 'book'"
-                  >
-                    全书范围
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded px-2 py-0.5 text-[11px] font-semibold"
-                    :class="transformScope === 'chapter' ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]' : 'text-[var(--ctp-subtext1)]'"
-                    @click="transformScope = 'chapter'"
-                  >
-                    仅当前章
-                  </button>
-                </div>
-
-                <button
-                  type="button"
-                  :disabled="transforming"
-                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
-                  title="OpenCC 级繁转简（含台港词汇转换，保护 XHTML 标签）"
-                  @click="runBackendTextTransform({ zh_direction: 't2s' }, '繁转简')"
-                >
-                  繁 → 简 (台港词库)
-                </button>
-                <button
-                  type="button"
-                  :disabled="transforming"
-                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
-                  title="简转繁（内置多音字词组消歧，避免后/发/干/里误转）"
-                  @click="runBackendTextTransform({ zh_direction: 's2t' }, '简转繁')"
-                >
-                  简 → 繁 (词组消歧)
-                </button>
-                <button
-                  type="button"
-                  :disabled="transforming"
-                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
-                  title="将台版/日版竖排 CSS 改为横排、直角引号「」改为弯引号，并在保存时同步 LTR 翻页方向"
-                  @click="runBackendTextTransform({ vertical_to_horizontal: true, convert_quotes_to_horizontal: true }, '竖排转横排')"
-                >
-                  竖排 → 横排 (CSS + 引号)
-                </button>
-              </div>
-
-              <button
-                type="button"
-                class="rounded p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
-                @click="proofreadPanelOpen = false"
-              >
-                <LuX class="h-3.5 w-3.5" />
-              </button>
-            </div>
-
-            <div class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--ctp-surface0)]/55 pt-2">
-              <div class="flex flex-wrap items-center gap-3">
-                <AppCheckbox v-model="cleanWebnovelAds" label="去网文求票/域名水印行" />
-                <AppCheckbox v-model="normalizePunctuation" label="中文标点规整 (弯引号/省略号/破折号)" />
-                <AppCheckbox v-model="convertCornerQuotes" label="直角引号「」→“”" />
-                <button
-                  type="button"
-                  class="text-[11px] font-medium text-[var(--ctp-accent)] hover:underline"
-                  @click="customStripRulesOpen = !customStripRulesOpen"
-                >
-                  {{ customStripRulesOpen ? '收起自定义正则' : '自定义净化正则' }}
-                </button>
-              </div>
-
-              <button
-                type="button"
-                :disabled="transforming"
-                class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-3 py-1 text-[11px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95 disabled:opacity-50"
-                @click="handleRunProofreadClean"
-              >
-                <LuSparkles class="h-3 w-3" />
-                <span>{{ transforming ? '处理中…' : '执行精校净化' }}</span>
-              </button>
-            </div>
-
-            <div v-if="customStripRulesOpen" class="pt-1">
-              <textarea
-                v-model="customStripRulesText"
-                rows="3"
-                placeholder="每行输入一条整行匹配剔除正则（自动保存在浏览器本地），例如：^.*本书由某某论坛整理.*$"
-                class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 font-mono text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </div>
-          </div>
+            :transform-scope="transformScope"
+            :transforming="transforming"
+            @update:transform-scope="transformScope = $event"
+            @run-transform="(opts, label) => runBackendTextTransform(opts, label)"
+            @close="proofreadPanelOpen = false"
+          />
 
           <!-- Collapsible Global EPUB CSS Presets & Stylesheet Editor -->
-          <div
+          <BookEditorCssPanel
             v-if="cssPanelOpen"
-            class="space-y-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] px-4 py-2.5 text-xs"
-          >
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="flex flex-wrap items-center gap-1.5">
-                <span class="font-semibold text-[var(--ctp-subtext1)]">中文排版预设：</span>
-                <button
-                  v-for="preset in cssPresets"
-                  :key="preset.id"
-                  type="button"
-                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
-                  :title="preset.desc"
-                  @click="applyCssPreset(preset.css, preset.label)"
-                >
-                  {{ preset.label }}
-                </button>
-              </div>
-              <button
-                type="button"
-                class="rounded p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
-                @click="cssPanelOpen = false"
-              >
-                <LuX class="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <textarea
-              v-model="primaryCssDraft"
-              rows="5"
-              spellcheck="false"
-              placeholder="编辑全局 EPUB CSS 样式表（保存 EPUB 或 TXT 转 EPUB 时自动写入样式文件，右侧预览分屏实时生效）…"
-              class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 font-mono text-[11px] leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-              @input="syncPrimaryCssDraftToStylesheets"
-            />
-          </div>
+            :model-value="primaryCssDraft"
+            @update:model-value="primaryCssDraft = $event; syncPrimaryCssDraftToStylesheets()"
+            @apply-preset="(css, label) => applyCssPreset(css, label)"
+            @close="cssPanelOpen = false"
+          />
 
           <!-- Collapsible Find & Replace Bar -->
-          <div
+          <BookEditorFindReplaceBar
             v-if="findBarOpen"
-            class="flex shrink-0 flex-wrap items-center gap-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] px-4 py-2 text-xs"
-          >
-            <input
-              ref="findInputRef"
-              v-model="findQuery"
-              type="text"
-              placeholder="查找内容…"
-              class="h-7 w-44 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 text-xs outline-none focus:border-[var(--ctp-accent)]"
-            />
-            <input
-              v-model="replaceQuery"
-              type="text"
-              placeholder="替换为…"
-              class="h-7 w-44 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 text-xs outline-none focus:border-[var(--ctp-accent)]"
-            />
-
-            <div class="inline-flex rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-0.5">
-              <button
-                type="button"
-                class="rounded px-2 py-0.5 text-[11px] font-semibold"
-                :class="
-                  findScope === 'chapter'
-                    ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                    : 'text-[var(--ctp-subtext1)]'
-                "
-                @click="findScope = 'chapter'"
-              >
-                当前章
-              </button>
-              <button
-                type="button"
-                class="rounded px-2 py-0.5 text-[11px] font-semibold"
-                :class="
-                  findScope === 'book'
-                    ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                    : 'text-[var(--ctp-subtext1)]'
-                "
-                @click="findScope = 'book'"
-              >
-                全书
-              </button>
-            </div>
-
-            <button
-              type="button"
-              class="rounded-lg border px-2 py-0.5 font-mono text-[11px] font-bold"
-              :class="
-                findCaseSensitive
-                  ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                  : 'border-[var(--ctp-surface0)] text-[var(--ctp-subtext0)]'
-              "
-              title="区分大小写"
-              @click="findCaseSensitive = !findCaseSensitive"
-            >
-              Aa
-            </button>
-            <button
-              type="button"
-              class="rounded-lg border px-2 py-0.5 font-mono text-[11px] font-bold"
-              :class="
-                findUseRegex
-                  ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                  : 'border-[var(--ctp-surface0)] text-[var(--ctp-subtext0)]'
-              "
-              title="使用正则表达式"
-              @click="findUseRegex = !findUseRegex"
-            >
-              .*
-            </button>
-
-            <span v-if="findQuery" class="font-mono text-[11px] text-[var(--ctp-subtext0)]">
-              {{ searchMatchSummary }}
-            </span>
-
-            <div class="ml-auto flex items-center gap-1.5">
-              <button
-                type="button"
-                :disabled="!findQuery"
-                class="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 text-[11px] font-medium text-[var(--ctp-text)] hover:border-[var(--ctp-accent)] disabled:opacity-45"
-                @click="handleReplaceSingle"
-              >
-                <LuReplace class="h-3 w-3" />
-                <span>替换当前</span>
-              </button>
-              <button
-                type="button"
-                :disabled="!findQuery"
-                class="inline-flex h-7 items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-2.5 text-[11px] font-semibold text-[var(--ctp-on-accent)] hover:opacity-95 disabled:opacity-45"
-                @click="handleReplaceAll"
-              >
-                <LuReplaceAll class="h-3 w-3" />
-                <span>全部替换</span>
-              </button>
-              <button
-                type="button"
-                class="rounded p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
-                @click="findBarOpen = false"
-              >
-                <LuX class="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
+            ref="findBarRef"
+            :find-query="findQuery"
+            :replace-query="replaceQuery"
+            :find-scope="findScope"
+            :find-case-sensitive="findCaseSensitive"
+            :find-use-regex="findUseRegex"
+            :search-match-summary="searchMatchSummary"
+            @update:find-query="findQuery = $event"
+            @update:replace-query="replaceQuery = $event"
+            @update:find-scope="findScope = $event"
+            @update:find-case-sensitive="findCaseSensitive = $event"
+            @update:find-use-regex="findUseRegex = $event"
+            @replace-single="handleReplaceSingle"
+            @replace-all="handleReplaceAll"
+            @close="findBarOpen = false"
+          />
 
           <!-- Chapter Title Header Input -->
           <div class="flex shrink-0 items-center gap-3 border-b border-[var(--ctp-surface0)]/55 px-6 py-2.5">
