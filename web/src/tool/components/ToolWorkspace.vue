@@ -53,6 +53,8 @@ import type {
 } from '../types'
 import BatchRenameModal from './BatchRenameModal.vue'
 import BookContentEditorModal from './BookContentEditorModal.vue'
+import ComicPageManagerModal from './ComicPageManagerModal.vue'
+import ComicSeriesToolsModal from './ComicSeriesToolsModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
 import ToolHomeView from './ToolHomeView.vue'
@@ -150,6 +152,9 @@ const scrapeQueueIndex = ref(0)
 const renameModalOpen = ref(false)
 const bookEditorOpen = ref(false)
 const bookEditorEntry = ref<MediaFileEntry | null>(null)
+const comicPageManagerOpen = ref(false)
+const comicPageManagerEntry = ref<MediaFileEntry | null>(null)
+const comicSeriesToolsOpen = ref(false)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -643,6 +648,15 @@ function openBookContentEditor(entry: MediaFileEntry): void {
   bookEditorEntry.value = entry
   bookEditorOpen.value = true
 }
+
+function openComicPageManager(entry: MediaFileEntry): void {
+  comicPageManagerEntry.value = entry
+  comicPageManagerOpen.value = true
+}
+
+const selectedComicEntries = computed(() =>
+  selectedEntriesForRename.value.filter((e) => e.media_kind === 'comic'),
+)
 
 async function handleBookContentSaved(updated: MediaFileDetail): Promise<void> {
   await handleDetailUpdated(updated, true)
@@ -1332,6 +1346,16 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
+                    v-if="selectedComicEntries.length > 0"
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+                    @click="comicSeriesToolsOpen = true"
+                  >
+                    <LuLayers class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                    <span>漫画系列工具 ({{ selectedComicEntries.length }})</span>
+                  </button>
+
+                  <button
                     type="button"
                     :disabled="selectedEntriesForRename.length === 0"
                     class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-45"
@@ -1568,6 +1592,16 @@ onBeforeUnmount(() => {
                   </button>
 
                   <button
+                    v-if="file.media_kind === 'comic'"
+                    type="button"
+                    class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                    title="漫画页面管理与体积瘦身"
+                    @click.stop="openComicPageManager(file)"
+                  >
+                    <LuImage class="h-4 w-4" />
+                  </button>
+
+                  <button
                     type="button"
                     class="shrink-0 rounded-xl p-2 text-[var(--ctp-subtext0)] opacity-80 transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
                     title="添加刮削任务（本地信息 → 高优先级源 → 低优先级源）"
@@ -1601,6 +1635,7 @@ onBeforeUnmount(() => {
             @updated="handleDetailUpdated"
             @open-scrape="(d) => openManualScrapeModal(d.entry)"
             @open-content-editor="openBookContentEditor"
+            @open-comic-pages="openComicPageManager"
           />
         </div>
       </main>
@@ -1637,6 +1672,21 @@ onBeforeUnmount(() => {
       @close="bookEditorOpen = false"
       @saved="handleBookContentSaved"
       @converted="handleTxtConvertedToEpub"
+    />
+
+    <ComicPageManagerModal
+      :open="comicPageManagerOpen"
+      :entry="comicPageManagerEntry"
+      @close="comicPageManagerOpen = false"
+      @saved="(d) => handleDetailUpdated(d, true)"
+    />
+
+    <ComicSeriesToolsModal
+      :open="comicSeriesToolsOpen"
+      :root-id="activeRootId"
+      :entries="selectedComicEntries"
+      @close="comicSeriesToolsOpen = false"
+      @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
     />
 
     <!-- Bottom-Right Floating Task Progress Panel (Click task jumps to Tasks View) -->
