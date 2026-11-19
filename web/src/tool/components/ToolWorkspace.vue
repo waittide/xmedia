@@ -1,17 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
-import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
-  LuAlertTriangle,
   LuArrowDown,
   LuArrowUp,
   LuBookOpen,
   LuCheckCircle2,
-  LuChevronDown,
   LuChevronRight,
   LuClapperboard,
-  LuClock,
   LuDisc3,
   LuFileSignature,
   LuFileText,
@@ -19,25 +15,13 @@ import {
   LuFolder,
   LuFolderOpen,
   LuFolderPlus,
-  LuHardDrive,
-  LuHome,
   LuImage,
   LuLayers,
-  LuLibrary,
   LuList,
-  LuLock,
-  LuMonitor,
-  LuMoon,
   LuMusic,
-  LuPanelLeftClose,
-  LuPanelLeftOpen,
   LuRadio,
   LuRefreshCw,
-  LuSearch,
-  LuSettings,
   LuSparkles,
-  LuSun,
-  LuWrench,
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
@@ -45,7 +29,6 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import FloatingTaskShelf from '@/components/ui/FloatingTaskShelf.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useDialogStore } from '@/stores/dialog'
-import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl, toolApi } from '../api'
 import { formatBytes, useToolText } from '../i18n'
@@ -69,7 +52,9 @@ import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
 import ToolHomeView from './ToolHomeView.vue'
 import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
+import ToolSidebar from './ToolSidebar.vue'
 import ToolTasksView from './ToolTasksView.vue'
+import ToolTopHeader from './ToolTopHeader.vue'
 
 defineProps<{
   status: ToolStatusDto | null
@@ -79,9 +64,7 @@ const emit = defineEmits<{
   lock: []
 }>()
 
-const { t } = useI18n()
 const dialogStore = useDialogStore()
-const themeStore = useThemeStore()
 const taskStore = useToolTaskStore()
 const txt = useToolText()
 
@@ -182,22 +165,11 @@ const mobileMenuOpen = ref(false)
 const activeDomain = ref<MediaKind>(loadSavedDomain())
 const completenessFilter = ref<CompletenessFilter>('all')
 const searchQuery = ref('')
-const searchInputRef = ref<HTMLInputElement | null>(null)
+const topHeaderRef = ref<InstanceType<typeof ToolTopHeader> | null>(null)
 const notifyingRescan = ref(false)
 let dirLoadSeq = 0
 let inspectSeq = 0
 let suppressHashSync = false
-
-// Collapsible sidebar groups (Server WorkspaceLayout style)
-const collapsedGroups = ref<Record<string, boolean>>({
-  roots: false,
-  folders: false,
-  filters: false,
-})
-
-function toggleGroupFold(groupId: string): void {
-  collapsedGroups.value[groupId] = !collapsedGroups.value[groupId]
-}
 
 const settings = ref<PublicSettingsDto | null>(null)
 const domainNavMemory = ref<Record<MediaKind, { rootId: string; relPath: string }>>({
@@ -287,12 +259,6 @@ const domainLabels = computed(() => txt.value.domainLabels[activeDomain.value])
 const domainRoots = computed<ManagedRootDto[]>(() =>
   (settings.value?.roots ?? []).filter((r) => r.default_kind === activeDomain.value),
 )
-
-const themeModeTooltip = computed(() => {
-  if (themeStore.themeMode === 'light') return `${t('theme.modeTitle')}: ${t('theme.light')}`
-  if (themeStore.themeMode === 'dark') return `${t('theme.modeTitle')}: ${t('theme.dark')}`
-  return `${t('theme.modeTitle')}: ${t('theme.system')}`
-})
 
 function isEntryComplete(e: MediaFileEntry): boolean {
   const c = e.completeness
@@ -499,12 +465,6 @@ function toggleSidebar(): void {
   }
   collapsed.value = !collapsed.value
   localStorage.setItem('xmedia_tool.sidebar_collapsed', collapsed.value ? '1' : '0')
-}
-
-function cycleThemeMode(): void {
-  const order = ['system', 'light', 'dark'] as const
-  const idx = order.indexOf(themeStore.themeMode)
-  themeStore.setThemeMode(order[(idx + 1) % order.length]!)
 }
 
 function syncDomainStateToMemory(dom: MediaKind, rootId: string, relPath: string): void {
@@ -1031,7 +991,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 function handleKeydown(ev: KeyboardEvent): void {
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
     ev.preventDefault()
-    searchInputRef.value?.focus()
+    topHeaderRef.value?.focusSearch()
     return
   }
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 's') {
@@ -1162,418 +1122,48 @@ onBeforeUnmount(() => {
   <div
     class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--ctp-shell)] text-[var(--ctp-text)]"
   >
-    <!-- Full-Width Top Bar (Aligned with Server WorkspaceLayout) -->
-    <header
-      class="flex h-16 shrink-0 items-center justify-between gap-3 bg-[var(--ctp-shell)] px-4 select-none sm:px-5"
-    >
-      <!-- Left: Sidebar Toggle + Accent Brand + 4-Domain Capsule Switcher -->
-      <div class="flex shrink-0 items-center gap-2.5">
-        <button
-          type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-          @click="toggleSidebar"
-        >
-          <LuPanelLeftOpen v-if="isCompact" class="h-[18px] w-[18px]" />
-          <LuPanelLeftClose v-else class="h-[18px] w-[18px]" />
-        </button>
+    <!-- Full-Width Top Bar -->
+    <ToolTopHeader
+      ref="topHeaderRef"
+      :is-compact="isCompact"
+      :active-domain="activeDomain"
+      :active-nav="activeNav"
+      :domain-tabs="domainTabs"
+      :search-query="searchQuery"
+      :search-placeholder="domainLabels.searchPlaceholder"
+      :status="status"
+      @toggle-sidebar="toggleSidebar"
+      @navigate-home="navigatePrimary('home')"
+      @switch-domain="switchDomain"
+      @update:search-query="searchQuery = $event"
+      @lock="emit('lock')"
+      @toggle-settings="activeNav === 'settings' ? exitSettings() : openSettingsTab('appearance')"
+    />
 
-        <button
-          type="button"
-          class="flex items-center gap-2.5 text-left outline-none transition hover:opacity-90"
-          @click="navigatePrimary('home')"
-        >
-          <div
-            class="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm"
-          >
-            <LuWrench class="h-[18px] w-[18px]" />
-          </div>
-          <div class="hidden lg:block">
-            <div class="text-sm leading-tight font-bold tracking-tight">{{ txt.brand }}</div>
-            <div class="text-[10px] text-[var(--ctp-subtext0)]">{{ txt.brandSub }}</div>
-          </div>
-        </button>
-
-        <!-- Unified 4-Domain Capsule Switcher -->
-        <div
-          class="ml-1 hidden items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/70 p-1 md:flex"
-        >
-          <button
-            v-for="tab in domainTabs"
-            :key="tab.value"
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition"
-            :class="
-              activeDomain === tab.value
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-xs'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
-            "
-            @click="switchDomain(tab.value)"
-          >
-            <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
-            <span>{{ tab.label }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Center: Pill Search Bar -->
-      <div class="relative mx-auto w-full max-w-xl">
-        <LuSearch
-          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--ctp-subtext0)]"
-        />
-        <input
-          ref="searchInputRef"
-          v-model="searchQuery"
-          type="text"
-          :placeholder="domainLabels.searchPlaceholder"
-          class="h-10 w-full rounded-full border border-[var(--ctp-surface0)]/90 bg-[var(--ctp-mantle)]/70 pr-14 pl-10 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none transition focus:border-[var(--ctp-accent)] focus:bg-[var(--ctp-canvas)]"
-        />
-        <kbd
-          v-if="!searchQuery"
-          class="pointer-events-none absolute top-1/2 right-3 hidden -translate-y-1/2 rounded-md border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)]/80 px-1.5 py-0.5 font-mono text-[10px] text-[var(--ctp-subtext0)] sm:inline"
-        >
-          ⌘K
-        </kbd>
-        <button
-          v-else
-          type="button"
-          class="absolute top-1/2 right-3 -translate-y-1/2 rounded-full p-0.5 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
-          @click="searchQuery = ''"
-        >
-          <LuX class="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      <!-- Right: ffprobe hint + Theme Mode + Settings + Lock -->
-      <div class="flex shrink-0 items-center gap-1.5">
-        <span
-          v-if="status && !status.ffmpeg.ffprobe_available"
-          class="hidden items-center gap-1 rounded-xl border border-amber-500/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-500 sm:inline-flex"
-          title="系统未检测到 ffprobe，视频编码/分辨率/音轨与字幕流详情探测将受限"
-        >
-          <LuAlertTriangle class="h-3.5 w-3.5" />
-          <span>无 ffprobe</span>
-        </span>
-
-        <button
-          type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-xl transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-          :class="
-            themeStore.themeMode === 'system'
-              ? 'bg-[var(--ctp-surface0)]/55 text-[var(--ctp-text)]'
-              : 'text-[var(--ctp-subtext1)]'
-          "
-          :title="themeModeTooltip"
-          @click="cycleThemeMode"
-        >
-          <LuMonitor v-if="themeStore.themeMode === 'system'" class="h-[18px] w-[18px]" />
-          <LuSun v-else-if="themeStore.themeMode === 'light'" class="h-[18px] w-[18px]" />
-          <LuMoon v-else class="h-[18px] w-[18px]" />
-        </button>
-
-        <button
-          v-if="status?.requires_password"
-          type="button"
-          class="flex h-9 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/80 px-2.5 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:border-amber-500/50 hover:text-amber-500"
-          :title="txt.actions.lock"
-          @click="emit('lock')"
-        >
-          <LuLock class="h-3.5 w-3.5" />
-          <span class="hidden md:inline">{{ txt.actions.lock }}</span>
-        </button>
-
-        <button
-          type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-xl transition"
-          :class="
-            activeNav === 'settings'
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
-          "
-          :title="txt.actions.settings"
-          :aria-label="txt.actions.settings"
-          @click="activeNav === 'settings' ? exitSettings() : openSettingsTab('appearance')"
-        >
-          <LuSettings class="h-[18px] w-[18px]" />
-        </button>
-      </div>
-    </header>
-
-    <!-- Middle Body: Server-Aligned Collapsible Sidebar + Flush Rounded Main Canvas -->
+    <!-- Middle Body: Collapsible Sidebar + Flush Rounded Main Canvas -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
-      <div
-        v-if="mobileMenuOpen"
-        class="fixed inset-0 z-30 bg-black/45 md:hidden"
-        @click="mobileMenuOpen = false"
+      <ToolSidebar
+        :mobile-menu-open="mobileMenuOpen"
+        :collapsed="collapsed"
+        :is-compact="isCompact"
+        :active-domain="activeDomain"
+        :active-nav="activeNav"
+        :domain-tabs="domainTabs"
+        :total-items="stats.total"
+        :domain-roots="domainRoots"
+        :active-root-id="activeRootId"
+        :snapshot="snapshot"
+        :completeness-filter="completenessFilter"
+        :filter-items="filterItems"
+        @close-mobile="mobileMenuOpen = false"
+        @switch-domain="switchDomain"
+        @navigate-primary="navigatePrimary"
+        @open-settings-roots="openSettingsTab('roots')"
+        @open-folders-view="setViewMode('folders'); navigatePrimary('items')"
+        @select-root="selectRoot"
+        @enter-folder="enterFolder"
+        @select-completeness-filter="selectCompletenessFilter"
       />
-
-      <!-- Left Sidebar (Aligned with Server WorkspaceLayout: Home / Items / Tasks -> Groups) -->
-      <aside
-        class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col border-r border-[var(--ctp-surface0)]/65 bg-[var(--ctp-shell)] transition-all duration-200 select-none md:static md:border-r-0"
-        :class="[
-          mobileMenuOpen ? 'w-64 translate-x-0' : '-translate-x-full md:translate-x-0',
-          collapsed ? 'md:w-16' : 'md:w-60',
-        ]"
-      >
-        <!-- Mobile 4-Domain Switcher Grid -->
-        <div
-          class="grid grid-cols-2 gap-1.5 border-b border-[var(--ctp-surface0)]/60 px-3 py-2.5 md:hidden"
-        >
-          <button
-            v-for="tab in domainTabs"
-            :key="`mob-${tab.value}`"
-            type="button"
-            class="flex items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-xs font-semibold transition"
-            :class="
-              activeDomain === tab.value
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                : 'bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)]'
-            "
-            @click="switchDomain(tab.value)"
-          >
-            <component :is="tab.icon" class="h-3.5 w-3.5 shrink-0" />
-            <span class="truncate">{{ tab.label }}</span>
-          </button>
-        </div>
-
-        <nav class="flex-1 space-y-0.5 overflow-y-auto px-3 pt-1 pb-4">
-          <!-- Fixed Top Primary Navigation: 首页 / 条目 / 任务 -->
-          <button
-            type="button"
-            class="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition"
-            :class="[
-              isCompact ? 'md:justify-center md:px-0' : '',
-              activeNav === 'home'
-                ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
-            ]"
-            :title="isCompact ? txt.nav.home : undefined"
-            @click="navigatePrimary('home')"
-          >
-            <LuHome class="h-4 w-4 shrink-0" />
-            <span v-if="!isCompact" class="truncate">{{ txt.nav.home }}</span>
-          </button>
-
-          <button
-            type="button"
-            class="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition"
-            :class="[
-              isCompact ? 'md:justify-center md:px-0' : '',
-              activeNav === 'items'
-                ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
-            ]"
-            :title="isCompact ? txt.nav.items : undefined"
-            @click="navigatePrimary('items')"
-          >
-            <LuLibrary class="h-4 w-4 shrink-0" />
-            <template v-if="!isCompact">
-              <span class="flex-1 truncate text-left">{{ txt.nav.items }}</span>
-              <span class="font-mono text-[11px] opacity-75">{{ stats.total }}</span>
-            </template>
-          </button>
-
-          <button
-            type="button"
-            class="relative flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition"
-            :class="[
-              isCompact ? 'md:justify-center md:px-0' : '',
-              activeNav === 'tasks'
-                ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]',
-            ]"
-            :title="isCompact ? txt.nav.tasks : undefined"
-            @click="navigatePrimary('tasks')"
-          >
-            <LuClock class="h-4 w-4 shrink-0" />
-            <template v-if="!isCompact">
-              <span class="flex-1 truncate text-left">{{ txt.nav.tasks }}</span>
-              <span
-                v-if="taskStore.activeCount > 0"
-                class="rounded-full bg-[var(--ctp-accent)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[var(--ctp-on-accent)]"
-              >
-                {{ taskStore.activeCount }}
-              </span>
-              <span
-                v-else-if="taskStore.persistentTasks.length > 0"
-                class="font-mono text-[11px] opacity-70"
-              >
-                {{ taskStore.persistentTasks.length }}
-              </span>
-            </template>
-            <span
-              v-else-if="taskStore.activeCount > 0"
-              class="absolute top-1.5 right-2 h-2 w-2 rounded-full bg-[var(--ctp-accent)]"
-            />
-          </button>
-
-          <!-- Compact Rail Icons for Sidebar Groups -->
-          <div
-            v-if="isCompact"
-            class="mt-3 hidden space-y-0.5 border-t border-[var(--ctp-surface0)]/55 pt-3 md:block"
-          >
-            <button
-              type="button"
-              class="flex w-full items-center justify-center rounded-xl py-2 text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-              :title="txt.roots.title"
-              @click="openSettingsTab('roots')"
-            >
-              <LuHardDrive class="h-4 w-4 shrink-0" />
-            </button>
-            <button
-              type="button"
-              class="flex w-full items-center justify-center rounded-xl py-2 text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-              :title="txt.roots.foldersTitle"
-              @click="setViewMode('folders'); navigatePrimary('items')"
-            >
-              <LuFolder class="h-4 w-4 shrink-0" />
-            </button>
-            <button
-              type="button"
-              class="flex w-full items-center justify-center rounded-xl py-2 text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-              :title="txt.filters.title"
-              @click="selectCompletenessFilter('incomplete')"
-            >
-              <LuCheckCircle2 class="h-4 w-4 shrink-0" />
-            </button>
-          </div>
-
-          <!-- Expanded Collapsible Sidebar Groups (Server WorkspaceLayout Style) -->
-          <template v-if="!isCompact">
-            <div class="mt-4 flex items-center justify-between border-t border-[var(--ctp-surface0)]/50 px-2 pt-3">
-              <span class="text-[10px] font-semibold tracking-wider text-[var(--ctp-subtext0)]/80 uppercase">
-                {{ txt.domains[activeDomain] }}
-              </span>
-            </div>
-
-            <!-- Group 1: Media Roots -->
-            <div class="pt-3">
-              <div class="mb-1 flex items-center justify-between px-2">
-                <button
-                  type="button"
-                  class="flex min-w-0 flex-1 items-center gap-1 rounded-md py-0.5 text-left text-[11px] font-semibold tracking-wider text-[var(--ctp-subtext0)] uppercase transition hover:text-[var(--ctp-text)]"
-                  @click="toggleGroupFold('roots')"
-                >
-                  <LuChevronRight v-if="collapsedGroups.roots" class="h-3 w-3 shrink-0" />
-                  <LuChevronDown v-else class="h-3 w-3 shrink-0" />
-                  <span class="truncate">{{ txt.roots.title }}</span>
-                </button>
-                <button
-                  type="button"
-                  class="rounded-md p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-accent)]"
-                  :title="txt.roots.add"
-                  @click="openSettingsTab('roots')"
-                >
-                  <LuFolderPlus class="h-3.5 w-3.5" />
-                </button>
-              </div>
-
-              <div v-if="!collapsedGroups.roots" class="space-y-0.5">
-                <div
-                  v-if="domainRoots.length === 0"
-                  class="px-3 py-1.5 text-[11px] text-[var(--ctp-subtext0)]"
-                >
-                  暂无目录，点击右上角 + 添加
-                </div>
-                <button
-                  v-for="r in domainRoots"
-                  :key="r.id"
-                  type="button"
-                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium transition"
-                  :class="
-                    activeRootId === r.id
-                      ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                      : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
-                  "
-                  :title="r.path"
-                  @click="selectRoot(r.id)"
-                >
-                  <LuHardDrive class="h-3.5 w-3.5 shrink-0" />
-                  <span class="flex-1 truncate text-left">{{ r.name }}</span>
-                </button>
-              </div>
-            </div>
-
-            <!-- Group 2: Subfolders -->
-            <div
-              v-if="snapshot && (snapshot.parent_rel_path !== null || snapshot.folders.length > 0)"
-              class="pt-3"
-            >
-              <div class="mb-1 flex items-center justify-between px-2">
-                <button
-                  type="button"
-                  class="flex min-w-0 flex-1 items-center gap-1 rounded-md py-0.5 text-left text-[11px] font-semibold tracking-wider text-[var(--ctp-subtext0)] uppercase transition hover:text-[var(--ctp-text)]"
-                  @click="toggleGroupFold('folders')"
-                >
-                  <LuChevronRight v-if="collapsedGroups.folders" class="h-3 w-3 shrink-0" />
-                  <LuChevronDown v-else class="h-3 w-3 shrink-0" />
-                  <span class="truncate">{{ txt.roots.foldersTitle }}</span>
-                </button>
-                <span class="font-mono text-[10px] text-[var(--ctp-subtext0)]">
-                  {{ snapshot.folders.length }}
-                </span>
-              </div>
-
-              <div v-if="!collapsedGroups.folders" class="space-y-0.5">
-                <button
-                  v-if="snapshot.parent_rel_path !== null"
-                  type="button"
-                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-                  @click="enterFolder(snapshot.parent_rel_path)"
-                >
-                  <LuArrowUp class="h-3.5 w-3.5 shrink-0" />
-                  <span class="truncate">{{ txt.roots.parentDir }}</span>
-                </button>
-
-                <button
-                  v-for="folder in snapshot.folders"
-                  :key="folder.rel_path"
-                  type="button"
-                  class="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-xs text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]"
-                  @click="enterFolder(folder.rel_path)"
-                >
-                  <LuFolder class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-accent)]" />
-                  <span class="flex-1 truncate text-left">{{ folder.name }}</span>
-                  <span class="font-mono text-[10px] opacity-70">{{ folder.media_file_count }}</span>
-                </button>
-              </div>
-            </div>
-
-            <!-- Group 3: Completeness Filters -->
-            <div class="pt-3">
-              <div class="mb-1 flex items-center justify-between px-2">
-                <button
-                  type="button"
-                  class="flex min-w-0 flex-1 items-center gap-1 rounded-md py-0.5 text-left text-[11px] font-semibold tracking-wider text-[var(--ctp-subtext0)] uppercase transition hover:text-[var(--ctp-text)]"
-                  @click="toggleGroupFold('filters')"
-                >
-                  <LuChevronRight v-if="collapsedGroups.filters" class="h-3 w-3 shrink-0" />
-                  <LuChevronDown v-else class="h-3 w-3 shrink-0" />
-                  <span class="truncate">{{ txt.filters.title }}</span>
-                </button>
-              </div>
-
-              <div v-if="!collapsedGroups.filters" class="space-y-0.5">
-                <button
-                  v-for="item in filterItems"
-                  :key="item.id"
-                  type="button"
-                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-xs font-medium transition"
-                  :class="
-                    activeNav === 'items' && completenessFilter === item.id
-                      ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                      : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/60 hover:text-[var(--ctp-text)]'
-                  "
-                  @click="selectCompletenessFilter(item.id)"
-                >
-                  <component :is="item.icon" class="h-3.5 w-3.5 shrink-0" />
-                  <span class="flex-1 truncate text-left">{{ item.label }}</span>
-                  <span class="font-mono text-[10px] opacity-75">{{ item.count }}</span>
-                </button>
-              </div>
-            </div>
-          </template>
-        </nav>
-      </aside>
 
       <!-- Main Rounded Canvas + Optional Right Metadata Inspector Drawer -->
       <main
