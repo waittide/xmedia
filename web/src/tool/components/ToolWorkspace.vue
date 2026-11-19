@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
   LuAlertTriangle,
+  LuArrowDown,
   LuArrowUp,
   LuBookOpen,
   LuCheckCircle2,
@@ -14,6 +15,7 @@ import {
   LuDisc3,
   LuFileSignature,
   LuFileText,
+  LuFilm,
   LuFolder,
   LuFolderOpen,
   LuFolderPlus,
@@ -26,8 +28,11 @@ import {
   LuLock,
   LuMonitor,
   LuMoon,
+  LuMusic,
   LuPanelLeftClose,
   LuPanelLeftOpen,
+  LuRadio,
+  LuRefreshCw,
   LuSearch,
   LuSettings,
   LuSparkles,
@@ -36,8 +41,10 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import FloatingTaskShelf from '@/components/ui/FloatingTaskShelf.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { useDialogStore } from '@/stores/dialog'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl, toolApi } from '../api'
@@ -73,12 +80,15 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const dialogStore = useDialogStore()
 const themeStore = useThemeStore()
 const taskStore = useToolTaskStore()
 const txt = useToolText()
 
 type PrimaryNavKey = 'home' | 'items' | 'tasks' | 'settings'
 type BrowseViewMode = 'flat' | 'folders'
+type SortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
+type SortDir = 'asc' | 'desc'
 type CompletenessFilter =
   | 'all'
   | 'complete'
@@ -88,8 +98,44 @@ type CompletenessFilter =
   | 'missing_tag'
 
 const VALID_DOMAINS: MediaKind[] = ['book', 'comic', 'music', 'video']
+const PAGE_CHUNK_SIZE = 100
+
+interface ParsedToolHash {
+  domain?: MediaKind
+  nav?: PrimaryNavKey
+  rootId?: string
+  relPath?: string
+  settingsTab?: ToolSettingsTab
+}
+
+function parseToolHash(): ParsedToolHash {
+  const raw = window.location.hash.replace(/^#\/?/, '')
+  if (!raw) return {}
+  const [pathPart, queryPart = ''] = raw.split('?')
+  const segs = (pathPart ?? '').split('/').filter(Boolean)
+  const out: ParsedToolHash = {}
+  if (segs[0] && VALID_DOMAINS.includes(segs[0] as MediaKind)) {
+    out.domain = segs[0] as MediaKind
+  }
+  if (segs[1] === 'home' || segs[1] === 'items' || segs[1] === 'tasks' || segs[1] === 'settings') {
+    out.nav = segs[1]
+  }
+  const params = new URLSearchParams(queryPart)
+  const root = params.get('root')
+  if (root) out.rootId = root
+  const path = params.get('path')
+  if (path !== null) out.relPath = path
+  const tab = params.get('tab')
+  if (tab === 'appearance' || tab === 'scrapers' || tab === 'roots' || tab === 'templates') {
+    out.settingsTab = tab
+  }
+  return out
+}
+
+const initialHash = parseToolHash()
 
 function loadSavedDomain(): MediaKind {
+  if (initialHash.domain) return initialHash.domain
   const saved = localStorage.getItem('xmedia_tool.active_domain') as MediaKind | null
   if (saved && VALID_DOMAINS.includes(saved)) {
     return saved
@@ -98,22 +144,49 @@ function loadSavedDomain(): MediaKind {
 }
 
 function loadSavedNav(): PrimaryNavKey {
+  if (initialHash.nav) return initialHash.nav
   const saved = localStorage.getItem('xmedia_tool.active_nav')
   if (saved === 'home' || saved === 'items' || saved === 'tasks') return saved
   return 'home'
 }
 
+function loadSavedSortField(): SortField {
+  const saved = localStorage.getItem('xmedia_tool.sort_field')
+  if (
+    saved === 'name' ||
+    saved === 'title' ||
+    saved === 'incomplete' ||
+    saved === 'size' ||
+    saved === 'modified'
+  ) {
+    return saved
+  }
+  return 'name'
+}
+
 const activeNav = ref<PrimaryNavKey>(loadSavedNav())
-const previousWorkspaceNav = ref<'home' | 'items' | 'tasks'>('home')
+const previousWorkspaceNav = ref<'home' | 'items' | 'tasks'>(
+  activeNav.value === 'settings' ? 'home' : activeNav.value,
+)
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
 const viewMode = ref<BrowseViewMode>(
   localStorage.getItem('xmedia_tool.view_mode') === 'folders' ? 'folders' : 'flat',
 )
+const sortField = ref<SortField>(loadSavedSortField())
+const sortDir = ref<SortDir>(
+  localStorage.getItem('xmedia_tool.sort_dir') === 'desc' ? 'desc' : 'asc',
+)
+const visibleLimit = ref(PAGE_CHUNK_SIZE)
+const lastSelectedRelPath = ref<string | null>(null)
 const mobileMenuOpen = ref(false)
 const activeDomain = ref<MediaKind>(loadSavedDomain())
 const completenessFilter = ref<CompletenessFilter>('all')
 const searchQuery = ref('')
 const searchInputRef = ref<HTMLInputElement | null>(null)
+const notifyingRescan = ref(false)
+let dirLoadSeq = 0
+let inspectSeq = 0
+let suppressHashSync = false
 
 // Collapsible sidebar groups (Server WorkspaceLayout style)
 const collapsedGroups = ref<Record<string, boolean>>({
@@ -148,7 +221,7 @@ const loadingInspector = ref(false)
 const artworkVersion = ref(1)
 const batchSummaryBanner = ref<string | null>(null)
 
-const settingsInitialTab = ref<ToolSettingsTab>('appearance')
+const settingsInitialTab = ref<ToolSettingsTab>(initialHash.settingsTab ?? 'appearance')
 const scrapeModalOpen = ref(false)
 const scrapeQueue = ref<MediaFileEntry[]>([])
 const scrapeQueueIndex = ref(0)
@@ -166,11 +239,40 @@ const dryRunModalOpen = ref(false)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
-function navigatePrimary(nav: 'home' | 'items' | 'tasks'): void {
+function syncHashFromState(replace = false): void {
+  if (suppressHashSync) return
+  const params = new URLSearchParams()
+  if (activeNav.value === 'settings') {
+    params.set('tab', settingsInitialTab.value)
+  } else {
+    if (activeRootId.value) params.set('root', activeRootId.value)
+    if (currentRelPath.value) params.set('path', currentRelPath.value)
+  }
+  const qs = params.toString()
+  const nextHash = `#/${activeDomain.value}/${activeNav.value}${qs ? `?${qs}` : ''}`
+  if (window.location.hash !== nextHash) {
+    if (replace) {
+      window.history.replaceState(null, '', nextHash)
+    } else {
+      window.history.pushState(null, '', nextHash)
+    }
+  }
+}
+
+async function navigatePrimary(nav: 'home' | 'items' | 'tasks'): Promise<void> {
+  if (
+    activeNav.value !== nav &&
+    (nav === 'tasks' || activeNav.value === 'settings') &&
+    inspectorRef.value &&
+    !(await inspectorRef.value.confirmDiscardIfDirty())
+  ) {
+    return
+  }
   activeNav.value = nav
   previousWorkspaceNav.value = nav
   localStorage.setItem('xmedia_tool.active_nav', nav)
   mobileMenuOpen.value = false
+  syncHashFromState()
 }
 
 const domainTabs = computed<Array<{ value: MediaKind; label: string; icon: Component }>>(() => [
@@ -269,12 +371,41 @@ const hasActiveSearchOrFilter = computed<boolean>(
   () => Boolean(searchQuery.value.trim()) || completenessFilter.value !== 'all',
 )
 
+const sortOptions = computed(() => [
+  { value: 'name', label: txt.value.sort.name },
+  { value: 'title', label: txt.value.sort.title },
+  { value: 'incomplete', label: txt.value.sort.incomplete },
+  { value: 'size', label: txt.value.sort.size },
+  { value: 'modified', label: txt.value.sort.modified },
+])
+
+function setSortField(field: SortField): void {
+  sortField.value = field
+  localStorage.setItem('xmedia_tool.sort_field', field)
+}
+
+function toggleSortDir(): void {
+  sortDir.value = sortDir.value === 'asc' ? 'desc' : 'asc'
+  localStorage.setItem('xmedia_tool.sort_dir', sortDir.value)
+}
+
+function completenessScore(e: MediaFileEntry): number {
+  const c = e.completeness
+  return (
+    (c.has_title ? 1 : 0) +
+    (c.has_creator ? 1 : 0) +
+    (c.has_cover ? 1 : 0) +
+    (c.has_summary_or_lyrics ? 1 : 0) +
+    (c.has_nfo_or_tag_block ? 1 : 0)
+  )
+}
+
 const filteredFiles = computed<MediaFileEntry[]>(() => {
   const base = snapshot.value?.files ?? []
   const q = searchQuery.value.trim().toLowerCase()
   const showRecursive = viewMode.value === 'flat' || hasActiveSearchOrFilter.value
 
-  return base.filter((f) => {
+  const list = base.filter((f) => {
     if (!showRecursive && parentRelOf(f.rel_path) !== currentRelPath.value) {
       return false
     }
@@ -292,6 +423,34 @@ const filteredFiles = computed<MediaFileEntry[]>(() => {
     }
     return true
   })
+
+  const dir = sortDir.value === 'asc' ? 1 : -1
+  return [...list].sort((a, b) => {
+    let cmp = 0
+    if (sortField.value === 'title') {
+      cmp = a.display_title.localeCompare(b.display_title, undefined, { numeric: true })
+    } else if (sortField.value === 'incomplete') {
+      cmp = completenessScore(a) - completenessScore(b)
+    } else if (sortField.value === 'size') {
+      cmp = a.file_size - b.file_size
+    } else if (sortField.value === 'modified') {
+      cmp = a.modified_unix_secs - b.modified_unix_secs
+    } else {
+      cmp = a.file_name.localeCompare(b.file_name, undefined, { numeric: true })
+    }
+    if (cmp === 0) {
+      cmp = a.rel_path.localeCompare(b.rel_path, undefined, { numeric: true })
+    }
+    return cmp * dir
+  })
+})
+
+const visibleFiles = computed<MediaFileEntry[]>(() =>
+  filteredFiles.value.slice(0, visibleLimit.value),
+)
+
+watch([searchQuery, completenessFilter, viewMode, sortField, sortDir, activeRootId, currentRelPath], () => {
+  visibleLimit.value = PAGE_CHUNK_SIZE
 })
 
 const breadcrumbs = computed<Array<{ label: string; relPath: string }>>(() => {
@@ -309,16 +468,22 @@ const breadcrumbs = computed<Array<{ label: string; relPath: string }>>(() => {
   return items
 })
 
+const checkedFiles = computed<MediaFileEntry[]>(() => {
+  if (selectedPaths.value.size === 0) return []
+  return filteredFiles.value.filter((f) => selectedPaths.value.has(f.rel_path))
+})
+
 const selectedEntriesForRename = computed<MediaFileEntry[]>(() => {
-  const files = filteredFiles.value
-  if (selectedPaths.value.size > 0) {
-    return files.filter((f) => selectedPaths.value.has(f.rel_path))
+  if (checkedFiles.value.length > 0) {
+    return checkedFiles.value
   }
   if (activeDetail.value) {
-    const match = files.find((f) => f.rel_path === activeDetail.value?.entry.rel_path)
+    const match = filteredFiles.value.find(
+      (f) => f.rel_path === activeDetail.value?.entry.rel_path,
+    )
     if (match) return [match]
   }
-  return files
+  return []
 })
 
 const allFilteredSelected = computed(
@@ -385,11 +550,26 @@ async function switchDomain(next: MediaKind): Promise<void> {
   mobileMenuOpen.value = false
   localStorage.setItem('xmedia_tool.active_domain', next)
   await activateDomainWorkspace(next)
+  syncHashFromState()
 }
 
 async function loadInitial(): Promise<void> {
   const s = await toolApi.getSettings()
   settings.value = s
+
+  if (initialHash.rootId) {
+    const matched = s.roots.find((r) => r.id === initialHash.rootId)
+    if (matched && matched.default_kind) {
+      activeDomain.value = matched.default_kind
+      domainNavMemory.value = {
+        ...domainNavMemory.value,
+        [matched.default_kind]: {
+          rootId: matched.id,
+          relPath: initialHash.relPath ?? '',
+        },
+      }
+    }
+  }
 
   const currentHasRoots = s.roots.some((r) => r.default_kind === activeDomain.value)
   if (!currentHasRoots) {
@@ -400,16 +580,19 @@ async function loadInitial(): Promise<void> {
     }
   }
   await activateDomainWorkspace(activeDomain.value)
+  syncHashFromState(true)
 }
 
 async function loadDirectory(rootId: string, relPath: string): Promise<void> {
   if (!rootId) return
+  const seq = ++dirLoadSeq
   const reqDomain = activeDomain.value
   const preserveSelection = rootId === activeRootId.value && relPath === currentRelPath.value
   loadingDir.value = true
   dirError.value = null
   if (!preserveSelection) {
     selectedPaths.value = new Set()
+    lastSelectedRelPath.value = null
   }
 
   const rootLabel = settings.value?.roots.find((r) => r.id === rootId)?.name || '媒体目录'
@@ -449,10 +632,11 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
       return
     }
     taskStore.completeTask(taskId, `已加载 ${snap.files.length.toLocaleString()} 个媒体文件`)
-    if (activeDomain.value !== reqDomain) return
+    if (seq !== dirLoadSeq || activeDomain.value !== reqDomain) return
     snapshot.value = snap
     currentRelPath.value = snap.current_rel_path
     syncDomainStateToMemory(reqDomain, rootId, snap.current_rel_path)
+    syncHashFromState(true)
 
     if (preserveSelection && selectedPaths.value.size > 0) {
       const surviving = new Set(snap.files.map((f) => f.rel_path))
@@ -473,11 +657,11 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     taskStore.failTask(taskId, msg)
-    if (activeDomain.value === reqDomain) {
+    if (seq === dirLoadSeq && activeDomain.value === reqDomain) {
       dirError.value = msg
     }
   } finally {
-    if (activeDomain.value === reqDomain) {
+    if (seq === dirLoadSeq && activeDomain.value === reqDomain) {
       loadingDir.value = false
     }
   }
@@ -489,13 +673,14 @@ async function selectRoot(rootId: string): Promise<void> {
   }
   mobileMenuOpen.value = false
   if (activeNav.value === 'settings' || activeNav.value === 'tasks') {
-    navigatePrimary('items')
+    await navigatePrimary('items')
   }
   if (activeRootId.value === rootId && currentRelPath.value === '') return
   activeRootId.value = rootId
   currentRelPath.value = ''
   activeDetail.value = null
   inspectingPath.value = null
+  syncHashFromState()
   await loadDirectory(rootId, '')
 }
 
@@ -508,8 +693,10 @@ async function enterFolder(relPath: string, forceFoldersView = false): Promise<v
     setViewMode('folders')
   }
   if (activeNav.value !== 'items') {
-    navigatePrimary('items')
+    await navigatePrimary('items')
   }
+  currentRelPath.value = relPath
+  syncHashFromState()
   await loadDirectory(activeRootId.value, relPath)
 }
 
@@ -518,29 +705,58 @@ async function inspectEntry(entry: MediaFileEntry): Promise<void> {
   if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
     return
   }
+  const seq = ++inspectSeq
   inspectingPath.value = entry.rel_path
   loadingInspector.value = true
   try {
-    activeDetail.value = await toolApi.inspectFile(
+    const detail = await toolApi.inspectFile(
       entry.root_id,
       entry.rel_path,
       activeDomain.value,
     )
+    if (seq !== inspectSeq) return
+    activeDetail.value = detail
   } catch (err) {
-    dirError.value = err instanceof Error ? err.message : String(err)
+    if (seq === inspectSeq) {
+      dirError.value = err instanceof Error ? err.message : String(err)
+    }
   } finally {
-    loadingInspector.value = false
+    if (seq === inspectSeq) {
+      loadingInspector.value = false
+    }
   }
 }
 
-function toggleSelectFile(relPath: string): void {
+function toggleSelectFile(relPath: string, shiftKey = false): void {
   const next = new Set(selectedPaths.value)
+  if (shiftKey && lastSelectedRelPath.value) {
+    const list = filteredFiles.value
+    const fromIdx = list.findIndex((f) => f.rel_path === lastSelectedRelPath.value)
+    const toIdx = list.findIndex((f) => f.rel_path === relPath)
+    if (fromIdx !== -1 && toIdx !== -1) {
+      const start = Math.min(fromIdx, toIdx)
+      const end = Math.max(fromIdx, toIdx)
+      const shouldSelect = !next.has(relPath)
+      for (let i = start; i <= end; i += 1) {
+        const p = list[i]!.rel_path
+        if (shouldSelect) {
+          next.add(p)
+        } else {
+          next.delete(p)
+        }
+      }
+      selectedPaths.value = next
+      lastSelectedRelPath.value = relPath
+      return
+    }
+  }
   if (next.has(relPath)) {
     next.delete(relPath)
   } else {
     next.add(relPath)
   }
   selectedPaths.value = next
+  lastSelectedRelPath.value = relPath
 }
 
 function toggleSelectAllFiltered(): void {
@@ -637,12 +853,38 @@ function enqueueScrapeFiles(files: MediaFileEntry[], labelHint?: string): void {
   }, 4000)
 }
 
-function enqueueScrapeForSelection(): void {
-  const targets =
-    selectedPaths.value.size > 0
-      ? filteredFiles.value.filter((f) => selectedPaths.value.has(f.rel_path))
-      : [...filteredFiles.value]
-  enqueueScrapeFiles(targets)
+async function enqueueScrapeForSelection(): Promise<void> {
+  if (checkedFiles.value.length > 0) {
+    enqueueScrapeFiles(checkedFiles.value)
+    return
+  }
+  const all = filteredFiles.value
+  if (all.length === 0) return
+  if (all.length > 1) {
+    const ok = await dialogStore.confirm({
+      title: txt.value.batch.scrapeAllConfirmTitle,
+      message: txt.value.batch.scrapeAllConfirmMsg.replace('{count}', String(all.length)),
+      confirmText: txt.value.batch.scrapeAllConfirmBtn,
+    })
+    if (!ok) return
+  }
+  enqueueScrapeFiles([...all])
+}
+
+async function triggerManualRescan(): Promise<void> {
+  if (notifyingRescan.value) return
+  notifyingRescan.value = true
+  try {
+    const rep = await toolApi.triggerWebhookRescan(activeRootId.value || undefined)
+    batchSummaryBanner.value = rep.message
+    setTimeout(() => {
+      batchSummaryBanner.value = null
+    }, 5000)
+  } catch (err) {
+    dirError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    notifyingRescan.value = false
+  }
 }
 
 async function handleSelectScrapeQueueIndex(nextIdx: number): Promise<void> {
@@ -741,23 +983,147 @@ function handleSettingsUpdated(next: PublicSettingsDto): void {
   settings.value = next
 }
 
-function openSettingsTab(tab: ToolSettingsTab): void {
+async function openSettingsTab(tab: ToolSettingsTab): Promise<void> {
+  if (
+    activeNav.value !== 'settings' &&
+    inspectorRef.value &&
+    !(await inspectorRef.value.confirmDiscardIfDirty())
+  ) {
+    return
+  }
   settingsInitialTab.value = tab
   if (activeNav.value !== 'settings') {
     previousWorkspaceNav.value = activeNav.value
   }
   activeNav.value = 'settings'
   mobileMenuOpen.value = false
+  syncHashFromState()
 }
 
 function exitSettings(): void {
   activeNav.value = previousWorkspaceNav.value
+  syncHashFromState()
+}
+
+const anyModalOpen = computed(
+  () =>
+    scrapeModalOpen.value ||
+    renameModalOpen.value ||
+    bookEditorOpen.value ||
+    comicPageManagerOpen.value ||
+    comicSeriesToolsOpen.value ||
+    musicToolsOpen.value ||
+    videoToolsOpen.value ||
+    dryRunModalOpen.value,
+)
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    target.isContentEditable
+  )
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
     ev.preventDefault()
     searchInputRef.value?.focus()
+    return
+  }
+  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 's') {
+    if (activeDetail.value && inspectorRef.value && !anyModalOpen.value) {
+      ev.preventDefault()
+      void inspectorRef.value.save()
+    }
+    return
+  }
+  if (anyModalOpen.value) return
+  if (ev.key === 'Escape') {
+    if (activeDetail.value && inspectorRef.value) {
+      ev.preventDefault()
+      void inspectorRef.value.requestClose()
+    } else if (selectedPaths.value.size > 0) {
+      ev.preventDefault()
+      selectedPaths.value = new Set()
+    }
+    return
+  }
+  if (isTypingTarget(ev.target)) return
+  if (activeNav.value === 'items' && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
+    const list = filteredFiles.value
+    if (list.length === 0) return
+    ev.preventDefault()
+    const curIdx = inspectingPath.value
+      ? list.findIndex((f) => f.rel_path === inspectingPath.value)
+      : -1
+    const nextIdx =
+      ev.key === 'ArrowDown'
+        ? Math.min(list.length - 1, curIdx + 1)
+        : Math.max(0, curIdx <= 0 ? 0 : curIdx - 1)
+    if (nextIdx >= visibleLimit.value) {
+      visibleLimit.value = nextIdx + PAGE_CHUNK_SIZE
+    }
+    const target = list[nextIdx]
+    if (target) {
+      void inspectEntry(target)
+    }
+  }
+}
+
+function handleBeforeUnload(ev: BeforeUnloadEvent): void {
+  if (taskStore.activeCount > 0 || inspectorRef.value?.isDirty) {
+    ev.preventDefault()
+    ev.returnValue = ''
+  }
+}
+
+async function handleHashChange(): Promise<void> {
+  const parsed = parseToolHash()
+  if (!parsed.domain && !parsed.nav) return
+  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+    syncHashFromState(true)
+    return
+  }
+  suppressHashSync = true
+  try {
+    const domainChanged = Boolean(parsed.domain && parsed.domain !== activeDomain.value)
+    if (parsed.domain) {
+      activeDomain.value = parsed.domain
+      localStorage.setItem('xmedia_tool.active_domain', parsed.domain)
+    }
+    if (parsed.nav) {
+      activeNav.value = parsed.nav
+      if (parsed.nav !== 'settings') {
+        previousWorkspaceNav.value = parsed.nav
+        localStorage.setItem('xmedia_tool.active_nav', parsed.nav)
+      } else if (parsed.settingsTab) {
+        settingsInitialTab.value = parsed.settingsTab
+      }
+    }
+    if (domainChanged) {
+      if (parsed.rootId) {
+        domainNavMemory.value = {
+          ...domainNavMemory.value,
+          [activeDomain.value]: {
+            rootId: parsed.rootId,
+            relPath: parsed.relPath ?? '',
+          },
+        }
+      }
+      await activateDomainWorkspace(activeDomain.value)
+    } else if (
+      parsed.rootId &&
+      (parsed.rootId !== activeRootId.value || (parsed.relPath ?? '') !== currentRelPath.value)
+    ) {
+      activeRootId.value = parsed.rootId
+      await loadDirectory(parsed.rootId, parsed.relPath ?? '')
+    }
+  } finally {
+    suppressHashSync = false
   }
 }
 
@@ -765,6 +1131,8 @@ let offFileScraped: (() => void) | null = null
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  window.addEventListener('hashchange', handleHashChange)
   offFileScraped = taskStore.onFileScraped((updated) => {
     artworkVersion.value += 1
     if (snapshot.value && snapshot.value.root_id === updated.entry.root_id) {
@@ -784,6 +1152,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  window.removeEventListener('hashchange', handleHashChange)
   if (offFileScraped) offFileScraped()
 })
 </script>
@@ -1338,7 +1708,7 @@ onBeforeUnmount(() => {
                     :model-value="allFilteredSelected"
                     :label="
                       selectedPaths.size > 0
-                        ? `已选 ${selectedPaths.size} 项`
+                        ? txt.batch.selectedCount.replace('{count}', String(selectedPaths.size))
                         : txt.actions.selectAll
                     "
                     @change="toggleSelectAllFiltered"
@@ -1348,10 +1718,31 @@ onBeforeUnmount(() => {
                     v-if="selectedPaths.size > 0"
                     type="button"
                     class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-                    @click="selectedPaths = new Set()"
+                    @click="selectedPaths = new Set(); lastSelectedRelPath = null"
                   >
                     {{ txt.actions.clearSelect }}
                   </button>
+
+                  <!-- Sort Controls -->
+                  <div v-if="filteredFiles.length > 1" class="flex items-center gap-1">
+                    <div class="w-28">
+                      <AppSelect
+                        :model-value="sortField"
+                        :options="sortOptions"
+                        size="sm"
+                        @update:model-value="setSortField($event as SortField)"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      class="flex h-8 w-8 items-center justify-center rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+                      :title="sortDir === 'asc' ? txt.sort.asc : txt.sort.desc"
+                      @click="toggleSortDir"
+                    >
+                      <LuArrowUp v-if="sortDir === 'asc'" class="h-3.5 w-3.5" />
+                      <LuArrowDown v-else class="h-3.5 w-3.5" />
+                    </button>
+                  </div>
 
                   <!-- Scrape Button: Adds Background Scrape Task (Local -> High Priority -> Low Priority) -->
                   <button
@@ -1364,9 +1755,9 @@ onBeforeUnmount(() => {
                     <LuSparkles class="h-3.5 w-3.5" />
                     <span>
                       {{
-                        selectedPaths.size > 0
-                          ? `${txt.actions.scrape} (${selectedPaths.size})`
-                          : txt.actions.scrape
+                        checkedFiles.length > 0
+                          ? `${txt.actions.scrape} (${checkedFiles.length})`
+                          : txt.batch.scrapeAllLabel.replace('{count}', String(filteredFiles.length))
                       }}
                     </span>
                   </button>
@@ -1378,7 +1769,7 @@ onBeforeUnmount(() => {
                     @click="comicSeriesToolsOpen = true"
                   >
                     <LuLayers class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-                    <span>漫画系列工具 ({{ selectedComicEntries.length }})</span>
+                    <span>{{ txt.batch.comicSeriesTools }} ({{ selectedComicEntries.length }})</span>
                   </button>
 
                   <button
@@ -1388,7 +1779,7 @@ onBeforeUnmount(() => {
                     @click="openMusicToolbox(selectedMusicEntries)"
                   >
                     <LuMusic class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-                    <span>专辑/响度工具 ({{ selectedMusicEntries.length }})</span>
+                    <span>{{ txt.batch.musicTools }} ({{ selectedMusicEntries.length }})</span>
                   </button>
 
                   <button
@@ -1398,7 +1789,7 @@ onBeforeUnmount(() => {
                     @click="openVideoToolbox(selectedVideoEntries)"
                   >
                     <LuFilm class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-                    <span>整季剧集映射 ({{ selectedVideoEntries.length }})</span>
+                    <span>{{ txt.batch.videoTools }} ({{ selectedVideoEntries.length }})</span>
                   </button>
 
                   <button
@@ -1409,7 +1800,7 @@ onBeforeUnmount(() => {
                     @click="dryRunModalOpen = true"
                   >
                     <LuSparkles class="h-3.5 w-3.5 text-amber-500" />
-                    <span>预检刮削 ({{ selectedEntriesForRename.length }})</span>
+                    <span>{{ txt.batch.dryRunScrape }} ({{ selectedEntriesForRename.length }})</span>
                   </button>
 
                   <button
@@ -1420,6 +1811,19 @@ onBeforeUnmount(() => {
                   >
                     <LuFileSignature class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
                     <span>{{ txt.actions.batchRename }}</span>
+                  </button>
+
+                  <button
+                    v-if="settings?.xmedia_webhook_enabled"
+                    type="button"
+                    :disabled="notifyingRescan"
+                    class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+                    :title="txt.batch.triggerRescan"
+                    @click="triggerManualRescan"
+                  >
+                    <LuRefreshCw v-if="notifyingRescan" class="h-3.5 w-3.5 animate-spin text-[var(--ctp-accent)]" />
+                    <LuRadio v-else class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                    <span>{{ notifyingRescan ? txt.batch.rescanning : txt.batch.triggerRescan }}</span>
                   </button>
 
                   <RefreshButton
@@ -1496,7 +1900,7 @@ onBeforeUnmount(() => {
 
               <div v-else class="space-y-2">
                 <div
-                  v-for="file in filteredFiles"
+                  v-for="file in visibleFiles"
                   :key="file.rel_path"
                   class="group flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-2.5 transition"
                   :class="
@@ -1506,10 +1910,12 @@ onBeforeUnmount(() => {
                   "
                   @click="inspectEntry(file)"
                 >
-                  <div @click.stop>
+                  <div
+                    @click.stop.prevent="toggleSelectFile(file.rel_path, $event.shiftKey)"
+                  >
                     <AppCheckbox
                       :model-value="selectedPaths.has(file.rel_path)"
-                      @change="toggleSelectFile(file.rel_path)"
+                      class="pointer-events-none"
                     />
                   </div>
 
@@ -1686,6 +2092,41 @@ onBeforeUnmount(() => {
                   >
                     <LuSparkles class="h-4 w-4" />
                   </button>
+                </div>
+
+                <!-- Incremental Load More Bar for Large Directories -->
+                <div
+                  v-if="filteredFiles.length > visibleFiles.length"
+                  class="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/40 px-4 py-2.5 text-xs text-[var(--ctp-subtext0)]"
+                >
+                  <span>
+                    {{
+                      txt.batch.showingOf
+                        .replace('{shown}', String(visibleFiles.length))
+                        .replace('{total}', String(filteredFiles.length))
+                    }}
+                  </span>
+                  <div class="flex items-center gap-2">
+                    <button
+                      type="button"
+                      class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1 font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+                      @click="visibleLimit += PAGE_CHUNK_SIZE"
+                    >
+                      {{
+                        txt.batch.loadMore.replace(
+                          '{remaining}',
+                          String(filteredFiles.length - visibleFiles.length),
+                        )
+                      }}
+                    </button>
+                    <button
+                      type="button"
+                      class="rounded-xl px-2.5 py-1 font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
+                      @click="visibleLimit = filteredFiles.length"
+                    >
+                      {{ txt.batch.showAll }}
+                    </button>
+                  </div>
                 </div>
               </div>
             </template>

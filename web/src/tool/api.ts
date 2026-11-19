@@ -328,6 +328,13 @@ export const toolApi = {
     return toolRequest<WebhookTestReportDto>('/settings/test-webhook', { method: 'POST' })
   },
 
+  triggerWebhookRescan(rootId?: string): Promise<WebhookTestReportDto> {
+    return toolRequest<WebhookTestReportDto>('/settings/trigger-webhook', {
+      method: 'POST',
+      body: JSON.stringify(rootId ? { root_id: rootId } : {}),
+    })
+  },
+
   removeRoot(id: string): Promise<void> {
     return toolRequest<void>(`/roots/${encodeURIComponent(id)}`, {
       method: 'DELETE',

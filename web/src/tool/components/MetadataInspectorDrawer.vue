@@ -482,6 +482,8 @@ async function requestClose(): Promise<void> {
 defineExpose({
   isDirty,
   confirmDiscardIfDirty,
+  requestClose,
+  save: () => saveMetadata(false),
 })
 
 async function saveMetadata(syncArchivePath = false): Promise<void> {

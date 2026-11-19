@@ -14,10 +14,12 @@ import {
   LuSparkles,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import { useToolText } from '../i18n'
 import { useToolTaskStore, type ToolTaskEntry } from '../tasks'
 
 type TaskStatusFilter = 'all' | 'active' | 'completed' | 'failed'
 
+const txt = useToolText()
 const taskStore = useToolTaskStore()
 const statusFilter = ref<TaskStatusFilter>('all')
 const expandedTaskIds = ref<Set<string>>(new Set())
@@ -87,9 +89,9 @@ function formatTime(ms: number): string {
     <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 class="text-xl font-bold tracking-tight text-[var(--ctp-text)]">任务中心</h1>
+        <h1 class="text-xl font-bold tracking-tight text-[var(--ctp-text)]">{{ txt.tasks.title }}</h1>
         <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">
-          刮削任务默认按「本地已有非空信息 → 高优先级刮削源 → 低优先级刮削源」顺序自动补齐缺失字段
+          {{ txt.tasks.subtitle }}
         </p>
       </div>
 
@@ -101,7 +103,7 @@ function formatTime(ms: number): string {
           @click="taskStore.clearCompleted()"
         >
           <LuTrash2 class="h-3.5 w-3.5" />
-          <span>清除已完成</span>
+          <span>{{ txt.tasks.clearCompleted }}</span>
         </button>
       </div>
     </div>
@@ -135,9 +137,9 @@ function formatTime(ms: number): string {
       class="rounded-3xl border border-dashed border-[var(--ctp-surface1)] bg-[var(--ctp-shell)]/55 py-16 text-center"
     >
       <LuClock class="mx-auto mb-3 h-7 w-7 text-[var(--ctp-subtext0)]" />
-      <p class="text-sm font-semibold text-[var(--ctp-text)]">暂无任务记录</p>
+      <p class="text-sm font-semibold text-[var(--ctp-text)]">{{ txt.tasks.emptyTitle }}</p>
       <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
-        在「首页」或「条目」中点击「刮削」即可将文件加入后台自动补齐队列
+        {{ txt.tasks.emptyDesc }}
       </p>
     </div>
 
@@ -229,7 +231,7 @@ function formatTime(ms: number): string {
                 @click="taskStore.cancelTask(task.id)"
               >
                 <LuBan class="h-3.5 w-3.5" />
-                <span>取消</span>
+                <span>{{ txt.tasks.cancel }}</span>
               </button>
 
               <button
@@ -239,7 +241,7 @@ function formatTime(ms: number): string {
                 @click="taskStore.retryTaskFailedOrUnmatched(task.id)"
               >
                 <LuRotateCcw class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-                <span>重试未完成项</span>
+                <span>{{ txt.tasks.retryUnfinished }}</span>
               </button>
 
               <button
@@ -248,7 +250,7 @@ function formatTime(ms: number): string {
                 class="inline-flex h-8 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
                 @click="toggleExpand(task.id)"
               >
-                <span>明细 ({{ task.subItems.length }})</span>
+                <span>{{ txt.tasks.details }} ({{ task.subItems.length }})</span>
                 <LuChevronUp v-if="expandedTaskIds.has(task.id)" class="h-3.5 w-3.5" />
                 <LuChevronDown v-else class="h-3.5 w-3.5" />
               </button>
@@ -257,7 +259,7 @@ function formatTime(ms: number): string {
                 v-if="task.status !== 'running' && task.status !== 'queued'"
                 type="button"
                 class="flex h-8 w-8 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-red-500/10 hover:text-red-500"
-                title="移除任务记录"
+                :title="txt.tasks.removeRecord"
                 @click="taskStore.removeTask(task.id)"
               >
                 <LuTrash2 class="h-3.5 w-3.5" />
@@ -305,21 +307,21 @@ function formatTime(ms: number): string {
                 class="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-500"
               >
                 <LuCheckCircle2 class="h-3.5 w-3.5" />
-                <span>已补齐</span>
+                <span>{{ txt.tasks.statusMatched }}</span>
               </span>
               <span
                 v-else-if="sub.status === 'unmatched'"
                 class="inline-flex items-center gap-1 text-[11px] font-medium text-amber-500"
               >
                 <LuAlertCircle class="h-3.5 w-3.5" />
-                <span>未命中</span>
+                <span>{{ txt.tasks.statusUnmatched }}</span>
               </span>
               <span
                 v-else-if="sub.status === 'running'"
                 class="inline-flex items-center gap-1 text-[11px] font-semibold text-[var(--ctp-accent)]"
               >
                 <LuLoader2 class="h-3.5 w-3.5 animate-spin" />
-                <span>刮削中…</span>
+                <span>{{ txt.tasks.statusRunning }}</span>
               </span>
               <span
                 v-else-if="sub.status === 'failed'"
@@ -327,15 +329,15 @@ function formatTime(ms: number): string {
                 :title="sub.error"
               >
                 <LuAlertCircle class="h-3.5 w-3.5 shrink-0" />
-                <span class="truncate">{{ sub.error || '失败' }}</span>
+                <span class="truncate">{{ sub.error || txt.tasks.statusFailed }}</span>
               </span>
               <span
                 v-else-if="sub.status === 'cancelled'"
                 class="text-[11px] text-[var(--ctp-subtext0)]"
               >
-                已取消
+                {{ txt.tasks.statusCancelled }}
               </span>
-              <span v-else class="text-[11px] text-[var(--ctp-subtext0)]">排队中</span>
+              <span v-else class="text-[11px] text-[var(--ctp-subtext0)]">{{ txt.tasks.statusQueued }}</span>
             </div>
           </div>
         </div>

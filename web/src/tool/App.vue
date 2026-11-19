@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { LuLock, LuRefreshCw, LuWrench } from 'vue-icons-plus/lu'
+import { LuAlertCircle, LuLock, LuRefreshCw, LuWrench } from 'vue-icons-plus/lu'
 import AppDialogHost from '@/components/ui/AppDialogHost.vue'
 import { useThemeStore } from '@/stores/theme'
 import { setToolToken, toolApi } from './api'
@@ -13,6 +13,7 @@ useThemeStore()
 const txt = useToolText()
 
 const booting = ref(true)
+const bootError = ref<string | null>(null)
 const status = ref<ToolStatusDto | null>(null)
 const passwordInput = ref('')
 const unlocking = ref(false)
@@ -20,8 +21,12 @@ const unlockError = ref<string | null>(null)
 
 async function fetchStatus(): Promise<void> {
   booting.value = true
+  bootError.value = null
   try {
     status.value = await toolApi.getStatus()
+  } catch (err) {
+    status.value = null
+    bootError.value = err instanceof Error ? err.message : String(err)
   } finally {
     booting.value = false
   }
@@ -67,7 +72,49 @@ onBeforeUnmount(() => {
     class="flex h-screen w-screen items-center justify-center bg-[var(--ctp-shell)] text-xs text-[var(--ctp-subtext0)]"
   >
     <LuRefreshCw class="mr-2 h-4 w-4 animate-spin text-[var(--ctp-accent)]" />
-    <span>正在连接 xmedia-tool…</span>
+    <span>{{ txt.boot.connecting }}</span>
+  </div>
+
+  <!-- Connection Error / Retry State -->
+  <div
+    v-else-if="bootError || !status"
+    class="flex h-screen w-screen items-center justify-center bg-[var(--ctp-shell)] p-4 text-[var(--ctp-text)]"
+  >
+    <div
+      class="w-full max-w-sm space-y-4 rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-6 shadow-2xl"
+    >
+      <div class="flex items-center gap-3">
+        <div
+          class="flex h-11 w-11 items-center justify-center rounded-2xl bg-red-500/15 text-red-500"
+        >
+          <LuAlertCircle class="h-5 w-5" />
+        </div>
+        <div>
+          <h1 class="text-base font-bold">{{ txt.boot.failedTitle }}</h1>
+          <p class="text-[11px] text-[var(--ctp-subtext0)]">{{ txt.brand }}</p>
+        </div>
+      </div>
+
+      <p class="text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+        {{ txt.boot.failedDesc }}
+      </p>
+
+      <div
+        v-if="bootError"
+        class="rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 font-mono text-[11px] break-all text-red-400"
+      >
+        {{ bootError }}
+      </div>
+
+      <button
+        type="button"
+        class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--ctp-accent)] py-2.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+        @click="fetchStatus"
+      >
+        <LuRefreshCw class="h-3.5 w-3.5" />
+        <span>{{ txt.boot.retry }}</span>
+      </button>
+    </div>
   </div>
 
   <!-- Password Gate when `--password` / `XMEDIA_TOOL_PASSWORD` is configured -->
