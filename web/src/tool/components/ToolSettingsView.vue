@@ -138,7 +138,7 @@ const priorities = ref<ScraperPrioritiesDto>({
     'openlibrary',
   ],
   comic: ['bangumi'],
-  music: ['qq', 'netease', 'kugou', 'kuwo', 'itunes', 'musicbrainz', 'lrclib'],
+  music: ['qq', 'netease', 'kugou', 'kuwo', 'migu', 'taihe', 'qishui', 'itunes', 'bangumi', 'musicbrainz', 'lrclib'],
   video: ['tmdb', 'bangumi'],
 })
 
