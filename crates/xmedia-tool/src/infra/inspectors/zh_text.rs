@@ -252,30 +252,63 @@ pub fn convert_zh_plain(input: &str, dir: ZhConvertDirection) -> String {
     out
 }
 
-/// Converts text nodes inside HTML/XHTML without touching tag names, attributes, or XML entities.
+fn is_verbatim_xhtml_tag(tag_name: &str) -> bool {
+    matches!(tag_name, "code" | "pre" | "script" | "style")
+}
+
+/// Converts text nodes inside HTML/XHTML without touching tag names, attributes, XML entities,
+/// or verbatim code/style/script blocks.
 pub fn transform_xhtml_preserving_tags<F>(xhtml: &str, mut transform_text: F) -> String
 where
     F: FnMut(&str) -> String,
 {
     let mut out = String::with_capacity(xhtml.len());
     let mut buf = String::new();
+    let mut tag_buf = String::new();
     let mut in_tag = false;
     let mut in_entity = false;
     let mut entity_buf = String::new();
+    let mut skip_depth: usize = 0;
+
+    let flush_buf = |buf: &mut String, out: &mut String, skip: usize, f: &mut F| {
+        if !buf.is_empty() {
+            if skip == 0 {
+                out.push_str(&f(buf));
+            } else {
+                out.push_str(buf);
+            }
+            buf.clear();
+        }
+    };
 
     for ch in xhtml.chars() {
         if in_tag {
             out.push(ch);
+            tag_buf.push(ch);
             if ch == '>' {
                 in_tag = false;
+                let inner = tag_buf.trim_start_matches('<').trim_end_matches('>').trim();
+                let is_closing = inner.starts_with('/');
+                let is_self_closing = inner.ends_with('/');
+                let raw_name = inner
+                    .trim_start_matches('/')
+                    .split(|c: char| c.is_whitespace() || c == '/')
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if is_verbatim_xhtml_tag(&raw_name) && !is_self_closing {
+                    if is_closing {
+                        skip_depth = skip_depth.saturating_sub(1);
+                    } else {
+                        skip_depth += 1;
+                    }
+                }
+                tag_buf.clear();
             }
         } else if in_entity {
             entity_buf.push(ch);
             if ch == ';' {
-                if !buf.is_empty() {
-                    out.push_str(&transform_text(&buf));
-                    buf.clear();
-                }
+                flush_buf(&mut buf, &mut out, skip_depth, &mut transform_text);
                 out.push_str(&entity_buf);
                 entity_buf.clear();
                 in_entity = false;
@@ -285,11 +318,10 @@ where
                 in_entity = false;
             }
         } else if ch == '<' {
-            if !buf.is_empty() {
-                out.push_str(&transform_text(&buf));
-                buf.clear();
-            }
+            flush_buf(&mut buf, &mut out, skip_depth, &mut transform_text);
             in_tag = true;
+            tag_buf.clear();
+            tag_buf.push(ch);
             out.push(ch);
         } else if ch == '&' {
             in_entity = true;
@@ -301,9 +333,7 @@ where
     if !entity_buf.is_empty() {
         buf.push_str(&entity_buf);
     }
-    if !buf.is_empty() {
-        out.push_str(&transform_text(&buf));
-    }
+    flush_buf(&mut buf, &mut out, skip_depth, &mut transform_text);
     out
 }
 
@@ -341,7 +371,13 @@ fn replace_bounded_runs(text: &str) -> String {
                 end += 1;
             }
             let run_len = end - i;
-            if c == '-' && run_len == 2 {
+            let prev_ch = if i > 0 { Some(raw[i - 1]) } else { None };
+            let next_ch = raw.get(end).copied();
+            if c == '-'
+                && run_len == 2
+                && !prev_ch.is_some_and(|p| p.is_ascii_alphanumeric())
+                && !next_ch.is_some_and(|n| n.is_ascii_alphanumeric())
+            {
                 out.push_str("——");
             } else if (c == '.' || c == '。') && (3..=6).contains(&run_len) {
                 out.push_str("……");
@@ -376,7 +412,7 @@ pub fn normalize_chinese_punctuation_segment(
         let near_cjk = prev.is_some_and(is_cjk) || next.is_some_and(is_cjk);
 
         match ch {
-            '"' => {
+            '"' if near_cjk || !*open_double => {
                 out.push(if *open_double { '“' } else { '”' });
                 *open_double = !*open_double;
             }
@@ -518,5 +554,12 @@ mod tests {
             rewrite_css_vertical_to_horizontal(v_css),
             "html { writing-mode: horizontal-tb; writing-mode: horizontal-tb; }"
         );
+
+        // Code/pre blocks and CLI flags must survive punctuation normalization intact
+        let tech_xhtml =
+            r#"<p>执行 <code>git commit --amend -m "fix"</code> 即可。</p><pre>--force "ok"</pre>"#;
+        let (_, _, out_tech) =
+            apply_text_transforms_to_chapter("第二章", "", tech_xhtml, &opts, &[]);
+        assert_eq!(out_tech, tech_xhtml);
     }
 }

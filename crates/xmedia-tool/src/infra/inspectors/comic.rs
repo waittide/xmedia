@@ -190,11 +190,10 @@ fn apply_epub_opf_fallback_into_comic(opf_bytes: &[u8], meta: &mut ComicFileMeta
         } else if dir.eq_ignore_ascii_case("rtl") {
             meta.reading_direction = "rtl".to_string();
         }
-    } else if meta
-        .language_iso
-        .as_deref()
-        .is_some_and(|l| matches!(l.get(0..2).unwrap_or(""), "en" | "fr" | "es" | "de"))
-    {
+    } else if meta.language_iso.as_deref().is_some_and(|l| {
+        let low = l.trim().to_ascii_lowercase();
+        matches!(low.get(0..2), Some("en" | "fr" | "es" | "de"))
+    }) {
         meta.reading_direction = "ltr".to_string();
     }
 }

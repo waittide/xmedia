@@ -654,7 +654,8 @@ pub fn promote_exact_match_anchor(
                 let nt = normalize_title_for_match(t);
                 nt == kw_norm
                     || (kw_norm.chars().count() >= 3
-                        && (nt.contains(&kw_norm) || kw_norm.contains(&nt)))
+                        && (nt.contains(&kw_norm)
+                            || (nt.chars().count() >= 3 && kw_norm.contains(&nt))))
             })
     };
     let match_author = |m: &ScrapedMetadata| -> bool {
@@ -868,5 +869,47 @@ mod tests {
             &cross_script_same_artist,
             Some(ScrapeTargetKind::MusicTrack)
         ));
+    }
+
+    #[test]
+    fn promote_anchor_ignores_empty_or_short_normalized_titles() {
+        use super::{ScrapeQuery, promote_exact_match_anchor};
+
+        let mut sources = vec![
+            (
+                FieldSourceBadge {
+                    provider_id: "bangumi".into(),
+                    provider_name: "Bangumi".into(),
+                },
+                ScrapedMetadata {
+                    provider_id: "bangumi".into(),
+                    external_id: "1".into(),
+                    title: Some("Page Blanche Vol.1".into()),
+                    creators: vec!["Other".into()],
+                    ..Default::default()
+                },
+            ),
+            (
+                FieldSourceBadge {
+                    provider_id: "douban".into(),
+                    provider_name: "Douban".into(),
+                },
+                ScrapedMetadata {
+                    provider_id: "douban".into(),
+                    external_id: "2".into(),
+                    title: Some("...".into()), // normalizes to ""
+                    creators: vec!["Boulet".into()],
+                    ..Default::default()
+                },
+            ),
+        ];
+        let query = ScrapeQuery {
+            target: Some(ScrapeTargetKind::Comic),
+            keyword: "Page Blanche".into(),
+            artist_or_author: Some("Boulet".into()),
+            ..Default::default()
+        };
+        promote_exact_match_anchor(&mut sources, &query);
+        assert_eq!(sources[0].0.provider_id, "bangumi");
     }
 }

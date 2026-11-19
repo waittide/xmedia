@@ -666,14 +666,46 @@ struct EpubStructureInfo {
     spine_idrefs: Vec<String>,
 }
 
+fn percent_decode_path(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push(((hi << 4) | lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| raw.to_string())
+}
+
 fn read_zip_bytes<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     entry_path: &str,
 ) -> Option<Vec<u8>> {
-    let mut f = archive.by_name(entry_path).ok()?;
-    let mut buf = Vec::new();
-    f.read_to_end(&mut buf).ok()?;
-    Some(buf)
+    if let Ok(mut f) = archive.by_name(entry_path) {
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf).ok()?;
+        return Some(buf);
+    }
+    if entry_path.contains('%') {
+        let decoded = percent_decode_path(entry_path);
+        if let Ok(mut f) = archive.by_name(&decoded) {
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf).ok()?;
+            return Some(buf);
+        }
+    }
+    None
 }
 
 fn parse_epub_structure<R: Read + std::io::Seek>(
@@ -2485,7 +2517,12 @@ pub fn polish_epub_book(epub_path: &Path) -> DomainResult<PolishBookReportDto> {
     let ncx_xml = render_toc_ncx(&info.unique_id, &meta.title, &toc_triples, ncx_dir);
     replacements.push((ncx_full_path, ncx_xml.into_bytes()));
 
-    // Prune unused non-cover images from manifest
+    // Prune unused non-cover images from manifest (accounting for percent-encoded vs UTF-8 hrefs)
+    let decoded_doc_sources = if all_doc_sources.contains('%') {
+        Some(percent_decode_path(&all_doc_sources))
+    } else {
+        None
+    };
     let mut unused_manifest_paths: HashSet<String> = HashSet::new();
     let mut merged_manifest: Vec<ManifestNode> =
         Vec::with_capacity(info.manifest.len() + extra_manifest_nodes.len());
@@ -2498,8 +2535,19 @@ pub fn polish_epub_book(epub_path: &Path) -> DomainResult<PolishBookReportDto> {
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
-            if !basename.is_empty() && !all_doc_sources.contains(basename) {
-                unused_manifest_paths.insert(m.full_path);
+            let decoded_basename = percent_decode_path(basename);
+            let is_referenced = basename.is_empty()
+                || all_doc_sources.contains(basename)
+                || all_doc_sources.contains(&decoded_basename)
+                || decoded_doc_sources
+                    .as_deref()
+                    .is_some_and(|d| d.contains(&decoded_basename));
+            if !is_referenced {
+                unused_manifest_paths.insert(m.full_path.clone());
+                let decoded_full = percent_decode_path(&m.full_path);
+                if decoded_full != m.full_path {
+                    unused_manifest_paths.insert(decoded_full);
+                }
                 continue;
             }
         }
@@ -2513,8 +2561,8 @@ pub fn polish_epub_book(epub_path: &Path) -> DomainResult<PolishBookReportDto> {
     valid_zip_paths.insert(info.opf_path.clone());
     for m in &merged_manifest {
         valid_zip_paths.insert(m.full_path.clone());
-        if m.full_path.contains("%20") {
-            valid_zip_paths.insert(m.full_path.replace("%20", " "));
+        if m.full_path.contains('%') {
+            valid_zip_paths.insert(percent_decode_path(&m.full_path));
         }
     }
 
@@ -2741,5 +2789,60 @@ mod tests {
             .unwrap();
         let locked_meta = read_book_meta_any(&epub_path).unwrap();
         assert_eq!(locked_meta.locked_fields, vec!["title", "series", "cover"]);
+    }
+
+    #[test]
+    fn polish_epub_preserves_percent_encoded_cjk_chapters_and_images() {
+        let tmp = tempfile::tempdir().unwrap();
+        let epub_path = tmp.path().join("cjk_encoded.epub");
+        {
+            let f = File::create(&epub_path).unwrap();
+            let mut zw = ZipWriter::new(f);
+            let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+            let deflated =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zw.start_file("mimetype", stored).unwrap();
+            zw.write_all(b"application/epub+zip").unwrap();
+            zw.start_file("META-INF/container.xml", deflated).unwrap();
+            zw.write_all(
+                br#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+            )
+            .unwrap();
+            zw.start_file("OEBPS/content.opf", deflated).unwrap();
+            zw.write_all(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">urn:uuid:test-cjk</dc:identifier>
+    <dc:title>中文编码测试</dc:title>
+    <dc:language>zh-CN</dc:language>
+  </metadata>
+  <manifest>
+    <item id="ch1" href="Text/%E7%AC%AC%E4%B8%80%E7%AB%A0.xhtml" media-type="application/xhtml+xml"/>
+    <item id="img1" href="Images/%E6%8F%92%E5%9B%BE%201.png" media-type="image/png"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+  </spine>
+</package>"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("OEBPS/Text/第一章.xhtml", deflated).unwrap();
+            zw.write_all(
+                r#"<?xml version="1.0" encoding="UTF-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>第一章</title></head><body><h1>第一章</h1><p><img src="../Images/插图 1.png" alt="图"/></p></body></html>"#
+                    .as_bytes(),
+            )
+            .unwrap();
+            zw.start_file("OEBPS/Images/插图 1.png", stored).unwrap();
+            zw.write_all(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+                .unwrap();
+            zw.finish().unwrap();
+        }
+
+        let report = polish_epub_book(&epub_path).unwrap();
+        assert_eq!(report.removed_orphan_files, 0);
+        assert!(read_epub_internal_asset(&epub_path, "OEBPS/Text/第一章.xhtml").is_ok());
+        assert!(read_epub_internal_asset(&epub_path, "OEBPS/Images/插图 1.png").is_ok());
     }
 }
