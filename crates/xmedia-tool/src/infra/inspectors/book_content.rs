@@ -37,9 +37,16 @@ static DEFAULT_VOLUME_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 static DEFAULT_CHAPTER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^\s*(?:第[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+[\s章节回话折幕].*|(?:chapter|section|episode)\s+[0-9ivxlcdm]+(?:\b.*)?|(?:楔子|序[章言幕曲]?|引子|前言|番外|尾声|后记|终章|prologue|epilogue)(?:[\s：:、—\-].*)?)$",
+        r#"(?i)^\s*(?:第[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+[\s章节回话折幕][^\n。．！？；]*|(?:chapter|episode)\s+[0-9ivxlcdm]+(?:\b[^\n,;"]*)?|(?:楔子|序[章言幕曲]?|引子|前言|番外|尾声|后记|终章|prologue|epilogue)(?:[\s\u{3000}：:、—\-].*)?)$"#,
     )
     .expect("valid default chapter heading regex")
+});
+
+static DEFAULT_PROSE_FALSE_CHAPTER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*第[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+[章节回话折幕][中内裏里上下前后後的了说說道云]",
+    )
+    .expect("valid prose false chapter regex")
 });
 
 const DEFAULT_EPUB_CSS: &str = r#"body {
@@ -304,7 +311,9 @@ pub fn segment_txt_chapters(
         let matched_kind = if (1..=80).contains(&char_len) {
             if vol_re_opt.is_some_and(|re| re.is_match(trimmed)) {
                 Some(HKind::Volume)
-            } else if chap_re.is_match(trimmed) {
+            } else if chap_re.is_match(trimmed)
+                && (custom_chap.is_some() || !DEFAULT_PROSE_FALSE_CHAPTER_RE.is_match(trimmed))
+            {
                 Some(HKind::Chapter)
             } else {
                 None

@@ -445,6 +445,22 @@ pub fn is_compatible_secondary_source(
             })
         });
         if !has_title_overlap {
+            let is_cn_webnovel = |id: &str| {
+                matches!(
+                    id,
+                    "qidian"
+                        | "fanqie"
+                        | "qimao"
+                        | "17k"
+                        | "ciweimao"
+                        | "sfacg"
+                        | "faloo"
+                        | "jjwxc"
+                )
+            };
+            if is_cn_webnovel(&primary.provider_id) || is_cn_webnovel(&secondary.provider_id) {
+                return false;
+            }
             let p_ascii = p_titles.iter().all(|t| t.is_ascii());
             let s_ascii = s_titles.iter().all(|t| t.is_ascii());
             if p_ascii && s_ascii {
@@ -500,9 +516,20 @@ pub fn is_compatible_secondary_source(
             .collect();
         let p_ascii = p_creators.iter().all(|c| c.is_ascii());
         let s_ascii = s_creators.iter().all(|c| c.is_ascii());
-        // Compare authors when both sides use the same script (e.g. both CJK webnovel platforms);
-        // cross-script pairs like "刘慈欣" vs "Cixin Liu" remain allowed for ISBN/cover fallback.
-        if !p_creators.is_empty() && !s_creators.is_empty() && p_ascii == s_ascii {
+        let involves_cn_webnovel = matches!(
+            primary.provider_id.as_str(),
+            "qidian" | "fanqie" | "qimao" | "17k" | "ciweimao" | "sfacg" | "faloo" | "jjwxc"
+        ) || matches!(
+            secondary.provider_id.as_str(),
+            "qidian" | "fanqie" | "qimao" | "17k" | "ciweimao" | "sfacg" | "faloo" | "jjwxc"
+        );
+        // Compare authors when both sides use the same script, OR whenever either side is a
+        // domestic webnovel platform (blocking webnovels from polluting Western ISBN books);
+        // cross-script published pairs like Douban "刘慈欣" vs OpenLibrary "Cixin Liu" remain allowed.
+        if !p_creators.is_empty()
+            && !s_creators.is_empty()
+            && (p_ascii == s_ascii || involves_cn_webnovel)
+        {
             let same_author = p_creators.iter().any(|pc| {
                 s_creators
                     .iter()

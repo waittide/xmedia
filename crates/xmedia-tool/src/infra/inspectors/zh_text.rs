@@ -329,15 +329,42 @@ fn is_cjk(c: char) -> bool {
 
 /// Normalizes Chinese punctuation in plain text (paired curly quotes, ellipsis `……`, em-dash `——`,
 /// and CJK-adjacent half-width commas/exclamations/questions without altering numbers or URLs).
+fn replace_bounded_runs(text: &str) -> String {
+    let raw: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut i = 0usize;
+    while i < raw.len() {
+        let c = raw[i];
+        if c == '-' || c == '.' || c == '。' {
+            let mut end = i + 1;
+            while end < raw.len() && raw[end] == c {
+                end += 1;
+            }
+            let run_len = end - i;
+            if c == '-' && run_len == 2 {
+                out.push_str("——");
+            } else if (c == '.' || c == '。') && (3..=6).contains(&run_len) {
+                out.push_str("……");
+            } else {
+                for _ in 0..run_len {
+                    out.push(c);
+                }
+            }
+            i = end;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
 pub fn normalize_chinese_punctuation_segment(
     text: &str,
     open_double: &mut bool,
     open_single: &mut bool,
 ) -> String {
-    let stage = text
-        .replace("...", "……")
-        .replace("。。。", "……")
-        .replace("--", "——");
+    let stage = replace_bounded_runs(text);
 
     let chars: Vec<char> = stage.chars().collect();
     let mut out = String::with_capacity(stage.len() + 8);
