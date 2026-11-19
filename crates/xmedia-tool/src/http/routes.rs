@@ -24,7 +24,9 @@ use xmedia_core::infra::thumbnail::sniff_image_mime;
 use crate::application::inbox::{InboxScanReportDto, scan_and_import_inbox};
 use crate::application::scraping::{AutoScrapeResultDto, DryRunScrapeItemDto};
 use crate::application::settings::{PublicSettingsDto, UpdateSettingsInput};
-use crate::application::webhook::{WebhookTestReportDto, test_xmedia_webhook};
+use crate::application::webhook::{
+    WebhookTestReportDto, test_xmedia_webhook, trigger_xmedia_rescan,
+};
 use crate::application::workbench::{
     RenameHistoryBatchDto, UndoRenameReportDto, WorkbenchProgress,
 };
@@ -64,6 +66,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/auth/unlock", post(unlock_tool))
         .route("/settings", get(get_settings).patch(update_settings))
         .route("/settings/test-webhook", post(test_webhook_route))
+        .route("/settings/trigger-webhook", post(trigger_webhook_route))
         .route("/inbox/scan", post(scan_inbox_route))
         .route("/roots", post(add_root))
         .route(
@@ -248,6 +251,31 @@ async fn test_webhook_route(
 ) -> ApiResult<Json<WebhookTestReportDto>> {
     let settings = state.settings.get_raw().await?;
     let report = test_xmedia_webhook(&settings.xmedia_webhook).await?;
+    Ok(Json(report))
+}
+
+#[derive(Deserialize, Default)]
+struct TriggerWebhookReq {
+    #[serde(default)]
+    root_id: Option<Uuid>,
+}
+
+async fn trigger_webhook_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    body: Option<Json<TriggerWebhookReq>>,
+) -> ApiResult<Json<WebhookTestReportDto>> {
+    let settings = state.settings.get_raw().await?;
+    let root_path = body.and_then(|Json(req)| {
+        req.root_id.and_then(|rid| {
+            settings
+                .roots
+                .iter()
+                .find(|r| r.id == RootId(rid))
+                .map(|r| r.path.clone())
+        })
+    });
+    let report = trigger_xmedia_rescan(&settings.xmedia_webhook, root_path.as_deref()).await?;
     Ok(Json(report))
 }
 
