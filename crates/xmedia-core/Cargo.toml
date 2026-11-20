@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+db-postgres = ["toasty/postgresql"]
+db-mysql = ["toasty/mysql"]
+
 [dependencies]
 aes-gcm.workspace = true
 argon2.workspace = true

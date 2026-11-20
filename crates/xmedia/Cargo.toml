@@ -10,6 +10,8 @@ book = ["dep:xmedia-book"]
 comic = ["dep:xmedia-comic"]
 music = ["dep:xmedia-music"]
 video = ["dep:xmedia-video"]
+db-postgres = ["xmedia-core/db-postgres", "toasty/postgresql"]
+db-mysql = ["xmedia-core/db-mysql", "toasty/mysql"]
 
 [dependencies]
 anyhow.workspace = true

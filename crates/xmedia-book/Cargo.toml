@@ -33,6 +33,5 @@ xmedia-core.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
-base64.workspace = true
 tempfile.workspace = true
 tower.workspace = true
