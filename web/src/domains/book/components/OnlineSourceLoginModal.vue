@@ -2,17 +2,14 @@
 import { reactive, ref, watch } from 'vue'
 import {
   LuCheckCircle2,
-  LuExternalLink,
   LuKeyRound,
   LuLoader2,
-  LuTerminal,
   LuX,
 } from 'vue-icons-plus/lu'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
   onlineBookApi,
   type BookSourceSummaryDto,
-  type ExecutionDiagnostics,
   type LoginUiItem,
 } from '../onlineApi'
 
@@ -30,11 +27,6 @@ const snackbar = useSnackbarStore()
 
 const formValues = reactive<Record<string, string>>({})
 const runningAction = ref<string | null>(null)
-const errorMsg = ref<string | null>(null)
-const lastActionName = ref<string | null>(null)
-const lastDiagnostics = ref<ExecutionDiagnostics | null>(null)
-const lastResultText = ref('')
-const showLogs = ref(false)
 const showVarEditor = ref(false)
 const rawVariableDraft = ref('')
 const savingVar = ref(false)
@@ -48,11 +40,6 @@ watch(
     const prevId = prev?.[1]
     if (wasOpen && prevId === srcId) return
 
-    errorMsg.value = null
-    lastActionName.value = null
-    lastDiagnostics.value = null
-    lastResultText.value = ''
-    showLogs.value = false
     showVarEditor.value = false
     rawVariableDraft.value = src.variable_preview || ''
 
@@ -84,41 +71,48 @@ async function triggerAction(item: LoginUiItem): Promise<void> {
   const act = item.action?.trim()
   if (!act) return
   runningAction.value = item.name
-  lastActionName.value = item.name
-  errorMsg.value = null
   try {
     const resp = await onlineBookApi.runLoginAction(
       props.source.id,
       { ...formValues },
       act,
     )
-    lastDiagnostics.value = resp.diagnostics
-    lastResultText.value = resp.result
     rawVariableDraft.value = resp.source.variable_preview || ''
     emit('updated', resp.source)
 
-    const latestToast =
-      resp.diagnostics.toasts.length > 0
-        ? resp.diagnostics.toasts[resp.diagnostics.toasts.length - 1]
-        : null
-    if (latestToast) {
-      const lines = latestToast
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean)
-      if (lines.length === 1 && lines[0]!.length <= 60) {
-        snackbar.show({ message: lines[0]! })
-      } else {
-        snackbar.show({ message: `「${item.name}」执行完成，详情已在上方反馈区完整展示` })
-      }
+    const toasts = resp.diagnostics.toasts
+      .map((t) => t.trim())
+      .filter(Boolean)
+    const firstLink = resp.diagnostics.browser_urls[0]
+
+    if (toasts.length > 0) {
+      // If the script emitted a progress toast followed by a result toast (e.g. "正在登录中..." + "✅登录成功"),
+      // prefer the final result toast; if multiple distinct messages exist, show the final one cleanly.
+      const finalMsg = toasts[toasts.length - 1]!
+      snackbar.show({
+        message: finalMsg,
+        actionLabel: firstLink ? firstLink.title || '打开链接' : undefined,
+        onAction: firstLink
+          ? () => {
+              window.open(firstLink.url, '_blank', 'noopener,noreferrer')
+            }
+          : undefined,
+      })
+    } else if (firstLink) {
+      snackbar.show({
+        message: `${item.name}：点击打开外部页面`,
+        actionLabel: firstLink.title || '打开链接',
+        onAction: () => {
+          window.open(firstLink.url, '_blank', 'noopener,noreferrer')
+        },
+      })
     } else if (resp.result) {
-      snackbar.show({ message: `${item.name}：${resp.result.slice(0, 60)}` })
+      snackbar.show({ message: `${item.name}：${resp.result}` })
     } else {
       snackbar.show({ message: `已执行「${item.name}」` })
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    errorMsg.value = msg
     snackbar.show({ message: msg, tone: 'error' })
   } finally {
     runningAction.value = null
@@ -128,15 +122,18 @@ async function triggerAction(item: LoginUiItem): Promise<void> {
 async function saveRawVariable(): Promise<void> {
   if (!props.source || savingVar.value) return
   savingVar.value = true
-  errorMsg.value = null
   try {
     const updated = await onlineBookApi.updateSource(props.source.id, {
       variable: rawVariableDraft.value,
     })
     emit('updated', updated)
     showVarEditor.value = false
+    snackbar.show({ message: '已保存源变量' })
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
     savingVar.value = false
   }
@@ -193,88 +190,6 @@ async function saveRawVariable(): Promise<void> {
           >
             <LuX class="h-4 w-4" />
           </button>
-        </div>
-
-        <!-- Pinned Feedback Banner (Always Visible Above Scrollable Form) -->
-        <div
-          v-if="runningAction || errorMsg || lastDiagnostics"
-          class="shrink-0 space-y-2 border-b border-[var(--md-sys-color-outline-variant)]/40 bg-[var(--md-sys-color-surface-container)]/85 px-5 py-3 text-xs"
-        >
-          <div
-            v-if="runningAction"
-            class="flex items-center gap-2 text-[var(--md-sys-color-primary)]"
-          >
-            <LuLoader2 class="h-4 w-4 animate-spin shrink-0" />
-            <span>正在执行「{{ runningAction }}」并等待远端接口响应…</span>
-          </div>
-
-          <div
-            v-else-if="errorMsg"
-            class="rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 text-[var(--md-sys-color-on-error-container)]"
-          >
-            执行「{{ lastActionName }}」失败：{{ errorMsg }}
-          </div>
-
-          <template v-else-if="lastDiagnostics">
-            <div class="flex items-center justify-between gap-2">
-              <div class="flex items-center gap-1.5 font-semibold text-[var(--md-sys-color-primary)]">
-                <LuTerminal class="h-3.5 w-3.5" />
-                <span>书源反馈 · {{ lastActionName }}</span>
-              </div>
-              <div class="flex items-center gap-3">
-                <button
-                  v-if="lastDiagnostics.logs.length > 0"
-                  type="button"
-                  class="text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)]"
-                  @click="showLogs = !showLogs"
-                >
-                  {{ showLogs ? '隐藏调试日志' : `查看调试日志 (${lastDiagnostics.logs.length})` }}
-                </button>
-                <button
-                  type="button"
-                  class="text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-                  @click="lastDiagnostics = null"
-                >
-                  收起
-                </button>
-              </div>
-            </div>
-
-            <div class="max-h-[45vh] space-y-1.5 overflow-y-auto">
-              <pre
-                v-for="(toast, i) in lastDiagnostics.toasts"
-                :key="`toast-${i}`"
-                class="whitespace-pre-wrap break-words rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2.5 font-mono text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface)] [tab-size:2]"
-              >{{ toast }}</pre>
-              <div
-                v-if="lastDiagnostics.toasts.length === 0"
-                class="rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 font-mono text-[11px] text-[var(--md-sys-color-on-surface)]"
-              >
-                {{ lastResultText ? `返回结果：${lastResultText}` : `已执行「${lastActionName}」（脚本未输出提示文本）` }}
-              </div>
-              <pre
-                v-if="showLogs && lastDiagnostics.logs.length > 0"
-                class="whitespace-pre-wrap break-words rounded-xl bg-[var(--md-sys-color-surface-container-highest)]/70 px-3 py-2 font-mono text-[10px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
-              >{{ lastDiagnostics.logs.join('\n') }}</pre>
-            </div>
-
-            <div
-              v-if="lastDiagnostics.browser_urls.length > 0"
-              class="flex flex-wrap gap-2 pt-0.5"
-            >
-              <a
-                v-for="(link, idx) in lastDiagnostics.browser_urls"
-                :key="`url-${idx}`"
-                :href="link.url"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="md-btn md-btn-sm md-btn-tonal md-state"
-              >
-                <LuExternalLink class="h-3.5 w-3.5" />
-                <span>{{ link.title || link.url }}</span>
-              </a>
-            </div>
-          </template>
         </div>
 
         <!-- Body -->

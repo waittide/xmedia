@@ -16,22 +16,31 @@ const snackbar = useSnackbarStore()
           :key="snackbar.current.id"
           role="status"
           aria-live="polite"
-          class="pointer-events-auto flex max-w-lg items-center gap-3 overflow-hidden rounded-[var(--md-sys-shape-corner-md)] border py-2.5 pr-2.5 pl-3.5 text-[13px] font-medium shadow-[var(--md-sys-elevation-3)] backdrop-blur-md"
-          :class="
+          class="pointer-events-auto flex gap-3 overflow-hidden rounded-[var(--md-sys-shape-corner-md)] border py-2.5 pr-2.5 pl-3.5 text-[13px] font-medium shadow-[var(--md-sys-elevation-3)] backdrop-blur-md"
+          :class="[
+            snackbar.current.message.includes('\n')
+              ? 'max-w-2xl items-start'
+              : 'max-w-lg items-center',
             snackbar.current.tone === 'error'
               ? 'border-[var(--md-sys-color-error)]/40 bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-              : 'border-[var(--md-sys-color-primary)]/30 bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface)]'
-          "
+              : 'border-[var(--md-sys-color-primary)]/30 bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface)]',
+          ]"
         >
           <span
-            class="h-5 w-1 shrink-0 rounded-full"
+            class="mt-0.5 h-5 w-1 shrink-0 rounded-full"
             :class="
               snackbar.current.tone === 'error'
                 ? 'bg-[var(--md-sys-color-error)]'
                 : 'bg-[var(--md-sys-color-primary)]'
             "
           />
-          <span class="min-w-0 flex-1 leading-snug">{{ snackbar.current.message }}</span>
+          <div
+            v-if="snackbar.current.message.includes('\n')"
+            class="max-h-[60vh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed [tab-size:2]"
+          >
+            {{ snackbar.current.message }}
+          </div>
+          <span v-else class="min-w-0 flex-1 leading-snug">{{ snackbar.current.message }}</span>
 
           <button
             v-if="snackbar.current.actionLabel"

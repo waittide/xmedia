@@ -49,7 +49,9 @@ export const useSnackbarStore = defineStore('snackbar', () => {
       tone: normalized.tone ?? 'default',
     }
 
-    const duration = normalized.durationMs ?? (normalized.actionLabel ? 6000 : 3800)
+    const isMultiline = normalized.message.includes('\n')
+    const duration =
+      normalized.durationMs ?? (isMultiline ? 9000 : normalized.actionLabel ? 6000 : 3800)
     if (duration > 0) {
       timer = setTimeout(() => {
         current.value = null
