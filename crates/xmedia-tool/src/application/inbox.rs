@@ -5,7 +5,7 @@ use serde::Serialize;
 use walkdir::WalkDir;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
-use crate::application::scraping::ScrapingOrchestratorService;
+use crate::application::scraping::{AutoScrapeOptions, ScrapingOrchestratorService};
 use crate::application::settings::ToolSettingsService;
 use crate::application::webhook::notify_xmedia_rescan;
 use crate::application::workbench::MediaWorkbenchService;
@@ -217,8 +217,17 @@ pub async fn scan_and_import_inbox(
                     && let Some(ins) =
                         workbench.resolve_inspector_for_path(&target_abs, target_root.default_kind)
                 {
+                    let opts = AutoScrapeOptions {
+                        organize_by_template: inbox_cfg.organize_by_template,
+                        ..Default::default()
+                    };
                     match scraping
-                        .auto_scrape_file(target_root_id, &src_rel, ins.media_kind())
+                        .auto_scrape_file_with_options(
+                            target_root_id,
+                            &src_rel,
+                            ins.media_kind(),
+                            opts,
+                        )
                         .await
                     {
                         Ok(res) => {

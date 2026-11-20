@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
@@ -265,6 +267,8 @@ async fn online_cover_proxy(
     if let Ok(hv) = HeaderValue::from_str(&mime) {
         resp.headers_mut().insert(CONTENT_TYPE, hv);
     }
+    resp.headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     resp.headers_mut().insert(
         CACHE_CONTROL,
         HeaderValue::from_static("public, max-age=86400"),

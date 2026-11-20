@@ -343,6 +343,26 @@ pub fn transform_subtitle_content(
     (out_lines.join("\n"), shifted_cues)
 }
 
+fn validate_subtitle_lang_tag(raw: &str) -> DomainResult<&str> {
+    let lang = raw.trim();
+    if lang.is_empty()
+        || lang.len() > 64
+        || lang.contains('/')
+        || lang.contains('\\')
+        || lang.contains("..")
+        || lang.starts_with('.')
+        || lang.ends_with('.')
+        || lang
+            .chars()
+            .any(|c| c.is_control() || matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+    {
+        return Err(DomainError::Validation(format!(
+            "invalid subtitle language tag '{lang}'"
+        )));
+    }
+    Ok(lang)
+}
+
 pub fn process_video_subtitle(
     video_path: &Path,
     input: &ProcessSubtitleInput,
@@ -350,10 +370,18 @@ pub fn process_video_subtitle(
     let parent = video_path
         .parent()
         .ok_or_else(|| DomainError::Validation("video path has no parent dir".into()))?;
-    if input.subtitle_filename.contains('/') || input.subtitle_filename.contains('\\') {
+    if input.subtitle_filename.is_empty()
+        || input.subtitle_filename.contains('/')
+        || input.subtitle_filename.contains('\\')
+        || input.subtitle_filename.contains("..")
+        || input.subtitle_filename.chars().any(char::is_control)
+    {
         return Err(DomainError::Validation("invalid subtitle filename".into()));
     }
     let sub_path = parent.join(&input.subtitle_filename);
+    if sub_path.parent() != Some(parent) {
+        return Err(DomainError::Validation("invalid subtitle filename".into()));
+    }
     if !sub_path.is_file() {
         return Err(DomainError::NotFound(format!(
             "subtitle '{}' not found",
@@ -379,8 +407,9 @@ pub fn process_video_subtitle(
     let mut target_path: PathBuf = sub_path.clone();
     let mut final_filename = input.subtitle_filename.clone();
     if let Some(ref lang_raw) = input.rename_language {
-        let lang = lang_raw.trim();
-        if !lang.is_empty() {
+        let trimmed = lang_raw.trim();
+        if !trimmed.is_empty() {
+            let lang = validate_subtitle_lang_tag(trimmed)?;
             let video_stem = video_path
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -388,6 +417,11 @@ pub fn process_video_subtitle(
             let forced_part = if input.forced { ".forced" } else { "" };
             final_filename = format!("{video_stem}.{lang}{forced_part}.{ext}");
             target_path = parent.join(&final_filename);
+            if target_path.parent() != Some(parent) {
+                return Err(DomainError::Validation(
+                    "subtitle rename target escapes parent directory".into(),
+                ));
+            }
         }
     }
 
@@ -429,12 +463,17 @@ pub fn extract_embedded_subtitle(
         "vtt" => "vtt",
         _ => "srt",
     };
-    let lang = language_tag
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("zh-CN");
+    let lang = match language_tag.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => validate_subtitle_lang_tag(raw)?,
+        None => "zh-CN",
+    };
     let created_filename = format!("{stem}.{lang}.{ext}");
     let out_path = parent.join(&created_filename);
+    if out_path.parent() != Some(parent) {
+        return Err(DomainError::Validation(
+            "subtitle output path escapes parent directory".into(),
+        ));
+    }
 
     let map_arg = format!("0:{stream_index}");
     let status = Command::new(ffmpeg_bin)
@@ -519,5 +558,38 @@ mod tests {
         let final_text = std::fs::read_to_string(tmp.path().join(&rep.final_filename)).unwrap();
         assert!(final_text.contains("00:00:01,500 --> 00:00:03,500"));
         assert!(final_text.contains("你好世界"));
+    }
+
+    #[test]
+    fn subtitle_language_tag_blocks_path_traversal_and_control_chars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vid = tmp.path().join("Movie.mkv");
+        std::fs::write(&vid, b"dummy").unwrap();
+        let sub = tmp.path().join("Movie.chs.srt");
+        std::fs::write(&sub, b"1\n00:00:01,000 --> 00:00:02,000\nHi\n").unwrap();
+
+        for bad_lang in [
+            "../../pwn",
+            "zh/../../x",
+            "zh\\..\\x",
+            "zh..cn",
+            "zh\x00cn",
+            "zh\ncn",
+        ] {
+            let err = process_video_subtitle(
+                &vid,
+                &ProcessSubtitleInput {
+                    subtitle_filename: "Movie.chs.srt".into(),
+                    rename_language: Some(bad_lang.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(err, DomainError::Validation(_)));
+
+            let ext_err =
+                extract_embedded_subtitle(&vid, 0, Some(bad_lang), "srt", "ffmpeg").unwrap_err();
+            assert!(matches!(ext_err, DomainError::Validation(_)));
+        }
     }
 }

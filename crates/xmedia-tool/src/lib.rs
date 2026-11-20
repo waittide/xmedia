@@ -610,7 +610,7 @@ mod tests {
         )
         .unwrap();
 
-        let app = XMediaToolApp::init(XMediaToolConfig {
+        let mut app = XMediaToolApp::init(XMediaToolConfig {
             data_dir: tmp.path().join("data"),
             initial_roots: vec![video_root.clone()],
             password: None,
@@ -619,6 +619,7 @@ mod tests {
         })
         .await
         .unwrap();
+        app.scraping.set_allow_private_artwork_ips(true);
 
         let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
@@ -1537,7 +1538,7 @@ mod tests {
         std::fs::write(inbox.join("movie_raw.mkv"), b"dummy-mkv").unwrap();
         write_minimal_epub(&inbox.join("book_raw.epub"));
 
-        let app = XMediaToolApp::init(XMediaToolConfig {
+        let mut app = XMediaToolApp::init(XMediaToolConfig {
             data_dir: tmp.path().join("data"),
             initial_roots: vec![root.clone()],
             password: None,
@@ -1546,6 +1547,7 @@ mod tests {
         })
         .await
         .unwrap();
+        app.scraping.set_allow_private_artwork_ips(true);
         let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
         // 1. Video with `organize_by_template = Some(false)` updates NFO & artwork in place without moving
@@ -1700,7 +1702,7 @@ mod tests {
         let raw_cbz = root.join("JOJO4_Ch01.cbz");
         write_minimal_cbz(&raw_cbz);
 
-        let app = XMediaToolApp::init(XMediaToolConfig {
+        let mut app = XMediaToolApp::init(XMediaToolConfig {
             data_dir: tmp.path().join("data"),
             initial_roots: vec![root.clone()],
             password: None,
@@ -1709,6 +1711,7 @@ mod tests {
         })
         .await
         .unwrap();
+        app.scraping.set_allow_private_artwork_ips(true);
         let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
         // Scrape & archive by default Komga/Kavita series template + series cover
@@ -1812,7 +1815,7 @@ mod tests {
         write_minimal_wav(&root.join("t1.wav"));
         write_minimal_wav(&root.join("t2.wav"));
 
-        let app = XMediaToolApp::init(XMediaToolConfig {
+        let mut app = XMediaToolApp::init(XMediaToolConfig {
             data_dir: tmp.path().join("data"),
             initial_roots: vec![root.clone()],
             password: None,
@@ -1821,6 +1824,7 @@ mod tests {
         })
         .await
         .unwrap();
+        app.scraping.set_allow_private_artwork_ips(true);
         let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
         // 1. Default (write_album_cover = false): embeds cover & archives to Picard hierarchy without creating cover.png
@@ -1920,7 +1924,7 @@ The Dark Forest.
         )
         .unwrap();
 
-        let app = XMediaToolApp::init(XMediaToolConfig {
+        let mut app = XMediaToolApp::init(XMediaToolConfig {
             data_dir: tmp.path().join("data"),
             initial_roots: vec![root.clone()],
             password: None,
@@ -1929,6 +1933,7 @@ The Dark Forest.
         })
         .await
         .unwrap();
+        app.scraping.set_allow_private_artwork_ips(true);
         let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
 
         // 1. EPUB 3.0 series + subseries + volume roundtrip & Calibre directory rename

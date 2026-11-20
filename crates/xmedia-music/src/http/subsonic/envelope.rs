@@ -1,5 +1,5 @@
 use axum::body::Body;
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Number, Value};
@@ -8,6 +8,22 @@ use xmedia_core::domain::error::DomainError;
 pub const SUBSONIC_API_VERSION: &str = "1.16.1";
 pub const SERVER_TYPE: &str = "xmedia";
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+const MAX_JSONP_CALLBACK_LEN: usize = 128;
+
+/// Validates a JSONP callback identifier (`^[A-Za-z_$][0-9A-Za-z_$]*(\.[A-Za-z_$][0-9A-Za-z_$]*)*$`, max 128 bytes).
+pub fn is_valid_jsonp_callback(callback: &str) -> bool {
+    if callback.is_empty() || callback.len() > MAX_JSONP_CALLBACK_LEN {
+        return false;
+    }
+    callback.split('.').all(|segment| {
+        let mut bytes = segment.bytes();
+        let Some(first) = bytes.next() else {
+            return false;
+        };
+        let first_ok = first.is_ascii_alphabetic() || first == b'_' || first == b'$';
+        first_ok && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseFormat {
@@ -333,6 +349,24 @@ impl From<DomainError> for SubsonicError {
                 code: 70,
                 message: m,
             },
+            DomainError::Storage(detail) => {
+                tracing::error!(detail = %detail, "subsonic internal storage error");
+                Self {
+                    code: 0,
+                    message: "Internal storage error".to_string(),
+                }
+            }
+            DomainError::Persistence(detail) => {
+                tracing::error!(detail = %detail, "subsonic internal persistence error");
+                Self {
+                    code: 0,
+                    message: "Internal database error".to_string(),
+                }
+            }
+            DomainError::Conflict(m) | DomainError::UnsupportedFormat(m) => Self {
+                code: 0,
+                message: m,
+            },
             other => Self {
                 code: 0,
                 message: other.to_string(),
@@ -451,12 +485,33 @@ fn json_http_response(fmt: ResponseFormat, callback: &str, root: Map<String, Val
 
     match fmt {
         ResponseFormat::Jsonp => {
+            if !is_valid_jsonp_callback(callback) {
+                let mut err_root = base_json_envelope("failed");
+                let err_node = SsNode::new()
+                    .attr_int("code", 10)
+                    .attr_str("message", "Invalid JSONP callback parameter.");
+                err_root.insert("error".to_string(), err_node.to_json_object());
+                let mut err_wrapper = Map::new();
+                err_wrapper.insert("subsonic-response".to_string(), Value::Object(err_root));
+                let err_json =
+                    serde_json::to_string(&Value::Object(err_wrapper)).unwrap_or_default();
+                let mut res = (StatusCode::BAD_REQUEST, Body::from(err_json)).into_response();
+                res.headers_mut().insert(
+                    CONTENT_TYPE,
+                    HeaderValue::from_static("application/json; charset=utf-8"),
+                );
+                res.headers_mut()
+                    .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+                return res;
+            }
             let body = format!("{callback}({json_text});");
             let mut res = (StatusCode::OK, Body::from(body)).into_response();
             res.headers_mut().insert(
                 CONTENT_TYPE,
                 HeaderValue::from_static("application/javascript; charset=utf-8"),
             );
+            res.headers_mut()
+                .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
             res
         }
         _ => {
@@ -484,4 +539,76 @@ fn escape_xml(input: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    #[test]
+    fn jsonp_callback_validation_blocks_xss_and_allows_valid_identifiers() {
+        for valid in [
+            "callback",
+            "jQuery123456_789",
+            "_cb",
+            "$fn",
+            "window.myApp.cb_1",
+            &"a".repeat(MAX_JSONP_CALLBACK_LEN),
+        ] {
+            assert!(is_valid_jsonp_callback(valid), "should allow {valid}");
+        }
+
+        for invalid in [
+            "",
+            "alert(1)//",
+            "cb;alert(1)",
+            "<script>alert(1)</script>",
+            "foo.bar()",
+            "123abc",
+            ".leadingDot",
+            "trailingDot.",
+            "a..b",
+            "a.1b",
+            "cb\nalert(1)",
+            &"a".repeat(MAX_JSONP_CALLBACK_LEN + 1),
+        ] {
+            assert!(!is_valid_jsonp_callback(invalid), "should reject {invalid}");
+        }
+    }
+
+    #[tokio::test]
+    async fn render_ok_rejects_malicious_jsonp_callback_with_400_json() {
+        let params = SubsonicParams::from_query_and_form(Some("f=jsonp&callback=alert(1)//"), &[]);
+        let resp = render_ok(&params, None);
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(
+            resp.headers().get(X_CONTENT_TYPE_OPTIONS).unwrap(),
+            "nosniff"
+        );
+        let bytes = to_bytes(resp.into_body(), 1024 * 64).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(!body.contains("alert(1)"));
+        assert!(body.contains("\"status\":\"failed\""));
+    }
+
+    #[tokio::test]
+    async fn render_ok_wraps_valid_jsonp_callback() {
+        let params =
+            SubsonicParams::from_query_and_form(Some("f=jsonp&callback=myApp.onData"), &[]);
+        let resp = render_ok(&params, None);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(CONTENT_TYPE).unwrap(),
+            "application/javascript; charset=utf-8"
+        );
+        let bytes = to_bytes(resp.into_body(), 1024 * 64).await.unwrap();
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(body.starts_with("myApp.onData({"));
+        assert!(body.ends_with("});"));
+    }
 }

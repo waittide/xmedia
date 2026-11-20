@@ -35,7 +35,9 @@ use crate::infra::inspectors::video::{
     render_tvshow_nfo_xml, render_video_nfo_xml, write_image_replacing_opposite_ext,
 };
 use crate::infra::scrape_cache::{ScrapeCacheStatsDto, ScrapeMetadataCache};
-use crate::infra::scrapers::http_client::build_http_client;
+use crate::infra::scrapers::http_client::{
+    build_ssrf_safe_http_client, validate_artwork_http_url, validate_public_http_url,
+};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DryRunScrapeItemDto {
@@ -115,6 +117,7 @@ pub struct ScrapingOrchestratorService {
     workbench: MediaWorkbenchService,
     providers: Arc<Vec<Arc<dyn ScraperProviderPort>>>,
     cache: ScrapeMetadataCache,
+    allow_private_artwork_ips: bool,
 }
 
 impl ScrapingOrchestratorService {
@@ -137,7 +140,13 @@ impl ScrapingOrchestratorService {
             workbench,
             providers: Arc::new(providers),
             cache: ScrapeMetadataCache::new(cache_dir),
+            allow_private_artwork_ips: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_allow_private_artwork_ips(&mut self, allow: bool) {
+        self.allow_private_artwork_ips = allow;
     }
 
     pub async fn cache_stats(&self) -> DomainResult<ScrapeCacheStatsDto> {
@@ -812,6 +821,7 @@ impl ScrapingOrchestratorService {
 
         let need_existing = only_fill_missing
             || media_kind == MediaKind::Book
+            || media_kind == MediaKind::Video
             || (media_kind == MediaKind::Music
                 && scraped.target == Some(ScrapeTargetKind::MusicAlbum));
         let existing_detail = if need_existing {
@@ -896,54 +906,13 @@ impl ScrapingOrchestratorService {
         if let Some(MediaMetadataPayload::Video(existing_video)) =
             existing_detail.as_ref().map(|d| &d.metadata)
             && !existing_video.locked_fields.is_empty()
+            && let MediaMetadataPatch::Video(ref mut vp) = patch
         {
-            let is_locked = |name: &str| {
-                existing_video
-                    .locked_fields
-                    .iter()
-                    .any(|f| f.eq_ignore_ascii_case(name))
-            };
-            if let MediaMetadataPatch::Video(ref mut vp) = patch {
-                if is_locked("title") {
-                    vp.title = None;
-                }
-                if is_locked("original_title") {
-                    vp.original_title = None;
-                }
-                if is_locked("show_title") {
-                    vp.show_title = None;
-                }
-                if is_locked("summary") || is_locked("overview") {
-                    vp.summary = None;
-                }
-                if is_locked("genres") {
-                    vp.genres = None;
-                }
-                if is_locked("tags") {
-                    vp.tags = None;
-                }
-                if is_locked("actors") || is_locked("cast") {
-                    vp.actors = None;
-                }
-                if is_locked("directors") {
-                    vp.directors = None;
-                }
-                if is_locked("studio") {
-                    vp.studio = None;
-                }
-                if is_locked("year") {
-                    vp.year = None;
-                }
-                if is_locked("rating") {
-                    vp.rating = None;
-                }
-                if is_locked("collection_set") || is_locked("set") {
-                    vp.collection_set = None;
-                }
-            }
-            if is_locked("cover") || is_locked("poster") {
-                effective_apply_cover = false;
-            }
+            apply_video_locked_fields(
+                vp,
+                &existing_video.locked_fields,
+                &mut effective_apply_cover,
+            );
         }
 
         let mut detail = self
@@ -957,7 +926,7 @@ impl ScrapingOrchestratorService {
         let mut cached_cover_download: Option<(Vec<u8>, String)> = None;
         if effective_apply_cover && media_kind != MediaKind::Comic && !defer_non_epub_book_cover {
             let creds = self.settings.get_credentials().await?;
-            let client = build_http_client(&creds)?;
+            let client = build_ssrf_safe_http_client(&creds, self.allow_private_artwork_ips)?;
 
             if media_kind == MediaKind::Video {
                 let (has_poster, has_fanart, has_thumb) = match existing_detail
@@ -977,7 +946,8 @@ impl ScrapingOrchestratorService {
                         continue;
                     }
                     if let Some(u) = url_opt.map(str::trim).filter(|s| !s.is_empty())
-                        && let Ok((bytes, mime)) = download_image_bytes(&client, u).await
+                        && let Ok((bytes, mime)) =
+                            download_image_bytes(&client, u, self.allow_private_artwork_ips).await
                     {
                         detail = self
                             .workbench
@@ -994,7 +964,9 @@ impl ScrapingOrchestratorService {
                 {
                     let need_embedded = !(only_fill_missing && already_has_cover);
                     if (need_embedded || (media_kind == MediaKind::Music && write_album_cover))
-                        && let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await
+                        && let Ok((bytes, mime)) =
+                            download_image_bytes(&client, cover_url, self.allow_private_artwork_ips)
+                                .await
                     {
                         if need_embedded {
                             detail = self
@@ -1072,8 +1044,10 @@ impl ScrapingOrchestratorService {
                 && !cover_url.trim().is_empty()
             {
                 let creds = self.settings.get_credentials().await?;
-                let client = build_http_client(&creds)?;
-                if let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await {
+                let client = build_ssrf_safe_http_client(&creds, self.allow_private_artwork_ips)?;
+                if let Ok((bytes, mime)) =
+                    download_image_bytes(&client, cover_url, self.allow_private_artwork_ips).await
+                {
                     let cur_rel = detail.entry.rel_path.clone();
                     detail = self
                         .workbench
@@ -1143,8 +1117,10 @@ impl ScrapingOrchestratorService {
                 && !cover_url.trim().is_empty()
             {
                 let creds = self.settings.get_credentials().await?;
-                let client = build_http_client(&creds)?;
-                if let Ok((bytes, mime)) = download_image_bytes(&client, cover_url).await {
+                let client = build_ssrf_safe_http_client(&creds, self.allow_private_artwork_ips)?;
+                if let Ok((bytes, mime)) =
+                    download_image_bytes(&client, cover_url, self.allow_private_artwork_ips).await
+                {
                     let cur_rel = detail.entry.rel_path.clone();
                     detail = self
                         .workbench
@@ -1190,6 +1166,7 @@ impl ScrapingOrchestratorService {
             .find(|r| r.id == root_id)
             .cloned()
             .ok_or_else(|| DomainError::NotFound(format!("root '{root_id}' not found")))?;
+        root.ensure_writable()?;
         let src_sandbox = root.resolve_existing(rel_path)?;
         if !src_sandbox.abs_path.is_file() {
             return Err(DomainError::Validation(format!(
@@ -1218,6 +1195,10 @@ impl ScrapingOrchestratorService {
                 .and_then(|s| s.to_str())
                 .unwrap_or("");
             filter_video_patch_for_missing(&mut vp, &meta, fallback_stem);
+        }
+        let mut effective_apply_cover = apply_cover;
+        if !meta.locked_fields.is_empty() {
+            apply_video_locked_fields(&mut vp, &meta.locked_fields, &mut effective_apply_cover);
         }
         apply_video_patch_onto(&mut meta, vp);
         if meta.is_episode && meta.season_number.is_none() {
@@ -1276,11 +1257,14 @@ impl ScrapingOrchestratorService {
 
         // 3. Pre-fetch requested scraped artwork bytes (with URL deduplication)
         let mut downloaded_images: HashMap<String, (Vec<u8>, &'static str)> = HashMap::new();
-        let skip_poster = only_fill_missing && existing_poster;
-        let skip_fanart = only_fill_missing && existing_fanart;
-        let skip_thumb = only_fill_missing && existing_thumb;
-        if apply_cover {
-            let client = build_http_client(&raw_settings.credentials)?;
+        let skip_poster = !effective_apply_cover || (only_fill_missing && existing_poster);
+        let skip_fanart = !effective_apply_cover || (only_fill_missing && existing_fanart);
+        let skip_thumb = !effective_apply_cover || (only_fill_missing && existing_thumb);
+        if effective_apply_cover {
+            let client = build_ssrf_safe_http_client(
+                &raw_settings.credentials,
+                self.allow_private_artwork_ips,
+            )?;
             let urls_to_fetch: [Option<&str>; 4] = [
                 (!skip_poster)
                     .then_some(scraped.cover_url.as_deref())
@@ -1300,7 +1284,7 @@ impl ScrapingOrchestratorService {
                 if u.is_empty() || downloaded_images.contains_key(u) {
                     continue;
                 }
-                match download_image_bytes(&client, u).await {
+                match download_image_bytes(&client, u, self.allow_private_artwork_ips).await {
                     Ok((bytes, mime)) => {
                         let img_ext = if mime.contains("png") {
                             "png"
@@ -1367,20 +1351,20 @@ impl ScrapingOrchestratorService {
                             "jpg"
                         }
                     };
-                    if lower.contains("-poster.") && (!apply_cover || skip_poster) {
+                    if lower.contains("-poster.") && skip_poster {
                         let target_poster_dir = if meta.is_episode { &show_dir } else { &dst_dir };
                         let migrated =
                             target_poster_dir.join(format!("poster.{}", image_ext(&lower)));
                         if !migrated.exists() {
                             let _ = std::fs::copy(&comp_abs, &migrated);
                         }
-                    } else if lower.contains("-fanart.") && (!apply_cover || skip_fanart) {
+                    } else if lower.contains("-fanart.") && skip_fanart {
                         let target_fan_dir = if meta.is_episode { &show_dir } else { &dst_dir };
                         let migrated = target_fan_dir.join(format!("fanart.{}", image_ext(&lower)));
                         if !migrated.exists() {
                             let _ = std::fs::copy(&comp_abs, &migrated);
                         }
-                    } else if lower.contains("-thumb.") && (!apply_cover || skip_thumb) {
+                    } else if lower.contains("-thumb.") && skip_thumb {
                         let migrated =
                             dst_dir.join(format!("{target_stem}-thumb.{}", image_ext(&lower)));
                         if !migrated.exists() {
@@ -1505,6 +1489,14 @@ impl ScrapingOrchestratorService {
         .await
         .map_err(|e| DomainError::Storage(format!("video Jellyfin archive task failed: {e}")))??;
 
+        if raw_settings.xmedia_webhook.notify_on_scrape {
+            let webhook_cfg = raw_settings.xmedia_webhook;
+            let root_path = root.path;
+            tokio::spawn(async move {
+                notify_xmedia_rescan(&webhook_cfg, &root_path).await;
+            });
+        }
+
         self.workbench
             .inspect_file(root_id, &target_rel_path, Some(MediaKind::Video))
             .await
@@ -1539,8 +1531,8 @@ impl ScrapingOrchestratorService {
             )));
         }
         let creds = self.settings.get_credentials().await?;
-        let client = build_http_client(&creds)?;
-        download_image_bytes(&client, parsed.as_str()).await
+        let client = build_ssrf_safe_http_client(&creds, false)?;
+        download_image_bytes(&client, parsed.as_str(), false).await
     }
 
     /// Downloads a remote artwork image (e.g. from a scraper candidate) using configured proxy/UA
@@ -1553,31 +1545,10 @@ impl ScrapingOrchestratorService {
         slot: &str,
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<MediaFileDetail> {
-        let parsed = reqwest::Url::parse(raw_url.trim())
-            .map_err(|_| DomainError::Validation("invalid artwork URL".into()))?;
-        if !matches!(parsed.scheme(), "http" | "https") || !parsed.username().is_empty() {
-            return Err(DomainError::Validation(
-                "artwork URL must use http or https".into(),
-            ));
-        }
-        let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
-        if host.is_empty()
-            || host == "localhost"
-            || host.ends_with(".local")
-            || host.starts_with("127.")
-            || host.starts_with("10.")
-            || host.starts_with("192.168.")
-            || host.starts_with("169.254.")
-            || host == "::1"
-            || host == "[::1]"
-        {
-            return Err(DomainError::Validation(
-                "disallowed local/private artwork host".into(),
-            ));
-        }
+        let parsed = validate_public_http_url(raw_url)?;
         let creds = self.settings.get_credentials().await?;
-        let client = build_http_client(&creds)?;
-        let (bytes, mime) = download_image_bytes(&client, parsed.as_str()).await?;
+        let client = build_ssrf_safe_http_client(&creds, false)?;
+        let (bytes, mime) = download_image_bytes(&client, parsed.as_str(), false).await?;
         self.workbench
             .write_artwork(root_id, rel_path, &bytes, &mime, slot, preferred_kind)
             .await
@@ -1670,24 +1641,29 @@ fn is_webnovel_serial_only_provider(id: &str) -> bool {
     )
 }
 
+const MAX_IMAGE_DOWNLOAD_BYTES: usize = 16 * 1024 * 1024;
+
 async fn download_image_bytes(
     client: &reqwest::Client,
     url: &str,
+    allow_private_ips: bool,
 ) -> DomainResult<(Vec<u8>, String)> {
-    let mut req = client.get(url);
-    if url.contains(".doubanio.com/") {
+    let validated = validate_artwork_http_url(url, allow_private_ips)?;
+    let url_str = validated.as_str();
+    let mut req = client.get(validated.clone());
+    if url_str.contains(".doubanio.com/") {
         req = req.header(reqwest::header::REFERER, "https://book.douban.com/");
-    } else if url.contains(".xinhuashudian.com/") || url.contains("://xinhuashudian.com/") {
+    } else if url_str.contains(".xinhuashudian.com/") || url_str.contains("://xinhuashudian.com/") {
         req = req.header(reqwest::header::REFERER, "https://www.xhsd.com/");
-    } else if url.contains(".nhentai.net/") || url.contains("://nhentai.net/") {
+    } else if url_str.contains(".nhentai.net/") || url_str.contains("://nhentai.net/") {
         req = req.header(reqwest::header::REFERER, "https://nhentai.net/");
-    } else if url.contains("hanime1.me/")
-        || url.contains(".hembed.com/")
-        || url.contains(".hanime1.com/")
+    } else if url_str.contains("hanime1.me/")
+        || url_str.contains(".hembed.com/")
+        || url_str.contains(".hanime1.com/")
     {
         req = req.header(reqwest::header::REFERER, "https://hanime1.me/");
     }
-    let resp = req
+    let mut resp = req
         .send()
         .await
         .map_err(|e| DomainError::Storage(format!("failed downloading image '{url}': {e}")))?;
@@ -1697,20 +1673,96 @@ async fn download_image_bytes(
             resp.status()
         )));
     }
+    if let Some(content_len) = resp.content_length()
+        && content_len > MAX_IMAGE_DOWNLOAD_BYTES as u64
+    {
+        return Err(DomainError::Validation(
+            "image download exceeds 16MB size limit".into(),
+        ));
+    }
     let header_mime = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(';').next().unwrap_or(s).trim().to_string());
-    let raw = resp
-        .bytes()
+        .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase());
+    if let Some(ref ct) = header_mime
+        && !ct.is_empty()
+        && ct != "application/octet-stream"
+        && ct != "binary/octet-stream"
+        && (!ct.starts_with("image/") || ct.contains("svg"))
+    {
+        return Err(DomainError::Validation(format!(
+            "unsupported image content type '{ct}'"
+        )));
+    }
+    let mut raw = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
         .map_err(|e| DomainError::Storage(format!("failed reading image body: {e}")))?
-        .to_vec();
+    {
+        if raw.len().saturating_add(chunk.len()) > MAX_IMAGE_DOWNLOAD_BYTES {
+            return Err(DomainError::Validation(
+                "image download exceeds 16MB size limit".into(),
+            ));
+        }
+        raw.extend_from_slice(&chunk);
+    }
+    let sniffed = sniff_image_mime(&raw);
+    if sniffed == "image/svg+xml" {
+        return Err(DomainError::Validation("SVG artwork is not allowed".into()));
+    }
     let mime = header_mime
-        .filter(|m| m.starts_with("image/"))
-        .unwrap_or_else(|| sniff_image_mime(&raw).to_string());
+        .filter(|m| m.starts_with("image/") && !m.contains("svg"))
+        .unwrap_or_else(|| sniffed.to_string());
     Ok((raw, mime))
+}
+
+fn apply_video_locked_fields(
+    vp: &mut VideoMetaPatch,
+    locked_fields: &[String],
+    apply_cover: &mut bool,
+) {
+    let is_locked = |name: &str| locked_fields.iter().any(|f| f.eq_ignore_ascii_case(name));
+    if is_locked("title") {
+        vp.title = None;
+    }
+    if is_locked("original_title") {
+        vp.original_title = None;
+    }
+    if is_locked("show_title") {
+        vp.show_title = None;
+    }
+    if is_locked("summary") || is_locked("overview") {
+        vp.summary = None;
+    }
+    if is_locked("genres") {
+        vp.genres = None;
+    }
+    if is_locked("tags") {
+        vp.tags = None;
+    }
+    if is_locked("actors") || is_locked("cast") {
+        vp.actors = None;
+    }
+    if is_locked("directors") {
+        vp.directors = None;
+    }
+    if is_locked("studio") {
+        vp.studio = None;
+    }
+    if is_locked("year") {
+        vp.year = None;
+    }
+    if is_locked("rating") {
+        vp.rating = None;
+    }
+    if is_locked("collection_set") || is_locked("set") {
+        vp.collection_set = None;
+    }
+    if is_locked("cover") || is_locked("poster") {
+        *apply_cover = false;
+    }
 }
 
 fn has_lrc_timestamps(text: &str) -> bool {
@@ -2199,13 +2251,14 @@ fn fallback_metadata_from_candidate(cand: &ScrapeCandidate) -> ScrapedMetadata {
     let mut language: Option<String> = None;
 
     const CN_NOVEL_PROVIDERS: &[&str] = &[
-        "qidian", "fanqie", "qimao", "zongheng", "jjwxc", "sfacg", "ciweimao", "faloo",
+        "qidian", "fanqie", "qimao", "17k", "ciweimao", "sfacg", "faloo", "jjwxc",
     ];
     const MUSIC_PROVIDERS: &[&str] = &[
-        "qq_music",
+        "qq",
         "netease",
         "kugou",
         "kuwo",
+        "migu",
         "taihe",
         "qishui",
         "musicbrainz",
@@ -2391,5 +2444,148 @@ mod tests {
             meta.external_ids.get("fanqie").map(String::as_str),
             Some("7171641987538357284")
         );
+    }
+
+    #[test]
+    fn fallback_metadata_recognizes_qq_migu_and_17k_provider_ids() {
+        for (pid, pname) in [("qq", "QQ 音乐"), ("migu", "咪咕音乐")] {
+            let cand = ScrapeCandidate {
+                provider_id: pid.into(),
+                provider_name: pname.into(),
+                external_id: "song1".into(),
+                target: ScrapeTargetKind::MusicTrack,
+                title: "晴天".into(),
+                subtitle: Some("周杰伦 · 叶惠美".into()),
+                year: Some(2003),
+                summary: None,
+                cover_url: None,
+                synced_lyrics: None,
+                plain_lyrics: None,
+            };
+            let meta = fallback_metadata_from_candidate(&cand);
+            assert_eq!(meta.creators, vec!["周杰伦"]);
+            assert_eq!(meta.series_or_album.as_deref(), Some("叶惠美"));
+        }
+
+        let k17 = ScrapeCandidate {
+            provider_id: "17k".into(),
+            provider_name: "17K小说网".into(),
+            external_id: "123".into(),
+            target: ScrapeTargetKind::Book,
+            title: "小说".into(),
+            subtitle: Some("作者A · 都市".into()),
+            year: None,
+            summary: None,
+            cover_url: None,
+            synced_lyrics: None,
+            plain_lyrics: None,
+        };
+        let meta = fallback_metadata_from_candidate(&k17);
+        assert_eq!(meta.creators, vec!["作者A"]);
+        assert_eq!(meta.genres, vec!["都市"]);
+        assert_eq!(meta.language.as_deref(), Some("zh-CN"));
+    }
+
+    #[test]
+    fn validate_public_http_url_blocks_private_cgnat_and_ipv6_ranges() {
+        for blocked in [
+            "http://127.0.0.1/a.jpg",
+            "http://localhost/a.jpg",
+            "http://foo.local/a.jpg",
+            "http://10.0.0.1/a.jpg",
+            "http://172.16.0.1/a.jpg",
+            "http://172.31.255.1/a.jpg",
+            "http://192.168.0.1/a.jpg",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://100.64.0.1/a.jpg",
+            "http://0.0.0.0/a.jpg",
+            "http://[::1]/a.jpg",
+            "http://[fc00::1]/a.jpg",
+            "http://[fe80::1]/a.jpg",
+            "http://[::ffff:127.0.0.1]/a.jpg",
+            "http://[::ffff:172.16.1.1]/a.jpg",
+            "file:///etc/passwd",
+            "https://user:pass@1.1.1.1/a.jpg",
+        ] {
+            assert!(
+                validate_public_http_url(blocked).is_err(),
+                "expected {blocked} to be rejected"
+            );
+        }
+        assert!(validate_public_http_url("https://1.1.1.1/cover.jpg").is_ok());
+    }
+
+    #[test]
+    fn apply_video_locked_fields_strips_locked_metadata_and_cover() {
+        let mut vp = VideoMetaPatch {
+            title: Some("New Title".into()),
+            summary: Some("New Plot".into()),
+            genres: Some(vec!["Action".into()]),
+            year: Some(2025),
+            ..Default::default()
+        };
+        let mut apply_cover = true;
+        apply_video_locked_fields(
+            &mut vp,
+            &["title".into(), "overview".into(), "poster".into()],
+            &mut apply_cover,
+        );
+        assert!(vp.title.is_none());
+        assert!(vp.summary.is_none());
+        assert_eq!(vp.genres, Some(vec!["Action".into()]));
+        assert_eq!(vp.year, Some(2025));
+        assert!(!apply_cover);
+    }
+
+    #[tokio::test]
+    async fn apply_video_jellyfin_archive_enforces_read_only_root() {
+        use crate::infra::config_store::JsonFileConfigRepository;
+        use crate::infra::inspectors::build_default_inspectors;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let video_dir = tmp.path().join("videos");
+        std::fs::create_dir_all(&video_dir).unwrap();
+        std::fs::write(video_dir.join("Movie (2024).mkv"), b"dummy").unwrap();
+
+        let repo = Arc::new(
+            JsonFileConfigRepository::load_or_init(tmp.path().join("tool-config.json"), &[])
+                .unwrap(),
+        );
+        let settings = ToolSettingsService::new(repo);
+        let root = settings
+            .add_root_with_options(
+                "ReadOnly".into(),
+                video_dir.to_string_lossy().into_owned(),
+                Some(MediaKind::Video),
+                true,
+            )
+            .await
+            .unwrap();
+        let workbench = MediaWorkbenchService::new(
+            settings.clone(),
+            build_default_inspectors(xmedia_core::infra::ffmpeg::FfmpegToolkit::from_ffmpeg_bin(
+                "ffmpeg",
+            )),
+        );
+        let scraping = ScrapingOrchestratorService::new(settings, workbench, vec![]);
+
+        let err = scraping
+            .apply_to_file(
+                root.id,
+                "Movie (2024).mkv",
+                MediaKind::Video,
+                ScrapedMetadata {
+                    title: Some("Movie".into()),
+                    year: Some(2024),
+                    ..Default::default()
+                },
+                false,
+                false,
+                Some(true),
+                false,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Forbidden(_)));
     }
 }

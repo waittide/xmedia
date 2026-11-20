@@ -16,7 +16,9 @@ use xmedia_core::domain::user::{User, UserId};
 use crate::application::catalog::BookCatalogService;
 use crate::infra::persistence::models::{BookOnlineShelfModel, BookSourceRecordModel};
 use crate::source::BookSourceEngine;
-use crate::source::http::{DEFAULT_WEBVIEW_UA, HttpClientConfig, validate_target_url};
+use crate::source::http::{
+    DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, ssrf_redirect_policy, validate_target_url,
+};
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, LoginUiItem,
     OnlineBookDetail, OnlineChapterContent, OnlineChapterItem, SearchBookResult,
@@ -1546,15 +1548,20 @@ impl BookOnlineService {
     }
 
     pub async fn fetch_cover_proxy(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
+        const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
         let validated = validate_target_url(raw_url.trim(), self.allow_private_ips)
             .map_err(DomainError::Validation)?;
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(12))
             .user_agent(DEFAULT_WEBVIEW_UA)
+            .redirect(ssrf_redirect_policy(
+                self.allow_private_ips,
+                MAX_REDIRECT_HOPS,
+            ))
             .build()
             .map_err(|e| DomainError::Storage(e.to_string()))?;
 
-        let resp = client
+        let mut resp = client
             .get(validated)
             .send()
             .await
@@ -1567,26 +1574,96 @@ impl BookOnlineService {
             )));
         }
 
-        let ct = resp
+        let header_ct = resp
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/jpeg")
-            .split(';')
-            .next()
-            .unwrap_or("image/jpeg")
-            .trim()
-            .to_string();
+            .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase());
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| DomainError::Validation(format!("读取封面失败: {e}")))?;
-        if bytes.len() > 8 * 1024 * 1024 {
+        if let Some(ref ct) = header_ct {
+            validate_cover_header_mime(ct)?;
+        }
+
+        if let Some(content_len) = resp.content_length()
+            && content_len > MAX_COVER_BYTES as u64
+        {
             return Err(DomainError::Validation("封面图片体积超过 8MB 限制".into()));
         }
-        Ok((bytes.to_vec(), ct))
+
+        let mut bytes = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| DomainError::Validation(format!("读取封面失败: {e}")))?
+        {
+            if bytes.len().saturating_add(chunk.len()) > MAX_COVER_BYTES {
+                return Err(DomainError::Validation("封面图片体积超过 8MB 限制".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+
+        let safe_mime = validate_safe_cover_image(header_ct.as_deref(), &bytes)?;
+        Ok((bytes, safe_mime))
     }
+}
+
+fn validate_cover_header_mime(ct_lower: &str) -> DomainResult<()> {
+    if ct_lower.is_empty()
+        || ct_lower == "application/octet-stream"
+        || ct_lower == "binary/octet-stream"
+    {
+        return Ok(());
+    }
+    if !ct_lower.starts_with("image/") || ct_lower.contains("svg") {
+        return Err(DomainError::Validation(format!(
+            "不支持的封面内容类型: {ct_lower}"
+        )));
+    }
+    Ok(())
+}
+
+fn detect_safe_raster_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"BM") {
+        Some("image/bmp")
+    } else if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
+        Some("image/x-icon")
+    } else if bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && matches!(
+            &bytes[8..12],
+            b"avif" | b"avis" | b"heic" | b"heix" | b"mif1"
+        )
+    {
+        Some("image/avif")
+    } else {
+        None
+    }
+}
+
+pub(crate) fn validate_safe_cover_image(
+    header_ct: Option<&str>,
+    bytes: &[u8],
+) -> DomainResult<String> {
+    if let Some(ct) = header_ct {
+        let normalized = ct
+            .split(';')
+            .next()
+            .unwrap_or(ct)
+            .trim()
+            .to_ascii_lowercase();
+        validate_cover_header_mime(&normalized)?;
+    }
+    let sniffed = detect_safe_raster_image_mime(bytes)
+        .ok_or_else(|| DomainError::Validation("封面内容不是受支持的安全图片格式".into()))?;
+    Ok(sniffed.to_string())
 }
 
 fn sanitize_file_stem(name: &str) -> String {
@@ -1609,5 +1686,35 @@ fn sanitize_file_stem(name: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
-fn _keep_http_cfg(_: HttpClientConfig) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cover_image_validation_rejects_html_and_svg_xss_payloads() {
+        let html = b"<html><script>alert(1)</script></html>";
+        assert!(validate_safe_cover_image(Some("text/html"), html).is_err());
+        assert!(validate_safe_cover_image(Some("image/jpeg"), html).is_err());
+
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"/>";
+        assert!(validate_safe_cover_image(Some("image/svg+xml"), svg).is_err());
+        assert!(validate_safe_cover_image(None, svg).is_err());
+
+        // Valid PNG magic bytes with text/html header must still be rejected
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0];
+        assert!(validate_safe_cover_image(Some("text/html"), &png).is_err());
+        assert!(validate_safe_cover_image(Some("image/svg+xml"), &png).is_err());
+
+        // Valid PNG / JPEG / WebP with safe or octet-stream header succeed
+        assert_eq!(
+            validate_safe_cover_image(Some("image/png"), &png).unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            validate_safe_cover_image(Some("application/octet-stream"), &png).unwrap(),
+            "image/png"
+        );
+        let jpg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        assert_eq!(validate_safe_cover_image(None, &jpg).unwrap(), "image/jpeg");
+    }
+}

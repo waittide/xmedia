@@ -63,11 +63,15 @@ pub struct UpdateSettingsInput {
 #[derive(Clone)]
 pub struct ToolSettingsService {
     repo: Arc<dyn ConfigRepositoryPort>,
+    write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ToolSettingsService {
     pub fn new(repo: Arc<dyn ConfigRepositoryPort>) -> Self {
-        Self { repo }
+        Self {
+            repo,
+            write_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
     }
 
     pub async fn get_raw(&self) -> DomainResult<ToolSettings> {
@@ -110,6 +114,7 @@ impl ToolSettingsService {
     ) -> DomainResult<ManagedRoot> {
         let root = ManagedRoot::new(name, PathBuf::from(path.trim()), default_kind)?
             .with_read_only(read_only);
+        let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;
         if let Some(existing) = settings
             .roots
@@ -128,6 +133,7 @@ impl ToolSettingsService {
         root_id: RootId,
         read_only: bool,
     ) -> DomainResult<ManagedRoot> {
+        let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;
         let target = settings
             .roots
@@ -141,6 +147,7 @@ impl ToolSettingsService {
     }
 
     pub async fn remove_root(&self, root_id: RootId) -> DomainResult<()> {
+        let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;
         let before = settings.roots.len();
         settings.roots.retain(|r| r.id != root_id);
@@ -154,6 +161,7 @@ impl ToolSettingsService {
         &self,
         input: UpdateSettingsInput,
     ) -> DomainResult<PublicSettingsDto> {
+        let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;
         if let Some(key) = input.tmdb_api_key {
             let trimmed = key.trim();
@@ -290,4 +298,45 @@ fn mask_secret(raw: Option<&str>) -> Option<String> {
         .rev()
         .collect();
     Some(format!("{prefix}••••{suffix}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::config_store::JsonFileConfigRepository;
+
+    #[tokio::test]
+    async fn concurrent_root_additions_do_not_lose_updates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("tool-config.json");
+        let repo = Arc::new(JsonFileConfigRepository::load_or_init(cfg_path, &[]).unwrap());
+        let svc = ToolSettingsService::new(repo);
+
+        let mut dirs = Vec::new();
+        for i in 0..6 {
+            let d = tmp.path().join(format!("root_{i}"));
+            std::fs::create_dir_all(&d).unwrap();
+            dirs.push(d);
+        }
+
+        let mut handles = Vec::new();
+        for (i, dir) in dirs.into_iter().enumerate() {
+            let s = svc.clone();
+            handles.push(tokio::spawn(async move {
+                s.add_root(
+                    format!("Root {i}"),
+                    dir.to_string_lossy().into_owned(),
+                    Some(MediaKind::Book),
+                )
+                .await
+                .unwrap();
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let settings = svc.get_raw().await.unwrap();
+        assert_eq!(settings.roots.len(), 6);
+    }
 }

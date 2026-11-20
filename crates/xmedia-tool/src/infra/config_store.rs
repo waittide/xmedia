@@ -32,7 +32,12 @@ impl JsonFileConfigRepository {
                     file_path.display()
                 ))
             })?;
-            serde_json::from_slice(&raw).unwrap_or_default()
+            serde_json::from_slice(&raw).map_err(|e| {
+                DomainError::Storage(format!(
+                    "failed to parse config '{}' (original file preserved): {e}",
+                    file_path.display()
+                ))
+            })?
         } else {
             ToolSettings::default()
         };
@@ -92,8 +97,26 @@ impl ConfigRepositoryPort for JsonFileConfigRepository {
     }
 
     async fn save(&self, settings: &ToolSettings) -> DomainResult<()> {
+        let mut cache = self.cache.write().await;
         persist_to_disk(&self.file_path, settings)?;
-        *self.cache.write().await = settings.clone();
+        *cache = settings.clone();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_config_returns_error_and_preserves_original_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg_path = tmp.path().join("tool-config.json");
+        let original = b"{ invalid json content";
+        std::fs::write(&cfg_path, original).unwrap();
+
+        let res = JsonFileConfigRepository::load_or_init(cfg_path.clone(), &[]);
+        assert!(res.is_err());
+        assert_eq!(std::fs::read(&cfg_path).unwrap(), original);
     }
 }

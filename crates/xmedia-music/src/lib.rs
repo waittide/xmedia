@@ -493,4 +493,88 @@ mod tests {
                 .is_empty()
         );
     }
+
+    #[tokio::test]
+    async fn subsonic_album_list_by_year_supports_descending_from_greater_than_to() {
+        use crate::domain::catalog::{Album, AlbumId, AlbumListQuery, AlbumListType, ArtistId};
+        use crate::domain::repository::MusicCatalogRepository;
+        use crate::infra::persistence::repositories::ToastyMusicCatalogRepository;
+        use xmedia_core::domain::library::LibraryId;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("by_year.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut models = ModelSet::new();
+        register_core_models(&mut models);
+        register_music_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_music_schema(&mut db, &db_url).await.unwrap();
+
+        let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(db));
+        let lib_id = LibraryId::new();
+        let artist_id = ArtistId::new();
+        let now = jiff::Timestamp::now();
+
+        for (title, year) in [
+            ("Old Album", 2005),
+            ("Mid Album", 2015),
+            ("New Album", 2023),
+        ] {
+            let album = Album {
+                id: AlbumId::new(),
+                library_id: lib_id,
+                album_key: format!("key-{year}"),
+                title: title.into(),
+                album_artist_id: artist_id,
+                album_artist_name: "Artist".into(),
+                year: Some(year),
+                genre: None,
+                disc_count: 1,
+                track_count: 1,
+                duration_secs: 180,
+                is_compilation: false,
+                cover_key: None,
+                created_at: now,
+                updated_at: now,
+            };
+            catalog_repo.save_album(&album).await.unwrap();
+        }
+
+        // Subsonic spec: fromYear > toYear returns albums in [toYear, fromYear] in descending year order
+        let desc = catalog_repo
+            .list_albums(
+                &AlbumListQuery {
+                    list_type: AlbumListType::ByYear,
+                    from_year: Some(2024),
+                    to_year: Some(2010),
+                    size: 10,
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let desc_years: Vec<Option<i32>> = desc.items.iter().map(|a| a.year).collect();
+        assert_eq!(desc_years, vec![Some(2023), Some(2015)]);
+
+        let asc = catalog_repo
+            .list_albums(
+                &AlbumListQuery {
+                    list_type: AlbumListType::ByYear,
+                    from_year: Some(2010),
+                    to_year: Some(2024),
+                    size: 10,
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let asc_years: Vec<Option<i32>> = asc.items.iter().map(|a| a.year).collect();
+        assert_eq!(asc_years, vec![Some(2015), Some(2023)]);
+    }
 }

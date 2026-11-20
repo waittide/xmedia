@@ -180,8 +180,9 @@ pub fn parse_sidecar_subtitle_lang_and_label(
         .rsplit_once('.')
         .map(|(s, _)| s)
         .unwrap_or(sub_filename);
-    let suffix = if sub_stem.len() > video_stem.len()
-        && sub_stem[..video_stem.len()].eq_ignore_ascii_case(video_stem)
+    let suffix = if sub_stem
+        .get(..video_stem.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(video_stem))
     {
         sub_stem[video_stem.len()..]
             .trim_start_matches(['.', '_', '-', ' '])
@@ -204,4 +205,26 @@ pub fn parse_sidecar_subtitle_lang_and_label(
         other => (Some(other.to_string()), suffix.to_string()),
     };
     (lang, label)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sidecar_subtitle_parser_handles_multibyte_utf8_without_panicking() {
+        // video_stem byte len (2) lands mid-character inside 3-byte UTF-8 '电'
+        let (lang, label) = parse_sidecar_subtitle_lang_and_label("ab", "电影.chs.srt");
+        assert_eq!(lang, None);
+        assert_eq!(label, "External");
+
+        let (lang2, label2) =
+            parse_sidecar_subtitle_lang_and_label("中文电影", "中文电影.zh-CN.srt");
+        assert_eq!(lang2.as_deref(), Some("zh-CN"));
+        assert_eq!(label2, "简体中文");
+
+        let (lang3, label3) = parse_sidecar_subtitle_lang_and_label("Movie", "movie.en.srt");
+        assert_eq!(lang3.as_deref(), Some("en"));
+        assert_eq!(label3, "English");
+    }
 }

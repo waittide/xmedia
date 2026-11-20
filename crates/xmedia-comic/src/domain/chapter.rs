@@ -190,14 +190,69 @@ impl Chapter {
     }
 
     pub fn cmp_order(&self, other: &Self) -> Ordering {
+        let vol_a = self.volume_number.unwrap_or(0.0).max(0.0);
+        let vol_b = other.volume_number.unwrap_or(0.0).max(0.0);
         self.kind
             .sort_rank()
             .cmp(&other.kind.sort_rank())
-            .then_with(|| match (self.volume_number, other.volume_number) {
-                (Some(va), Some(vb)) => va.total_cmp(&vb),
-                _ => Ordering::Equal,
-            })
-            .then_with(|| self.number.total_cmp(&other.number))
+            .then_with(|| vol_a.total_cmp(&vol_b))
+            .then_with(|| self.number.max(0.0).total_cmp(&other.number.max(0.0)))
             .then_with(|| natural_cmp(&self.title, &other.title))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_chapter(vol: Option<f64>, num: f64, title: &str) -> Chapter {
+        Chapter::new(
+            SeriesId::new(),
+            LibraryId::new(),
+            ChapterKind::Chapter,
+            num,
+            vol,
+            title.to_string(),
+            10,
+            ChapterSourceKind::ArchiveFile,
+            format!("{title}.cbz"),
+            100,
+            "hash".into(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cmp_order_satisfies_strict_weak_ordering_and_matches_sort_key() {
+        let mut items = vec![
+            mk_chapter(Some(2.0), 1.0, "Ch 1"),
+            mk_chapter(None, 2.0, "Ch 2"),
+            mk_chapter(Some(1.0), 3.0, "Ch 3"),
+            mk_chapter(None, 1.0, "Ch 1"),
+            mk_chapter(Some(0.0), 1.5, "Ch 1.5"),
+        ];
+
+        // Verify antisymmetry and transitivity across all triples
+        for a in &items {
+            assert_eq!(a.cmp_order(a), Ordering::Equal);
+            for b in &items {
+                assert_eq!(a.cmp_order(b), b.cmp_order(a).reverse());
+                for c in &items {
+                    if a.cmp_order(b) == Ordering::Less && b.cmp_order(c) == Ordering::Less {
+                        assert_eq!(a.cmp_order(c), Ordering::Less);
+                    }
+                }
+            }
+        }
+
+        items.sort_by(Chapter::cmp_order);
+        let by_sort_key = {
+            let mut cloned = items.clone();
+            cloned.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
+            cloned
+        };
+        let ordered_titles: Vec<&str> = items.iter().map(|c| c.title.as_str()).collect();
+        let key_titles: Vec<&str> = by_sort_key.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(ordered_titles, key_titles);
     }
 }

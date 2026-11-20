@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 pub const DEFAULT_WEBVIEW_UA: &str = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
+pub const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_REDIRECT_HOPS: usize = 6;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LegadoUrlOptions {
@@ -318,6 +321,24 @@ pub fn validate_target_url(raw_url: &str, allow_private_ips: bool) -> Result<Url
     Ok(parsed)
 }
 
+/// Builds a redirect policy that enforces hop limit and SSRF validation on every redirect target.
+pub fn ssrf_redirect_policy(allow_private_ips: bool, max_hops: usize) -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= max_hops {
+            return attempt.error(std::io::Error::other(format!(
+                "重定向次数超过上限 ({max_hops})"
+            )));
+        }
+        if let Err(reason) = validate_target_url(attempt.url().as_str(), allow_private_ips) {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                reason,
+            ));
+        }
+        attempt.follow()
+    })
+}
+
 pub fn decode_response_bytes(
     bytes: &[u8],
     explicit_charset: Option<&str>,
@@ -405,7 +426,10 @@ impl LegadoHttpClient {
     ) -> Result<Self, String> {
         let mut builder = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(config.timeout_secs.max(3)))
-            .redirect(reqwest::redirect::Policy::limited(6));
+            .redirect(ssrf_redirect_policy(
+                config.allow_private_ips,
+                MAX_REDIRECT_HOPS,
+            ));
         if let Some(ref proxy) = config.proxy_url
             && !proxy.trim().is_empty()
         {
@@ -564,7 +588,7 @@ impl LegadoHttpClient {
             }
         }
 
-        let resp = req
+        let mut resp = req
             .send()
             .map_err(|e| format!("请求 '{resolved_url}' 失败: {e}"))?;
 
@@ -590,9 +614,26 @@ impl LegadoHttpClient {
             }
         }
 
-        let raw_bytes = resp
-            .bytes()
+        if let Some(content_len) = resp.content_length()
+            && content_len > MAX_RESPONSE_BODY_BYTES as u64
+        {
+            return Err(format!(
+                "响应体超过最大限制 ({}MB): '{resolved_url}'",
+                MAX_RESPONSE_BODY_BYTES / (1024 * 1024)
+            ));
+        }
+
+        let mut raw_bytes = Vec::new();
+        resp.by_ref()
+            .take((MAX_RESPONSE_BODY_BYTES as u64) + 1)
+            .read_to_end(&mut raw_bytes)
             .map_err(|e| format!("读取响应体失败 '{resolved_url}': {e}"))?;
+        if raw_bytes.len() > MAX_RESPONSE_BODY_BYTES {
+            return Err(format!(
+                "响应体超过最大限制 ({}MB): '{resolved_url}'",
+                MAX_RESPONSE_BODY_BYTES / (1024 * 1024)
+            ));
+        }
 
         let body = decode_response_bytes(
             &raw_bytes,
@@ -609,5 +650,94 @@ impl LegadoHttpClient {
     }
 }
 
-#[allow(dead_code)]
-fn _keep_ipv6_ref(_: Ipv6Addr) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    #[test]
+    fn restricted_ip_blocks_private_loopback_cgnat_and_ipv6_ranges() {
+        for blocked in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "0.0.0.0",
+            "240.0.0.1",
+            "::1",
+            "::",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:172.16.5.4",
+        ] {
+            let ip: IpAddr = blocked.parse().unwrap();
+            assert!(is_restricted_ip(ip), "expected {blocked} to be restricted");
+        }
+
+        for allowed in [
+            "1.1.1.1",
+            "8.8.8.8",
+            "172.15.0.1",
+            "172.32.0.1",
+            "2606:4700::1",
+        ] {
+            let ip: IpAddr = allowed.parse().unwrap();
+            assert!(!is_restricted_ip(ip), "expected {allowed} to be public");
+        }
+    }
+
+    #[test]
+    fn validate_target_url_rejects_local_private_and_non_http() {
+        assert!(validate_target_url("http://127.0.0.1/admin", false).is_err());
+        assert!(validate_target_url("http://localhost:8080/a", false).is_err());
+        assert!(validate_target_url("http://172.16.1.2/secret", false).is_err());
+        assert!(validate_target_url("http://[::ffff:10.0.0.1]/x", false).is_err());
+        assert!(validate_target_url("file:///etc/passwd", false).is_err());
+        assert!(validate_target_url("https://1.1.1.1/ok", false).is_ok());
+        assert!(validate_target_url("http://127.0.0.1/ok", true).is_ok());
+    }
+
+    #[test]
+    fn legado_http_client_enforces_response_size_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let oversz = MAX_RESPONSE_BODY_BYTES + 1024;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {oversz}\r\nConnection: close\r\n\r\n"
+                );
+                let _ = stream.write_all(header.as_bytes());
+            }
+        });
+
+        let client = LegadoHttpClient::new(
+            HttpClientConfig {
+                timeout_secs: 5,
+                allow_private_ips: true,
+                proxy_url: None,
+            },
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+            false,
+        )
+        .unwrap();
+
+        let err = client
+            .fetch(&format!("http://{addr}/huge"), "")
+            .unwrap_err();
+        assert!(
+            err.contains("响应体超过最大限制"),
+            "unexpected error: {err}"
+        );
+        let _ = handle.join();
+    }
+}

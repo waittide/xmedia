@@ -642,8 +642,28 @@ pub fn split_cue_album(
         .map_err(|e| DomainError::Storage(format!("read cue sheet failed: {e}")))?;
     let parsed = parse_cue_sheet(&raw_cue)?;
     let parent = cue_path.parent().unwrap_or_else(|| Path::new("."));
+    let canon_parent = parent
+        .canonicalize()
+        .map_err(|e| DomainError::Storage(format!("resolve cue directory failed: {e}")))?;
 
-    let mut source_audio = parent.join(&parsed.audio_file);
+    let audio_rel = Path::new(&parsed.audio_file);
+    if audio_rel.is_absolute()
+        || audio_rel.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        })
+    {
+        return Err(DomainError::Validation(format!(
+            "CUE audio path '{}' escapes parent directory",
+            parsed.audio_file
+        )));
+    }
+
+    let mut source_audio = parent.join(audio_rel);
     if !source_audio.is_file() {
         // Fallback: if CUE references .wav but actual file is .flac/.ape with same stem
         for ext in ["flac", "wav", "ape", "wv", "m4a"] {
@@ -660,6 +680,16 @@ pub fn split_cue_album(
             parsed.audio_file
         )));
     }
+    let canon_source_audio = source_audio
+        .canonicalize()
+        .map_err(|e| DomainError::Storage(format!("resolve CUE source audio failed: {e}")))?;
+    if !canon_source_audio.starts_with(&canon_parent) {
+        return Err(DomainError::Validation(format!(
+            "CUE audio path '{}' escapes parent directory",
+            parsed.audio_file
+        )));
+    }
+    source_audio = canon_source_audio;
 
     let mut created_files = Vec::new();
     for i in 0..parsed.tracks.len() {
@@ -759,5 +789,35 @@ FILE "YeHuiMei.flac" WAVE
         assert_eq!(parsed.tracks.len(), 2);
         assert_eq!(parsed.tracks[1].title, "晴天");
         assert!((parsed.tracks[1].start_secs - (5.0 * 60.0 + 42.0 + 37.0 / 75.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn split_cue_album_rejects_audio_file_path_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("secret.flac");
+        std::fs::write(&outside, b"secret").unwrap();
+        let album_dir = tmp.path().join("album");
+        std::fs::create_dir_all(&album_dir).unwrap();
+
+        let traversal_cue = album_dir.join("evil.cue");
+        std::fs::write(
+            &traversal_cue,
+            "FILE \"../secret.flac\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"T1\"\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let err = split_cue_album(&traversal_cue, "ffmpeg").unwrap_err();
+        assert!(matches!(err, DomainError::Validation(_)));
+
+        let abs_cue = album_dir.join("abs.cue");
+        std::fs::write(
+            &abs_cue,
+            format!(
+                "FILE \"{}\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"T1\"\n    INDEX 01 00:00:00\n",
+                outside.display()
+            ),
+        )
+        .unwrap();
+        let err_abs = split_cue_album(&abs_cue, "ffmpeg").unwrap_err();
+        assert!(matches!(err_abs, DomainError::Validation(_)));
     }
 }

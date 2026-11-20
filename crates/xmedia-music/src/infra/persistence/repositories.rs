@@ -623,6 +623,11 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .map(|g| g.trim().to_lowercase())
             .filter(|g| !g.is_empty());
 
+        let (year_min, year_max) = match (query.from_year, query.to_year) {
+            (Some(f), Some(t)) => (Some(f.min(t)), Some(f.max(t))),
+            (f, t) => (f, t),
+        };
+
         let mut pool: Vec<Album> = rows
             .into_iter()
             .map(Self::album_to_domain)
@@ -636,13 +641,13 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
                 {
                     return false;
                 }
-                if let Some(fy) = query.from_year
-                    && a.year.is_none_or(|y| y < fy)
+                if let Some(min_y) = year_min
+                    && a.year.is_none_or(|y| y < min_y)
                 {
                     return false;
                 }
-                if let Some(ty) = query.to_year
-                    && a.year.is_none_or(|y| y > ty)
+                if let Some(max_y) = year_max
+                    && a.year.is_none_or(|y| y > max_y)
                 {
                     return false;
                 }
