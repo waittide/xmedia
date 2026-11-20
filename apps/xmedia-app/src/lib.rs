@@ -1,5 +1,8 @@
-pub mod config;
-pub mod proxy;
+pub mod gateway;
+pub mod local_engine;
+pub mod opds_client;
+pub mod remote_sources;
+pub mod subsonic_client;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -7,8 +10,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
 
-use crate::config::AppServerStore;
-use crate::proxy::RunningGateway;
+use crate::gateway::RunningGateway;
 
 pub struct GatewayUrlState(pub String);
 
@@ -33,7 +35,7 @@ fn external_dist_dir_from_env() -> Option<PathBuf> {
 }
 
 /// Checks `--headless-gateway <addr>` CLI argument or `XMEDIA_APP_HEADLESS_ADDR` env var
-/// so automated E2E tests can start the exact same local loopback gateway without a GUI display.
+/// so automated E2E tests can start the exact same standalone local gateway without a GUI display.
 pub fn parse_headless_addr_from_env_and_args() -> Option<String> {
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -60,13 +62,12 @@ fn run_headless_gateway(raw_addr: &str) -> anyhow::Result<()> {
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("xmedia-app-headless"));
-    let store = AppServerStore::open_shared(data_dir.join("servers.json"))?;
     let dist_dir = external_dist_dir_from_env();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(proxy::run_gateway_forever(bind_addr, store, dist_dir))
+    runtime.block_on(gateway::run_gateway_forever(bind_addr, data_dir, dist_dir))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -75,7 +76,7 @@ pub fn run() {
 
     if let Some(headless_addr) = parse_headless_addr_from_env_and_args() {
         if let Err(err) = run_headless_gateway(&headless_addr) {
-            eprintln!("Failed to run headless XMedia gateway: {err}");
+            eprintln!("Failed to run headless XMedia standalone gateway: {err}");
             std::process::exit(1);
         }
         return;
@@ -88,14 +89,14 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("./data"));
-            let store = AppServerStore::open_shared(data_dir.join("servers.json"))?;
             let dist_dir = external_dist_dir_from_env();
 
             let bind_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-            let gateway: RunningGateway =
-                tauri::async_runtime::block_on(proxy::start_gateway(bind_addr, store, dist_dir))?;
+            let gateway: RunningGateway = tauri::async_runtime::block_on(gateway::start_gateway(
+                bind_addr, data_dir, dist_dir,
+            ))?;
             let gateway_url = gateway.url.clone();
-            tracing::info!(url = %gateway_url, "started Tauri local loopback gateway");
+            tracing::info!(url = %gateway_url, "started Tauri standalone local loopback gateway");
 
             app.manage(GatewayUrlState(gateway_url.clone()));
             app.manage(gateway);
