@@ -288,7 +288,14 @@ export const onlineBookApi = {
       body: JSON.stringify({
         source_id: sourceId,
         book_url: bookUrl,
-        fallback_hint: fallbackHint ?? null,
+        fallback_hint: fallbackHint
+          ? {
+              ...fallbackHint,
+              dur_chapter_index: fallbackHint.dur_chapter_index ?? 0,
+              dur_chapter_title: fallbackHint.dur_chapter_title ?? '',
+              custom_variable: fallbackHint.custom_variable ?? '',
+            }
+          : null,
       }),
     }),
 

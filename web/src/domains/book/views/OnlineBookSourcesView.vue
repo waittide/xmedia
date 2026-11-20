@@ -155,6 +155,15 @@ async function handleSearch(): Promise<void> {
   }
 }
 
+function formatKindTags(raw: string | null | undefined): string {
+  if (!raw) return ''
+  return raw
+    .split(/[,，|/]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' · ')
+}
+
 function isInShelf(item: AggregatedSearchItemDto): boolean {
   return shelfBooks.value.some(
     (b) => b.source_id === item.source_id && b.book_url === item.book.book_url,
@@ -676,7 +685,7 @@ function handleJobUpdated(job: OnlineDownloadJobDto): void {
               <p class="mt-0.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
                 {{ item.book.author || '佚名' }}
                 <span v-if="item.book.word_count"> · {{ item.book.word_count }}</span>
-                <span v-if="item.book.kind"> · {{ item.book.kind }}</span>
+                <span v-if="formatKindTags(item.book.kind)"> · {{ formatKindTags(item.book.kind) }}</span>
               </p>
               <p
                 v-if="item.book.intro"

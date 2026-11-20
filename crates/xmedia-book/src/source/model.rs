@@ -298,6 +298,7 @@ impl SourceRuntimeState {
 
 /// Context about the current book passed to JS rules (`book` global object).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BookJsContext {
     pub name: String,
     pub author: String,
@@ -312,6 +313,7 @@ pub struct BookJsContext {
 
 /// Context about the current chapter passed to JS rules (`chapter` global object).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ChapterJsContext {
     pub index: usize,
     pub title: String,

@@ -66,7 +66,8 @@ pub struct ImportBookSourcesReportDto {
     pub sources: Vec<BookSourceSummaryDto>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct UpdateBookSourceInput {
     pub enabled: Option<bool>,
     pub weight: Option<i64>,
@@ -163,17 +164,25 @@ pub struct OnlineShelfBookDto {
 pub struct AddOnlineShelfInput {
     pub source_id: Uuid,
     pub name: String,
+    #[serde(default)]
     pub author: String,
     pub book_url: String,
+    #[serde(default)]
     pub toc_url: String,
+    #[serde(default)]
     pub cover_url: Option<String>,
+    #[serde(default)]
     pub intro: Option<String>,
+    #[serde(default)]
     pub kind: Option<String>,
+    #[serde(default)]
     pub last_chapter: Option<String>,
+    #[serde(default)]
     pub total_chapters: Option<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
 pub struct UpdateOnlineShelfInput {
     pub current_chapter_index: Option<i64>,
     pub current_chapter_title: Option<String>,
@@ -206,13 +215,18 @@ pub enum DownloadJobStatus {
 pub struct StartDownloadInput {
     pub source_id: Uuid,
     pub book_name: String,
+    #[serde(default)]
     pub author: String,
     pub book_url: String,
     pub toc_url: String,
+    #[serde(default)]
     pub cover_url: Option<String>,
+    #[serde(default)]
     pub intro: Option<String>,
     pub format: OnlineDownloadFormat,
+    #[serde(default)]
     pub start_chapter: Option<usize>,
+    #[serde(default)]
     pub end_chapter: Option<usize>,
     #[serde(default)]
     pub import_to_library: bool,
