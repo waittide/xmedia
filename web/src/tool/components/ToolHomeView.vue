@@ -90,6 +90,10 @@ const incompleteFiles = computed<MediaFileEntry[]>(() =>
   (props.snapshot?.files ?? []).filter((f) => !isEntryComplete(f)),
 )
 
+const unorganizedFiles = computed<MediaFileEntry[]>(() =>
+  (props.snapshot?.files ?? []).filter((f) => !f.completeness.is_organized),
+)
+
 const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value.slice(0, 8))
 </script>
 
@@ -148,13 +152,14 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
           </button>
 
           <button
-            v-if="stats.total > 0"
+            v-if="unorganizedFiles.length > 0"
             type="button"
             class="md-btn md-btn-sm md-btn-tonal md-state"
+            title="按默认命名模板批量整理归档尚未归档的条目（自动跳过已归档条目）"
             @click="emit('openRenameAll')"
           >
             <LuFileSignature class="h-3.5 w-3.5" />
-            <span>{{ txt.actions.batchRename }}</span>
+            <span>{{ txt.actions.batchRename }} ({{ unorganizedFiles.length }})</span>
           </button>
         </div>
       </div>

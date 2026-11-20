@@ -1062,7 +1062,9 @@ impl MediaInspectorPort for VideoNfoInspector {
                         .is_some_and(|s| !s.trim().is_empty()),
                     has_nfo_or_tag_block: meta.has_nfo,
                     is_normalized: false,
+                    is_organized: false,
                 },
+                metadata: Some(MediaMetadataPayload::Video(meta)),
             }
         })
         .await
@@ -1071,6 +1073,7 @@ impl MediaInspectorPort for VideoNfoInspector {
             display_subtitle: String::new(),
             year: None,
             completeness: CompletenessFlags::default(),
+            metadata: None,
         })
     }
 

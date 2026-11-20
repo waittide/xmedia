@@ -17,6 +17,7 @@ use crate::application::batch_metadata::{
 };
 use crate::application::settings::ToolSettingsService;
 use crate::application::webhook::notify_xmedia_rescan;
+use crate::domain::config::RenameTemplates;
 use crate::domain::media::{
     ComicMetaPatch, DeleteFileErrorDto, DeleteFilesReportDto, DirectorySnapshot, FolderEntryDto,
     MediaFileDetail, MediaFileEntry, MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch,
@@ -410,7 +411,14 @@ impl MediaWorkbenchService {
     where
         F: FnMut(WorkbenchProgress) + Send,
     {
-        let root = self.settings.find_root(root_id).await?;
+        let raw_settings = self.settings.get_raw().await?;
+        let root = raw_settings
+            .roots
+            .iter()
+            .find(|r| r.id == root_id)
+            .cloned()
+            .ok_or_else(|| DomainError::NotFound(format!("root '{root_id}' not found")))?;
+        let rename_templates = raw_settings.rename_templates;
         let dir_sandbox = root.resolve_existing(rel_path)?;
         if !dir_sandbox.abs_path.is_dir() {
             return Err(DomainError::Validation(format!(
@@ -569,7 +577,13 @@ impl MediaWorkbenchService {
         let mut files = Vec::with_capacity(raw_files.len());
         for (idx, (fname, file_abs, inspector)) in raw_files.into_iter().enumerate() {
             let entry = self
-                .build_file_entry(&root, &file_abs, &fname, inspector.as_ref())
+                .build_file_entry(
+                    &root,
+                    &file_abs,
+                    &fname,
+                    inspector.as_ref(),
+                    &rename_templates,
+                )
                 .await?;
             files.push(entry);
             let done = (idx + 1) as u64;
@@ -607,8 +621,15 @@ impl MediaWorkbenchService {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let rename_templates = self.settings.get_raw().await?.rename_templates;
         let entry = self
-            .build_file_entry(&root, &sandbox.abs_path, &fname, inspector.as_ref())
+            .build_file_entry(
+                &root,
+                &sandbox.abs_path,
+                &fname,
+                inspector.as_ref(),
+                &rename_templates,
+            )
             .await?;
         let metadata = inspector.inspect_file(&sandbox.abs_path).await?;
         Ok(MediaFileDetail { entry, metadata })
@@ -671,8 +692,15 @@ impl MediaWorkbenchService {
             })
             .await;
         }
+        let rename_templates = self.settings.get_raw().await?.rename_templates;
         let entry = self
-            .build_file_entry(&root, &sandbox.abs_path, &fname, inspector.as_ref())
+            .build_file_entry(
+                &root,
+                &sandbox.abs_path,
+                &fname,
+                inspector.as_ref(),
+                &rename_templates,
+            )
             .await?;
         Ok(MediaFileDetail { entry, metadata })
     }
@@ -710,8 +738,15 @@ impl MediaWorkbenchService {
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let rename_templates = self.settings.get_raw().await?.rename_templates;
         let entry = self
-            .build_file_entry(&root, &sandbox.abs_path, &fname, inspector.as_ref())
+            .build_file_entry(
+                &root,
+                &sandbox.abs_path,
+                &fname,
+                inspector.as_ref(),
+                &rename_templates,
+            )
             .await?;
         let metadata = inspector.inspect_file(&sandbox.abs_path).await?;
         Ok(MediaFileDetail { entry, metadata })
@@ -2223,6 +2258,7 @@ impl MediaWorkbenchService {
         abs_path: &Path,
         file_name: &str,
         inspector: &dyn MediaInspectorPort,
+        rename_templates: &RenameTemplates,
     ) -> DomainResult<MediaFileEntry> {
         let fs_meta = std::fs::metadata(abs_path).map_err(|e| {
             DomainError::Storage(format!("failed stating '{}': {e}", abs_path.display()))
@@ -2237,17 +2273,21 @@ impl MediaWorkbenchService {
             .strip_prefix(&root.path)
             .map(path_to_slash)
             .unwrap_or_else(|_| file_name.to_string());
-        let ext = abs_path
+        let raw_ext = abs_path
             .extension()
             .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
+            .unwrap_or_default();
+        let ext = raw_ext.to_ascii_lowercase();
         let fallback_stem = abs_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or(file_name);
 
-        let quick = inspector.summarize_file(abs_path, fallback_stem).await;
+        let mut quick = inspector.summarize_file(abs_path, fallback_stem).await;
+        if let Some(ref meta) = quick.metadata {
+            quick.completeness.is_organized =
+                is_entry_organized(abs_path, &rel_path, raw_ext, meta, rename_templates);
+        }
 
         Ok(MediaFileEntry {
             root_id: root.id,
@@ -2263,6 +2303,40 @@ impl MediaWorkbenchService {
             completeness: quick.completeness,
         })
     }
+}
+
+fn is_entry_organized(
+    abs_path: &Path,
+    rel_path: &str,
+    raw_ext: &str,
+    meta: &MediaMetadataPayload,
+    templates: &RenameTemplates,
+) -> bool {
+    let tpl = match meta {
+        MediaMetadataPayload::Book(_) => &templates.book,
+        MediaMetadataPayload::Comic(_) => &templates.comic,
+        MediaMetadataPayload::Music(_) => &templates.music,
+        MediaMetadataPayload::Video(v) => {
+            if v.is_episode {
+                &templates.video_episode
+            } else {
+                &templates.video_movie
+            }
+        }
+    };
+    if let MediaMetadataPayload::Video(v) = meta
+        && v.is_episode
+        && v.episode_number.is_none()
+        && tpl.to_ascii_lowercase().contains("{episode")
+    {
+        return false;
+    }
+    let parent_rel = Path::new(rel_path)
+        .parent()
+        .map(path_to_slash)
+        .unwrap_or_default();
+    let (to_rel, _) = render_template_target(tpl, &parent_rel, meta, abs_path, raw_ext);
+    rel_path == to_rel
 }
 
 fn count_subtree_children(

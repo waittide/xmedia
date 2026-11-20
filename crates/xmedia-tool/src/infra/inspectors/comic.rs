@@ -747,7 +747,9 @@ impl MediaInspectorPort for CbzComicInspector {
                             .is_some_and(|s| !s.trim().is_empty()),
                         has_nfo_or_tag_block: m.has_comic_info_xml,
                         is_normalized: false,
+                        is_organized: false,
                     },
+                    metadata: Some(MediaMetadataPayload::Comic(m)),
                 }
             }
             Err(_) => QuickFileSummary {
@@ -755,6 +757,7 @@ impl MediaInspectorPort for CbzComicInspector {
                 display_subtitle: String::new(),
                 year: None,
                 completeness: CompletenessFlags::default(),
+                metadata: None,
             },
         })
         .await
@@ -763,6 +766,7 @@ impl MediaInspectorPort for CbzComicInspector {
             display_subtitle: String::new(),
             year: None,
             completeness: CompletenessFlags::default(),
+            metadata: None,
         })
     }
 

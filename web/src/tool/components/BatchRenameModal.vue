@@ -25,6 +25,7 @@ const props = defineProps<{
   open: boolean
   rootId: string
   entries: MediaFileEntry[]
+  skippedOrganizedCount?: number
   templates: RenameTemplatesDto
 }>()
 
@@ -42,6 +43,7 @@ const episodeInputRef = ref<HTMLInputElement | null>(null)
 const genericInputRef = ref<HTMLInputElement | null>(null)
 const plans = ref<RenamePlanItem[]>([])
 const excludedPaths = ref<Set<string>>(new Set())
+const showUnchanged = ref(false)
 const taskStore = useToolTaskStore()
 const loadingPreview = ref(false)
 const previewFeedback = useActionFeedback()
@@ -194,6 +196,7 @@ watch(
   (isOpen) => {
     if (isOpen) {
       excludedPaths.value = new Set()
+      showUnchanged.value = false
       conflictPolicy.value = 'skip'
       seedTemplatesForEntries()
       void runPreview()
@@ -257,6 +260,11 @@ function toggleRowExcluded(fromRelPath: string): void {
 
 const activePlans = computed(() =>
   plans.value.filter((p) => !excludedPaths.value.has(p.from_rel_path)),
+)
+
+const unchangedCount = computed(() => plans.value.filter((p) => p.unchanged).length)
+const visiblePlans = computed(() =>
+  showUnchanged.value ? plans.value : plans.value.filter((p) => !p.unchanged),
 )
 
 const actionableCount = computed(
@@ -475,14 +483,48 @@ async function handleExecute(): Promise<void> {
           </div>
 
           <div
-            v-for="item in plans"
+            v-if="(skippedOrganizedCount ?? 0) > 0 || unchangedCount > 0"
+            class="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/55 px-3 py-2 text-[11px] text-[var(--ctp-subtext1)]"
+          >
+            <span>
+              已自动跳过
+              <template v-if="(skippedOrganizedCount ?? 0) > 0">
+                {{ skippedOrganizedCount }} 项已按默认模板归档的条目
+              </template>
+              <template v-if="(skippedOrganizedCount ?? 0) > 0 && unchangedCount > 0">
+                及
+              </template>
+              <template v-if="unchangedCount > 0">
+                {{ unchangedCount }} 项路径无变化的条目
+              </template>
+            </span>
+            <button
+              v-if="unchangedCount > 0"
+              type="button"
+              class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+              @click="showUnchanged = !showUnchanged"
+            >
+              {{ showUnchanged ? '隐藏无变化项' : `查看无变化项 (${unchangedCount})` }}
+            </button>
+          </div>
+
+          <div
+            v-if="!loadingPreview && visiblePlans.length === 0 && plans.length > 0"
+            class="rounded-2xl border border-dashed border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/25 py-8 text-center text-xs text-[var(--ctp-subtext0)]"
+          >
+            当前所选条目的路径均已符合模板，无需整理归档。
+          </div>
+
+          <div
+            v-for="item in visiblePlans"
             :key="item.from_rel_path"
             class="rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/35 p-3 transition"
-            :class="excludedPaths.has(item.from_rel_path) ? 'opacity-50' : ''"
+            :class="item.unchanged || excludedPaths.has(item.from_rel_path) ? 'opacity-50' : ''"
           >
             <div class="flex flex-wrap items-center gap-2 text-xs">
               <AppCheckbox
-                :model-value="!excludedPaths.has(item.from_rel_path)"
+                :disabled="item.unchanged"
+                :model-value="!item.unchanged && !excludedPaths.has(item.from_rel_path)"
                 @change="toggleRowExcluded(item.from_rel_path)"
               />
               <span class="font-mono text-[var(--ctp-subtext1)]">{{ item.from_rel_path }}</span>

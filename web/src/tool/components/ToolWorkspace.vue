@@ -215,6 +215,7 @@ async function confirmActiveEditorClean(): Promise<boolean> {
 const settingsInitialTab = ref<ToolSettingsTab>(initialHash.settingsTab ?? 'appearance')
 const renameModalOpen = ref(false)
 const renameTargetEntries = ref<MediaFileEntry[] | null>(null)
+const renameSkippedOrganizedCount = ref(0)
 const deleteDialogOpen = ref(false)
 const deleteDialogPaths = ref<string[]>([])
 const deleteDialogCompanions = ref(false)
@@ -1085,18 +1086,23 @@ function toggleSelectAllRaw(paths: string[]): void {
 
 function openRenameModal(entries?: MediaFileEntry[]): void {
   const targets = entries && entries.length > 0 ? entries : selectedEntriesForRename.value
-  if (targets.length > 0 && !resolveModalRootId(targets)) {
+  const pending = targets.filter((e) => !e.completeness.is_organized)
+  const skippedCount = targets.length - pending.length
+  if (targets.length > 0 && pending.length === 0) {
+    snackbar.show({
+      message: '所选条目均已按默认模板整理归档，无需重复整理',
+    })
+    return
+  }
+  if (pending.length > 0 && !resolveModalRootId(pending)) {
     snackbar.show({
       message: '所选条目跨越多个挂载目录，请先从左侧选择单个挂载目录再整理归档',
       tone: 'error',
     })
     return
   }
-  if (entries && entries.length > 0) {
-    renameTargetEntries.value = entries
-  } else {
-    renameTargetEntries.value = null
-  }
+  renameSkippedOrganizedCount.value = skippedCount
+  renameTargetEntries.value = pending
   renameModalOpen.value = true
 }
 
@@ -1294,6 +1300,7 @@ async function handleRenamed(
     selectedPaths.value = nextSel
   }
   renameTargetEntries.value = null
+  renameSkippedOrganizedCount.value = 0
   if (movedCount > 0) {
     await reloadCurrentScope()
     snackbar.show({
@@ -1665,7 +1672,12 @@ watch(
 )
 
 function handleSettingsUpdated(next: PublicSettingsDto): void {
+  const templatesChanged =
+    JSON.stringify(settings.value?.rename_templates) !== JSON.stringify(next.rename_templates)
   settings.value = next
+  if (templatesChanged) {
+    void reloadCurrentScope()
+  }
 }
 
 async function openSettingsTab(tab: ToolSettingsTab): Promise<void> {
@@ -2226,8 +2238,9 @@ onBeforeUnmount(() => {
       :open="renameModalOpen"
       :root-id="effectiveModalRootId"
       :entries="renameTargetEntries ?? selectedEntriesForRename"
+      :skipped-organized-count="renameSkippedOrganizedCount"
       :templates="settings.rename_templates"
-      @close="renameModalOpen = false; renameTargetEntries = null"
+      @close="renameModalOpen = false; renameTargetEntries = null; renameSkippedOrganizedCount = 0"
       @renamed="handleRenamed"
     />
 

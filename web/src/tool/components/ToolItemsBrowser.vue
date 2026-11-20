@@ -209,6 +209,10 @@ const mediaEntryMap = computed<Map<string, MediaFileEntry>>(() => {
   return m
 })
 
+const unorganizedCheckedFiles = computed<MediaFileEntry[]>(() =>
+  props.checkedFiles.filter((f) => !f.completeness.is_organized),
+)
+
 const sortedRawFiles = computed<RawFileEntryDto[]>(() => {
   const cur = props.currentRelPath
   const rawList: RawFileEntryDto[] =
@@ -844,7 +848,7 @@ function relativeDirBadge(relPath: string): string | null {
               <!-- Raw File Quick Actions -->
               <div class="flex w-24 shrink-0 items-center justify-end gap-0.5 opacity-70 transition group-hover:opacity-100">
                 <button
-                  v-if="mediaEntryMap.get(raw.rel_path)"
+                  v-if="mediaEntryMap.get(raw.rel_path) && !mediaEntryMap.get(raw.rel_path)!.completeness.is_organized"
                   type="button"
                   class="md-icon-btn md-icon-btn-sm md-state"
                   title="按模板整理归档此媒体文件"
@@ -1053,6 +1057,13 @@ function relativeDirBadge(relPath: string): string | null {
               >
                 已规范化
               </span>
+              <span
+                v-if="file.completeness.is_organized"
+                class="rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
+                title="当前路径已符合默认命名模板，无需重复整理归档"
+              >
+                已归档
+              </span>
             </div>
 
             <!-- Row Quick Icon Actions (Subtle until hovered) -->
@@ -1120,6 +1131,7 @@ function relativeDirBadge(relPath: string): string | null {
               </button>
 
               <button
+                v-if="!file.completeness.is_organized"
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
                 title="按模板整理归档此条目"
@@ -1242,12 +1254,25 @@ function relativeDirBadge(relPath: string): string | null {
 
               <button
                 type="button"
-                class="md-btn md-btn-sm md-btn-outlined md-state"
-                title="按命名模板整理归档所选媒体条目"
+                :disabled="unorganizedCheckedFiles.length === 0"
+                class="md-btn md-btn-sm md-btn-outlined md-state disabled:cursor-not-allowed disabled:opacity-45"
+                :title="
+                  unorganizedCheckedFiles.length === 0
+                    ? '所选条目均已按模板整理归档，无需重复整理'
+                    : unorganizedCheckedFiles.length < checkedFiles.length
+                      ? `按命名模板整理归档（将自动跳过 ${checkedFiles.length - unorganizedCheckedFiles.length} 项已归档条目）`
+                      : '按命名模板整理归档所选媒体条目'
+                "
                 @click="emit('openRename', checkedFiles)"
               >
                 <LuFileSignature class="h-3.5 w-3.5" />
-                <span>整理归档</span>
+                <span>
+                  {{
+                    unorganizedCheckedFiles.length > 0 && unorganizedCheckedFiles.length < checkedFiles.length
+                      ? `整理归档 (${unorganizedCheckedFiles.length})`
+                      : '整理归档'
+                  }}
+                </span>
               </button>
 
               <button
@@ -1344,12 +1369,25 @@ function relativeDirBadge(relPath: string): string | null {
 
             <button
               type="button"
-              class="md-btn md-btn-sm md-btn-outlined md-state"
-              title="按元信息模板重命名并归档目录"
+              :disabled="unorganizedCheckedFiles.length === 0"
+              class="md-btn md-btn-sm md-btn-outlined md-state disabled:cursor-not-allowed disabled:opacity-45"
+              :title="
+                unorganizedCheckedFiles.length === 0
+                  ? '所选条目均已按模板整理归档，无需重复整理'
+                  : unorganizedCheckedFiles.length < checkedFiles.length
+                    ? `按元信息模板重命名并归档目录（将自动跳过 ${checkedFiles.length - unorganizedCheckedFiles.length} 项已归档条目）`
+                    : '按元信息模板重命名并归档目录'
+              "
               @click="emit('openRename', checkedFiles)"
             >
               <LuFileSignature class="h-3.5 w-3.5" />
-              <span>整理归档</span>
+              <span>
+                {{
+                  unorganizedCheckedFiles.length > 0 && unorganizedCheckedFiles.length < checkedFiles.length
+                    ? `整理归档 (${unorganizedCheckedFiles.length})`
+                    : '整理归档'
+                }}
+              </span>
             </button>
 
             <button

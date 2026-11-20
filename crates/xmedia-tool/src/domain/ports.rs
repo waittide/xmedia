@@ -25,6 +25,7 @@ pub struct QuickFileSummary {
     pub display_subtitle: String,
     pub year: Option<i32>,
     pub completeness: CompletenessFlags,
+    pub metadata: Option<MediaMetadataPayload>,
 }
 
 /// Port for inspecting and atomically writing metadata/artwork of local media files for one `MediaKind`.

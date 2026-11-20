@@ -310,6 +310,7 @@ export interface CompletenessFlags {
   has_summary_or_lyrics: boolean
   has_nfo_or_tag_block: boolean
   is_normalized?: boolean
+  is_organized?: boolean
 }
 
 export interface FolderEntryDto {

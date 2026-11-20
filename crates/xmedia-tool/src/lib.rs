@@ -1573,6 +1573,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(vid.entry.rel_path, "inbox/movie_raw.mkv");
+        assert!(!vid.entry.completeness.is_organized);
         assert!(inbox.join("movie_raw.nfo").is_file());
         assert!(inbox.join("movie_raw-poster.png").is_file());
         assert!(inbox.join("movie_raw-fanart.png").is_file());
@@ -1603,6 +1604,7 @@ mod tests {
             book.entry.rel_path,
             "Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub"
         );
+        assert!(book.entry.completeness.is_organized);
         assert!(
             root.join("Robert Martin/Clean Architecture/Clean Architecture - Robert Martin.epub")
                 .is_file()

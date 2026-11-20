@@ -13,6 +13,8 @@ pub struct CompletenessFlags {
     pub has_nfo_or_tag_block: bool,
     #[serde(default)]
     pub is_normalized: bool,
+    #[serde(default)]
+    pub is_organized: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

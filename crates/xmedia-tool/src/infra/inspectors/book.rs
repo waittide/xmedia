@@ -1245,7 +1245,9 @@ impl MediaInspectorPort for EpubBookInspector {
                                 .as_ref()
                                 .is_some_and(|pub_name| !pub_name.trim().is_empty()),
                         is_normalized: m.is_normalized,
+                        is_organized: false,
                     },
+                    metadata: Some(MediaMetadataPayload::Book(m)),
                 }
             }
             Err(_) => QuickFileSummary {
@@ -1253,6 +1255,7 @@ impl MediaInspectorPort for EpubBookInspector {
                 display_subtitle: String::new(),
                 year: None,
                 completeness: CompletenessFlags::default(),
+                metadata: None,
             },
         })
         .await
@@ -1261,6 +1264,7 @@ impl MediaInspectorPort for EpubBookInspector {
             display_subtitle: String::new(),
             year: None,
             completeness: CompletenessFlags::default(),
+            metadata: None,
         })
     }
 

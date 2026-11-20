@@ -391,7 +391,9 @@ impl MediaInspectorPort for LoftyMusicInspector {
                             || m.embedded_lyrics.is_some(),
                         has_nfo_or_tag_block: !m.album.trim().is_empty(),
                         is_normalized: false,
+                        is_organized: false,
                     },
+                    metadata: Some(MediaMetadataPayload::Music(m)),
                 }
             }
             Err(_) => QuickFileSummary {
@@ -399,6 +401,7 @@ impl MediaInspectorPort for LoftyMusicInspector {
                 display_subtitle: String::new(),
                 year: None,
                 completeness: CompletenessFlags::default(),
+                metadata: None,
             },
         })
         .await
@@ -407,6 +410,7 @@ impl MediaInspectorPort for LoftyMusicInspector {
             display_subtitle: String::new(),
             year: None,
             completeness: CompletenessFlags::default(),
+            metadata: None,
         })
     }
 

@@ -798,12 +798,17 @@ defineExpose({
 
                 <button
                   type="button"
-                  class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                  title="按命名模板预览并归档移动此条目"
+                  :disabled="Boolean(detail.entry.completeness.is_organized)"
+                  class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px] disabled:cursor-not-allowed disabled:opacity-55"
+                  :title="
+                    detail.entry.completeness.is_organized
+                      ? '当前路径已符合默认归档模板，无需重复整理'
+                      : '按命名模板预览并归档移动此条目'
+                  "
                   @click="emit('openRename', detail.entry)"
                 >
                   <LuFileSignature class="h-3 w-3" />
-                  <span>整理归档</span>
+                  <span>{{ detail.entry.completeness.is_organized ? '已归档' : '整理归档' }}</span>
                 </button>
 
                 <button
