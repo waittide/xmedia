@@ -9,6 +9,7 @@ members = [
     "crates/xmedia",
     "crates/xmedia-tool",
 ]
+exclude = ["apps/xmedia-app"]
 
 [workspace.package]
 version = "0.1.0"
