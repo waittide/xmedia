@@ -8,6 +8,7 @@ export default {
     allBooks: '全部',
     recentReading: '继续',
     favorites: '收藏',
+    onlineSources: '书源',
     shelves: '书架',
     newShelf: '新建书架',
     shelfNamePlaceholder: '书架名称，回车创建…',

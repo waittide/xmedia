@@ -8,6 +8,7 @@ export default {
     allBooks: 'All',
     recentReading: 'Continue',
     favorites: 'Favorites',
+    onlineSources: 'Sources',
     shelves: 'Shelves',
     newShelf: 'New Shelf',
     shelfNamePlaceholder: 'Shelf name, press Enter…',

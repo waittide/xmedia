@@ -35,6 +35,12 @@ export const router = createRouter({
       meta: { domain: 'book' as MediaKind },
     },
     {
+      path: '/book/online/read',
+      name: 'book-online-reader',
+      component: () => import('@/domains/book/views/OnlineReaderView.vue'),
+      meta: { domain: 'book' as MediaKind },
+    },
+    {
       path: '/comic/read/:chapterId',
       name: 'comic-reader',
       component: () => import('@/domains/comic/views/ReaderView.vue'),
@@ -111,6 +117,12 @@ export const router = createRouter({
           path: 'book/bookmarks',
           name: 'book-bookmarks',
           component: () => import('@/domains/book/views/BookmarksView.vue'),
+          meta: { domain: 'book' as MediaKind },
+        },
+        {
+          path: 'book/online',
+          name: 'book-online',
+          component: () => import('@/domains/book/views/OnlineBookSourcesView.vue'),
           meta: { domain: 'book' as MediaKind },
         },
 

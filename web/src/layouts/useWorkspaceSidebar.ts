@@ -9,6 +9,7 @@ import {
   LuFilm,
   LuFolder,
   LuFolderHeart,
+  LuGlobe,
   LuHeart,
   LuHome,
   LuLayers,
@@ -362,6 +363,13 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
           icon: LuHeart,
           active: isBookSectionActive('favorites'),
           onClick: () => void openBookSection('favorites'),
+        },
+        {
+          key: 'online',
+          label: bookT('nav.onlineSources'),
+          icon: LuGlobe,
+          active: route.name === 'book-online',
+          onClick: () => go('/book/online'),
         },
       ]
     }
