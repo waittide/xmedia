@@ -5,7 +5,7 @@ pub mod packager;
 pub mod rule;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use regex::Regex;
@@ -16,7 +16,28 @@ use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
     OnlineChapterContent, OnlineChapterItem, SearchBookResult, SourceRuntimeState,
 };
-use crate::source::rule::{RuleValue, eval_rule_list, eval_rule_string};
+use crate::source::rule::{
+    RuleValue, cached_regex, eval_rule_list, eval_rule_string, rule_needs_js, split_js_pipeline,
+};
+
+static RE_COMMENT_IMG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?is)<div\s+rs-native[^>]*>.*?</div>|<img[^>]+(?:data:image/svg\+xml|qtbzs|showCmt|chapter_review_svg)[^>]*>"#,
+    )
+    .expect("valid comment img regex")
+});
+static RE_SCRIPT_STYLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)<(?:script|style|comment)[^>]*>.*?</(?:script|style|comment)>|<comment[^>]*/>",
+    )
+    .expect("valid script style regex")
+});
+static RE_HTML_BREAKS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)<br\s*/?>|</p>|</div>|</h[1-6]>|</li>|</blockquote>")
+        .expect("valid html breaks regex")
+});
+static RE_HTML_TAGS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<[^>]+>").expect("valid html tags regex"));
 
 #[derive(Debug, Clone)]
 pub struct SourceCallOutput<T> {
@@ -40,6 +61,7 @@ impl Default for BookSourceEngine {
     }
 }
 
+#[cfg(test)]
 type SessionTuple = (
     LegadoHttpClient,
     Arc<Mutex<SourceRuntimeState>>,
@@ -47,6 +69,357 @@ type SessionTuple = (
     Arc<Mutex<ExecutionDiagnostics>>,
     LegadoJsSession,
 );
+
+/// Shared per-source context for batch operations (e.g. multi-chapter downloads).
+/// Reuses parsed `LegadoBookSource`, pooled `LegadoHttpClient`, cookies, and runtime state.
+#[derive(Clone)]
+pub struct ReusableSourceContext {
+    source: Arc<LegadoBookSource>,
+    http: LegadoHttpClient,
+    state_arc: Arc<Mutex<SourceRuntimeState>>,
+    cookies_arc: Arc<Mutex<HashMap<String, String>>>,
+    js_timeout: Duration,
+}
+
+impl ReusableSourceContext {
+    pub fn source(&self) -> &LegadoBookSource {
+        &self.source
+    }
+
+    pub fn snapshot_state(&self) -> SourceRuntimeState {
+        let mut st = self
+            .state_arc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        st.cookies = self
+            .cookies_arc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        st
+    }
+
+    /// Creates a thread-local worker session that lazily initializes QuickJS at most once per worker.
+    pub fn create_worker_session(&self) -> ReusableWorkerSession {
+        ReusableWorkerSession {
+            source: Arc::clone(&self.source),
+            http: self.http.clone(),
+            state_arc: self.state_arc.clone(),
+            diag_arc: Arc::new(Mutex::new(ExecutionDiagnostics::default())),
+            js_timeout: self.js_timeout,
+            js: None,
+            pending_search: None,
+            pending_book: None,
+            pending_chapter: None,
+        }
+    }
+
+    pub fn fetch_toc_sync(
+        &self,
+        toc_url: &str,
+        book_ctx: &BookJsContext,
+    ) -> Result<Vec<OnlineChapterItem>, String> {
+        let mut worker = self.create_worker_session();
+        worker.fetch_toc(toc_url, book_ctx)
+    }
+}
+
+/// Thread-confined worker session (owns lazy QuickJS VM if any rule requires JS).
+pub struct ReusableWorkerSession {
+    source: Arc<LegadoBookSource>,
+    http: LegadoHttpClient,
+    state_arc: Arc<Mutex<SourceRuntimeState>>,
+    diag_arc: Arc<Mutex<ExecutionDiagnostics>>,
+    js_timeout: Duration,
+    js: Option<LegadoJsSession>,
+    pending_search: Option<(String, u32)>,
+    pending_book: Option<BookJsContext>,
+    pending_chapter: Option<ChapterJsContext>,
+}
+
+impl ReusableWorkerSession {
+    fn set_search_vars(&mut self, keyword: &str, page: u32) -> Result<(), String> {
+        self.pending_search = Some((keyword.to_string(), page));
+        if let Some(ref mut js) = self.js {
+            js.set_search_vars(keyword, page)?;
+        }
+        Ok(())
+    }
+
+    fn set_book_context(&mut self, book: &BookJsContext) -> Result<(), String> {
+        self.pending_book = Some(book.clone());
+        if let Some(ref mut js) = self.js {
+            js.set_book_context(book)?;
+        }
+        Ok(())
+    }
+
+    fn set_chapter_context(&mut self, chapter: &ChapterJsContext) -> Result<(), String> {
+        self.pending_chapter = Some(chapter.clone());
+        if let Some(ref mut js) = self.js {
+            js.set_chapter_context(chapter)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_js(&mut self) -> Result<&mut LegadoJsSession, String> {
+        if self.js.is_none() {
+            let mut js = LegadoJsSession::new(
+                &self.source,
+                self.http.clone(),
+                self.state_arc.clone(),
+                self.diag_arc.clone(),
+                self.js_timeout,
+            )?;
+            if let Some((ref kw, page)) = self.pending_search {
+                js.set_search_vars(kw, page)?;
+            }
+            if let Some(ref book) = self.pending_book {
+                js.set_book_context(book)?;
+            }
+            if let Some(ref ch) = self.pending_chapter {
+                js.set_chapter_context(ch)?;
+            }
+            self.js = Some(js);
+        }
+        Ok(self.js.as_mut().expect("js session initialized"))
+    }
+
+    fn eval_string(
+        &mut self,
+        input: &RuleValue,
+        rule: &str,
+        base_url: &str,
+    ) -> Result<String, String> {
+        if rule_needs_js(rule) {
+            let js = self.ensure_js()?;
+            eval_rule_string(input, rule, base_url, Some(js))
+        } else {
+            eval_rule_string(input, rule, base_url, None)
+        }
+    }
+
+    fn eval_list(
+        &mut self,
+        input: &RuleValue,
+        rule: &str,
+        base_url: &str,
+    ) -> Result<Vec<RuleValue>, String> {
+        if rule_needs_js(rule) {
+            let js = self.ensure_js()?;
+            eval_rule_list(input, rule, base_url, Some(js))
+        } else {
+            eval_rule_list(input, rule, base_url, None)
+        }
+    }
+
+    fn eval_opt(&mut self, input: &RuleValue, rule_opt: Option<&str>, base_url: &str) -> String {
+        let Some(rule) = rule_opt.map(str::trim).filter(|s| !s.is_empty()) else {
+            return String::new();
+        };
+        self.eval_string(input, rule, base_url)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    }
+
+    pub fn fetch_toc(
+        &mut self,
+        toc_url: &str,
+        book_ctx: &BookJsContext,
+    ) -> Result<Vec<OnlineChapterItem>, String> {
+        let rule_toc = self
+            .source
+            .rule_toc
+            .clone()
+            .ok_or_else(|| format!("书源「{}」未配置 ruleToc", self.source.book_source_name))?;
+        let chapter_list_rule = rule_toc
+            .chapter_list
+            .as_deref()
+            .ok_or_else(|| "ruleToc 缺少 chapterList 规则".to_string())?;
+
+        self.set_book_context(book_ctx)?;
+
+        let mut chapters = Vec::new();
+        let mut next_url_opt = Some(toc_url.to_string());
+        let mut visited = std::collections::HashSet::new();
+        const MAX_TOC_PAGES: usize = 30;
+
+        while let Some(page_url) = next_url_opt.take() {
+            if visited.len() >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
+                break;
+            }
+            let fetched = self.http.fetch(&page_url, &self.source.book_source_url)?;
+            let raw_input = RuleValue::from_raw(fetched.body);
+
+            let items = self.eval_list(&raw_input, chapter_list_rule, &fetched.final_url)?;
+
+            for item in items {
+                let title =
+                    self.eval_opt(&item, rule_toc.chapter_name.as_deref(), &fetched.final_url);
+                let url_raw =
+                    self.eval_opt(&item, rule_toc.chapter_url.as_deref(), &fetched.final_url);
+                if title.is_empty() {
+                    continue;
+                }
+                let update_time =
+                    self.eval_opt(&item, rule_toc.update_time.as_deref(), &fetched.final_url);
+                let is_vol_str =
+                    self.eval_opt(&item, rule_toc.is_volume.as_deref(), &fetched.final_url);
+                let is_volume = matches!(
+                    is_vol_str.trim().to_ascii_lowercase().as_str(),
+                    "true" | "1"
+                ) || url_raw.is_empty()
+                    || (!url_raw.starts_with("http://")
+                        && !url_raw.starts_with("https://")
+                        && !url_raw.starts_with("data:")
+                        && !url_raw.contains('/'));
+
+                let resolved = if url_raw.is_empty() {
+                    String::new()
+                } else {
+                    resolve_relative_url(&url_raw, &fetched.final_url)
+                };
+
+                chapters.push(OnlineChapterItem {
+                    index: chapters.len(),
+                    title,
+                    url: resolved,
+                    update_time: (!update_time.is_empty()).then_some(update_time),
+                    is_volume,
+                });
+            }
+
+            if let Some(ref next_rule) = rule_toc.next_toc_url
+                && !next_rule.trim().is_empty()
+            {
+                let next_raw = self.eval_opt(&raw_input, Some(next_rule), &fetched.final_url);
+                if !next_raw.is_empty() {
+                    next_url_opt = Some(resolve_relative_url(&next_raw, &fetched.final_url));
+                }
+            }
+        }
+
+        Ok(chapters)
+    }
+
+    pub fn fetch_chapter_content(
+        &mut self,
+        chapter_url: &str,
+        book_ctx: &BookJsContext,
+        chapter_ctx: &ChapterJsContext,
+    ) -> Result<OnlineChapterContent, String> {
+        let rule_content =
+            self.source.rule_content.clone().ok_or_else(|| {
+                format!("书源「{}」未配置 ruleContent", self.source.book_source_name)
+            })?;
+        let content_rule = rule_content
+            .content
+            .as_deref()
+            .ok_or_else(|| "ruleContent 缺少 content 规则".to_string())?;
+
+        self.set_book_context(book_ctx)?;
+        self.set_chapter_context(chapter_ctx)?;
+
+        let mut pages_html = Vec::new();
+        let mut resolved_title = chapter_ctx.title.clone();
+        let mut next_url_opt = Some(chapter_url.to_string());
+        let mut visited = std::collections::HashSet::new();
+        const MAX_CONTENT_PAGES: usize = 20;
+
+        while let Some(page_url) = next_url_opt.take() {
+            if visited.len() >= MAX_CONTENT_PAGES || !visited.insert(page_url.clone()) {
+                break;
+            }
+            let fetched = self.http.fetch(&page_url, &self.source.book_source_url)?;
+            let raw_input = RuleValue::from_raw(fetched.body);
+
+            if pages_html.is_empty()
+                && let Some(ref title_rule) = rule_content.title
+                && !title_rule.trim().is_empty()
+            {
+                let t = self.eval_opt(&raw_input, Some(title_rule), &fetched.final_url);
+                if !t.is_empty() {
+                    resolved_title = t;
+                }
+            }
+
+            let part = self.eval_string(&raw_input, content_rule, &fetched.final_url)?;
+            if !part.trim().is_empty() {
+                pages_html.push(part);
+            }
+
+            if let Some(ref next_rule) = rule_content.next_content_url
+                && !next_rule.trim().is_empty()
+            {
+                let next_raw = self.eval_opt(&raw_input, Some(next_rule), &fetched.final_url);
+                if !next_raw.is_empty() {
+                    next_url_opt = Some(resolve_relative_url(&next_raw, &fetched.final_url));
+                }
+            }
+        }
+
+        let mut raw_html = pages_html.join("\n");
+        if let Some(ref rep_rule) = rule_content.replace_regex
+            && !rep_rule.trim().is_empty()
+        {
+            raw_html = apply_content_replace_regex(&raw_html, rep_rule);
+        }
+
+        let clean_text = clean_chapter_html_to_text(&raw_html);
+        Ok(OnlineChapterContent {
+            title: resolved_title,
+            content: clean_text,
+            raw_html,
+        })
+    }
+}
+
+fn search_url_needs_js(raw_tpl: &str) -> bool {
+    if split_js_pipeline(raw_tpl).is_some() {
+        return true;
+    }
+    let mut rest = raw_tpl;
+    while let Some(open) = rest.find("{{") {
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            break;
+        };
+        let expr = after_open[..close].trim();
+        if expr != "key" && expr != "page" {
+            return true;
+        }
+        rest = &after_open[close + 2..];
+    }
+    false
+}
+
+fn substitute_simple_search_url(raw_tpl: &str, keyword: &str, page: u32) -> String {
+    let page_str = page.to_string();
+    let mut out = String::with_capacity(raw_tpl.len() + keyword.len());
+    let mut rest = raw_tpl;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        match after_open[..close].trim() {
+            "key" => out.push_str(keyword),
+            "page" => out.push_str(&page_str),
+            other => {
+                out.push_str("{{");
+                out.push_str(other);
+                out.push_str("}}");
+            }
+        }
+        rest = &after_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
 
 impl BookSourceEngine {
     pub fn new(http_config: HttpClientConfig, js_timeout: Duration) -> Self {
@@ -56,6 +429,30 @@ impl BookSourceEngine {
         }
     }
 
+    pub fn prepare_reusable_context(
+        &self,
+        source: Arc<LegadoBookSource>,
+        mut initial_state: SourceRuntimeState,
+    ) -> Result<ReusableSourceContext, String> {
+        initial_state.ensure_android_id(&source.book_source_url);
+        let cookies_arc = Arc::new(Mutex::new(initial_state.cookies.clone()));
+        let state_arc = Arc::new(Mutex::new(initial_state));
+        let http = LegadoHttpClient::new(
+            self.http_config.clone(),
+            cookies_arc.clone(),
+            source.header.as_deref(),
+            source.enabled_cookie_jar,
+        )?;
+        Ok(ReusableSourceContext {
+            source,
+            http,
+            state_arc,
+            cookies_arc,
+            js_timeout: self.js_timeout,
+        })
+    }
+
+    #[cfg(test)]
     fn build_session(
         &self,
         source: &LegadoBookSource,
@@ -81,6 +478,39 @@ impl BookSourceEngine {
         )?;
 
         Ok((http, state_arc, cookies_arc, diag_arc, js))
+    }
+
+    fn build_lazy_session(
+        &self,
+        source: &LegadoBookSource,
+        mut initial_state: SourceRuntimeState,
+    ) -> Result<(ReusableWorkerSession, Arc<Mutex<HashMap<String, String>>>), String> {
+        initial_state.ensure_android_id(&source.book_source_url);
+        let cookies_arc = Arc::new(Mutex::new(initial_state.cookies.clone()));
+        let state_arc = Arc::new(Mutex::new(initial_state));
+        let diag_arc = Arc::new(Mutex::new(ExecutionDiagnostics::default()));
+
+        let http = LegadoHttpClient::new(
+            self.http_config.clone(),
+            cookies_arc.clone(),
+            source.header.as_deref(),
+            source.enabled_cookie_jar,
+        )?;
+
+        Ok((
+            ReusableWorkerSession {
+                source: Arc::new(source.clone()),
+                http,
+                state_arc,
+                diag_arc,
+                js_timeout: self.js_timeout,
+                js: None,
+                pending_search: None,
+                pending_book: None,
+                pending_chapter: None,
+            },
+            cookies_arc,
+        ))
     }
 
     fn finalize_state(
@@ -112,18 +542,41 @@ impl BookSourceEngine {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| format!("书源「{}」未配置 searchUrl", source.book_source_name))?;
 
-        js.set_search_vars(keyword, page)?;
-
-        let input = RuleValue::Text(String::new());
-        let evaluated = if raw_tpl.to_ascii_lowercase().contains("<js>")
-            || raw_tpl.to_ascii_lowercase().contains("@js:")
-            || (raw_tpl.contains("{{") && raw_tpl.contains("}}"))
-        {
+        let evaluated = if search_url_needs_js(raw_tpl) {
+            js.set_search_vars(keyword, page)?;
+            let input = RuleValue::Text(String::new());
             eval_rule_string(&input, raw_tpl, &source.book_source_url, Some(js))?
         } else {
-            raw_tpl
-                .replace("{{key}}", keyword)
-                .replace("{{page}}", &page.to_string())
+            substitute_simple_search_url(raw_tpl, keyword, page)
+        };
+
+        let trimmed = evaluated.trim();
+        if trimmed.is_empty() {
+            return Err("searchUrl 求值结果为空".into());
+        }
+        Ok(resolve_relative_url(trimmed, &source.book_source_url))
+    }
+
+    fn build_search_url_lazy(
+        &self,
+        source: &LegadoBookSource,
+        session: &mut ReusableWorkerSession,
+        keyword: &str,
+        page: u32,
+    ) -> Result<String, String> {
+        let raw_tpl = source
+            .search_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("书源「{}」未配置 searchUrl", source.book_source_name))?;
+
+        let evaluated = if search_url_needs_js(raw_tpl) {
+            session.set_search_vars(keyword, page)?;
+            let input = RuleValue::Text(String::new());
+            session.eval_string(&input, raw_tpl, &source.book_source_url)?
+        } else {
+            substitute_simple_search_url(raw_tpl, keyword, page)
         };
 
         let trimmed = evaluated.trim();
@@ -146,75 +599,38 @@ impl BookSourceEngine {
             .as_ref()
             .ok_or_else(|| format!("书源「{}」未配置 ruleSearch", source.book_source_name))?;
 
-        let (http, state_arc, cookies_arc, diag_arc, mut js) = self.build_session(source, state)?;
-        let search_url = self.build_search_url(source, &mut js, keyword, page)?;
-        let fetched = http.fetch(&search_url, &source.book_source_url)?;
+        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
+        session.set_search_vars(keyword, page)?;
+        let search_url = self.build_search_url_lazy(source, &mut session, keyword, page)?;
+        let fetched = session.http.fetch(&search_url, &source.book_source_url)?;
         let raw_input = RuleValue::from_raw(fetched.body);
 
         let book_list_rule = rule_search
             .book_list
             .as_deref()
             .ok_or_else(|| "ruleSearch 缺少 bookList 规则".to_string())?;
-        let items = eval_rule_list(
-            &raw_input,
-            book_list_rule,
-            &fetched.final_url,
-            Some(&mut js),
-        )?;
+        let items = session.eval_list(&raw_input, book_list_rule, &fetched.final_url)?;
 
         let mut results = Vec::with_capacity(items.len());
         for item in items {
-            let name = eval_opt_rule(
-                &item,
-                rule_search.name.as_deref(),
-                &fetched.final_url,
-                &mut js,
-            );
-            let book_url_raw = eval_opt_rule(
-                &item,
-                rule_search.book_url.as_deref(),
-                &fetched.final_url,
-                &mut js,
-            );
+            let name = session.eval_opt(&item, rule_search.name.as_deref(), &fetched.final_url);
+            let book_url_raw =
+                session.eval_opt(&item, rule_search.book_url.as_deref(), &fetched.final_url);
             if name.is_empty() || book_url_raw.is_empty() {
                 continue;
             }
-            let author = eval_opt_rule(
-                &item,
-                rule_search.author.as_deref(),
-                &fetched.final_url,
-                &mut js,
-            );
-            let cover_raw = eval_opt_rule(
-                &item,
-                rule_search.cover_url.as_deref(),
-                &fetched.final_url,
-                &mut js,
-            );
-            let intro = eval_opt_rule(
-                &item,
-                rule_search.intro.as_deref(),
-                &fetched.final_url,
-                &mut js,
-            );
-            let kind = eval_opt_rule(
-                &item,
-                rule_search.kind.as_deref(),
-                &fetched.final_url,
-                &mut js,
-            );
-            let last_chapter = eval_opt_rule(
+            let author = session.eval_opt(&item, rule_search.author.as_deref(), &fetched.final_url);
+            let cover_raw =
+                session.eval_opt(&item, rule_search.cover_url.as_deref(), &fetched.final_url);
+            let intro = session.eval_opt(&item, rule_search.intro.as_deref(), &fetched.final_url);
+            let kind = session.eval_opt(&item, rule_search.kind.as_deref(), &fetched.final_url);
+            let last_chapter = session.eval_opt(
                 &item,
                 rule_search.last_chapter.as_deref(),
                 &fetched.final_url,
-                &mut js,
             );
-            let word_count = eval_opt_rule(
-                &item,
-                rule_search.word_count.as_deref(),
-                &fetched.final_url,
-                &mut js,
-            );
+            let word_count =
+                session.eval_opt(&item, rule_search.word_count.as_deref(), &fetched.final_url);
 
             let book_url = resolve_relative_url(&book_url_raw, &fetched.final_url);
             let cover_url = (!cover_raw.is_empty())
@@ -232,7 +648,8 @@ impl BookSourceEngine {
             });
         }
 
-        let (final_state, diagnostics) = Self::finalize_state(&state_arc, &cookies_arc, &diag_arc);
+        let (final_state, diagnostics) =
+            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
         Ok(SourceCallOutput {
             data: results,
             state: final_state,
@@ -248,12 +665,12 @@ impl BookSourceEngine {
         book_url: &str,
         fallback_hint: Option<&BookJsContext>,
     ) -> Result<SourceCallOutput<OnlineBookDetail>, String> {
-        let (http, state_arc, cookies_arc, diag_arc, mut js) = self.build_session(source, state)?;
+        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
         if let Some(hint) = fallback_hint {
-            js.set_book_context(hint)?;
+            session.set_book_context(hint)?;
         }
 
-        let fetched = http.fetch(book_url, &source.book_source_url)?;
+        let fetched = session.http.fetch(book_url, &source.book_source_url)?;
         let mut info_input = RuleValue::from_raw(fetched.body);
 
         let Some(rule_info) = source.rule_book_info.as_ref() else {
@@ -269,7 +686,7 @@ impl BookSourceEngine {
                 word_count: None,
             };
             let (final_state, diagnostics) =
-                Self::finalize_state(&state_arc, &cookies_arc, &diag_arc);
+                Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
             return Ok(SourceCallOutput {
                 data: detail,
                 state: final_state,
@@ -280,60 +697,39 @@ impl BookSourceEngine {
         if let Some(ref init_rule) = rule_info.init
             && !init_rule.trim().is_empty()
         {
-            let init_out =
-                eval_rule_string(&info_input, init_rule, &fetched.final_url, Some(&mut js))?;
+            let init_out = session.eval_string(&info_input, init_rule, &fetched.final_url)?;
             if !init_out.trim().is_empty() {
                 info_input = RuleValue::from_raw(init_out);
             }
         }
 
-        let name_extracted = eval_opt_rule(
-            &info_input,
-            rule_info.name.as_deref(),
-            &fetched.final_url,
-            &mut js,
-        );
-        let author_extracted = eval_opt_rule(
-            &info_input,
-            rule_info.author.as_deref(),
-            &fetched.final_url,
-            &mut js,
-        );
-        let cover_extracted = eval_opt_rule(
+        let name_extracted =
+            session.eval_opt(&info_input, rule_info.name.as_deref(), &fetched.final_url);
+        let author_extracted =
+            session.eval_opt(&info_input, rule_info.author.as_deref(), &fetched.final_url);
+        let cover_extracted = session.eval_opt(
             &info_input,
             rule_info.cover_url.as_deref(),
             &fetched.final_url,
-            &mut js,
         );
-        let intro_extracted = eval_opt_rule(
-            &info_input,
-            rule_info.intro.as_deref(),
-            &fetched.final_url,
-            &mut js,
-        );
-        let kind_extracted = eval_opt_rule(
-            &info_input,
-            rule_info.kind.as_deref(),
-            &fetched.final_url,
-            &mut js,
-        );
-        let last_chapter_extracted = eval_opt_rule(
+        let intro_extracted =
+            session.eval_opt(&info_input, rule_info.intro.as_deref(), &fetched.final_url);
+        let kind_extracted =
+            session.eval_opt(&info_input, rule_info.kind.as_deref(), &fetched.final_url);
+        let last_chapter_extracted = session.eval_opt(
             &info_input,
             rule_info.last_chapter.as_deref(),
             &fetched.final_url,
-            &mut js,
         );
-        let word_count_extracted = eval_opt_rule(
+        let word_count_extracted = session.eval_opt(
             &info_input,
             rule_info.word_count.as_deref(),
             &fetched.final_url,
-            &mut js,
         );
-        let toc_raw = eval_opt_rule(
+        let toc_raw = session.eval_opt(
             &info_input,
             rule_info.toc_url.as_deref(),
             &fetched.final_url,
-            &mut js,
         );
 
         let toc_url = if toc_raw.is_empty() {
@@ -370,7 +766,8 @@ impl BookSourceEngine {
             word_count: (!word_count_extracted.is_empty()).then_some(word_count_extracted),
         };
 
-        let (final_state, diagnostics) = Self::finalize_state(&state_arc, &cookies_arc, &diag_arc);
+        let (final_state, diagnostics) =
+            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
         Ok(SourceCallOutput {
             data: detail,
             state: final_state,
@@ -386,101 +783,10 @@ impl BookSourceEngine {
         toc_url: &str,
         book_ctx: &BookJsContext,
     ) -> Result<SourceCallOutput<Vec<OnlineChapterItem>>, String> {
-        let rule_toc = source
-            .rule_toc
-            .as_ref()
-            .ok_or_else(|| format!("书源「{}」未配置 ruleToc", source.book_source_name))?;
-        let chapter_list_rule = rule_toc
-            .chapter_list
-            .as_deref()
-            .ok_or_else(|| "ruleToc 缺少 chapterList 规则".to_string())?;
-
-        let (http, state_arc, cookies_arc, diag_arc, mut js) = self.build_session(source, state)?;
-        js.set_book_context(book_ctx)?;
-
-        let mut chapters = Vec::new();
-        let mut next_url_opt = Some(toc_url.to_string());
-        let mut visited = std::collections::HashSet::new();
-        const MAX_TOC_PAGES: usize = 30;
-
-        while let Some(page_url) = next_url_opt.take() {
-            if visited.len() >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
-                break;
-            }
-            let fetched = http.fetch(&page_url, &source.book_source_url)?;
-            let raw_input = RuleValue::from_raw(fetched.body);
-
-            let items = eval_rule_list(
-                &raw_input,
-                chapter_list_rule,
-                &fetched.final_url,
-                Some(&mut js),
-            )?;
-
-            for item in items {
-                let title = eval_opt_rule(
-                    &item,
-                    rule_toc.chapter_name.as_deref(),
-                    &fetched.final_url,
-                    &mut js,
-                );
-                let url_raw = eval_opt_rule(
-                    &item,
-                    rule_toc.chapter_url.as_deref(),
-                    &fetched.final_url,
-                    &mut js,
-                );
-                if title.is_empty() {
-                    continue;
-                }
-                let update_time = eval_opt_rule(
-                    &item,
-                    rule_toc.update_time.as_deref(),
-                    &fetched.final_url,
-                    &mut js,
-                );
-                let is_vol_str = eval_opt_rule(
-                    &item,
-                    rule_toc.is_volume.as_deref(),
-                    &fetched.final_url,
-                    &mut js,
-                );
-                let is_volume = matches!(
-                    is_vol_str.trim().to_ascii_lowercase().as_str(),
-                    "true" | "1"
-                ) || url_raw.is_empty()
-                    || (!url_raw.starts_with("http://")
-                        && !url_raw.starts_with("https://")
-                        && !url_raw.starts_with("data:")
-                        && !url_raw.contains('/'));
-
-                let resolved = if url_raw.is_empty() {
-                    String::new()
-                } else {
-                    resolve_relative_url(&url_raw, &fetched.final_url)
-                };
-
-                chapters.push(OnlineChapterItem {
-                    index: chapters.len(),
-                    title,
-                    url: resolved,
-                    update_time: (!update_time.is_empty()).then_some(update_time),
-                    is_volume,
-                });
-            }
-
-            if let Some(ref next_rule) = rule_toc.next_toc_url
-                && !next_rule.trim().is_empty()
-            {
-                let next_raw =
-                    eval_opt_rule(&raw_input, Some(next_rule), &fetched.final_url, &mut js);
-                if !next_raw.is_empty() {
-                    next_url_opt = Some(resolve_relative_url(&next_raw, &fetched.final_url));
-                }
-            }
-        }
-
-        let (final_state, diagnostics) = Self::finalize_state(&state_arc, &cookies_arc, &diag_arc);
+        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
+        let chapters = session.fetch_toc(toc_url, book_ctx)?;
+        let (final_state, diagnostics) =
+            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
         Ok(SourceCallOutput {
             data: chapters,
             state: final_state,
@@ -497,74 +803,12 @@ impl BookSourceEngine {
         book_ctx: &BookJsContext,
         chapter_ctx: &ChapterJsContext,
     ) -> Result<SourceCallOutput<OnlineChapterContent>, String> {
-        let rule_content = source
-            .rule_content
-            .as_ref()
-            .ok_or_else(|| format!("书源「{}」未配置 ruleContent", source.book_source_name))?;
-        let content_rule = rule_content
-            .content
-            .as_deref()
-            .ok_or_else(|| "ruleContent 缺少 content 规则".to_string())?;
-
-        let (http, state_arc, cookies_arc, diag_arc, mut js) = self.build_session(source, state)?;
-        js.set_book_context(book_ctx)?;
-        js.set_chapter_context(chapter_ctx)?;
-
-        let mut pages_html = Vec::new();
-        let mut resolved_title = chapter_ctx.title.clone();
-        let mut next_url_opt = Some(chapter_url.to_string());
-        let mut visited = std::collections::HashSet::new();
-        const MAX_CONTENT_PAGES: usize = 20;
-
-        while let Some(page_url) = next_url_opt.take() {
-            if visited.len() >= MAX_CONTENT_PAGES || !visited.insert(page_url.clone()) {
-                break;
-            }
-            let fetched = http.fetch(&page_url, &source.book_source_url)?;
-            let raw_input = RuleValue::from_raw(fetched.body);
-
-            if pages_html.is_empty()
-                && let Some(ref title_rule) = rule_content.title
-                && !title_rule.trim().is_empty()
-            {
-                let t = eval_opt_rule(&raw_input, Some(title_rule), &fetched.final_url, &mut js);
-                if !t.is_empty() {
-                    resolved_title = t;
-                }
-            }
-
-            let part =
-                eval_rule_string(&raw_input, content_rule, &fetched.final_url, Some(&mut js))?;
-            if !part.trim().is_empty() {
-                pages_html.push(part);
-            }
-
-            if let Some(ref next_rule) = rule_content.next_content_url
-                && !next_rule.trim().is_empty()
-            {
-                let next_raw =
-                    eval_opt_rule(&raw_input, Some(next_rule), &fetched.final_url, &mut js);
-                if !next_raw.is_empty() {
-                    next_url_opt = Some(resolve_relative_url(&next_raw, &fetched.final_url));
-                }
-            }
-        }
-
-        let mut raw_html = pages_html.join("\n");
-        if let Some(ref rep_rule) = rule_content.replace_regex
-            && !rep_rule.trim().is_empty()
-        {
-            raw_html = apply_content_replace_regex(&raw_html, rep_rule);
-        }
-
-        let clean_text = clean_chapter_html_to_text(&raw_html);
-        let (final_state, diagnostics) = Self::finalize_state(&state_arc, &cookies_arc, &diag_arc);
+        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
+        let data = session.fetch_chapter_content(chapter_url, book_ctx, chapter_ctx)?;
+        let (final_state, diagnostics) =
+            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
         Ok(SourceCallOutput {
-            data: OnlineChapterContent {
-                title: resolved_title,
-                content: clean_text,
-                raw_html,
-            },
+            data,
             state: final_state,
             diagnostics,
         })
@@ -579,32 +823,19 @@ impl BookSourceEngine {
         action_js: Option<&str>,
     ) -> Result<SourceCallOutput<String>, String> {
         state.login_info = login_info.clone();
-        let (_http, state_arc, cookies_arc, diag_arc, mut js) =
-            self.build_session(source, state)?;
+        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
         let login_url_js = source.login_url.as_deref().unwrap_or("");
-        let out = js.eval_login_script(login_url_js, action_js, &login_info)?;
-        let (final_state, diagnostics) = Self::finalize_state(&state_arc, &cookies_arc, &diag_arc);
+        let out = session
+            .ensure_js()?
+            .eval_login_script(login_url_js, action_js, &login_info)?;
+        let (final_state, diagnostics) =
+            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
         Ok(SourceCallOutput {
             data: out,
             state: final_state,
             diagnostics,
         })
     }
-}
-
-fn eval_opt_rule(
-    input: &RuleValue,
-    rule_opt: Option<&str>,
-    base_url: &str,
-    js: &mut LegadoJsSession,
-) -> String {
-    let Some(rule) = rule_opt.map(str::trim).filter(|s| !s.is_empty()) else {
-        return String::new();
-    };
-    eval_rule_string(input, rule, base_url, Some(js))
-        .unwrap_or_default()
-        .trim()
-        .to_string()
 }
 
 fn apply_content_replace_regex(content: &str, replace_rule: &str) -> String {
@@ -615,10 +846,10 @@ fn apply_content_replace_regex(content: &str, replace_rule: &str) -> String {
             continue;
         }
         if let Some((pat, rep)) = trimmed.strip_prefix("##").and_then(|s| s.split_once("##"))
-            && let Ok(re) = Regex::new(pat)
+            && let Some(re) = cached_regex(pat)
         {
             out = re.replace_all(&out, rep).into_owned();
-        } else if let Ok(re) = Regex::new(trimmed) {
+        } else if let Some(re) = cached_regex(trimmed) {
             out = re.replace_all(&out, "").into_owned();
         }
     }
@@ -631,28 +862,14 @@ pub fn clean_chapter_html_to_text(raw: &str) -> String {
     if raw.trim().is_empty() {
         return String::new();
     }
-    let mut s = raw.to_string();
 
     // Strip Legado client interactive comment/review SVG `<img>` tags & `<div rs-native>` wrappers
-    if let Ok(re_comment_img) = Regex::new(
-        r#"(?is)<div\s+rs-native[^>]*>.*?</div>|<img[^>]+(?:data:image/svg\+xml|qtbzs|showCmt|chapter_review_svg)[^>]*>"#,
-    ) {
-        s = re_comment_img.replace_all(&s, "").into_owned();
-    }
-    if let Ok(re_script_style) = Regex::new(
-        r"(?is)<(?:script|style|comment)[^>]*>.*?</(?:script|style|comment)>|<comment[^>]*/>",
-    ) {
-        s = re_script_style.replace_all(&s, "").into_owned();
-    }
-
+    let s = RE_COMMENT_IMG.replace_all(raw, "");
+    let s = RE_SCRIPT_STYLE.replace_all(&s, "");
     // Convert block boundaries into newlines
-    if let Ok(re_breaks) = Regex::new(r"(?i)<br\s*/?>|</p>|</div>|</h[1-6]>|</li>|</blockquote>") {
-        s = re_breaks.replace_all(&s, "\n").into_owned();
-    }
+    let s = RE_HTML_BREAKS.replace_all(&s, "\n");
     // Strip remaining HTML tags
-    if let Ok(re_tags) = Regex::new(r"(?is)<[^>]+>") {
-        s = re_tags.replace_all(&s, "").into_owned();
-    }
+    let s = RE_HTML_TAGS.replace_all(&s, "");
 
     // Decode common HTML entities
     let decoded = s

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -8,7 +9,7 @@ use encoding_rs::Encoding;
 use jiff::Timestamp;
 use md5::{Digest, Md5};
 use rquickjs::context::EvalOptions;
-use rquickjs::{CatchResultExt, Context, Ctx, Function, Runtime, Value};
+use rquickjs::{Array, CatchResultExt, Context, Ctx, Function, Object, Runtime, Value};
 
 use crate::source::http::{DEFAULT_WEBVIEW_UA, LegadoHttpClient};
 use crate::source::model::{
@@ -19,6 +20,13 @@ use crate::source::rule::{RuleValue, eval_non_js_list, eval_non_js_single};
 
 const JS_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const JS_MAX_STACK_BYTES: usize = 2 * 1024 * 1024;
+
+static PROCESS_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+#[inline]
+fn now_mono_ms() -> u64 {
+    PROCESS_EPOCH.elapsed().as_millis() as u64
+}
 
 #[derive(Clone)]
 struct SharedBridgeState {
@@ -38,7 +46,7 @@ struct SharedBridgeState {
 pub struct LegadoJsSession {
     _runtime: Runtime,
     context: Context,
-    deadline: Arc<Mutex<Instant>>,
+    deadline_ms: Arc<AtomicU64>,
     timeout: Duration,
     bridge: SharedBridgeState,
 }
@@ -55,11 +63,12 @@ impl LegadoJsSession {
         runtime.set_memory_limit(JS_MEMORY_LIMIT_BYTES);
         runtime.set_max_stack_size(JS_MAX_STACK_BYTES);
 
-        let deadline = Arc::new(Mutex::new(Instant::now() + timeout));
-        let deadline_check = deadline.clone();
+        let deadline_ms = Arc::new(AtomicU64::new(
+            now_mono_ms().saturating_add(timeout.as_millis() as u64),
+        ));
+        let deadline_check = deadline_ms.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
-            let guard = deadline_check.lock().unwrap_or_else(|e| e.into_inner());
-            Instant::now() > *guard
+            now_mono_ms() > deadline_check.load(Ordering::Relaxed)
         })));
 
         let context =
@@ -81,7 +90,7 @@ impl LegadoJsSession {
         let mut session = Self {
             _runtime: runtime,
             context,
-            deadline,
+            deadline_ms,
             timeout,
             bridge,
         };
@@ -104,8 +113,10 @@ impl LegadoJsSession {
     }
 
     fn reset_deadline(&self) {
-        let mut guard = self.deadline.lock().unwrap_or_else(|e| e.into_inner());
-        *guard = Instant::now() + self.timeout;
+        self.deadline_ms.store(
+            now_mono_ms().saturating_add(self.timeout.as_millis() as u64),
+            Ordering::Relaxed,
+        );
     }
 
     fn install_bridges(&mut self) -> Result<(), String> {
@@ -694,6 +705,9 @@ impl LegadoJsSession {
                 globalThis.baseUrl = __srcUrl;
                 globalThis.key = '';
                 globalThis.page = 1;
+                globalThis.__x_eval_rule = function(__x_code) {{
+                    return (function() {{ return eval(__x_code); }}).call(globalThis);
+                }};
                 "#,
                 src_name = serde_json::to_string(&b.source_name).unwrap_or_else(|_| "\"\"".into()),
                 src_url = serde_json::to_string(&b.source_url).unwrap_or_else(|_| "\"\"".into()),
@@ -722,59 +736,63 @@ impl LegadoJsSession {
 
     pub fn set_book_context(&mut self, book: &BookJsContext) -> Result<(), String> {
         self.reset_deadline();
-        let script = format!(
-            r#"
-            globalThis.book.name = {name};
-            globalThis.book.author = {author};
-            globalThis.book.bookUrl = {book_url};
-            globalThis.book.tocUrl = {toc_url};
-            globalThis.book.coverUrl = {cover_url};
-            globalThis.book.abstract = {intro};
-            globalThis.book.durChapterIndex = {dur_idx};
-            globalThis.book.durChapterTitle = {dur_title};
-            globalThis.book._vars.custom = {custom_var};
-            "#,
-            name = serde_json::to_string(&book.name).unwrap_or_else(|_| "\"\"".into()),
-            author = serde_json::to_string(&book.author).unwrap_or_else(|_| "\"\"".into()),
-            book_url = serde_json::to_string(&book.book_url).unwrap_or_else(|_| "\"\"".into()),
-            toc_url = serde_json::to_string(&book.toc_url).unwrap_or_else(|_| "\"\"".into()),
-            cover_url = serde_json::to_string(book.cover_url.as_deref().unwrap_or(""))
-                .unwrap_or_else(|_| "\"\"".into()),
-            intro = serde_json::to_string(book.intro.as_deref().unwrap_or(""))
-                .unwrap_or_else(|_| "\"\"".into()),
-            dur_idx = book.dur_chapter_index,
-            dur_title =
-                serde_json::to_string(&book.dur_chapter_title).unwrap_or_else(|_| "\"\"".into()),
-            custom_var =
-                serde_json::to_string(&book.custom_variable).unwrap_or_else(|_| "\"\"".into()),
-        );
         self.context.with(|ctx| {
-            ctx.eval::<(), _>(script.as_str())
-                .catch(&ctx)
-                .map_err(|e| format!("注入 book 上下文失败: {e}"))
+            let book_obj: Object<'_> = ctx
+                .globals()
+                .get("book")
+                .map_err(|e| format!("获取 book 上下文失败: {e}"))?;
+            book_obj
+                .set("name", book.name.as_str())
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            book_obj
+                .set("author", book.author.as_str())
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            book_obj
+                .set("bookUrl", book.book_url.as_str())
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            book_obj
+                .set("tocUrl", book.toc_url.as_str())
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            book_obj
+                .set("coverUrl", book.cover_url.as_deref().unwrap_or(""))
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            book_obj
+                .set("abstract", book.intro.as_deref().unwrap_or(""))
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            book_obj
+                .set("durChapterIndex", book.dur_chapter_index as i64)
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            book_obj
+                .set("durChapterTitle", book.dur_chapter_title.as_str())
+                .map_err(|e| format!("注入 book 上下文失败: {e}"))?;
+            if let Ok(vars_obj) = book_obj.get::<_, Object<'_>>("_vars") {
+                let _ = vars_obj.set("custom", book.custom_variable.as_str());
+            }
+            Ok(())
         })
     }
 
     pub fn set_chapter_context(&mut self, chapter: &ChapterJsContext) -> Result<(), String> {
         self.reset_deadline();
-        let script = format!(
-            r#"
-            globalThis.chapter.index = {index};
-            globalThis.chapter.title = {title};
-            globalThis.chapter.url = {url};
-            "#,
-            index = chapter.index,
-            title = serde_json::to_string(&chapter.title).unwrap_or_else(|_| "\"\"".into()),
-            url = serde_json::to_string(&chapter.url).unwrap_or_else(|_| "\"\"".into()),
-        );
         self.context.with(|ctx| {
-            ctx.eval::<(), _>(script.as_str())
-                .catch(&ctx)
-                .map_err(|e| format!("注入 chapter 上下文失败: {e}"))
+            let ch_obj: Object<'_> = ctx
+                .globals()
+                .get("chapter")
+                .map_err(|e| format!("获取 chapter 上下文失败: {e}"))?;
+            ch_obj
+                .set("index", chapter.index as i64)
+                .map_err(|e| format!("注入 chapter 上下文失败: {e}"))?;
+            ch_obj
+                .set("title", chapter.title.as_str())
+                .map_err(|e| format!("注入 chapter 上下文失败: {e}"))?;
+            ch_obj
+                .set("url", chapter.url.as_str())
+                .map_err(|e| format!("注入 chapter 上下文失败: {e}"))?;
+            Ok(())
         })
     }
 
-    /// Evaluates a rule's JS snippet with `result` and `baseUrl` bound, returning a `RuleValue`.
+    /// Evaluates a rule's JS snippet with `result` and `baseUrl` bound via `globals.set`, returning a `RuleValue`.
     pub fn eval_rule_js(
         &mut self,
         code: &str,
@@ -796,32 +814,26 @@ impl LegadoJsSession {
                 .unwrap_or_else(|e| e.into_inner()) = base_url.to_string();
         }
 
-        let set_input_js = match input {
-            RuleValue::Json(v) => format!(
-                "globalThis.result = {}; globalThis.baseUrl = {};",
-                serde_json::to_string(v).unwrap_or_else(|_| "null".into()),
-                serde_json::to_string(base_url).unwrap_or_else(|_| "\"\"".into()),
-            ),
-            RuleValue::Text(s) => format!(
-                "globalThis.result = {}; globalThis.baseUrl = {};",
-                serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into()),
-                serde_json::to_string(base_url).unwrap_or_else(|_| "\"\"".into()),
-            ),
-        };
-
         self.context.with(|ctx| {
-            ctx.eval_with_options::<(), _>(set_input_js.as_str(), sloppy_eval_options())
-                .catch(&ctx)
-                .map_err(|e| format!("设置 JS result/baseUrl 失败: {e}"))?;
+            let globals = ctx.globals();
+            let js_result = match input {
+                RuleValue::Json(v) => json_to_js_value(&ctx, v)?,
+                RuleValue::Text(s) => rquickjs::String::from_str(ctx.clone(), s.as_str())
+                    .map(Value::from_string)
+                    .map_err(|e| format!("设置 JS result 失败: {e}"))?,
+            };
+            globals
+                .set("result", js_result)
+                .map_err(|e| format!("设置 JS result 失败: {e}"))?;
+            globals
+                .set("baseUrl", base_url)
+                .map_err(|e| format!("设置 JS baseUrl 失败: {e}"))?;
 
-            // Wrap in block-friendly evaluation via direct eval (sloppy mode) so `let`/`const` declarations
-            // inside separate rule snippets never collide in global scope, while `this === globalThis`!
-            let wrapped = format!(
-                "(function() {{ return eval({}); }}).call(globalThis)",
-                serde_json::to_string(code).unwrap_or_else(|_| "\"\"".into())
-            );
-            let val: Value<'_> = ctx
-                .eval_with_options(wrapped.as_str(), sloppy_eval_options())
+            let runner: Function<'_> = globals
+                .get("__x_eval_rule")
+                .map_err(|e| format!("获取 JS 规则执行器失败: {e}"))?;
+            let val: Value<'_> = runner
+                .call((code,))
                 .catch(&ctx)
                 .map_err(|e| format!("执行书源 JS 规则失败: {e}"))?;
 
@@ -837,11 +849,12 @@ impl LegadoJsSession {
         login_info: &HashMap<String, String>,
     ) -> Result<String, String> {
         self.reset_deadline();
-        let login_json = serde_json::to_string(login_info).unwrap_or_else(|_| "{}".to_string());
+        let login_val = serde_json::to_value(login_info)
+            .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
         self.context.with(|ctx| {
-            let init_res = format!("globalThis.result = {login_json};");
-            ctx.eval_with_options::<(), _>(init_res.as_str(), sloppy_eval_options())
-                .catch(&ctx)
+            let js_login = json_to_js_value(&ctx, &login_val)?;
+            ctx.globals()
+                .set("result", js_login)
                 .map_err(|e| format!("设置登录表单数据失败: {e}"))?;
 
             if !login_url_js.trim().is_empty() {
@@ -862,6 +875,51 @@ impl LegadoJsSession {
 
             Ok(String::new())
         })
+    }
+}
+
+fn json_to_js_value<'js>(ctx: &Ctx<'js>, val: &serde_json::Value) -> Result<Value<'js>, String> {
+    match val {
+        serde_json::Value::Null => Ok(Value::new_null(ctx.clone())),
+        serde_json::Value::Bool(b) => Ok(Value::new_bool(ctx.clone(), *b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                if (i32::MIN as i64..=i32::MAX as i64).contains(&i) {
+                    return Ok(Value::new_int(ctx.clone(), i as i32));
+                }
+                return Ok(Value::new_float(ctx.clone(), i as f64));
+            }
+            if let Some(u) = n.as_u64() {
+                if u <= i32::MAX as u64 {
+                    return Ok(Value::new_int(ctx.clone(), u as i32));
+                }
+                return Ok(Value::new_float(ctx.clone(), u as f64));
+            }
+            Ok(Value::new_float(ctx.clone(), n.as_f64().unwrap_or(0.0)))
+        }
+        serde_json::Value::String(s) => rquickjs::String::from_str(ctx.clone(), s.as_str())
+            .map(Value::from_string)
+            .map_err(|e| format!("转换 JS 字符串失败: {e}")),
+        serde_json::Value::Array(arr) => {
+            let js_arr = Array::new(ctx.clone()).map_err(|e| format!("创建 JS 数组失败: {e}"))?;
+            for (idx, item) in arr.iter().enumerate() {
+                let js_item = json_to_js_value(ctx, item)?;
+                js_arr
+                    .set(idx, js_item)
+                    .map_err(|e| format!("写入 JS 数组元素失败: {e}"))?;
+            }
+            Ok(js_arr.into_value())
+        }
+        serde_json::Value::Object(map) => {
+            let js_obj = Object::new(ctx.clone()).map_err(|e| format!("创建 JS 对象失败: {e}"))?;
+            for (k, v) in map {
+                let js_v = json_to_js_value(ctx, v)?;
+                js_obj
+                    .set(k.as_str(), js_v)
+                    .map_err(|e| format!("写入 JS 对象属性失败: {e}"))?;
+            }
+            Ok(js_obj.into_value())
+        }
     }
 }
 

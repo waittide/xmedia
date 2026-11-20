@@ -191,6 +191,8 @@ pub struct LegadoBookSource {
     pub login_check_js: Option<String>,
     #[serde(default, deserialize_with = "de_opt_string")]
     pub js_lib: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    pub concurrent_rate: Option<String>,
     #[serde(default)]
     pub rule_search: Option<LegadoSearchRule>,
     #[serde(default)]
@@ -246,6 +248,47 @@ impl LegadoBookSource {
         }
         serde_json::from_str::<Vec<LoginUiItem>>(trimmed).unwrap_or_default()
     }
+
+    /// Parses Legado `concurrentRate` into a rate-limit specification.
+    ///
+    /// Supports both `"requests/millis"` (e.g. `"10/1000"`) and pure millisecond
+    /// interval (e.g. `"200"`, meaning 1 request per 200ms). Returns `None` when
+    /// unset, `"0"`, or invalid.
+    pub fn parse_concurrent_rate(&self) -> Option<ConcurrentRateSpec> {
+        let raw = self.concurrent_rate.as_deref()?.trim();
+        if raw.is_empty() || raw == "0" {
+            return None;
+        }
+        if let Some((req_part, ms_part)) = raw.split_once('/') {
+            let max_requests = req_part.trim().parse::<usize>().ok()?;
+            let window_ms = ms_part.trim().parse::<u64>().ok()?;
+            if max_requests == 0 || window_ms == 0 {
+                return None;
+            }
+            return Some(ConcurrentRateSpec {
+                max_concurrency: max_requests.clamp(1, 16),
+                window_requests: max_requests,
+                window_ms,
+            });
+        }
+        let interval_ms = raw.parse::<u64>().ok()?;
+        if interval_ms == 0 {
+            return None;
+        }
+        Some(ConcurrentRateSpec {
+            max_concurrency: 1,
+            window_requests: 1,
+            window_ms: interval_ms,
+        })
+    }
+}
+
+/// Parsed Legado `concurrentRate` policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConcurrentRateSpec {
+    pub max_concurrency: usize,
+    pub window_requests: usize,
+    pub window_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -269,7 +312,7 @@ pub struct LoginUiItem {
 }
 
 /// Persisted per-source runtime state (variables, login form values, cookies, cache).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRuntimeState {
     #[serde(default)]
     pub variable: String,
@@ -372,4 +415,57 @@ pub struct OnlineChapterContent {
     pub title: String,
     pub content: String,
     pub raw_html: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_concurrent_rate_supports_ratio_and_interval_formats() {
+        let ratio: LegadoBookSource = serde_json::from_str(
+            r#"{"bookSourceName":"A","bookSourceUrl":"https://a.test","concurrentRate":"10/1000"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ratio.parse_concurrent_rate(),
+            Some(ConcurrentRateSpec {
+                max_concurrency: 10,
+                window_requests: 10,
+                window_ms: 1000,
+            })
+        );
+
+        let interval: LegadoBookSource = serde_json::from_str(
+            r#"{"bookSourceName":"B","bookSourceUrl":"https://b.test","concurrentRate":200}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            interval.parse_concurrent_rate(),
+            Some(ConcurrentRateSpec {
+                max_concurrency: 1,
+                window_requests: 1,
+                window_ms: 200,
+            })
+        );
+
+        let disabled: LegadoBookSource = serde_json::from_str(
+            r#"{"bookSourceName":"C","bookSourceUrl":"https://c.test","concurrentRate":"0"}"#,
+        )
+        .unwrap();
+        assert_eq!(disabled.parse_concurrent_rate(), None);
+
+        let capped: LegadoBookSource = serde_json::from_str(
+            r#"{"bookSourceName":"D","bookSourceUrl":"https://d.test","concurrentRate":"50/1000"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            capped.parse_concurrent_rate(),
+            Some(ConcurrentRateSpec {
+                max_concurrency: 16,
+                window_requests: 50,
+                window_ms: 1000,
+            })
+        );
+    }
 }

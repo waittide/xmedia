@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
@@ -408,6 +408,122 @@ fn extract_meta_charset(head_lower: &str) -> Option<String> {
     None
 }
 
+const MAX_CACHED_CLIENTS: usize = 64;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ClientCacheKey {
+    timeout_secs: u64,
+    allow_private_ips: bool,
+    proxy_url: Option<String>,
+}
+
+impl ClientCacheKey {
+    fn from_config(config: &HttpClientConfig) -> Self {
+        Self {
+            timeout_secs: config.timeout_secs.max(3),
+            allow_private_ips: config.allow_private_ips,
+            proxy_url: config
+                .proxy_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        }
+    }
+}
+
+static BLOCKING_CLIENT_CACHE: LazyLock<Mutex<HashMap<ClientCacheKey, reqwest::blocking::Client>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static ASYNC_CLIENT_CACHE: LazyLock<Mutex<HashMap<ClientCacheKey, reqwest::Client>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Returns a pooled, cached `reqwest::blocking::Client` shared across calls with identical config.
+pub fn get_or_build_blocking_client(
+    config: &HttpClientConfig,
+) -> Result<reqwest::blocking::Client, String> {
+    let key = ClientCacheKey::from_config(config);
+    {
+        let guard = BLOCKING_CLIENT_CACHE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = guard.get(&key) {
+            return Ok(client.clone());
+        }
+    }
+
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(key.timeout_secs))
+        .connect_timeout(Duration::from_secs(key.timeout_secs.min(10)))
+        .pool_max_idle_per_host(16)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .redirect(ssrf_redirect_policy(
+            key.allow_private_ips,
+            MAX_REDIRECT_HOPS,
+        ));
+    if let Some(ref proxy) = key.proxy_url {
+        let p = reqwest::Proxy::all(proxy.as_str()).map_err(|e| format!("代理配置无效: {e}"))?;
+        builder = builder.proxy(p);
+    }
+    let client = builder
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+
+    let mut guard = BLOCKING_CLIENT_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= MAX_CACHED_CLIENTS && !guard.contains_key(&key) {
+        guard.clear();
+    }
+    Ok(guard.entry(key).or_insert(client).clone())
+}
+
+/// Returns a pooled, cached async `reqwest::Client` for cover proxy & async fetches.
+pub fn get_or_build_async_client(
+    timeout_secs: u64,
+    allow_private_ips: bool,
+    proxy_url: Option<&str>,
+) -> Result<reqwest::Client, String> {
+    let key = ClientCacheKey {
+        timeout_secs: timeout_secs.max(3),
+        allow_private_ips,
+        proxy_url: proxy_url
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+    };
+    {
+        let guard = ASYNC_CLIENT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(client) = guard.get(&key) {
+            return Ok(client.clone());
+        }
+    }
+
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(key.timeout_secs))
+        .connect_timeout(Duration::from_secs(key.timeout_secs.min(10)))
+        .user_agent(DEFAULT_WEBVIEW_UA)
+        .pool_max_idle_per_host(16)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .redirect(ssrf_redirect_policy(
+            key.allow_private_ips,
+            MAX_REDIRECT_HOPS,
+        ));
+    if let Some(ref proxy) = key.proxy_url {
+        let p = reqwest::Proxy::all(proxy.as_str()).map_err(|e| format!("代理配置无效: {e}"))?;
+        builder = builder.proxy(p);
+    }
+    let client = builder
+        .build()
+        .map_err(|e| format!("创建异步 HTTP 客户端失败: {e}"))?;
+
+    let mut guard = ASYNC_CLIENT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= MAX_CACHED_CLIENTS && !guard.contains_key(&key) {
+        guard.clear();
+    }
+    Ok(guard.entry(key).or_insert(client).clone())
+}
+
 #[derive(Clone)]
 pub struct LegadoHttpClient {
     client: reqwest::blocking::Client,
@@ -424,21 +540,7 @@ impl LegadoHttpClient {
         default_header_json: Option<&str>,
         enabled_cookie_jar: bool,
     ) -> Result<Self, String> {
-        let mut builder = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(config.timeout_secs.max(3)))
-            .redirect(ssrf_redirect_policy(
-                config.allow_private_ips,
-                MAX_REDIRECT_HOPS,
-            ));
-        if let Some(ref proxy) = config.proxy_url
-            && !proxy.trim().is_empty()
-        {
-            let p = reqwest::Proxy::all(proxy.trim()).map_err(|e| format!("代理配置无效: {e}"))?;
-            builder = builder.proxy(p);
-        }
-        let client = builder
-            .build()
-            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
+        let client = get_or_build_blocking_client(&config)?;
 
         let mut default_headers = HashMap::new();
         if let Some(raw) = default_header_json

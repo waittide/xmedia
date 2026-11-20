@@ -1,8 +1,62 @@
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
 use regex::Regex;
 use scraper::{ElementRef, Html, Selector};
 
 use crate::source::http::resolve_relative_url;
 use crate::source::js_runtime::LegadoJsSession;
+
+const MAX_RULE_REGEX_CACHE: usize = 256;
+
+static RULE_REGEX_CACHE: LazyLock<Mutex<HashMap<String, Regex>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub(crate) fn cached_regex(pattern: &str) -> Option<Regex> {
+    {
+        let guard = RULE_REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(re) = guard.get(pattern) {
+            return Some(re.clone());
+        }
+    }
+    let compiled = Regex::new(pattern).ok()?;
+    let mut guard = RULE_REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if guard.len() >= MAX_RULE_REGEX_CACHE && !guard.contains_key(pattern) {
+        guard.clear();
+    }
+    guard.insert(pattern.to_string(), compiled.clone());
+    Some(compiled)
+}
+
+/// Returns true when evaluating `rule` may require a QuickJS runtime.
+pub fn rule_needs_js(rule: &str) -> bool {
+    let trimmed = rule.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if split_js_pipeline(trimmed).is_some() {
+        return true;
+    }
+    let mut rest = trimmed;
+    while let Some(open) = rest.find("{{") {
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            break;
+        };
+        let expr = after_open[..close].trim();
+        let is_pure_non_js = expr.starts_with("$.")
+            || expr.starts_with("$[")
+            || expr.starts_with("@css:")
+            || expr.starts_with("@CSS:")
+            || expr.starts_with("@Json:")
+            || expr.starts_with("@json:");
+        if !is_pure_non_js {
+            return true;
+        }
+        rest = &after_open[close + 2..];
+    }
+    false
+}
 
 /// Unified input passed between chained Legado rules.
 #[derive(Debug, Clone)]
@@ -228,7 +282,7 @@ pub fn eval_non_js_single(input: &RuleValue, rule: &str, base_url: &str) -> Stri
     // Regex capture rule (`:pattern`)
     if let Some(pat) = core.strip_prefix(':') {
         let text = input.as_text();
-        if let Ok(re) = Regex::new(pat)
+        if let Some(re) = cached_regex(pat)
             && let Some(caps) = re.captures(&text)
         {
             let matched = caps
@@ -422,7 +476,7 @@ fn apply_regex_replace(input: &str, spec: Option<RegexReplaceSpec<'_>>) -> Strin
     if s.pattern.is_empty() {
         return input.to_string();
     }
-    let Ok(re) = Regex::new(s.pattern) else {
+    let Some(re) = cached_regex(s.pattern) else {
         return input.to_string();
     };
     if s.only_first {

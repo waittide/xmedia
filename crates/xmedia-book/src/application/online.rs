@@ -1,32 +1,40 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
 use jiff::Timestamp;
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use toasty::Db;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock, Semaphore, mpsc};
 use uuid::Uuid;
+use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, UserId};
+use xmedia_core::infra::stream::open_file_range_stream_spec;
 
 use crate::application::catalog::BookCatalogService;
+use crate::domain::book::BookId;
 use crate::infra::persistence::models::{BookOnlineShelfModel, BookSourceRecordModel};
 use crate::source::BookSourceEngine;
-use crate::source::http::{
-    DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, ssrf_redirect_policy, validate_target_url,
-};
+use crate::source::http::{get_or_build_async_client, validate_target_url};
 use crate::source::model::{
-    BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, LoginUiItem,
-    OnlineBookDetail, OnlineChapterContent, OnlineChapterItem, SearchBookResult,
+    BookJsContext, ChapterJsContext, ConcurrentRateSpec, ExecutionDiagnostics, LegadoBookSource,
+    LoginUiItem, OnlineBookDetail, OnlineChapterContent, OnlineChapterItem, SearchBookResult,
     SourceRuntimeState,
 };
 use crate::source::packager::{
     PackBookMetadata, PackChapterInput, package_chapters_to_epub, package_chapters_to_txt,
 };
+
+const SEARCH_MAX_CONCURRENCY: usize = 16;
+const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 4;
+const DEFAULT_DOWNLOAD_MIN_INTERVAL_MS: u64 = 40;
+const DOWNLOAD_STATE_PERSIST_BATCH: usize = 20;
 
 fn db_err(err: impl std::fmt::Display) -> DomainError {
     DomainError::Persistence(err.to_string())
@@ -211,6 +219,7 @@ pub enum DownloadJobStatus {
     Running,
     Completed,
     Failed,
+    Cancelled,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -247,6 +256,10 @@ pub struct OnlineDownloadJobDto {
     pub total_chapters: usize,
     pub processed_chapters: usize,
     pub failed_chapters: usize,
+    #[serde(default)]
+    pub chapters_per_sec: f64,
+    #[serde(default)]
+    pub elapsed_ms: u64,
     pub current_chapter_title: Option<String>,
     pub output_file_name: Option<String>,
     pub file_size: Option<u64>,
@@ -260,6 +273,136 @@ pub struct OnlineDownloadJobDto {
 struct StoredDownloadJob {
     dto: OnlineDownloadJobDto,
     output_path: Option<PathBuf>,
+    started_at: Option<Instant>,
+    cancel_flag: Arc<AtomicBool>,
+    cancel_cond: Arc<(Mutex<bool>, Condvar)>,
+    cancel_notify: Arc<Notify>,
+}
+
+impl StoredDownloadJob {
+    fn snapshot_dto(&self) -> OnlineDownloadJobDto {
+        let mut dto = self.dto.clone();
+        if dto.status == DownloadJobStatus::Running
+            && let Some(started) = self.started_at
+        {
+            let elapsed = started.elapsed().as_millis() as u64;
+            dto.elapsed_ms = elapsed;
+            dto.chapters_per_sec = compute_chapters_per_sec(dto.processed_chapters, elapsed);
+        }
+        dto
+    }
+
+    fn signal_cancel(&self) {
+        self.cancel_flag.store(true, Ordering::Release);
+        let (lock, cvar) = &*self.cancel_cond;
+        let mut guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = true;
+        cvar.notify_all();
+        self.cancel_notify.notify_waiters();
+    }
+}
+
+fn compute_chapters_per_sec(processed: usize, elapsed_ms: u64) -> f64 {
+    if processed == 0 || elapsed_ms == 0 {
+        return 0.0;
+    }
+    let rate = processed as f64 / (elapsed_ms as f64 / 1000.0);
+    (rate * 100.0).round() / 100.0
+}
+
+struct DownloadRateLimiter {
+    window_requests: usize,
+    window: Duration,
+    min_interval: Duration,
+    history: Mutex<VecDeque<Instant>>,
+}
+
+impl DownloadRateLimiter {
+    fn from_spec(spec: Option<ConcurrentRateSpec>) -> (usize, Self) {
+        match spec {
+            Some(s) => (
+                s.max_concurrency,
+                Self {
+                    window_requests: s.window_requests.max(1),
+                    window: Duration::from_millis(s.window_ms.max(1)),
+                    min_interval: Duration::ZERO,
+                    history: Mutex::new(VecDeque::with_capacity(s.window_requests.min(64))),
+                },
+            ),
+            None => (
+                DEFAULT_DOWNLOAD_CONCURRENCY,
+                Self {
+                    window_requests: DEFAULT_DOWNLOAD_CONCURRENCY,
+                    window: Duration::from_millis(
+                        DEFAULT_DOWNLOAD_MIN_INTERVAL_MS * DEFAULT_DOWNLOAD_CONCURRENCY as u64,
+                    ),
+                    min_interval: Duration::from_millis(DEFAULT_DOWNLOAD_MIN_INTERVAL_MS),
+                    history: Mutex::new(VecDeque::with_capacity(DEFAULT_DOWNLOAD_CONCURRENCY)),
+                },
+            ),
+        }
+    }
+
+    /// Blocks until a request slot is available, or returns `false` immediately upon cancellation.
+    fn wait_for_slot(
+        &self,
+        cancel_flag: &AtomicBool,
+        cancel_cond: &(Mutex<bool>, Condvar),
+    ) -> bool {
+        loop {
+            if cancel_flag.load(Ordering::Acquire) {
+                return false;
+            }
+            let wait_dur = {
+                let mut hist = self.history.lock().unwrap_or_else(|e| e.into_inner());
+                let now = Instant::now();
+                while let Some(&front) = hist.front() {
+                    if now.saturating_duration_since(front) >= self.window {
+                        hist.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+                let mut need_wait = Duration::ZERO;
+                if hist.len() >= self.window_requests
+                    && let Some(&oldest) = hist.front()
+                {
+                    let w = self
+                        .window
+                        .saturating_sub(now.saturating_duration_since(oldest));
+                    need_wait = need_wait.max(w);
+                }
+                if !self.min_interval.is_zero()
+                    && let Some(&last) = hist.back()
+                {
+                    let w = self
+                        .min_interval
+                        .saturating_sub(now.saturating_duration_since(last));
+                    need_wait = need_wait.max(w);
+                }
+                if need_wait.is_zero() {
+                    hist.push_back(now);
+                    return true;
+                }
+                need_wait
+            };
+
+            let (lock, cvar) = cancel_cond;
+            let guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+            if *guard || cancel_flag.load(Ordering::Acquire) {
+                return false;
+            }
+            let _ = cvar.wait_timeout(guard, wait_dur);
+        }
+    }
+}
+
+struct ChapterProgressEvent {
+    idx: usize,
+    chapter_title: String,
+    packed: PackChapterInput,
+    failed: bool,
+    from_cache: bool,
 }
 
 pub struct BookOnlineService {
@@ -741,6 +884,7 @@ impl BookOnlineService {
 
         sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
         let page_num = page.max(1);
+        let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
 
         let mut handles = Vec::with_capacity(sources.len());
         for rec in sources {
@@ -750,21 +894,48 @@ impl BookOnlineService {
             let sid = rec.id;
             let sname = rec.name.clone();
             let state = rec.runtime_state.0.clone();
+            let prev_state_cmp = state.clone();
+            let sem_clone = Arc::clone(&sem);
 
             handles.push(tokio::spawn(async move {
                 let parsed = match parsed_res {
                     Ok(p) => p,
                     Err(e) => {
-                        return (sid, sname, Err(format!("书源解析失败: {e}")));
+                        return (
+                            sid,
+                            sname,
+                            prev_state_cmp,
+                            Err(format!("书源解析失败: {e}")),
+                        );
                     }
                 };
-                let join = tokio::task::spawn_blocking(move || {
-                    engine.search_sync(&parsed, state, &kw_owned, page_num)
-                })
+                let Ok(_permit) = sem_clone.acquire_owned().await else {
+                    return (sid, sname, prev_state_cmp, Err("搜索并发调度已关闭".into()));
+                };
+                let timed = tokio::time::timeout(
+                    SEARCH_PER_SOURCE_TIMEOUT,
+                    tokio::task::spawn_blocking(move || {
+                        engine.search_sync(&parsed, state, &kw_owned, page_num)
+                    }),
+                )
                 .await;
-                match join {
-                    Ok(res) => (sid, sname, res),
-                    Err(e) => (sid, sname, Err(format!("搜索任务异常: {e}"))),
+                match timed {
+                    Ok(Ok(res)) => (sid, sname, prev_state_cmp, res),
+                    Ok(Err(e)) => (
+                        sid,
+                        sname,
+                        prev_state_cmp,
+                        Err(format!("搜索任务异常: {e}")),
+                    ),
+                    Err(_) => (
+                        sid,
+                        sname,
+                        prev_state_cmp,
+                        Err(format!(
+                            "搜索超时（超过 {} 秒）",
+                            SEARCH_PER_SOURCE_TIMEOUT.as_secs()
+                        )),
+                    ),
                 }
             }));
         }
@@ -774,10 +945,12 @@ impl BookOnlineService {
         let mut toasts = Vec::new();
 
         for h in handles {
-            if let Ok((sid, sname, res)) = h.await {
+            if let Ok((sid, sname, prev_state, res)) = h.await {
                 match res {
                     Ok(out) => {
-                        let _ = self.persist_runtime_state(sid, out.state).await;
+                        if out.state != prev_state {
+                            let _ = self.persist_runtime_state(sid, out.state).await;
+                        }
                         toasts.extend(out.diagnostics.toasts);
                         for book in out.data {
                             items.push(AggregatedSearchItemDto {
@@ -820,6 +993,7 @@ impl BookOnlineService {
         let engine = self.engine.clone();
         let url_owned = book_url.to_string();
         let prev_state = rec.runtime_state.0.clone();
+        let prev_state_cmp = prev_state.clone();
 
         let out = tokio::task::spawn_blocking(move || {
             engine.fetch_book_info_sync(&parsed, prev_state, &url_owned, fallback_hint.as_ref())
@@ -828,7 +1002,9 @@ impl BookOnlineService {
         .map_err(|e| DomainError::Storage(format!("获取书籍详情失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        let _ = self.persist_runtime_state(source_id, out.state).await;
+        if out.state != prev_state_cmp {
+            let _ = self.persist_runtime_state(source_id, out.state).await;
+        }
 
         Ok(OnlineBookDetailResponseDto {
             source_id,
@@ -851,6 +1027,7 @@ impl BookOnlineService {
         let engine = self.engine.clone();
         let url_owned = toc_url.to_string();
         let prev_state = rec.runtime_state.0.clone();
+        let prev_state_cmp = prev_state.clone();
 
         let out = tokio::task::spawn_blocking(move || {
             engine.fetch_toc_sync(&parsed, prev_state, &url_owned, &book_ctx)
@@ -859,7 +1036,9 @@ impl BookOnlineService {
         .map_err(|e| DomainError::Storage(format!("获取目录失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        let _ = self.persist_runtime_state(source_id, out.state).await;
+        if out.state != prev_state_cmp {
+            let _ = self.persist_runtime_state(source_id, out.state).await;
+        }
 
         Ok(OnlineTocResponseDto {
             source_id,
@@ -868,32 +1047,12 @@ impl BookOnlineService {
         })
     }
 
-    fn chapter_cache_path(&self, source_id: Uuid, chapter_url: &str) -> PathBuf {
-        let mut h = Md5::new();
-        h.update(chapter_url.as_bytes());
-        let key = hex::encode(h.finalize());
-        self.cache_dir
-            .join(source_id.to_string())
-            .join(format!("{key}.json"))
-    }
-
     fn read_cached_chapter(
         &self,
         source_id: Uuid,
         chapter_url: &str,
     ) -> Option<OnlineChapterContent> {
-        let path = self.chapter_cache_path(source_id, chapter_url);
-        let meta = std::fs::metadata(&path).ok()?;
-        // Expire cached chapters after 14 days
-        if let Ok(modified) = meta.modified()
-            && let Ok(age) = SystemTime::now().duration_since(modified)
-            && age > Duration::from_secs(14 * 24 * 3600)
-        {
-            let _ = std::fs::remove_file(&path);
-            return None;
-        }
-        let raw = std::fs::read_to_string(&path).ok()?;
-        serde_json::from_str::<OnlineChapterContent>(&raw).ok()
+        read_cached_chapter_at(&self.cache_dir, source_id, chapter_url)
     }
 
     fn write_cached_chapter(
@@ -902,16 +1061,7 @@ impl BookOnlineService {
         chapter_url: &str,
         content: &OnlineChapterContent,
     ) {
-        if content.content.trim().is_empty() {
-            return;
-        }
-        let path = self.chapter_cache_path(source_id, chapter_url);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(json) = serde_json::to_string(content) {
-            let _ = std::fs::write(path, json);
-        }
+        write_cached_chapter_at(&self.cache_dir, source_id, chapter_url, content);
     }
 
     pub async fn fetch_chapter_content(
@@ -939,6 +1089,7 @@ impl BookOnlineService {
         let engine = self.engine.clone();
         let url_owned = chapter_url.to_string();
         let prev_state = rec.runtime_state.0.clone();
+        let prev_state_cmp = prev_state.clone();
         let ch_idx = chapter_ctx.index;
 
         let out = tokio::task::spawn_blocking(move || {
@@ -954,7 +1105,9 @@ impl BookOnlineService {
         .map_err(|e| DomainError::Storage(format!("获取章节正文失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        let _ = self.persist_runtime_state(source_id, out.state).await;
+        if out.state != prev_state_cmp {
+            let _ = self.persist_runtime_state(source_id, out.state).await;
+        }
         self.write_cached_chapter(source_id, chapter_url, &out.data);
 
         Ok(OnlineContentResponseDto {
@@ -1238,6 +1391,8 @@ impl BookOnlineService {
             total_chapters: 0,
             processed_chapters: 0,
             failed_chapters: 0,
+            chapters_per_sec: 0.0,
+            elapsed_ms: 0,
             current_chapter_title: None,
             output_file_name: None,
             file_size: None,
@@ -1248,6 +1403,10 @@ impl BookOnlineService {
             updated_at: now,
         };
 
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_cond = Arc::new((Mutex::new(false), Condvar::new()));
+        let cancel_notify = Arc::new(Notify::new());
+
         {
             let mut guard = self.downloads.write().await;
             guard.insert(
@@ -1255,6 +1414,10 @@ impl BookOnlineService {
                 StoredDownloadJob {
                     dto: dto.clone(),
                     output_path: None,
+                    started_at: None,
+                    cancel_flag: cancel_flag.clone(),
+                    cancel_cond: cancel_cond.clone(),
+                    cancel_notify: cancel_notify.clone(),
                 },
             );
         }
@@ -1262,7 +1425,15 @@ impl BookOnlineService {
         let svc = Arc::clone(self);
         let actor_clone = actor.clone();
         tokio::spawn(async move {
-            svc.execute_download_job(job_id, actor_clone, input).await;
+            svc.execute_download_job(
+                job_id,
+                actor_clone,
+                input,
+                cancel_flag,
+                cancel_cond,
+                cancel_notify,
+            )
+            .await;
         });
 
         Ok(dto)
@@ -1273,12 +1444,59 @@ impl BookOnlineService {
         job_id: Uuid,
         actor: User,
         input: StartDownloadInput,
+        cancel_flag: Arc<AtomicBool>,
+        cancel_cond: Arc<(Mutex<bool>, Condvar)>,
+        cancel_notify: Arc<Notify>,
     ) {
-        self.update_job(job_id, |j| {
-            j.status = DownloadJobStatus::Running;
-            j.current_chapter_title = Some("正在拉取章节目录…".into());
-        })
-        .await;
+        let started_at = Instant::now();
+        {
+            let mut guard = self.downloads.write().await;
+            let Some(slot) = guard.get_mut(&job_id) else {
+                return;
+            };
+            if cancel_flag.load(Ordering::Acquire)
+                || slot.dto.status == DownloadJobStatus::Cancelled
+            {
+                slot.dto.status = DownloadJobStatus::Cancelled;
+                slot.dto.current_chapter_title = None;
+                slot.dto.updated_at = Timestamp::now();
+                return;
+            }
+            slot.started_at = Some(started_at);
+            slot.dto.status = DownloadJobStatus::Running;
+            slot.dto.current_chapter_title = Some("正在拉取章节目录…".into());
+            slot.dto.updated_at = Timestamp::now();
+        }
+
+        // Load & parse book source ONCE for the entire download job
+        let src_rec = match self.load_source_model(input.source_id).await {
+            Ok(r) => r,
+            Err(e) => {
+                self.fail_job(job_id, started_at, format!("加载书源失败: {e}"))
+                    .await;
+                return;
+            }
+        };
+        let parsed_source = match serde_json::from_str::<LegadoBookSource>(&src_rec.raw_json) {
+            Ok(p) => Arc::new(p),
+            Err(e) => {
+                self.fail_job(job_id, started_at, format!("书源 JSON 无效: {e}"))
+                    .await;
+                return;
+            }
+        };
+        let mut last_persisted_state = src_rec.runtime_state.0.clone();
+        let reusable_ctx = match self
+            .engine
+            .prepare_reusable_context(Arc::clone(&parsed_source), src_rec.runtime_state.0)
+        {
+            Ok(c) => c,
+            Err(e) => {
+                self.fail_job(job_id, started_at, format!("初始化书源会话失败: {e}"))
+                    .await;
+                return;
+            }
+        };
 
         let book_ctx = BookJsContext {
             name: input.book_name.clone(),
@@ -1290,23 +1508,49 @@ impl BookOnlineService {
             ..Default::default()
         };
 
-        let toc_res = self
-            .fetch_toc(input.source_id, &input.toc_url, book_ctx.clone())
-            .await;
+        if cancel_flag.load(Ordering::Acquire) {
+            self.mark_job_cancelled(job_id, started_at).await;
+            return;
+        }
+
+        let toc_task = {
+            let ctx = reusable_ctx.clone();
+            let toc_url = input.toc_url.clone();
+            let bctx = book_ctx.clone();
+            tokio::task::spawn_blocking(move || ctx.fetch_toc_sync(&toc_url, &bctx))
+        };
+
+        let toc_res = tokio::select! {
+            res = toc_task => match res {
+                Ok(inner) => inner,
+                Err(e) => Err(format!("获取目录线程失败: {e}")),
+            },
+            _ = cancel_notify.notified() => {
+                self.mark_job_cancelled(job_id, started_at).await;
+                return;
+            }
+        };
+
+        if cancel_flag.load(Ordering::Acquire) {
+            self.mark_job_cancelled(job_id, started_at).await;
+            return;
+        }
+
         let all_chapters = match toc_res {
-            Ok(t) => t
-                .chapters
+            Ok(list) => list
                 .into_iter()
                 .filter(|c| !c.is_volume && !c.url.trim().is_empty())
                 .collect::<Vec<_>>(),
             Err(e) => {
-                self.fail_job(job_id, format!("获取目录失败: {e}")).await;
+                self.fail_job(job_id, started_at, format!("获取目录失败: {e}"))
+                    .await;
                 return;
             }
         };
 
         if all_chapters.is_empty() {
-            self.fail_job(job_id, "目录为空，无可下载章节".into()).await;
+            self.fail_job(job_id, started_at, "目录为空，无可下载章节".into())
+                .await;
             return;
         }
 
@@ -1316,69 +1560,226 @@ impl BookOnlineService {
             .map(|e| (e + 1).min(all_chapters.len()))
             .unwrap_or(all_chapters.len())
             .max(start);
-        let selected = &all_chapters[start..end];
+        let selected: Vec<OnlineChapterItem> = all_chapters[start..end].to_vec();
         if selected.is_empty() {
-            self.fail_job(job_id, "所选章节区间为空".into()).await;
+            self.fail_job(job_id, started_at, "所选章节区间为空".into())
+                .await;
             return;
         }
 
+        let total_selected = selected.len();
         self.update_job(job_id, |j| {
-            j.total_chapters = selected.len();
+            j.total_chapters = total_selected;
+            j.elapsed_ms = started_at.elapsed().as_millis() as u64;
         })
         .await;
 
-        let mut packed_chapters = Vec::with_capacity(selected.len());
-        let mut failed_count = 0usize;
+        let (concurrency, rate_limiter) =
+            DownloadRateLimiter::from_spec(parsed_source.parse_concurrent_rate());
+        let rate_limiter = Arc::new(rate_limiter);
+        let selected_arc = Arc::new(selected);
+        let cursor = Arc::new(AtomicUsize::new(0));
+        let worker_count = concurrency.min(total_selected).max(1);
+        let (tx, mut rx) = mpsc::unbounded_channel::<ChapterProgressEvent>();
 
-        for (i, ch) in selected.iter().enumerate() {
-            self.update_job(job_id, |j| {
-                j.current_chapter_title = Some(ch.title.clone());
-            })
-            .await;
+        let mut worker_handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let selected_w = Arc::clone(&selected_arc);
+            let cursor_w = Arc::clone(&cursor);
+            let ctx_w = reusable_ctx.clone();
+            let limiter_w = Arc::clone(&rate_limiter);
+            let cancel_flag_w = Arc::clone(&cancel_flag);
+            let cancel_cond_w = Arc::clone(&cancel_cond);
+            let cache_dir_w = self.cache_dir.clone();
+            let source_id = input.source_id;
+            let book_ctx_w = book_ctx.clone();
+            let tx_w = tx.clone();
 
-            let mut cur_book_ctx = book_ctx.clone();
-            cur_book_ctx.dur_chapter_index = ch.index;
-            cur_book_ctx.dur_chapter_title = ch.title.clone();
+            worker_handles.push(tokio::task::spawn_blocking(move || {
+                let mut session = ctx_w.create_worker_session();
+                loop {
+                    if cancel_flag_w.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let idx = cursor_w.fetch_add(1, Ordering::Relaxed);
+                    if idx >= selected_w.len() {
+                        break;
+                    }
+                    let ch = &selected_w[idx];
 
-            let ch_ctx = ChapterJsContext {
-                index: ch.index,
-                title: ch.title.clone(),
-                url: ch.url.clone(),
-            };
+                    // Fast path: cached chapters are read directly without consuming rate-limit quota
+                    if let Some(cached) = read_cached_chapter_at(&cache_dir_w, source_id, &ch.url)
+                        && !cached.content.trim().is_empty()
+                    {
+                        let packed = PackChapterInput {
+                            title: if cached.title.trim().is_empty() {
+                                ch.title.clone()
+                            } else {
+                                cached.title
+                            },
+                            content: cached.content,
+                        };
+                        if tx_w
+                            .send(ChapterProgressEvent {
+                                idx,
+                                chapter_title: ch.title.clone(),
+                                packed,
+                                failed: false,
+                                from_cache: true,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
 
-            match self
-                .fetch_chapter_content(input.source_id, &ch.url, cur_book_ctx, ch_ctx, false)
-                .await
-            {
-                Ok(resp) if !resp.content.content.trim().is_empty() => {
-                    packed_chapters.push(PackChapterInput {
-                        title: if resp.content.title.trim().is_empty() {
-                            ch.title.clone()
-                        } else {
-                            resp.content.title
-                        },
-                        content: resp.content.content,
-                    });
-                    if !resp.cached {
-                        // Gentle pacing for uncached remote fetches
-                        tokio::time::sleep(Duration::from_millis(120)).await;
+                    if !limiter_w.wait_for_slot(&cancel_flag_w, &cancel_cond_w) {
+                        break;
+                    }
+
+                    let mut cur_book_ctx = book_ctx_w.clone();
+                    cur_book_ctx.dur_chapter_index = ch.index;
+                    cur_book_ctx.dur_chapter_title = ch.title.clone();
+                    let ch_ctx = ChapterJsContext {
+                        index: ch.index,
+                        title: ch.title.clone(),
+                        url: ch.url.clone(),
+                    };
+
+                    let (packed, failed) =
+                        match session.fetch_chapter_content(&ch.url, &cur_book_ctx, &ch_ctx) {
+                            Ok(content) if !content.content.trim().is_empty() => {
+                                write_cached_chapter_at(&cache_dir_w, source_id, &ch.url, &content);
+                                let title = if content.title.trim().is_empty() {
+                                    ch.title.clone()
+                                } else {
+                                    content.title
+                                };
+                                (
+                                    PackChapterInput {
+                                        title,
+                                        content: content.content,
+                                    },
+                                    false,
+                                )
+                            }
+                            _ => (
+                                PackChapterInput {
+                                    title: ch.title.clone(),
+                                    content: "[本章抓取失败，请稍后重试]".into(),
+                                },
+                                true,
+                            ),
+                        };
+
+                    if tx_w
+                        .send(ChapterProgressEvent {
+                            idx,
+                            chapter_title: ch.title.clone(),
+                            packed,
+                            failed,
+                            from_cache: false,
+                        })
+                        .is_err()
+                    {
+                        break;
                     }
                 }
-                _ => {
-                    failed_count += 1;
-                    packed_chapters.push(PackChapterInput {
-                        title: ch.title.clone(),
-                        content: "[本章抓取失败，请稍后重试]".into(),
-                    });
+            }));
+        }
+        drop(tx);
+
+        let mut ordered_chapters: Vec<Option<PackChapterInput>> = vec![None; total_selected];
+        let mut processed_count = 0usize;
+        let mut failed_count = 0usize;
+        let mut uncached_since_persist = 0usize;
+        let mut was_cancelled = false;
+
+        loop {
+            if cancel_flag.load(Ordering::Acquire) {
+                was_cancelled = true;
+                break;
+            }
+            tokio::select! {
+                biased;
+                _ = cancel_notify.notified() => {
+                    was_cancelled = true;
+                    break;
+                }
+                maybe_ev = rx.recv() => {
+                    let Some(ev) = maybe_ev else {
+                        break;
+                    };
+                    if let Some(slot) = ordered_chapters.get_mut(ev.idx) {
+                        *slot = Some(ev.packed);
+                    }
+                    processed_count += 1;
+                    if ev.failed {
+                        failed_count += 1;
+                    }
+                    if !ev.from_cache {
+                        uncached_since_persist += 1;
+                    }
+
+                    let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                    let cps = compute_chapters_per_sec(processed_count, elapsed_ms);
+                    self.update_job(job_id, |j| {
+                        j.processed_chapters = processed_count;
+                        j.failed_chapters = failed_count;
+                        j.current_chapter_title = Some(ev.chapter_title);
+                        j.elapsed_ms = elapsed_ms;
+                        j.chapters_per_sec = cps;
+                    })
+                    .await;
+
+                    if uncached_since_persist >= DOWNLOAD_STATE_PERSIST_BATCH {
+                        uncached_since_persist = 0;
+                        let snap = reusable_ctx.snapshot_state();
+                        if snap != last_persisted_state {
+                            if self.persist_runtime_state(input.source_id, snap.clone()).await.is_ok() {
+                                last_persisted_state = snap;
+                            }
+                        }
+                    }
                 }
             }
-
-            self.update_job(job_id, |j| {
-                j.processed_chapters = i + 1;
-                j.failed_chapters = failed_count;
-            })
-            .await;
         }
+
+        // Persist any final runtime_state changes once at end of chapter fetching
+        let final_snap = reusable_ctx.snapshot_state();
+        if final_snap != last_persisted_state {
+            let _ = self
+                .persist_runtime_state(input.source_id, final_snap)
+                .await;
+        }
+
+        if was_cancelled || cancel_flag.load(Ordering::Acquire) {
+            self.mark_job_cancelled(job_id, started_at).await;
+            let job_dir = self.download_dir.join(job_id.to_string());
+            let _ = tokio::fs::remove_dir_all(&job_dir).await;
+            return;
+        }
+
+        for h in worker_handles {
+            let _ = h.await;
+        }
+
+        if cancel_flag.load(Ordering::Acquire) {
+            self.mark_job_cancelled(job_id, started_at).await;
+            return;
+        }
+
+        let packed_chapters: Vec<PackChapterInput> = ordered_chapters
+            .into_iter()
+            .enumerate()
+            .map(|(idx, opt)| {
+                opt.unwrap_or_else(|| PackChapterInput {
+                    title: selected_arc[idx].title.clone(),
+                    content: "[本章抓取失败，请稍后重试]".into(),
+                })
+            })
+            .collect();
 
         // Optional cover download for EPUB
         let cover_bytes = if input.format == OnlineDownloadFormat::Epub
@@ -1390,8 +1791,15 @@ impl BookOnlineService {
             None
         };
 
+        if cancel_flag.load(Ordering::Acquire) {
+            self.mark_job_cancelled(job_id, started_at).await;
+            return;
+        }
+
         self.update_job(job_id, |j| {
             j.current_chapter_title = Some("正在封装电子书文件…".into());
+            j.elapsed_ms = started_at.elapsed().as_millis() as u64;
+            j.chapters_per_sec = compute_chapters_per_sec(j.processed_chapters, j.elapsed_ms);
         })
         .await;
 
@@ -1401,19 +1809,27 @@ impl BookOnlineService {
             description: input.intro.clone(),
             cover_bytes,
         };
-
-        let packaged = match input.format {
+        let fmt = input.format;
+        let packaged = tokio::task::spawn_blocking(move || match fmt {
             OnlineDownloadFormat::Epub => package_chapters_to_epub(&pack_meta, &packed_chapters),
             OnlineDownloadFormat::Txt => Ok(package_chapters_to_txt(&pack_meta, &packed_chapters)),
-        };
+        })
+        .await
+        .map_err(|e| format!("封装线程失败: {e}"))
+        .and_then(|r| r);
 
         let bytes = match packaged {
             Ok(b) => b,
             Err(e) => {
-                self.fail_job(job_id, e).await;
+                self.fail_job(job_id, started_at, e).await;
                 return;
             }
         };
+
+        if cancel_flag.load(Ordering::Acquire) {
+            self.mark_job_cancelled(job_id, started_at).await;
+            return;
+        }
 
         let ext = match input.format {
             OnlineDownloadFormat::Epub => "epub",
@@ -1421,24 +1837,15 @@ impl BookOnlineService {
         };
         let safe_stem = sanitize_file_stem(&input.book_name);
         let file_name = format!("{safe_stem}.{ext}");
-        let job_dir = self.download_dir.join(job_id.to_string());
-        if let Err(e) = std::fs::create_dir_all(&job_dir) {
-            self.fail_job(job_id, format!("创建输出目录失败: {e}"))
-                .await;
-            return;
-        }
-        let out_path = job_dir.join(&file_name);
-        if let Err(e) = std::fs::write(&out_path, &bytes) {
-            self.fail_job(job_id, format!("写入输出文件失败: {e}"))
-                .await;
-            return;
-        }
-
         let file_size = bytes.len() as u64;
+
         let mut imported_book_id = None;
+        let mut output_path = None;
+
         if input.import_to_library {
             self.update_job(job_id, |j| {
                 j.current_chapter_title = Some("正在导入本地图书库…".into());
+                j.elapsed_ms = started_at.elapsed().as_millis() as u64;
             })
             .await;
             match self
@@ -1447,43 +1854,101 @@ impl BookOnlineService {
                 .await
             {
                 Ok(summary) => {
+                    // Do not write a redundant second copy in `online_downloads/{job_id}`;
+                    // downloads for imported books stream directly from the catalog storage.
                     imported_book_id = Some(summary.id.0);
                 }
                 Err(e) => {
-                    self.fail_job(job_id, format!("封装成功但导入图书库失败: {e}"))
+                    self.fail_job(job_id, started_at, format!("封装成功但导入图书库失败: {e}"))
                         .await;
                     return;
                 }
             }
+        } else {
+            let job_dir = self.download_dir.join(job_id.to_string());
+            if let Err(e) = tokio::fs::create_dir_all(&job_dir).await {
+                self.fail_job(job_id, started_at, format!("创建输出目录失败: {e}"))
+                    .await;
+                return;
+            }
+            let out_path = job_dir.join(&file_name);
+            if let Err(e) = tokio::fs::write(&out_path, &bytes).await {
+                self.fail_job(job_id, started_at, format!("写入输出文件失败: {e}"))
+                    .await;
+                return;
+            }
+            output_path = Some(out_path);
         }
 
+        let final_elapsed = started_at.elapsed().as_millis() as u64;
         let mut guard = self.downloads.write().await;
         if let Some(slot) = guard.get_mut(&job_id) {
-            slot.output_path = Some(out_path);
+            if cancel_flag.load(Ordering::Acquire)
+                || slot.dto.status == DownloadJobStatus::Cancelled
+            {
+                slot.dto.status = DownloadJobStatus::Cancelled;
+                slot.dto.current_chapter_title = None;
+                slot.dto.elapsed_ms = final_elapsed;
+                slot.dto.chapters_per_sec =
+                    compute_chapters_per_sec(slot.dto.processed_chapters, final_elapsed);
+                slot.dto.updated_at = Timestamp::now();
+                drop(guard);
+                let job_dir = self.download_dir.join(job_id.to_string());
+                let _ = tokio::fs::remove_dir_all(&job_dir).await;
+                return;
+            }
+            slot.output_path = output_path;
             slot.dto.status = DownloadJobStatus::Completed;
             slot.dto.output_file_name = Some(file_name);
             slot.dto.file_size = Some(file_size);
             slot.dto.imported_book_id = imported_book_id;
             slot.dto.current_chapter_title = None;
+            slot.dto.elapsed_ms = final_elapsed;
+            slot.dto.chapters_per_sec =
+                compute_chapters_per_sec(slot.dto.processed_chapters, final_elapsed);
             slot.dto.updated_at = Timestamp::now();
+        } else {
+            // Job was deleted while finishing; clean up disk artifact if any
+            drop(guard);
+            let job_dir = self.download_dir.join(job_id.to_string());
+            let _ = tokio::fs::remove_dir_all(&job_dir).await;
         }
     }
 
     async fn update_job(&self, job_id: Uuid, f: impl FnOnce(&mut OnlineDownloadJobDto)) {
         let mut guard = self.downloads.write().await;
-        if let Some(slot) = guard.get_mut(&job_id) {
+        if let Some(slot) = guard.get_mut(&job_id)
+            && slot.dto.status != DownloadJobStatus::Cancelled
+        {
             f(&mut slot.dto);
             slot.dto.updated_at = Timestamp::now();
         }
     }
 
-    async fn fail_job(&self, job_id: Uuid, msg: String) {
+    async fn fail_job(&self, job_id: Uuid, started_at: Instant, msg: String) {
+        let elapsed = started_at.elapsed().as_millis() as u64;
         self.update_job(job_id, |j| {
             j.status = DownloadJobStatus::Failed;
             j.error = Some(msg);
             j.current_chapter_title = None;
+            j.elapsed_ms = elapsed;
+            j.chapters_per_sec = compute_chapters_per_sec(j.processed_chapters, elapsed);
         })
         .await;
+    }
+
+    async fn mark_job_cancelled(&self, job_id: Uuid, started_at: Instant) {
+        let elapsed = started_at.elapsed().as_millis() as u64;
+        let mut guard = self.downloads.write().await;
+        if let Some(slot) = guard.get_mut(&job_id) {
+            slot.dto.status = DownloadJobStatus::Cancelled;
+            slot.dto.current_chapter_title = None;
+            slot.dto.error = None;
+            slot.dto.elapsed_ms = elapsed;
+            slot.dto.chapters_per_sec =
+                compute_chapters_per_sec(slot.dto.processed_chapters, elapsed);
+            slot.dto.updated_at = Timestamp::now();
+        }
     }
 
     pub async fn list_downloads(&self, user_id: UserId) -> Vec<OnlineDownloadJobDto> {
@@ -1491,7 +1956,7 @@ impl BookOnlineService {
         let mut list: Vec<OnlineDownloadJobDto> = guard
             .values()
             .filter(|j| j.dto.user_id == user_id.0)
-            .map(|j| j.dto.clone())
+            .map(StoredDownloadJob::snapshot_dto)
             .collect();
         list.sort_by_key(|j| std::cmp::Reverse(j.created_at));
         list
@@ -1509,15 +1974,73 @@ impl BookOnlineService {
         if slot.dto.user_id != user_id.0 {
             return Err(DomainError::Forbidden("无权查看他人下载任务".into()));
         }
-        Ok(slot.dto.clone())
+        Ok(slot.snapshot_dto())
     }
 
-    pub async fn read_download_file(
+    pub async fn cancel_download(
         &self,
         user_id: UserId,
         job_id: Uuid,
-    ) -> DomainResult<(String, &'static str, Vec<u8>)> {
-        let (file_name, format, path) = {
+    ) -> DomainResult<OnlineDownloadJobDto> {
+        let mut guard = self.downloads.write().await;
+        let slot = guard
+            .get_mut(&job_id)
+            .ok_or_else(|| DomainError::NotFound("未找到下载任务".into()))?;
+        if slot.dto.user_id != user_id.0 {
+            return Err(DomainError::Forbidden("无权取消他人下载任务".into()));
+        }
+        if matches!(
+            slot.dto.status,
+            DownloadJobStatus::Pending | DownloadJobStatus::Running
+        ) {
+            slot.signal_cancel();
+            if let Some(started) = slot.started_at {
+                let elapsed = started.elapsed().as_millis() as u64;
+                slot.dto.elapsed_ms = elapsed;
+                slot.dto.chapters_per_sec =
+                    compute_chapters_per_sec(slot.dto.processed_chapters, elapsed);
+            }
+            slot.dto.status = DownloadJobStatus::Cancelled;
+            slot.dto.current_chapter_title = None;
+            slot.dto.error = None;
+            slot.dto.updated_at = Timestamp::now();
+        }
+        Ok(slot.snapshot_dto())
+    }
+
+    pub async fn delete_download(&self, user_id: UserId, job_id: Uuid) -> DomainResult<()> {
+        {
+            let mut guard = self.downloads.write().await;
+            let slot = guard
+                .get(&job_id)
+                .ok_or_else(|| DomainError::NotFound("未找到下载任务".into()))?;
+            if slot.dto.user_id != user_id.0 {
+                return Err(DomainError::Forbidden("无权删除他人下载任务".into()));
+            }
+            if matches!(
+                slot.dto.status,
+                DownloadJobStatus::Pending | DownloadJobStatus::Running
+            ) {
+                slot.signal_cancel();
+            }
+            guard.remove(&job_id);
+        }
+
+        let job_dir = self.download_dir.join(job_id.to_string());
+        if let Err(e) = tokio::fs::remove_dir_all(&job_dir).await
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(DomainError::Storage(format!("清理下载任务目录失败: {e}")));
+        }
+        Ok(())
+    }
+
+    pub async fn open_download_file_stream(
+        &self,
+        user_id: UserId,
+        job_id: Uuid,
+    ) -> DomainResult<(String, &'static str, ByteRangeStream)> {
+        let (file_name, format, path, imported_book_id) = {
             let guard = self.downloads.read().await;
             let slot = guard
                 .get(&job_id)
@@ -1525,41 +2048,56 @@ impl BookOnlineService {
             if slot.dto.user_id != user_id.0 {
                 return Err(DomainError::Forbidden("无权下载他人任务产物".into()));
             }
-            let path = slot
-                .output_path
-                .clone()
-                .ok_or_else(|| DomainError::Validation("任务尚未完成或产物不存在".into()))?;
             let fname = slot
                 .dto
                 .output_file_name
                 .clone()
                 .unwrap_or_else(|| "novel.epub".to_string());
-            (fname, slot.dto.format, path)
+            (
+                fname,
+                slot.dto.format,
+                slot.output_path.clone(),
+                slot.dto.imported_book_id,
+            )
         };
 
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|e| DomainError::Storage(format!("读取下载文件失败: {e}")))?;
         let mime = match format {
             OnlineDownloadFormat::Epub => "application/epub+zip",
             OnlineDownloadFormat::Txt => "text/plain; charset=utf-8",
         };
-        Ok((file_name, mime, bytes))
+
+        if let Some(p) = path {
+            let stream = open_file_range_stream_spec(&p, ByteRangeSpec::Full).await?;
+            return Ok((file_name, mime, stream));
+        }
+        if let Some(book_id) = imported_book_id {
+            let (_book, stream) = self
+                .catalog
+                .open_book_file_stream(BookId(book_id), ByteRangeSpec::Full)
+                .await?;
+            return Ok((file_name, mime, stream));
+        }
+        Err(DomainError::Validation("任务尚未完成或产物不存在".into()))
+    }
+
+    pub async fn read_download_file(
+        &self,
+        user_id: UserId,
+        job_id: Uuid,
+    ) -> DomainResult<(String, &'static str, Vec<u8>)> {
+        let (file_name, mime, stream) = self.open_download_file_stream(user_id, job_id).await?;
+        let bytes = axum::body::to_bytes(axum::body::Body::from_stream(stream.stream), usize::MAX)
+            .await
+            .map_err(|e| DomainError::Storage(format!("读取下载文件流失败: {e}")))?;
+        Ok((file_name, mime, bytes.to_vec()))
     }
 
     pub async fn fetch_cover_proxy(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
         const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
         let validated = validate_target_url(raw_url.trim(), self.allow_private_ips)
             .map_err(DomainError::Validation)?;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(12))
-            .user_agent(DEFAULT_WEBVIEW_UA)
-            .redirect(ssrf_redirect_policy(
-                self.allow_private_ips,
-                MAX_REDIRECT_HOPS,
-            ))
-            .build()
-            .map_err(|e| DomainError::Storage(e.to_string()))?;
+        let client = get_or_build_async_client(12, self.allow_private_ips, None)
+            .map_err(DomainError::Storage)?;
 
         let mut resp = client
             .get(validated)
@@ -1666,6 +2204,52 @@ pub(crate) fn validate_safe_cover_image(
     Ok(sniffed.to_string())
 }
 
+fn chapter_cache_path_at(cache_dir: &Path, source_id: Uuid, chapter_url: &str) -> PathBuf {
+    let mut h = Md5::new();
+    h.update(chapter_url.as_bytes());
+    let key = hex::encode(h.finalize());
+    cache_dir
+        .join(source_id.to_string())
+        .join(format!("{key}.json"))
+}
+
+fn read_cached_chapter_at(
+    cache_dir: &Path,
+    source_id: Uuid,
+    chapter_url: &str,
+) -> Option<OnlineChapterContent> {
+    let path = chapter_cache_path_at(cache_dir, source_id, chapter_url);
+    let meta = std::fs::metadata(&path).ok()?;
+    // Expire cached chapters after 14 days
+    if let Ok(modified) = meta.modified()
+        && let Ok(age) = SystemTime::now().duration_since(modified)
+        && age > Duration::from_secs(14 * 24 * 3600)
+    {
+        let _ = std::fs::remove_file(&path);
+        return None;
+    }
+    let raw = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<OnlineChapterContent>(&raw).ok()
+}
+
+fn write_cached_chapter_at(
+    cache_dir: &Path,
+    source_id: Uuid,
+    chapter_url: &str,
+    content: &OnlineChapterContent,
+) {
+    if content.content.trim().is_empty() {
+        return;
+    }
+    let path = chapter_cache_path_at(cache_dir, source_id, chapter_url);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string(content) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
 fn sanitize_file_stem(name: &str) -> String {
     let cleaned: String = name
         .trim()
@@ -1689,6 +2273,86 @@ fn sanitize_file_stem(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
+    use axum::extract::Path as AxumPath;
+    use axum::routing::get;
+    use tempfile::TempDir;
+    use toasty::schema::ModelSet;
+    use xmedia_core::application::auth::AuthService;
+    use xmedia_core::application::dto::SetupAdminInput;
+    use xmedia_core::application::library::LibraryService;
+    use xmedia_core::infra::events::BroadcastEventHub;
+    use xmedia_core::infra::persistence::repositories::{
+        ToastyLibraryRepository, ToastyUserRepository,
+    };
+    use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
+    use xmedia_core::{ensure_core_schema, register_core_models};
+
+    use crate::source::http::HttpClientConfig;
+    use crate::{ensure_book_schema, init_book_module, register_book_models};
+
+    async fn setup_test_online_service() -> (TempDir, User, Arc<BookOnlineService>) {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("online_unit_test.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut model_set = ModelSet::new();
+        register_core_models(&mut model_set);
+        register_book_models(&mut model_set);
+        let mut db = Db::builder()
+            .models(model_set)
+            .connect(&db_url)
+            .await
+            .unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+        let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
+        let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let lifecycles = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        let security = Arc::new(SecurityManager::new("book-unit-secret"));
+        let tokens = Arc::new(JwtTokenService::new("book-unit-secret", 3600));
+        let events = Arc::new(BroadcastEventHub::default());
+        let auth_svc = Arc::new(AuthService::new(
+            users_repo,
+            security,
+            tokens,
+            lifecycles.clone(),
+        ));
+        let session = auth_svc
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: Some("Admin".into()),
+                password: "password123".into(),
+            })
+            .await
+            .unwrap();
+        let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+        let lib_svc = Arc::new(LibraryService::new(
+            libs_repo.clone(),
+            events.clone(),
+            lifecycles,
+        ));
+        let book_services =
+            init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
+        let online_svc = Arc::new(
+            BookOnlineService::with_engine(
+                db,
+                tmp.path(),
+                book_services.catalog.clone(),
+                BookSourceEngine::new(
+                    HttpClientConfig {
+                        allow_private_ips: true,
+                        ..Default::default()
+                    },
+                    Duration::from_secs(10),
+                ),
+                true,
+            )
+            .unwrap(),
+        );
+        (tmp, admin, online_svc)
+    }
 
     #[test]
     fn cover_image_validation_rejects_html_and_svg_xss_payloads() {
@@ -1716,5 +2380,295 @@ mod tests {
         );
         let jpg = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
         assert_eq!(validate_safe_cover_image(None, &jpg).unwrap(), "image/jpeg");
+    }
+
+    #[test]
+    fn rate_limiter_wakes_immediately_on_cancel() {
+        let (_conc, limiter) = DownloadRateLimiter::from_spec(Some(ConcurrentRateSpec {
+            max_concurrency: 1,
+            window_requests: 1,
+            window_ms: 5_000,
+        }));
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_cond = Arc::new((Mutex::new(false), Condvar::new()));
+
+        // First slot succeeds immediately
+        assert!(limiter.wait_for_slot(&cancel_flag, &cancel_cond));
+
+        let flag_bg = cancel_flag.clone();
+        let cond_bg = cancel_cond.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            flag_bg.store(true, Ordering::Release);
+            let (lock, cvar) = &*cond_bg;
+            *lock.lock().unwrap() = true;
+            cvar.notify_all();
+        });
+
+        let t0 = Instant::now();
+        assert!(!limiter.wait_for_slot(&cancel_flag, &cancel_cond));
+        assert!(
+            t0.elapsed() < Duration::from_millis(500),
+            "expected prompt wakeup on cancel, took {:?}",
+            t0.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_download_reports_realtime_speed_preserves_order_and_deletes_disk_artifact()
+    {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_in_flight = Arc::new(AtomicUsize::new(0));
+        let total_chapters = 10usize;
+
+        let in_flight_c = in_flight.clone();
+        let max_in_flight_c = max_in_flight.clone();
+        let mock_app = Router::new()
+            .route(
+                "/toc",
+                get(move || async move {
+                    let mut items = String::from("<html><body><ul id=\"toc\">");
+                    for i in 1..=total_chapters {
+                        items.push_str(&format!("<li><a href=\"/ch/{i}\">第{i}章</a></li>"));
+                    }
+                    items.push_str("</ul></body></html>");
+                    items
+                }),
+            )
+            .route(
+                "/ch/{num}",
+                get(move |AxumPath(num): AxumPath<usize>| {
+                    let in_flight = in_flight_c.clone();
+                    let max_in_flight = max_in_flight_c.clone();
+                    async move {
+                        let cur = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_in_flight.fetch_max(cur, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(40)).await;
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                        format!("<html><body><div id=\"body\"><p>正文内容第{num}章</p></div></body></html>")
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (tmp, admin, online_svc) = setup_test_online_service().await;
+        let raw_source = serde_json::json!({
+            "bookSourceName": "并发测试书源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "concurrentRate": "4/100",
+            "ruleToc": {
+                "chapterList": "#toc li a",
+                "chapterName": "text",
+                "chapterUrl": "href"
+            },
+            "ruleContent": {
+                "content": "id.body@html"
+            }
+        })
+        .to_string();
+        let imported = online_svc
+            .import_sources(&admin, &raw_source)
+            .await
+            .unwrap();
+        let source_id = imported.sources[0].id;
+
+        let job = online_svc
+            .start_download(
+                &admin,
+                StartDownloadInput {
+                    source_id,
+                    book_name: "并发测试小说".into(),
+                    author: "作者A".into(),
+                    book_url: format!("http://{addr}/book"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    format: OnlineDownloadFormat::Txt,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut finished = job;
+        for _ in 0..120 {
+            finished = online_svc
+                .get_download(admin.id, finished.id)
+                .await
+                .unwrap();
+            if matches!(
+                finished.status,
+                DownloadJobStatus::Completed
+                    | DownloadJobStatus::Failed
+                    | DownloadJobStatus::Cancelled
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(
+            finished.status,
+            DownloadJobStatus::Completed,
+            "{finished:?}"
+        );
+        assert_eq!(finished.processed_chapters, total_chapters);
+        assert_eq!(finished.failed_chapters, 0);
+        assert!(finished.elapsed_ms > 0, "expected elapsed_ms > 0");
+        assert!(
+            finished.chapters_per_sec > 0.0,
+            "expected chapters_per_sec > 0.0, got {}",
+            finished.chapters_per_sec
+        );
+        assert!(
+            max_in_flight.load(Ordering::SeqCst) >= 2,
+            "expected concurrent chapter fetching (max_in_flight={})",
+            max_in_flight.load(Ordering::SeqCst)
+        );
+
+        // Verify chapter ordering in packaged TXT via streaming reader
+        let (fname, mime, bytes) = online_svc
+            .read_download_file(admin.id, finished.id)
+            .await
+            .unwrap();
+        assert_eq!(fname, "并发测试小说.txt");
+        assert_eq!(mime, "text/plain; charset=utf-8");
+        let text = String::from_utf8(bytes).unwrap();
+        let pos1 = text.find("正文内容第1章").unwrap();
+        let pos5 = text.find("正文内容第5章").unwrap();
+        let pos10 = text.find("正文内容第10章").unwrap();
+        assert!(
+            pos1 < pos5 && pos5 < pos10,
+            "chapter order must be preserved"
+        );
+
+        // Verify disk artifact exists, then DELETE removes both record and disk directory
+        let job_dir = tmp
+            .path()
+            .join("online_downloads")
+            .join(finished.id.to_string());
+        assert!(job_dir.is_dir());
+        online_svc
+            .delete_download(admin.id, finished.id)
+            .await
+            .unwrap();
+        assert!(!job_dir.exists());
+        assert!(
+            online_svc
+                .get_download(admin.id, finished.id)
+                .await
+                .is_err()
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn download_can_be_cancelled_mid_flight() {
+        let fetched_count = Arc::new(AtomicUsize::new(0));
+        let fetched_c = fetched_count.clone();
+        let mock_app = Router::new()
+            .route(
+                "/toc",
+                get(|| async {
+                    let mut items = String::from("<html><body><ul id=\"toc\">");
+                    for i in 1..=20 {
+                        items.push_str(&format!("<li><a href=\"/ch/{i}\">第{i}章</a></li>"));
+                    }
+                    items.push_str("</ul></body></html>");
+                    items
+                }),
+            )
+            .route(
+                "/ch/{num}",
+                get(move |AxumPath(num): AxumPath<usize>| {
+                    let fetched = fetched_c.clone();
+                    async move {
+                        fetched.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(80)).await;
+                        format!("<html><body><div id=\"body\"><p>慢章{num}</p></div></body></html>")
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (tmp, admin, online_svc) = setup_test_online_service().await;
+        let raw_source = serde_json::json!({
+            "bookSourceName": "慢速可取消书源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "concurrentRate": "200",
+            "ruleToc": {
+                "chapterList": "#toc li a",
+                "chapterName": "text",
+                "chapterUrl": "href"
+            },
+            "ruleContent": {
+                "content": "id.body@html"
+            }
+        })
+        .to_string();
+        let imported = online_svc
+            .import_sources(&admin, &raw_source)
+            .await
+            .unwrap();
+        let source_id = imported.sources[0].id;
+
+        let job = online_svc
+            .start_download(
+                &admin,
+                StartDownloadInput {
+                    source_id,
+                    book_name: "可取消小说".into(),
+                    author: "作者B".into(),
+                    book_url: format!("http://{addr}/book"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    format: OnlineDownloadFormat::Epub,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Wait until at least 1 chapter has been processed or job is running
+        for _ in 0..40 {
+            let cur = online_svc.get_download(admin.id, job.id).await.unwrap();
+            if cur.processed_chapters >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let cancelled = online_svc.cancel_download(admin.id, job.id).await.unwrap();
+        assert_eq!(cancelled.status, DownloadJobStatus::Cancelled);
+
+        // Give background workers a moment to observe cancellation
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let after = online_svc.get_download(admin.id, job.id).await.unwrap();
+        assert_eq!(after.status, DownloadJobStatus::Cancelled);
+        assert!(
+            fetched_count.load(Ordering::SeqCst) < 10,
+            "cancellation should stop remaining chapter fetches early (fetched={})",
+            fetched_count.load(Ordering::SeqCst)
+        );
+        let job_dir = tmp.path().join("online_downloads").join(job.id.to_string());
+        assert!(!job_dir.exists());
+
+        server_handle.abort();
     }
 }

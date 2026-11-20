@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -52,7 +52,11 @@ pub fn router() -> Router<BookHttpState> {
             "/online/downloads",
             get(list_downloads).post(start_download),
         )
-        .route("/online/downloads/{id}", get(get_download))
+        .route(
+            "/online/downloads/{id}",
+            get(get_download).delete(delete_download),
+        )
+        .route("/online/downloads/{id}/cancel", post(cancel_download))
         .route("/online/downloads/{id}/file", get(download_packaged_file))
 }
 
@@ -341,23 +345,44 @@ async fn get_download(
     Ok(Json(job))
 }
 
+async fn cancel_download(
+    State(state): State<BookHttpState>,
+    BookWebAuth(user): BookWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<OnlineDownloadJobDto>> {
+    let job = state.services.online.cancel_download(user.id, id).await?;
+    Ok(Json(job))
+}
+
+async fn delete_download(
+    State(state): State<BookHttpState>,
+    BookWebAuth(user): BookWebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<StatusCode> {
+    state.services.online.delete_download(user.id, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn download_packaged_file(
     State(state): State<BookHttpState>,
     BookWebAuth(user): BookWebAuth,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
-    let (file_name, mime, bytes) = state
+    let (file_name, mime, range_stream) = state
         .services
         .online
-        .read_download_file(user.id, id)
+        .open_download_file_stream(user.id, id)
         .await?;
     let (stem, ext) = file_name
         .rsplit_once('.')
         .unwrap_or((file_name.as_str(), "epub"));
     let safe_name = sanitize_download_filename(stem, ext);
-    let mut resp = bytes.into_response();
+    let mut resp = Response::new(Body::from_stream(range_stream.stream));
     resp.headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+    if let Ok(len_val) = HeaderValue::from_str(&range_stream.total_size.to_string()) {
+        resp.headers_mut().insert(CONTENT_LENGTH, len_val);
+    }
     if let Ok(cd) = HeaderValue::from_str(&format!(
         "attachment; filename=\"{safe_name}\"; filename*=UTF-8''{}",
         form_urlencoded::byte_serialize(file_name.as_bytes()).collect::<String>()
