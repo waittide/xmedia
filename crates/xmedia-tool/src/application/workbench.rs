@@ -18,8 +18,9 @@ use crate::application::batch_metadata::{
 use crate::application::settings::ToolSettingsService;
 use crate::application::webhook::notify_xmedia_rescan;
 use crate::domain::media::{
-    ComicMetaPatch, DirectorySnapshot, FolderEntryDto, MediaFileDetail, MediaFileEntry,
-    MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch, RenamePlanItem, VideoMetaPatch,
+    ComicMetaPatch, DeleteFileErrorDto, DeleteFilesReportDto, DirectorySnapshot, FolderEntryDto,
+    MediaFileDetail, MediaFileEntry, MediaMetadataPatch, MediaMetadataPayload, MusicMetaPatch,
+    RawFileEntryDto, RenameConflictPolicy, RenamePlanItem, VideoMetaPatch,
 };
 use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
@@ -75,6 +76,14 @@ fn progress_step_for(total: u64) -> u64 {
     } else {
         25
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PreviewRenameOptions<'a> {
+    pub template_override: Option<&'a str>,
+    pub episode_template_override: Option<&'a str>,
+    pub preferred_kind: Option<MediaKind>,
+    pub conflict_policy: RenameConflictPolicy,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -426,6 +435,7 @@ impl MediaWorkbenchService {
         let effective_pref = domain_filter.or(root.default_kind);
         let mut raw_dirs = Vec::new();
         let mut raw_files = Vec::new();
+        let mut folder_raw_entries = Vec::new();
 
         let entries = std::fs::read_dir(&dir_sandbox.abs_path).map_err(|e| {
             DomainError::Storage(format!(
@@ -444,14 +454,42 @@ impl MediaWorkbenchService {
             }
             if p.is_dir() {
                 raw_dirs.push((fname.to_string(), p));
-            } else if !recursive
-                && p.is_file()
-                && let Some(ins) = self.resolve_inspector_for_path(&p, effective_pref)
-                && domain_filter.is_none_or(|want| ins.media_kind() == want)
-            {
-                raw_files.push((fname.to_string(), p, ins));
+            } else if p.is_file() {
+                let matched_ins = self
+                    .resolve_inspector_for_path(&p, effective_pref)
+                    .filter(|ins| domain_filter.is_none_or(|want| ins.media_kind() == want));
+                let meta_fs = std::fs::metadata(&p).ok();
+                let file_size = meta_fs.as_ref().map(|m| m.len()).unwrap_or(0);
+                let modified_unix_secs = meta_fs
+                    .as_ref()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                let ext = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let rel = p
+                    .strip_prefix(&root.path)
+                    .map(path_to_slash)
+                    .unwrap_or_else(|_| fname.to_string());
+                folder_raw_entries.push(RawFileEntryDto {
+                    rel_path: rel,
+                    file_name: fname.to_string(),
+                    extension: ext,
+                    file_size,
+                    modified_unix_secs,
+                    is_media: matched_ins.is_some(),
+                    media_kind: matched_ins.as_ref().map(|i| i.media_kind()),
+                });
+                if !recursive && let Some(ins) = matched_ins {
+                    raw_files.push((fname.to_string(), p, ins));
+                }
             }
         }
+        folder_raw_entries.sort_by_key(|a| a.file_name.to_lowercase());
 
         on_progress(WorkbenchProgress {
             processed: 0,
@@ -551,6 +589,7 @@ impl MediaWorkbenchService {
             parent_rel_path: parent_rel,
             folders,
             files,
+            raw_files: folder_raw_entries,
         })
     }
 
@@ -686,29 +725,43 @@ impl MediaWorkbenchService {
         episode_template_override: Option<&str>,
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<Vec<RenamePlanItem>> {
-        self.preview_rename_with_progress(
+        self.preview_rename_with_options(
             root_id,
             rel_paths,
-            template_override,
-            episode_template_override,
-            preferred_kind,
-            |_| {},
+            PreviewRenameOptions {
+                template_override,
+                episode_template_override,
+                preferred_kind,
+                conflict_policy: RenameConflictPolicy::Skip,
+            },
         )
         .await
+    }
+
+    pub async fn preview_rename_with_options(
+        &self,
+        root_id: RootId,
+        rel_paths: &[String],
+        options: PreviewRenameOptions<'_>,
+    ) -> DomainResult<Vec<RenamePlanItem>> {
+        self.preview_rename_with_progress(root_id, rel_paths, options, |_| {})
+            .await
     }
 
     pub async fn preview_rename_with_progress<F>(
         &self,
         root_id: RootId,
         rel_paths: &[String],
-        template_override: Option<&str>,
-        episode_template_override: Option<&str>,
-        preferred_kind: Option<MediaKind>,
+        options: PreviewRenameOptions<'_>,
         mut on_progress: F,
     ) -> DomainResult<Vec<RenamePlanItem>>
     where
         F: FnMut(WorkbenchProgress) + Send,
     {
+        let template_override = options.template_override;
+        let episode_template_override = options.episode_template_override;
+        let preferred_kind = options.preferred_kind;
+        let conflict_policy = options.conflict_policy;
         let raw_settings = self.settings.get_raw().await?;
         let root = raw_settings
             .roots
@@ -781,7 +834,7 @@ impl MediaWorkbenchService {
                 .parent()
                 .map(path_to_slash)
                 .unwrap_or_default();
-            let (to_rel, rendered_stem) =
+            let (mut to_rel, mut rendered_stem) =
                 render_template_target(&tpl, &parent_rel, &meta, &sandbox.abs_path, ext);
             let target_parent_rel = Path::new(&to_rel)
                 .parent()
@@ -789,21 +842,74 @@ impl MediaWorkbenchService {
                 .unwrap_or_default();
 
             let from_rel = sandbox.rel_slash_string();
-            let unchanged = from_rel == to_rel;
+            let mut unchanged = from_rel == to_rel;
 
             let target_abs = root.resolve_target(&to_rel)?;
             let mut conflict = None;
+            let mut will_overwrite = false;
             if let MediaMetadataPayload::Video(ref v) = meta
                 && v.is_episode
                 && v.episode_number.is_none()
                 && tpl.to_ascii_lowercase().contains("{episode")
             {
-                conflict = Some("episode number is missing for episode template".to_string());
+                conflict = Some("剧集模板缺少集号".to_string());
             } else if !unchanged {
-                if target_abs.exists() && target_abs != sandbox.abs_path {
-                    conflict = Some("target file already exists on disk".to_string());
-                } else if !planned_targets.insert(to_rel.to_lowercase()) {
-                    conflict = Some("duplicate target filename in current batch".to_string());
+                let exists_on_disk = target_abs.exists() && target_abs != sandbox.abs_path;
+                let duplicate_in_batch = planned_targets.contains(&to_rel.to_lowercase());
+                match conflict_policy {
+                    RenameConflictPolicy::Skip => {
+                        if exists_on_disk {
+                            conflict = Some("目标文件已存在".to_string());
+                        } else if duplicate_in_batch {
+                            conflict = Some("批次内目标文件名重复".to_string());
+                        } else {
+                            planned_targets.insert(to_rel.to_lowercase());
+                        }
+                    }
+                    RenameConflictPolicy::AutoSuffix => {
+                        if exists_on_disk || duplicate_in_batch {
+                            let mut resolved = false;
+                            for suffix_idx in 2..=999usize {
+                                let cand_stem = format!("{rendered_stem} ({suffix_idx})");
+                                let cand_name = if ext.is_empty() {
+                                    cand_stem.clone()
+                                } else {
+                                    format!("{cand_stem}.{ext}")
+                                };
+                                let cand_rel = if target_parent_rel.is_empty() {
+                                    cand_name
+                                } else {
+                                    format!("{target_parent_rel}/{cand_name}")
+                                };
+                                let cand_abs = root.resolve_target(&cand_rel)?;
+                                let cand_exists = cand_abs.exists() && cand_abs != sandbox.abs_path;
+                                let cand_dup = planned_targets.contains(&cand_rel.to_lowercase());
+                                if !cand_exists && !cand_dup {
+                                    to_rel = cand_rel;
+                                    rendered_stem = cand_stem;
+                                    unchanged = from_rel == to_rel;
+                                    planned_targets.insert(to_rel.to_lowercase());
+                                    resolved = true;
+                                    break;
+                                }
+                            }
+                            if !resolved {
+                                conflict = Some("无法生成不冲突的目标文件名".to_string());
+                            }
+                        } else {
+                            planned_targets.insert(to_rel.to_lowercase());
+                        }
+                    }
+                    RenameConflictPolicy::Overwrite => {
+                        if duplicate_in_batch {
+                            conflict = Some("批次内目标文件名重复".to_string());
+                        } else {
+                            if exists_on_disk {
+                                will_overwrite = true;
+                            }
+                            planned_targets.insert(to_rel.to_lowercase());
+                        }
+                    }
                 }
             }
 
@@ -1005,6 +1111,7 @@ impl MediaWorkbenchService {
                 companion_moves,
                 conflict,
                 unchanged,
+                will_overwrite,
             });
 
             let done = (idx + 1) as u64;
@@ -1061,10 +1168,21 @@ impl MediaWorkbenchService {
             let old_parent = src.abs_path.parent().map(Path::to_path_buf);
             let dst = root.resolve_target(&item.to_rel_path)?;
             if dst.exists() && dst != src.abs_path {
-                return Err(DomainError::Conflict(format!(
-                    "target '{}' already exists",
-                    item.to_rel_path
-                )));
+                if !item.will_overwrite {
+                    return Err(DomainError::Conflict(format!(
+                        "目标文件已存在：'{}'",
+                        item.to_rel_path
+                    )));
+                }
+                if dst.is_dir() {
+                    return Err(DomainError::Conflict(format!(
+                        "目标路径是目录，无法覆盖：'{}'",
+                        item.to_rel_path
+                    )));
+                }
+                std::fs::remove_file(&dst).map_err(|e| {
+                    DomainError::Storage(format!("无法覆盖已有文件 '{}': {e}", item.to_rel_path))
+                })?;
             }
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
@@ -1118,9 +1236,17 @@ impl MediaWorkbenchService {
                                     | "front.webp"
                             )
                         });
-                    if !comp_dst.exists() {
+                    if !comp_dst.exists()
+                        || (item.will_overwrite
+                            && comp_dst.is_file()
+                            && comp_dst != comp_src.abs_path)
+                    {
                         if let Some(p) = comp_dst.parent() {
                             let _ = std::fs::create_dir_all(p);
+                        }
+                        if comp_dst.exists() && item.will_overwrite && comp_dst != comp_src.abs_path
+                        {
+                            let _ = std::fs::remove_file(&comp_dst);
                         }
                         if is_shared_dir_sidecar {
                             let _ = std::fs::copy(&comp_src.abs_path, &comp_dst);
@@ -1194,6 +1320,125 @@ impl MediaWorkbenchService {
         }
 
         Ok(moved_count)
+    }
+
+    pub async fn delete_files(
+        &self,
+        root_id: RootId,
+        rel_paths: &[String],
+        delete_companions: bool,
+    ) -> DomainResult<DeleteFilesReportDto> {
+        let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
+
+        let mut deleted_paths = Vec::new();
+        let mut deleted_companions = Vec::new();
+        let mut failed = Vec::new();
+        let mut removed_set = std::collections::HashSet::new();
+
+        for rel in rel_paths {
+            let trimmed = rel.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let sandbox = match root.resolve_existing(trimmed) {
+                Ok(sb) => sb,
+                Err(err) => {
+                    failed.push(DeleteFileErrorDto {
+                        rel_path: rel.clone(),
+                        error: err.to_string(),
+                    });
+                    continue;
+                }
+            };
+            if !sandbox.abs_path.is_file() {
+                failed.push(DeleteFileErrorDto {
+                    rel_path: rel.clone(),
+                    error: "仅支持删除文件，不支持直接删除目录".to_string(),
+                });
+                continue;
+            }
+
+            let old_parent = sandbox.abs_path.parent().map(Path::to_path_buf);
+            let companions: Vec<std::path::PathBuf> = if delete_companions {
+                find_companion_sidecars(&sandbox.abs_path)
+                    .into_iter()
+                    .map(|(p, _)| p)
+                    .filter(|p| {
+                        // Never delete directory-shared sidecars directly; only clean them if directory becomes empty
+                        let is_shared =
+                            p.file_name().and_then(|s| s.to_str()).is_some_and(|fname| {
+                                matches!(
+                                    fname.to_ascii_lowercase().as_str(),
+                                    "metadata.opf"
+                                        | "movie.nfo"
+                                        | "season.nfo"
+                                        | "tvshow.nfo"
+                                        | "poster.jpg"
+                                        | "poster.jpeg"
+                                        | "poster.png"
+                                        | "poster.webp"
+                                        | "fanart.jpg"
+                                        | "fanart.jpeg"
+                                        | "fanart.png"
+                                        | "fanart.webp"
+                                        | "cover.jpg"
+                                        | "cover.jpeg"
+                                        | "cover.png"
+                                        | "cover.webp"
+                                        | "folder.jpg"
+                                        | "folder.jpeg"
+                                        | "folder.png"
+                                        | "folder.webp"
+                                        | "front.jpg"
+                                        | "front.jpeg"
+                                        | "front.png"
+                                        | "front.webp"
+                                )
+                            });
+                        !is_shared && self.resolve_inspector_for_path(p, None).is_none()
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+
+            if let Err(err) = std::fs::remove_file(&sandbox.abs_path) {
+                failed.push(DeleteFileErrorDto {
+                    rel_path: rel.clone(),
+                    error: format!("删除文件失败: {err}"),
+                });
+                continue;
+            }
+
+            let rel_slash = sandbox.rel_slash_string();
+            removed_set.insert(sandbox.abs_path.clone());
+            deleted_paths.push(rel_slash);
+
+            if delete_companions {
+                for comp_abs in companions {
+                    if removed_set.contains(&comp_abs) || !comp_abs.is_file() {
+                        continue;
+                    }
+                    if std::fs::remove_file(&comp_abs).is_ok() {
+                        removed_set.insert(comp_abs.clone());
+                        if let Ok(comp_rel) = comp_abs.strip_prefix(&root.path) {
+                            deleted_companions.push(path_to_slash(comp_rel));
+                        }
+                    }
+                }
+                if let Some(ref prev_dir) = old_parent {
+                    cleanup_empty_parent_dirs(prev_dir, &root.path);
+                }
+            }
+        }
+
+        Ok(DeleteFilesReportDto {
+            deleted_count: deleted_paths.len(),
+            deleted_paths,
+            deleted_companions,
+            failed,
+        })
     }
 
     pub async fn read_epub_asset(

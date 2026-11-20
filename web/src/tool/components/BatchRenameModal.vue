@@ -15,6 +15,7 @@ import { toolApi } from '../api'
 import { useToolTaskStore } from '../tasks'
 import type {
   MediaFileEntry,
+  RenameConflictPolicy,
   RenameHistoryBatchDto,
   RenamePlanItem,
   RenameTemplatesDto,
@@ -34,6 +35,7 @@ const emit = defineEmits<{
 
 const templateInput = ref('')
 const episodeTemplateInput = ref('')
+const conflictPolicy = ref<RenameConflictPolicy>('skip')
 const focusedVideoInput = ref<'movie' | 'episode'>('movie')
 const movieInputRef = ref<HTMLInputElement | null>(null)
 const episodeInputRef = ref<HTMLInputElement | null>(null)
@@ -157,7 +159,7 @@ async function runPreview(): Promise<void> {
   taskStore.startTask({
     id: taskId,
     kind: 'rename',
-    title: `生成重命名预览 (${props.entries.length} 项)`,
+    title: `生成整理归档预览 (${props.entries.length} 项)`,
     total: props.entries.length,
     ephemeral: true,
   })
@@ -174,6 +176,7 @@ async function runPreview(): Promise<void> {
           inlineProgressPct.value = Math.min(100, Math.round((prog.processed / prog.total) * 100))
         }
       },
+      conflictPolicy.value,
     )
     taskStore.completeTask(taskId, `已生成 ${plans.value.length.toLocaleString()} 条预览方案`)
   } catch (err) {
@@ -191,6 +194,7 @@ watch(
   (isOpen) => {
     if (isOpen) {
       excludedPaths.value = new Set()
+      conflictPolicy.value = 'skip'
       seedTemplatesForEntries()
       void runPreview()
       void loadUndoHistory()
@@ -204,6 +208,12 @@ watch([templateInput, episodeTemplateInput], () => {
   debounceTimer = setTimeout(() => {
     void runPreview()
   }, 260)
+})
+
+watch(conflictPolicy, () => {
+  if (!props.open) return
+  if (debounceTimer) clearTimeout(debounceTimer)
+  void runPreview()
 })
 
 async function insertTokenAtCursor(
@@ -251,6 +261,11 @@ const activePlans = computed(() =>
 
 const actionableCount = computed(
   () => activePlans.value.filter((p) => !p.unchanged && !p.conflict).length,
+)
+
+const conflictCount = computed(() => activePlans.value.filter((p) => Boolean(p.conflict)).length)
+const overwriteCount = computed(
+  () => activePlans.value.filter((p) => !p.unchanged && !p.conflict && p.will_overwrite).length,
 )
 
 async function handleExecute(): Promise<void> {
@@ -312,7 +327,7 @@ async function handleExecute(): Promise<void> {
           <div class="flex items-center gap-2">
             <LuFileSignature class="h-4 w-4 text-[var(--ctp-accent)]" />
             <h2 class="text-sm font-bold text-[var(--ctp-text)]">
-              按元信息模板批量重命名 ({{ entries.length }} 个文件)
+              按元信息模板整理归档 ({{ entries.length }} 个文件)
             </h2>
           </div>
           <button
@@ -412,7 +427,40 @@ async function handleExecute(): Promise<void> {
               {{ chip }}
             </button>
             <span class="ml-auto text-[11px] text-[var(--ctp-subtext0)]">
-              同名外挂文件（.lrc / .nfo / .srt / .ass）将自动跟随改名
+              同名外挂文件（.opf / .lrc / .nfo / .srt / .ass）将自动跟随归档
+            </span>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 border-t border-[var(--ctp-surface0)]/60 pt-2">
+            <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">目标冲突处理：</span>
+            <div class="inline-flex flex-wrap items-center gap-1">
+              <button
+                v-for="opt in [
+                  { id: 'skip' as const, label: '跳过冲突', tip: '目标路径已存在时跳过，保持原文件不动' },
+                  { id: 'auto_suffix' as const, label: '自动追加序号 (2)', tip: '目标已存在时自动追加 (2)/(3) 共存归档' },
+                  { id: 'overwrite' as const, label: '覆盖已有文件', tip: '直接覆盖目标位置的已有文件（请谨慎）' },
+                ]"
+                :key="opt.id"
+                type="button"
+                :title="opt.tip"
+                class="rounded-lg border px-2.5 py-1 text-[11px] font-medium transition"
+                :class="
+                  conflictPolicy === opt.id
+                    ? opt.id === 'overwrite'
+                      ? 'border-amber-500/70 bg-amber-500/15 text-amber-400'
+                      : 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext0)] hover:border-[var(--ctp-surface1)]'
+                "
+                @click="conflictPolicy = opt.id"
+              >
+                {{ opt.label }}
+              </button>
+            </div>
+            <span v-if="conflictCount > 0 && conflictPolicy === 'skip'" class="text-[11px] text-amber-400">
+              当前有 {{ conflictCount }} 项冲突，可切换为「自动追加序号」或「覆盖已有文件」
+            </span>
+            <span v-else-if="overwriteCount > 0" class="text-[11px] text-amber-400">
+              注意：将覆盖磁盘上 {{ overwriteCount }} 个已有文件
             </span>
           </div>
         </div>
@@ -450,7 +498,7 @@ async function handleExecute(): Promise<void> {
                 v-if="item.unchanged"
                 class="ml-auto rounded-full bg-[var(--ctp-surface0)]/65 px-2 py-0.5 text-[10px] text-[var(--ctp-subtext0)]"
               >
-                文件名无变化
+                路径无变化
               </span>
               <span
                 v-else-if="item.conflict"
@@ -460,11 +508,18 @@ async function handleExecute(): Promise<void> {
                 {{ item.conflict }}
               </span>
               <span
+                v-else-if="item.will_overwrite"
+                class="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-amber-400"
+              >
+                <LuAlertTriangle class="h-3 w-3" />
+                将覆盖已有文件
+              </span>
+              <span
                 v-else
                 class="ml-auto inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-500"
               >
                 <LuCheck class="h-3 w-3" />
-                可安全重命名
+                可安全归档
               </span>
             </div>
 
@@ -528,7 +583,7 @@ async function handleExecute(): Promise<void> {
         >
           <div class="flex items-center gap-3">
             <span class="text-xs text-[var(--ctp-subtext0)]">
-              共 {{ actionableCount }} 项待改名（冲突项与未变化项会自动跳过）
+              共 {{ actionableCount }} 项待归档（冲突项与未变化项会自动跳过）
             </span>
             <button
               v-if="undoHistory.length > 0"
@@ -555,7 +610,7 @@ async function handleExecute(): Promise<void> {
             >
               <LuRefreshCw v-if="executing" class="h-3.5 w-3.5 animate-spin" />
               <LuCheck v-else class="h-3.5 w-3.5" />
-              <span>执行批量重命名 ({{ actionableCount }})</span>
+              <span>执行整理归档 ({{ actionableCount }})</span>
             </button>
           </div>
         </div>

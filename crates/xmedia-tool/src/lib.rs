@@ -2071,4 +2071,200 @@ The Dark Forest.
             panic!("expected book payload");
         }
     }
+
+    #[tokio::test]
+    async fn folder_raw_files_and_delete_companions_vs_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let root = dir.path().join("books");
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        std::fs::write(sub.join("novel.txt"), "第一章 测试正文").unwrap();
+        std::fs::write(sub.join("novel.opf"), "<package/>").unwrap();
+        std::fs::write(sub.join("novel.jpg"), b"fakejpg").unwrap();
+        std::fs::write(sub.join("extra_note.md"), "keep me").unwrap();
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir,
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        // 1. Folder view (non-recursive) lists ALL raw files including .opf/.jpg/.md
+        let snap = app
+            .workbench
+            .browse_directory(root_id, "sub", Some(MediaKind::Book), false)
+            .await
+            .unwrap();
+        let raw_names: Vec<&str> = snap
+            .raw_files
+            .iter()
+            .map(|f| f.file_name.as_str())
+            .collect();
+        assert_eq!(
+            raw_names,
+            vec!["extra_note.md", "novel.jpg", "novel.opf", "novel.txt"]
+        );
+        assert!(
+            snap.raw_files
+                .iter()
+                .find(|f| f.file_name == "novel.txt")
+                .unwrap()
+                .is_media
+        );
+        assert!(
+            !snap
+                .raw_files
+                .iter()
+                .find(|f| f.file_name == "novel.opf")
+                .unwrap()
+                .is_media
+        );
+
+        // 2. Folder view delete (delete_companions = false) removes ONLY the targeted file
+        let rep_single = app
+            .workbench
+            .delete_files(root_id, &["sub/extra_note.md".into()], false)
+            .await
+            .unwrap();
+        assert_eq!(rep_single.deleted_count, 1);
+        assert!(rep_single.deleted_companions.is_empty());
+        assert!(!sub.join("extra_note.md").exists());
+        assert!(sub.join("novel.txt").exists());
+        assert!(sub.join("novel.opf").exists());
+
+        // 3. Flat media view delete (delete_companions = true) removes main file + companion sidecars + empty parent
+        let rep_media = app
+            .workbench
+            .delete_files(root_id, &["sub/novel.txt".into()], true)
+            .await
+            .unwrap();
+        assert_eq!(rep_media.deleted_count, 1);
+        assert_eq!(rep_media.deleted_companions.len(), 2);
+        assert!(!sub.join("novel.txt").exists());
+        assert!(!sub.join("novel.opf").exists());
+        assert!(!sub.join("novel.jpg").exists());
+        assert!(!sub.exists());
+    }
+
+    #[tokio::test]
+    async fn rename_conflict_policies_skip_auto_suffix_and_overwrite() {
+        use crate::application::workbench::PreviewRenameOptions;
+        use crate::domain::media::RenameConflictPolicy;
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        let root = dir.path().join("books");
+        std::fs::create_dir_all(root.join("夏目漱石")).unwrap();
+
+        std::fs::write(root.join("夏目漱石/草枕.txt"), "existing version").unwrap();
+        std::fs::write(root.join("草枕_竖排.txt"), "vertical version").unwrap();
+
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir,
+            initial_roots: vec![root.clone()],
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+        let root_id = app.settings.get_public_settings().await.unwrap().roots[0].id;
+
+        app.workbench
+            .write_metadata(
+                root_id,
+                "草枕_竖排.txt",
+                MediaMetadataPatch::Book(BookMetaPatch {
+                    title: Some("草枕".into()),
+                    authors: Some(vec!["夏目漱石".into()]),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+
+        let tpl = "{author}/{title}";
+
+        // 1. Skip policy reports conflict
+        let skip_plans = app
+            .workbench
+            .preview_rename_with_options(
+                root_id,
+                &["草枕_竖排.txt".into()],
+                PreviewRenameOptions {
+                    template_override: Some(tpl),
+                    episode_template_override: None,
+                    preferred_kind: Some(MediaKind::Book),
+                    conflict_policy: RenameConflictPolicy::Skip,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(skip_plans.len(), 1);
+        assert!(skip_plans[0].conflict.is_some());
+        assert!(!skip_plans[0].will_overwrite);
+
+        // 2. AutoSuffix resolves conflict to "草枕 (2).txt" and moves cleanly
+        let suffix_plans = app
+            .workbench
+            .preview_rename_with_options(
+                root_id,
+                &["草枕_竖排.txt".into()],
+                PreviewRenameOptions {
+                    template_override: Some(tpl),
+                    episode_template_override: None,
+                    preferred_kind: Some(MediaKind::Book),
+                    conflict_policy: RenameConflictPolicy::AutoSuffix,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(suffix_plans[0].conflict, None);
+        assert_eq!(suffix_plans[0].to_rel_path, "夏目漱石/草枕 (2).txt");
+        let moved = app
+            .workbench
+            .execute_rename(root_id, &suffix_plans)
+            .await
+            .unwrap();
+        assert_eq!(moved, 1);
+        assert!(root.join("夏目漱石/草枕 (2).txt").is_file());
+        assert!(root.join("夏目漱石/草枕.txt").is_file());
+
+        // 3. Overwrite policy marks will_overwrite and replaces destination safely
+        let overwrite_plans = app
+            .workbench
+            .preview_rename_with_options(
+                root_id,
+                &["夏目漱石/草枕 (2).txt".into()],
+                PreviewRenameOptions {
+                    template_override: Some(tpl),
+                    episode_template_override: None,
+                    preferred_kind: Some(MediaKind::Book),
+                    conflict_policy: RenameConflictPolicy::Overwrite,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(overwrite_plans[0].conflict, None);
+        assert!(overwrite_plans[0].will_overwrite);
+        assert_eq!(overwrite_plans[0].to_rel_path, "夏目漱石/草枕.txt");
+        let moved_ov = app
+            .workbench
+            .execute_rename(root_id, &overwrite_plans)
+            .await
+            .unwrap();
+        assert_eq!(moved_ov, 1);
+        assert!(!root.join("夏目漱石/草枕 (2).txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("夏目漱石/草枕.txt")).unwrap(),
+            "vertical version"
+        );
+    }
 }

@@ -32,10 +32,11 @@ use crate::application::webhook::{
     WebhookTestReportDto, test_xmedia_webhook, trigger_xmedia_rescan,
 };
 use crate::application::workbench::{
-    RenameHistoryBatchDto, UndoRenameReportDto, WorkbenchProgress,
+    PreviewRenameOptions, RenameHistoryBatchDto, UndoRenameReportDto, WorkbenchProgress,
 };
 use crate::domain::media::{
-    DirectorySnapshot, MediaFileDetail, MediaMetadataPatch, RenamePlanItem,
+    DeleteFilesReportDto, DirectorySnapshot, MediaFileDetail, MediaMetadataPatch,
+    RenameConflictPolicy, RenamePlanItem,
 };
 use crate::domain::scraper::{
     AggregateScrapeResponse, ProviderStatusDto, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind,
@@ -100,6 +101,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
         .route("/files/rename/execute/stream", post(execute_rename_stream))
         .route("/files/rename/history", get(list_rename_history))
         .route("/files/rename/undo", post(undo_rename_batch))
+        .route("/files/delete", post(delete_files_route))
         .route("/scrapers/providers", get(list_scraper_providers))
         .route("/scrapers/search", post(search_scrapers))
         .route("/scrapers/aggregate", post(aggregate_scrapers))
@@ -508,6 +510,8 @@ struct PreviewRenameRequest {
     template: Option<String>,
     episode_template: Option<String>,
     kind: Option<MediaKind>,
+    #[serde(default)]
+    conflict_policy: RenameConflictPolicy,
 }
 
 async fn preview_rename(
@@ -517,15 +521,38 @@ async fn preview_rename(
 ) -> ApiResult<Json<Vec<RenamePlanItem>>> {
     let plans = state
         .workbench
-        .preview_rename(
+        .preview_rename_with_options(
             RootId(req.root_id),
             &req.paths,
-            req.template.as_deref(),
-            req.episode_template.as_deref(),
-            req.kind,
+            PreviewRenameOptions {
+                template_override: req.template.as_deref(),
+                episode_template_override: req.episode_template.as_deref(),
+                preferred_kind: req.kind,
+                conflict_policy: req.conflict_policy,
+            },
         )
         .await?;
     Ok(Json(plans))
+}
+
+#[derive(Deserialize)]
+struct DeleteFilesRequest {
+    root_id: Uuid,
+    paths: Vec<String>,
+    #[serde(default)]
+    delete_companions: bool,
+}
+
+async fn delete_files_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<DeleteFilesRequest>,
+) -> ApiResult<Json<DeleteFilesReportDto>> {
+    let report = state
+        .workbench
+        .delete_files(RootId(req.root_id), &req.paths, req.delete_companions)
+        .await?;
+    Ok(Json(report))
 }
 
 #[derive(Deserialize)]
@@ -833,9 +860,12 @@ async fn preview_rename_stream(
             .preview_rename_with_progress(
                 RootId(req.root_id),
                 &req.paths,
-                req.template.as_deref(),
-                req.episode_template.as_deref(),
-                req.kind,
+                PreviewRenameOptions {
+                    template_override: req.template.as_deref(),
+                    episode_template_override: req.episode_template.as_deref(),
+                    preferred_kind: req.kind,
+                    conflict_policy: req.conflict_policy,
+                },
                 move |p| {
                     let _ = prog_tx.try_send(p);
                 },

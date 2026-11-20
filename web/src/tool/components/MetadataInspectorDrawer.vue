@@ -17,6 +17,7 @@ import {
   LuPackageCheck,
   LuRefreshCw,
   LuSave,
+  LuTrash2,
   LuUnlock,
   LuUpload,
   LuWand2,
@@ -78,6 +79,8 @@ const emit = defineEmits<{
   openComicPages: [entry: MediaFileEntry]
   openMusicTools: [entry: MediaFileEntry]
   openVideoTools: [entry: MediaFileEntry]
+  openRename: [entry: MediaFileEntry]
+  requestDelete: [entry: MediaFileEntry]
   openHistory: []
 }>()
 
@@ -792,6 +795,26 @@ defineExpose({
                     <span>{{ isVideoFieldLocked('poster') ? '已锁' : '锁海报' }}</span>
                   </button>
                 </template>
+
+                <button
+                  type="button"
+                  class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+                  title="按命名模板预览并归档移动此条目"
+                  @click="emit('openRename', detail.entry)"
+                >
+                  <LuFileSignature class="h-3 w-3" />
+                  <span>整理归档</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="md-chip md-state !h-7 !rounded-full !border-red-500/35 !px-2.5 !text-[11px] !text-red-400 hover:!bg-red-500/10"
+                  title="删除此媒体条目及同名外挂文件"
+                  @click="emit('requestDelete', detail.entry)"
+                >
+                  <LuTrash2 class="h-3 w-3" />
+                  <span>删除</span>
+                </button>
               </div>
             </div>
           </div>

@@ -9,8 +9,11 @@ import {
   LuFileText,
   LuImage,
   LuLayers,
+  LuLoader2,
   LuSparkles,
+  LuTrash2,
 } from 'vue-icons-plus/lu'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
@@ -209,6 +212,12 @@ async function confirmActiveEditorClean(): Promise<boolean> {
 
 const settingsInitialTab = ref<ToolSettingsTab>(initialHash.settingsTab ?? 'appearance')
 const renameModalOpen = ref(false)
+const renameTargetEntries = ref<MediaFileEntry[] | null>(null)
+const deleteDialogOpen = ref(false)
+const deleteDialogPaths = ref<string[]>([])
+const deleteDialogCompanions = ref(false)
+const deletingFiles = ref(false)
+const deleteDialogError = ref<string | null>(null)
 const batchMetadataModalOpen = ref(false)
 const historyModalOpen = ref(false)
 const bookEditorOpen = ref(false)
@@ -334,7 +343,15 @@ function parentRelOf(relPath: string): string {
 }
 
 function setViewMode(next: BrowseViewMode): void {
+  if (viewMode.value !== next) {
+    selectedPaths.value = new Set()
+    lastSelectedRelPath.value = null
+  }
   viewMode.value = next
+  if (next === 'folders') {
+    completenessFilter.value = 'all'
+    workbenchFocusPaths.value = null
+  }
   localStorage.setItem('xmedia_tool.view_mode', next)
 }
 
@@ -619,7 +636,10 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
     syncHashFromState(true)
 
     if (preserveSelection && selectedPaths.value.size > 0) {
-      const surviving = new Set(snap.files.map((f) => f.rel_path))
+      const surviving = new Set<string>([
+        ...snap.files.map((f) => f.rel_path),
+        ...(snap.raw_files ?? []).map((f) => f.rel_path),
+      ])
       const pruned = new Set<string>()
       for (const p of selectedPaths.value) {
         if (surviving.has(p)) pruned.add(p)
@@ -716,15 +736,21 @@ async function inspectEntry(entry: MediaFileEntry): Promise<void> {
 function toggleSelectFile(relPath: string, shiftKey = false): void {
   const next = new Set(selectedPaths.value)
   if (shiftKey && lastSelectedRelPath.value) {
-    const list = filteredFiles.value
-    const fromIdx = list.findIndex((f) => f.rel_path === lastSelectedRelPath.value)
-    const toIdx = list.findIndex((f) => f.rel_path === relPath)
+    const isFolderRawMode =
+      viewMode.value === 'folders' &&
+      !hasActiveSearchOrFilter.value &&
+      !(workbenchFocusPaths.value && workbenchFocusPaths.value.size > 0)
+    const listPaths: string[] = isFolderRawMode
+      ? (snapshot.value?.raw_files ?? []).map((f) => f.rel_path)
+      : filteredFiles.value.map((f) => f.rel_path)
+    const fromIdx = listPaths.indexOf(lastSelectedRelPath.value)
+    const toIdx = listPaths.indexOf(relPath)
     if (fromIdx !== -1 && toIdx !== -1) {
       const start = Math.min(fromIdx, toIdx)
       const end = Math.max(fromIdx, toIdx)
       const shouldSelect = !next.has(relPath)
       for (let i = start; i <= end; i += 1) {
-        const p = list[i]!.rel_path
+        const p = listPaths[i]!
         if (shouldSelect) {
           next.add(p)
         } else {
@@ -750,6 +776,74 @@ function toggleSelectAllFiltered(): void {
     selectedPaths.value = new Set()
   } else {
     selectedPaths.value = new Set(filteredFiles.value.map((f) => f.rel_path))
+  }
+}
+
+function toggleSelectAllRaw(paths: string[]): void {
+  const allSelected = paths.length > 0 && paths.every((p) => selectedPaths.value.has(p))
+  if (allSelected) {
+    selectedPaths.value = new Set()
+  } else {
+    selectedPaths.value = new Set(paths)
+  }
+}
+
+function openRenameModal(entries?: MediaFileEntry[]): void {
+  if (entries && entries.length > 0) {
+    renameTargetEntries.value = entries
+  } else {
+    renameTargetEntries.value = null
+  }
+  renameModalOpen.value = true
+}
+
+function requestDeleteFiles(paths: string[], deleteCompanions: boolean): void {
+  const unique = Array.from(new Set(paths.map((p) => p.trim()).filter((p) => p.length > 0)))
+  if (unique.length === 0) return
+  deleteDialogPaths.value = unique
+  deleteDialogCompanions.value = deleteCompanions
+  deleteDialogError.value = null
+  deleteDialogOpen.value = true
+}
+
+async function confirmDeleteFiles(): Promise<void> {
+  if (!activeRootId.value || deleteDialogPaths.value.length === 0 || deletingFiles.value) return
+  deletingFiles.value = true
+  deleteDialogError.value = null
+  try {
+    const report = await toolApi.deleteFiles(
+      activeRootId.value,
+      deleteDialogPaths.value,
+      deleteDialogCompanions.value,
+    )
+    const deletedSet = new Set([...report.deleted_paths, ...report.deleted_companions])
+    if (selectedPaths.value.size > 0) {
+      const nextSel = new Set<string>()
+      for (const p of selectedPaths.value) {
+        if (!deletedSet.has(p)) nextSel.add(p)
+      }
+      selectedPaths.value = nextSel
+    }
+    if (activeDetail.value && deletedSet.has(activeDetail.value.entry.rel_path)) {
+      activeDetail.value = null
+      inspectingPath.value = null
+    }
+    if (report.failed.length > 0 && report.deleted_count === 0) {
+      deleteDialogError.value = report.failed.map((f) => `${f.rel_path}: ${f.error}`).join('；')
+      return
+    }
+    deleteDialogOpen.value = false
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+    const compHint =
+      report.deleted_companions.length > 0
+        ? `（同步清理 ${report.deleted_companions.length} 个同名外挂）`
+        : ''
+    const failHint = report.failed.length > 0 ? `，${report.failed.length} 项失败` : ''
+    snackbar.show(`已删除 ${report.deleted_count} 个文件${compHint}${failHint}`)
+  } catch (err) {
+    deleteDialogError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    deletingFiles.value = false
   }
 }
 
@@ -793,10 +887,20 @@ async function handleRenamed(
   if (mappedRel && activeRootId.value) {
     inspectingPath.value = mappedRel
   }
+  if (movedCount > 0 && selectedPaths.value.size > 0) {
+    const nextSel = new Set<string>()
+    for (const p of selectedPaths.value) {
+      if (!(p in movedMap)) {
+        nextSel.add(p)
+      }
+    }
+    selectedPaths.value = nextSel
+  }
+  renameTargetEntries.value = null
   if (activeRootId.value && movedCount > 0) {
     await loadDirectory(activeRootId.value, currentRelPath.value)
     snackbar.show({
-      message: `已完成 ${movedCount} 个文件的重命名与归档`,
+      message: `已完成 ${movedCount} 个文件的整理与归档`,
       actionLabel: '撤销历史',
       onAction: () => {
         historyModalOpen.value = true
@@ -1203,6 +1307,7 @@ const anyModalOpen = computed(
   () =>
     tasksDrawerOpen.value ||
     renameModalOpen.value ||
+    deleteDialogOpen.value ||
     batchMetadataModalOpen.value ||
     historyModalOpen.value ||
     autoScrapeModalOpen.value ||
@@ -1330,23 +1435,78 @@ async function handleHashChange(): Promise<void> {
 }
 
 let offFileScraped: (() => void) | null = null
+let offBatchSettled: (() => void) | null = null
+let scrapeRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleScrapeDirectoryRefresh(delayMs = 350): void {
+  if (!activeRootId.value) return
+  if (scrapeRefreshTimer) clearTimeout(scrapeRefreshTimer)
+  scrapeRefreshTimer = setTimeout(() => {
+    scrapeRefreshTimer = null
+    if (activeRootId.value) {
+      void loadDirectory(activeRootId.value, currentRelPath.value)
+    }
+  }, delayMs)
+}
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('hashchange', handleHashChange)
-  offFileScraped = taskStore.onFileScraped((updated) => {
+  offFileScraped = taskStore.onFileScraped((updated, prevRelPath) => {
     artworkVersion.value += 1
+    const moved = Boolean(prevRelPath && prevRelPath !== updated.entry.rel_path)
+
+    if (moved) {
+      if (selectedPaths.value.has(prevRelPath)) {
+        const nextSel = new Set(selectedPaths.value)
+        nextSel.delete(prevRelPath)
+        nextSel.add(updated.entry.rel_path)
+        selectedPaths.value = nextSel
+      }
+      if (scrapeWorkbenchPaths.value?.includes(prevRelPath)) {
+        scrapeWorkbenchPaths.value = scrapeWorkbenchPaths.value.map((p) =>
+          p === prevRelPath ? updated.entry.rel_path : p,
+        )
+      }
+    }
+
     if (snapshot.value && snapshot.value.root_id === updated.entry.root_id) {
       snapshot.value = {
         ...snapshot.value,
         files: snapshot.value.files.map((f) =>
-          f.rel_path === updated.entry.rel_path ? updated.entry : f,
+          f.rel_path === prevRelPath || f.rel_path === updated.entry.rel_path
+            ? updated.entry
+            : f,
         ),
       }
+      if (moved) {
+        scheduleScrapeDirectoryRefresh(350)
+      }
     }
-    if (activeDetail.value?.entry.rel_path === updated.entry.rel_path) {
+
+    if (
+      activeDetail.value?.entry.rel_path === prevRelPath ||
+      activeDetail.value?.entry.rel_path === updated.entry.rel_path
+    ) {
       activeDetail.value = updated
+      inspectingPath.value = updated.entry.rel_path
+    }
+  })
+
+  offBatchSettled = taskStore.onBatchSettled((task) => {
+    if (!activeRootId.value) return
+    const touchesCurrentRoot = Boolean(
+      task.subItems?.some((it) => it.rootId === activeRootId.value),
+    )
+    if (!touchesCurrentRoot) return
+    if ((task.matchedCount ?? 0) > 0 || task.scrapeOptions?.organize_by_template) {
+      if (scrapeRefreshTimer) {
+        clearTimeout(scrapeRefreshTimer)
+        scrapeRefreshTimer = null
+      }
+      artworkVersion.value += 1
+      void loadDirectory(activeRootId.value, currentRelPath.value)
     }
   })
   void loadInitial()
@@ -1357,6 +1517,8 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('hashchange', handleHashChange)
   if (offFileScraped) offFileScraped()
+  if (offBatchSettled) offBatchSettled()
+  if (scrapeRefreshTimer) clearTimeout(scrapeRefreshTimer)
 })
 </script>
 
@@ -1527,6 +1689,7 @@ onBeforeUnmount(() => {
             @select-completeness-filter="selectCompletenessFilter"
             @clear-focus-paths="workbenchFocusPaths = null"
             @toggle-select-all="toggleSelectAllFiltered"
+            @toggle-select-all-raw="toggleSelectAllRaw"
             @clear-selection="selectedPaths = new Set(); lastSelectedRelPath = null"
             @set-sort-field="setSortField"
             @toggle-sort-dir="toggleSortDir"
@@ -1538,7 +1701,8 @@ onBeforeUnmount(() => {
             @open-dry-run="dryRunModalOpen = true"
             @open-batch-metadata="batchMetadataModalOpen = true"
             @open-history="historyModalOpen = true"
-            @open-rename="renameModalOpen = true"
+            @open-rename="openRenameModal"
+            @request-delete-files="requestDeleteFiles"
             @trigger-rescan="triggerManualRescan"
             @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
             @inspect-file="inspectEntry"
@@ -1588,6 +1752,8 @@ onBeforeUnmount(() => {
               @open-comic-pages="openComicPageManager"
               @open-music-tools="(e) => openMusicToolbox([e])"
               @open-video-tools="(e) => openVideoToolbox([e])"
+              @open-rename="(e) => openRenameModal([e])"
+              @request-delete="(e) => requestDeleteFiles([e.rel_path], true)"
               @open-history="historyModalOpen = true"
             />
           </div>
@@ -1618,9 +1784,9 @@ onBeforeUnmount(() => {
       v-if="settings && activeRootId"
       :open="renameModalOpen"
       :root-id="activeRootId"
-      :entries="selectedEntriesForRename"
+      :entries="renameTargetEntries ?? selectedEntriesForRename"
       :templates="settings.rename_templates"
-      @close="renameModalOpen = false"
+      @close="renameModalOpen = false; renameTargetEntries = null"
       @renamed="handleRenamed"
     />
 
@@ -1692,6 +1858,80 @@ onBeforeUnmount(() => {
       @confirm="(entries) => enqueueScrapeFiles(entries)"
       @manual-scrape="handleDryRunManualScrape"
     />
+
+    <!-- Safe File Deletion Confirmation Dialog -->
+    <MdDialog
+      :open="deleteDialogOpen"
+      :title="deleteDialogCompanions ? '确认删除媒体条目与同名外挂？' : '确认删除原始文件？'"
+      :subtitle="
+        deleteDialogCompanions
+          ? '主视图删除模式：同步删除主文件及其专属同名外挂（.opf / .nfo / .lrc / .srt / .ass / 同名封面）'
+          : '文件视图删除模式：仅删除所选原始文件本身，不会牵连删除其他外挂文件'
+      "
+      max-width="max-w-lg"
+      @close="!deletingFiles && (deleteDialogOpen = false)"
+    >
+      <template #icon>
+        <LuTrash2 class="h-5 w-5 text-red-400" />
+      </template>
+
+      <div class="space-y-3 py-1">
+        <div
+          v-if="deleteDialogError"
+          class="rounded-2xl border border-red-500/35 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-400"
+        >
+          {{ deleteDialogError }}
+        </div>
+
+        <p class="text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
+          即将从磁盘<strong class="text-red-400">永久删除</strong>以下
+          <strong class="font-mono text-[var(--md-sys-color-on-surface)]">{{ deleteDialogPaths.length }}</strong>
+          个文件，此操作不可撤销：
+        </p>
+
+        <div
+          class="max-h-48 space-y-1 overflow-y-auto rounded-2xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container)]/60 p-2.5 font-mono text-[11px] text-[var(--md-sys-color-on-surface)]"
+        >
+          <div
+            v-for="p in deleteDialogPaths.slice(0, 12)"
+            :key="p"
+            class="truncate"
+            :title="p"
+          >
+            {{ p }}
+          </div>
+          <div
+            v-if="deleteDialogPaths.length > 12"
+            class="pt-1 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+          >
+            ……以及其他 {{ deleteDialogPaths.length - 12 }} 个文件
+          </div>
+        </div>
+      </div>
+
+      <template #footer>
+        <div class="flex items-center justify-end gap-2">
+          <button
+            type="button"
+            :disabled="deletingFiles"
+            class="md-btn md-btn-sm md-btn-text md-state"
+            @click="deleteDialogOpen = false"
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            :disabled="deletingFiles"
+            class="inline-flex h-9 items-center gap-1.5 rounded-full bg-red-500 px-4 text-xs font-semibold text-white transition hover:bg-red-600 disabled:opacity-50"
+            @click="confirmDeleteFiles"
+          >
+            <LuLoader2 v-if="deletingFiles" class="h-3.5 w-3.5 animate-spin" />
+            <LuTrash2 v-else class="h-3.5 w-3.5" />
+            <span>{{ deletingFiles ? '正在删除…' : `确认永久删除 (${deleteDialogPaths.length})` }}</span>
+          </button>
+        </div>
+      </template>
+    </MdDialog>
 
     <!-- Slide-Over Tasks Drawer (Opened from Top Bar Progress Pill or List Inline Banner) -->
     <ToolTasksDrawer

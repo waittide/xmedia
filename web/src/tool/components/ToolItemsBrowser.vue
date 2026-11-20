@@ -10,6 +10,7 @@ import {
   LuColumns3,
   LuCornerLeftUp,
   LuDisc3,
+  LuFile,
   LuFileSignature,
   LuFileText,
   LuFilm,
@@ -25,6 +26,7 @@ import {
   LuRadio,
   LuRefreshCw,
   LuSparkles,
+  LuTrash2,
   LuUndo2,
   LuX,
 } from 'vue-icons-plus/lu'
@@ -36,7 +38,12 @@ import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl } from '../api'
 import { formatBytes, useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem } from '../tasks'
-import type { DirectorySnapshot, ManagedRootDto, MediaFileEntry } from '../types'
+import type {
+  DirectorySnapshot,
+  ManagedRootDto,
+  MediaFileEntry,
+  RawFileEntryDto,
+} from '../types'
 import type { ToolCompletenessFilter } from './ToolSidebar.vue'
 
 export type ToolSortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
@@ -88,6 +95,7 @@ const emit = defineEmits<{
   selectCompletenessFilter: [filter: ToolCompletenessFilter]
   clearFocusPaths: []
   toggleSelectAll: []
+  toggleSelectAllRaw: [paths: string[]]
   clearSelection: []
   setSortField: [field: ToolSortField]
   toggleSortDir: []
@@ -99,7 +107,8 @@ const emit = defineEmits<{
   openDryRun: []
   openBatchMetadata: []
   openHistory: []
-  openRename: []
+  openRename: [entries?: MediaFileEntry[]]
+  requestDeleteFiles: [paths: string[], deleteCompanions: boolean]
   triggerRescan: []
   refreshDir: []
   inspectFile: [entry: MediaFileEntry]
@@ -141,6 +150,91 @@ const sortedFolders = computed(() => {
     (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }) * dir,
   )
 })
+
+const mediaEntryMap = computed<Map<string, MediaFileEntry>>(() => {
+  const m = new Map<string, MediaFileEntry>()
+  for (const f of props.snapshot?.files ?? []) {
+    m.set(f.rel_path, f)
+  }
+  return m
+})
+
+const sortedRawFiles = computed<RawFileEntryDto[]>(() => {
+  const cur = props.currentRelPath
+  const rawList: RawFileEntryDto[] =
+    props.snapshot?.raw_files !== undefined
+      ? props.snapshot.raw_files
+      : (props.snapshot?.files ?? [])
+          .filter((f) => {
+            const idx = f.rel_path.lastIndexOf('/')
+            const parent = idx === -1 ? '' : f.rel_path.slice(0, idx)
+            return parent === cur
+          })
+          .map((f) => ({
+            rel_path: f.rel_path,
+            file_name: f.file_name,
+            extension: f.extension,
+            file_size: f.file_size,
+            modified_unix_secs: f.modified_unix_secs,
+            is_media: true,
+            media_kind: f.media_kind,
+          }))
+  const dir = props.sortDir === 'asc' ? 1 : -1
+  return [...rawList].sort((a, b) => {
+    if (props.sortField === 'size') {
+      return (a.file_size - b.file_size) * dir
+    }
+    if (props.sortField === 'modified') {
+      return (a.modified_unix_secs - b.modified_unix_secs) * dir
+    }
+    return a.file_name.localeCompare(b.file_name, undefined, { numeric: true }) * dir
+  })
+})
+
+const allRawFilesSelected = computed(
+  () =>
+    sortedRawFiles.value.length > 0 &&
+    sortedRawFiles.value.every((f) => props.selectedPaths.has(f.rel_path)),
+)
+
+const selectedRawPaths = computed<string[]>(() => Array.from(props.selectedPaths))
+
+function rawFileCategory(
+  raw: RawFileEntryDto,
+): 'image' | 'sidecar' | 'book' | 'comic' | 'music' | 'video' | 'other' {
+  const ext = raw.extension.toLowerCase()
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'svg'].includes(ext)) {
+    return 'image'
+  }
+  if (['opf', 'nfo', 'xml', 'lrc', 'srt', 'ass', 'ssa', 'vtt', 'json', 'cue'].includes(ext)) {
+    return 'sidecar'
+  }
+  if (raw.media_kind === 'book') return 'book'
+  if (raw.media_kind === 'comic') return 'comic'
+  if (raw.media_kind === 'music') return 'music'
+  if (raw.media_kind === 'video') return 'video'
+  return 'other'
+}
+
+function rawFileKindLabel(raw: RawFileEntryDto): string {
+  const ext = raw.extension.toLowerCase()
+  if (ext === 'epub' && isOrigBackupFile(raw.file_name)) return '原件备份'
+  if (['opf', 'nfo', 'xml'].includes(ext)) return '元数据文件'
+  if (['lrc', 'srt', 'ass', 'ssa', 'vtt'].includes(ext)) return '歌词 / 字幕'
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'avif', 'svg'].includes(ext)) return '图片'
+  if (raw.is_media && raw.media_kind === 'book') return '图书'
+  if (raw.is_media && raw.media_kind === 'comic') return '漫画'
+  if (raw.is_media && raw.media_kind === 'music') return '音频'
+  if (raw.is_media && raw.media_kind === 'video') return '视频'
+  return '普通文件'
+}
+
+function handleRawFileRowClick(raw: RawFileEntryDto): void {
+  const media = mediaEntryMap.value.get(raw.rel_path)
+  if (media) {
+    emit('inspectFile', media)
+  }
+}
 
 function formatModifiedDate(unixSecs: number): string {
   if (!unixSecs) return '—'
@@ -232,7 +326,7 @@ function relativeDirBadge(relPath: string): string | null {
             v-if="isFolderManagerMode && snapshot"
             class="ml-2 hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] sm:inline-flex"
           >
-            {{ sortedFolders.length }} 文件夹 · {{ filteredFiles.length }} 文件
+            {{ sortedFolders.length }} 文件夹 · {{ sortedRawFiles.length }} 文件
           </span>
         </div>
 
@@ -314,7 +408,7 @@ function relativeDirBadge(relPath: string): string | null {
       </div>
 
       <!-- MD3 Filter Chips Row + Lightweight Primary Action -->
-      <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+      <div v-if="!isFolderManagerMode" class="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div class="flex flex-wrap items-center gap-1.5">
           <button
             v-for="f in filterItems"
@@ -367,6 +461,25 @@ function relativeDirBadge(relPath: string): string | null {
       </div>
 
       <div
+        v-else
+        class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      >
+        <span>
+          文件视图 · 展示当前目录原始文件（含 .opf / .nfo / 封面 / 字幕等外挂），删除仅移除所选文件本身
+        </span>
+        <AppCheckbox
+          v-if="sortedRawFiles.length > 0"
+          :model-value="allRawFilesSelected"
+          :label="
+            selectedPaths.size > 0
+              ? txt.batch.selectedCount.replace('{count}', String(selectedPaths.size))
+              : txt.actions.selectAll
+          "
+          @change="emit('toggleSelectAllRaw', sortedRawFiles.map((f) => f.rel_path))"
+        />
+      </div>
+
+      <div
         v-if="dirError"
         class="mb-4 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]"
       >
@@ -410,17 +523,17 @@ function relativeDirBadge(relPath: string): string | null {
           >
             <div class="flex w-5 shrink-0 items-center justify-center">
               <AppCheckbox
-                v-if="filteredFiles.length > 0"
-                :model-value="allFilteredSelected"
-                @change="emit('toggleSelectAll')"
+                v-if="sortedRawFiles.length > 0"
+                :model-value="allRawFilesSelected"
+                @change="emit('toggleSelectAllRaw', sortedRawFiles.map((f) => f.rel_path))"
               />
             </div>
             <div class="w-10 shrink-0" />
-            <div class="min-w-0 flex-1">名称</div>
+            <div class="min-w-0 flex-1">文件名</div>
             <div class="hidden w-28 shrink-0 text-right md:block">大小 / 项数</div>
             <div class="hidden w-24 shrink-0 text-right xl:block">修改日期</div>
-            <div class="hidden w-40 shrink-0 text-right sm:block">状态</div>
-            <div class="w-20 shrink-0 text-right">操作</div>
+            <div class="hidden w-32 shrink-0 text-right sm:block">类型</div>
+            <div class="w-24 shrink-0 text-right">操作</div>
           </div>
 
           <div class="divide-y divide-[var(--md-sys-color-outline-variant)]/35">
@@ -453,8 +566,8 @@ function relativeDirBadge(relPath: string): string | null {
               <div class="hidden w-24 shrink-0 text-right text-xs text-[var(--md-sys-color-on-surface-variant)] xl:block">
                 —
               </div>
-              <div class="hidden w-40 shrink-0 sm:block" />
-              <div class="flex w-20 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="hidden w-32 shrink-0 sm:block" />
+              <div class="flex w-24 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
                 <LuChevronRight class="h-4 w-4 opacity-50" />
               </div>
             </button>
@@ -506,307 +619,125 @@ function relativeDirBadge(relPath: string): string | null {
               <div class="hidden w-24 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] opacity-60 xl:block">
                 —
               </div>
-              <div class="hidden w-40 shrink-0 justify-end sm:flex">
+              <div class="hidden w-32 shrink-0 justify-end sm:flex">
                 <span class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                  进入目录
+                  文件夹
                 </span>
               </div>
-              <div class="flex w-20 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="flex w-24 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
                 <LuChevronRight class="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
               </div>
             </button>
 
             <!-- Empty Subfolder Inline Notice (keeps '..' row clickable) -->
             <div
-              v-if="sortedFolders.length === 0 && filteredFiles.length === 0"
+              v-if="sortedFolders.length === 0 && sortedRawFiles.length === 0"
               class="py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
             >
-              此文件夹暂无子目录或支持的媒体文件
+              此文件夹为空
             </div>
 
-            <!-- File Rows in Current Folder -->
+            <!-- Raw File Rows in Current Folder -->
             <div
-              v-for="file in visibleFiles"
-              :key="`fm-file-${file.rel_path}`"
-              class="md-state group flex cursor-pointer items-center gap-3.5 px-4 py-2.5"
-              :class="
-                inspectingPath === file.rel_path
+              v-for="raw in sortedRawFiles"
+              :key="`fm-raw-${raw.rel_path}`"
+              class="md-state group flex items-center gap-3.5 px-4 py-2.5"
+              :class="[
+                mediaEntryMap.has(raw.rel_path) ? 'cursor-pointer' : 'cursor-default',
+                inspectingPath === raw.rel_path
                   ? 'bg-[var(--md-sys-color-secondary-container)]/75'
-                  : selectedPaths.has(file.rel_path)
+                  : selectedPaths.has(raw.rel_path)
                     ? 'bg-[var(--md-sys-color-primary-container)]/35'
-                    : ''
-              "
-              @click="emit('inspectFile', file)"
+                    : '',
+              ]"
+              @click="handleRawFileRowClick(raw)"
             >
               <div
                 class="flex w-5 shrink-0 items-center justify-center"
-                @click.stop="emit('toggleSelectFile', file.rel_path, $event.shiftKey)"
+                @click.stop="emit('toggleSelectFile', raw.rel_path, $event.shiftKey)"
               >
-                <AppCheckbox :model-value="selectedPaths.has(file.rel_path)" />
+                <AppCheckbox :model-value="selectedPaths.has(raw.rel_path)" />
               </div>
 
-              <!-- Compact File Thumbnail -->
+              <!-- Raw File Type Icon -->
               <div
-                class="relative shrink-0 overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)]"
-                :class="file.media_kind === 'music' ? 'h-10 w-10' : 'h-12 w-10'"
+                class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]"
               >
-                <img
-                  v-if="file.completeness.has_cover"
-                  :src="
-                    buildArtworkUrl(
-                      file.root_id,
-                      file.rel_path,
-                      file.media_kind,
-                      artworkVersion,
-                      file.media_kind === 'video' ? 'poster' : 'cover',
-                    )
-                  "
-                  alt=""
-                  loading="lazy"
-                  class="h-full w-full object-cover"
-                />
-                <div
-                  v-else
-                  class="flex h-full w-full items-center justify-center text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  <LuBookOpen v-if="file.media_kind === 'book'" class="h-4 w-4 opacity-55" />
-                  <LuLayers v-else-if="file.media_kind === 'comic'" class="h-4 w-4 opacity-55" />
-                  <LuDisc3 v-else-if="file.media_kind === 'music'" class="h-4 w-4 opacity-55" />
-                  <LuClapperboard v-else class="h-4 w-4 opacity-55" />
-                </div>
+                <LuImage v-if="rawFileCategory(raw) === 'image'" class="h-4 w-4 text-sky-400" />
+                <LuFileText v-else-if="rawFileCategory(raw) === 'sidecar'" class="h-4 w-4 text-amber-400" />
+                <LuBookOpen v-else-if="rawFileCategory(raw) === 'book'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+                <LuLayers v-else-if="rawFileCategory(raw) === 'comic'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+                <LuDisc3 v-else-if="rawFileCategory(raw) === 'music'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+                <LuClapperboard v-else-if="rawFileCategory(raw) === 'video'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+                <LuFile v-else class="h-4 w-4 opacity-70" />
               </div>
 
-              <!-- Filename & Metadata Subtitle -->
+              <!-- Raw File Name -->
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
-                  <span class="truncate text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
-                    {{ file.file_name }}
+                  <span class="truncate font-mono text-[13px] font-medium text-[var(--md-sys-color-on-surface)]">
+                    {{ raw.file_name }}
                   </span>
                   <span
+                    v-if="raw.extension"
                     class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-surface-variant)]"
                   >
-                    {{ file.extension }}
-                  </span>
-                  <span
-                    v-if="fileTaskStatus(file) === 'running'"
-                    class="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
-                  >
-                    <LuLoader2 class="h-2.5 w-2.5 animate-spin" />
-                    <span>刮削中</span>
-                  </span>
-                  <span
-                    v-else-if="fileTaskStatus(file) === 'queued'"
-                    class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-                  >
-                    排队中
-                  </span>
-                  <span
-                    v-else-if="fileTaskStatus(file) === 'unmatched'"
-                    class="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-500"
-                  >
-                    未匹配
-                  </span>
-                  <span
-                    v-else-if="fileTaskStatus(file) === 'failed'"
-                    class="shrink-0 rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-error-container)]"
-                  >
-                    失败
+                    {{ raw.extension }}
                   </span>
                 </div>
-                <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                  <span
-                    v-if="file.display_title && file.display_title !== file.file_name.replace(/\.[^.]+$/, '')"
-                    class="truncate"
-                  >
-                    {{ file.display_title }}
-                  </span>
-                  <span v-if="file.display_subtitle" class="truncate opacity-80">
-                    {{ file.display_subtitle }}
-                  </span>
-                  <span v-if="file.year" class="shrink-0 font-mono opacity-75">
-                    {{ file.year }}
-                  </span>
-                  <span class="shrink-0 font-mono opacity-70 md:hidden">
-                    {{ formatBytes(file.file_size) }}
-                  </span>
+                <div class="mt-0.5 flex items-center gap-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)] md:hidden">
+                  <span class="font-mono">{{ formatBytes(raw.file_size) }}</span>
+                  <span>·</span>
+                  <span>{{ rawFileKindLabel(raw) }}</span>
                 </div>
               </div>
 
               <!-- Size Column -->
               <div class="hidden w-28 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] md:block">
-                {{ formatBytes(file.file_size) }}
+                {{ formatBytes(raw.file_size) }}
               </div>
 
               <!-- Modified Date Column -->
               <div class="hidden w-24 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] opacity-80 xl:block">
-                {{ formatModifiedDate(file.modified_unix_secs) }}
+                {{ formatModifiedDate(raw.modified_unix_secs) }}
               </div>
 
-              <!-- Completeness Status Pills -->
-              <div class="hidden w-40 shrink-0 items-center justify-end gap-1 sm:flex">
+              <!-- File Kind Column -->
+              <div class="hidden w-32 shrink-0 items-center justify-end sm:flex">
                 <span
-                  class="rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                  class="rounded-full px-2 py-0.5 text-[10px] font-medium"
                   :class="
-                    file.completeness.has_cover
-                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                      : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
-                  "
-                >
-                  {{ file.completeness.has_cover ? '封面' : '缺封' }}
-                </span>
-                <span
-                  class="rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-                  :class="
-                    file.completeness.has_summary_or_lyrics
-                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                    raw.is_media
+                      ? 'bg-[var(--md-sys-color-primary-container)]/75 text-[var(--md-sys-color-on-primary-container)]'
                       : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
                   "
                 >
-                  {{
-                    file.media_kind === 'music'
-                      ? file.completeness.has_summary_or_lyrics
-                        ? '歌词'
-                        : '缺词'
-                      : file.completeness.has_summary_or_lyrics
-                        ? '简介'
-                        : '缺介'
-                  }}
-                </span>
-                <span
-                  class="rounded-full px-1.5 py-0.5 text-[10px] font-medium"
-                  :class="
-                    file.completeness.has_nfo_or_tag_block
-                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-                  "
-                >
-                  {{ file.completeness.has_nfo_or_tag_block ? '标签' : '缺标' }}
-                </span>
-                <span
-                  v-if="file.media_kind === 'book' && file.extension === 'epub' && isOrigBackupFile(file.file_name)"
-                  class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-                  title="规范化保留的原始 EPUB 备份"
-                >
-                  备份
-                </span>
-                <span
-                  v-else-if="file.media_kind === 'book' && file.completeness.is_normalized"
-                  class="rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
-                  title="已完成 EPUB 3.0 规范化"
-                >
-                  已规范
+                  {{ rawFileKindLabel(raw) }}
                 </span>
               </div>
 
-              <!-- Quick Row Actions -->
-              <div class="flex w-20 shrink-0 items-center justify-end gap-0.5 opacity-65 transition group-hover:opacity-100">
+              <!-- Raw File Quick Actions -->
+              <div class="flex w-24 shrink-0 items-center justify-end gap-0.5 opacity-70 transition group-hover:opacity-100">
                 <button
-                  v-if="
-                    file.media_kind === 'book' &&
-                    (file.extension === 'txt' || file.extension === 'epub')
-                  "
+                  v-if="mediaEntryMap.get(raw.rel_path)"
                   type="button"
                   class="md-icon-btn md-icon-btn-sm md-state"
-                  :title="file.extension === 'txt' ? '正文编辑与转 EPUB' : '编辑目录与正文'"
-                  @click.stop="emit('openBookContentEditor', file)"
+                  title="按模板整理归档此媒体文件"
+                  @click.stop="emit('openRename', [mediaEntryMap.get(raw.rel_path)!])"
                 >
-                  <LuFileText class="h-4 w-4" />
-                </button>
-
-                <button
-                  v-if="
-                    file.media_kind === 'book' &&
-                    (file.extension === 'txt' || file.extension === 'epub' || file.extension === 'pdf') &&
-                    !isOrigBackupFile(file.file_name)
-                  "
-                  type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state"
-                  :class="file.completeness.is_normalized ? 'text-emerald-500' : ''"
-                  :title="
-                    file.completeness.is_normalized
-                      ? '已规范化 EPUB 3.0（点击可按新参数重新规范化）'
-                      : '转为规范化压缩 EPUB 3.0'
-                  "
-                  @click.stop="emit('openBookNormalizeEpub', [file])"
-                >
-                  <LuPackageCheck class="h-4 w-4" />
-                </button>
-
-                <button
-                  v-if="file.media_kind === 'comic'"
-                  type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state"
-                  title="漫画页面管理与瘦身"
-                  @click.stop="emit('openComicPageManager', file)"
-                >
-                  <LuImage class="h-4 w-4" />
-                </button>
-
-                <button
-                  v-if="file.media_kind === 'music'"
-                  type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state"
-                  title="音频工具箱"
-                  @click.stop="emit('openMusicToolbox', [file])"
-                >
-                  <LuMusic class="h-4 w-4" />
-                </button>
-
-                <button
-                  v-if="file.media_kind === 'video'"
-                  type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state"
-                  title="视频字幕与剧集工具箱"
-                  @click.stop="emit('openVideoToolbox', [file])"
-                >
-                  <LuFilm class="h-4 w-4" />
+                  <LuFileSignature class="h-4 w-4" />
                 </button>
 
                 <button
                   type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state"
-                  title="快速自动刮削此条目"
-                  @click.stop="emit('enqueueScrapeFiles', [file])"
+                  class="md-icon-btn md-icon-btn-sm md-state text-red-400 hover:bg-red-500/10"
+                  title="仅删除此原始文件（不删除同名外挂）"
+                  @click.stop="emit('requestDeleteFiles', [raw.rel_path], false)"
                 >
-                  <LuSparkles class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+                  <LuTrash2 class="h-4 w-4" />
                 </button>
               </div>
             </div>
-          </div>
-        </div>
-
-        <!-- Load More Bar (Folder Mode) -->
-        <div
-          v-if="filteredFiles.length > visibleFiles.length"
-          class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          <span>
-            {{
-              txt.batch.showingOf
-                .replace('{shown}', String(visibleFiles.length))
-                .replace('{total}', String(filteredFiles.length))
-            }}
-          </span>
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
-              @click="emit('loadMore')"
-            >
-              {{
-                txt.batch.loadMore.replace(
-                  '{remaining}',
-                  String(filteredFiles.length - visibleFiles.length),
-                )
-              }}
-            </button>
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-text md-state"
-              @click="emit('showAll')"
-            >
-              {{ txt.batch.showAll }}
-            </button>
           </div>
         </div>
       </div>
@@ -1060,10 +991,28 @@ function relativeDirBadge(relPath: string): string | null {
               <button
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
+                title="按模板整理归档此条目"
+                @click.stop="emit('openRename', [file])"
+              >
+                <LuFileSignature class="h-4 w-4" />
+              </button>
+
+              <button
+                type="button"
+                class="md-icon-btn md-icon-btn-sm md-state"
                 title="快速自动刮削此条目"
                 @click.stop="emit('enqueueScrapeFiles', [file])"
               >
                 <LuSparkles class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+              </button>
+
+              <button
+                type="button"
+                class="md-icon-btn md-icon-btn-sm md-state text-red-400 hover:bg-red-500/10"
+                title="删除此条目及同名外挂文件"
+                @click.stop="emit('requestDeleteFiles', [file.rel_path], true)"
+              >
+                <LuTrash2 class="h-4 w-4" />
               </button>
             </div>
           </div>
@@ -1128,91 +1077,137 @@ function relativeDirBadge(relPath: string): string | null {
 
           <div class="mx-1 h-5 w-px bg-[var(--md-sys-color-outline-variant)]" />
 
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-filled md-state"
-            @click="emit('enqueueScrapeSelection')"
-          >
-            <LuSparkles class="h-3.5 w-3.5" />
-            <span>自动刮削</span>
-          </button>
+          <template v-if="isFolderManagerMode">
+            <button
+              v-if="checkedFiles.length > 0"
+              type="button"
+              class="md-btn md-btn-sm md-btn-tonal md-state"
+              title="按命名模板整理归档所选媒体文件"
+              @click="emit('openRename', checkedFiles)"
+            >
+              <LuFileSignature class="h-3.5 w-3.5" />
+              <span>整理归档 ({{ checkedFiles.length }})</span>
+            </button>
 
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            title="在三栏刮削工作台中逐项对照与编辑已选条目"
-            @click="emit('openScrapeWorkbench', checkedFiles)"
-          >
-            <LuColumns3 class="h-3.5 w-3.5" />
-            <span>刮削工作台</span>
-          </button>
+            <button
+              v-if="checkedFiles.length > 0"
+              type="button"
+              class="md-btn md-btn-sm md-btn-tonal md-state"
+              @click="emit('enqueueScrapeSelection')"
+            >
+              <LuSparkles class="h-3.5 w-3.5" />
+              <span>自动刮削 ({{ checkedFiles.length }})</span>
+            </button>
 
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            @click="emit('openBatchMetadata')"
-          >
-            <LuPencil class="h-3.5 w-3.5" />
-            <span>批量编辑</span>
-          </button>
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-outlined md-state !border-red-500/45 !text-red-400 hover:!bg-red-500/10"
+              title="仅删除所选原始文件本身（不删除同名外挂）"
+              @click="emit('requestDeleteFiles', selectedRawPaths, false)"
+            >
+              <LuTrash2 class="h-3.5 w-3.5" />
+              <span>删除文件 ({{ selectedRawPaths.length }})</span>
+            </button>
+          </template>
 
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="emit('openRename')"
-          >
-            <LuFileSignature class="h-3.5 w-3.5" />
-            <span>重命名</span>
-          </button>
+          <template v-else>
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-filled md-state"
+              @click="emit('enqueueScrapeSelection')"
+            >
+              <LuSparkles class="h-3.5 w-3.5" />
+              <span>自动刮削</span>
+            </button>
 
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
-            @click="emit('openDryRun')"
-          >
-            <span>置信度预演</span>
-          </button>
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-tonal md-state"
+              title="在三栏刮削工作台中逐项对照与编辑已选条目"
+              @click="emit('openScrapeWorkbench', checkedFiles)"
+            >
+              <LuColumns3 class="h-3.5 w-3.5" />
+              <span>刮削工作台</span>
+            </button>
 
-          <button
-            v-if="selectedBookEntries.length > 0"
-            type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
-            title="将所选 TXT / EPUB / PDF 批量转为规范化压缩 EPUB 3.0"
-            @click="emit('openBookNormalizeEpub', selectedBookEntries)"
-          >
-            <LuPackageCheck class="h-3.5 w-3.5" />
-            <span>转规范化 EPUB</span>
-          </button>
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-tonal md-state"
+              @click="emit('openBatchMetadata')"
+            >
+              <LuPencil class="h-3.5 w-3.5" />
+              <span>批量编辑</span>
+            </button>
 
-          <button
-            v-if="selectedComicEntries.length > 0"
-            type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
-            @click="emit('openComicSeriesTools')"
-          >
-            <LuLayers class="h-3.5 w-3.5" />
-            <span>漫画工具</span>
-          </button>
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-outlined md-state"
+              title="按元信息模板重命名并归档目录"
+              @click="emit('openRename', checkedFiles)"
+            >
+              <LuFileSignature class="h-3.5 w-3.5" />
+              <span>整理归档</span>
+            </button>
 
-          <button
-            v-if="selectedMusicEntries.length > 0"
-            type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
-            @click="emit('openMusicToolbox', selectedMusicEntries)"
-          >
-            <LuMusic class="h-3.5 w-3.5" />
-            <span>音频工具</span>
-          </button>
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-text md-state"
+              @click="emit('openDryRun')"
+            >
+              <span>置信度预演</span>
+            </button>
 
-          <button
-            v-if="selectedVideoEntries.length > 0"
-            type="button"
-            class="md-btn md-btn-sm md-btn-text md-state"
-            @click="emit('openVideoToolbox', selectedVideoEntries)"
-          >
-            <LuFilm class="h-3.5 w-3.5" />
-            <span>视频工具</span>
-          </button>
+            <button
+              v-if="selectedBookEntries.length > 0"
+              type="button"
+              class="md-btn md-btn-sm md-btn-text md-state"
+              title="将所选 TXT / EPUB / PDF 批量转为规范化压缩 EPUB 3.0"
+              @click="emit('openBookNormalizeEpub', selectedBookEntries)"
+            >
+              <LuPackageCheck class="h-3.5 w-3.5" />
+              <span>转规范化 EPUB</span>
+            </button>
+
+            <button
+              v-if="selectedComicEntries.length > 0"
+              type="button"
+              class="md-btn md-btn-sm md-btn-text md-state"
+              @click="emit('openComicSeriesTools')"
+            >
+              <LuLayers class="h-3.5 w-3.5" />
+              <span>漫画工具</span>
+            </button>
+
+            <button
+              v-if="selectedMusicEntries.length > 0"
+              type="button"
+              class="md-btn md-btn-sm md-btn-text md-state"
+              @click="emit('openMusicToolbox', selectedMusicEntries)"
+            >
+              <LuMusic class="h-3.5 w-3.5" />
+              <span>音频工具</span>
+            </button>
+
+            <button
+              v-if="selectedVideoEntries.length > 0"
+              type="button"
+              class="md-btn md-btn-sm md-btn-text md-state"
+              @click="emit('openVideoToolbox', selectedVideoEntries)"
+            >
+              <LuFilm class="h-3.5 w-3.5" />
+              <span>视频工具</span>
+            </button>
+
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-outlined md-state !border-red-500/45 !text-red-400 hover:!bg-red-500/10"
+              title="删除所选媒体条目及同名外挂文件"
+              @click="emit('requestDeleteFiles', checkedFiles.map((f) => f.rel_path), true)"
+            >
+              <LuTrash2 class="h-3.5 w-3.5" />
+              <span>删除</span>
+            </button>
+          </template>
         </div>
       </Transition>
     </Teleport>

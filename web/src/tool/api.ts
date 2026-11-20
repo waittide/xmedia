@@ -33,6 +33,7 @@ import type {
   ConvertTxtToEpubResponseDto,
   MergeComicsReportDto,
   SaveComicPageInput,
+  DeleteFilesReportDto,
   DirectorySnapshot,
   EditableBookChapterDto,
   InsertedEpubImageDto,
@@ -44,6 +45,7 @@ import type {
   MediaMetadataPatchEnvelope,
   ProviderStatusDto,
   PublicSettingsDto,
+  RenameConflictPolicy,
   RenameHistoryBatchDto,
   RenamePlanItem,
   UndoRenameReportDto,
@@ -476,6 +478,7 @@ export const toolApi = {
     kind: MediaKind | null,
     episodeTemplate?: string | null,
     onProgress?: StreamProgressCallback,
+    conflictPolicy: RenameConflictPolicy = 'skip',
   ): Promise<RenamePlanItem[]> {
     const body = JSON.stringify({
       root_id: rootId,
@@ -483,6 +486,7 @@ export const toolApi = {
       template: template || undefined,
       episode_template: episodeTemplate || undefined,
       kind: kind || undefined,
+      conflict_policy: conflictPolicy,
     })
     if (onProgress) {
       return toolStreamRequest<RenamePlanItem[]>(
@@ -532,6 +536,21 @@ export const toolApi = {
     return toolRequest<{ moved_count: number }>('/files/rename/execute', {
       method: 'POST',
       body,
+    })
+  },
+
+  deleteFiles(
+    rootId: string,
+    paths: string[],
+    deleteCompanions: boolean,
+  ): Promise<DeleteFilesReportDto> {
+    return toolRequest<DeleteFilesReportDto>('/files/delete', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        paths,
+        delete_companions: deleteCompanions,
+      }),
     })
   },
 

@@ -320,6 +320,16 @@ export interface MediaFileEntry {
   completeness: CompletenessFlags
 }
 
+export interface RawFileEntryDto {
+  rel_path: string
+  file_name: string
+  extension: string
+  file_size: number
+  modified_unix_secs: number
+  is_media: boolean
+  media_kind: MediaKind | null
+}
+
 export interface DirectorySnapshot {
   root_id: string
   root_name: string
@@ -327,6 +337,7 @@ export interface DirectorySnapshot {
   parent_rel_path: string | null
   folders: FolderEntryDto[]
   files: MediaFileEntry[]
+  raw_files?: RawFileEntryDto[]
 }
 
 export interface BookFileMeta {
@@ -531,12 +542,27 @@ export type MediaMetadataPatchEnvelope =
   | { kind: 'music'; patch: MusicMetaPatch }
   | { kind: 'video'; patch: VideoMetaPatch }
 
+export type RenameConflictPolicy = 'skip' | 'auto_suffix' | 'overwrite'
+
 export interface RenamePlanItem {
   from_rel_path: string
   to_rel_path: string
   companion_moves: [string, string][]
   conflict: string | null
   unchanged: boolean
+  will_overwrite?: boolean
+}
+
+export interface DeleteFileErrorDto {
+  rel_path: string
+  error: string
+}
+
+export interface DeleteFilesReportDto {
+  deleted_count: number
+  deleted_paths: string[]
+  deleted_companions: string[]
+  failed: DeleteFileErrorDto[]
 }
 
 export interface ProviderStatusDto {

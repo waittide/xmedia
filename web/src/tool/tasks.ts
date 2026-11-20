@@ -45,7 +45,8 @@ export interface ToolTaskEntry {
   finishedAt?: number
 }
 
-type FileScrapedListener = (detail: MediaFileDetail) => void
+type FileScrapedListener = (detail: MediaFileDetail, prevRelPath: string) => void
+type BatchSettledListener = (task: ToolTaskEntry) => void
 
 const SCRAPE_CONCURRENCY = 2
 
@@ -53,6 +54,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
   const entries = ref<ToolTaskEntry[]>([])
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const fileListeners = new Set<FileScrapedListener>()
+  const batchSettledListeners = new Set<BatchSettledListener>()
 
   let workerRunning = false
   const pendingScrapeBatchIds: string[] = []
@@ -64,10 +66,27 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     }
   }
 
-  function notifyFileScraped(detail: MediaFileDetail): void {
+  function notifyFileScraped(detail: MediaFileDetail, prevRelPath: string): void {
     for (const fn of fileListeners) {
       try {
-        fn(detail)
+        fn(detail, prevRelPath)
+      } catch {
+        // ignore listener error
+      }
+    }
+  }
+
+  function onBatchSettled(fn: BatchSettledListener): () => void {
+    batchSettledListeners.add(fn)
+    return () => {
+      batchSettledListeners.delete(fn)
+    }
+  }
+
+  function notifyBatchSettled(task: ToolTaskEntry): void {
+    for (const fn of batchSettledListeners) {
+      try {
+        fn(task)
       } catch {
         // ignore listener error
       }
@@ -293,15 +312,20 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
             const activeNames = items.filter((it) => it.status === 'running').map((it) => it.fileName)
             task!.detail = activeNames.join(' · ') || sub.fileName
             try {
+              const prevRelPath = sub.relPath
               const res = await toolApi.autoScrapeFile(
                 sub.rootId,
-                sub.relPath,
+                prevRelPath,
                 sub.mediaKind,
                 task!.scrapeOptions,
               )
               sub.confidence = res.confidence
               sub.finishedAt = Date.now()
               if (res.detail?.entry) {
+                if (res.detail.entry.rel_path && res.detail.entry.rel_path !== sub.relPath) {
+                  sub.relPath = res.detail.entry.rel_path
+                  sub.fileName = res.detail.entry.file_name
+                }
                 sub.matchedTitle = res.detail.entry.display_title || undefined
                 sub.matchedSubtitle = res.detail.entry.display_subtitle || undefined
                 sub.hasCover = res.detail.entry.completeness.has_cover
@@ -311,7 +335,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
               if (res.matched) {
                 sub.status = 'matched'
                 task!.matchedCount = (task!.matchedCount ?? 0) + 1
-                notifyFileScraped(res.detail)
+                notifyFileScraped(res.detail, prevRelPath)
               } else {
                 sub.status = 'unmatched'
                 task!.unmatchedCount = (task!.unmatchedCount ?? 0) + 1
@@ -376,6 +400,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     } else {
       task.status = 'completed'
     }
+    notifyBatchSettled(task)
   }
 
   function cancelTask(id: string): void {
@@ -492,6 +517,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     unresolvedCount,
     fileStatusMap,
     onFileScraped,
+    onBatchSettled,
     startTask,
     updateTask,
     completeTask,

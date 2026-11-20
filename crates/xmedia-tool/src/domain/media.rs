@@ -39,6 +39,17 @@ pub struct MediaFileEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RawFileEntryDto {
+    pub rel_path: String,
+    pub file_name: String,
+    pub extension: String,
+    pub file_size: u64,
+    pub modified_unix_secs: i64,
+    pub is_media: bool,
+    pub media_kind: Option<MediaKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectorySnapshot {
     pub root_id: RootId,
     pub root_name: String,
@@ -46,6 +57,8 @@ pub struct DirectorySnapshot {
     pub parent_rel_path: Option<String>,
     pub folders: Vec<FolderEntryDto>,
     pub files: Vec<MediaFileEntry>,
+    #[serde(default)]
+    pub raw_files: Vec<RawFileEntryDto>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -269,6 +282,15 @@ pub struct VideoMetaPatch {
     pub locked_fields: Option<Vec<String>>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenameConflictPolicy {
+    #[default]
+    Skip,
+    AutoSuffix,
+    Overwrite,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenamePlanItem {
     pub from_rel_path: String,
@@ -276,4 +298,20 @@ pub struct RenamePlanItem {
     pub companion_moves: Vec<(String, String)>,
     pub conflict: Option<String>,
     pub unchanged: bool,
+    #[serde(default)]
+    pub will_overwrite: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteFileErrorDto {
+    pub rel_path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteFilesReportDto {
+    pub deleted_count: usize,
+    pub deleted_paths: Vec<String>,
+    pub deleted_companions: Vec<String>,
+    pub failed: Vec<DeleteFileErrorDto>,
 }
