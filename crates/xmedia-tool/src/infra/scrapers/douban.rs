@@ -233,9 +233,13 @@ pub(crate) fn parse_douban_subject_html(
     // Prefer the last `.intro` inside `#link-report` (which holds the unfolded `.all.hidden` text)
     let report_slice = if let Some(idx) = html.find("id=\"link-report\"") {
         let tail = &html[idx..];
-        let end = tail
-            .find("id=\"author-intro\"")
-            .unwrap_or(tail.len().min(25_000));
+        let end = tail.find("id=\"author-intro\"").unwrap_or_else(|| {
+            let mut limit = tail.len().min(25_000);
+            while limit > 0 && !tail.is_char_boundary(limit) {
+                limit -= 1;
+            }
+            limit
+        });
         &tail[..end]
     } else {
         let _ = &*RE_INTRO_DIV;
@@ -561,5 +565,27 @@ impl ScraperProviderPort for DoubanBookProvider {
         parse_douban_subject_html(id, &html, target).ok_or_else(|| {
             DomainError::NotFound(format!("豆瓣读书 subject '{id}' blocked or missing"))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_subject_html_handles_multibyte_char_at_report_slice_boundary() {
+        let mut html = String::from(
+            r#"<html><body><h1><span property="v:itemreviewed">测试书名</span></h1><div id="link-report"><div class="intro"><p>简介内容</p></div>"#,
+        );
+        let link_idx = html.find(r#"id="link-report""#).unwrap();
+        let pad_len = 24_999 - (html.len() - link_idx);
+        html.push_str(&"a".repeat(pad_len));
+        // '园' occupies bytes 24999..25002 relative to id="link-report"
+        html.push_str("园</div></body></html>");
+
+        let parsed = parse_douban_subject_html("1234567", &html, ScrapeTargetKind::Book)
+            .expect("should parse without UTF-8 boundary panic");
+        assert_eq!(parsed.title.as_deref(), Some("测试书名"));
+        assert_eq!(parsed.summary.as_deref(), Some("简介内容"));
     }
 }

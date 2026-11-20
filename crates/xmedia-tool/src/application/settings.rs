@@ -242,8 +242,17 @@ fn mask_secret(raw: Option<&str>) -> Option<String> {
     if val.is_empty() {
         return None;
     }
-    if val.len() <= 8 {
+    if val.chars().count() <= 8 {
         return Some("••••••••".to_string());
     }
-    Some(format!("{}••••{}", &val[..4], &val[val.len() - 4..]))
+    let prefix: String = val.chars().take(4).collect();
+    let suffix: String = val
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    Some(format!("{prefix}••••{suffix}"))
 }

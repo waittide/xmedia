@@ -486,9 +486,7 @@ fn parse_nfo_into(xml_bytes: &[u8], meta: &mut VideoFileMeta) {
                             "episode" => meta.episode_number = trimmed.parse::<u32>().ok(),
                             "year" => meta.year = trimmed.parse::<i32>().ok(),
                             "premiered" | "aired" if meta.year.is_none() => {
-                                if trimmed.len() >= 4 {
-                                    meta.year = trimmed[..4].parse::<i32>().ok();
-                                }
+                                meta.year = trimmed.get(..4).and_then(|s| s.parse::<i32>().ok());
                             }
                             "rating" if parent == "movie" || parent == "episodedetails" => {
                                 meta.rating = trimmed.parse::<f32>().ok();
