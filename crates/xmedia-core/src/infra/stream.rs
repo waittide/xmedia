@@ -3,7 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{GB18030, UTF_8, UTF_16BE, UTF_16LE};
 use futures_core::Stream;
@@ -126,18 +126,21 @@ pub async fn open_file_range_stream_spec(
             .map_err(|e| DomainError::Storage(format!("failed to seek media file: {e}")))?;
     }
 
-    let mut remaining = end_inclusive - start + 1;
+    let remaining = end_inclusive - start + 1;
     let (tx, rx) = mpsc::channel::<DomainResult<Bytes>>(8);
+    let mut limited = file.take(remaining);
 
     tokio::spawn(async move {
-        let mut buf = vec![0u8; 64 * 1024];
-        while remaining > 0 {
-            let to_read = (remaining as usize).min(buf.len());
-            match file.read(&mut buf[..to_read]).await {
+        const CHUNK_SIZE: usize = 64 * 1024;
+        let mut buf = BytesMut::with_capacity(CHUNK_SIZE);
+        loop {
+            if buf.capacity() < CHUNK_SIZE / 2 {
+                buf.reserve(CHUNK_SIZE);
+            }
+            match limited.read_buf(&mut buf).await {
                 Ok(0) => break,
-                Ok(n) => {
-                    remaining = remaining.saturating_sub(n as u64);
-                    let chunk = Bytes::copy_from_slice(&buf[..n]);
+                Ok(_) => {
+                    let chunk = buf.split().freeze();
                     if tx.send(Ok(chunk)).await.is_err() {
                         break;
                     }
@@ -160,6 +163,64 @@ pub async fn open_file_range_stream_spec(
         end_inclusive,
         total_size,
     })
+}
+
+/// Moves a temporary file into `dest`, falling back to streaming copy + delete when crossing
+/// filesystems (`EXDEV`), returning the final file size in bytes.
+pub async fn move_or_copy_file(src: &Path, dest: &Path) -> DomainResult<u64> {
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            DomainError::Storage(format!(
+                "failed to create destination dir {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    if tokio::fs::rename(src, dest).await.is_err() {
+        tokio::fs::copy(src, dest).await.map_err(|e| {
+            DomainError::Storage(format!(
+                "failed to copy uploaded file to {}: {e}",
+                dest.display()
+            ))
+        })?;
+        let _ = tokio::fs::remove_file(src).await;
+    }
+    let meta = tokio::fs::metadata(dest).await.map_err(|e| {
+        DomainError::Storage(format!(
+            "failed to stat persisted file {}: {e}",
+            dest.display()
+        ))
+    })?;
+    Ok(meta.len())
+}
+
+/// Computes SHA-256 hex digest of a file on disk using a streaming buffer inside `spawn_blocking`.
+pub async fn sha256_file_hex(path: PathBuf) -> DomainResult<(u64, String)> {
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path).map_err(|e| {
+            DomainError::Storage(format!(
+                "failed to open file for hashing {}: {e}",
+                path.display()
+            ))
+        })?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0u8; 64 * 1024];
+        let mut total = 0u64;
+        loop {
+            let n = file.read(&mut buf).map_err(|e| {
+                DomainError::Storage(format!("failed reading file for hashing: {e}"))
+            })?;
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+            hasher.update(&buf[..n]);
+        }
+        Ok((total, hex::encode(hasher.finalize())))
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("sha256_file_hex task failed: {e}")))?
 }
 
 /// Decodes arbitrary text bytes with BOM & chardetng fallback (UTF-8 / UTF-16 / GB18030 / Shift-JIS).
@@ -186,4 +247,66 @@ pub fn decode_text_smart(bytes: &[u8]) -> (String, &'static str) {
     let encoding = if guessed == UTF_8 { GB18030 } else { guessed };
     let (cow, used, _) = encoding.decode(bytes);
     (cow.into_owned(), used.name())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::task::Poll;
+    use tempfile::TempDir;
+
+    async fn collect_stream(mut stream: ByteChunkStream) -> Vec<u8> {
+        let mut out = Vec::new();
+        while let Some(item) = std::future::poll_fn(|cx| match stream.as_mut().poll_next(cx) {
+            Poll::Ready(v) => Poll::Ready(v),
+            Poll::Pending => Poll::Pending,
+        })
+        .await
+        {
+            out.extend_from_slice(&item.unwrap());
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn open_file_range_stream_spec_handles_full_partial_and_suffix_ranges() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("sample.bin");
+        let payload: Vec<u8> = (0u8..=255).cycle().take(150_000).collect();
+        tokio::fs::write(&file_path, &payload).await.unwrap();
+
+        let full = open_file_range_stream_spec(&file_path, ByteRangeSpec::Full)
+            .await
+            .unwrap();
+        assert_eq!(full.start, 0);
+        assert_eq!(full.end_inclusive, 149_999);
+        assert_eq!(full.total_size, 150_000);
+        assert_eq!(collect_stream(full.stream).await, payload);
+
+        let partial = open_file_range_stream_spec(
+            &file_path,
+            ByteRangeSpec::FromTo {
+                start: 100,
+                end_inclusive: Some(70_099),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(partial.start, 100);
+        assert_eq!(partial.end_inclusive, 70_099);
+        let partial_bytes = collect_stream(partial.stream).await;
+        assert_eq!(partial_bytes.len(), 70_000);
+        assert_eq!(partial_bytes, payload[100..=70_099]);
+
+        let suffix =
+            open_file_range_stream_spec(&file_path, ByteRangeSpec::Suffix { last_bytes: 512 })
+                .await
+                .unwrap();
+        assert_eq!(suffix.start, 150_000 - 512);
+        assert_eq!(suffix.end_inclusive, 149_999);
+        assert_eq!(
+            collect_stream(suffix.stream).await,
+            payload[150_000 - 512..]
+        );
+    }
 }

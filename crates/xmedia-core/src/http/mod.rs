@@ -1,5 +1,8 @@
+use std::path::{Path, PathBuf};
+
 use axum::Json;
 use axum::body::Body;
+use axum::extract::multipart::Field;
 use axum::http::header::{
     ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH,
     CONTENT_RANGE, CONTENT_TYPE, COOKIE, SET_COOKIE, WWW_AUTHENTICATE,
@@ -10,6 +13,8 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::Serialize;
+use tokio::io::AsyncWriteExt;
+use uuid::Uuid;
 
 use crate::application::auth::AuthService;
 use crate::application::ports::{BinaryPayload, ByteChunkStream, ByteRangeSpec, ByteRangeStream};
@@ -461,6 +466,93 @@ pub fn into_binary_cache_response(payload: BinaryPayload) -> Response {
     res
 }
 
+/// RAII temporary upload file created while streaming multipart uploads to disk.
+/// Automatically removes the underlying file on drop unless moved elsewhere.
+#[derive(Debug)]
+pub struct TempUploadFile {
+    path: PathBuf,
+    size: u64,
+}
+
+impl TempUploadFile {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
+}
+
+impl Drop for TempUploadFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Streams an Axum multipart `Field` directly into a temporary file chunk-by-chunk,
+/// enforcing `max_bytes` incrementally so large uploads never buffer in RAM.
+pub async fn stream_multipart_field_to_temp_file(
+    field: &mut Field<'_>,
+    max_bytes: u64,
+    ext_hint: Option<&str>,
+) -> ApiResult<TempUploadFile> {
+    let clean_ext = ext_hint
+        .map(|e| {
+            e.trim()
+                .trim_start_matches('.')
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect::<String>()
+        })
+        .filter(|e| !e.is_empty());
+
+    let file_name = match clean_ext {
+        Some(ext) => format!("xmedia_upload_{}.{ext}.tmp", Uuid::now_v7()),
+        None => format!("xmedia_upload_{}.tmp", Uuid::now_v7()),
+    };
+    let path = std::env::temp_dir().join(file_name);
+    let mut file = tokio::fs::File::create(&path).await.map_err(|e| {
+        ApiError(DomainError::Storage(format!(
+            "failed to create temp upload file: {e}"
+        )))
+    })?;
+    let mut guard = TempUploadFile { path, size: 0 };
+
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| ApiError(DomainError::Validation(format!("upload read error: {e}"))))?
+    {
+        if chunk.is_empty() {
+            continue;
+        }
+        guard.size = guard.size.saturating_add(chunk.len() as u64);
+        if guard.size > max_bytes {
+            return Err(ApiError(DomainError::Validation(format!(
+                "uploaded file exceeds maximum allowed size ({max_bytes} bytes)"
+            ))));
+        }
+        file.write_all(&chunk).await.map_err(|e| {
+            ApiError(DomainError::Storage(format!(
+                "failed writing temp upload chunk: {e}"
+            )))
+        })?;
+    }
+
+    file.flush().await.map_err(|e| {
+        ApiError(DomainError::Storage(format!(
+            "failed flushing temp upload file: {e}"
+        )))
+    })?;
+
+    Ok(guard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,5 +604,21 @@ mod tests {
         assert!(!msg.contains("sqlite"));
         assert!(!msg.contains("SELECT"));
         assert_eq!(msg, "Internal database error");
+    }
+
+    #[test]
+    fn temp_upload_file_cleans_up_on_drop() {
+        let path = std::env::temp_dir().join(format!("xmedia_drop_test_{}.tmp", Uuid::now_v7()));
+        std::fs::write(&path, b"hello").unwrap();
+        assert!(path.exists());
+        {
+            let guard = TempUploadFile {
+                path: path.clone(),
+                size: 5,
+            };
+            assert_eq!(guard.size(), 5);
+            assert!(!guard.is_empty());
+        }
+        assert!(!path.exists());
     }
 }

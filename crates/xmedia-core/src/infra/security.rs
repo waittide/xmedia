@@ -1,3 +1,7 @@
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit};
 use argon2::Argon2;
@@ -13,8 +17,159 @@ use crate::application::ports::{AuthClaims, PasswordHasherPort, TokenServicePort
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::user::{UserId, UserRole};
 
+pub const DEFAULT_PASSWORD_CACHE_TTL: Duration = Duration::from_secs(60);
+pub const DEFAULT_PASSWORD_CACHE_CAPACITY: usize = 512;
+
+fn sha256_bytes(input: &[u8]) -> [u8; 32] {
+    let mut sha = Sha256::new();
+    sha.update(input);
+    let digest = sha.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
+fn password_hash_prefix(hash: &str) -> String {
+    hash.chars().take(48).collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VerifyCacheKey {
+    scope: String,
+    password_hash_prefix: String,
+    plain_sha256: [u8; 32],
+}
+
+/// Short-TTL, bounded-capacity in-memory cache for verified password hashes.
+/// Never stores plaintext passwords; keys only contain scope, hash prefix, and SHA-256 digests.
+pub struct PasswordVerifyCache {
+    ttl: Duration,
+    max_entries: usize,
+    entries: Mutex<HashMap<VerifyCacheKey, Instant>>,
+}
+
+impl PasswordVerifyCache {
+    pub fn new(ttl: Duration, max_entries: usize) -> Self {
+        Self {
+            ttl,
+            max_entries: max_entries.max(1),
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn check_hash(&self, hash: &str, plain: &str) -> bool {
+        let key = VerifyCacheKey {
+            scope: hex::encode(sha256_bytes(hash.as_bytes())),
+            password_hash_prefix: password_hash_prefix(hash),
+            plain_sha256: sha256_bytes(plain.as_bytes()),
+        };
+        self.contains_valid(&key)
+    }
+
+    pub fn record_hash(&self, hash: &str, plain: &str) {
+        let key = VerifyCacheKey {
+            scope: hex::encode(sha256_bytes(hash.as_bytes())),
+            password_hash_prefix: password_hash_prefix(hash),
+            plain_sha256: sha256_bytes(plain.as_bytes()),
+        };
+        self.insert_valid(key);
+    }
+
+    pub fn check_user_basic(&self, user_id: UserId, password_hash: &str, plain: &str) -> bool {
+        let key = VerifyCacheKey {
+            scope: user_id.0.to_string(),
+            password_hash_prefix: password_hash_prefix(password_hash),
+            plain_sha256: sha256_bytes(plain.as_bytes()),
+        };
+        self.contains_valid(&key)
+    }
+
+    pub fn record_user_basic(&self, user_id: UserId, password_hash: &str, plain: &str) {
+        let key = VerifyCacheKey {
+            scope: user_id.0.to_string(),
+            password_hash_prefix: password_hash_prefix(password_hash),
+            plain_sha256: sha256_bytes(plain.as_bytes()),
+        };
+        self.insert_valid(key);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.lock().map(|g| g.len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn contains_valid(&self, key: &VerifyCacheKey) -> bool {
+        let Ok(mut guard) = self.entries.lock() else {
+            return false;
+        };
+        let now = Instant::now();
+        if let Some(&expires_at) = guard.get(key) {
+            if now < expires_at {
+                return true;
+            }
+            guard.remove(key);
+        }
+        false
+    }
+
+    fn insert_valid(&self, key: VerifyCacheKey) {
+        let Ok(mut guard) = self.entries.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        if guard.len() >= self.max_entries {
+            guard.retain(|_, &mut exp| now < exp);
+        }
+        if guard.len() >= self.max_entries
+            && let Some(oldest_key) = guard
+                .iter()
+                .min_by_key(|(_, exp)| **exp)
+                .map(|(k, _)| k.clone())
+        {
+            guard.remove(&oldest_key);
+        }
+        guard.insert(key, now + self.ttl);
+    }
+}
+
+impl Default for PasswordVerifyCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_PASSWORD_CACHE_TTL, DEFAULT_PASSWORD_CACHE_CAPACITY)
+    }
+}
+
+fn verify_argon2_raw(plain: &str, hash: &str) -> DomainResult<bool> {
+    let parsed = PasswordHash::new(hash)
+        .map_err(|e| DomainError::Persistence(format!("invalid password hash: {e}")))?;
+    Ok(Argon2::default()
+        .verify_password(plain.as_bytes(), &parsed)
+        .is_ok())
+}
+
+fn hash_argon2_raw(plain: &str) -> DomainResult<String> {
+    Argon2::default()
+        .hash_password(plain.as_bytes())
+        .map(|h| h.to_string())
+        .map_err(|e| DomainError::Persistence(format!("password hashing failed: {e}")))
+}
+
+fn run_cpu_offloaded<T>(f: impl FnOnce() -> T) -> T {
+    if tokio::runtime::Handle::try_current()
+        .ok()
+        .is_some_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        tokio::task::block_in_place(f)
+    } else {
+        f()
+    }
+}
+
 pub struct SecurityManager {
     cipher_key: [u8; 32],
+    verify_cache: Arc<PasswordVerifyCache>,
 }
 
 impl SecurityManager {
@@ -25,7 +180,34 @@ impl SecurityManager {
         let digest = sha.finalize();
         let mut cipher_key = [0u8; 32];
         cipher_key.copy_from_slice(&digest);
-        Self { cipher_key }
+        Self {
+            cipher_key,
+            verify_cache: Arc::new(PasswordVerifyCache::default()),
+        }
+    }
+
+    pub fn verify_cache(&self) -> &PasswordVerifyCache {
+        &self.verify_cache
+    }
+
+    /// Verifies a password against an Argon2 PHC hash without blocking Tokio worker threads.
+    /// Uses the bounded short-TTL in-memory cache on repeated requests (e.g. concurrent OPDS reads).
+    pub async fn verify_password_async(&self, plain: &str, hash: &str) -> DomainResult<bool> {
+        if self.verify_cache.check_hash(hash, plain) {
+            return Ok(true);
+        }
+        let plain_owned = plain.to_owned();
+        let hash_owned = hash.to_owned();
+        let matched =
+            tokio::task::spawn_blocking(move || verify_argon2_raw(&plain_owned, &hash_owned))
+                .await
+                .map_err(|e| {
+                    DomainError::Persistence(format!("password verification task failed: {e}"))
+                })??;
+        if matched {
+            self.verify_cache.record_hash(hash, plain);
+        }
+        Ok(matched)
     }
 
     pub fn decrypt_subsonic_secret(&self, encoded: &str) -> DomainResult<String> {
@@ -78,18 +260,18 @@ impl SecurityManager {
 
 impl PasswordHasherPort for SecurityManager {
     fn hash_password(&self, plain: &str) -> DomainResult<String> {
-        Argon2::default()
-            .hash_password(plain.as_bytes())
-            .map(|h| h.to_string())
-            .map_err(|e| DomainError::Persistence(format!("password hashing failed: {e}")))
+        run_cpu_offloaded(|| hash_argon2_raw(plain))
     }
 
     fn verify_password(&self, plain: &str, hash: &str) -> DomainResult<bool> {
-        let parsed = PasswordHash::new(hash)
-            .map_err(|e| DomainError::Persistence(format!("invalid password hash: {e}")))?;
-        Ok(Argon2::default()
-            .verify_password(plain.as_bytes(), &parsed)
-            .is_ok())
+        if self.verify_cache.check_hash(hash, plain) {
+            return Ok(true);
+        }
+        let matched = run_cpu_offloaded(|| verify_argon2_raw(plain, hash))?;
+        if matched {
+            self.verify_cache.record_hash(hash, plain);
+        }
+        Ok(matched)
     }
 
     fn encrypt_subsonic_secret(&self, plain: &str) -> DomainResult<String> {
@@ -197,5 +379,79 @@ impl TokenServicePort for JwtTokenService {
 
     fn ttl_seconds(&self) -> u64 {
         self.ttl_seconds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn verify_password_async_caches_positive_result_and_invalidates_on_hash_change() {
+        let mgr = SecurityManager::new("test-secret");
+        let hash1 = mgr.hash_password("super-secret-1").unwrap();
+        let hash2 = mgr.hash_password("super-secret-2").unwrap();
+
+        assert!(
+            mgr.verify_password_async("super-secret-1", &hash1)
+                .await
+                .unwrap()
+        );
+        assert_eq!(mgr.verify_cache().len(), 1);
+        assert!(mgr.verify_cache().check_hash(&hash1, "super-secret-1"));
+
+        // Second call hits cache directly.
+        assert!(
+            mgr.verify_password_async("super-secret-1", &hash1)
+                .await
+                .unwrap()
+        );
+
+        // Wrong password must fail and never be cached.
+        assert!(
+            !mgr.verify_password_async("wrong-pass", &hash1)
+                .await
+                .unwrap()
+        );
+        assert_eq!(mgr.verify_cache().len(), 1);
+
+        // Changed hash must miss cache for old password.
+        assert!(!mgr.verify_cache().check_hash(&hash2, "super-secret-1"));
+        assert!(
+            !mgr.verify_password_async("super-secret-1", &hash2)
+                .await
+                .unwrap()
+        );
+        assert!(
+            mgr.verify_password_async("super-secret-2", &hash2)
+                .await
+                .unwrap()
+        );
+        assert_eq!(mgr.verify_cache().len(), 2);
+    }
+
+    #[test]
+    fn password_verify_cache_respects_ttl_and_capacity_eviction() {
+        let cache = PasswordVerifyCache::new(Duration::from_millis(25), 2);
+        let u1 = UserId(Uuid::new_v4());
+        let u2 = UserId(Uuid::new_v4());
+        let u3 = UserId(Uuid::new_v4());
+
+        cache.record_user_basic(u1, "$argon2id$v=19$hash1", "pw1");
+        std::thread::sleep(Duration::from_millis(5));
+        cache.record_user_basic(u2, "$argon2id$v=19$hash2", "pw2");
+        assert!(cache.check_user_basic(u1, "$argon2id$v=19$hash1", "pw1"));
+        assert!(cache.check_user_basic(u2, "$argon2id$v=19$hash2", "pw2"));
+
+        // Third insert evicts oldest entry (u1) due to max_entries=2.
+        cache.record_user_basic(u3, "$argon2id$v=19$hash3", "pw3");
+        assert_eq!(cache.len(), 2);
+        assert!(!cache.check_user_basic(u1, "$argon2id$v=19$hash1", "pw1"));
+        assert!(cache.check_user_basic(u3, "$argon2id$v=19$hash3", "pw3"));
+
+        // Wait past TTL -> expired entries miss.
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!cache.check_user_basic(u2, "$argon2id$v=19$hash2", "pw2"));
+        assert!(!cache.check_user_basic(u3, "$argon2id$v=19$hash3", "pw3"));
     }
 }

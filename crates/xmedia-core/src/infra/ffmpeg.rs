@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -87,6 +87,7 @@ impl FfmpegToolkit {
 
     pub async fn check_status(&self) -> FfmpegStatusDto {
         let ffmpeg_fut = Command::new(&self.ffmpeg_bin)
+            .kill_on_drop(true)
             .arg("-version")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -104,6 +105,7 @@ impl FfmpegToolkit {
             };
 
         let ffprobe_fut = Command::new(&self.ffprobe_bin)
+            .kill_on_drop(true)
             .arg("-version")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -124,6 +126,7 @@ impl FfmpegToolkit {
 
     pub async fn probe_media(&self, path: &Path) -> DomainResult<ProbedMediaInfo> {
         let fut = Command::new(&self.ffprobe_bin)
+            .kill_on_drop(true)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -244,6 +247,7 @@ impl FfmpegToolkit {
     ) -> DomainResult<Vec<u8>> {
         let vf = format!("scale='min({max_width},iw)':-2");
         let fut = Command::new(&self.ffmpeg_bin)
+            .kill_on_drop(true)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -287,6 +291,7 @@ impl FfmpegToolkit {
     ) -> DomainResult<String> {
         let map_arg = format!("0:{stream_index}");
         let fut = Command::new(&self.ffmpeg_bin)
+            .kill_on_drop(true)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -335,15 +340,19 @@ impl FfmpegToolkit {
         let (tx, rx) = mpsc::channel::<DomainResult<Bytes>>(16);
 
         tokio::spawn(async move {
-            let mut buf = vec![0u8; 32 * 1024];
+            const CHUNK_SIZE: usize = 32 * 1024;
+            let mut buf = BytesMut::with_capacity(CHUNK_SIZE);
             loop {
-                match stdout.read(&mut buf).await {
+                if buf.capacity() < CHUNK_SIZE / 2 {
+                    buf.reserve(CHUNK_SIZE);
+                }
+                match stdout.read_buf(&mut buf).await {
                     Ok(0) => {
                         let _ = child.wait().await;
                         break;
                     }
-                    Ok(n) => {
-                        let chunk = Bytes::copy_from_slice(&buf[..n]);
+                    Ok(_) => {
+                        let chunk = buf.split().freeze();
                         if tx.send(Ok(chunk)).await.is_err() {
                             debug!("client disconnected, terminating ffmpeg process");
                             let _ = child.kill().await;

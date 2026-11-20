@@ -68,14 +68,12 @@ impl UserRepository for ToastyUserRepository {
 
     async fn find_by_api_key(&self, api_key: &str) -> DomainResult<Option<User>> {
         let mut db = self.db.clone();
-        let rows = UserModel::filter_by_api_key(api_key.to_string())
+        let opt = UserModel::filter_by_api_key(api_key.to_string())
+            .first()
             .exec(&mut db)
             .await
             .map_err(|e| DomainError::Persistence(format!("find user by api_key failed: {e}")))?;
-        rows.into_iter()
-            .next()
-            .map(Self::model_to_domain)
-            .transpose()
+        opt.map(Self::model_to_domain).transpose()
     }
 
     async fn list_all(&self) -> DomainResult<Vec<User>> {
