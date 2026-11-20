@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
 import {
+  LuCheckCircle2,
   LuExternalLink,
   LuKeyRound,
   LuLoader2,
   LuTerminal,
   LuX,
 } from 'vue-icons-plus/lu'
+import { useSnackbarStore } from '@/stores/snackbar'
 import {
   onlineBookApi,
   type BookSourceSummaryDto,
@@ -24,22 +26,33 @@ const emit = defineEmits<{
   updated: [source: BookSourceSummaryDto]
 }>()
 
+const snackbar = useSnackbarStore()
+
 const formValues = reactive<Record<string, string>>({})
 const runningAction = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
+const lastActionName = ref<string | null>(null)
 const lastDiagnostics = ref<ExecutionDiagnostics | null>(null)
 const lastResultText = ref('')
+const showLogs = ref(false)
 const showVarEditor = ref(false)
 const rawVariableDraft = ref('')
 const savingVar = ref(false)
 
 watch(
-  () => [props.open, props.source] as const,
-  ([isOpen, src]) => {
-    if (!isOpen || !src) return
+  () => [props.open, props.source?.id] as const,
+  ([isOpen, srcId], prev) => {
+    const src = props.source
+    if (!isOpen || !src || !srcId) return
+    const wasOpen = prev?.[0] ?? false
+    const prevId = prev?.[1]
+    if (wasOpen && prevId === srcId) return
+
     errorMsg.value = null
+    lastActionName.value = null
     lastDiagnostics.value = null
     lastResultText.value = ''
+    showLogs.value = false
     showVarEditor.value = false
     rawVariableDraft.value = src.variable_preview || ''
 
@@ -71,6 +84,7 @@ async function triggerAction(item: LoginUiItem): Promise<void> {
   const act = item.action?.trim()
   if (!act) return
   runningAction.value = item.name
+  lastActionName.value = item.name
   errorMsg.value = null
   try {
     const resp = await onlineBookApi.runLoginAction(
@@ -82,8 +96,24 @@ async function triggerAction(item: LoginUiItem): Promise<void> {
     lastResultText.value = resp.result
     rawVariableDraft.value = resp.source.variable_preview || ''
     emit('updated', resp.source)
+
+    const latestToast =
+      resp.diagnostics.toasts.length > 0
+        ? resp.diagnostics.toasts[resp.diagnostics.toasts.length - 1]
+        : null
+    if (latestToast) {
+      snackbar.show({
+        message: latestToast.replace(/\s+/g, ' ').slice(0, 120),
+      })
+    } else if (resp.result) {
+      snackbar.show({ message: `${item.name}：${resp.result.slice(0, 100)}` })
+    } else {
+      snackbar.show({ message: `已执行「${item.name}」` })
+    }
   } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
+    const msg = err instanceof Error ? err.message : String(err)
+    errorMsg.value = msg
+    snackbar.show({ message: msg, tone: 'error' })
   } finally {
     runningAction.value = null
   }
@@ -128,13 +158,22 @@ async function saveRawVariable(): Promise<void> {
               <LuKeyRound class="h-5 w-5" />
             </div>
             <div class="min-w-0">
-              <h2 class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-                书源登录与扩展设置 · {{ source.name }}
-              </h2>
+              <div class="flex flex-wrap items-center gap-2">
+                <h2 class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+                  书源登录与扩展设置 · {{ source.name }}
+                </h2>
+                <span
+                  v-if="source.cookie_hosts.length > 0"
+                  class="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
+                >
+                  <LuCheckCircle2 class="h-3 w-3" />
+                  <span>已存 Cookie ({{ source.cookie_hosts.length }})</span>
+                </span>
+              </div>
               <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                 {{
                   source.cookie_hosts.length > 0
-                    ? `已存 Cookie 域：${source.cookie_hosts.join(', ')}`
+                    ? `Cookie 域：${source.cookie_hosts.slice(0, 3).join(', ')}${source.cookie_hosts.length > 3 ? ' 等' : ''}`
                     : '执行书源自带 loginUi / loginUrl 脚本并持久化源变量与 Cookie'
                 }}
               </p>
@@ -150,43 +189,63 @@ async function saveRawVariable(): Promise<void> {
           </button>
         </div>
 
-        <!-- Body -->
-        <div class="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+        <!-- Pinned Feedback Banner (Always Visible Above Scrollable Form) -->
+        <div
+          v-if="runningAction || errorMsg || lastDiagnostics"
+          class="shrink-0 space-y-2 border-b border-[var(--md-sys-color-outline-variant)]/40 bg-[var(--md-sys-color-surface-container)]/85 px-5 py-3 text-xs"
+        >
           <div
-            v-if="errorMsg"
-            class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
+            v-if="runningAction"
+            class="flex items-center gap-2 text-[var(--md-sys-color-primary)]"
           >
-            {{ errorMsg }}
+            <LuLoader2 class="h-4 w-4 animate-spin shrink-0" />
+            <span>正在执行「{{ runningAction }}」并等待远端接口响应…</span>
           </div>
 
-          <!-- Toast / Diagnostics Output -->
           <div
-            v-if="
-              lastDiagnostics &&
-              (lastDiagnostics.toasts.length > 0 ||
-                lastDiagnostics.browser_urls.length > 0 ||
-                lastResultText)
-            "
-            class="space-y-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3.5 text-xs"
+            v-else-if="errorMsg"
+            class="rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 text-[var(--md-sys-color-on-error-container)]"
           >
-            <div class="flex items-center gap-1.5 font-semibold text-[var(--md-sys-color-primary)]">
-              <LuTerminal class="h-3.5 w-3.5" />
-              <span>书源反馈</span>
+            执行「{{ lastActionName }}」失败：{{ errorMsg }}
+          </div>
+
+          <template v-else-if="lastDiagnostics">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5 font-semibold text-[var(--md-sys-color-primary)]">
+                <LuTerminal class="h-3.5 w-3.5" />
+                <span>书源反馈 · {{ lastActionName }}</span>
+              </div>
+              <button
+                v-if="lastDiagnostics.logs.length > 0"
+                type="button"
+                class="text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)]"
+                @click="showLogs = !showLogs"
+              >
+                {{ showLogs ? '隐藏调试日志' : `查看调试日志 (${lastDiagnostics.logs.length})` }}
+              </button>
             </div>
-            <pre
-              v-for="(toast, i) in lastDiagnostics.toasts"
-              :key="`toast-${i}`"
-              class="whitespace-pre-wrap break-words rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface)]"
-            >{{ toast }}</pre>
-            <div
-              v-if="lastDiagnostics.toasts.length === 0 && lastResultText"
-              class="rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 font-mono text-[11px] text-[var(--md-sys-color-on-surface)]"
-            >
-              返回结果：{{ lastResultText }}
+
+            <div class="max-h-40 space-y-1.5 overflow-y-auto">
+              <pre
+                v-for="(toast, i) in lastDiagnostics.toasts"
+                :key="`toast-${i}`"
+                class="whitespace-pre-wrap break-words rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface)]"
+              >{{ toast }}</pre>
+              <div
+                v-if="lastDiagnostics.toasts.length === 0"
+                class="rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 font-mono text-[11px] text-[var(--md-sys-color-on-surface)]"
+              >
+                {{ lastResultText ? `返回结果：${lastResultText}` : `已执行「${lastActionName}」（脚本未输出提示文本）` }}
+              </div>
+              <pre
+                v-if="showLogs && lastDiagnostics.logs.length > 0"
+                class="whitespace-pre-wrap break-words rounded-xl bg-[var(--md-sys-color-surface-container-highest)]/70 px-3 py-2 font-mono text-[10px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
+              >{{ lastDiagnostics.logs.join('\n') }}</pre>
             </div>
+
             <div
               v-if="lastDiagnostics.browser_urls.length > 0"
-              class="flex flex-wrap gap-2 pt-1"
+              class="flex flex-wrap gap-2 pt-0.5"
             >
               <a
                 v-for="(link, idx) in lastDiagnostics.browser_urls"
@@ -200,7 +259,11 @@ async function saveRawVariable(): Promise<void> {
                 <span>{{ link.title || link.url }}</span>
               </a>
             </div>
-          </div>
+          </template>
+        </div>
+
+        <!-- Body -->
+        <div class="flex-1 space-y-4 overflow-y-auto px-5 py-4">
 
           <!-- Dynamic Legado loginUi Controls -->
           <div

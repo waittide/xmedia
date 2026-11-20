@@ -35,7 +35,7 @@ impl Default for BookSourceEngine {
     fn default() -> Self {
         Self {
             http_config: HttpClientConfig::default(),
-            js_timeout: Duration::from_secs(20),
+            js_timeout: Duration::from_secs(45),
         }
     }
 }

@@ -52,7 +52,7 @@ pub struct HttpClientConfig {
 impl Default for HttpClientConfig {
     fn default() -> Self {
         Self {
-            timeout_secs: 20,
+            timeout_secs: 12,
             allow_private_ips: false,
             proxy_url: None,
         }
