@@ -1,9 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { setUnauthorizedHandler } from '@/api/client'
+import { ApiRequestError, setUnauthorizedHandler } from '@/api/client'
 import { ensureBookLocale } from '@/domains/book/i18n'
 import { ensureComicLocale } from '@/domains/comic/i18n'
 import { ensureMusicLocale } from '@/domains/music/i18n'
 import { ensureVideoLocale } from '@/domains/video/i18n'
+import { useAppServersStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { MediaKind } from '@/types/api'
@@ -32,6 +33,12 @@ function resolvePreferredDomain(
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
+    {
+      path: '/connect',
+      name: 'connect',
+      component: () => import('@/views/ConnectServerView.vue'),
+      meta: { public: true, fullscreen: true },
+    },
     {
       path: '/setup',
       name: 'setup',
@@ -372,7 +379,11 @@ export const router = createRouter({
 setUnauthorizedHandler(() => {
   const auth = useAuthStore()
   auth.clearLocalSession()
-  if (router.currentRoute.value.name !== 'login' && router.currentRoute.value.name !== 'setup') {
+  if (
+    router.currentRoute.value.name !== 'login' &&
+    router.currentRoute.value.name !== 'setup' &&
+    router.currentRoute.value.name !== 'connect'
+  ) {
     void router.replace('/login')
   }
 })
@@ -380,7 +391,45 @@ setUnauthorizedHandler(() => {
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   const domainStore = useDomainStore()
-  await auth.bootstrap()
+  const appServers = useAppServersStore()
+
+  await appServers.bootstrap()
+
+  if (appServers.isClientApp) {
+    if (to.name === 'connect') {
+      return true
+    }
+    if (!appServers.hasActiveServer) {
+      return { name: 'connect' }
+    }
+  } else if (to.name === 'connect') {
+    return '/'
+  }
+
+  try {
+    await auth.bootstrap()
+  } catch (err) {
+    auth.initialized = false
+    if (appServers.isClientApp) {
+      if (err instanceof ApiRequestError && err.code === 'no_server_configured') {
+        await appServers.refreshServers().catch(() => {
+          // ignore refresh errors before redirecting
+        })
+        return { name: 'connect' }
+      }
+      if (err instanceof ApiRequestError && err.status === 503) {
+        await appServers.refreshServers().catch(() => {
+          // ignore refresh errors before redirecting
+        })
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      return {
+        name: 'connect',
+        query: message ? { error: message } : undefined,
+      }
+    }
+    throw err
+  }
 
   if (auth.needsSetup) {
     if (to.name !== 'setup') return { name: 'setup' }

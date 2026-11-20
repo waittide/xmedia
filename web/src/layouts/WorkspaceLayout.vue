@@ -16,12 +16,14 @@ import {
   LuPanelLeftClose,
   LuPanelLeftOpen,
   LuSearch,
+  LuServer,
   LuSettings,
   LuSun,
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useAppServersStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
@@ -47,6 +49,7 @@ const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
+const appServersStore = useAppServersStore()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
@@ -200,6 +203,8 @@ const showMusicBar = computed(
     authStore.hasModule('music') &&
     (domainStore.activeDomain === 'music' || playerStore.currentTrack !== null),
 )
+
+const showMobileBottomNav = computed(() => domainTabs.value.length > 1)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -497,7 +502,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)]"
+    data-workspace-shell
+    :data-has-player="showMusicBar ? '1' : '0'"
+    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)] supports-[height:100dvh]:h-dvh"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent
     @dragleave.prevent="onDragLeave"
@@ -541,8 +548,9 @@ onBeforeUnmount(() => {
 
     <!-- Full-Width MD3 Top App Bar -->
     <header
-      class="flex h-16 shrink-0 items-center justify-between gap-2.5 bg-[var(--md-sys-color-surface-container)] px-3 select-none sm:gap-3 sm:px-4"
+      class="safe-pt safe-px shrink-0 bg-[var(--md-sys-color-surface-container)] select-none"
     >
+      <div class="flex h-16 items-center justify-between gap-2.5 px-3 sm:gap-3 sm:px-4">
       <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Switcher -->
       <div class="flex shrink-0 items-center gap-2">
         <button
@@ -790,6 +798,13 @@ onBeforeUnmount(() => {
                   @{{ authStore.user?.username }} ·
                   {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
                 </p>
+                <p
+                  v-if="appServersStore.isClientApp && appServersStore.activeServer"
+                  class="mt-1 flex items-center gap-1 truncate font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+                >
+                  <LuServer class="h-3 w-3 shrink-0 text-[var(--md-sys-color-primary)]" />
+                  <span class="truncate">{{ appServersStore.activeServer.name }}</span>
+                </p>
               </div>
 
               <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/50" />
@@ -803,6 +818,16 @@ onBeforeUnmount(() => {
                 <span>{{ t('nav.settings') }}</span>
               </RouterLink>
 
+              <RouterLink
+                v-if="appServersStore.isClientApp"
+                to="/connect"
+                class="md-state flex items-center gap-2.5 rounded-full px-3 py-2 text-xs font-medium text-[var(--md-sys-color-on-surface)]"
+                @click="accountMenuOpen = false; mobileMenuOpen = false"
+              >
+                <LuServer class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+                <span>{{ t('server.switchServer') }}</span>
+              </RouterLink>
+
               <button
                 type="button"
                 class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-error)]"
@@ -814,6 +839,7 @@ onBeforeUnmount(() => {
             </div>
           </Transition>
         </div>
+      </div>
       </div>
     </header>
 
@@ -834,6 +860,7 @@ onBeforeUnmount(() => {
       <main
         ref="mainScrollRef"
         class="min-w-0 flex-1 overflow-y-auto bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
+        :class="!showMobileBottomNav && !showMusicBar ? 'safe-pb md:pb-0' : ''"
       >
         <RouterView v-slot="{ Component }">
           <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">
@@ -844,7 +871,54 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Reserve Space for Persistent Global PlayerBar Rendered in App.vue -->
-    <div v-if="showMusicBar" class="h-20 shrink-0" aria-hidden="true" />
+    <div
+      v-if="showMusicBar"
+      class="h-[5.5rem] shrink-0 sm:h-20 md:h-[calc(5rem+var(--safe-area-bottom))]"
+      aria-hidden="true"
+    />
+
+    <!-- Mobile MD3 Navigation Bar (< md) -->
+    <nav
+      v-if="showMobileBottomNav"
+      data-mobile-bottom-nav
+      :aria-label="t('nav.mobileDomains')"
+      class="safe-pb safe-px relative z-30 shrink-0 border-t border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container)] select-none md:hidden"
+    >
+      <div
+        class="grid h-16 items-center"
+        :style="{ gridTemplateColumns: `repeat(${domainTabs.length}, minmax(0, 1fr))` }"
+      >
+        <button
+          v-for="tab in domainTabs"
+          :key="`bottom-${tab.kind}`"
+          type="button"
+          :aria-current="domainStore.activeDomain === tab.kind ? 'page' : undefined"
+          class="group flex h-full flex-col items-center justify-center gap-1 outline-none"
+          @click="switchDomain(tab.kind)"
+        >
+          <span
+            class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-200"
+            :class="
+              domainStore.activeDomain === tab.kind
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
+            "
+          >
+            <component :is="tab.icon" class="h-5 w-5 shrink-0" />
+          </span>
+          <span
+            class="md-label-medium max-w-full truncate px-1"
+            :class="
+              domainStore.activeDomain === tab.kind
+                ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)]'
+            "
+          >
+            {{ tab.label }}
+          </span>
+        </button>
+      </div>
+    </nav>
 
     <!-- Unified Global Background Tasks Drawer -->
     <BackgroundTasksDrawer

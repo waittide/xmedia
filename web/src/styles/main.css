@@ -61,6 +61,12 @@
   --z-popover: 120;
   --z-confirm: 140;
   --z-snackbar: 160;
+
+  /* Mobile Safe Area Insets (iOS notch / Android gesture bar) */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
 }
 
 :root[data-theme="dark"] {
@@ -86,6 +92,15 @@ body,
   font-family: "Google Sans Text", "Inter", "Noto Sans SC", "PingFang SC", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: none;
+}
+
+button,
+a,
+[role="button"],
+[role="switch"] {
+  touch-action: manipulation;
 }
 
 @layer components {
@@ -448,6 +463,77 @@ body,
   .md-nav-indicator {
     background-color: var(--md-sys-color-secondary-container);
     color: var(--md-sys-color-on-secondary-container);
+  }
+}
+
+@layer utilities {
+  .safe-pt {
+    padding-top: var(--safe-area-top);
+  }
+
+  .safe-pb {
+    padding-bottom: var(--safe-area-bottom);
+  }
+
+  .safe-pl {
+    padding-left: var(--safe-area-left);
+  }
+
+  .safe-pr {
+    padding-right: var(--safe-area-right);
+  }
+
+  .safe-px {
+    padding-left: var(--safe-area-left);
+    padding-right: var(--safe-area-right);
+  }
+
+  .safe-py {
+    padding-top: var(--safe-area-top);
+    padding-bottom: var(--safe-area-bottom);
+  }
+}
+
+/* Coordinate fixed PlayerBar, mobile sidebar drawer, and Snackbar with safe areas & MD3 bottom nav */
+@media (min-width: 768px) {
+  #app > footer.fixed.bottom-0 {
+    padding-bottom: var(--safe-area-bottom);
+  }
+}
+
+@media (max-width: 767.98px) {
+  :root:has([data-mobile-bottom-nav]) {
+    --md-snackbar-bottom: 5.25rem;
+  }
+
+  :root:has([data-mobile-bottom-nav]):has(#app > footer.fixed.bottom-0) {
+    --md-snackbar-bottom: 10.5rem;
+  }
+
+  #app:has([data-mobile-bottom-nav]) > footer.fixed.bottom-0 {
+    bottom: calc(4rem + var(--safe-area-bottom));
+  }
+
+  #app:not(:has([data-mobile-bottom-nav])) > footer.fixed.bottom-0 {
+    padding-bottom: var(--safe-area-bottom);
+  }
+
+  [data-workspace-shell] aside.fixed.top-16 {
+    top: calc(4rem + var(--safe-area-top));
+  }
+
+  [data-workspace-shell]:has([data-mobile-bottom-nav]) aside.fixed.top-16 {
+    bottom: calc(4rem + var(--safe-area-bottom));
+  }
+
+  [data-workspace-shell][data-has-player="1"]:has([data-mobile-bottom-nav]) aside.fixed.top-16 {
+    bottom: calc(9.5rem + var(--safe-area-bottom));
+  }
+}
+
+@media (min-width: 640px) and (max-width: 767.98px) {
+  [data-workspace-shell][data-has-player="1"]:has([data-mobile-bottom-nav]) aside.fixed.top-16 {
+    bottom: calc(9rem + var(--safe-area-bottom));
   }
 }
 
