@@ -606,18 +606,18 @@ function relativeDirBadge(relPath: string): string | null {
         </div>
 
         <div
-          v-else-if="
-            sortedFolders.length === 0 &&
-            sortedRawFiles.length === 0 &&
-            (!snapshot || snapshot.parent_rel_path === null)
-          "
+          v-else-if="sortedFolders.length === 0 && sortedRawFiles.length === 0"
           class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-16 text-center"
         >
           <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
             当前文件夹暂无内容
           </p>
           <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-            请从左侧切换其他媒体目录，或先往该目录添加媒体文件
+            {{
+              snapshot && snapshot.parent_rel_path !== null
+                ? '点击上方路径栏可返回上级目录，或从左侧切换其他媒体目录'
+                : '请从左侧切换其他媒体目录，或先往该目录添加媒体文件'
+            }}
           </p>
         </div>
 
@@ -645,41 +645,6 @@ function relativeDirBadge(relPath: string): string | null {
           </div>
 
           <div class="divide-y divide-[var(--md-sys-color-outline-variant)]/35">
-            <!-- Parent Directory Row (..) -->
-            <button
-              v-if="snapshot && snapshot.parent_rel_path !== null"
-              type="button"
-              class="md-state flex w-full items-center gap-3.5 px-4 py-2.5 text-left"
-              @click="emit('enterFolder', snapshot.parent_rel_path, true)"
-            >
-              <div class="w-5 shrink-0" />
-              <div
-                class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                <LuCornerLeftUp class="h-4 w-4" />
-              </div>
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="font-mono text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
-                    ..
-                  </span>
-                  <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                    返回上级目录
-                  </span>
-                </div>
-              </div>
-              <div class="hidden w-28 shrink-0 text-right text-xs text-[var(--md-sys-color-on-surface-variant)] md:block">
-                —
-              </div>
-              <div class="hidden w-24 shrink-0 text-right text-xs text-[var(--md-sys-color-on-surface-variant)] xl:block">
-                —
-              </div>
-              <div class="hidden w-32 shrink-0 sm:block" />
-              <div class="flex w-24 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
-                <LuChevronRight class="h-4 w-4 opacity-50" />
-              </div>
-            </button>
-
             <!-- Subfolder Rows -->
             <div
               v-for="folder in sortedFolders"
