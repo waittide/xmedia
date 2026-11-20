@@ -36,6 +36,8 @@ import type {
   DirectorySnapshot,
   EditableBookChapterDto,
   InsertedEpubImageDto,
+  NormalizeBookToEpubOptionsDto,
+  NormalizeBooksBatchReportDto,
   PolishBookResponseDto,
   ManagedRootDto,
   MediaFileDetail,
@@ -686,6 +688,21 @@ export const toolApi = {
       body: JSON.stringify({
         root_id: rootId,
         path: relPath,
+      }),
+    })
+  },
+
+  normalizeBooksToEpub(
+    rootId: string,
+    paths: string[],
+    options: NormalizeBookToEpubOptionsDto,
+  ): Promise<NormalizeBooksBatchReportDto> {
+    return toolRequest<NormalizeBooksBatchReportDto>('/books/normalize-epub', {
+      method: 'POST',
+      body: JSON.stringify({
+        root_id: rootId,
+        paths,
+        options,
       }),
     })
   },

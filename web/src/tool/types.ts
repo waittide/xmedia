@@ -250,6 +250,42 @@ export interface PolishBookResponseDto {
   detail: MediaFileDetail
 }
 
+export type BookImageCompressFormat = 'webp' | 'jpeg' | 'keep'
+
+export interface NormalizeBookToEpubOptionsDto {
+  keep_source: boolean
+  compress_images: boolean
+  image_format: BookImageCompressFormat
+  max_image_dimension: number | null
+  image_quality: number
+  generate_jacket: boolean
+  remove_orphans: boolean
+  pdf_scanned_fallback: boolean
+}
+
+export interface NormalizeBookItemReportDto {
+  source_rel_path: string
+  output_rel_path: string | null
+  backup_rel_path: string | null
+  source_format: string
+  before_bytes: number
+  after_bytes: number
+  chapter_count: number
+  compressed_images: number
+  removed_orphans: number
+  deleted_source: boolean
+  error: string | null
+}
+
+export interface NormalizeBooksBatchReportDto {
+  total: number
+  succeeded: number
+  failed: number
+  total_before_bytes: number
+  total_after_bytes: number
+  items: NormalizeBookItemReportDto[]
+}
+
 export interface CompletenessFlags {
   has_title: boolean
   has_creator: boolean

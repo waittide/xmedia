@@ -24,6 +24,7 @@ import type {
   ManagedRootDto,
   MediaFileDetail,
   MediaFileEntry,
+  NormalizeBooksBatchReportDto,
   PublicSettingsDto,
   ToolStatusDto,
 } from '../types'
@@ -32,6 +33,7 @@ import BatchMetadataModal from './BatchMetadataModal.vue'
 import BatchRenameModal from './BatchRenameModal.vue'
 import MetadataHistoryModal from './MetadataHistoryModal.vue'
 import BookContentEditorModal from './BookContentEditorModal.vue'
+import BookNormalizeEpubModal from './BookNormalizeEpubModal.vue'
 import ComicPageManagerModal from './ComicPageManagerModal.vue'
 import ComicSeriesToolsModal from './ComicSeriesToolsModal.vue'
 import MusicToolboxModal from './MusicToolboxModal.vue'
@@ -213,6 +215,8 @@ const batchMetadataModalOpen = ref(false)
 const historyModalOpen = ref(false)
 const bookEditorOpen = ref(false)
 const bookEditorEntry = ref<MediaFileEntry | null>(null)
+const bookNormalizeOpen = ref(false)
+const bookNormalizeEntries = ref<MediaFileEntry[]>([])
 const comicPageManagerOpen = ref(false)
 const comicPageManagerEntry = ref<MediaFileEntry | null>(null)
 const comicSeriesToolsOpen = ref(false)
@@ -1205,6 +1209,40 @@ function exitSettings(): void {
   syncHashFromState()
 }
 
+function openBookNormalizeModal(entries: MediaFileEntry[]): void {
+  const valid = entries.filter(
+    (e) =>
+      e.media_kind === 'book' &&
+      (e.extension === 'txt' || e.extension === 'epub' || e.extension === 'pdf'),
+  )
+  if (valid.length === 0) return
+  bookNormalizeEntries.value = valid
+  bookNormalizeOpen.value = true
+}
+
+async function handleBookNormalizeCompleted(report: NormalizeBooksBatchReportDto): Promise<void> {
+  artworkVersion.value += 1
+  if (activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  }
+  if (activeDetail.value) {
+    const matchedItem = report.items.find(
+      (it) => !it.error && it.source_rel_path === activeDetail.value?.entry.rel_path,
+    )
+    const targetRel = matchedItem?.output_rel_path ?? activeDetail.value.entry.rel_path
+    const refreshed = (snapshot.value?.files ?? []).find((f) => f.rel_path === targetRel)
+    if (refreshed) {
+      activeDetail.value = null
+      await inspectEntry(refreshed)
+    }
+  }
+  snackbar.show(
+    report.failed > 0
+      ? `规范化 EPUB 完成：成功 ${report.succeeded} 本，失败 ${report.failed} 本`
+      : `规范化 EPUB 完成：共处理 ${report.succeeded} 本`,
+  )
+}
+
 const anyModalOpen = computed(
   () =>
     scrapeModalOpen.value ||
@@ -1213,6 +1251,7 @@ const anyModalOpen = computed(
     historyModalOpen.value ||
     autoScrapeModalOpen.value ||
     bookEditorOpen.value ||
+    bookNormalizeOpen.value ||
     comicPageManagerOpen.value ||
     comicSeriesToolsOpen.value ||
     musicToolsOpen.value ||
@@ -1455,6 +1494,7 @@ onBeforeUnmount(() => {
           @open-scrape="(d) => openManualScrapeModal(d.entry)"
           @open-settings-scrapers="openSettingsTab('scrapers')"
           @open-content-editor="openBookContentEditor"
+          @open-normalize-epub="(e) => openBookNormalizeModal([e])"
           @open-comic-pages="openComicPageManager"
           @open-music-tools="(e) => openMusicToolbox([e])"
           @open-video-tools="(e) => openVideoToolbox([e])"
@@ -1558,6 +1598,7 @@ onBeforeUnmount(() => {
             @inspect-file="inspectEntry"
             @toggle-select-file="toggleSelectFile"
             @open-book-content-editor="openBookContentEditor"
+            @open-book-normalize-epub="openBookNormalizeModal"
             @open-comic-page-manager="openComicPageManager"
             @enqueue-scrape-files="enqueueScrapeFiles"
             @load-more="visibleLimit += PAGE_CHUNK_SIZE"
@@ -1596,6 +1637,7 @@ onBeforeUnmount(() => {
               @open-workbench="(d) => openScrapeWorkbench(d.entry)"
               @open-settings-scrapers="openSettingsTab('scrapers')"
               @open-content-editor="openBookContentEditor"
+              @open-normalize-epub="(e) => openBookNormalizeModal([e])"
               @open-comic-pages="openComicPageManager"
               @open-music-tools="(e) => openMusicToolbox([e])"
               @open-video-tools="(e) => openVideoToolbox([e])"
@@ -1656,6 +1698,15 @@ onBeforeUnmount(() => {
       @close="bookEditorOpen = false"
       @saved="handleBookContentSaved"
       @converted="handleTxtConvertedToEpub"
+    />
+
+    <BookNormalizeEpubModal
+      v-if="activeRootId"
+      :open="bookNormalizeOpen"
+      :root-id="activeRootId"
+      :entries="bookNormalizeEntries"
+      @close="bookNormalizeOpen = false"
+      @completed="handleBookNormalizeCompleted"
     />
 
     <ComicPageManagerModal

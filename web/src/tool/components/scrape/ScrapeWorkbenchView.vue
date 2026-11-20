@@ -16,6 +16,7 @@ import {
   LuLayers,
   LuLock,
   LuMusic,
+  LuPackageCheck,
   LuPanelLeft,
   LuRefreshCw,
   LuSave,
@@ -68,6 +69,7 @@ const emit = defineEmits<{
   openScrape: [detail: MediaFileDetail]
   openSettingsScrapers: []
   openContentEditor: [entry: MediaFileEntry]
+  openNormalizeEpub: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
   openMusicTools: [entry: MediaFileEntry]
   openVideoTools: [entry: MediaFileEntry]
@@ -888,6 +890,22 @@ defineExpose({
                   >
                     <LuFileText class="h-3 w-3" />
                     <span>{{ detail.entry.extension === 'txt' ? '正文与转 EPUB' : '编辑正文' }}</span>
+                  </button>
+
+                  <button
+                    v-if="
+                      detail.entry.media_kind === 'book' &&
+                      (detail.entry.extension === 'txt' ||
+                        detail.entry.extension === 'epub' ||
+                        detail.entry.extension === 'pdf')
+                    "
+                    type="button"
+                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+                    title="转为规范化压缩 EPUB 3.0（默认保留源文件）"
+                    @click="emit('openNormalizeEpub', detail.entry)"
+                  >
+                    <LuPackageCheck class="h-3 w-3" />
+                    <span>转规范化 EPUB</span>
                   </button>
 
                   <button

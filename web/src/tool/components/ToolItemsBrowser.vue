@@ -19,6 +19,7 @@ import {
   LuLayers,
   LuList,
   LuMusic,
+  LuPackageCheck,
   LuPencil,
   LuRadio,
   LuRefreshCw,
@@ -102,6 +103,7 @@ const emit = defineEmits<{
   inspectFile: [entry: MediaFileEntry]
   toggleSelectFile: [relPath: string, shiftKey?: boolean]
   openBookContentEditor: [entry: MediaFileEntry]
+  openBookNormalizeEpub: [entries: MediaFileEntry[]]
   openComicPageManager: [entry: MediaFileEntry]
   enqueueScrapeFiles: [entries: MediaFileEntry[]]
   loadMore: []
@@ -109,6 +111,14 @@ const emit = defineEmits<{
 }>()
 
 const txt = useToolText()
+
+const selectedBookEntries = computed(() =>
+  props.checkedFiles.filter(
+    (f) =>
+      f.media_kind === 'book' &&
+      (f.extension === 'txt' || f.extension === 'epub' || f.extension === 'pdf'),
+  ),
+)
 
 const isFolderManagerMode = computed(
   () =>
@@ -654,6 +664,19 @@ function relativeDirBadge(relPath: string): string | null {
                 </button>
 
                 <button
+                  v-if="
+                    file.media_kind === 'book' &&
+                    (file.extension === 'txt' || file.extension === 'epub' || file.extension === 'pdf')
+                  "
+                  type="button"
+                  class="md-icon-btn md-icon-btn-sm md-state"
+                  title="转为规范化压缩 EPUB 3.0"
+                  @click.stop="emit('openBookNormalizeEpub', [file])"
+                >
+                  <LuPackageCheck class="h-4 w-4" />
+                </button>
+
+                <button
                   v-if="file.media_kind === 'comic'"
                   type="button"
                   class="md-icon-btn md-icon-btn-sm md-state"
@@ -891,6 +914,19 @@ function relativeDirBadge(relPath: string): string | null {
               </button>
 
               <button
+                v-if="
+                  file.media_kind === 'book' &&
+                  (file.extension === 'txt' || file.extension === 'epub' || file.extension === 'pdf')
+                "
+                type="button"
+                class="md-icon-btn md-icon-btn-sm md-state"
+                title="转为规范化压缩 EPUB 3.0"
+                @click.stop="emit('openBookNormalizeEpub', [file])"
+              >
+                <LuPackageCheck class="h-4 w-4" />
+              </button>
+
+              <button
                 v-if="file.media_kind === 'comic'"
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
@@ -1034,6 +1070,17 @@ function relativeDirBadge(relPath: string): string | null {
             @click="emit('openDryRun')"
           >
             <span>置信度预演</span>
+          </button>
+
+          <button
+            v-if="selectedBookEntries.length > 0"
+            type="button"
+            class="md-btn md-btn-sm md-btn-text md-state"
+            title="将所选 TXT / EPUB / PDF 批量转为规范化压缩 EPUB 3.0"
+            @click="emit('openBookNormalizeEpub', selectedBookEntries)"
+          >
+            <LuPackageCheck class="h-3.5 w-3.5" />
+            <span>转规范化 EPUB</span>
           </button>
 
           <button
