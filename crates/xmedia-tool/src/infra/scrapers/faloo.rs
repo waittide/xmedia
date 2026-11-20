@@ -11,10 +11,10 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_novel_common::{
-    build_browser_http_client, build_novel_subtitle, extract_meta_map,
-    extract_numeric_id_from_query, is_antibot_or_captcha_html, normalize_cover_url,
-    parse_year_and_date, percent_encode_gb18030, read_response_text, score_novel_candidate,
-    strip_html_to_text, strip_inline_html,
+    NovelCandidateDraft, NovelMetadataDraft, build_browser_http_client, extract_digits_book_id,
+    extract_meta_map, extract_numeric_id_from_query, is_antibot_or_captcha_html,
+    normalize_cover_url, novel_candidate_from_detail, parse_year_and_date, percent_encode_gb18030,
+    rank_novel_candidates, read_response_text, strip_html_to_text, strip_inline_html,
 };
 
 pub struct FalooProvider;
@@ -53,9 +53,9 @@ pub(crate) fn parse_faloo_search_html(html: &str, query: &ScrapeQuery) -> Vec<Sc
     }
 
     let mut seen_ids = std::collections::HashSet::new();
-    let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
+    let mut drafts = Vec::new();
 
-    for (idx, chunk) in html.split(r#"class="TwoBox02_02""#).skip(1).enumerate() {
+    for chunk in html.split(r#"class="TwoBox02_02""#).skip(1) {
         let Some(t_cap) = RE_FL_TITLE_LINK.captures(chunk) else {
             continue;
         };
@@ -81,28 +81,19 @@ pub(crate) fn parse_faloo_search_html(html: &str, query: &ScrapeQuery) -> Vec<Sc
             .map(|c| clean_faloo_summary(&c[1]))
             .filter(|s| !s.is_empty());
 
-        let rel = score_novel_candidate(query, &title, author.as_deref(), None, 0);
-        scored.push((
-            rel,
-            idx,
-            ScrapeCandidate {
-                provider_id: "faloo".to_string(),
-                provider_name: "飞卢小说网".to_string(),
-                external_id: book_id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(author.as_deref(), category.as_deref()),
-                year: None,
-                summary,
-                cover_url,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            },
-        ));
+        drafts.push(NovelCandidateDraft {
+            external_id: book_id,
+            title,
+            author,
+            category,
+            year: None,
+            summary,
+            cover_url,
+            popularity_votes: 0,
+        });
     }
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().take(12).map(|(_, _, c)| c).collect()
+    rank_novel_candidates("faloo", "飞卢小说网", query, drafts, 12)
 }
 
 pub(crate) fn parse_faloo_detail_html(book_id: &str, html: &str) -> DomainResult<ScrapedMetadata> {
@@ -148,25 +139,17 @@ pub(crate) fn parse_faloo_detail_html(book_id: &str, html: &str) -> DomainResult
         .map(|s| parse_year_and_date(s))
         .unwrap_or((None, None));
 
-    let mut external_ids = std::collections::BTreeMap::new();
-    external_ids.insert("faloo".to_string(), book_id.to_string());
-
-    Ok(ScrapedMetadata {
-        provider_id: "faloo".to_string(),
-        external_id: book_id.to_string(),
-        target: Some(ScrapeTargetKind::Book),
-        title: Some(title),
-        creators: author.into_iter().collect(),
-        publisher_or_studio: Some("飞卢小说网".to_string()),
+    Ok(NovelMetadataDraft {
+        title,
+        author,
         year,
         published_date,
-        language: Some("zh-CN".to_string()),
         summary,
         genres: category.into_iter().collect(),
         cover_url,
-        external_ids,
         ..Default::default()
-    })
+    }
+    .into_metadata("faloo", "飞卢小说网", book_id))
 }
 
 #[async_trait]
@@ -198,24 +181,9 @@ impl ScraperProviderPort for FalooProvider {
             && let Ok(detail) = self
                 .fetch_detail(&id, ScrapeTargetKind::Book, "zh-CN", creds)
                 .await
-            && let Some(title) = detail.title
+            && let Some(cand) = novel_candidate_from_detail("faloo", "飞卢小说网", id, detail)
         {
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "faloo".to_string(),
-                provider_name: "飞卢小说网".to_string(),
-                external_id: id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(
-                    detail.creators.first().map(String::as_str),
-                    detail.genres.first().map(String::as_str),
-                ),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let client = build_browser_http_client(creds, false)?;
@@ -243,14 +211,7 @@ impl ScraperProviderPort for FalooProvider {
         _locale: &str,
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
-        let book_id: String = external_id
-            .trim()
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
-        if book_id.is_empty() {
-            return Err(DomainError::Validation("empty Faloo book id".into()));
-        }
+        let book_id = extract_digits_book_id(external_id, "Faloo")?;
         let client = build_browser_http_client(creds, false)?;
         let url = format!("https://b.faloo.com/{book_id}.html");
         let resp = client

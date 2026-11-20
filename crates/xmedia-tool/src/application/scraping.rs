@@ -11,7 +11,7 @@ use xmedia_core::infra::thumbnail::sniff_image_mime;
 use crate::application::settings::ToolSettingsService;
 use crate::application::webhook::notify_xmedia_rescan;
 use crate::application::workbench::MediaWorkbenchService;
-use crate::domain::config::ScraperPriorities;
+use crate::domain::config::{ScraperPriorities, ToolSettings};
 use crate::domain::media::{
     BookMetaPatch, ComicMetaPatch, MediaFileDetail, MediaMetadataPatch, MediaMetadataPayload,
     MusicMetaPatch, VideoMetaPatch,
@@ -38,6 +38,7 @@ use crate::infra::scrape_cache::{ScrapeCacheStatsDto, ScrapeMetadataCache};
 use crate::infra::scrapers::http_client::{
     build_ssrf_safe_http_client, validate_artwork_http_url, validate_public_http_url,
 };
+use crate::infra::workspace_fs::{resolve_existing_in_root, resolve_target_in_root};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DryRunScrapeItemDto {
@@ -144,8 +145,8 @@ impl ScrapingOrchestratorService {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_allow_private_artwork_ips(&mut self, allow: bool) {
+    #[doc(hidden)]
+    pub fn set_allow_private_artwork_ips(&mut self, allow: bool) {
         self.allow_private_artwork_ips = allow;
     }
 
@@ -230,28 +231,20 @@ impl ScrapingOrchestratorService {
         Ok(out)
     }
 
-    pub async fn search(&self, mut query: ScrapeQuery) -> DomainResult<Vec<ScrapeCandidate>> {
-        if query.keyword.trim().is_empty() && query.isbn.as_deref().unwrap_or("").trim().is_empty()
-        {
-            return Ok(Vec::new());
-        }
-        let raw_settings = self.settings.get_raw().await?;
-        let effective_locale = query
-            .locale
-            .clone()
-            .filter(|l| !l.trim().is_empty())
-            .unwrap_or_else(|| raw_settings.default_scrape_locale.clone());
-        query.locale = Some(effective_locale.clone());
-        let ttl_ms = raw_settings.scrape_cache_ttl_ms;
+    fn select_providers_for_query(
+        &self,
+        raw_settings: &ToolSettings,
+        query: &ScrapeQuery,
+    ) -> Vec<Arc<dyn ScraperProviderPort>> {
         let domain = query.target.map(ScrapeTargetKind::media_kind);
         let ordered = self.sort_providers_by_priority(
             domain,
             &raw_settings.scraper_priorities,
             &query.providers,
         );
-
         let has_isbn_hint = query.isbn.as_deref().is_some_and(|s| !s.trim().is_empty());
-        let selected: Vec<Arc<dyn ScraperProviderPort>> = ordered
+
+        ordered
             .into_iter()
             .filter(|p| {
                 let desc = p.descriptor();
@@ -275,17 +268,22 @@ impl ScrapingOrchestratorService {
                 let prov_creds = raw_settings.credentials_for_provider(&desc.id);
                 p.is_configured(&prov_creds)
             })
-            .collect();
+            .collect()
+    }
 
-        if selected.is_empty() {
-            return Ok(Vec::new());
-        }
-
+    async fn search_selected_providers(
+        &self,
+        selected: &[Arc<dyn ScraperProviderPort>],
+        raw_settings: &ToolSettings,
+        query: &ScrapeQuery,
+        effective_locale: &str,
+    ) -> Vec<Vec<ScrapeCandidate>> {
+        let ttl_ms = raw_settings.scrape_cache_ttl_ms;
         let provider_count = selected.len();
         let mut set = JoinSet::new();
-        for (order_idx, provider) in selected.into_iter().enumerate() {
+        for (order_idx, provider) in selected.iter().cloned().enumerate() {
             let id = provider.descriptor().id;
-            let loc = raw_settings.locale_for_provider(&id, &effective_locale);
+            let loc = raw_settings.locale_for_provider(&id, effective_locale);
             let mut q = query.clone();
             q.locale = Some(loc.clone());
             let c = raw_settings.credentials_for_provider(&id);
@@ -316,18 +314,47 @@ impl ScrapingOrchestratorService {
                 *slot = items;
             }
         }
+        per_provider
+    }
 
+    fn interleave_provider_candidates(
+        per_provider: &[Vec<ScrapeCandidate>],
+    ) -> Vec<ScrapeCandidate> {
         let max_len = per_provider.iter().map(Vec::len).max().unwrap_or(0);
         let total_cap: usize = per_provider.iter().map(Vec::len).sum();
         let mut combined = Vec::with_capacity(total_cap);
         for row in 0..max_len {
-            for bucket in &per_provider {
+            for bucket in per_provider {
                 if let Some(item) = bucket.get(row) {
                     combined.push(item.clone());
                 }
             }
         }
-        Ok(combined)
+        combined
+    }
+
+    pub async fn search(&self, mut query: ScrapeQuery) -> DomainResult<Vec<ScrapeCandidate>> {
+        if query.keyword.trim().is_empty() && query.isbn.as_deref().unwrap_or("").trim().is_empty()
+        {
+            return Ok(Vec::new());
+        }
+        let raw_settings = self.settings.get_raw().await?;
+        let effective_locale = query
+            .locale
+            .clone()
+            .filter(|l| !l.trim().is_empty())
+            .unwrap_or_else(|| raw_settings.default_scrape_locale.clone());
+        query.locale = Some(effective_locale.clone());
+
+        let selected = self.select_providers_for_query(&raw_settings, &query);
+        if selected.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let per_provider = self
+            .search_selected_providers(&selected, &raw_settings, &query, &effective_locale)
+            .await;
+        Ok(Self::interleave_provider_candidates(&per_provider))
     }
 
     /// Searches all enabled providers concurrently in user-configured priority order, fetches full
@@ -345,42 +372,9 @@ impl ScrapingOrchestratorService {
             .unwrap_or_else(|| raw_settings.default_scrape_locale.clone());
         query.locale = Some(effective_locale.clone());
         let ttl_ms = raw_settings.scrape_cache_ttl_ms;
-        let domain = query.target.map(ScrapeTargetKind::media_kind);
 
         // Preserve user's configured priority order (or explicit ordered list when passed)
-        let ordered = self.sort_providers_by_priority(
-            domain,
-            &raw_settings.scraper_priorities,
-            &query.providers,
-        );
-
-        let has_isbn_hint = query.isbn.as_deref().is_some_and(|s| !s.trim().is_empty());
-        let selected: Vec<Arc<dyn ScraperProviderPort>> = ordered
-            .into_iter()
-            .filter(|p| {
-                let desc = p.descriptor();
-                if let Some(target) = query.target
-                    && !desc.supported_targets.contains(&target)
-                {
-                    return false;
-                }
-                if has_isbn_hint
-                    && is_webnovel_serial_only_provider(&desc.id)
-                    && query.providers.is_empty()
-                {
-                    return false;
-                }
-                if !query.providers.is_empty() && !query.providers.iter().any(|id| id == &desc.id) {
-                    return false;
-                }
-                if !raw_settings.is_provider_enabled(&desc.id) {
-                    return false;
-                }
-                let prov_creds = raw_settings.credentials_for_provider(&desc.id);
-                p.is_configured(&prov_creds)
-            })
-            .collect();
-
+        let selected = self.select_providers_for_query(&raw_settings, &query);
         if selected.is_empty() {
             return Ok(AggregateScrapeResponse::default());
         }
@@ -398,40 +392,9 @@ impl ScrapingOrchestratorService {
 
         // Phase 1: Parallel search across all selected providers
         let provider_count = selected.len();
-        let mut search_set = JoinSet::new();
-        for (order_idx, provider) in selected.iter().cloned().enumerate() {
-            let id = provider.descriptor().id;
-            let loc = raw_settings.locale_for_provider(&id, &effective_locale);
-            let mut q = query.clone();
-            q.locale = Some(loc.clone());
-            let c = raw_settings.credentials_for_provider(&id);
-            let cache = self.cache.clone();
-            search_set.spawn(async move {
-                if let Some(cached) = cache.get_search(&id, &q, &loc, ttl_ms) {
-                    return (order_idx, cached);
-                }
-                let items = match provider.search(&q, &c).await {
-                    Ok(items) => {
-                        cache.put_search(&id, &q, &loc, ttl_ms, &items);
-                        items
-                    }
-                    Err(err) => {
-                        warn!("scraper provider '{id}' search failed: {err}");
-                        Vec::new()
-                    }
-                };
-                (order_idx, items)
-            });
-        }
-
-        let mut per_provider: Vec<Vec<ScrapeCandidate>> = vec![Vec::new(); provider_count];
-        while let Some(res) = search_set.join_next().await {
-            if let Ok((idx, items)) = res
-                && let Some(slot) = per_provider.get_mut(idx)
-            {
-                *slot = items;
-            }
-        }
+        let per_provider = self
+            .search_selected_providers(&selected, &raw_settings, &query, &effective_locale)
+            .await;
 
         // Phase 2: Parallel detail fetch for each provider's #1 candidate
         let mut selected_by_provider: BTreeMap<String, ScrapeCandidate> = BTreeMap::new();
@@ -516,17 +479,7 @@ impl ScrapingOrchestratorService {
             raw_active
         };
         let merged = merge_scraped_by_priority(&active_sources, query.target);
-
-        let max_len = per_provider.iter().map(Vec::len).max().unwrap_or(0);
-        let total_cap: usize = per_provider.iter().map(Vec::len).sum();
-        let mut combined = Vec::with_capacity(total_cap);
-        for row in 0..max_len {
-            for bucket in &per_provider {
-                if let Some(item) = bucket.get(row) {
-                    combined.push(item.clone());
-                }
-            }
-        }
+        let combined = Self::interleave_provider_candidates(&per_provider);
 
         Ok(AggregateScrapeResponse {
             provider_order,
@@ -1006,7 +959,7 @@ impl ScrapingOrchestratorService {
                 if media_kind == MediaKind::Book
                     && !detail.entry.extension.eq_ignore_ascii_case("epub")
                     && let Ok(root) = self.settings.find_root(root_id).await
-                    && let Ok(dst_sb) = root.resolve_existing(&plan.to_rel_path)
+                    && let Ok(dst_sb) = resolve_existing_in_root(&root, &plan.to_rel_path)
                     && let Some(dst_dir) = dst_sb.abs_path.parent()
                     && dst_dir != root.path
                     && dst_dir
@@ -1167,7 +1120,7 @@ impl ScrapingOrchestratorService {
             .cloned()
             .ok_or_else(|| DomainError::NotFound(format!("root '{root_id}' not found")))?;
         root.ensure_writable()?;
-        let src_sandbox = root.resolve_existing(rel_path)?;
+        let src_sandbox = resolve_existing_in_root(&root, rel_path)?;
         if !src_sandbox.abs_path.is_file() {
             return Err(DomainError::Validation(format!(
                 "'{}' is not a regular video file",
@@ -1231,7 +1184,7 @@ impl ScrapingOrchestratorService {
             &src_sandbox.abs_path,
             ext,
         );
-        let dst_abs = root.resolve_target(&target_rel_path)?;
+        let dst_abs = resolve_target_in_root(&root, &target_rel_path)?;
         if dst_abs != src_sandbox.abs_path && dst_abs.exists() {
             return Err(DomainError::Conflict(format!(
                 "target '{}' already exists on disk",
@@ -2561,11 +2514,11 @@ mod tests {
             )
             .await
             .unwrap();
+        let ffmpeg = xmedia_core::infra::ffmpeg::FfmpegToolkit::from_ffmpeg_bin("ffmpeg");
         let workbench = MediaWorkbenchService::new(
             settings.clone(),
-            build_default_inspectors(xmedia_core::infra::ffmpeg::FfmpegToolkit::from_ffmpeg_bin(
-                "ffmpeg",
-            )),
+            build_default_inspectors(ffmpeg.clone()),
+            ffmpeg,
         );
         let scraping = ScrapingOrchestratorService::new(settings, workbench, vec![]);
 

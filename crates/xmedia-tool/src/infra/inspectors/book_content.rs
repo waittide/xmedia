@@ -1717,6 +1717,411 @@ pub(crate) fn rebuild_opf_manifest_and_spine(
     replace_opf_metadata_block(&with_spine, meta, None, unique_id, effective_ver)
 }
 
+pub(crate) fn ext_for_image_mime(mime: &str) -> &'static str {
+    match mime.to_ascii_lowercase().as_str() {
+        "image/webp" => "webp",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/svg+xml" => "svg",
+        _ => "jpg",
+    }
+}
+
+pub(crate) fn epub_stored_zip_options() -> SimpleFileOptions {
+    SimpleFileOptions::default().compression_method(CompressionMethod::Stored)
+}
+
+pub(crate) fn epub_deflated_zip_options(best: bool) -> SimpleFileOptions {
+    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    if best {
+        opts.compression_level(Some(9))
+    } else {
+        opts
+    }
+}
+
+pub(crate) fn epub_entry_zip_options(
+    path: &str,
+    media_type: &str,
+    best: bool,
+) -> SimpleFileOptions {
+    if !best {
+        return epub_deflated_zip_options(false);
+    }
+    let lower_mt = media_type.to_ascii_lowercase();
+    let lower_path = path.to_ascii_lowercase();
+    let precompressed = lower_mt == "image/jpeg"
+        || lower_mt == "image/webp"
+        || lower_mt == "font/woff2"
+        || lower_mt == "application/font-woff2"
+        || lower_path.ends_with(".jpg")
+        || lower_path.ends_with(".jpeg")
+        || lower_path.ends_with(".webp")
+        || lower_path.ends_with(".woff2");
+    if precompressed {
+        epub_stored_zip_options()
+    } else {
+        epub_deflated_zip_options(true)
+    }
+}
+
+pub(crate) fn write_zip_entry<W: Write + std::io::Seek>(
+    writer: &mut ZipWriter<W>,
+    path: &str,
+    opts: SimpleFileOptions,
+    bytes: &[u8],
+    label: &str,
+) -> DomainResult<()> {
+    writer
+        .start_file(path, opts)
+        .map_err(|e| DomainError::Storage(format!("epub {label} start error: {e}")))?;
+    writer
+        .write_all(bytes)
+        .map_err(|e| DomainError::Storage(format!("epub {label} write error: {e}")))?;
+    Ok(())
+}
+
+pub(crate) fn read_epub_toc_map<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    info: &EpubStructureInfo,
+) -> HashMap<String, (String, u8)> {
+    let mut toc_map: HashMap<String, (String, u8)> = HashMap::new();
+    if let Some(nav_node) = info.manifest.iter().find(|m| is_nav_manifest_node(m))
+        && let Some(nav_bytes) = read_zip_bytes(archive, &nav_node.full_path)
+    {
+        let nav_dir = Path::new(&nav_node.full_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+        toc_map = parse_nav_toc_map(&nav_bytes, nav_dir);
+    }
+    if toc_map.is_empty()
+        && let Some(ncx_node) = info.manifest.iter().find(|m| {
+            info.toc_ncx_attr.as_deref() == Some(m.id.as_str())
+                || m.media_type
+                    .eq_ignore_ascii_case("application/x-dtbncx+xml")
+        })
+        && let Some(ncx_bytes) = read_zip_bytes(archive, &ncx_node.full_path)
+    {
+        let ncx_dir = Path::new(&ncx_node.full_path)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
+        toc_map = parse_ncx_toc_map(&ncx_bytes, ncx_dir);
+    }
+    toc_map
+}
+
+pub(crate) fn find_cover_manifest_node(info: &EpubStructureInfo) -> Option<&ManifestNode> {
+    info.manifest
+        .iter()
+        .find(|m| {
+            m.media_type.starts_with("image/")
+                && (m
+                    .properties
+                    .as_deref()
+                    .is_some_and(|p| p.split_whitespace().any(|t| t == "cover-image"))
+                    || info.cover_meta_id.as_deref() == Some(m.id.as_str()))
+        })
+        .or_else(|| {
+            info.manifest.iter().find(|m| {
+                m.media_type.starts_with("image/")
+                    && (m.id.to_ascii_lowercase().contains("cover")
+                        || m.href.to_ascii_lowercase().contains("cover"))
+            })
+        })
+}
+
+pub(crate) struct FreshEpubChapter {
+    pub title: String,
+    pub level: u8,
+    pub body_xhtml: String,
+}
+
+pub(crate) struct FreshEpubImage {
+    pub rel_href: String,
+    pub media_type: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+pub(crate) struct FreshEpubBuildOptions<'a> {
+    pub css: &'a str,
+    pub generate_jacket: bool,
+    pub mark_normalized: bool,
+    pub best_compression: bool,
+    pub cover_wrapper_class: &'a str,
+    pub cover_alt: &'a str,
+}
+
+const DEFAULT_CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"#;
+
+pub(crate) fn write_fresh_epub_package(
+    epub_path: &Path,
+    meta: &BookFileMeta,
+    chapters: &[FreshEpubChapter],
+    extra_images: &[FreshEpubImage],
+    cover: Option<&(Vec<u8>, &'static str, &'static str)>,
+    opts: &FreshEpubBuildOptions<'_>,
+) -> DomainResult<()> {
+    let lang = meta.language.as_deref().unwrap_or("zh-CN");
+    let book_uuid = format!("urn:uuid:{}", Uuid::now_v7());
+
+    atomic_write_via_temp(epub_path, |staging| {
+        let out_file = File::create(staging)
+            .map_err(|e| DomainError::Storage(format!("failed creating epub staging: {e}")))?;
+        let mut writer = ZipWriter::new(BufWriter::new(out_file));
+
+        let stored = epub_stored_zip_options();
+        let deflated = epub_deflated_zip_options(opts.best_compression);
+
+        // 1. OCF `mimetype` uncompressed first entry
+        write_zip_entry(
+            &mut writer,
+            "mimetype",
+            stored,
+            b"application/epub+zip",
+            "mimetype",
+        )?;
+
+        // 2. META-INF/container.xml
+        write_zip_entry(
+            &mut writer,
+            "META-INF/container.xml",
+            deflated,
+            DEFAULT_CONTAINER_XML.as_bytes(),
+            "container",
+        )?;
+
+        // 3. Stylesheet
+        write_zip_entry(
+            &mut writer,
+            "OEBPS/Styles/style.css",
+            deflated,
+            opts.css.as_bytes(),
+            "css",
+        )?;
+
+        let mut manifest_nodes = vec![
+            ManifestNode {
+                id: "style-css".to_string(),
+                href: "Styles/style.css".to_string(),
+                full_path: "OEBPS/Styles/style.css".to_string(),
+                media_type: "text/css".to_string(),
+                properties: None,
+            },
+            ManifestNode {
+                id: "nav".to_string(),
+                href: "nav.xhtml".to_string(),
+                full_path: "OEBPS/nav.xhtml".to_string(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: Some("nav".to_string()),
+            },
+            ManifestNode {
+                id: "ncx".to_string(),
+                href: "toc.ncx".to_string(),
+                full_path: "OEBPS/toc.ncx".to_string(),
+                media_type: "application/x-dtbncx+xml".to_string(),
+                properties: None,
+            },
+        ];
+        let mut spine_ids = Vec::new();
+        let mut toc_triples: Vec<(String, String, u8)> = Vec::with_capacity(chapters.len() + 1);
+
+        // 4. Optional Cover Image & Cover Page
+        let mut cover_item_id: Option<&str> = None;
+        let mut cover_rel_for_jacket: Option<String> = None;
+        if let Some((cov_bytes, cov_mime, cov_ext)) = cover {
+            let img_rel = format!("Images/cover.{cov_ext}");
+            let img_full = format!("OEBPS/{img_rel}");
+            write_zip_entry(
+                &mut writer,
+                &img_full,
+                epub_entry_zip_options(&img_full, cov_mime, opts.best_compression),
+                cov_bytes,
+                "cover image",
+            )?;
+
+            let cover_xhtml = wrap_full_xhtml_document(
+                "封面",
+                lang,
+                None,
+                Some("../Styles/style.css"),
+                &format!(
+                    "  <div class=\"{}\"><img src=\"../{img_rel}\" alt=\"{}\"/></div>",
+                    opts.cover_wrapper_class,
+                    escape(opts.cover_alt)
+                ),
+            );
+            write_zip_entry(
+                &mut writer,
+                "OEBPS/Text/cover.xhtml",
+                deflated,
+                cover_xhtml.as_bytes(),
+                "cover xhtml",
+            )?;
+
+            manifest_nodes.push(ManifestNode {
+                id: "cover-image".to_string(),
+                href: img_rel.clone(),
+                full_path: img_full,
+                media_type: (*cov_mime).to_string(),
+                properties: Some("cover-image".to_string()),
+            });
+            manifest_nodes.push(ManifestNode {
+                id: "cover-page".to_string(),
+                href: "Text/cover.xhtml".to_string(),
+                full_path: "OEBPS/Text/cover.xhtml".to_string(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: None,
+            });
+            spine_ids.push("cover-page".to_string());
+            cover_item_id = Some("cover-image");
+            cover_rel_for_jacket = Some(format!("../{img_rel}"));
+        }
+
+        // 5. Optional Jacket Metadata Page
+        if opts.generate_jacket {
+            let jacket_xhtml = render_book_jacket_xhtml(
+                meta,
+                cover_rel_for_jacket.as_deref(),
+                Some("../Styles/style.css"),
+            );
+            write_zip_entry(
+                &mut writer,
+                "OEBPS/Text/xmedia_jacket.xhtml",
+                deflated,
+                jacket_xhtml.as_bytes(),
+                "jacket",
+            )?;
+
+            manifest_nodes.push(ManifestNode {
+                id: "xmedia-jacket".to_string(),
+                href: "Text/xmedia_jacket.xhtml".to_string(),
+                full_path: "OEBPS/Text/xmedia_jacket.xhtml".to_string(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: None,
+            });
+            spine_ids.push("xmedia-jacket".to_string());
+            toc_triples.push((
+                "书籍简介".to_string(),
+                "OEBPS/Text/xmedia_jacket.xhtml".to_string(),
+                0,
+            ));
+        }
+
+        // 6. Optional Extra Images (e.g. PDF extracted page images)
+        for (idx, asset) in extra_images.iter().enumerate() {
+            let full_path = format!("OEBPS/{}", asset.rel_href);
+            write_zip_entry(
+                &mut writer,
+                &full_path,
+                epub_entry_zip_options(&full_path, asset.media_type, opts.best_compression),
+                &asset.bytes,
+                "image",
+            )?;
+            manifest_nodes.push(ManifestNode {
+                id: format!("img-{:04}", idx + 1),
+                href: asset.rel_href.clone(),
+                full_path,
+                media_type: asset.media_type.to_string(),
+                properties: None,
+            });
+        }
+
+        // 7. Chapters
+        for (idx, ch) in chapters.iter().enumerate() {
+            let seq = idx + 1;
+            let title = if ch.title.trim().is_empty() {
+                format!("第 {seq} 章")
+            } else {
+                ch.title.trim().to_string()
+            };
+            let level = ch.level.min(1);
+            let rel_href = format!("Text/chapter_{seq:04}.xhtml");
+            let full_path = format!("OEBPS/{rel_href}");
+            let item_id = format!("ch-{seq:04}");
+
+            let doc = wrap_full_xhtml_document(
+                &title,
+                lang,
+                None,
+                Some("../Styles/style.css"),
+                &ch.body_xhtml,
+            );
+            write_zip_entry(&mut writer, &full_path, deflated, doc.as_bytes(), "chapter")?;
+
+            manifest_nodes.push(ManifestNode {
+                id: item_id.clone(),
+                href: rel_href,
+                full_path: full_path.clone(),
+                media_type: "application/xhtml+xml".to_string(),
+                properties: None,
+            });
+            spine_ids.push(item_id);
+            toc_triples.push((title, full_path, level));
+        }
+
+        // 8. nav.xhtml + toc.ncx
+        let oebps_dir = Path::new("OEBPS");
+        let nav_xml = render_nav_xhtml(&meta.title, lang, &toc_triples, oebps_dir);
+        write_zip_entry(
+            &mut writer,
+            "OEBPS/nav.xhtml",
+            deflated,
+            nav_xml.as_bytes(),
+            "nav",
+        )?;
+
+        let ncx_xml = render_toc_ncx(&book_uuid, &meta.title, &toc_triples, oebps_dir);
+        write_zip_entry(
+            &mut writer,
+            "OEBPS/toc.ncx",
+            deflated,
+            ncx_xml.as_bytes(),
+            "ncx",
+        )?;
+
+        // 9. OEBPS/content.opf
+        let base_opf = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n    <dc:identifier id=\"bookid\">{}</dc:identifier>\n  </metadata>\n  <manifest></manifest>\n  <spine toc=\"ncx\"></spine>\n</package>\n",
+            escape(&book_uuid)
+        );
+        let mut effective_meta = meta.clone();
+        if opts.mark_normalized {
+            effective_meta.is_normalized = true;
+        }
+        let with_meta =
+            replace_opf_metadata_block(&base_opf, &effective_meta, cover_item_id, "bookid", "3.0");
+        let final_opf = rebuild_opf_manifest_and_spine(
+            &with_meta,
+            &manifest_nodes,
+            &spine_ids,
+            "ncx",
+            None,
+            &effective_meta,
+            "bookid",
+            "3.0",
+        );
+
+        write_zip_entry(
+            &mut writer,
+            "OEBPS/content.opf",
+            deflated,
+            final_opf.as_bytes(),
+            "opf",
+        )?;
+
+        writer
+            .finish()
+            .map_err(|e| DomainError::Storage(format!("epub zip finalize error: {e}")))?;
+        Ok(())
+    })
+}
+
 pub fn convert_txt_to_epub(
     txt_path: &Path,
     chapters_override: Option<&[SaveBookChapterInput]>,
@@ -1746,7 +2151,6 @@ pub fn convert_txt_to_epub(
     }
 
     let meta = read_book_meta_any(txt_path)?;
-    let lang = meta.language.as_deref().unwrap_or("zh-CN");
 
     let resolved_chapters: Vec<SaveBookChapterInput> = if let Some(list) = chapters_override {
         if list.is_empty() {
@@ -1779,148 +2183,26 @@ pub fn convert_txt_to_epub(
                 return None;
             }
             let mime = sniff_image_mime(&bytes);
-            let ext = match mime {
-                "image/png" => "png",
-                "image/webp" => "webp",
-                "image/gif" => "gif",
-                _ => "jpg",
-            };
-            Some((bytes, mime, ext))
+            Some((bytes, mime, ext_for_image_mime(mime)))
         });
 
-    let book_uuid = format!("urn:uuid:{}", Uuid::now_v7());
+    let chosen_css = stylesheets_override
+        .and_then(|s| s.first())
+        .map(String::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(DEFAULT_EPUB_CSS);
 
-    atomic_write_via_temp(&epub_path, |staging| {
-        let out_file = File::create(staging)
-            .map_err(|e| DomainError::Storage(format!("failed creating epub staging: {e}")))?;
-        let mut writer = ZipWriter::new(BufWriter::new(out_file));
-
-        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
-        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-
-        // 1. OCF `mimetype` uncompressed first entry
-        writer
-            .start_file("mimetype", stored)
-            .map_err(|e| DomainError::Storage(format!("epub mimetype start error: {e}")))?;
-        writer
-            .write_all(b"application/epub+zip")
-            .map_err(|e| DomainError::Storage(format!("epub mimetype write error: {e}")))?;
-
-        // 2. META-INF/container.xml
-        let container_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
-  <rootfiles>
-    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
-  </rootfiles>
-</container>
-"#;
-        writer
-            .start_file("META-INF/container.xml", deflated)
-            .map_err(|e| DomainError::Storage(format!("epub container error: {e}")))?;
-        writer
-            .write_all(container_xml.as_bytes())
-            .map_err(|e| DomainError::Storage(format!("epub container write error: {e}")))?;
-
-        // 3. Stylesheet
-        let chosen_css = stylesheets_override
-            .and_then(|s| s.first())
-            .map(String::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(DEFAULT_EPUB_CSS);
-        writer
-            .start_file("OEBPS/Styles/style.css", deflated)
-            .map_err(|e| DomainError::Storage(format!("epub css error: {e}")))?;
-        writer
-            .write_all(chosen_css.as_bytes())
-            .map_err(|e| DomainError::Storage(format!("epub css write error: {e}")))?;
-
-        let mut manifest_nodes = vec![
-            ManifestNode {
-                id: "style-css".to_string(),
-                href: "Styles/style.css".to_string(),
-                full_path: "OEBPS/Styles/style.css".to_string(),
-                media_type: "text/css".to_string(),
-                properties: None,
-            },
-            ManifestNode {
-                id: "nav".to_string(),
-                href: "nav.xhtml".to_string(),
-                full_path: "OEBPS/nav.xhtml".to_string(),
-                media_type: "application/xhtml+xml".to_string(),
-                properties: Some("nav".to_string()),
-            },
-            ManifestNode {
-                id: "ncx".to_string(),
-                href: "toc.ncx".to_string(),
-                full_path: "OEBPS/toc.ncx".to_string(),
-                media_type: "application/x-dtbncx+xml".to_string(),
-                properties: None,
-            },
-        ];
-        let mut spine_ids = Vec::new();
-
-        // 4. Optional Cover Image & Cover Page
-        let mut cover_item_id: Option<&str> = None;
-        if let Some((cov_bytes, cov_mime, cov_ext)) = &cover_payload {
-            let img_rel = format!("Images/cover.{cov_ext}");
-            let img_full = format!("OEBPS/{img_rel}");
-            writer
-                .start_file(&img_full, deflated)
-                .map_err(|e| DomainError::Storage(format!("epub cover image error: {e}")))?;
-            writer
-                .write_all(cov_bytes)
-                .map_err(|e| DomainError::Storage(format!("epub cover write error: {e}")))?;
-
-            let cover_xhtml = wrap_full_xhtml_document(
-                "封面",
-                lang,
-                None,
-                Some("../Styles/style.css"),
-                &format!(
-                    "  <div class=\"cover-wrap\"><img src=\"../{img_rel}\" alt=\"Cover\"/></div>"
-                ),
-            );
-            writer
-                .start_file("OEBPS/Text/cover.xhtml", deflated)
-                .map_err(|e| DomainError::Storage(format!("epub cover xhtml error: {e}")))?;
-            writer
-                .write_all(cover_xhtml.as_bytes())
-                .map_err(|e| DomainError::Storage(format!("epub cover xhtml write error: {e}")))?;
-
-            manifest_nodes.push(ManifestNode {
-                id: "cover-image".to_string(),
-                href: img_rel,
-                full_path: img_full,
-                media_type: (*cov_mime).to_string(),
-                properties: Some("cover-image".to_string()),
-            });
-            manifest_nodes.push(ManifestNode {
-                id: "cover-page".to_string(),
-                href: "Text/cover.xhtml".to_string(),
-                full_path: "OEBPS/Text/cover.xhtml".to_string(),
-                media_type: "application/xhtml+xml".to_string(),
-                properties: None,
-            });
-            spine_ids.push("cover-page".to_string());
-            cover_item_id = Some("cover-image");
-        }
-
-        // 5. Chapters
-        let mut toc_triples: Vec<(String, String, u8)> =
-            Vec::with_capacity(resolved_chapters.len());
-        for (idx, ch) in resolved_chapters.iter().enumerate() {
+    let fresh_chapters: Vec<FreshEpubChapter> = resolved_chapters
+        .iter()
+        .enumerate()
+        .map(|(idx, ch)| {
             let seq = idx + 1;
             let title = if ch.title.trim().is_empty() {
                 format!("第 {seq} 章")
             } else {
                 ch.title.trim().to_string()
             };
-            let level = ch.level.min(1);
-            let rel_href = format!("Text/chapter_{seq:04}.xhtml");
-            let full_path = format!("OEBPS/{rel_href}");
-            let item_id = format!("ch-{seq:04}");
-
-            let body_inner = match ch.mode {
+            let body_xhtml = match ch.mode {
                 ChapterEditMode::Plain => plain_to_xhtml_body(&title, &ch.plain_text),
                 ChapterEditMode::Xhtml => {
                     if ch.xhtml_body.trim().is_empty() {
@@ -1930,79 +2212,29 @@ pub fn convert_txt_to_epub(
                     }
                 }
             };
-            let doc = wrap_full_xhtml_document(
-                &title,
-                lang,
-                None,
-                Some("../Styles/style.css"),
-                &body_inner,
-            );
-            writer
-                .start_file(&full_path, deflated)
-                .map_err(|e| DomainError::Storage(format!("epub chapter start error: {e}")))?;
-            writer
-                .write_all(doc.as_bytes())
-                .map_err(|e| DomainError::Storage(format!("epub chapter write error: {e}")))?;
+            FreshEpubChapter {
+                title,
+                level: ch.level,
+                body_xhtml,
+            }
+        })
+        .collect();
 
-            manifest_nodes.push(ManifestNode {
-                id: item_id.clone(),
-                href: rel_href,
-                full_path: full_path.clone(),
-                media_type: "application/xhtml+xml".to_string(),
-                properties: None,
-            });
-            spine_ids.push(item_id);
-            toc_triples.push((title, full_path, level));
-        }
-
-        // 6. nav.xhtml + toc.ncx
-        let oebps_dir = Path::new("OEBPS");
-        let nav_xml = render_nav_xhtml(&meta.title, lang, &toc_triples, oebps_dir);
-        writer
-            .start_file("OEBPS/nav.xhtml", deflated)
-            .map_err(|e| DomainError::Storage(format!("epub nav start error: {e}")))?;
-        writer
-            .write_all(nav_xml.as_bytes())
-            .map_err(|e| DomainError::Storage(format!("epub nav write error: {e}")))?;
-
-        let ncx_xml = render_toc_ncx(&book_uuid, &meta.title, &toc_triples, oebps_dir);
-        writer
-            .start_file("OEBPS/toc.ncx", deflated)
-            .map_err(|e| DomainError::Storage(format!("epub ncx start error: {e}")))?;
-        writer
-            .write_all(ncx_xml.as_bytes())
-            .map_err(|e| DomainError::Storage(format!("epub ncx write error: {e}")))?;
-
-        // 7. OEBPS/content.opf
-        let base_opf = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n    <dc:identifier id=\"bookid\">{}</dc:identifier>\n  </metadata>\n  <manifest></manifest>\n  <spine toc=\"ncx\"></spine>\n</package>\n",
-            escape(&book_uuid)
-        );
-        let with_meta =
-            replace_opf_metadata_block(&base_opf, &meta, cover_item_id, "bookid", "3.0");
-        let final_opf = rebuild_opf_manifest_and_spine(
-            &with_meta,
-            &manifest_nodes,
-            &spine_ids,
-            "ncx",
-            None,
-            &meta,
-            "bookid",
-            "3.0",
-        );
-
-        writer
-            .start_file("OEBPS/content.opf", deflated)
-            .map_err(|e| DomainError::Storage(format!("epub opf start error: {e}")))?;
-        writer
-            .write_all(final_opf.as_bytes())
-            .map_err(|e| DomainError::Storage(format!("epub opf write error: {e}")))?;
-
-        writer
-            .finish()
-            .map_err(|e| DomainError::Storage(format!("epub zip finalize error: {e}")))?;
-        Ok(())
-    })?;
+    write_fresh_epub_package(
+        &epub_path,
+        &meta,
+        &fresh_chapters,
+        &[],
+        cover_payload.as_ref(),
+        &FreshEpubBuildOptions {
+            css: chosen_css,
+            generate_jacket: false,
+            mark_normalized: false,
+            best_compression: false,
+            cover_wrapper_class: "cover-wrap",
+            cover_alt: "Cover",
+        },
+    )?;
 
     if delete_source_txt {
         let _ = std::fs::remove_file(txt_path);
@@ -2042,13 +2274,7 @@ pub fn insert_epub_image(
         ));
     };
 
-    let img_ext = match mime_type.as_str() {
-        "image/png" => "png",
-        "image/webp" => "webp",
-        "image/gif" => "gif",
-        "image/svg+xml" => "svg",
-        _ => "jpg",
-    };
+    let img_ext = ext_for_image_mime(&mime_type);
 
     let f = File::open(epub_path)
         .map_err(|e| DomainError::Storage(format!("failed opening epub: {e}")))?;
@@ -2289,48 +2515,10 @@ pub fn polish_epub_book(epub_path: &Path) -> DomainResult<PolishBookReportDto> {
     let info = parse_epub_structure(&mut archive)?;
 
     // Existing TOC map for preserving TOC hierarchy & titles
-    let mut toc_map: HashMap<String, (String, u8)> = HashMap::new();
-    if let Some(nav_node) = info.manifest.iter().find(|m| is_nav_manifest_node(m))
-        && let Some(nav_bytes) = read_zip_bytes(&mut archive, &nav_node.full_path)
-    {
-        let nav_dir = Path::new(&nav_node.full_path)
-            .parent()
-            .unwrap_or_else(|| Path::new(""));
-        toc_map = parse_nav_toc_map(&nav_bytes, nav_dir);
-    }
-    if toc_map.is_empty()
-        && let Some(ncx_node) = info.manifest.iter().find(|m| {
-            info.toc_ncx_attr.as_deref() == Some(m.id.as_str())
-                || m.media_type
-                    .eq_ignore_ascii_case("application/x-dtbncx+xml")
-        })
-        && let Some(ncx_bytes) = read_zip_bytes(&mut archive, &ncx_node.full_path)
-    {
-        let ncx_dir = Path::new(&ncx_node.full_path)
-            .parent()
-            .unwrap_or_else(|| Path::new(""));
-        toc_map = parse_ncx_toc_map(&ncx_bytes, ncx_dir);
-    }
+    let toc_map = read_epub_toc_map(&mut archive, &info);
 
     // Locate cover image in manifest if available
-    let cover_img_node = info
-        .manifest
-        .iter()
-        .find(|m| {
-            m.media_type.starts_with("image/")
-                && (m
-                    .properties
-                    .as_deref()
-                    .is_some_and(|p| p.split_whitespace().any(|t| t == "cover-image"))
-                    || info.cover_meta_id.as_deref() == Some(m.id.as_str()))
-        })
-        .or_else(|| {
-            info.manifest.iter().find(|m| {
-                m.media_type.starts_with("image/")
-                    && (m.id.to_ascii_lowercase().contains("cover")
-                        || m.href.to_ascii_lowercase().contains("cover"))
-            })
-        });
+    let cover_img_node = find_cover_manifest_node(&info);
     let cover_img_id = cover_img_node.map(|m| m.id.clone());
     let cover_img_full = cover_img_node.map(|m| m.full_path.clone());
 

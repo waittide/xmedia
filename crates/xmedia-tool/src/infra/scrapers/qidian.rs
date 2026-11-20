@@ -12,10 +12,10 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_novel_common::{
-    build_browser_http_client, build_novel_subtitle, extract_meta_map,
-    extract_numeric_id_from_query, is_antibot_or_captcha_html, normalize_cover_url,
-    parse_year_and_date, percent_encode_utf8, read_response_text, score_novel_candidate,
-    strip_html_to_text, strip_inline_html,
+    NovelCandidateDraft, NovelMetadataDraft, build_browser_http_client, extract_digits_book_id,
+    extract_meta_map, extract_numeric_id_from_query, is_antibot_or_captcha_html,
+    normalize_cover_url, novel_candidate_from_detail, parse_year_and_date, percent_encode_utf8,
+    rank_novel_candidates, read_response_text, strip_html_to_text, strip_inline_html,
 };
 
 pub struct QidianProvider;
@@ -87,63 +87,38 @@ pub(crate) fn parse_qidian_search_html(html: &str, query: &ScrapeQuery) -> Vec<S
     };
     let records: Vec<QidianSearchRecord> = serde_json::from_value(records_val).unwrap_or_default();
 
-    let mut scored: Vec<(i32, usize, ScrapeCandidate)> = records
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, rec)| {
-            if rec.bid == 0 {
-                return None;
-            }
-            let title = strip_inline_html(&rec.b_name);
-            if title.is_empty() {
-                return None;
-            }
-            let author = strip_inline_html(&rec.b_auth);
-            let cat = if !rec.sub_cate_name.trim().is_empty() {
-                rec.sub_cate_name.trim()
-            } else {
-                rec.cat.trim()
-            };
-            let date_src = if !rec.last_update_time.trim().is_empty() {
-                &rec.last_update_time
-            } else {
-                &rec.update_time
-            };
-            let (year, _) = parse_year_and_date(date_src);
-            let summary = strip_html_to_text(&rec.desc);
-            let pop = u32::try_from(rec.recommend_cnt.min(100_000)).unwrap_or(0);
-            let score = score_novel_candidate(
-                query,
-                &title,
-                (!author.is_empty()).then_some(author.as_str()),
-                year,
-                pop,
-            );
-            Some((
-                score,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "qidian".to_string(),
-                    provider_name: "起点中文网".to_string(),
-                    external_id: rec.bid.to_string(),
-                    target: ScrapeTargetKind::Book,
-                    title,
-                    subtitle: build_novel_subtitle(
-                        (!author.is_empty()).then_some(author.as_str()),
-                        (!cat.is_empty()).then_some(cat),
-                    ),
-                    year,
-                    summary: (!summary.is_empty()).then_some(summary),
-                    cover_url: upgrade_qidian_cover(&rec.img_url, rec.bid),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ))
+    let drafts = records.into_iter().filter_map(|rec| {
+        if rec.bid == 0 {
+            return None;
+        }
+        let title = strip_inline_html(&rec.b_name);
+        let author = strip_inline_html(&rec.b_auth);
+        let cat = if !rec.sub_cate_name.trim().is_empty() {
+            rec.sub_cate_name.trim().to_string()
+        } else {
+            rec.cat.trim().to_string()
+        };
+        let date_src = if !rec.last_update_time.trim().is_empty() {
+            &rec.last_update_time
+        } else {
+            &rec.update_time
+        };
+        let (year, _) = parse_year_and_date(date_src);
+        let summary = strip_html_to_text(&rec.desc);
+        let popularity_votes = u32::try_from(rec.recommend_cnt.min(100_000)).unwrap_or(0);
+        Some(NovelCandidateDraft {
+            external_id: rec.bid.to_string(),
+            title,
+            author: (!author.is_empty()).then_some(author),
+            category: (!cat.is_empty()).then_some(cat),
+            year,
+            summary: (!summary.is_empty()).then_some(summary),
+            cover_url: upgrade_qidian_cover(&rec.img_url, rec.bid),
+            popularity_votes,
         })
-        .collect();
+    });
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().take(12).map(|(_, _, c)| c).collect()
+    rank_novel_candidates("qidian", "起点中文网", query, drafts, 12)
 }
 
 pub(crate) fn parse_qidian_detail_html(bid_str: &str, html: &str) -> DomainResult<ScrapedMetadata> {
@@ -216,26 +191,18 @@ pub(crate) fn parse_qidian_detail_html(bid_str: &str, html: &str) -> DomainResul
                 }
             }
 
-            let mut external_ids = std::collections::BTreeMap::new();
-            external_ids.insert("qidian".to_string(), bid_str.to_string());
-
-            return Ok(ScrapedMetadata {
-                provider_id: "qidian".to_string(),
-                external_id: bid_str.to_string(),
-                target: Some(ScrapeTargetKind::Book),
-                title: Some(title),
-                creators: author.into_iter().collect(),
-                publisher_or_studio: Some("起点中文网".to_string()),
+            return Ok(NovelMetadataDraft {
+                title,
+                author,
                 year,
                 published_date,
-                language: Some("zh-CN".to_string()),
                 summary: desc,
                 genres,
                 tags,
                 cover_url,
-                external_ids,
                 ..Default::default()
-            });
+            }
+            .into_metadata("qidian", "起点中文网", bid_str));
         }
     }
 
@@ -268,25 +235,17 @@ pub(crate) fn parse_qidian_detail_html(bid_str: &str, html: &str) -> DomainResul
         .and_then(|s| upgrade_qidian_cover(s, bid_num))
         .or_else(|| upgrade_qidian_cover("", bid_num));
 
-    let mut external_ids = std::collections::BTreeMap::new();
-    external_ids.insert("qidian".to_string(), bid_str.to_string());
-
-    Ok(ScrapedMetadata {
-        provider_id: "qidian".to_string(),
-        external_id: bid_str.to_string(),
-        target: Some(ScrapeTargetKind::Book),
-        title: Some(title),
-        creators: author.into_iter().collect(),
-        publisher_or_studio: Some("起点中文网".to_string()),
+    Ok(NovelMetadataDraft {
+        title,
+        author,
         year,
         published_date,
-        language: Some("zh-CN".to_string()),
         summary,
         genres: category.into_iter().collect(),
         cover_url,
-        external_ids,
         ..Default::default()
-    })
+    }
+    .into_metadata("qidian", "起点中文网", bid_str))
 }
 
 #[async_trait]
@@ -319,24 +278,9 @@ impl ScraperProviderPort for QidianProvider {
             && let Ok(detail) = self
                 .fetch_detail(&id, ScrapeTargetKind::Book, "zh-CN", creds)
                 .await
-            && let Some(title) = detail.title
+            && let Some(cand) = novel_candidate_from_detail("qidian", "起点中文网", id, detail)
         {
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "qidian".to_string(),
-                provider_name: "起点中文网".to_string(),
-                external_id: id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(
-                    detail.creators.first().map(String::as_str),
-                    detail.genres.first().map(String::as_str),
-                ),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let client = build_browser_http_client(creds, true)?;
@@ -361,14 +305,7 @@ impl ScraperProviderPort for QidianProvider {
         _locale: &str,
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
-        let bid: String = external_id
-            .trim()
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
-        if bid.is_empty() {
-            return Err(DomainError::Validation("empty Qidian book id".into()));
-        }
+        let bid = extract_digits_book_id(external_id, "Qidian")?;
         let mobile_client = build_browser_http_client(creds, true)?;
         let mobile_url = format!("https://m.qidian.com/book/{bid}.html");
         let mut last_err: Option<DomainError> = None;

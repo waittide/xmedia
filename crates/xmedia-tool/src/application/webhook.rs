@@ -41,7 +41,7 @@ fn paths_overlap_str(a: &Path, b: &Path) -> bool {
     ca == cb || ca.starts_with(&cb) || cb.starts_with(&ca)
 }
 
-pub async fn test_xmedia_webhook(cfg: &XmediaWebhookConfig) -> DomainResult<WebhookTestReportDto> {
+fn resolve_webhook_target(cfg: &XmediaWebhookConfig) -> DomainResult<(&str, &str)> {
     let base = cfg.base_url.trim().trim_end_matches('/');
     let api_key = cfg
         .api_key
@@ -52,7 +52,13 @@ pub async fn test_xmedia_webhook(cfg: &XmediaWebhookConfig) -> DomainResult<Webh
     if base.is_empty() {
         return Err(DomainError::Validation("missing xmedia base_url".into()));
     }
+    Ok((base, api_key))
+}
 
+async fn fetch_remote_libraries(
+    cfg: &XmediaWebhookConfig,
+) -> DomainResult<(reqwest::Client, &str, &str, Vec<RemoteLibraryItem>)> {
+    let (base, api_key) = resolve_webhook_target(cfg)?;
     let client = build_webhook_client()?;
     let resp = client
         .get(format!("{base}/api/v1/libraries"))
@@ -71,6 +77,62 @@ pub async fn test_xmedia_webhook(cfg: &XmediaWebhookConfig) -> DomainResult<Webh
     let libs: Vec<RemoteLibraryItem> = resp.json().await.map_err(|e| {
         DomainError::Storage(format!("parse xmedia libraries response failed: {e}"))
     })?;
+    Ok((client, base, api_key, libs))
+}
+
+async fn dispatch_matching_scans(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    libs: Vec<RemoteLibraryItem>,
+    changed_root_path: Option<&Path>,
+    trigger_mode: &str,
+) -> Vec<String> {
+    let mut triggered = Vec::new();
+    for lib in libs {
+        if let RemoteLibraryKind::LocalMount { root_path } = lib.kind {
+            let matches = match changed_root_path {
+                Some(p) => paths_overlap_str(p, Path::new(&root_path)),
+                None => true,
+            };
+            if !matches {
+                continue;
+            }
+            let url = format!("{base}/api/v1/libraries/{}/scan", lib.id);
+            match client.post(&url).header("x-api-key", api_key).send().await {
+                Ok(r) if r.status().is_success() => {
+                    info!(
+                        library = %lib.name,
+                        library_id = %lib.id,
+                        mode = trigger_mode,
+                        "triggered xmedia main server incremental scan via webhook"
+                    );
+                    triggered.push(lib.name);
+                }
+                Ok(r) => {
+                    warn!(
+                        library = %lib.name,
+                        status = %r.status(),
+                        mode = trigger_mode,
+                        "xmedia scan webhook returned non-success"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        library = %lib.name,
+                        error = %e,
+                        mode = trigger_mode,
+                        "xmedia scan webhook request failed"
+                    );
+                }
+            }
+        }
+    }
+    triggered
+}
+
+pub async fn test_xmedia_webhook(cfg: &XmediaWebhookConfig) -> DomainResult<WebhookTestReportDto> {
+    let (_client, _base, _api_key, libs) = fetch_remote_libraries(cfg).await?;
     let mount_names: Vec<String> = libs
         .iter()
         .filter(|l| matches!(l.kind, RemoteLibraryKind::LocalMount { .. }))
@@ -91,57 +153,23 @@ pub async fn notify_xmedia_rescan(cfg: &XmediaWebhookConfig, changed_root_path: 
     if !cfg.enabled {
         return;
     }
-    let base = cfg.base_url.trim().trim_end_matches('/');
-    let Some(api_key) = cfg
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    else {
-        return;
-    };
-    if base.is_empty() {
-        return;
-    }
-
-    let Ok(client) = build_webhook_client() else {
-        return;
-    };
-    let Ok(resp) = client
-        .get(format!("{base}/api/v1/libraries"))
-        .header("x-api-key", api_key)
-        .send()
-        .await
-    else {
-        warn!(base_url = %base, "failed contacting xmedia main server for rescan webhook");
-        return;
-    };
-    if !resp.status().is_success() {
-        warn!(status = %resp.status(), "xmedia rescan webhook auth/list failed");
-        return;
-    }
-    let Ok(libs) = resp.json::<Vec<RemoteLibraryItem>>().await else {
-        return;
-    };
-
-    for lib in libs {
-        if let RemoteLibraryKind::LocalMount { root_path } = lib.kind
-            && paths_overlap_str(changed_root_path, Path::new(&root_path))
-        {
-            let url = format!("{base}/api/v1/libraries/{}/scan", lib.id);
-            match client.post(&url).header("x-api-key", api_key).send().await {
-                Ok(r) if r.status().is_success() => {
-                    info!(library = %lib.name, library_id = %lib.id, "triggered xmedia main server incremental scan via webhook");
-                }
-                Ok(r) => {
-                    warn!(library = %lib.name, status = %r.status(), "xmedia scan webhook returned non-success");
-                }
-                Err(e) => {
-                    warn!(library = %lib.name, error = %e, "xmedia scan webhook request failed");
-                }
-            }
+    let (client, base, api_key, libs) = match fetch_remote_libraries(cfg).await {
+        Ok(res) => res,
+        Err(DomainError::Validation(_)) => return,
+        Err(err) => {
+            warn!(error = %err, "failed contacting xmedia main server for rescan webhook");
+            return;
         }
-    }
+    };
+    let _ = dispatch_matching_scans(
+        &client,
+        base,
+        api_key,
+        libs,
+        Some(changed_root_path),
+        "auto",
+    )
+    .await;
 }
 
 /// Manually triggers incremental library scans on the linked `xmedia` main server
@@ -151,62 +179,10 @@ pub async fn trigger_xmedia_rescan(
     cfg: &XmediaWebhookConfig,
     changed_root_path: Option<&Path>,
 ) -> DomainResult<WebhookTestReportDto> {
-    let base = cfg.base_url.trim().trim_end_matches('/');
-    let api_key = cfg
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| DomainError::Validation("missing xmedia API key".into()))?;
-    if base.is_empty() {
-        return Err(DomainError::Validation("missing xmedia base_url".into()));
-    }
-
-    let client = build_webhook_client()?;
-    let resp = client
-        .get(format!("{base}/api/v1/libraries"))
-        .header("x-api-key", api_key)
-        .send()
-        .await
-        .map_err(|e| DomainError::Storage(format!("connect to xmedia failed: {e}")))?;
-
-    if !resp.status().is_success() {
-        return Err(DomainError::Storage(format!(
-            "xmedia returned HTTP {} (check base_url and admin API key)",
-            resp.status()
-        )));
-    }
-
-    let libs: Vec<RemoteLibraryItem> = resp.json().await.map_err(|e| {
-        DomainError::Storage(format!("parse xmedia libraries response failed: {e}"))
-    })?;
+    let (client, base, api_key, libs) = fetch_remote_libraries(cfg).await?;
     let total_libraries = libs.len();
-    let mut triggered = Vec::new();
-
-    for lib in libs {
-        if let RemoteLibraryKind::LocalMount { root_path } = lib.kind {
-            let matches = match changed_root_path {
-                Some(p) => paths_overlap_str(p, Path::new(&root_path)),
-                None => true,
-            };
-            if !matches {
-                continue;
-            }
-            let url = format!("{base}/api/v1/libraries/{}/scan", lib.id);
-            match client.post(&url).header("x-api-key", api_key).send().await {
-                Ok(r) if r.status().is_success() => {
-                    info!(library = %lib.name, library_id = %lib.id, "manually triggered xmedia scan via webhook");
-                    triggered.push(lib.name);
-                }
-                Ok(r) => {
-                    warn!(library = %lib.name, status = %r.status(), "manual xmedia scan webhook returned non-success");
-                }
-                Err(e) => {
-                    warn!(library = %lib.name, error = %e, "manual xmedia scan webhook failed");
-                }
-            }
-        }
-    }
+    let triggered =
+        dispatch_matching_scans(&client, base, api_key, libs, changed_root_path, "manual").await;
 
     let message = if triggered.is_empty() {
         "已连接主站，但未找到与当前目录重合的本地挂载媒体库".to_string()

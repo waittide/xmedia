@@ -6,8 +6,8 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::config::ToolSettings;
 use crate::domain::ports::ConfigRepositoryPort;
-use crate::domain::workspace::ManagedRoot;
 use crate::infra::atomic_fs::atomic_write_bytes;
+use crate::infra::workspace_fs::open_managed_root;
 
 pub struct JsonFileConfigRepository {
     file_path: PathBuf,
@@ -62,11 +62,11 @@ impl JsonFileConfigRepository {
             changed = true;
         }
         for raw_dir in cli_roots {
-            if let Ok(root) = ManagedRoot::new("", raw_dir, None)
-                && !settings
-                    .roots
-                    .iter()
-                    .any(|existing| existing.path == root.path)
+            let root = open_managed_root("", raw_dir, None)?;
+            if !settings
+                .roots
+                .iter()
+                .any(|existing| existing.path == root.path)
             {
                 settings.roots.push(root);
                 changed = true;

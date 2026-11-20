@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,6 +10,7 @@ use walkdir::WalkDir;
 use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
+use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 
 use crate::application::batch_metadata::{
     BatchMetadataEditInput, BatchMetadataEditReportDto, MetadataHistoryBatchDto,
@@ -26,7 +28,9 @@ use crate::domain::media::{
 use crate::domain::ports::MediaInspectorPort;
 use crate::domain::template::render_template_target;
 use crate::domain::workspace::{ManagedRoot, RootId, SandboxPath, path_to_slash};
-use crate::infra::atomic_fs::{cleanup_empty_parent_dirs, find_companion_sidecars};
+use crate::infra::atomic_fs::{
+    cleanup_empty_parent_dirs, find_companion_sidecars, is_shared_dir_sidecar_name,
+};
 use crate::infra::inspectors::book::dir_has_single_book;
 use crate::infra::inspectors::book_content::{
     BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto, PolishBookReportDto,
@@ -61,6 +65,7 @@ use crate::infra::inspectors::video_ops::{
     extract_embedded_subtitle, list_video_subtitles, process_video_subtitle,
 };
 use crate::infra::inspectors::zh_text::BookTextTransformOptions;
+use crate::infra::workspace_fs::{resolve_existing_in_root, resolve_target_in_root};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct WorkbenchProgress {
@@ -114,6 +119,7 @@ pub struct UndoRenameReportDto {
 pub struct MediaWorkbenchService {
     settings: ToolSettingsService,
     inspectors: Vec<Arc<dyn MediaInspectorPort>>,
+    ffmpeg: FfmpegToolkit,
     rename_history: Arc<RwLock<Vec<RenameHistoryBatchDto>>>,
     metadata_history: Arc<RwLock<Vec<MetadataHistoryBatchDto>>>,
 }
@@ -122,10 +128,12 @@ impl MediaWorkbenchService {
     pub fn new(
         settings: ToolSettingsService,
         inspectors: Vec<Arc<dyn MediaInspectorPort>>,
+        ffmpeg: FfmpegToolkit,
     ) -> Self {
         Self {
             settings,
             inspectors,
+            ffmpeg,
             rename_history: Arc::new(RwLock::new(Vec::new())),
             metadata_history: Arc::new(RwLock::new(Vec::new())),
         }
@@ -317,11 +325,11 @@ impl MediaWorkbenchService {
         let mut skipped_conflicts = Vec::new();
 
         for mv in batch.moves.iter().rev() {
-            let Ok(cur) = root.resolve_existing(&mv.to_rel_path) else {
+            let Ok(cur) = resolve_existing_in_root(&root, &mv.to_rel_path) else {
                 skipped_conflicts.push(mv.to_rel_path.clone());
                 continue;
             };
-            let Ok(orig) = root.resolve_target(&mv.from_rel_path) else {
+            let Ok(orig) = resolve_target_in_root(&root, &mv.from_rel_path) else {
                 skipped_conflicts.push(mv.from_rel_path.clone());
                 continue;
             };
@@ -340,8 +348,8 @@ impl MediaWorkbenchService {
             restored_count += 1;
 
             for (comp_from, comp_to) in mv.companion_moves.iter().rev() {
-                if let Ok(comp_cur) = root.resolve_existing(comp_to)
-                    && let Ok(comp_orig) = root.resolve_target(comp_from)
+                if let Ok(comp_cur) = resolve_existing_in_root(&root, comp_to)
+                    && let Ok(comp_orig) = resolve_target_in_root(&root, comp_from)
                     && !comp_orig.exists()
                 {
                     if let Some(p) = comp_orig.parent() {
@@ -356,8 +364,10 @@ impl MediaWorkbenchService {
             }
         }
 
-        let mut guard = self.rename_history.write().await;
-        guard.retain(|b| b.batch_id != batch_id);
+        if restored_count > 0 {
+            let mut guard = self.rename_history.write().await;
+            guard.retain(|b| b.batch_id != batch_id);
+        }
 
         Ok(UndoRenameReportDto {
             batch_id,
@@ -419,7 +429,7 @@ impl MediaWorkbenchService {
             .cloned()
             .ok_or_else(|| DomainError::NotFound(format!("root '{root_id}' not found")))?;
         let rename_templates = raw_settings.rename_templates;
-        let dir_sandbox = root.resolve_existing(rel_path)?;
+        let dir_sandbox = resolve_existing_in_root(&root, rel_path)?;
         if !dir_sandbox.abs_path.is_dir() {
             return Err(DomainError::Validation(format!(
                 "'{}' is not a directory",
@@ -645,6 +655,75 @@ impl MediaWorkbenchService {
             .await
     }
 
+    async fn write_metadata_capturing_snapshot(
+        &self,
+        root_id: RootId,
+        rel_path: &str,
+        patch: MediaMetadataPatch,
+    ) -> DomainResult<(MediaFileDetail, Option<MetadataSnapshotRecord>)> {
+        let media_kind = match &patch {
+            MediaMetadataPatch::Book(_) => MediaKind::Book,
+            MediaMetadataPatch::Comic(_) => MediaKind::Comic,
+            MediaMetadataPatch::Music(_) => MediaKind::Music,
+            MediaMetadataPatch::Video(_) => MediaKind::Video,
+        };
+        let (root, sandbox, inspector) = self
+            .resolve_writable_media_file(root_id, rel_path, Some(media_kind))
+            .await?;
+        let previous = inspector.inspect_file(&sandbox.abs_path).await.ok();
+        let metadata = inspector.write_metadata(&sandbox.abs_path, &patch).await?;
+        let fname = sandbox
+            .abs_path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let snapshot = previous.map(|prev| MetadataSnapshotRecord {
+            rel_path: rel_path.to_string(),
+            file_name: fname.clone(),
+            previous: prev,
+        });
+        let rename_templates = self.settings.get_raw().await?.rename_templates;
+        let entry = self
+            .build_file_entry(
+                &root,
+                &sandbox.abs_path,
+                &fname,
+                inspector.as_ref(),
+                &rename_templates,
+            )
+            .await?;
+        Ok((MediaFileDetail { entry, metadata }, snapshot))
+    }
+
+    async fn push_batch_metadata_snapshots(
+        &self,
+        root_id: RootId,
+        media_kind: MediaKind,
+        label: String,
+        snapshots: Vec<MetadataSnapshotRecord>,
+    ) -> Option<Uuid> {
+        if snapshots.is_empty() {
+            return None;
+        }
+        let batch_id = Uuid::new_v4();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let updated_count = snapshots.len();
+        self.push_metadata_history(MetadataHistoryBatchDto {
+            batch_id,
+            root_id: root_id.0,
+            media_kind,
+            label,
+            created_at_unix: now,
+            updated_count,
+            records: snapshots,
+        })
+        .await;
+        Some(batch_id)
+    }
+
     async fn write_metadata_inner(
         &self,
         root_id: RootId,
@@ -658,40 +737,26 @@ impl MediaWorkbenchService {
             MediaMetadataPatch::Music(_) => MediaKind::Music,
             MediaMetadataPatch::Video(_) => MediaKind::Video,
         };
+        if let Some(label) = history_label {
+            let (detail, snapshot) = self
+                .write_metadata_capturing_snapshot(root_id, rel_path, patch)
+                .await?;
+            if let Some(rec) = snapshot {
+                let batch_label = format!("{label} · {}", rec.file_name);
+                self.push_batch_metadata_snapshots(root_id, media_kind, batch_label, vec![rec])
+                    .await;
+            }
+            return Ok(detail);
+        }
         let (root, sandbox, inspector) = self
             .resolve_writable_media_file(root_id, rel_path, Some(media_kind))
             .await?;
-        let previous = if history_label.is_some() {
-            inspector.inspect_file(&sandbox.abs_path).await.ok()
-        } else {
-            None
-        };
         let metadata = inspector.write_metadata(&sandbox.abs_path, &patch).await?;
         let fname = sandbox
             .abs_path
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if let (Some(label), Some(prev)) = (history_label, previous) {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            self.push_metadata_history(MetadataHistoryBatchDto {
-                batch_id: Uuid::new_v4(),
-                root_id: root_id.0,
-                media_kind,
-                label: format!("{label} · {fname}"),
-                created_at_unix: now,
-                updated_count: 1,
-                records: vec![MetadataSnapshotRecord {
-                    rel_path: rel_path.to_string(),
-                    file_name: fname.clone(),
-                    previous: prev,
-                }],
-            })
-            .await;
-        }
         let rename_templates = self.settings.get_raw().await?.rename_templates;
         let entry = self
             .build_file_entry(
@@ -823,7 +888,7 @@ impl MediaWorkbenchService {
 
         let effective_pref = preferred_kind.or(root.default_kind);
         for (idx, rel) in rel_paths.iter().enumerate() {
-            let sandbox = root.resolve_existing(rel)?;
+            let sandbox = resolve_existing_in_root(&root, rel)?;
             let Some(inspector) =
                 self.resolve_inspector_for_path(&sandbox.abs_path, effective_pref)
             else {
@@ -879,7 +944,7 @@ impl MediaWorkbenchService {
             let from_rel = sandbox.rel_slash_string();
             let mut unchanged = from_rel == to_rel;
 
-            let target_abs = root.resolve_target(&to_rel)?;
+            let target_abs = resolve_target_in_root(&root, &to_rel)?;
             let mut conflict = None;
             let mut will_overwrite = false;
             if let MediaMetadataPayload::Video(ref v) = meta
@@ -916,7 +981,7 @@ impl MediaWorkbenchService {
                                 } else {
                                     format!("{target_parent_rel}/{cand_name}")
                                 };
-                                let cand_abs = root.resolve_target(&cand_rel)?;
+                                let cand_abs = resolve_target_in_root(&root, &cand_rel)?;
                                 let cand_exists = cand_abs.exists() && cand_abs != sandbox.abs_path;
                                 let cand_dup = planned_targets.contains(&cand_rel.to_lowercase());
                                 if !cand_exists && !cand_dup {
@@ -1194,83 +1259,76 @@ impl MediaWorkbenchService {
         });
         let mut moved_count = 0usize;
         let mut recorded_moves: Vec<RenameMoveRecord> = Vec::new();
+        let mut first_err: Option<DomainError> = None;
 
         for item in plans {
             if item.unchanged || item.conflict.is_some() {
                 continue;
             }
-            let src = root.resolve_existing(&item.from_rel_path)?;
+            let src = match resolve_existing_in_root(&root, &item.from_rel_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    first_err = Some(e);
+                    break;
+                }
+            };
             let old_parent = src.abs_path.parent().map(Path::to_path_buf);
-            let dst = root.resolve_target(&item.to_rel_path)?;
+            let dst = match resolve_target_in_root(&root, &item.to_rel_path) {
+                Ok(d) => d,
+                Err(e) => {
+                    first_err = Some(e);
+                    break;
+                }
+            };
             if dst.exists() && dst != src.abs_path {
                 if !item.will_overwrite {
-                    return Err(DomainError::Conflict(format!(
+                    first_err = Some(DomainError::Conflict(format!(
                         "目标文件已存在：'{}'",
                         item.to_rel_path
                     )));
+                    break;
                 }
                 if dst.is_dir() {
-                    return Err(DomainError::Conflict(format!(
+                    first_err = Some(DomainError::Conflict(format!(
                         "目标路径是目录，无法覆盖：'{}'",
                         item.to_rel_path
                     )));
+                    break;
                 }
-                std::fs::remove_file(&dst).map_err(|e| {
-                    DomainError::Storage(format!("无法覆盖已有文件 '{}': {e}", item.to_rel_path))
-                })?;
+                if let Err(e) = std::fs::remove_file(&dst) {
+                    first_err = Some(DomainError::Storage(format!(
+                        "无法覆盖已有文件 '{}': {e}",
+                        item.to_rel_path
+                    )));
+                    break;
+                }
             }
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| DomainError::Storage(format!("failed creating folder: {e}")))?;
+            if let Some(parent) = dst.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                first_err = Some(DomainError::Storage(format!("failed creating folder: {e}")));
+                break;
             }
-            std::fs::rename(&src.abs_path, &dst).map_err(|e| {
-                DomainError::Storage(format!(
+            if let Err(e) = std::fs::rename(&src.abs_path, &dst) {
+                first_err = Some(DomainError::Storage(format!(
                     "failed renaming '{}' -> '{}': {e}",
                     item.from_rel_path, item.to_rel_path
-                ))
-            })?;
+                )));
+                break;
+            }
             moved_count += 1;
 
             let mut moved_companions: Vec<(String, String)> = Vec::new();
-            let mut migrated_shared_dirs: Vec<(std::path::PathBuf, std::path::PathBuf)> =
-                Vec::new();
+            let mut migrated_shared_dirs: Vec<(PathBuf, PathBuf)> = Vec::new();
             for (comp_from, comp_to) in &item.companion_moves {
-                if let Ok(comp_src) = root.resolve_existing(comp_from)
-                    && let Ok(comp_dst) = root.resolve_target(comp_to)
+                if let Ok(comp_src) = resolve_existing_in_root(&root, comp_from)
+                    && let Ok(comp_dst) = resolve_target_in_root(&root, comp_to)
                 {
                     let is_shared_dir_sidecar = comp_src
                         .abs_path
                         .file_name()
                         .and_then(|s| s.to_str())
-                        .is_some_and(|fname| {
-                            matches!(
-                                fname.to_ascii_lowercase().as_str(),
-                                "metadata.opf"
-                                    | "movie.nfo"
-                                    | "season.nfo"
-                                    | "tvshow.nfo"
-                                    | "poster.jpg"
-                                    | "poster.jpeg"
-                                    | "poster.png"
-                                    | "poster.webp"
-                                    | "fanart.jpg"
-                                    | "fanart.jpeg"
-                                    | "fanart.png"
-                                    | "fanart.webp"
-                                    | "cover.jpg"
-                                    | "cover.jpeg"
-                                    | "cover.png"
-                                    | "cover.webp"
-                                    | "folder.jpg"
-                                    | "folder.jpeg"
-                                    | "folder.png"
-                                    | "folder.webp"
-                                    | "front.jpg"
-                                    | "front.jpeg"
-                                    | "front.png"
-                                    | "front.webp"
-                            )
-                        });
+                        .is_some_and(is_shared_dir_sidecar_name);
                     if !comp_dst.exists()
                         || (item.will_overwrite
                             && comp_dst.is_file()
@@ -1354,6 +1412,10 @@ impl MediaWorkbenchService {
             }
         }
 
+        if let Some(err) = first_err {
+            return Err(err);
+        }
+
         Ok(moved_count)
     }
 
@@ -1383,7 +1445,7 @@ impl MediaWorkbenchService {
             }) {
                 continue;
             }
-            let sandbox = match root.resolve_existing(trimmed) {
+            let sandbox = match resolve_existing_in_root(&root, trimmed) {
                 Ok(sb) => sb,
                 Err(err) => {
                     failed.push(DeleteFileErrorDto {
@@ -1436,36 +1498,10 @@ impl MediaWorkbenchService {
                     .map(|(p, _)| p)
                     .filter(|p| {
                         // Never delete directory-shared sidecars directly; only clean them if directory becomes empty
-                        let is_shared =
-                            p.file_name().and_then(|s| s.to_str()).is_some_and(|fname| {
-                                matches!(
-                                    fname.to_ascii_lowercase().as_str(),
-                                    "metadata.opf"
-                                        | "movie.nfo"
-                                        | "season.nfo"
-                                        | "tvshow.nfo"
-                                        | "poster.jpg"
-                                        | "poster.jpeg"
-                                        | "poster.png"
-                                        | "poster.webp"
-                                        | "fanart.jpg"
-                                        | "fanart.jpeg"
-                                        | "fanart.png"
-                                        | "fanart.webp"
-                                        | "cover.jpg"
-                                        | "cover.jpeg"
-                                        | "cover.png"
-                                        | "cover.webp"
-                                        | "folder.jpg"
-                                        | "folder.jpeg"
-                                        | "folder.png"
-                                        | "folder.webp"
-                                        | "front.jpg"
-                                        | "front.jpeg"
-                                        | "front.png"
-                                        | "front.webp"
-                                )
-                            });
+                        let is_shared = p
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .is_some_and(is_shared_dir_sidecar_name);
                         !is_shared && self.resolve_inspector_for_path(p, None).is_none()
                     })
                     .collect()
@@ -1890,7 +1926,7 @@ impl MediaWorkbenchService {
         root.ensure_writable()?;
         let mut abs_sources = Vec::with_capacity(source_paths.len());
         for rel in &source_paths {
-            let sb = root.resolve_existing(rel)?;
+            let sb = resolve_existing_in_root(&root, rel)?;
             abs_sources.push(sb.abs_path);
         }
         let target_rel = if output_rel_path.to_ascii_lowercase().ends_with(".cbz") {
@@ -1898,7 +1934,7 @@ impl MediaWorkbenchService {
         } else {
             format!("{output_rel_path}.cbz")
         };
-        let target_abs = root.resolve_target(&target_rel)?;
+        let target_abs = resolve_target_in_root(&root, &target_rel)?;
         if let Some(parent) = target_abs.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 DomainError::Storage(format!("create merge output dir failed: {e}"))
@@ -1926,8 +1962,11 @@ impl MediaWorkbenchService {
         paths: Vec<String>,
         input: BatchComicSeriesSyncInput,
     ) -> DomainResult<BatchComicSeriesSyncReportDto> {
+        let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
         let mut updated_count = 0usize;
         let mut failed_paths = Vec::new();
+        let mut snapshots = Vec::new();
         let width = input.pad_width.clamp(1, 6);
 
         for (idx, rel_path) in paths.iter().enumerate() {
@@ -1953,11 +1992,27 @@ impl MediaWorkbenchService {
                 language_iso: None,
                 reading_direction: input.reading_direction.clone(),
             });
-            match self.write_metadata(root_id, rel_path, patch).await {
-                Ok(_) => updated_count += 1,
+            match self
+                .write_metadata_capturing_snapshot(root_id, rel_path, patch)
+                .await
+            {
+                Ok((_, snapshot)) => {
+                    updated_count += 1;
+                    if let Some(rec) = snapshot {
+                        snapshots.push(rec);
+                    }
+                }
                 Err(_) => failed_paths.push(rel_path.clone()),
             }
         }
+
+        self.push_batch_metadata_snapshots(
+            root_id,
+            MediaKind::Comic,
+            format!("批量同步漫画系列 ({updated_count} 项)"),
+            snapshots,
+        )
+        .await;
 
         Ok(BatchComicSeriesSyncReportDto {
             updated_count,
@@ -2010,18 +2065,18 @@ impl MediaWorkbenchService {
         &self,
         root_id: RootId,
         paths: Vec<String>,
-        ffmpeg_bin: String,
     ) -> DomainResult<ReplayGainReportDto> {
         let root = self.settings.find_root(root_id).await?;
         root.ensure_writable()?;
         let mut resolved = Vec::with_capacity(paths.len());
         for rel in paths {
-            if let Ok(sb) = root.resolve_existing(&rel)
+            if let Ok(sb) = resolve_existing_in_root(&root, &rel)
                 && sb.abs_path.is_file()
             {
                 resolved.push((sb.rel_slash_string(), sb.abs_path));
             }
         }
+        let ffmpeg_bin = self.ffmpeg.ffmpeg_bin().to_string();
         tokio::task::spawn_blocking(move || apply_replaygain_batch(&resolved, &ffmpeg_bin))
             .await
             .map_err(|e| DomainError::Storage(format!("replaygain task failed: {e}")))?
@@ -2031,12 +2086,12 @@ impl MediaWorkbenchService {
         &self,
         root_id: RootId,
         rel_path: &str,
-        ffmpeg_bin: String,
     ) -> DomainResult<CueSplitReportDto> {
         let root = self.settings.find_root(root_id).await?;
         root.ensure_writable()?;
-        let sb = root.resolve_existing(rel_path)?;
+        let sb = resolve_existing_in_root(&root, rel_path)?;
         let abs = sb.abs_path;
+        let ffmpeg_bin = self.ffmpeg.ffmpeg_bin().to_string();
         tokio::task::spawn_blocking(move || split_cue_album(&abs, &ffmpeg_bin))
             .await
             .map_err(|e| DomainError::Storage(format!("split cue task failed: {e}")))?
@@ -2048,8 +2103,11 @@ impl MediaWorkbenchService {
         paths: Vec<String>,
         input: BatchMusicAlbumSyncInput,
     ) -> DomainResult<BatchMusicAlbumSyncReportDto> {
+        let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
         let mut updated_count = 0usize;
         let mut failed_paths = Vec::new();
+        let mut snapshots = Vec::new();
 
         for (idx, rel_path) in paths.iter().enumerate() {
             let track_number = if input.auto_number_tracks {
@@ -2070,11 +2128,27 @@ impl MediaWorkbenchService {
                 embedded_lyrics: None,
                 sidecar_lrc: None,
             });
-            match self.write_metadata(root_id, rel_path, patch).await {
-                Ok(_) => updated_count += 1,
+            match self
+                .write_metadata_capturing_snapshot(root_id, rel_path, patch)
+                .await
+            {
+                Ok((_, snapshot)) => {
+                    updated_count += 1;
+                    if let Some(rec) = snapshot {
+                        snapshots.push(rec);
+                    }
+                }
                 Err(_) => failed_paths.push(rel_path.clone()),
             }
         }
+
+        self.push_batch_metadata_snapshots(
+            root_id,
+            MediaKind::Music,
+            format!("批量同步专辑信息 ({updated_count} 项)"),
+            snapshots,
+        )
+        .await;
 
         Ok(BatchMusicAlbumSyncReportDto {
             updated_count,
@@ -2122,12 +2196,12 @@ impl MediaWorkbenchService {
         stream_index: u32,
         language_tag: Option<String>,
         output_ext: String,
-        ffmpeg_bin: String,
     ) -> DomainResult<(ExtractSubtitleReportDto, MediaFileDetail)> {
         let (_, sandbox, _) = self
             .resolve_writable_media_file(root_id, rel_path, Some(MediaKind::Video))
             .await?;
         let abs = sandbox.abs_path;
+        let ffmpeg_bin = self.ffmpeg.ffmpeg_bin().to_string();
         let report = tokio::task::spawn_blocking(move || {
             extract_embedded_subtitle(
                 &abs,
@@ -2152,12 +2226,14 @@ impl MediaWorkbenchService {
         input: BatchRemapEpisodesInput,
     ) -> DomainResult<BatchRemapEpisodesReportDto> {
         let root = self.settings.find_root(root_id).await?;
+        root.ensure_writable()?;
         let mut updated_count = 0usize;
         let mut failed_paths = Vec::new();
-        let mut wrote_season_nfo = false;
+        let mut snapshots = Vec::new();
+        let mut written_season_dirs: HashSet<PathBuf> = HashSet::new();
 
         for (idx, rel_path) in paths.iter().enumerate() {
-            let sb = match root.resolve_existing(rel_path) {
+            let sb = match resolve_existing_in_root(&root, rel_path) {
                 Ok(sb) => sb,
                 Err(_) => {
                     failed_paths.push(rel_path.clone());
@@ -2180,13 +2256,19 @@ impl MediaWorkbenchService {
                 ..Default::default()
             });
 
-            match self.write_metadata(root_id, rel_path, patch).await {
-                Ok(_) => {
+            match self
+                .write_metadata_capturing_snapshot(root_id, rel_path, patch)
+                .await
+            {
+                Ok((_, snapshot)) => {
                     updated_count += 1;
+                    if let Some(rec) = snapshot {
+                        snapshots.push(rec);
+                    }
                     if input.write_season_nfo
-                        && !wrote_season_nfo
                         && let Some(season_num) = input.season_number
                         && let Some(parent) = sb.abs_path.parent()
+                        && !written_season_dirs.contains(parent)
                     {
                         let nfo = render_season_nfo_xml(
                             season_num,
@@ -2196,16 +2278,27 @@ impl MediaWorkbenchService {
                             base.tmdb_id.as_deref(),
                             base.bangumi_id.as_deref(),
                         );
-                        let _ = crate::infra::atomic_fs::atomic_write_bytes(
+                        if crate::infra::atomic_fs::atomic_write_bytes(
                             &parent.join("season.nfo"),
                             nfo.as_bytes(),
-                        );
-                        wrote_season_nfo = true;
+                        )
+                        .is_ok()
+                        {
+                            written_season_dirs.insert(parent.to_path_buf());
+                        }
                     }
                 }
                 Err(_) => failed_paths.push(rel_path.clone()),
             }
         }
+
+        self.push_batch_metadata_snapshots(
+            root_id,
+            MediaKind::Video,
+            format!("批量重排剧集编号 ({updated_count} 项)"),
+            snapshots,
+        )
+        .await;
 
         Ok(BatchRemapEpisodesReportDto {
             updated_count,
@@ -2233,7 +2326,7 @@ impl MediaWorkbenchService {
         preferred_kind: Option<MediaKind>,
     ) -> DomainResult<(ManagedRoot, SandboxPath, Arc<dyn MediaInspectorPort>)> {
         let root = self.settings.find_root(root_id).await?;
-        let sandbox = root.resolve_existing(rel_path)?;
+        let sandbox = resolve_existing_in_root(&root, rel_path)?;
         if !sandbox.abs_path.is_file() {
             return Err(DomainError::Validation(format!(
                 "'{}' is not a regular file",

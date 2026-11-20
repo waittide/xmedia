@@ -12,6 +12,7 @@ use crate::domain::config::{
 };
 use crate::domain::ports::ConfigRepositoryPort;
 use crate::domain::workspace::{ManagedRoot, RootId};
+use crate::infra::workspace_fs::open_managed_root;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettingsDto {
@@ -112,7 +113,7 @@ impl ToolSettingsService {
         default_kind: Option<MediaKind>,
         read_only: bool,
     ) -> DomainResult<ManagedRoot> {
-        let root = ManagedRoot::new(name, PathBuf::from(path.trim()), default_kind)?
+        let root = open_managed_root(name, PathBuf::from(path.trim()), default_kind)?
             .with_read_only(read_only);
         let _guard = self.write_lock.lock().await;
         let mut settings = self.repo.load().await?;

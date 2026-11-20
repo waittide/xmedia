@@ -12,9 +12,10 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_novel_common::{
-    build_browser_http_client, build_novel_subtitle, extract_numeric_id_from_query,
-    is_antibot_or_captcha_html, normalize_cover_url, parse_year_and_date, percent_encode_gb18030,
-    read_response_text, score_novel_candidate, strip_html_to_text, strip_inline_html,
+    NovelCandidateDraft, NovelMetadataDraft, build_browser_http_client, extract_digits_book_id,
+    extract_numeric_id_from_query, is_antibot_or_captcha_html, normalize_cover_url,
+    novel_candidate_from_detail, parse_year_and_date, percent_encode_gb18030,
+    rank_novel_candidates, read_response_text, strip_html_to_text, strip_inline_html,
 };
 
 pub struct JjwxcProvider;
@@ -62,9 +63,9 @@ pub(crate) fn parse_jjwxc_wap_search_html(html: &str, query: &ScrapeQuery) -> Ve
     }
 
     let mut seen_ids = std::collections::HashSet::new();
-    let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
+    let mut drafts = Vec::new();
 
-    for (idx, chunk) in html.split("<li").skip(1).enumerate() {
+    for chunk in html.split("<li").skip(1) {
         let Some(b_cap) = RE_JJ_BOOK_LINK.captures(chunk) else {
             continue;
         };
@@ -79,28 +80,15 @@ pub(crate) fn parse_jjwxc_wap_search_html(html: &str, query: &ScrapeQuery) -> Ve
             .map(|c| strip_inline_html(&c[1]))
             .filter(|s| !s.is_empty());
 
-        let rel = score_novel_candidate(query, &title, author.as_deref(), None, 0);
-        scored.push((
-            rel,
-            idx,
-            ScrapeCandidate {
-                provider_id: "jjwxc".to_string(),
-                provider_name: "晋江文学城".to_string(),
-                external_id: novel_id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(author.as_deref(), None),
-                year: None,
-                summary: None,
-                cover_url: None,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            },
-        ));
+        drafts.push(NovelCandidateDraft {
+            external_id: novel_id,
+            title,
+            author,
+            ..Default::default()
+        });
     }
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().take(12).map(|(_, _, c)| c).collect()
+    rank_novel_candidates("jjwxc", "晋江文学城", query, drafts, 12)
 }
 
 pub(crate) fn map_jjwxc_detail(
@@ -163,28 +151,19 @@ pub(crate) fn map_jjwxc_detail(
         .and_then(|c| c[1].parse::<f32>().ok())
         .filter(|&r| r > 0.0 && r <= 10.0);
 
-    let mut external_ids = std::collections::BTreeMap::new();
-    external_ids.insert("jjwxc".to_string(), ext_id.clone());
-
-    Ok(ScrapedMetadata {
-        provider_id: "jjwxc".to_string(),
-        external_id: ext_id,
-        target: Some(ScrapeTargetKind::Book),
-        title: Some(title),
+    Ok(NovelMetadataDraft {
+        title,
         series_or_album,
-        creators: (!author.is_empty()).then_some(author).into_iter().collect(),
-        publisher_or_studio: Some("晋江文学城".to_string()),
+        author: (!author.is_empty()).then_some(author),
         year,
         published_date,
-        language: Some("zh-CN".to_string()),
         rating,
         summary,
         genres,
         tags,
         cover_url,
-        external_ids,
-        ..Default::default()
-    })
+    }
+    .into_metadata("jjwxc", "晋江文学城", ext_id))
 }
 
 #[async_trait]
@@ -217,24 +196,9 @@ impl ScraperProviderPort for JjwxcProvider {
             && let Ok(detail) = self
                 .fetch_detail(&id, ScrapeTargetKind::Book, "zh-CN", creds)
                 .await
-            && let Some(title) = detail.title
+            && let Some(cand) = novel_candidate_from_detail("jjwxc", "晋江文学城", id, detail)
         {
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "jjwxc".to_string(),
-                provider_name: "晋江文学城".to_string(),
-                external_id: id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(
-                    detail.creators.first().map(String::as_str),
-                    detail.genres.first().map(String::as_str),
-                ),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let client = build_browser_http_client(creds, true)?;
@@ -262,14 +226,7 @@ impl ScraperProviderPort for JjwxcProvider {
         _locale: &str,
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
-        let novel_id: String = external_id
-            .trim()
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
-        if novel_id.is_empty() {
-            return Err(DomainError::Validation("empty JJWXC novel id".into()));
-        }
+        let novel_id = extract_digits_book_id(external_id, "JJWXC")?;
         let client = build_browser_http_client(creds, true)?;
         let resp = client
             .get("https://app-cdn.jjwxc.net/androidapi/novelbasicinfo")

@@ -11,10 +11,10 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_novel_common::{
-    build_browser_http_client, build_novel_subtitle, extract_meta_map,
-    extract_numeric_id_from_query, is_antibot_or_captcha_html, normalize_cover_url,
-    parse_year_and_date, read_response_text, score_novel_candidate, strip_html_to_text,
-    strip_inline_html,
+    NovelCandidateDraft, NovelMetadataDraft, build_browser_http_client, extract_digits_book_id,
+    extract_meta_map, extract_numeric_id_from_query, is_antibot_or_captcha_html,
+    normalize_cover_url, novel_candidate_from_detail, parse_year_and_date, rank_novel_candidates,
+    read_response_text, strip_html_to_text, strip_inline_html,
 };
 
 pub struct SfacgProvider;
@@ -69,18 +69,11 @@ pub(crate) fn parse_sfacg_search_html(html: &str, query: &ScrapeQuery) -> Vec<Sc
         return Vec::new();
     }
 
-    let mut scored: Vec<(i32, usize, ScrapeCandidate)> = Vec::new();
-    for (idx, ul_cap) in RE_SF_SEARCH_UL.captures_iter(html).enumerate() {
+    let drafts = RE_SF_SEARCH_UL.captures_iter(html).filter_map(|ul_cap| {
         let block = &ul_cap[1];
-        let Some(link_cap) = RE_SF_SEARCH_LINK.captures(block) else {
-            continue;
-        };
+        let link_cap = RE_SF_SEARCH_LINK.captures(block)?;
         let book_id = link_cap[1].trim().to_string();
         let title = strip_inline_html(&link_cap[2]);
-        if book_id.is_empty() || title.is_empty() {
-            continue;
-        }
-
         let cover_url = RE_SF_SEARCH_IMG
             .captures(block)
             .and_then(|c| upgrade_sfacg_cover(&c[1]));
@@ -101,28 +94,19 @@ pub(crate) fn parse_sfacg_search_html(html: &str, query: &ScrapeQuery) -> Vec<Sc
             (None, None, None)
         };
 
-        let rel = score_novel_candidate(query, &title, author.as_deref(), year, 0);
-        scored.push((
-            rel,
-            idx,
-            ScrapeCandidate {
-                provider_id: "sfacg".to_string(),
-                provider_name: "菠萝包轻小说".to_string(),
-                external_id: book_id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(author.as_deref(), None),
-                year,
-                summary,
-                cover_url,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            },
-        ));
-    }
+        Some(NovelCandidateDraft {
+            external_id: book_id,
+            title,
+            author,
+            category: None,
+            year,
+            summary,
+            cover_url,
+            popularity_votes: 0,
+        })
+    });
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().take(12).map(|(_, _, c)| c).collect()
+    rank_novel_candidates("sfacg", "菠萝包轻小说", query, drafts, 12)
 }
 
 pub(crate) fn parse_sfacg_detail_html(book_id: &str, html: &str) -> DomainResult<ScrapedMetadata> {
@@ -201,26 +185,18 @@ pub(crate) fn parse_sfacg_detail_html(book_id: &str, html: &str) -> DomainResult
         }
     }
 
-    let mut external_ids = std::collections::BTreeMap::new();
-    external_ids.insert("sfacg".to_string(), book_id.to_string());
-
-    Ok(ScrapedMetadata {
-        provider_id: "sfacg".to_string(),
-        external_id: book_id.to_string(),
-        target: Some(ScrapeTargetKind::Book),
-        title: Some(title),
-        creators: author.into_iter().collect(),
-        publisher_or_studio: Some("菠萝包轻小说".to_string()),
+    Ok(NovelMetadataDraft {
+        title,
+        author,
         year,
         published_date,
-        language: Some("zh-CN".to_string()),
         summary,
         genres: genre.into_iter().collect(),
         tags,
         cover_url,
-        external_ids,
         ..Default::default()
-    })
+    }
+    .into_metadata("sfacg", "菠萝包轻小说", book_id))
 }
 
 #[async_trait]
@@ -252,24 +228,9 @@ impl ScraperProviderPort for SfacgProvider {
             && let Ok(detail) = self
                 .fetch_detail(&id, ScrapeTargetKind::Book, "zh-CN", creds)
                 .await
-            && let Some(title) = detail.title
+            && let Some(cand) = novel_candidate_from_detail("sfacg", "菠萝包轻小说", id, detail)
         {
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "sfacg".to_string(),
-                provider_name: "菠萝包轻小说".to_string(),
-                external_id: id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(
-                    detail.creators.first().map(String::as_str),
-                    detail.genres.first().map(String::as_str),
-                ),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let client = build_browser_http_client(creds, false)?;
@@ -294,14 +255,7 @@ impl ScraperProviderPort for SfacgProvider {
         _locale: &str,
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
-        let book_id: String = external_id
-            .trim()
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
-        if book_id.is_empty() {
-            return Err(DomainError::Validation("empty SFACG book id".into()));
-        }
+        let book_id = extract_digits_book_id(external_id, "SFACG")?;
         let client = build_browser_http_client(creds, false)?;
         let url = format!("https://book.sfacg.com/Novel/{book_id}/");
         let resp = client

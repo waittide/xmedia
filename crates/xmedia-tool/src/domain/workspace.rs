@@ -42,42 +42,33 @@ pub struct ManagedRoot {
 }
 
 impl ManagedRoot {
-    pub fn new(
+    /// Constructs a `ManagedRoot` from an already-canonicalized directory path (pure value logic,
+    /// no OS filesystem I/O). Infrastructure callers should validate/canonicalize via
+    /// `crate::infra::workspace_fs::open_managed_root`.
+    pub fn from_canonical(
         name: impl Into<String>,
-        raw_path: impl AsRef<Path>,
+        canonical_path: PathBuf,
         default_kind: Option<MediaKind>,
-    ) -> DomainResult<Self> {
-        let canonical = std::fs::canonicalize(raw_path.as_ref()).map_err(|e| {
-            DomainError::Validation(format!(
-                "root directory '{}' does not exist or cannot be accessed: {e}",
-                raw_path.as_ref().display()
-            ))
-        })?;
-        if !canonical.is_dir() {
-            return Err(DomainError::Validation(format!(
-                "path '{}' is not a directory",
-                canonical.display()
-            )));
-        }
+    ) -> Self {
         let clean_name = {
             let trimmed = name.into().trim().to_string();
             if trimmed.is_empty() {
-                canonical
+                canonical_path
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| canonical.display().to_string())
+                    .unwrap_or_else(|| canonical_path.display().to_string())
             } else {
                 trimmed
             }
         };
-        Ok(Self {
+        Self {
             id: RootId::new(),
             name: clean_name,
-            path: canonical,
+            path: canonical_path,
             default_kind,
             read_only: false,
-        })
+        }
     }
 
     pub fn with_read_only(mut self, read_only: bool) -> Self {
@@ -95,20 +86,14 @@ impl ManagedRoot {
         Ok(())
     }
 
-    /// Resolves a relative path within this root, strictly preventing `..` or symlink traversal
-    /// outside the canonicalized root boundary.
-    pub fn resolve_existing(&self, rel_path: &str) -> DomainResult<SandboxPath> {
-        let cleaned_rel = sanitize_relative_path(rel_path)?;
-        let candidate = self.path.join(&cleaned_rel);
-        let canonical = std::fs::canonicalize(&candidate).map_err(|e| {
-            DomainError::NotFound(format!("path '{}' not found: {e}", cleaned_rel.display()))
-        })?;
-        if !canonical.starts_with(&self.path) {
+    /// Pure boundary check verifying that a canonicalized filesystem path resides within `self.path`.
+    pub fn verify_canonical_child(&self, canonical_abs: PathBuf) -> DomainResult<SandboxPath> {
+        if !canonical_abs.starts_with(&self.path) {
             return Err(DomainError::Forbidden(
                 "path escapes whitelisted root directory".into(),
             ));
         }
-        let normalized_rel = canonical
+        let normalized_rel = canonical_abs
             .strip_prefix(&self.path)
             .unwrap_or(Path::new(""))
             .to_path_buf();
@@ -116,36 +101,23 @@ impl ManagedRoot {
             root_id: self.id,
             root_path: self.path.clone(),
             rel_path: normalized_rel,
-            abs_path: canonical,
+            abs_path: canonical_abs,
         })
     }
 
-    /// Resolves a target path for creating/renaming a file inside this root, verifying its parent
-    /// directory stays strictly within the canonicalized root boundary.
-    pub fn resolve_target(&self, rel_path: &str) -> DomainResult<PathBuf> {
-        let cleaned_rel = sanitize_relative_path(rel_path)?;
-        if cleaned_rel.as_os_str().is_empty() {
-            return Err(DomainError::Validation(
-                "target relative path cannot be empty".into(),
-            ));
-        }
-        let candidate = self.path.join(&cleaned_rel);
-        // Walk up to the nearest existing ancestor to canonicalize and check boundary
-        let mut ancestor = candidate.parent().unwrap_or(&self.path);
-        while !ancestor.exists() {
-            ancestor = ancestor
-                .parent()
-                .ok_or_else(|| DomainError::Forbidden("invalid target path outside root".into()))?;
-        }
-        let canon_ancestor = std::fs::canonicalize(ancestor)
-            .map_err(|e| DomainError::Storage(format!("failed to verify target directory: {e}")))?;
-        if !canon_ancestor.starts_with(&self.path) {
+    /// Pure boundary check verifying that a canonicalized ancestor directory stays within `self.path`
+    /// before joining the non-existent relative `tail`.
+    pub fn verify_canonical_target(
+        &self,
+        canonical_ancestor: PathBuf,
+        tail: &Path,
+    ) -> DomainResult<PathBuf> {
+        if !canonical_ancestor.starts_with(&self.path) {
             return Err(DomainError::Forbidden(
                 "target path escapes whitelisted root directory".into(),
             ));
         }
-        let tail = candidate.strip_prefix(ancestor).unwrap_or(Path::new(""));
-        Ok(canon_ancestor.join(tail))
+        Ok(canonical_ancestor.join(tail))
     }
 }
 

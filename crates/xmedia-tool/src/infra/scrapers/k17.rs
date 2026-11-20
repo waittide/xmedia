@@ -12,10 +12,10 @@ use crate::domain::scraper::{
     ProviderDescriptor, ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata,
 };
 use crate::infra::scrapers::cn_novel_common::{
-    build_browser_http_client, build_novel_subtitle, extract_meta_map,
-    extract_numeric_id_from_query, is_antibot_or_captcha_html, normalize_cover_url,
-    parse_year_and_date, read_response_text, score_novel_candidate, strip_html_to_text,
-    strip_inline_html,
+    NovelCandidateDraft, NovelMetadataDraft, build_browser_http_client, extract_digits_book_id,
+    extract_meta_map, extract_numeric_id_from_query, is_antibot_or_captcha_html,
+    normalize_cover_url, novel_candidate_from_detail, parse_year_and_date, rank_novel_candidates,
+    read_response_text, strip_html_to_text, strip_inline_html,
 };
 
 pub struct K17Provider;
@@ -70,73 +70,51 @@ pub(crate) fn map_k17_search_values(
     values: Vec<serde_json::Value>,
     query: &ScrapeQuery,
 ) -> Vec<ScrapeCandidate> {
-    let mut scored: Vec<(i32, usize, ScrapeCandidate)> = values
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, val)| {
-            let item: K17BookItem = serde_json::from_value(val).ok()?;
-            if item.id == 0 || item.book_name.trim().is_empty() {
-                return None;
-            }
-            let title = strip_inline_html(&item.book_name);
-            let author = strip_inline_html(&item.author_name);
-            let cat = item
-                .category_name_2
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .or_else(|| {
-                    item.book_channel
-                        .as_ref()
-                        .map(|c| c.name.as_str())
-                        .filter(|s| !s.trim().is_empty())
-                });
-            let (year, _) = match &item.last_update_chapter_date {
-                Some(serde_json::Value::String(s)) => parse_year_and_date(s),
-                Some(serde_json::Value::Number(n)) => n
-                    .as_i64()
-                    .and_then(|ms| {
-                        let secs = if ms > 10_000_000_000 { ms / 1000 } else { ms };
-                        jiff::Timestamp::from_second(secs)
-                            .ok()
-                            .map(|ts| i32::from(ts.to_zoned(jiff::tz::TimeZone::UTC).year()))
-                    })
-                    .map(|y| (Some(y), None))
-                    .unwrap_or((None, None)),
-                _ => (None, None),
-            };
-            let summary = strip_html_to_text(&item.intro);
-            let rel = score_novel_candidate(
-                query,
-                &title,
-                (!author.is_empty()).then_some(author.as_str()),
-                year,
-                0,
-            );
-            Some((
-                rel,
-                idx,
-                ScrapeCandidate {
-                    provider_id: "17k".to_string(),
-                    provider_name: "17K小说网".to_string(),
-                    external_id: item.id.to_string(),
-                    target: ScrapeTargetKind::Book,
-                    title,
-                    subtitle: build_novel_subtitle(
-                        (!author.is_empty()).then_some(author.as_str()),
-                        cat,
-                    ),
-                    year,
-                    summary: (!summary.is_empty()).then_some(summary),
-                    cover_url: normalize_cover_url(&item.cover),
-                    synced_lyrics: None,
-                    plain_lyrics: None,
-                },
-            ))
+    let drafts = values.into_iter().filter_map(|val| {
+        let item: K17BookItem = serde_json::from_value(val).ok()?;
+        if item.id == 0 || item.book_name.trim().is_empty() {
+            return None;
+        }
+        let author = strip_inline_html(&item.author_name);
+        let category = item
+            .category_name_2
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                item.book_channel
+                    .as_ref()
+                    .map(|c| c.name.as_str())
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .map(str::to_string);
+        let (year, _) = match &item.last_update_chapter_date {
+            Some(serde_json::Value::String(s)) => parse_year_and_date(s),
+            Some(serde_json::Value::Number(n)) => n
+                .as_i64()
+                .and_then(|ms| {
+                    let secs = if ms > 10_000_000_000 { ms / 1000 } else { ms };
+                    jiff::Timestamp::from_second(secs)
+                        .ok()
+                        .map(|ts| i32::from(ts.to_zoned(jiff::tz::TimeZone::UTC).year()))
+                })
+                .map(|y| (Some(y), None))
+                .unwrap_or((None, None)),
+            _ => (None, None),
+        };
+        let summary = strip_html_to_text(&item.intro);
+        Some(NovelCandidateDraft {
+            external_id: item.id.to_string(),
+            title: strip_inline_html(&item.book_name),
+            author: (!author.is_empty()).then_some(author),
+            category,
+            year,
+            summary: (!summary.is_empty()).then_some(summary),
+            cover_url: normalize_cover_url(&item.cover),
+            popularity_votes: 0,
         })
-        .collect();
+    });
 
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    scored.into_iter().take(12).map(|(_, _, c)| c).collect()
+    rank_novel_candidates("17k", "17K小说网", query, drafts, 12)
 }
 
 pub(crate) fn parse_k17_detail_html(book_id: &str, html: &str) -> DomainResult<ScrapedMetadata> {
@@ -199,25 +177,17 @@ pub(crate) fn parse_k17_detail_html(book_id: &str, html: &str) -> DomainResult<S
 
     let cover_url = meta.get("og:image").and_then(|s| normalize_cover_url(s));
 
-    let mut external_ids = std::collections::BTreeMap::new();
-    external_ids.insert("17k".to_string(), book_id.to_string());
-
-    Ok(ScrapedMetadata {
-        provider_id: "17k".to_string(),
-        external_id: book_id.to_string(),
-        target: Some(ScrapeTargetKind::Book),
-        title: Some(title),
-        creators: author.into_iter().collect(),
-        publisher_or_studio: Some("17K小说网".to_string()),
+    Ok(NovelMetadataDraft {
+        title,
+        author,
         year,
         published_date,
-        language: Some("zh-CN".to_string()),
         summary,
         genres: category.into_iter().collect(),
         cover_url,
-        external_ids,
         ..Default::default()
-    })
+    }
+    .into_metadata("17k", "17K小说网", book_id))
 }
 
 #[async_trait]
@@ -248,24 +218,9 @@ impl ScraperProviderPort for K17Provider {
             && let Ok(detail) = self
                 .fetch_detail(&id, ScrapeTargetKind::Book, "zh-CN", creds)
                 .await
-            && let Some(title) = detail.title
+            && let Some(cand) = novel_candidate_from_detail("17k", "17K小说网", id, detail)
         {
-            return Ok(vec![ScrapeCandidate {
-                provider_id: "17k".to_string(),
-                provider_name: "17K小说网".to_string(),
-                external_id: id,
-                target: ScrapeTargetKind::Book,
-                title,
-                subtitle: build_novel_subtitle(
-                    detail.creators.first().map(String::as_str),
-                    detail.genres.first().map(String::as_str),
-                ),
-                year: detail.year,
-                summary: detail.summary,
-                cover_url: detail.cover_url,
-                synced_lyrics: None,
-                plain_lyrics: None,
-            }]);
+            return Ok(vec![cand]);
         }
 
         let client = build_browser_http_client(creds, true)?;
@@ -295,14 +250,7 @@ impl ScraperProviderPort for K17Provider {
         _locale: &str,
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
-        let book_id: String = external_id
-            .trim()
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .collect();
-        if book_id.is_empty() {
-            return Err(DomainError::Validation("empty 17K book id".into()));
-        }
+        let book_id = extract_digits_book_id(external_id, "17K")?;
         let client = build_browser_http_client(creds, false)?;
         let url = format!("https://www.17k.com/book/{book_id}.html");
         let resp = client

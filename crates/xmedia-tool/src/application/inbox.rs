@@ -11,6 +11,7 @@ use crate::application::webhook::notify_xmedia_rescan;
 use crate::application::workbench::MediaWorkbenchService;
 use crate::domain::workspace::path_to_slash;
 use crate::infra::atomic_fs::cleanup_empty_parent_dirs;
+use crate::infra::workspace_fs::resolve_target_in_root;
 
 const INCOMPLETE_DOWNLOAD_SUFFIXES: &[&str] = &[
     ".part",
@@ -175,7 +176,7 @@ pub async fn scan_and_import_inbox(
     let mut failed_count = 0usize;
 
     for (src_abs, src_rel) in candidates {
-        let target_abs = match target_root.resolve_target(&src_rel) {
+        let target_abs = match resolve_target_in_root(&target_root, &src_rel) {
             Ok(p) => p,
             Err(e) => {
                 failed_count += 1;
