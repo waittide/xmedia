@@ -6,6 +6,7 @@ import { useMusicStore } from '@/domains/music/store'
 import { useVideoStore } from '@/domains/video/store'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
+import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
 import { useUploadStore } from '@/stores/uploads'
 
 export function resetAllSessionState(): void {
@@ -13,6 +14,7 @@ export function resetAllSessionState(): void {
   useEventsStore().disconnect()
   usePlayerStore().resetForLogout()
   useUploadStore().resetState()
+  useOnlineDownloadsStore().resetState()
   useDomainStore().resetRoutes()
   useCatalogStore().resetState()
   useComicSidebarStore().resetState()

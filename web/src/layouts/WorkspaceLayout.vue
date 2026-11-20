@@ -6,13 +6,15 @@ import {
   LuBookOpen,
   LuClapperboard,
   LuDisc3,
+  LuFileUp,
+  LuFolderUp,
   LuLayers,
+  LuListChecks,
   LuLogOut,
   LuMonitor,
   LuMoon,
   LuPanelLeftClose,
   LuPanelLeftOpen,
-  LuRefreshCw,
   LuSearch,
   LuSettings,
   LuSun,
@@ -23,9 +25,11 @@ import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
+import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
 import { useThemeStore } from '@/stores/theme'
 import { getAcceptedUploadExtensions, useUploadStore } from '@/stores/uploads'
 import type { MediaKind } from '@/types/api'
+import { extractFilesFromDataTransfer, normalizePickedFiles } from '@/utils/fileDrop'
 
 import { useCatalogStore } from '@/domains/book/store'
 import { useSidebarStore as useComicSidebarStore } from '@/domains/comic/store'
@@ -33,10 +37,10 @@ import { usePlayerStore } from '@/domains/music/player'
 import { useMusicStore } from '@/domains/music/store'
 import { useVideoStore } from '@/domains/video/store'
 
+import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
-import UploadShelf from '@/components/UploadShelf.vue'
 import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
 
 const { t } = useI18n()
@@ -46,6 +50,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
+const onlineDownloadsStore = useOnlineDownloadsStore()
 const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
 const escapeStack = useEscapeStack()
@@ -59,14 +64,23 @@ const videoStore = useVideoStore()
 const collapsed = ref(localStorage.getItem('xmedia.sidebar_collapsed') === '1')
 const mobileMenuOpen = ref(false)
 const accountMenuOpen = ref(false)
+const uploadMenuOpen = ref(false)
+const tasksDrawerOpen = ref(false)
 const layoutCustomizerOpen = ref(false)
 const commandPaletteOpen = ref(false)
 const dragDepth = ref(0)
 
 const filePickerRef = ref<HTMLInputElement | null>(null)
+const folderPickerRef = ref<HTMLInputElement | null>(null)
 const mainScrollRef = ref<HTMLElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const accountMenuRef = ref<HTMLElement | null>(null)
+const uploadMenuRef = ref<HTMLElement | null>(null)
+
+const folderInputAttrs: Record<string, string> = {
+  webkitdirectory: '',
+  directory: '',
+}
 
 const comicSearchQuery = ref('')
 const videoSearchQuery = ref('')
@@ -76,6 +90,12 @@ escapeStack.register(
   () => mobileMenuOpen.value,
   () => {
     mobileMenuOpen.value = false
+  },
+)
+escapeStack.register(
+  () => uploadMenuOpen.value,
+  () => {
+    uploadMenuOpen.value = false
   },
 )
 escapeStack.register(
@@ -101,6 +121,16 @@ watch(
       void ensureDomainSidebarLoaded(domainStore.activeDomain)
     }
   },
+)
+
+watch(
+  () => [authStore.isAuthenticated, authStore.user?.id] as const,
+  ([isAuth]) => {
+    if (isAuth && authStore.hasModule('book')) {
+      void onlineDownloadsStore.refresh()
+    }
+  },
+  { immediate: true },
 )
 
 async function ensureDomainSidebarLoaded(kind: MediaKind): Promise<void> {
@@ -284,14 +314,35 @@ function clearGlobalSearch(): void {
 }
 
 // Upload & Drag-and-Drop
-function triggerUploadPicker(): void {
+function toggleUploadMenu(): void {
+  accountMenuOpen.value = false
+  uploadMenuOpen.value = !uploadMenuOpen.value
+}
+
+function triggerFilePicker(): void {
+  uploadMenuOpen.value = false
   filePickerRef.value?.click()
+}
+
+function triggerFolderPicker(): void {
+  uploadMenuOpen.value = false
+  folderPickerRef.value?.click()
 }
 
 function handlePickedFiles(ev: Event): void {
   const input = ev.target as HTMLInputElement
   if (input.files && input.files.length > 0) {
-    uploadStore.enqueueFiles(input.files)
+    const { files, fromDirectory } = normalizePickedFiles(input.files, false)
+    uploadStore.enqueueFiles(files, { fromDirectory })
+    input.value = ''
+  }
+}
+
+function handlePickedFolder(ev: Event): void {
+  const input = ev.target as HTMLInputElement
+  if (input.files && input.files.length > 0) {
+    const { files } = normalizePickedFiles(input.files, true)
+    uploadStore.enqueueFiles(files, { fromDirectory: true })
     input.value = ''
   }
 }
@@ -306,11 +357,79 @@ function onDragLeave(): void {
   dragDepth.value = Math.max(0, dragDepth.value - 1)
 }
 
-function onDropFiles(ev: DragEvent): void {
+async function onDropFiles(ev: DragEvent): Promise<void> {
   dragDepth.value = 0
-  if (!authStore.isAdmin) return
-  if (ev.dataTransfer?.files && ev.dataTransfer.files.length > 0) {
-    uploadStore.enqueueFiles(ev.dataTransfer.files)
+  if (!authStore.isAdmin || !ev.dataTransfer) return
+  const { files, fromDirectory } = await extractFilesFromDataTransfer(ev.dataTransfer)
+  if (files.length > 0 || fromDirectory) {
+    uploadStore.enqueueFiles(files, { fromDirectory })
+  }
+}
+
+// Unified Global Background Task Metrics (Scans + Uploads + Online Downloads)
+const PROGRESS_RING_RADIUS = 18
+const PROGRESS_RING_CIRCUMFERENCE = 2 * Math.PI * PROGRESS_RING_RADIUS
+
+const globalActiveSummary = computed(() => {
+  const progressValues: number[] = []
+  let activeCount = 0
+
+  for (const sc of eventsStore.scanTaskList) {
+    if (sc.status !== 'running') continue
+    activeCount += 1
+    if (sc.total !== null && sc.total > 0) {
+      progressValues.push(Math.min(100, Math.round((sc.scanned / sc.total) * 100)))
+    }
+  }
+
+  for (const task of uploadStore.tasks) {
+    if (task.status !== 'queued' && task.status !== 'uploading') continue
+    activeCount += 1
+    progressValues.push(Math.max(0, Math.min(100, task.progress)))
+  }
+
+  for (const job of onlineDownloadsStore.activeJobs) {
+    activeCount += 1
+    if (job.total_chapters > 0) {
+      progressValues.push(
+        Math.min(100, Math.round((job.processed_chapters / job.total_chapters) * 100)),
+      )
+    }
+  }
+
+  const progress =
+    activeCount > 0 && progressValues.length > 0
+      ? Math.round(progressValues.reduce((acc, v) => acc + v, 0) / progressValues.length)
+      : null
+
+  return { activeCount, progress }
+})
+
+const globalActiveTaskCount = computed(() => globalActiveSummary.value.activeCount)
+const globalActiveProgress = computed(() => globalActiveSummary.value.progress)
+const globalFailedTaskCount = computed(() => {
+  const failedScans = eventsStore.scanTaskList.filter((sc) => sc.status === 'failed').length
+  return failedScans + uploadStore.failedCount + onlineDownloadsStore.failedCount
+})
+
+const progressRingOffset = computed(() => {
+  if (globalActiveProgress.value === null) return PROGRESS_RING_CIRCUMFERENCE
+  return PROGRESS_RING_CIRCUMFERENCE * (1 - globalActiveProgress.value / 100)
+})
+
+const tasksButtonTooltip = computed(() => {
+  if (globalActiveTaskCount.value > 0) {
+    return t('transfers.openTasksActive', { count: globalActiveTaskCount.value })
+  }
+  return t('transfers.openTasks')
+})
+
+function openTasksDrawer(): void {
+  uploadMenuOpen.value = false
+  accountMenuOpen.value = false
+  tasksDrawerOpen.value = true
+  if (authStore.isAuthenticated && authStore.hasModule('book')) {
+    void onlineDownloadsStore.refresh()
   }
 }
 
@@ -328,20 +447,6 @@ const themeModeTooltip = computed(() => {
   return `${t('theme.modeTitle')}: ${t('theme.system')}`
 })
 
-const topScanLabel = computed(() => {
-  const active = eventsStore.firstActiveScan
-  if (!active) return ''
-  if (active.total && active.total > 0) {
-    const pct = Math.min(100, Math.round((active.scanned / active.total) * 100))
-    return t('admin.scanningWithTotal', {
-      scanned: active.scanned,
-      total: active.total,
-      pct,
-    })
-  }
-  return t('admin.scanning', { scanned: active.scanned })
-})
-
 const userInitials = computed(() => {
   const label = authStore.user?.display_name || authStore.user?.username || 'U'
   return label.slice(0, 1).toUpperCase()
@@ -349,6 +454,8 @@ const userInitials = computed(() => {
 
 async function handleSignOut(): Promise<void> {
   accountMenuOpen.value = false
+  uploadMenuOpen.value = false
+  tasksDrawerOpen.value = false
   playerStore.pause()
   eventsStore.disconnect()
   await authStore.logout()
@@ -360,6 +467,9 @@ function handleOutsideClick(ev: MouseEvent): void {
   const target = ev.target as Node
   if (accountMenuOpen.value && accountMenuRef.value && !accountMenuRef.value.contains(target)) {
     accountMenuOpen.value = false
+  }
+  if (uploadMenuOpen.value && uploadMenuRef.value && !uploadMenuRef.value.contains(target)) {
+    uploadMenuOpen.value = false
   }
 }
 
@@ -393,7 +503,7 @@ onBeforeUnmount(() => {
     @dragleave.prevent="onDragLeave"
     @drop.prevent="onDropFiles"
   >
-    <!-- Hidden Global Multi-Domain File Picker -->
+    <!-- Hidden Global Multi-Domain File & Folder Pickers -->
     <input
       ref="filePickerRef"
       type="file"
@@ -401,6 +511,14 @@ onBeforeUnmount(() => {
       :accept="acceptedExtensions"
       class="hidden"
       @change="handlePickedFiles"
+    />
+    <input
+      ref="folderPickerRef"
+      type="file"
+      multiple
+      class="hidden"
+      v-bind="folderInputAttrs"
+      @change="handlePickedFolder"
     />
 
     <!-- Full-Window Drag & Drop Overlay -->
@@ -510,31 +628,129 @@ onBeforeUnmount(() => {
         </button>
       </form>
 
-      <!-- Right: Scan Chip + Circular MD3 Icon Buttons + Avatar Menu -->
+      <!-- Right: Upload Menu + Background Tasks Ring Button + Theme + Avatar Menu -->
       <div class="flex shrink-0 items-center gap-1">
-        <button
-          v-if="eventsStore.anyScanning"
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state mr-1 hidden xl:inline-flex"
-          @click="uploadStore.collapsed = false"
-        >
-          <LuRefreshCw class="h-3.5 w-3.5 animate-spin" />
-          <span>{{ topScanLabel }}</span>
-        </button>
+        <!-- Upload Menu (Files / Folder) -->
+        <div v-if="authStore.isAdmin" ref="uploadMenuRef" class="relative">
+          <button
+            type="button"
+            class="md-icon-btn md-state"
+            :class="
+              uploadMenuOpen
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : ''
+            "
+            :title="t('common.uploadMedia')"
+            :aria-label="t('common.uploadMedia')"
+            :aria-expanded="uploadMenuOpen"
+            aria-haspopup="menu"
+            @click="toggleUploadMenu"
+          >
+            <LuUpload class="h-[18px] w-[18px]" />
+          </button>
 
-        <button
-          v-if="authStore.isAdmin"
-          type="button"
-          class="md-icon-btn md-state relative"
-          :title="t('common.uploadMedia')"
-          @click="triggerUploadPicker"
-        >
-          <LuUpload class="h-[18px] w-[18px]" />
+          <Transition name="md-dialog">
+            <div
+              v-if="uploadMenuOpen"
+              role="menu"
+              class="absolute top-12 right-0 z-[var(--z-popover)] w-44 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-1.5 shadow-[var(--md-sys-elevation-3)]"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
+                @click="triggerFilePicker"
+              >
+                <LuFileUp class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
+                <span>{{ t('common.uploadFiles') }}</span>
+              </button>
+
+              <button
+                type="button"
+                role="menuitem"
+                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
+                @click="triggerFolderPicker"
+              >
+                <LuFolderUp class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
+                <span>{{ t('common.uploadFolder') }}</span>
+              </button>
+            </div>
+          </Transition>
+        </div>
+
+        <!-- Global Background Tasks Button with SVG Progress Ring -->
+        <div class="relative inline-flex items-center justify-center">
+          <button
+            type="button"
+            class="md-icon-btn md-state"
+            :class="
+              tasksDrawerOpen
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : globalActiveTaskCount > 0
+                  ? 'text-[var(--md-sys-color-primary)]'
+                  : ''
+            "
+            :title="tasksButtonTooltip"
+            :aria-label="tasksButtonTooltip"
+            @click="openTasksDrawer"
+          >
+            <LuListChecks class="h-[18px] w-[18px]" />
+          </button>
+
+          <svg
+            v-if="globalActiveTaskCount > 0"
+            class="pointer-events-none absolute inset-0 h-10 w-10"
+            :class="globalActiveProgress === null ? 'animate-spin' : ''"
+            viewBox="0 0 40 40"
+            aria-hidden="true"
+          >
+            <circle
+              cx="20"
+              cy="20"
+              :r="PROGRESS_RING_RADIUS"
+              fill="none"
+              stroke="var(--md-sys-color-outline-variant)"
+              stroke-opacity="0.45"
+              stroke-width="2.25"
+            />
+            <circle
+              v-if="globalActiveProgress !== null"
+              cx="20"
+              cy="20"
+              :r="PROGRESS_RING_RADIUS"
+              fill="none"
+              stroke="var(--md-sys-color-primary)"
+              stroke-width="2.25"
+              stroke-linecap="round"
+              transform="rotate(-90 20 20)"
+              :stroke-dasharray="PROGRESS_RING_CIRCUMFERENCE"
+              :stroke-dashoffset="progressRingOffset"
+              class="transition-[stroke-dashoffset] duration-300"
+            />
+            <circle
+              v-else
+              cx="20"
+              cy="20"
+              :r="PROGRESS_RING_RADIUS"
+              fill="none"
+              stroke="var(--md-sys-color-primary)"
+              stroke-width="2.25"
+              stroke-linecap="round"
+              :stroke-dasharray="`${PROGRESS_RING_CIRCUMFERENCE * 0.28} ${PROGRESS_RING_CIRCUMFERENCE * 0.72}`"
+            />
+          </svg>
+
           <span
-            v-if="uploadStore.activeCount > 0"
-            class="absolute top-2 right-2 h-2 w-2 rounded-full bg-[var(--md-sys-color-primary)]"
+            v-if="globalActiveTaskCount > 0"
+            class="pointer-events-none absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] px-1 text-[10px] font-bold leading-none text-[var(--md-sys-color-on-primary)] ring-2 ring-[var(--md-sys-color-surface-container)]"
+          >
+            {{ globalActiveTaskCount > 99 ? '99+' : globalActiveTaskCount }}
+          </span>
+          <span
+            v-else-if="globalFailedTaskCount > 0"
+            class="pointer-events-none absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-[var(--md-sys-color-error)] ring-2 ring-[var(--md-sys-color-surface-container)]"
           />
-        </button>
+        </div>
 
         <button
           type="button"
@@ -556,7 +772,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="md-state flex h-9 w-9 items-center justify-center rounded-full bg-[var(--md-sys-color-primary-container)] text-xs font-bold text-[var(--md-sys-color-on-primary-container)]"
-            @click="accountMenuOpen = !accountMenuOpen"
+            @click="uploadMenuOpen = false; accountMenuOpen = !accountMenuOpen"
           >
             {{ userInitials }}
           </button>
@@ -630,8 +846,11 @@ onBeforeUnmount(() => {
     <!-- Reserve Space for Persistent Global PlayerBar Rendered in App.vue -->
     <div v-if="showMusicBar" class="h-20 shrink-0" aria-hidden="true" />
 
-    <!-- Non-Blocking Multi-Domain Scan & Upload Task Shelf -->
-    <UploadShelf :elevated-bottom="showMusicBar" />
+    <!-- Unified Global Background Tasks Drawer -->
+    <BackgroundTasksDrawer
+      :open="tasksDrawerOpen"
+      @close="tasksDrawerOpen = false"
+    />
 
     <!-- Sidebar Layout Customizer Modal -->
     <LayoutCustomizerModal
