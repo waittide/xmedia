@@ -137,6 +137,8 @@ export default {
     queueTitle: '播放队列',
     queueSubtitle: '',
     clearQueue: '清空队列',
+    clearQueueConfirmTitle: '清空播放队列？',
+    clearQueueConfirm: '确定清空当前队列中的全部 {count} 首歌曲？此操作将停止播放。',
     syncFromCloud: '恢复云端队列',
     qualityRaw: '原画直推',
     qualityOpus128: 'Opus 128k',

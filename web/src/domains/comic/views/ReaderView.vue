@@ -20,9 +20,11 @@ import {
 } from 'vue-icons-plus/lu'
 import { api, chapterPageUrl } from '@/domains/comic/api'
 import { useSidebarStore } from '@/domains/comic/store'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import type { ComicBookmark, ReaderContextDto, ReaderFitMode, ReaderMode } from '@/domains/comic/types'
 
 const { t } = useI18n()
@@ -31,6 +33,7 @@ const route = useRoute()
 const router = useRouter()
 const theme = useThemeStore()
 const sidebarStore = useSidebarStore()
+const snackbar = useSnackbarStore()
 
 const ctx = ref<ReaderContextDto | null>(null)
 const chapterBookmarks = ref<ComicBookmark[]>([])
@@ -50,22 +53,12 @@ const zoomPercent = ref(100)
 const widePages = reactive<Record<number, boolean>>({})
 const preloadedSet = new Set<string>()
 const pendingNextChapterTap = ref(false)
-const toastMessage = ref('')
-let toastTimer: ReturnType<typeof setTimeout> | null = null
 let progressTimer: ReturnType<typeof setTimeout> | null = null
 let pendingProgress: { chapterId: string; page: number; completed?: boolean } | null = null
 let webtoonObserver: IntersectionObserver | null = null
 const visibleWebtoonPages = new Set<number>()
 
 const webtoonContainerRef = ref<HTMLDivElement | null>(null)
-
-function showToast(msg: string): void {
-  toastMessage.value = msg
-  if (toastTimer) clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => {
-    toastMessage.value = ''
-  }, 2600)
-}
 
 const totalPages = computed(() => ctx.value?.chapter.page_count || 1)
 
@@ -143,14 +136,18 @@ const modeOptions = computed(() => [
   { value: 'webtoon', label: t('reader.modeWebtoon') },
 ])
 
+const quickModeOptions = computed<SegmentedOption<ReaderMode>[]>(() => [
+  { value: 'rtl_double', label: 'RTL', icon: LuColumns2, title: t('reader.modeRtlDouble') },
+  { value: 'ltr_single', label: '1P', icon: LuFileText, title: t('reader.modeLtrSingle') },
+  { value: 'ltr_double', label: 'LTR 2P', icon: LuColumns2, title: t('reader.modeLtrDouble') },
+  { value: 'webtoon', label: 'Webtoon', icon: LuScrollText, title: t('reader.modeWebtoon') },
+])
+
 const fitOptions = computed(() => [
-  { value: 'fit_height', label: t('reader.fitHeight') },
-  { value: 'fitWidth_compat', label: '' },
-].slice(0, 0).concat([
   { value: 'fit_height', label: t('reader.fitHeight') },
   { value: 'fit_width', label: t('reader.fitWidth') },
   { value: 'original', label: t('reader.fitOriginal') },
-]))
+])
 
 async function loadChapter(chapterId: string, queryPage?: number, seamlessToast = false): Promise<void> {
   flushPendingProgress()
@@ -181,7 +178,9 @@ async function loadChapter(chapterId: string, queryPage?: number, seamlessToast 
     scheduleSaveProgress()
 
     if (seamlessToast) {
-      showToast(t('reader.switchedToChapter', { title: `#${data.chapter.number_label} ${data.chapter.title}` }))
+      snackbar.show(
+        t('reader.switchedToChapter', { title: `#${data.chapter.number_label} ${data.chapter.title}` }),
+      )
     }
 
     if (readerMode.value === 'webtoon') {
@@ -204,7 +203,6 @@ onBeforeUnmount(() => {
   flushPendingProgress()
   teardownWebtoonObserver()
   preloadedSet.clear()
-  if (toastTimer) clearTimeout(toastTimer)
 })
 
 watch(
@@ -329,16 +327,16 @@ async function advanceForward(): Promise<void> {
   if (ctx.value.next_chapter) {
     if (!pendingNextChapterTap.value) {
       pendingNextChapterTap.value = true
-      showToast(
+      snackbar.show(
         t('reader.endOfChapterToast', {
           next: `#${ctx.value.next_chapter.number_label} ${ctx.value.next_chapter.title}`,
-        })
+        }),
       )
     } else {
       goToChapter(ctx.value.next_chapter.id)
     }
   } else {
-    showToast(t('reader.reachedSeriesEnd'))
+    snackbar.show(t('reader.reachedSeriesEnd'))
   }
 }
 
@@ -389,6 +387,17 @@ function onStageClick(ev: MouseEvent): void {
 }
 
 function onKeydown(e: KeyboardEvent): void {
+  const target = e.target as HTMLElement | null
+  if (
+    target &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable)
+  ) {
+    return
+  }
+
   if (e.key === 'Escape') {
     if (settingsDrawerOpen.value || chaptersDrawerOpen.value) {
       settingsDrawerOpen.value = false
@@ -398,6 +407,8 @@ function onKeydown(e: KeyboardEvent): void {
     }
     return
   }
+
+  if (e.metaKey || e.ctrlKey || e.altKey) return
 
   if (e.key === ' ') {
     e.preventDefault()
@@ -500,31 +511,33 @@ async function togglePageBookmark(): Promise<void> {
   if (existing) {
     await api.deleteBookmark(existing.id)
     chapterBookmarks.value = chapterBookmarks.value.filter((b) => b.id !== existing.id)
-    showToast(globalT('bookmarksPage.removedBookmark', { page }))
+    snackbar.show(globalT('bookmarksPage.removedBookmark', { page }))
   } else {
     const created = await api.createBookmark(ctx.value.chapter.id, {
       page_number: page,
       title: `#${ctx.value.chapter.number_label} · ${globalT('bookmarksPage.pageLabel', { page })}`,
     })
     chapterBookmarks.value = [...chapterBookmarks.value, created]
-    showToast(globalT('bookmarksPage.addedBookmark', { page }))
+    snackbar.show(globalT('bookmarksPage.addedBookmark', { page }))
   }
   void sidebarStore.refresh()
 }
 </script>
 
 <template>
-  <div class="relative flex h-screen w-screen flex-col overflow-hidden bg-[#0e0e13] text-zinc-100 select-none">
+  <div
+    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-dim)] text-[var(--md-sys-color-on-surface)] select-none"
+  >
     <!-- Top Floating HUD Bar -->
     <header
       v-show="hudVisible"
-      class="fixed top-0 right-0 left-0 z-40 flex h-14 items-center justify-between gap-4 border-b border-white/10 bg-zinc-950/85 px-4 backdrop-blur-md"
+      class="fixed top-0 right-0 left-0 z-[var(--z-base-overlay)] flex h-14 items-center justify-between gap-4 border-b border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)]/90 px-4 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
     >
       <div class="flex min-w-0 items-center gap-3">
         <button
           type="button"
           :title="t('reader.backToSeries')"
-          class="flex items-center gap-1.5 rounded-xl bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20"
+          class="md-btn md-btn-sm md-btn-tonal md-state"
           @click="ctx ? router.push('/comic/series/' + ctx.series_id) : router.push('/comic')"
         >
           <LuChevronLeft class="h-4 w-4" />
@@ -532,68 +545,42 @@ async function togglePageBookmark(): Promise<void> {
         </button>
 
         <div v-if="ctx" class="min-w-0">
-          <div class="truncate text-sm font-bold text-white">{{ ctx.series_title }}</div>
-          <div class="truncate text-[11px] text-zinc-400">
+          <div class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)]">
+            {{ ctx.series_title }}
+          </div>
+          <div class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
             #{{ ctx.chapter.number_label }} {{ ctx.chapter.title }}
           </div>
         </div>
       </div>
 
-      <!-- Quick Mode Switcher Pills + Controls -->
+      <!-- Quick Mode Switcher + Controls -->
       <div class="flex items-center gap-1.5">
-        <div class="hidden items-center rounded-xl bg-white/8 p-1 md:flex">
-          <button
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition"
-            :class="readerMode === 'rtl_double' ? 'bg-[var(--accent)] text-[var(--accent-contrast)]' : 'text-zinc-300 hover:text-white'"
-            @click="changeMode('rtl_double')"
-          >
-            <LuColumns2 class="h-3.5 w-3.5" />
-            <span>RTL</span>
-          </button>
-          <button
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition"
-            :class="readerMode === 'ltr_single' ? 'bg-[var(--accent)] text-[var(--accent-contrast)]' : 'text-zinc-300 hover:text-white'"
-            @click="changeMode('ltr_single')"
-          >
-            <LuFileText class="h-3.5 w-3.5" />
-            <span>1P</span>
-          </button>
-          <button
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition"
-            :class="readerMode === 'ltr_double' ? 'bg-[var(--accent)] text-[var(--accent-contrast)]' : 'text-zinc-300 hover:text-white'"
-            @click="changeMode('ltr_double')"
-          >
-            <LuColumns2 class="h-3.5 w-3.5" />
-            <span>LTR 2P</span>
-          </button>
-          <button
-            type="button"
-            class="flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium transition"
-            :class="readerMode === 'webtoon' ? 'bg-[var(--accent)] text-[var(--accent-contrast)]' : 'text-zinc-300 hover:text-white'"
-            @click="changeMode('webtoon')"
-          >
-            <LuScrollText class="h-3.5 w-3.5" />
-            <span>Webtoon</span>
-          </button>
+        <div class="hidden md:flex">
+          <MdSegmentedButton
+            :model-value="readerMode"
+            :options="quickModeOptions"
+            size="sm"
+            @update:model-value="changeMode"
+          />
         </div>
 
         <!-- Zoom Controls -->
         <button
           type="button"
-          class="hidden h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-zinc-200 hover:bg-white/20 sm:flex"
+          class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
           @click="zoomPercent = Math.max(50, zoomPercent - 10)"
         >
           <LuZoomOut class="h-4 w-4" />
         </button>
-        <span class="hidden w-11 text-center font-mono text-xs text-zinc-300 sm:inline">
+        <span
+          class="hidden w-11 text-center font-mono text-xs text-[var(--md-sys-color-on-surface-variant)] sm:inline"
+        >
           {{ zoomPercent }}%
         </span>
         <button
           type="button"
-          class="hidden h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-zinc-200 hover:bg-white/20 sm:flex"
+          class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
           @click="zoomPercent = Math.min(200, zoomPercent + 10)"
         >
           <LuZoomIn class="h-4 w-4" />
@@ -603,11 +590,11 @@ async function togglePageBookmark(): Promise<void> {
         <button
           type="button"
           :title="globalT('bookmarksPage.bookmarkPage')"
-          class="flex h-9 w-9 items-center justify-center rounded-xl transition"
+          class="md-icon-btn md-icon-btn-sm md-state"
           :class="
             currentPageBookmark
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'bg-white/10 text-zinc-200 hover:bg-white/20'
+              ? '!bg-[var(--md-sys-color-primary-container)] !text-[var(--md-sys-color-on-primary-container)]'
+              : ''
           "
           @click="togglePageBookmark"
         >
@@ -618,7 +605,12 @@ async function togglePageBookmark(): Promise<void> {
         <button
           type="button"
           :title="t('reader.chapterList')"
-          class="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-zinc-200 transition hover:bg-white/20"
+          class="md-icon-btn md-icon-btn-sm md-state"
+          :class="
+            chaptersDrawerOpen
+              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
+          "
           @click="
             chaptersDrawerOpen = !chaptersDrawerOpen;
             settingsDrawerOpen = false
@@ -630,7 +622,12 @@ async function togglePageBookmark(): Promise<void> {
         <!-- Reader Settings Popover Button -->
         <button
           type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-zinc-200 transition hover:bg-white/20"
+          class="md-icon-btn md-icon-btn-sm md-state"
+          :class="
+            settingsDrawerOpen
+              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
+          "
           @click="
             settingsDrawerOpen = !settingsDrawerOpen;
             chaptersDrawerOpen = false
@@ -644,10 +641,12 @@ async function togglePageBookmark(): Promise<void> {
     <!-- Floating Reader Settings Popover -->
     <div
       v-if="settingsDrawerOpen && ctx"
-      class="fixed top-16 right-4 z-50 w-80 space-y-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5 text-[var(--text-primary)] shadow-2xl"
+      class="fixed top-16 right-4 z-[var(--z-sheet)] w-80 space-y-4 rounded-[24px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)] p-5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
     >
       <div>
-        <label class="mb-1 block text-xs font-semibold">{{ t('settings.defaultReaderMode') }}</label>
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+          {{ t('settings.defaultReaderMode') }}
+        </label>
         <AppSelect
           size="sm"
           :model-value="readerMode"
@@ -657,7 +656,9 @@ async function togglePageBookmark(): Promise<void> {
       </div>
 
       <div v-if="readerMode !== 'webtoon'">
-        <label class="mb-1 block text-xs font-semibold">{{ t('settings.defaultFitMode') }}</label>
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+          {{ t('settings.defaultFitMode') }}
+        </label>
         <AppSelect
           size="sm"
           :model-value="fitMode"
@@ -675,7 +676,7 @@ async function togglePageBookmark(): Promise<void> {
       </div>
 
       <div v-if="readerMode === 'webtoon'">
-        <label class="mb-1 block text-xs font-semibold">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('reader.webtoonWidth') }} ({{ webtoonWidth }}px)
         </label>
         <input
@@ -684,7 +685,7 @@ async function togglePageBookmark(): Promise<void> {
           min="520"
           max="1400"
           step="20"
-          class="w-full accent-[var(--accent)]"
+          class="w-full accent-[var(--md-sys-color-primary)]"
           @change="persistSeriesReaderPref"
         />
       </div>
@@ -697,7 +698,9 @@ async function togglePageBookmark(): Promise<void> {
         />
       </div>
 
-      <p class="border-t border-[var(--border-subtle)] pt-3 text-[11px] leading-relaxed text-[var(--text-secondary)]">
+      <p
+        class="border-t border-[var(--md-sys-color-outline-variant)]/55 pt-3 text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
+      >
         {{ t('reader.shortcutsHint') }}
       </p>
     </div>
@@ -705,22 +708,24 @@ async function togglePageBookmark(): Promise<void> {
     <!-- Floating Chapter Switcher Popover -->
     <div
       v-if="chaptersDrawerOpen && ctx"
-      class="fixed top-16 right-14 z-50 max-h-[70vh] w-72 overflow-y-auto rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-2 text-[var(--text-primary)] shadow-2xl"
+      class="fixed top-16 right-14 z-[var(--z-sheet)] max-h-[70vh] w-72 overflow-y-auto rounded-[24px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)] p-2 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
     >
       <button
         v-for="ch in ctx.all_chapters"
         :key="ch.id"
         type="button"
-        class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs transition"
+        class="md-state flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs transition"
         :class="
           ch.id === ctx.chapter.id
-            ? 'bg-[var(--accent)]/15 font-bold text-[var(--accent)]'
-            : 'hover:bg-[var(--surface-hover)]'
+            ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+            : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-highest)]'
         "
         @click="goToChapter(ch.id)"
       >
         <span class="truncate">#{{ ch.number_label }} {{ ch.title }}</span>
-        <span class="shrink-0 text-[10px] text-[var(--text-secondary)]">{{ ch.page_count }}P</span>
+        <span class="shrink-0 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+          {{ ch.page_count }}P
+        </span>
       </button>
     </div>
 
@@ -759,13 +764,15 @@ async function togglePageBookmark(): Promise<void> {
             <button
               v-if="ctx.next_chapter"
               type="button"
-              class="inline-flex items-center gap-2 rounded-full bg-[var(--accent)] px-7 py-3 text-sm font-bold text-[var(--accent-contrast)] shadow-xl transition hover:scale-105"
+              class="md-btn md-btn-filled md-state !h-11 !px-7 text-sm shadow-[var(--md-sys-elevation-2)]"
               @click="goToChapter(ctx.next_chapter.id)"
             >
               <span>{{ t('reader.nextChapter') }}: #{{ ctx.next_chapter.number_label }} {{ ctx.next_chapter.title }}</span>
               <LuChevronRight class="h-4 w-4" />
             </button>
-            <p v-else class="text-sm text-zinc-400">{{ t('reader.reachedSeriesEnd') }}</p>
+            <p v-else class="text-sm text-[var(--md-sys-color-on-surface-variant)]">
+              {{ t('reader.reachedSeriesEnd') }}
+            </p>
           </div>
         </div>
       </div>
@@ -793,25 +800,17 @@ async function togglePageBookmark(): Promise<void> {
       </div>
     </div>
 
-    <!-- Seamless Toast Pill -->
-    <div
-      v-if="toastMessage"
-      class="pointer-events-none fixed bottom-20 left-1/2 z-50 -translate-x-1/2 rounded-full border border-white/15 bg-zinc-900/95 px-5 py-2.5 text-xs font-semibold text-white shadow-2xl backdrop-blur-md"
-    >
-      {{ toastMessage }}
-    </div>
-
     <!-- Bottom Floating Page Scrubber HUD -->
     <footer
       v-if="ctx"
       v-show="hudVisible"
-      class="fixed right-0 bottom-0 left-0 z-40 flex h-14 items-center gap-4 border-t border-white/10 bg-zinc-950/85 px-4 backdrop-blur-md"
+      class="fixed right-0 bottom-0 left-0 z-[var(--z-base-overlay)] flex h-14 items-center gap-4 border-t border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)]/90 px-4 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
     >
       <button
         type="button"
         :disabled="!ctx.prev_chapter"
         :title="ctx.prev_chapter ? t('reader.prevChapter') : t('reader.noPrevChapter')"
-        class="flex h-9 items-center gap-1 rounded-xl bg-white/10 px-3 text-xs font-medium text-white transition hover:bg-white/20 disabled:opacity-35"
+        class="md-btn md-btn-sm md-btn-tonal md-state"
         @click="ctx.prev_chapter && goToChapter(ctx.prev_chapter.id)"
       >
         <LuSkipBack class="h-3.5 w-3.5" />
@@ -819,7 +818,9 @@ async function togglePageBookmark(): Promise<void> {
       </button>
 
       <div class="flex flex-1 items-center gap-3">
-        <span class="w-24 shrink-0 text-center font-mono text-xs text-zinc-300">
+        <span
+          class="w-24 shrink-0 text-center font-mono text-xs text-[var(--md-sys-color-on-surface-variant)]"
+        >
           {{
             currentSpread.length > 1
               ? (isRtl
@@ -837,7 +838,7 @@ async function togglePageBookmark(): Promise<void> {
           :max="Math.max(1, totalPages)"
           :value="currentPage"
           :dir="isRtl ? 'rtl' : 'ltr'"
-          class="h-1.5 flex-1 cursor-pointer accent-[var(--accent)]"
+          class="h-1.5 flex-1 cursor-pointer accent-[var(--md-sys-color-primary)]"
           @input="onScrubberInput"
         />
       </div>
@@ -846,7 +847,7 @@ async function togglePageBookmark(): Promise<void> {
         v-if="dimImages"
         type="button"
         :title="t('reader.eyeCareDim')"
-        class="hidden h-9 w-9 items-center justify-center rounded-xl bg-amber-500/20 text-amber-300 sm:flex"
+        class="md-icon-btn md-icon-btn-sm md-state hidden !bg-[var(--md-sys-color-warning-container)] !text-[var(--md-sys-color-on-warning-container)] sm:inline-flex"
         @click="toggleDimImages(false)"
       >
         <LuEye class="h-4 w-4" />
@@ -856,7 +857,7 @@ async function togglePageBookmark(): Promise<void> {
         type="button"
         :disabled="!ctx.next_chapter"
         :title="ctx.next_chapter ? t('reader.nextChapter') : t('reader.noNextChapter')"
-        class="flex h-9 items-center gap-1 rounded-xl bg-white/10 px-3 text-xs font-medium text-white transition hover:bg-white/20 disabled:opacity-35"
+        class="md-btn md-btn-sm md-btn-tonal md-state"
         @click="ctx.next_chapter && goToChapter(ctx.next_chapter.id)"
       >
         <span class="hidden sm:inline">{{ t('reader.nextChapter') }}</span>

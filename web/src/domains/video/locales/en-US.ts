@@ -115,6 +115,10 @@ export default {
     nextEpisode: 'Next Ep',
     pip: 'Picture in Picture',
     fullscreen: 'Fullscreen',
+    loading: 'Loading video…',
+    loadErrorTitle: 'Failed to load video',
+    loadErrorDesc: 'Unable to fetch video metadata or media stream. Please try again.',
+    retry: 'Retry',
   },
   admin: {
     managedBadge: 'Managed',

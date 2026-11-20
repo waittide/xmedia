@@ -37,7 +37,7 @@ const src = computed(() => {
 
 <template>
   <div
-    class="relative flex aspect-square items-center justify-center overflow-hidden bg-gradient-to-br from-[var(--ctp-surface0)] via-[var(--ctp-mantle)] to-[var(--ctp-accent-soft)] select-none"
+    class="relative flex aspect-square items-center justify-center overflow-hidden bg-gradient-to-br from-[var(--md-sys-color-surface-container-high)] via-[var(--md-sys-color-surface-container)] to-[var(--md-sys-color-primary-container)]/45 select-none"
     :class="rounded"
   >
     <img
@@ -49,7 +49,7 @@ const src = computed(() => {
       class="h-full w-full object-cover"
       @error="failed = true"
     />
-    <LuDisc3 v-else class="h-2/5 w-2/5 text-[var(--ctp-subtext0)]/55" />
+    <LuDisc3 v-else class="h-2/5 w-2/5 text-[var(--md-sys-color-on-surface-variant)]/55" />
     <slot />
   </div>
 </template>

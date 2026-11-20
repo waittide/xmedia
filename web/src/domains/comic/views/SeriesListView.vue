@@ -200,7 +200,7 @@ watch(
           v-for="badge in activeQueryTags"
           :key="badge.key"
           type="button"
-          class="inline-flex h-7 items-center gap-1 rounded-full bg-[var(--accent-soft)] px-2.5 text-xs font-medium text-[var(--accent)] transition hover:opacity-85"
+          class="md-chip md-chip-selected md-state !h-8 !rounded-full"
           @click="removeQueryKey(badge.key)"
         >
           <span>{{ badge.label }}</span>
@@ -212,7 +212,7 @@ watch(
             statusFilter || readStatusFilter || selectedLibraryId || activeQueryTags.length > 0
           "
           type="button"
-          class="text-xs font-semibold text-[var(--accent)] hover:underline"
+          class="md-btn md-btn-sm md-btn-text md-state"
           @click="resetAllFilters"
         >
           {{ t('series.clearFilters') }}
@@ -221,9 +221,9 @@ watch(
 
       <div class="flex items-center gap-2">
         <div
-          class="inline-flex h-8 items-center gap-1.5 rounded-full bg-[var(--bg-mantle)] px-3 text-xs font-medium text-[var(--text-muted)]"
+          class="inline-flex h-8 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-surface-container)] px-3 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]"
         >
-          <LuArrowUpDown class="h-3.5 w-3.5 text-[var(--text-secondary)]" />
+          <LuArrowUpDown class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
           <AppSelect
             variant="inline"
             :model-value="sortBy"
@@ -233,7 +233,7 @@ watch(
           <button
             type="button"
             :title="sortDir === 'desc' ? t('series.sortDesc') : t('series.sortAsc')"
-            class="ml-0.5 rounded px-1 text-[11px] font-semibold text-[var(--accent)] transition hover:bg-[var(--sidebar-hover)]"
+            class="md-state ml-0.5 rounded-full px-1.5 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-primary)]"
             @click="sortDir = sortDir === 'desc' ? 'asc' : 'desc'"
           >
             {{ sortDir === 'desc' ? '↓' : '↑' }}
@@ -246,7 +246,7 @@ watch(
 
     <div
       v-if="!loading && seriesList.length === 0"
-      class="rounded-3xl border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface)]/50 py-20 text-center text-sm text-[var(--text-secondary)]"
+      class="md-card-outlined rounded-3xl border-dashed py-20 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('series.emptyFiltered') }}
     </div>

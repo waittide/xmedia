@@ -7,6 +7,10 @@ import { api } from '@/domains/book/api'
 import { useThemeStore } from '@/stores/theme'
 import type { ReadingLocation } from '@/domains/book/types'
 
+const LOCATIONS_CACHE_PREFIX = 'xmedia.epub.locations:'
+const LOCATIONS_INDEX_KEY = 'xmedia.epub.locations.__index'
+const MAX_CACHED_BOOKS = 12
+
 const props = defineProps<{
   bookId: string
   initialLocation: ReadingLocation | null
@@ -32,6 +36,84 @@ const errorMsg = ref('')
 let book: Book | null = null
 let rendition: Rendition | null = null
 let locationsReady = false
+let lastKnownCfi = ''
+
+interface EpubLocationsWithCache {
+  generate(chars?: number): Promise<string[]>
+  percentageFromCfi(cfi: string): number
+  load?: (locations: string) => void
+  save?: () => string
+}
+
+interface EpubRenditionWithOff extends Rendition {
+  off?: (event: string, handler: (...args: unknown[]) => void) => void
+}
+
+function buildLocationsCacheKey(bookId: string, byteLength: number): string {
+  return `${LOCATIONS_CACHE_PREFIX}${bookId}:${byteLength}`
+}
+
+function readCachedLocations(key: string): string | null {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+
+function writeCachedLocations(key: string, serialized: string): void {
+  try {
+    let index: string[] = []
+    try {
+      const raw = localStorage.getItem(LOCATIONS_INDEX_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        if (Array.isArray(parsed)) {
+          index = parsed.filter((k): k is string => typeof k === 'string')
+        }
+      }
+    } catch {
+      index = []
+    }
+
+    const nextIndex = [key, ...index.filter((k) => k !== key)]
+    while (nextIndex.length > MAX_CACHED_BOOKS) {
+      const evicted = nextIndex.pop()
+      if (evicted) {
+        try {
+          localStorage.removeItem(evicted)
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    try {
+      localStorage.setItem(key, serialized)
+      localStorage.setItem(LOCATIONS_INDEX_KEY, JSON.stringify(nextIndex))
+    } catch {
+      // On QuotaExceededError, evict older entries and retry once
+      while (nextIndex.length > 1) {
+        const evicted = nextIndex.pop()
+        if (evicted) {
+          try {
+            localStorage.removeItem(evicted)
+          } catch {
+            // ignore
+          }
+        }
+      }
+      try {
+        localStorage.setItem(key, serialized)
+        localStorage.setItem(LOCATIONS_INDEX_KEY, JSON.stringify(nextIndex))
+      } catch {
+        // ignore if still too large for localStorage
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function resolveFontStack(key: string): string {
   if (key === 'serif') return '"Noto Serif SC", "Source Han Serif SC", Georgia, serif'
@@ -76,9 +158,30 @@ async function nextPage(): Promise<void> {
   await rendition?.next()
 }
 
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  if (!target || typeof target !== 'object') return false
+  const el = target as { tagName?: string; isContentEditable?: boolean }
+  const tag = el.tagName?.toUpperCase()
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || Boolean(el.isContentEditable)
+}
+
 function handleKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'ArrowLeft') void prevPage()
-  if (ev.key === 'ArrowRight') void nextPage()
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return
+  if (isEditableEventTarget(ev.target)) return
+  if (ev.key === 'ArrowLeft') {
+    ev.preventDefault()
+    void prevPage()
+  } else if (ev.key === 'ArrowRight') {
+    ev.preventDefault()
+    void nextPage()
+  }
+}
+
+function handleRenditionKeydown(...args: unknown[]): void {
+  const ev = args[0]
+  if (ev && typeof ev === 'object' && 'key' in ev) {
+    handleKeydown(ev as KeyboardEvent)
+  }
 }
 
 defineExpose({ navigateTo })
@@ -106,18 +209,30 @@ onMounted(async () => {
       spread: 'none',
     })
 
+    // Ensure arrow-key paging still works after clicking inside the epub iframe
+    rendition.on('keydown', handleRenditionKeydown)
+
     applyRenditionTheme()
+
+    const cacheKey = buildLocationsCacheKey(props.bookId, buffer.byteLength)
+    const cachedLocations = readCachedLocations(cacheKey)
+    const locationsApi = book.locations as unknown as EpubLocationsWithCache
+    if (cachedLocations && typeof locationsApi.load === 'function') {
+      try {
+        locationsApi.load(cachedLocations)
+        locationsReady = true
+      } catch {
+        locationsReady = false
+      }
+    }
 
     const startTarget = props.initialLocation?.locator || undefined
     await rendition.display(startTarget)
     loading.value = false
 
-    void book.locations.generate(1200).then(() => {
-      locationsReady = true
-    })
-
     rendition.on('relocated', (loc) => {
       const cfi = loc.start.cfi
+      lastKnownCfi = cfi
       let pct = loc.start.percentage * 100
       if (locationsReady && book) {
         pct = book.locations.percentageFromCfi(cfi) * 100
@@ -128,6 +243,33 @@ onMounted(async () => {
         locator: cfi,
       })
     })
+
+    if (!locationsReady) {
+      const currentBook = book
+      const currentLocations = currentBook.locations as unknown as EpubLocationsWithCache
+      void currentBook.locations.generate(1200).then(() => {
+        if (book !== currentBook) return
+        locationsReady = true
+        try {
+          const serialized =
+            typeof currentLocations.save === 'function' ? currentLocations.save() : ''
+          if (serialized) {
+            writeCachedLocations(cacheKey, serialized)
+          }
+        } catch {
+          // ignore
+        }
+        if (lastKnownCfi) {
+          const pct = currentBook.locations.percentageFromCfi(lastKnownCfi) * 100
+          if (Number.isFinite(pct)) {
+            emit('progress', {
+              progress_percent: Math.min(100, Math.max(0, Number(pct.toFixed(2)))),
+              locator: lastKnownCfi,
+            })
+          }
+        }
+      })
+    }
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
@@ -157,17 +299,23 @@ watch(
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
+  const r = rendition as EpubRenditionWithOff | null
+  if (r && typeof r.off === 'function') {
+    r.off('keydown', handleRenditionKeydown)
+  }
   rendition?.destroy()
   book?.destroy()
+  rendition = null
+  book = null
 })
 </script>
 
 <template>
-  <div class="relative flex h-full w-full items-center justify-center overflow-hidden bg-[var(--ctp-canvas)]">
-    <div v-if="loading" class="text-sm text-[var(--ctp-subtext0)]">
+  <div class="relative flex h-full w-full items-center justify-center overflow-hidden bg-[var(--md-sys-color-surface)]">
+    <div v-if="loading" class="text-sm text-[var(--md-sys-color-on-surface-variant)]">
       {{ t('reader.loadingBook') }}
     </div>
-    <div v-else-if="errorMsg" class="text-sm text-[var(--ctp-red)]">
+    <div v-else-if="errorMsg" class="text-sm text-[var(--md-sys-color-error)]">
       {{ errorMsg }}
     </div>
 
@@ -177,7 +325,7 @@ onBeforeUnmount(() => {
     <template v-if="themeStore.reader.flow === 'paginated' && !loading">
       <button
         type="button"
-        class="absolute left-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/85 text-[var(--ctp-subtext1)] shadow-md backdrop-blur-sm transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
+        class="md-icon-btn md-state absolute left-3 top-1/2 !h-11 !w-11 -translate-y-1/2 border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)]/90 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-sm hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
         :title="t('reader.prevPage')"
         @click="prevPage"
       >
@@ -186,7 +334,7 @@ onBeforeUnmount(() => {
 
       <button
         type="button"
-        class="absolute right-3 top-1/2 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/85 text-[var(--ctp-subtext1)] shadow-md backdrop-blur-sm transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
+        class="md-icon-btn md-state absolute right-3 top-1/2 !h-11 !w-11 -translate-y-1/2 border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)]/90 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-sm hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
         :title="t('reader.nextPage')"
         @click="nextPage"
       >

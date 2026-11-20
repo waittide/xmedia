@@ -84,17 +84,19 @@ watch(() => route.params.id, loadShelf)
       />
       <div
         v-else
-        class="flex h-36 w-64 shrink-0 items-center justify-center rounded-3xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+        class="flex h-36 w-64 shrink-0 items-center justify-center rounded-3xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
       >
         <LuFolderHeart class="h-12 w-12" />
       </div>
 
       <div class="min-w-0 flex-1 space-y-2.5">
-        <p class="text-xs font-medium text-[var(--ctp-subtext0)]">
+        <p class="text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('common.videosCount', { count: detail.shelf.video_count }) }}
         </p>
 
-        <h1 class="truncate text-2xl font-extrabold tracking-tight sm:text-3xl">
+        <h1
+          class="truncate text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)] sm:text-3xl"
+        >
           {{ detail.shelf.name }}
         </h1>
 
@@ -102,7 +104,7 @@ watch(() => route.params.id, loadShelf)
           <button
             v-if="detail.videos.length > 0"
             type="button"
-            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-md"
+            class="md-btn md-btn-filled md-state"
             @click="router.push(`/video/watch/${detail.videos[0]!.id}`)"
           >
             <LuPlay class="h-4 w-4 fill-current" />
@@ -111,7 +113,7 @@ watch(() => route.params.id, loadShelf)
 
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 py-2 text-xs font-medium text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]"
+            class="md-btn md-btn-tonal md-state"
             @click="handleRename"
           >
             <LuPencil class="h-3.5 w-3.5" />
@@ -120,7 +122,7 @@ watch(() => route.params.id, loadShelf)
 
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-full border border-[var(--ctp-red)]/30 bg-[var(--ctp-red)]/10 px-3.5 py-2 text-xs font-medium text-[var(--ctp-red)]"
+            class="md-btn md-state bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
             @click="handleDeleteShelf"
           >
             <LuTrash2 class="h-3.5 w-3.5" />
@@ -134,7 +136,7 @@ watch(() => route.params.id, loadShelf)
 
     <div
       v-if="detail.videos.length === 0"
-      class="card-soft rounded-2xl bg-[var(--ctp-shell)] py-14 text-center text-xs text-[var(--ctp-subtext0)]"
+      class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('shelf.emptyVideos') }}
     </div>

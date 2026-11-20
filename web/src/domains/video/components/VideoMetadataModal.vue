@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import { LuUpload } from 'vue-icons-plus/lu'
-import AppDialog from '@/components/ui/AppDialog.vue'
+import { LuFilm, LuUpload } from 'vue-icons-plus/lu'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import { api } from '../api'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
@@ -96,91 +96,74 @@ async function onPosterFileChange(ev: Event): Promise<void> {
 </script>
 
 <template>
-  <AppDialog
+  <MdDialog
     :open="open"
     :title="t('metadata.editVideoTitle')"
-    max-width-class="max-w-xl"
+    max-width="max-w-xl"
     @close="emit('close')"
   >
-    <form class="space-y-4 text-xs" @submit.prevent="handleSave">
+    <template #icon>
+      <LuFilm class="h-5 w-5" />
+    </template>
+
+    <form class="space-y-4 py-1 text-xs" @submit.prevent="handleSave">
       <div>
-        <label class="mb-1 block font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('metadata.fieldTitle') }}
         </label>
-        <input
-          v-model="title"
-          type="text"
-          required
-          class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-        />
+        <input v-model="title" type="text" required class="md-input h-9 w-full text-xs" />
       </div>
 
       <div class="grid grid-cols-3 gap-3">
         <div>
-          <label class="mb-1 block font-semibold text-[var(--ctp-subtext1)]">
+          <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('metadata.fieldYear') }}
           </label>
-          <input
-            v-model="yearInput"
-            type="number"
-            class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-          />
+          <input v-model="yearInput" type="number" class="md-input h-9 w-full text-xs" />
         </div>
         <div>
-          <label class="mb-1 block font-semibold text-[var(--ctp-subtext1)]">
+          <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('metadata.fieldSeason') }}
           </label>
           <input
             v-model="seasonInput"
             type="number"
             min="0"
-            class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-9 w-full text-xs"
           />
         </div>
         <div>
-          <label class="mb-1 block font-semibold text-[var(--ctp-subtext1)]">
+          <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('metadata.fieldEpisode') }}
           </label>
           <input
             v-model="episodeInput"
             type="number"
             min="0"
-            class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-9 w-full text-xs"
           />
         </div>
       </div>
 
       <div>
-        <label class="mb-1 block font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('metadata.fieldGenres') }}
         </label>
-        <input
-          v-model="genresInput"
-          type="text"
-          class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-        />
+        <input v-model="genresInput" type="text" class="md-input h-9 w-full text-xs" />
       </div>
 
       <div>
-        <label class="mb-1 block font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('metadata.fieldTags') }}
         </label>
-        <input
-          v-model="tagsInput"
-          type="text"
-          class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-        />
+        <input v-model="tagsInput" type="text" class="md-input h-9 w-full text-xs" />
       </div>
 
       <div>
-        <label class="mb-1 block font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('metadata.fieldSummary') }}
         </label>
-        <textarea
-          v-model="summary"
-          rows="3"
-          class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-        />
+        <textarea v-model="summary" rows="3" class="md-input w-full py-2.5 text-xs" />
       </div>
 
       <div>
@@ -193,7 +176,7 @@ async function onPosterFileChange(ev: Event): Promise<void> {
         />
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
+          class="md-btn md-btn-sm md-btn-tonal md-state"
           @click="posterInputRef?.click()"
         >
           <LuUpload class="h-3.5 w-3.5" />
@@ -203,21 +186,23 @@ async function onPosterFileChange(ev: Event): Promise<void> {
     </form>
 
     <template #footer>
-      <button
-        type="button"
-        class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-2 text-xs font-semibold text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]"
-        @click="emit('close')"
-      >
-        {{ t('common.cancel') }}
-      </button>
-      <button
-        type="button"
-        :disabled="saving || !title.trim()"
-        class="rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-bold text-[var(--ctp-on-accent)] disabled:opacity-50"
-        @click="handleSave"
-      >
-        {{ t('common.save') }}
-      </button>
+      <div class="ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-text md-state"
+          @click="emit('close')"
+        >
+          {{ t('common.cancel') }}
+        </button>
+        <button
+          type="button"
+          :disabled="saving || !title.trim()"
+          class="md-btn md-btn-sm md-btn-filled md-state"
+          @click="handleSave"
+        >
+          {{ t('common.save') }}
+        </button>
+      </div>
     </template>
-  </AppDialog>
+  </MdDialog>
 </template>

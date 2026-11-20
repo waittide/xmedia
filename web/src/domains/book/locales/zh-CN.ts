@@ -164,6 +164,8 @@ export default {
     chapterIndicator: '第 {current} / {total} 章',
     zoomIn: '放大',
     zoomOut: '缩小',
+    fitWidth: '适应宽度',
+    fitPage: '适应页面',
     loadingBook: '正在打开…',
   },
   common: {

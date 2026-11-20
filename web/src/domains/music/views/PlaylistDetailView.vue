@@ -89,12 +89,12 @@ watch(() => route.params.id, loadPlaylist)
       />
 
       <div class="min-w-0 flex-1 space-y-2.5">
-        <p class="text-xs font-medium text-[var(--ctp-subtext0)]">
+        <p class="text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('playlist.ownerBy', { owner: detail.playlist.owner_username }) }} ·
           {{ t('common.tracksCount', { count: detail.playlist.track_count }) }}
         </p>
 
-        <h1 class="truncate text-2xl font-extrabold tracking-tight sm:text-3xl">
+        <h1 class="truncate text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)] sm:text-3xl">
           {{ detail.playlist.name }}
         </h1>
 
@@ -110,7 +110,7 @@ watch(() => route.params.id, loadPlaylist)
           <button
             v-if="detail.tracks.length > 0"
             type="button"
-            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-md"
+            class="md-btn md-btn-filled md-state"
             @click="playerStore.playQueue(detail.tracks, 0)"
           >
             <LuPlay class="h-4 w-4 fill-current" />
@@ -120,7 +120,7 @@ watch(() => route.params.id, loadPlaylist)
           <button
             v-if="detail.tracks.length > 0"
             type="button"
-            class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2.5 text-xs font-semibold"
+            class="md-btn md-btn-tonal md-state"
             @click="playerStore.shuffleAndPlay(detail.tracks)"
           >
             <LuShuffle class="h-4 w-4" />
@@ -130,7 +130,7 @@ watch(() => route.params.id, loadPlaylist)
           <button
             v-if="canEdit"
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 py-2 text-xs font-medium text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]"
+            class="md-btn md-btn-outlined md-btn-sm md-state"
             @click="handleRename"
           >
             <LuPencil class="h-3.5 w-3.5" />
@@ -140,7 +140,7 @@ watch(() => route.params.id, loadPlaylist)
           <button
             v-if="canEdit"
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-full border border-[var(--ctp-red)]/30 bg-[var(--ctp-red)]/10 px-3.5 py-2 text-xs font-medium text-[var(--ctp-red)]"
+            class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
             @click="handleDelete"
           >
             <LuTrash2 class="h-3.5 w-3.5" />
@@ -154,7 +154,7 @@ watch(() => route.params.id, loadPlaylist)
 
     <div
       v-if="detail.tracks.length === 0"
-      class="card-soft rounded-2xl bg-[var(--ctp-shell)] py-14 text-center text-xs text-[var(--ctp-subtext0)]"
+      class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('playlist.emptyTracks') }}
     </div>

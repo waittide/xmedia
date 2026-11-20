@@ -17,7 +17,7 @@ const videoStore = useVideoStore()
 
 <template>
   <div
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--ctp-mantle)]"
+    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]"
     @click="router.push(`/video/shows/${show.id}`)"
   >
     <div class="relative mb-2.5">
@@ -45,16 +45,18 @@ const videoStore = useVideoStore()
         >
           <LuHeart
             class="h-3.5 w-3.5"
-            :class="show.is_favorite ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]' : ''"
+            :class="show.is_favorite ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]' : ''"
           />
         </button>
       </PosterImage>
     </div>
 
-    <h3 class="truncate text-xs font-bold text-[var(--ctp-text)]">
+    <h3 class="truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
       {{ show.title }}
     </h3>
-    <div class="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-[var(--ctp-subtext0)]">
+    <div
+      class="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+    >
       <span>
         {{ t('common.seasonsCount', { count: show.season_count }) }} ·
         {{ t('common.episodesCount', { count: show.episode_count }) }}

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { LuHeart } from 'vue-icons-plus/lu'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import ShowCard from '../components/ShowCard.vue'
@@ -15,6 +16,11 @@ const activeTab = ref<'videos' | 'shows'>('videos')
 const favorites = ref<VideoFavoritesDto>({ videos: [], shows: [] })
 const editingVideo = ref<VideoSummaryDto | null>(null)
 
+const tabOptions = computed(() => [
+  { value: 'videos' as const, label: `${t('favorites.tabVideos')} (${favorites.value.videos.length})` },
+  { value: 'shows' as const, label: `${t('favorites.tabShows')} (${favorites.value.shows.length})` },
+])
+
 async function loadFavorites(): Promise<void> {
   favorites.value = await api.listFavorites()
 }
@@ -26,39 +32,18 @@ onMounted(loadFavorites)
   <div class="mx-auto max-w-6xl space-y-6 px-6 py-7 sm:px-8">
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-extrabold tracking-tight">{{ t('favorites.title') }}</h1>
-        <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('favorites.subtitle') }}</p>
+        <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
+          {{ t('favorites.title') }}
+        </h1>
+        <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          {{ t('favorites.subtitle') }}
+        </p>
       </div>
 
       <RefreshButton size="md" :action="loadFavorites" />
     </div>
 
-    <div class="inline-flex gap-1 rounded-2xl bg-[var(--ctp-shell)] p-1">
-      <button
-        type="button"
-        class="rounded-xl px-4 py-2 text-xs font-semibold transition"
-        :class="
-          activeTab === 'videos'
-            ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-        "
-        @click="activeTab = 'videos'"
-      >
-        {{ t('favorites.tabVideos') }} ({{ favorites.videos.length }})
-      </button>
-      <button
-        type="button"
-        class="rounded-xl px-4 py-2 text-xs font-semibold transition"
-        :class="
-          activeTab === 'shows'
-            ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-        "
-        @click="activeTab = 'shows'"
-      >
-        {{ t('favorites.tabShows') }} ({{ favorites.shows.length }})
-      </button>
-    </div>
+    <MdSegmentedButton v-model="activeTab" :options="tabOptions" size="md" />
 
     <div v-if="activeTab === 'videos'">
       <div
@@ -73,7 +58,10 @@ onMounted(loadFavorites)
           @deleted="loadFavorites"
         />
       </div>
-      <div v-else class="py-16 text-center text-xs text-[var(--ctp-subtext0)]">
+      <div
+        v-else
+        class="md-card-filled py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      >
         <LuHeart class="mx-auto mb-2 h-6 w-6 opacity-40" />
         {{ t('favorites.empty') }}
       </div>
@@ -86,7 +74,10 @@ onMounted(loadFavorites)
       >
         <ShowCard v-for="sh in favorites.shows" :key="sh.id" :show="sh" />
       </div>
-      <div v-else class="py-16 text-center text-xs text-[var(--ctp-subtext0)]">
+      <div
+        v-else
+        class="md-card-filled py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      >
         <LuHeart class="mx-auto mb-2 h-6 w-6 opacity-40" />
         {{ t('favorites.empty') }}
       </div>

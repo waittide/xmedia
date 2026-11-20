@@ -138,16 +138,31 @@ function handleOutside(ev: MouseEvent): void {
   menuOpen.value = false
 }
 
+function handleMenuKeydown(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape' && menuOpen.value) {
+    ev.stopPropagation()
+    menuOpen.value = false
+  }
+}
+
 watch(menuOpen, (isOpen) => {
-  if (isOpen) document.addEventListener('mousedown', handleOutside)
-  else document.removeEventListener('mousedown', handleOutside)
+  if (isOpen) {
+    document.addEventListener('mousedown', handleOutside)
+    window.addEventListener('keydown', handleMenuKeydown)
+  } else {
+    document.removeEventListener('mousedown', handleOutside)
+    window.removeEventListener('keydown', handleMenuKeydown)
+  }
 })
-onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutside)
+  window.removeEventListener('keydown', handleMenuKeydown)
+})
 </script>
 
 <template>
   <div
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--ctp-mantle)]"
+    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]"
     @click="router.push(`/video/watch/${video.id}`)"
   >
     <div class="relative mb-2.5">
@@ -169,13 +184,13 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
           </span>
           <span
             v-if="episodeTag"
-            class="rounded-md bg-[var(--ctp-accent)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[var(--ctp-on-accent)] shadow-xs"
+            class="rounded-md bg-[var(--md-sys-color-primary)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[var(--md-sys-color-on-primary)] shadow-xs"
           >
             {{ episodeTag }}
           </span>
           <span
             v-if="video.progress?.completed"
-            class="inline-flex items-center gap-0.5 rounded-md bg-[var(--ctp-green)]/90 px-1.5 py-0.5 text-[10px] font-bold text-black"
+            class="inline-flex items-center gap-0.5 rounded-md bg-[var(--md-sys-color-success-container)] px-1.5 py-0.5 text-[10px] font-bold text-[var(--md-sys-color-on-success-container)]"
           >
             <LuCheck class="h-3 w-3" />
           </span>
@@ -195,7 +210,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
         >
           <button
             type="button"
-            class="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-lg transition hover:scale-105"
+            class="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105"
             :title="t('common.play')"
           >
             <LuPlay class="ml-0.5 h-5 w-5 fill-current" />
@@ -208,7 +223,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
           >
             <LuHeart
               class="h-3.5 w-3.5"
-              :class="video.is_favorite ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]' : ''"
+              :class="video.is_favorite ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]' : ''"
             />
           </button>
         </div>
@@ -219,7 +234,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
           class="pointer-events-none absolute right-0 bottom-0 left-0 h-1 bg-black/45"
         >
           <div
-            class="h-full bg-[var(--ctp-accent)]"
+            class="h-full bg-[var(--md-sys-color-primary)]"
             :style="{ width: `${progressPercent}%` }"
           />
         </div>
@@ -228,18 +243,18 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 
     <div class="flex items-start justify-between gap-1.5">
       <div class="min-w-0 flex-1">
-        <h3 class="truncate text-xs font-bold text-[var(--ctp-text)]">
+        <h3 class="truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
           {{ video.title }}
         </h3>
-        <div class="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--ctp-subtext0)]">
+        <div class="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
           <span
             v-if="video.show_id && video.show_title"
-            class="truncate hover:text-[var(--ctp-accent)] hover:underline"
+            class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
             @click.stop="router.push(`/video/shows/${video.show_id}`)"
           >
             {{ video.show_title }}
           </span>
-          <span v-else class="uppercase font-mono text-[10px]">
+          <span v-else class="font-mono text-[10px] uppercase">
             {{ video.container }}
           </span>
           <span v-if="video.year" class="shrink-0">· {{ video.year }}</span>
@@ -248,7 +263,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 
       <button
         type="button"
-        class="shrink-0 rounded-lg p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+        class="md-icon-btn md-icon-btn-sm md-state"
         @click="openMenu"
       >
         <LuMoreHorizontal class="h-4 w-4" />
@@ -260,15 +275,17 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
     <div
       v-if="menuOpen"
       ref="menuRef"
+      role="menu"
       :style="menuPos"
-      class="fixed z-[115] w-56 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 text-xs text-[var(--ctp-text)] shadow-2xl"
+      class="fixed z-[var(--z-popover)] w-56 rounded-2xl border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-high)] p-1.5 text-xs text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
     >
       <button
         type="button"
-        class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
+        role="menuitem"
+        class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--md-sys-color-surface-container-highest)]"
         @click="toggleWatched"
       >
-        <LuCheck class="h-3.5 w-3.5 text-[var(--ctp-green)]" />
+        <LuCheck class="h-3.5 w-3.5 text-[var(--md-sys-color-success)]" />
         <span>
           {{ video.progress?.completed ? t('common.markUnwatched') : t('common.markWatched') }}
         </span>
@@ -277,51 +294,58 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       <button
         v-if="authStore.isAdmin"
         type="button"
-        class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
+        role="menuitem"
+        class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--md-sys-color-surface-container-highest)]"
         @click="menuOpen = false; emit('edit', video)"
       >
-        <LuPencil class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
+        <LuPencil class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
         <span>{{ t('common.editMetadata') }}</span>
       </button>
 
       <button
         type="button"
-        class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
+        role="menuitem"
+        class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--md-sys-color-surface-container-highest)]"
         @click="createShelfWithVideo"
       >
-        <LuPlus class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+        <LuPlus class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
         <span>{{ t('nav.newShelf') }}</span>
       </button>
 
       <div
         v-if="videoStore.shelves.length > 0"
-        class="my-1 max-h-28 overflow-y-auto border-t border-[var(--ctp-surface0)]/60 pt-1"
+        class="my-1 max-h-28 overflow-y-auto border-t border-[var(--md-sys-color-outline-variant)]/60 pt-1"
       >
         <button
           v-for="sh in videoStore.shelves"
           :key="sh.id"
           type="button"
-          class="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-mantle)] hover:text-[var(--ctp-text)]"
+          role="menuitem"
+          class="md-state flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-highest)] hover:text-[var(--md-sys-color-on-surface)]"
           @click="addToShelf(sh.id)"
         >
           <span class="truncate">+ {{ sh.name }}</span>
-          <span class="font-mono text-[10px] text-[var(--ctp-subtext0)]">{{ sh.video_count }}</span>
+          <span class="font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+            {{ sh.video_count }}
+          </span>
         </button>
       </div>
 
       <a
         :href="buildVideoDownloadUrl(video.id)"
-        class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
+        role="menuitem"
+        class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--md-sys-color-surface-container-highest)]"
         @click="menuOpen = false"
       >
-        <LuDownload class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
+        <LuDownload class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
         <span>{{ t('common.download') }}</span>
       </a>
 
       <button
         v-if="removableFromShelf"
         type="button"
-        class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--ctp-red)] transition hover:bg-[var(--ctp-red)]/10"
+        role="menuitem"
+        class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)] transition hover:bg-[var(--md-sys-color-error-container)] hover:text-[var(--md-sys-color-on-error-container)]"
         @click="menuOpen = false; emit('removeFromShelf', video.id)"
       >
         <LuTrash2 class="h-3.5 w-3.5" />
@@ -331,7 +355,8 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
       <button
         v-if="authStore.isAdmin"
         type="button"
-        class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--ctp-red)] transition hover:bg-[var(--ctp-red)]/10"
+        role="menuitem"
+        class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)] transition hover:bg-[var(--md-sys-color-error-container)] hover:text-[var(--md-sys-color-on-error-container)]"
         @click="confirmDelete"
       >
         <LuTrash2 class="h-3.5 w-3.5" />

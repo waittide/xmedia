@@ -23,7 +23,7 @@ import { useDialogStore } from '@/stores/dialog'
 import { useSidebarStore } from '@/domains/comic/store'
 import { useUploadStore } from '@/stores/uploads'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppDialog from '@/components/ui/AppDialog.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import SeriesMetadataModal from '@/domains/comic/components/SeriesMetadataModal.vue'
 import ChapterMetadataModal from '@/domains/comic/components/ChapterMetadataModal.vue'
@@ -260,11 +260,13 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
   <div v-if="detail" class="mx-auto max-w-6xl space-y-10 p-6 sm:p-8">
     <!-- Widescreen Hero Section -->
     <section
-      class="flex flex-col gap-8 rounded-3xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-6 shadow-sm md:flex-row md:p-8"
+      class="md-card-filled flex flex-col gap-8 rounded-3xl border border-[var(--md-sys-color-outline-variant)]/50 p-6 shadow-[var(--md-sys-elevation-1)] md:flex-row md:p-8"
     >
       <!-- 3D Book-Shadow Cover -->
       <div class="mx-auto w-48 shrink-0 md:mx-0 md:w-56">
-        <div class="book-shadow aspect-[2/3] w-full overflow-hidden rounded-2xl bg-[var(--bg-mantle)]">
+        <div
+          class="book-shadow aspect-[2/3] w-full overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)]"
+        >
           <img
             v-if="detail.cover_url"
             :src="withAuthUrl(detail.cover_url)"
@@ -273,7 +275,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
           />
           <div
             v-else
-            class="flex h-full w-full items-center justify-center text-[var(--text-secondary)]"
+            class="flex h-full w-full items-center justify-center text-[var(--md-sys-color-on-surface-variant)]"
           >
             <LuBookOpen class="h-12 w-12 opacity-40" />
           </div>
@@ -285,7 +287,9 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
         <div class="space-y-3.5">
           <!-- Meta Badges -->
           <div class="flex flex-wrap items-center gap-2 text-xs">
-            <span class="rounded-full bg-[var(--accent)]/15 px-3 py-1 font-semibold text-[var(--accent)]">
+            <span
+              class="rounded-full bg-[var(--md-sys-color-primary-container)] px-3 py-1 font-semibold text-[var(--md-sys-color-on-primary-container)]"
+            >
               {{
                 detail.series.status === 'completed'
                   ? t('series.statusCompleted')
@@ -294,7 +298,9 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
                     : t('series.statusOngoing')
               }}
             </span>
-            <span class="rounded-full bg-[var(--bg-mantle)] px-3 py-1 font-medium text-[var(--text-secondary)]">
+            <span
+              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
+            >
               {{
                 detail.series.reading_direction === 'ltr'
                   ? t('series.directionLtr')
@@ -305,31 +311,33 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
             </span>
             <span
               v-if="detail.series.year"
-              class="rounded-full bg-[var(--bg-mantle)] px-3 py-1 font-medium text-[var(--text-secondary)]"
+              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ detail.series.year }}
             </span>
             <span
               v-if="detail.series.age_rating"
-              class="rounded-full bg-amber-500/15 px-3 py-1 font-semibold text-amber-600 dark:text-amber-400"
+              class="rounded-full bg-[var(--md-sys-color-warning-container)] px-3 py-1 font-semibold text-[var(--md-sys-color-on-warning-container)]"
             >
               {{ detail.series.age_rating }}
             </span>
             <span
               v-if="detail.series.publisher"
-              class="rounded-full bg-[var(--bg-mantle)] px-3 py-1 font-medium text-[var(--text-secondary)]"
+              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ detail.series.publisher }}
             </span>
           </div>
 
           <div>
-            <h1 class="text-2xl font-extrabold tracking-tight text-[var(--text-primary)] sm:text-3xl">
+            <h1
+              class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)] sm:text-3xl"
+            >
               {{ detail.series.title }}
             </h1>
             <p
               v-if="detail.series.alt_titles.length > 0"
-              class="mt-1 text-xs text-[var(--text-secondary)]"
+              class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ detail.series.alt_titles.join(' / ') }}
             </p>
@@ -344,7 +352,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               v-for="w in detail.series.writers"
               :key="'w-' + w"
               type="button"
-              class="rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+              class="md-chip md-state !rounded-full !bg-[var(--md-sys-color-surface)] !text-[var(--md-sys-color-on-surface)] hover:!border-[var(--md-sys-color-primary)] hover:!text-[var(--md-sys-color-primary)]"
               @click="router.push({ path: '/comic/series', query: { writer: w } })"
             >
               {{ t('series.writers') }}: {{ w }}
@@ -353,7 +361,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               v-for="p in detail.series.pencillers"
               :key="'p-' + p"
               type="button"
-              class="rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-1 text-xs font-medium text-[var(--text-primary)] transition hover:border-[var(--accent)] hover:text-[var(--accent)]"
+              class="md-chip md-state !rounded-full !bg-[var(--md-sys-color-surface)] !text-[var(--md-sys-color-on-surface)] hover:!border-[var(--md-sys-color-primary)] hover:!text-[var(--md-sys-color-primary)]"
               @click="router.push({ path: '/comic/series', query: { penciller: p } })"
             >
               {{ t('series.pencillers') }}: {{ p }}
@@ -361,7 +369,9 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
           </div>
 
           <!-- Summary -->
-          <p class="text-sm leading-relaxed whitespace-pre-line text-[var(--text-secondary)]">
+          <p
+            class="text-sm leading-relaxed whitespace-pre-line text-[var(--md-sys-color-on-surface-variant)]"
+          >
             {{ detail.series.summary || t('series.summaryEmpty') }}
           </p>
 
@@ -374,7 +384,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               v-for="g in detail.series.genres"
               :key="'g-' + g"
               type="button"
-              class="rounded-lg bg-[var(--accent)]/12 px-2.5 py-1 text-xs font-medium text-[var(--accent)] transition hover:bg-[var(--accent)]/20"
+              class="md-chip md-chip-selected md-state"
               @click="router.push({ path: '/comic/series', query: { genre: g } })"
             >
               {{ g }}
@@ -383,7 +393,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               v-for="tag in detail.series.tags"
               :key="'t-' + tag"
               type="button"
-              class="rounded-lg bg-[var(--bg-mantle)] px-2.5 py-1 text-xs font-medium text-[var(--text-secondary)] transition hover:text-[var(--text-primary)]"
+              class="md-chip md-state"
               @click="router.push({ path: '/comic/series', query: { tag } })"
             >
               #{{ tag }}
@@ -392,11 +402,11 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
         </div>
 
         <!-- Primary Capsule Button + Circular Action Buttons -->
-        <div class="flex flex-wrap items-center gap-3 pt-2">
+        <div class="flex flex-wrap items-center gap-2.5 pt-2">
           <button
             type="button"
             :disabled="detail.chapters.length === 0"
-            class="inline-flex h-11 items-center gap-2.5 rounded-full bg-[var(--accent)] px-6 text-sm font-bold text-[var(--accent-contrast)] shadow-md transition hover:opacity-92 disabled:opacity-40"
+            class="md-btn md-btn-filled md-state !h-11 !px-6 text-sm shadow-[var(--md-sys-elevation-1)]"
             @click="primaryReadAction"
           >
             <LuPlay class="h-4 w-4 fill-current" />
@@ -416,8 +426,12 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
           <button
             type="button"
             :title="detail.is_favorite ? t('series.favoriteRemove') : t('series.favoriteAdd')"
-            class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] transition hover:border-rose-500/60"
-            :class="detail.is_favorite ? 'text-rose-500' : 'text-[var(--text-secondary)]'"
+            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)]"
+            :class="
+              detail.is_favorite
+                ? '!border-[var(--md-sys-color-error)]/40 !bg-[var(--md-sys-color-error-container)] !text-[var(--md-sys-color-on-error-container)]'
+                : 'hover:!border-[var(--md-sys-color-error)]/50 hover:!text-[var(--md-sys-color-error)]'
+            "
             @click="toggleFavorite"
           >
             <LuHeart class="h-4.5 w-4.5" :class="{ 'fill-current': detail.is_favorite }" />
@@ -426,10 +440,15 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
           <button
             type="button"
             :title="t('series.addToShelf')"
-            class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/60 hover:text-[var(--accent)]"
+            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)]"
+            :class="
+              detail.shelf_ids.length > 0
+                ? '!border-[var(--md-sys-color-primary)]/40 !bg-[var(--md-sys-color-primary-container)] !text-[var(--md-sys-color-on-primary-container)]'
+                : 'hover:!border-[var(--md-sys-color-primary)]/50 hover:!text-[var(--md-sys-color-primary)]'
+            "
             @click="openShelfDialog"
           >
-            <LuBookmark class="h-4.5 w-4.5" :class="{ 'fill-current text-[var(--accent)]': detail.shelf_ids.length > 0 }" />
+            <LuBookmark class="h-4.5 w-4.5" :class="{ 'fill-current': detail.shelf_ids.length > 0 }" />
           </button>
 
           <template v-if="auth.isAdmin && isManagedSeries">
@@ -444,7 +463,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
             <button
               type="button"
               :title="t('series.uploadToSeries')"
-              class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/60 hover:text-[var(--text-primary)]"
+              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
               @click="chapterUploadRef?.click()"
             >
               <LuUpload class="h-4.5 w-4.5" />
@@ -458,7 +477,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
                 ? t('series.markAllUnread')
                 : t('series.markAllRead')
             "
-            class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/60 hover:text-[var(--text-primary)]"
+            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
             @click="
               handleMarkSeriesRead(
                 !(detail.completed_chapters >= detail.series.chapter_count && detail.series.chapter_count > 0)
@@ -472,7 +491,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
             <button
               type="button"
               :title="t('series.editMetadata')"
-              class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/60 hover:text-[var(--text-primary)]"
+              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
               @click="editSeriesOpen = true"
             >
               <LuPencil class="h-4 w-4" />
@@ -488,7 +507,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
             <button
               type="button"
               :title="t('series.changeCover')"
-              class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-[var(--accent)]/60 hover:text-[var(--text-primary)]"
+              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
               @click="coverInputRef?.click()"
             >
               <LuImage class="h-4 w-4" />
@@ -497,7 +516,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
             <button
               type="button"
               :title="t('series.deleteSeries')"
-              class="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--bg-base)] text-[var(--text-secondary)] transition hover:border-red-500/60 hover:text-red-500"
+              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-error)]/60 hover:!text-[var(--md-sys-color-error)]"
               @click="handleDeleteSeries"
             >
               <LuTrash2 class="h-4 w-4" />
@@ -513,10 +532,12 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
     <section class="space-y-4">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
-          <h2 class="text-lg font-bold text-[var(--text-primary)]">
+          <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
             {{ t('series.chaptersHeader') }}
           </h2>
-          <span class="rounded-full bg-[var(--bg-mantle)] px-2.5 py-0.5 text-xs font-semibold text-[var(--text-secondary)]">
+          <span
+            class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]"
+          >
             {{ detail.completed_chapters }} / {{ detail.series.chapter_count }}
           </span>
         </div>
@@ -530,7 +551,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
 
           <button
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3 py-1.5 text-xs font-medium text-[var(--text-primary)] transition hover:border-[var(--accent)]/60"
+            class="md-btn md-btn-sm md-btn-outlined md-state"
             @click="orderAsc = !orderAsc"
           >
             <LuArrowUpDown class="h-3.5 w-3.5" />
@@ -544,78 +565,90 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
         <div
           v-for="group in volumeGroups"
           :key="group.key"
-          class="overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+          class="md-card-filled overflow-hidden border border-[var(--md-sys-color-outline-variant)]/50"
         >
           <div
-            class="flex cursor-pointer items-center justify-between bg-[var(--bg-mantle)]/65 px-4 py-3"
+            class="flex cursor-pointer items-center justify-between bg-[var(--md-sys-color-surface-container)] px-4 py-3"
             @click="toggleVolumeCollapse(group.key)"
           >
-            <div class="flex items-center gap-2 text-sm font-bold text-[var(--text-primary)]">
+            <div
+              class="flex items-center gap-2 text-sm font-bold text-[var(--md-sys-color-on-surface)]"
+            >
               <LuChevronRight v-if="collapsedVolumes[group.key]" class="h-4 w-4" />
               <LuChevronDown v-else class="h-4 w-4" />
               <span>{{ group.title }}</span>
-              <span class="text-xs font-normal text-[var(--text-secondary)]">
+              <span class="text-xs font-normal text-[var(--md-sys-color-on-surface-variant)]">
                 ({{ group.chapters.length }})
               </span>
             </div>
             <button
               v-if="group.volumeNumber !== null"
               type="button"
-              class="rounded-lg px-2.5 py-1 text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent)]/12"
+              class="md-btn md-btn-sm md-btn-text md-state"
               @click.stop="handleMarkVolumeRead(group.volumeNumber)"
             >
               {{ t('series.markVolumeRead') }}
             </button>
           </div>
 
-          <div v-if="!collapsedVolumes[group.key]" class="divide-y divide-[var(--border-subtle)]">
+          <div
+            v-if="!collapsedVolumes[group.key]"
+            class="divide-y divide-[var(--md-sys-color-outline-variant)]/45"
+          >
             <div
               v-for="ch in group.chapters"
               :key="ch.id"
-              class="group flex items-center justify-between gap-4 px-4 py-3.5 transition hover:bg-[var(--surface-hover)]"
+              class="group flex items-center justify-between gap-4 px-4 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container)]"
               :class="ch.is_missing ? 'opacity-50' : 'cursor-pointer'"
               @click="openChapter(ch)"
             >
               <div class="min-w-0 flex-1 space-y-1">
                 <div class="flex flex-wrap items-center gap-2">
-                  <span class="rounded-md bg-[var(--bg-mantle)] px-2 py-0.5 text-xs font-semibold text-[var(--text-primary)]">
+                  <span
+                    class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)]"
+                  >
                     {{ chapterKindBadge(ch) }}
                   </span>
                   <span
                     class="truncate text-sm font-semibold"
                     :class="
                       ch.is_completed
-                        ? 'text-[var(--text-secondary)]'
-                        : 'text-[var(--text-primary)] group-hover:text-[var(--accent)]'
+                        ? 'text-[var(--md-sys-color-on-surface-variant)]'
+                        : 'text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]'
                     "
                   >
                     {{ ch.title }}
                   </span>
                   <span
                     v-if="ch.is_completed"
-                    class="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-500"
+                    class="rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
                   >
                     {{ t('series.completedBadge') }}
                   </span>
                   <span
                     v-if="ch.is_missing"
-                    class="rounded-md bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-500"
+                    class="rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-error-container)]"
                   >
                     {{ t('series.missingBadge') }}
                   </span>
                 </div>
 
-                <div class="flex items-center gap-3 text-xs text-[var(--text-secondary)]">
+                <div
+                  class="flex items-center gap-3 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+                >
                   <span>{{ t('series.pagesCount', { count: ch.page_count }) }}</span>
-                  <span v-if="ch.current_page > 0 && !ch.is_completed" class="text-[var(--accent)]">
+                  <span
+                    v-if="ch.current_page > 0 && !ch.is_completed"
+                    class="font-medium text-[var(--md-sys-color-primary)]"
+                  >
                     {{ t('series.readProgress', { page: ch.current_page, total: ch.page_count }) }}
                   </span>
                   <div
                     v-if="ch.current_page > 0 || ch.is_completed"
-                    class="h-1 w-24 overflow-hidden rounded-full bg-[var(--bg-mantle)]"
+                    class="h-1 w-24 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
                   >
                     <div
-                      class="h-full rounded-full bg-[var(--accent)]"
+                      class="h-full rounded-full bg-[var(--md-sys-color-primary)]"
                       :style="{
                         width:
                           (ch.is_completed
@@ -628,12 +661,12 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               </div>
 
               <!-- Row Action Buttons -->
-              <div class="flex shrink-0 items-center gap-1.5" @click.stop>
+              <div class="flex shrink-0 items-center gap-1" @click.stop>
                 <button
                   type="button"
                   :title="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
-                  class="rounded-lg p-2 transition hover:bg-[var(--bg-mantle)]"
-                  :class="ch.is_completed ? 'text-emerald-500' : 'text-[var(--text-secondary)]'"
+                  class="md-icon-btn md-icon-btn-sm md-state"
+                  :class="ch.is_completed ? '!text-[var(--md-sys-color-success)]' : ''"
                   @click="toggleChapterRead(ch)"
                 >
                   <LuCheck class="h-4 w-4" />
@@ -641,7 +674,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
                 <button
                   type="button"
                   :title="t('series.markPrevRead')"
-                  class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-[var(--bg-mantle)] hover:text-[var(--accent)]"
+                  class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-primary)]"
                   @click="handleMarkPreviousRead(ch)"
                 >
                   <LuCheckCheck class="h-4 w-4" />
@@ -650,7 +683,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
                   v-if="auth.isAdmin"
                   type="button"
                   :title="t('series.editChapter')"
-                  class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-[var(--bg-mantle)] hover:text-[var(--text-primary)]"
+                  class="md-icon-btn md-icon-btn-sm md-state"
                   @click="editingChapter = ch"
                 >
                   <LuPencil class="h-3.5 w-3.5" />
@@ -659,7 +692,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
                   v-if="auth.isAdmin"
                   type="button"
                   :title="t('series.deleteChapter')"
-                  class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-red-500/10 hover:text-red-500"
+                  class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
                   @click="handleDeleteChapter(ch)"
                 >
                   <LuTrash2 class="h-3.5 w-3.5" />
@@ -673,55 +706,62 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
       <!-- Flat Chapter List Mode -->
       <div
         v-else
-        class="divide-y divide-[var(--border-subtle)] overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)]"
+        class="md-card-filled divide-y divide-[var(--md-sys-color-outline-variant)]/45 overflow-hidden border border-[var(--md-sys-color-outline-variant)]/50"
       >
         <div
           v-for="ch in sortedChapters"
           :key="ch.id"
-          class="group flex items-center justify-between gap-4 px-5 py-3.5 transition hover:bg-[var(--surface-hover)]"
+          class="group flex items-center justify-between gap-4 px-5 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container)]"
           :class="ch.is_missing ? 'opacity-50' : 'cursor-pointer'"
           @click="openChapter(ch)"
         >
           <div class="min-w-0 flex-1 space-y-1">
             <div class="flex flex-wrap items-center gap-2">
-              <span class="rounded-md bg-[var(--bg-mantle)] px-2 py-0.5 text-xs font-semibold text-[var(--text-primary)]">
+              <span
+                class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)]"
+              >
                 {{ chapterKindBadge(ch) }}
               </span>
               <span
                 class="truncate text-sm font-semibold"
                 :class="
                   ch.is_completed
-                    ? 'text-[var(--text-secondary)]'
-                    : 'text-[var(--text-primary)] group-hover:text-[var(--accent)]'
+                    ? 'text-[var(--md-sys-color-on-surface-variant)]'
+                    : 'text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]'
                 "
               >
                 {{ ch.title }}
               </span>
               <span
                 v-if="ch.is_completed"
-                class="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-500"
+                class="rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
               >
                 {{ t('series.completedBadge') }}
               </span>
               <span
                 v-if="ch.is_missing"
-                class="rounded-md bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-500"
+                class="rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-error-container)]"
               >
                 {{ t('series.missingBadge') }}
               </span>
             </div>
 
-            <div class="flex items-center gap-3 text-xs text-[var(--text-secondary)]">
+            <div
+              class="flex items-center gap-3 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            >
               <span>{{ t('series.pagesCount', { count: ch.page_count }) }}</span>
-              <span v-if="ch.current_page > 0 && !ch.is_completed" class="text-[var(--accent)]">
+              <span
+                v-if="ch.current_page > 0 && !ch.is_completed"
+                class="font-medium text-[var(--md-sys-color-primary)]"
+              >
                 {{ t('series.readProgress', { page: ch.current_page, total: ch.page_count }) }}
               </span>
               <div
                 v-if="ch.current_page > 0 || ch.is_completed"
-                class="h-1 w-24 overflow-hidden rounded-full bg-[var(--bg-mantle)]"
+                class="h-1 w-24 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
               >
                 <div
-                  class="h-full rounded-full bg-[var(--accent)]"
+                  class="h-full rounded-full bg-[var(--md-sys-color-primary)]"
                   :style="{
                     width:
                       (ch.is_completed
@@ -733,12 +773,12 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
             </div>
           </div>
 
-          <div class="flex shrink-0 items-center gap-1.5" @click.stop>
+          <div class="flex shrink-0 items-center gap-1" @click.stop>
             <button
               type="button"
               :title="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
-              class="rounded-lg p-2 transition hover:bg-[var(--bg-mantle)]"
-              :class="ch.is_completed ? 'text-emerald-500' : 'text-[var(--text-secondary)]'"
+              class="md-icon-btn md-icon-btn-sm md-state"
+              :class="ch.is_completed ? '!text-[var(--md-sys-color-success)]' : ''"
               @click="toggleChapterRead(ch)"
             >
               <LuCheck class="h-4 w-4" />
@@ -746,7 +786,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
             <button
               type="button"
               :title="t('series.markPrevRead')"
-              class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-[var(--bg-mantle)] hover:text-[var(--accent)]"
+              class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-primary)]"
               @click="handleMarkPreviousRead(ch)"
             >
               <LuCheckCheck class="h-4 w-4" />
@@ -755,7 +795,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               v-if="auth.isAdmin"
               type="button"
               :title="t('series.editChapter')"
-              class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-[var(--bg-mantle)] hover:text-[var(--text-primary)]"
+              class="md-icon-btn md-icon-btn-sm md-state"
               @click="editingChapter = ch"
             >
               <LuPencil class="h-3.5 w-3.5" />
@@ -764,7 +804,7 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
               v-if="auth.isAdmin"
               type="button"
               :title="t('series.deleteChapter')"
-              class="rounded-lg p-2 text-[var(--text-secondary)] transition hover:bg-red-500/10 hover:text-red-500"
+              class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
               @click="handleDeleteChapter(ch)"
             >
               <LuTrash2 class="h-3.5 w-3.5" />
@@ -789,20 +829,23 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
       @saved="loadDetail"
     />
 
-    <AppDialog
+    <MdDialog
       :open="shelfModalOpen"
       :title="t('shelves.selectShelvesTitle')"
-      max-width-class="max-w-md"
+      max-width="max-w-md"
       @close="shelfModalOpen = false"
     >
       <div class="space-y-3">
-        <p v-if="allShelves.length === 0" class="text-sm text-[var(--text-secondary)]">
+        <p
+          v-if="allShelves.length === 0"
+          class="text-sm text-[var(--md-sys-color-on-surface-variant)]"
+        >
           {{ t('shelves.emptyShelves') }}
         </p>
         <div
           v-for="sh in allShelves"
           :key="sh.shelf.id"
-          class="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)]/60 p-3"
+          class="rounded-xl border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)] p-3"
         >
           <AppCheckbox
             :model-value="selectedShelfIds.includes(sh.shelf.id)"
@@ -813,21 +856,23 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
         </div>
       </div>
       <template #footer>
-        <button
-          type="button"
-          class="rounded-xl border border-[var(--border-subtle)] px-4 py-2 text-sm text-[var(--text-secondary)]"
-          @click="shelfModalOpen = false"
-        >
-          {{ t('common.cancel') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent-contrast)]"
-          @click="saveShelvesSelection"
-        >
-          {{ t('common.save') }}
-        </button>
+        <div class="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            class="md-btn md-btn-text md-state"
+            @click="shelfModalOpen = false"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            class="md-btn md-btn-filled md-state"
+            @click="saveShelvesSelection"
+          >
+            {{ t('common.save') }}
+          </button>
+        </div>
       </template>
-    </AppDialog>
+    </MdDialog>
   </div>
 </template>

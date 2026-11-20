@@ -5,7 +5,7 @@ import { LuBookmark, LuPencil, LuPlus, LuTrash2 } from 'vue-icons-plus/lu'
 import { api } from '@/domains/comic/api'
 import { useDialogStore } from '@/stores/dialog'
 import { useSidebarStore } from '@/domains/comic/store'
-import AppDialog from '@/components/ui/AppDialog.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import SeriesCard from '@/domains/comic/components/SeriesCard.vue'
 import type { ShelfDetailDto } from '@/domains/comic/types'
@@ -78,14 +78,18 @@ async function removeShelf(item: ShelfDetailDto): Promise<void> {
   <div class="mx-auto max-w-7xl space-y-8 p-6 sm:p-8">
     <div class="flex items-center justify-between gap-4">
       <div>
-        <h2 class="text-lg font-bold text-[var(--text-primary)]">{{ t('shelves.title') }}</h2>
-        <p class="text-xs text-[var(--text-secondary)]">{{ t('shelves.subtitle') }}</p>
+        <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
+          {{ t('shelves.title') }}
+        </h2>
+        <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          {{ t('shelves.subtitle') }}
+        </p>
       </div>
       <div class="flex items-center gap-2">
         <RefreshButton size="md" :action="refreshPage" />
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-[var(--accent-contrast)] hover:opacity-90"
+          class="md-btn md-btn-sm md-btn-filled md-state"
           @click="openCreate"
         >
           <LuPlus class="h-4 w-4" />
@@ -96,7 +100,7 @@ async function removeShelf(item: ShelfDetailDto): Promise<void> {
 
     <div
       v-if="shelves.length === 0"
-      class="rounded-3xl border border-dashed border-[var(--border-subtle)] bg-[var(--bg-surface)]/50 py-20 text-center text-sm text-[var(--text-secondary)]"
+      class="md-card-outlined rounded-3xl border-dashed py-20 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('shelves.emptyShelves') }}
     </div>
@@ -104,29 +108,34 @@ async function removeShelf(item: ShelfDetailDto): Promise<void> {
     <section
       v-for="item in shelves"
       :key="item.shelf.id"
-      class="space-y-4 rounded-3xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-6"
+      class="md-card-filled space-y-4 rounded-3xl border border-[var(--md-sys-color-outline-variant)]/50 p-6"
     >
       <div class="flex items-center justify-between gap-3">
         <div class="flex items-center gap-2.5">
-          <LuBookmark class="h-5 w-5 text-[var(--accent)]" />
+          <LuBookmark class="h-5 w-5 text-[var(--md-sys-color-primary)]" />
           <div>
-            <h3 class="text-base font-bold text-[var(--text-primary)]">{{ item.shelf.name }}</h3>
-            <p v-if="item.shelf.description" class="text-xs text-[var(--text-secondary)]">
+            <h3 class="text-base font-bold text-[var(--md-sys-color-on-surface)]">
+              {{ item.shelf.name }}
+            </h3>
+            <p
+              v-if="item.shelf.description"
+              class="text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            >
               {{ item.shelf.description }}
             </p>
           </div>
         </div>
-        <div class="flex items-center gap-1.5">
+        <div class="flex items-center gap-1">
           <button
             type="button"
-            class="rounded-lg p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]"
+            class="md-icon-btn md-icon-btn-sm md-state"
             @click="openEdit(item)"
           >
             <LuPencil class="h-4 w-4" />
           </button>
           <button
             type="button"
-            class="rounded-lg p-1.5 text-[var(--text-secondary)] hover:bg-red-500/10 hover:text-red-500"
+            class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
             @click="removeShelf(item)"
           >
             <LuTrash2 class="h-4 w-4" />
@@ -134,7 +143,10 @@ async function removeShelf(item: ShelfDetailDto): Promise<void> {
         </div>
       </div>
 
-      <p v-if="item.series.length === 0" class="text-xs text-[var(--text-secondary)]">
+      <p
+        v-if="item.series.length === 0"
+        class="text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      >
         {{ t('shelves.emptySeriesInShelf') }}
       </p>
       <div
@@ -145,50 +157,52 @@ async function removeShelf(item: ShelfDetailDto): Promise<void> {
       </div>
     </section>
 
-    <AppDialog
+    <MdDialog
       :open="modalOpen"
       :title="editingId ? t('shelves.editShelf') : t('shelves.createShelf')"
-      max-width-class="max-w-md"
+      max-width="max-w-md"
       @close="modalOpen = false"
     >
       <div class="space-y-4">
         <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
             {{ t('shelves.shelfName') }}
           </label>
           <input
             v-model="nameInput"
             type="text"
-            class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+            class="md-input h-10 w-full text-sm"
           />
         </div>
         <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
             {{ t('shelves.shelfDesc') }}
           </label>
           <textarea
             v-model="descInput"
             rows="3"
-            class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+            class="md-input w-full py-2.5 text-sm"
           />
         </div>
       </div>
       <template #footer>
-        <button
-          type="button"
-          class="rounded-xl border border-[var(--border-subtle)] px-4 py-2 text-sm text-[var(--text-secondary)]"
-          @click="modalOpen = false"
-        >
-          {{ t('common.cancel') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent-contrast)]"
-          @click="saveShelf"
-        >
-          {{ t('common.save') }}
-        </button>
+        <div class="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            class="md-btn md-btn-text md-state"
+            @click="modalOpen = false"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            class="md-btn md-btn-filled md-state"
+            @click="saveShelf"
+          >
+            {{ t('common.save') }}
+          </button>
+        </div>
       </template>
-    </AppDialog>
+    </MdDialog>
   </div>
 </template>

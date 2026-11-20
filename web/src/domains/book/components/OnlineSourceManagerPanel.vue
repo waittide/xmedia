@@ -321,7 +321,7 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
             <button
               type="button"
               :disabled="busyId === src.id"
-              class="md-icon-btn md-icon-btn-sm md-state text-red-400 hover:bg-red-500/10"
+              class="md-icon-btn md-icon-btn-sm md-state !text-[var(--md-sys-color-error)] hover:bg-[var(--md-sys-color-error-container)]/50"
               title="删除书源"
               @click="handleDeleteSource(src)"
             >

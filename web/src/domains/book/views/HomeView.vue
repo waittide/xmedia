@@ -206,7 +206,7 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
         <RefreshButton variant="ghost" :action="refreshPage" />
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-shell)] hover:text-[var(--ctp-text)]"
+          class="md-btn md-btn-sm md-btn-text md-state !h-7 !px-2.5 !text-[11px] !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
           @click="customizerOpen = true"
         >
           <LuSlidersHorizontal class="h-3.5 w-3.5" />
@@ -219,22 +219,22 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
           v-for="card in statCards"
           :key="card.key"
           type="button"
-          class="card-soft flex items-center gap-3.5 rounded-2xl bg-[var(--ctp-shell)] p-4 text-left transition hover:border-[var(--ctp-accent)]"
+          class="md-card-filled md-state flex items-center gap-3.5 border border-transparent p-4 text-left transition hover:border-[var(--md-sys-color-primary)]/45"
           @click="card.onClick()"
         >
           <div
             class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
             :class="
               card.tone === 'rose'
-                ? 'bg-[var(--ctp-red)]/15 text-[var(--ctp-red)]'
-                : 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+                : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
             "
           >
             <component :is="card.icon" class="h-5 w-5" />
           </div>
           <div class="min-w-0">
-            <p class="text-xl font-bold leading-none text-[var(--ctp-text)]">{{ card.value }}</p>
-            <p class="mt-1 truncate text-xs text-[var(--ctp-subtext0)]">{{ card.label }}</p>
+            <p class="text-xl font-bold leading-none text-[var(--md-sys-color-on-surface)]">{{ card.value }}</p>
+            <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ card.label }}</p>
           </div>
         </button>
       </div>
@@ -246,15 +246,15 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
     <!-- Empty Welcome State -->
     <section
       v-else-if="!loading && overview && overview.stats.total_books === 0"
-      class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
+      class="md-card-filled flex flex-col items-center justify-center rounded-3xl px-6 py-16 text-center"
     >
       <div
-        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
       >
         <LuBookOpen class="h-7 w-7" />
       </div>
       <h2 class="text-lg font-bold">{{ t('home.welcomeEmptyTitle') }}</h2>
-      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('home.welcomeEmptyDesc') }}
       </p>
     </section>
@@ -263,16 +263,16 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
     <section v-if="overview && overview.continue_reading.length > 0">
       <div class="mb-5 flex items-end justify-between">
         <div>
-          <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ t('home.continueReading') }}
           </h2>
-          <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+          <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('home.continueSubtitle') }}
           </p>
         </div>
         <button
           type="button"
-          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
           @click="goSection('recent')"
         >
           <span>{{ t('home.seeAll') }}</span>
@@ -285,10 +285,10 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
           v-for="book in overview.continue_reading"
           :key="book.id"
           :to="`/book/read/${book.id}`"
-          class="group flex items-center gap-4 rounded-2xl border border-[var(--ctp-surface0)]/85 bg-[var(--ctp-shell)]/90 p-3.5 transition duration-200 hover:-translate-y-0.5 hover:border-[var(--ctp-accent)]/60 hover:bg-[var(--ctp-mantle)]"
+          class="group md-card-filled flex items-center gap-4 border border-transparent p-3.5 transition duration-200 hover:-translate-y-0.5 hover:border-[var(--md-sys-color-primary)]/45 hover:bg-[var(--md-sys-color-surface-container)]"
         >
           <div
-            class="relative h-28 w-20 shrink-0 overflow-hidden rounded-xl bg-[var(--ctp-mantle)] shadow-md"
+            class="relative h-28 w-20 shrink-0 overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)] shadow-md"
           >
             <img
               v-if="book.has_cover"
@@ -300,11 +300,11 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
             />
             <div v-else class="flex h-full w-full flex-col justify-between p-2 text-left">
               <span
-                class="self-end rounded bg-[var(--ctp-accent-soft)] px-1.5 py-0.5 text-[9px] font-bold uppercase text-[var(--ctp-accent)]"
+                class="self-end rounded bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 text-[9px] font-bold uppercase text-[var(--md-sys-color-on-primary-container)]"
               >
                 {{ book.format }}
               </span>
-              <p class="line-clamp-2 text-[11px] font-bold leading-tight text-[var(--ctp-text)]">
+              <p class="line-clamp-2 text-[11px] font-bold leading-tight text-[var(--md-sys-color-on-surface)]">
                 {{ book.metadata.title }}
               </p>
             </div>
@@ -312,25 +312,25 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
 
           <div class="flex min-w-0 flex-1 flex-col justify-center">
             <h3
-              class="truncate text-sm font-bold text-[var(--ctp-text)] transition-colors group-hover:text-[var(--ctp-accent)]"
+              class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
             >
               {{ book.metadata.title }}
             </h3>
-            <p class="mt-1.5 truncate text-xs text-[var(--ctp-subtext0)]">
+            <p class="mt-1.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
               {{ formatResumeSubtitle(book) }}
             </p>
 
             <div class="mt-4 flex items-center gap-3">
-              <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--ctp-canvas)]/90">
+              <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]">
                 <div
-                  class="h-full rounded-full bg-[var(--ctp-accent)] transition-all duration-300"
+                  class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all duration-300"
                   :style="{
                     width: `${Math.max(3, Math.min(100, book.progress?.progress_percent ?? 0))}%`,
                   }"
                 />
               </div>
               <span
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm transition group-hover:scale-105"
+                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-sm transition group-hover:scale-105"
               >
                 <LuPlay class="ml-0.5 h-3.5 w-3.5 fill-current" />
               </span>
@@ -344,16 +344,16 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
     <section v-if="overview && overview.recently_added.length > 0">
       <div class="mb-5 flex items-end justify-between">
         <div>
-          <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ t('home.recentlyAdded') }}
           </h2>
-          <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+          <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('home.recentlySubtitle') }}
           </p>
         </div>
         <button
           type="button"
-          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
           @click="goSection('all')"
         >
           <span>{{ t('home.seeAll') }}</span>

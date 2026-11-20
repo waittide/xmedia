@@ -39,7 +39,7 @@ watch(() => route.query.q, runSearch)
 <template>
   <div class="mx-auto max-w-6xl space-y-8 px-6 py-7 sm:px-8">
     <div class="flex flex-wrap items-center justify-between gap-4">
-      <h1 class="text-2xl font-extrabold tracking-tight">
+      <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
         {{ t('catalog.searchResultsFor', { q: queryText }) }}
       </h1>
 
@@ -53,18 +53,20 @@ watch(() => route.query.q, runSearch)
         result.albums.length === 0 &&
         result.tracks.length === 0
       "
-      class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+      class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('common.noResults') }}
     </div>
 
     <section v-if="result.artists.length > 0">
-      <h2 class="mb-3 text-base font-bold">{{ t('nav.artists') }}</h2>
+      <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('nav.artists') }}
+      </h2>
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
         <div
           v-for="ar in result.artists"
           :key="ar.id"
-          class="flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--ctp-mantle)]"
+          class="flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--md-sys-color-surface-container)]"
           @click="router.push(`/music/artists/${ar.id}`)"
         >
           <CoverImage
@@ -74,20 +76,26 @@ watch(() => route.query.q, runSearch)
             rounded="rounded-full"
             class="mb-2.5 w-3/4"
           />
-          <p class="w-full truncate text-xs font-bold">{{ ar.name }}</p>
+          <p class="w-full truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
+            {{ ar.name }}
+          </p>
         </div>
       </div>
     </section>
 
     <section v-if="result.albums.length > 0">
-      <h2 class="mb-3 text-base font-bold">{{ t('nav.albums') }}</h2>
+      <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('nav.albums') }}
+      </h2>
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
         <AlbumCard v-for="al in result.albums" :key="al.id" :album="al" />
       </div>
     </section>
 
     <section v-if="result.tracks.length > 0">
-      <h2 class="mb-3 text-base font-bold">{{ t('nav.songs') }}</h2>
+      <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('nav.songs') }}
+      </h2>
       <TrackTable :tracks="result.tracks" />
     </section>
   </div>

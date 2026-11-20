@@ -164,6 +164,8 @@ export default {
     chapterIndicator: 'Chapter {current} / {total}',
     zoomIn: 'Zoom In',
     zoomOut: 'Zoom Out',
+    fitWidth: 'Fit Width',
+    fitPage: 'Fit Page',
     loadingBook: 'Opening…',
   },
   common: {

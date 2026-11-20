@@ -314,6 +314,22 @@ export const usePlayerStore = defineStore('player', () => {
     playQueue(copy, 0)
   }
 
+  function playAtIndex(index: number): void {
+    if (index < 0 || index >= queue.value.length) return
+    if (index === currentIndex.value) {
+      void togglePlay()
+      return
+    }
+    if (currentIndex.value >= 0) {
+      playHistory.push(currentIndex.value)
+      if (playHistory.length > 200) playHistory.shift()
+    }
+    currentIndex.value = index
+    shufflePool = shufflePool.filter((i) => i !== index)
+    scrobbledCurrent = false
+    void loadAndPlayCurrent(0, true)
+  }
+
   function playTrackNow(track: TrackDto): void {
     playTrackAt(track, 0)
   }
@@ -630,6 +646,7 @@ export const usePlayerStore = defineStore('player', () => {
     playQueue,
     resumeQueue,
     shuffleAndPlay,
+    playAtIndex,
     playTrackNow,
     playTrackAt,
     enqueueNext,

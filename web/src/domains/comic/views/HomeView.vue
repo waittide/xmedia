@@ -169,7 +169,7 @@ const cardsGridClass = computed(() => {
         <RefreshButton variant="ghost" :action="refreshPage" />
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-shell)] hover:text-[var(--ctp-text)]"
+          class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
           @click="customizerOpen = true"
         >
           <LuSlidersHorizontal class="h-3.5 w-3.5" />
@@ -182,22 +182,26 @@ const cardsGridClass = computed(() => {
           v-for="card in statCards"
           :key="card.key"
           type="button"
-          class="card-soft flex items-center gap-3.5 rounded-2xl bg-[var(--ctp-shell)] p-4 text-left transition hover:border-[var(--ctp-accent)]"
+          class="md-card-filled md-state flex items-center gap-3.5 border border-transparent p-4 text-left transition hover:border-[var(--md-sys-color-outline-variant)] hover:shadow-[var(--md-sys-elevation-1)]"
           @click="card.onClick()"
         >
           <div
             class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
             :class="
               card.tone === 'rose'
-                ? 'bg-[var(--ctp-red)]/15 text-[var(--ctp-red)]'
-                : 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+                : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
             "
           >
             <component :is="card.icon" class="h-5 w-5" />
           </div>
           <div class="min-w-0">
-            <p class="text-xl font-bold leading-none text-[var(--ctp-text)]">{{ card.value }}</p>
-            <p class="mt-1 truncate text-xs text-[var(--ctp-subtext0)]">{{ card.label }}</p>
+            <p class="text-xl font-bold leading-none text-[var(--md-sys-color-on-surface)]">
+              {{ card.value }}
+            </p>
+            <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
+              {{ card.label }}
+            </p>
           </div>
         </button>
       </div>
@@ -209,15 +213,17 @@ const cardsGridClass = computed(() => {
     <!-- Empty Welcome State -->
     <section
       v-else-if="!loading && overview && overview.stats.series_count === 0"
-      class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
+      class="md-card-filled flex flex-col items-center justify-center rounded-3xl px-6 py-16 text-center"
     >
       <div
-        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
       >
         <LuBookOpen class="h-7 w-7" />
       </div>
-      <h2 class="text-lg font-bold text-[var(--ctp-text)]">{{ t('home.emptyTitle') }}</h2>
-      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('home.emptyTitle') }}
+      </h2>
+      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('home.emptyDesc') }}
       </p>
       <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
@@ -231,7 +237,7 @@ const cardsGridClass = computed(() => {
         />
         <button
           type="button"
-          class="inline-flex items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
+          class="md-btn md-btn-filled md-state"
           @click="fileInputRef?.click()"
         >
           <LuUpload class="h-4 w-4" />
@@ -239,7 +245,7 @@ const cardsGridClass = computed(() => {
         </button>
         <button
           type="button"
-          class="inline-flex items-center gap-2 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-2 text-xs font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)]"
+          class="md-btn md-btn-outlined md-state"
           @click="router.push('/comic/libraries')"
         >
           <LuLibrary class="h-4 w-4" />
@@ -252,14 +258,16 @@ const cardsGridClass = computed(() => {
     <section v-if="overview && overview.continue_reading.length > 0">
       <div class="mb-5 flex items-end justify-between">
         <div>
-          <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ t('home.continueReading') }}
           </h2>
-          <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('home.continueSubtitle') }}</p>
+          <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+            {{ t('home.continueSubtitle') }}
+          </p>
         </div>
         <RouterLink
           to="/comic/continue"
-          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
         >
           <span>{{ t('home.viewAll') }}</span>
           <LuArrowRight class="h-3.5 w-3.5" />
@@ -271,10 +279,10 @@ const cardsGridClass = computed(() => {
           v-for="item in overview.continue_reading.slice(0, 6)"
           :key="item.series.id"
           :to="`/comic/read/${encodeURIComponent(item.pointer.chapter_id)}?page=${item.pointer.current_page}`"
-          class="group flex items-center gap-4 rounded-2xl border border-[var(--ctp-surface0)]/85 bg-[var(--ctp-shell)]/90 p-3.5 transition duration-200 hover:-translate-y-0.5 hover:border-[var(--ctp-accent)]/60 hover:bg-[var(--ctp-mantle)]"
+          class="group md-card-filled flex items-center gap-4 border border-transparent p-3.5 transition duration-200 hover:-translate-y-0.5 hover:border-[var(--md-sys-color-outline-variant)] hover:bg-[var(--md-sys-color-surface-container)] hover:shadow-[var(--md-sys-elevation-1)]"
         >
           <div
-            class="relative h-28 w-20 shrink-0 overflow-hidden rounded-xl bg-[var(--ctp-mantle)] shadow-md"
+            class="relative h-28 w-20 shrink-0 overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container)] shadow-[var(--md-sys-elevation-1)]"
           >
             <img
               v-if="item.series.cover_url"
@@ -286,7 +294,7 @@ const cardsGridClass = computed(() => {
             />
             <div
               v-else
-              class="flex h-full w-full items-center justify-center p-2 text-center text-[11px] font-bold text-[var(--ctp-text)]"
+              class="flex h-full w-full items-center justify-center p-2 text-center text-[11px] font-bold text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ item.series.title }}
             </div>
@@ -294,11 +302,11 @@ const cardsGridClass = computed(() => {
 
           <div class="flex min-w-0 flex-1 flex-col justify-center">
             <h3
-              class="truncate text-sm font-bold text-[var(--ctp-text)] transition-colors group-hover:text-[var(--ctp-accent)]"
+              class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
             >
               {{ item.series.title }}
             </h3>
-            <p class="mt-1.5 truncate text-xs text-[var(--ctp-subtext0)]">
+            <p class="mt-1.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
               {{
                 item.pointer.is_resuming_mid_chapter
                   ? t('home.resumeAt', {
@@ -314,9 +322,11 @@ const cardsGridClass = computed(() => {
             </p>
 
             <div class="mt-4 flex items-center gap-3">
-              <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--ctp-canvas)]/90">
+              <div
+                class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
+              >
                 <div
-                  class="h-full rounded-full bg-[var(--ctp-accent)] transition-all duration-300"
+                  class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all duration-300"
                   :style="{
                     width: `${Math.max(
                       3,
@@ -331,7 +341,7 @@ const cardsGridClass = computed(() => {
                 />
               </div>
               <span
-                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm transition group-hover:scale-105"
+                class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)] transition group-hover:scale-105"
               >
                 <LuPlay class="ml-0.5 h-3.5 w-3.5 fill-current" />
               </span>
@@ -345,16 +355,16 @@ const cardsGridClass = computed(() => {
     <section v-if="overview && overview.recently_updated.length > 0">
       <div class="mb-5 flex items-end justify-between">
         <div>
-          <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ t('home.recentlyUpdated') }}
           </h2>
-          <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+          <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('home.recentlyUpdatedSubtitle') }}
           </p>
         </div>
         <RouterLink
           to="/comic/series"
-          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+          class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
         >
           <span>{{ t('home.viewAll') }}</span>
           <LuArrowRight class="h-3.5 w-3.5" />

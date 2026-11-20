@@ -266,7 +266,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
         <RefreshButton variant="ghost" :action="refreshPage" />
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-shell)] hover:text-[var(--ctp-text)]"
+          class="md-btn md-btn-text md-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
           @click="customizerOpen = true"
         >
           <LuSlidersHorizontal class="h-3.5 w-3.5" />
@@ -279,22 +279,26 @@ const continueItems = computed<ContinueListenItem[]>(() => {
           v-for="card in statCards"
           :key="card.key"
           type="button"
-          class="card-soft flex items-center gap-3.5 rounded-2xl bg-[var(--ctp-shell)] p-4 text-left transition hover:border-[var(--ctp-accent)]"
+          class="md-card-filled md-state flex items-center gap-3.5 border border-[var(--md-sys-color-outline-variant)]/50 p-4 text-left transition hover:border-[var(--md-sys-color-primary)]/50"
           @click="card.onClick()"
         >
           <div
             class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
             :class="
               card.tone === 'rose'
-                ? 'bg-[var(--ctp-red)]/15 text-[var(--ctp-red)]'
-                : 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+                ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+                : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
             "
           >
             <component :is="card.icon" class="h-5 w-5" />
           </div>
           <div class="min-w-0">
-            <p class="text-xl font-bold leading-none text-[var(--ctp-text)]">{{ card.value }}</p>
-            <p class="mt-1 truncate text-xs text-[var(--ctp-subtext0)]">{{ card.label }}</p>
+            <p class="text-xl font-bold leading-none text-[var(--md-sys-color-on-surface)]">
+              {{ card.value }}
+            </p>
+            <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
+              {{ card.label }}
+            </p>
           </div>
         </button>
       </div>
@@ -306,15 +310,17 @@ const continueItems = computed<ContinueListenItem[]>(() => {
     <!-- Empty Library Onboarding -->
     <section
       v-else-if="!loading && overview && overview.stats.total_tracks === 0"
-      class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
+      class="md-card-filled flex flex-col items-center justify-center rounded-3xl px-6 py-16 text-center"
     >
       <div
-        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
       >
         <LuDisc3 class="h-7 w-7" />
       </div>
-      <h2 class="text-lg font-bold">{{ t('home.emptyLibraryTitle') }}</h2>
-      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('home.emptyLibraryTitle') }}
+      </h2>
+      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('home.emptyLibraryDesc') }}
       </p>
     </section>
@@ -324,16 +330,16 @@ const continueItems = computed<ContinueListenItem[]>(() => {
       <section v-if="continueItems.length > 0">
         <div class="mb-5 flex items-end justify-between">
           <div>
-            <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+            <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
               {{ t('continueView.title') }}
             </h2>
-            <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+            <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('continueView.subtitle') }}
             </p>
           </div>
           <RouterLink
             to="/music/continue"
-            class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+            class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
           >
             <span>{{ t('collections.seeAll') }}</span>
             <LuArrowRight class="h-3.5 w-3.5" />
@@ -345,7 +351,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
             v-for="item in continueItems"
             :key="item.track.id"
             type="button"
-            class="group flex items-center gap-4 rounded-2xl border border-[var(--ctp-surface0)]/85 bg-[var(--ctp-shell)]/90 p-3.5 text-left transition duration-200 hover:-translate-y-0.5 hover:border-[var(--ctp-accent)]/60 hover:bg-[var(--ctp-mantle)]"
+            class="group md-card-filled md-state flex items-center gap-4 border border-[var(--md-sys-color-outline-variant)]/50 p-3.5 text-left transition duration-200 hover:-translate-y-0.5 hover:border-[var(--md-sys-color-primary)]/50 hover:bg-[var(--md-sys-color-surface-container)]"
             @click="playerStore.playTrackAt(item.track, item.resumeSecs)"
           >
             <CoverImage
@@ -353,28 +359,30 @@ const continueItems = computed<ContinueListenItem[]>(() => {
               :has-cover="Boolean(item.track.cover_key)"
               :size="200"
               rounded="rounded-xl"
-              class="h-24 w-24 shrink-0 shadow-md"
+              class="h-24 w-24 shrink-0 shadow-[var(--md-sys-elevation-1)]"
             />
 
             <div class="flex min-w-0 flex-1 flex-col justify-center">
               <h3
-                class="truncate text-sm font-bold text-[var(--ctp-text)] transition-colors group-hover:text-[var(--ctp-accent)]"
+                class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
               >
                 {{ item.track.title }}
               </h3>
-              <p class="mt-1.5 truncate text-xs text-[var(--ctp-subtext0)]">
+              <p class="mt-1.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
                 {{ item.subtitle }}
               </p>
 
               <div class="mt-4 flex items-center gap-3">
-                <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--ctp-canvas)]/90">
+                <div
+                  class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
+                >
                   <div
-                    class="h-full rounded-full bg-[var(--ctp-accent)] transition-all duration-300"
+                    class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all duration-300"
                     :style="{ width: `${item.percent}%` }"
                   />
                 </div>
                 <span
-                  class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm transition group-hover:scale-105"
+                  class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)] transition group-hover:scale-105"
                 >
                   <LuPlay class="ml-0.5 h-3.5 w-3.5 fill-current" />
                 </span>
@@ -387,12 +395,12 @@ const continueItems = computed<ContinueListenItem[]>(() => {
       <!-- Recently Added Albums -->
       <section v-if="overview.recent_added_albums.length > 0">
         <div class="mb-5 flex items-end justify-between">
-          <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ t('home.recentAddedAlbums') }}
           </h2>
           <RouterLink
             :to="{ path: '/music/songs', query: { tab: 'albums' } }"
-            class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+            class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
           >
             <span>{{ t('collections.seeAll') }}</span>
             <LuArrowRight class="h-3.5 w-3.5" />
@@ -407,7 +415,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
       <!-- Most Played Albums -->
       <section v-if="overview.frequent_albums.length > 0">
         <div class="mb-5 flex items-end justify-between">
-          <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ t('home.frequentAlbums') }}
           </h2>
         </div>
@@ -424,13 +432,13 @@ const continueItems = computed<ContinueListenItem[]>(() => {
       <!-- Random Discovery -->
       <section v-if="overview.random_tracks.length > 0">
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <h2 class="text-lg font-bold tracking-tight text-[var(--ctp-text)]">
+          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ t('home.randomDiscovery') }}
           </h2>
           <div class="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 py-1.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-xs transition hover:opacity-95"
+              class="md-btn md-btn-filled md-btn-sm md-state"
               @click="playerStore.playQueue(overview.random_tracks, 0)"
             >
               <LuPlay class="h-3.5 w-3.5 fill-current" />
@@ -438,7 +446,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
             </button>
             <button
               type="button"
-              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:bg-[var(--ctp-surface0)]"
+              class="md-btn md-btn-tonal md-btn-sm md-state"
               @click="playerStore.shuffleAndPlay(overview.random_tracks)"
             >
               <LuShuffle class="h-3.5 w-3.5" />
@@ -447,11 +455,11 @@ const continueItems = computed<ContinueListenItem[]>(() => {
             <button
               type="button"
               :disabled="randomFeedback.running.value"
-              class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 py-1.5 text-xs font-medium transition disabled:opacity-70"
+              class="md-btn md-btn-outlined md-btn-sm md-state"
               :class="
                 randomFeedback.done.value
-                  ? 'border-emerald-500/45 text-emerald-500'
-                  : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                  ? 'border-[var(--md-sys-color-success)] text-[var(--md-sys-color-success)]'
+                  : 'text-[var(--md-sys-color-on-surface-variant)]'
               "
               @click="randomFeedback.run(refreshRandomPicks)"
             >

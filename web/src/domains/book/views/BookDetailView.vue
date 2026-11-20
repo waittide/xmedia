@@ -14,7 +14,6 @@ import {
   LuTrash2,
   LuCheck,
   LuBookmark,
-  LuX,
 } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
 import { useAuthStore } from '@/stores/auth'
@@ -22,6 +21,7 @@ import { useCatalogStore } from '@/domains/book/store'
 import { useThemeStore } from '@/stores/theme'
 import { useDialogStore } from '@/stores/dialog'
 import type { Bookmark, BookSummaryDto, TocItem } from '@/domains/book/types'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import TocTree from '@/domains/book/components/TocTree.vue'
 
@@ -276,7 +276,7 @@ function openBookmarkInReader(bm: Bookmark): void {
     <div class="mb-6 flex items-center justify-between gap-3">
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-mantle)] hover:text-[var(--ctp-text)]"
+        class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
         @click="goBack"
       >
         <LuArrowLeft class="h-4 w-4" />
@@ -289,20 +289,20 @@ function openBookmarkInReader(bm: Bookmark): void {
       />
     </div>
 
-    <div v-if="loading" class="py-20 text-center text-sm text-[var(--ctp-subtext0)]">
+    <div v-if="loading" class="py-20 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
       {{ t('common.loading') }}
     </div>
 
-    <div v-else-if="!book" class="py-20 text-center text-sm text-[var(--ctp-subtext0)]">
+    <div v-else-if="!book" class="py-20 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
       {{ t('detail.notFound') }}
     </div>
 
     <div v-else class="space-y-12">
-      <!-- BeePub-style Hero Section: Cover + Title/Author/Progress/Actions -->
+      <!-- Hero Section: Cover + Title/Author/Progress/Actions -->
       <section class="flex flex-col gap-8 md:flex-row md:gap-12">
         <!-- Left Cover Column -->
         <div class="mx-auto w-52 shrink-0 md:mx-0 md:w-60">
-          <div class="book-shadow group relative aspect-[2/3] w-full overflow-hidden rounded-xl bg-[var(--ctp-mantle)]">
+          <div class="book-shadow group relative aspect-[2/3] w-full overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-low)]">
             <img
               v-if="book.has_cover"
               :src="api.coverUrl(book.id, book.updated_at)"
@@ -313,10 +313,10 @@ function openBookmarkInReader(bm: Bookmark): void {
               v-else
               class="flex h-full w-full flex-col justify-between p-5"
             >
-              <span class="self-end rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-xs font-bold uppercase text-[var(--ctp-accent)]">
+              <span class="self-end rounded-md bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-xs font-bold uppercase text-[var(--md-sys-color-on-primary-container)]">
                 {{ book.format }}
               </span>
-              <p class="text-base font-bold text-[var(--ctp-text)]">{{ book.metadata.title }}</p>
+              <p class="text-base font-bold text-[var(--md-sys-color-on-surface)]">{{ book.metadata.title }}</p>
             </div>
 
             <template v-if="authStore.isAdmin">
@@ -343,69 +343,69 @@ function openBookmarkInReader(bm: Bookmark): void {
         <div class="flex min-w-0 flex-1 flex-col pt-1">
           <div>
             <div class="mb-2 flex flex-wrap items-center gap-2">
-              <span class="rounded-full bg-[var(--ctp-accent-soft)] px-3 py-0.5 text-xs font-semibold uppercase text-[var(--ctp-accent)]">
+              <span class="rounded-full bg-[var(--md-sys-color-primary-container)] px-3 py-0.5 text-xs font-semibold uppercase text-[var(--md-sys-color-on-primary-container)]">
                 {{ book.format }}
               </span>
               <span
                 v-if="book.is_missing"
-                class="rounded-full bg-[var(--ctp-red)]/15 px-3 py-0.5 text-xs font-semibold text-[var(--ctp-red)]"
+                class="rounded-full bg-[var(--md-sys-color-error-container)] px-3 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-error-container)]"
               >
                 {{ t('catalog.missingBadge') }}
               </span>
             </div>
 
-            <h1 class="font-serif text-3xl font-bold leading-tight text-[var(--ctp-text)] sm:text-4xl">
+            <h1 class="font-serif text-3xl font-bold leading-tight text-[var(--md-sys-color-on-surface)] sm:text-4xl">
               {{ book.metadata.title }}
             </h1>
 
-            <p v-if="book.metadata.authors.length > 0" class="mt-2.5 text-base text-[var(--ctp-subtext1)]">
+            <p v-if="book.metadata.authors.length > 0" class="mt-2.5 text-base text-[var(--md-sys-color-on-surface-variant)]">
               <template v-for="(author, idx) in book.metadata.authors" :key="author">
                 <button
                   type="button"
-                  class="hover:text-[var(--ctp-accent)] hover:underline transition-colors"
+                  class="transition-colors hover:text-[var(--md-sys-color-primary)] hover:underline"
                   @click="filterByAuthor(author)"
                 >
                   {{ author }}
                 </button><span v-if="idx < book.metadata.authors.length - 1">, </span>
               </template>
             </p>
-            <p v-else class="mt-2 text-sm text-[var(--ctp-subtext0)]">
+            <p v-else class="mt-2 text-sm text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('catalog.unknownAuthor') }}
             </p>
           </div>
 
           <!-- Reading Progress Strip -->
-          <div class="mt-6 max-w-md rounded-2xl bg-[var(--ctp-shell)] p-3.5 card-soft">
+          <div class="md-card-filled mt-6 max-w-md p-3.5">
             <div class="flex items-center justify-between text-xs">
-              <span class="font-medium text-[var(--ctp-subtext1)]">
+              <span class="font-medium text-[var(--md-sys-color-on-surface-variant)]">
                 {{
                   hasProgress && book.progress
                     ? t('catalog.progressLabel', { percent: Math.round(book.progress.progress_percent) })
                     : t('catalog.notStarted')
                 }}
               </span>
-              <span v-if="hasProgress && book.progress" class="font-mono font-semibold text-[var(--ctp-accent)]">
+              <span v-if="hasProgress && book.progress" class="font-mono font-semibold text-[var(--md-sys-color-primary)]">
                 {{ Math.round(book.progress.progress_percent) }}%
               </span>
             </div>
-            <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--ctp-surface0)]">
+            <div class="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]">
               <div
-                class="h-full rounded-full bg-[var(--ctp-accent)] transition-all"
+                class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all"
                 :style="{ width: `${book.progress ? Math.min(100, book.progress.progress_percent) : 0}%` }"
               />
             </div>
           </div>
 
-          <p v-if="statusMsg" class="mt-3 text-xs font-medium text-[var(--ctp-green)]">
+          <p v-if="statusMsg" class="mt-3 text-xs font-medium text-[var(--md-sys-color-success)]">
             {{ statusMsg }}
           </p>
 
-          <!-- BeePub-style Action Button Bar -->
+          <!-- Action Button Bar -->
           <div ref="actionsAreaRef" class="mt-auto flex flex-wrap items-center gap-2.5 pt-7">
             <button
               type="button"
               :disabled="book.is_missing"
-              class="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[var(--ctp-accent)] px-6 text-sm font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-40"
+              class="md-btn md-btn-filled md-state !h-11 !px-6 !text-sm"
               @click="router.push(`/book/read/${book.id}`)"
             >
               <LuBookOpen class="h-4 w-4" />
@@ -415,8 +415,8 @@ function openBookmarkInReader(bm: Bookmark): void {
             <!-- Favorite Circle Button -->
             <button
               type="button"
-              class="card-soft flex h-11 w-11 items-center justify-center rounded-full bg-[var(--ctp-shell)] transition hover:shadow-sm"
-              :class="book.is_favorite ? 'text-[var(--ctp-red)]' : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'"
+              class="md-icon-btn md-state !h-11 !w-11 bg-[var(--md-sys-color-surface-container-low)] hover:shadow-sm"
+              :class="book.is_favorite ? '!text-[var(--md-sys-color-error)]' : ''"
               :title="book.is_favorite ? t('detail.favoriteRemove') : t('detail.favoriteAdd')"
               @click="toggleFavorite"
             >
@@ -427,7 +427,7 @@ function openBookmarkInReader(bm: Bookmark): void {
             <div class="relative">
               <button
                 type="button"
-                class="card-soft flex h-11 w-11 items-center justify-center rounded-full bg-[var(--ctp-shell)] text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)] hover:shadow-sm"
+                class="md-icon-btn md-state !h-11 !w-11 bg-[var(--md-sys-color-surface-container-low)] hover:shadow-sm"
                 :title="t('detail.shelvesMenu')"
                 @click="shelfPopoverOpen = !shelfPopoverOpen; moreMenuOpen = false"
               >
@@ -436,14 +436,14 @@ function openBookmarkInReader(bm: Bookmark): void {
 
               <div
                 v-if="shelfPopoverOpen"
-                class="absolute left-0 top-13 z-30 w-56 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 shadow-2xl"
+                class="absolute left-0 top-13 z-[var(--z-popover)] w-56 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
               >
-                <div class="px-2.5 py-1.5 text-[11px] font-semibold text-[var(--ctp-subtext0)]">
+                <div class="px-2.5 py-1.5 text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
                   {{ t('detail.shelvesMenu') }}
                 </div>
                 <p
                   v-if="catalogStore.shelves.length === 0"
-                  class="px-2.5 py-2 text-xs text-[var(--ctp-subtext0)]"
+                  class="px-2.5 py-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   {{ t('detail.noShelvesYet') }}
                 </p>
@@ -451,11 +451,11 @@ function openBookmarkInReader(bm: Bookmark): void {
                   v-for="sh in catalogStore.shelves"
                   :key="sh.id"
                   type="button"
-                  class="flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-xs font-medium transition hover:bg-[var(--ctp-surface0)]"
+                  class="flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-xs font-medium text-[var(--md-sys-color-on-surface)] transition hover:bg-[var(--md-sys-color-surface-container-highest)]"
                   @click="toggleShelf(sh.id, sh.book_ids.includes(book.id))"
                 >
                   <span class="truncate">{{ sh.name }}</span>
-                  <LuCheck v-if="sh.book_ids.includes(book.id)" class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                  <LuCheck v-if="sh.book_ids.includes(book.id)" class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
                 </button>
               </div>
             </div>
@@ -464,7 +464,7 @@ function openBookmarkInReader(bm: Bookmark): void {
             <a
               v-if="!book.is_missing"
               :href="api.fileUrl(book.id, true)"
-              class="card-soft flex h-11 w-11 items-center justify-center rounded-full bg-[var(--ctp-shell)] text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)] hover:shadow-sm"
+              class="md-icon-btn md-state !h-11 !w-11 bg-[var(--md-sys-color-surface-container-low)] hover:shadow-sm"
               :title="t('catalog.download')"
             >
               <LuDownload class="h-4 w-4" />
@@ -474,7 +474,7 @@ function openBookmarkInReader(bm: Bookmark): void {
             <div v-if="authStore.isAdmin" class="relative">
               <button
                 type="button"
-                class="card-soft flex h-11 w-11 items-center justify-center rounded-full bg-[var(--ctp-shell)] text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)] hover:shadow-sm"
+                class="md-icon-btn md-state !h-11 !w-11 bg-[var(--md-sys-color-surface-container-low)] hover:shadow-sm"
                 :title="t('detail.moreActions')"
                 @click="moreMenuOpen = !moreMenuOpen; shelfPopoverOpen = false"
               >
@@ -483,31 +483,31 @@ function openBookmarkInReader(bm: Bookmark): void {
 
               <div
                 v-if="moreMenuOpen"
-                class="absolute left-0 top-13 z-30 w-48 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 shadow-2xl"
+                class="absolute left-0 top-13 z-[var(--z-popover)] w-48 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)] p-1.5 shadow-[var(--md-sys-elevation-3)]"
               >
                 <button
                   type="button"
-                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--ctp-text)] hover:bg-[var(--ctp-surface0)]"
+                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-highest)]"
                   @click="openEditModal"
                 >
-                  <LuPencil class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
+                  <LuPencil class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
                   <span>{{ t('detail.editMetadata') }}</span>
                 </button>
 
                 <button
                   type="button"
-                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--ctp-text)] hover:bg-[var(--ctp-surface0)]"
+                  class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-highest)]"
                   @click="moreMenuOpen = false; coverInputRef?.click()"
                 >
-                  <LuImage class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
+                  <LuImage class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
                   <span>{{ t('detail.replaceCover') }}</span>
                 </button>
 
                 <template v-if="authStore.isAdmin">
-                  <div class="my-1 h-px bg-[var(--ctp-surface0)]" />
+                  <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/55" />
                   <button
                     type="button"
-                    class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--ctp-red)] hover:bg-[var(--ctp-red)]/10"
+                    class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-error)] hover:bg-[var(--md-sys-color-error-container)]/50"
                     @click="handleDeleteBook"
                   >
                     <LuTrash2 class="h-3.5 w-3.5" />
@@ -521,20 +521,20 @@ function openBookmarkInReader(bm: Bookmark): void {
       </section>
 
       <!-- Lower Split Section: Synopsis & Bookmarks + Metadata Specs Sidebar -->
-      <section class="flex flex-col gap-10 border-t border-[var(--ctp-surface0)]/70 pt-8 lg:flex-row">
+      <section class="flex flex-col gap-10 border-t border-[var(--md-sys-color-outline-variant)]/55 pt-8 lg:flex-row">
         <!-- Main Column -->
         <div class="min-w-0 flex-1 space-y-8">
           <div>
-            <h2 class="mb-3 text-sm font-bold uppercase tracking-wider text-[var(--ctp-subtext0)]">
+            <h2 class="mb-3 text-sm font-bold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('detail.synopsis') }}
             </h2>
             <p
               v-if="book.metadata.description"
-              class="whitespace-pre-line text-sm leading-7 text-[var(--ctp-text)]"
+              class="whitespace-pre-line text-sm leading-7 text-[var(--md-sys-color-on-surface)]"
             >
               {{ book.metadata.description }}
             </p>
-            <p v-else class="text-sm italic text-[var(--ctp-subtext0)]">
+            <p v-else class="text-sm italic text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('detail.noSynopsis') }}
             </p>
 
@@ -544,7 +544,7 @@ function openBookmarkInReader(bm: Bookmark): void {
                 v-for="tg in book.metadata.tags"
                 :key="tg"
                 type="button"
-                class="rounded-full bg-[var(--ctp-mantle)] px-3 py-1 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                class="md-chip md-state !rounded-full"
                 @click="filterByTag(tg)"
               >
                 #{{ tg }}
@@ -554,10 +554,10 @@ function openBookmarkInReader(bm: Bookmark): void {
 
           <!-- Hierarchical Volume / Chapter Table of Contents Preview -->
           <div v-if="toc.length > 0">
-            <h2 class="mb-3 text-sm font-bold uppercase tracking-wider text-[var(--ctp-subtext0)]">
+            <h2 class="mb-3 text-sm font-bold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('reader.toc') }} ({{ toc.length }})
             </h2>
-            <div class="card-soft max-h-80 overflow-y-auto rounded-2xl bg-[var(--ctp-shell)] p-3">
+            <div class="md-card-filled max-h-80 overflow-y-auto p-3">
               <TocTree
                 :items="toc"
                 :active-href="book.progress?.locator"
@@ -568,33 +568,33 @@ function openBookmarkInReader(bm: Bookmark): void {
 
           <!-- Personal Bookmarks List -->
           <div v-if="bookmarks.length > 0">
-            <h2 class="mb-3 text-sm font-bold uppercase tracking-wider text-[var(--ctp-subtext0)]">
+            <h2 class="mb-3 text-sm font-bold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('detail.bookmarksSection') }} ({{ bookmarks.length }})
             </h2>
             <div class="space-y-2">
               <div
                 v-for="bm in bookmarks"
                 :key="bm.id"
-                class="card-soft flex items-center justify-between gap-3 rounded-2xl bg-[var(--ctp-shell)] px-4 py-3"
+                class="md-card-filled flex items-center justify-between gap-3 px-4 py-3"
               >
                 <button
                   type="button"
                   class="flex min-w-0 flex-1 items-center gap-3 text-left"
                   @click="openBookmarkInReader(bm)"
                 >
-                  <LuBookmark class="h-4 w-4 shrink-0 text-[var(--ctp-accent)]" />
+                  <LuBookmark class="h-4 w-4 shrink-0 text-[var(--md-sys-color-primary)]" />
                   <div class="min-w-0">
-                    <p class="truncate text-sm font-medium text-[var(--ctp-text)] hover:text-[var(--ctp-accent)]">
+                    <p class="truncate text-sm font-medium text-[var(--md-sys-color-on-surface)] hover:text-[var(--md-sys-color-primary)]">
                       {{ bm.title }}
                     </p>
-                    <p class="text-xs text-[var(--ctp-subtext0)]">
+                    <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
                       {{ Math.round(bm.location.progress_percent) }}%
                     </p>
                   </div>
                 </button>
                 <button
                   type="button"
-                  class="rounded-lg p-1.5 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-red)]"
+                  class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7 hover:!text-[var(--md-sys-color-error)]"
                   @click="deleteBookmark(bm.id)"
                 >
                   <LuTrash2 class="h-3.5 w-3.5" />
@@ -604,34 +604,34 @@ function openBookmarkInReader(bm: Bookmark): void {
           </div>
         </div>
 
-        <!-- Metadata Specifications Sidebar (BeePub BookMetadataSidebar style) -->
+        <!-- Metadata Specifications Sidebar -->
         <aside class="w-full shrink-0 lg:w-72">
-          <div class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-5">
-            <h2 class="mb-4 text-xs font-bold uppercase tracking-wider text-[var(--ctp-subtext0)]">
+          <div class="md-card-filled p-5">
+            <h2 class="mb-4 text-xs font-bold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('detail.specifications') }}
             </h2>
             <dl class="space-y-3 text-xs">
               <div class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.library') }}</dt>
-                <dd class="truncate font-medium text-[var(--ctp-text)]">{{ book.library_name || '—' }}</dd>
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.library') }}</dt>
+                <dd class="truncate font-medium text-[var(--md-sys-color-on-surface)]">{{ book.library_name || '—' }}</dd>
               </div>
               <div class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.sourceMode') }}</dt>
-                <dd class="font-medium text-[var(--ctp-text)]">
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.sourceMode') }}</dt>
+                <dd class="font-medium text-[var(--md-sys-color-on-surface)]">
                   {{ book.is_managed ? t('catalog.managedBadge') : t('catalog.mountedBadge') }}
                 </dd>
               </div>
               <div class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.format') }}</dt>
-                <dd class="font-mono font-semibold uppercase text-[var(--ctp-text)]">{{ book.format }}</dd>
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.format') }}</dt>
+                <dd class="font-mono font-semibold uppercase text-[var(--md-sys-color-on-surface)]">{{ book.format }}</dd>
               </div>
               <div class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.fileSize') }}</dt>
-                <dd class="font-medium text-[var(--ctp-text)]">{{ formatBytes(book.file_size) }}</dd>
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.fileSize') }}</dt>
+                <dd class="font-medium text-[var(--md-sys-color-on-surface)]">{{ formatBytes(book.file_size) }}</dd>
               </div>
               <div v-if="book.metadata.chapter_count || book.metadata.page_count" class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.structure') }}</dt>
-                <dd class="font-medium text-[var(--ctp-text)]">
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.structure') }}</dt>
+                <dd class="font-medium text-[var(--md-sys-color-on-surface)]">
                   <template v-if="book.metadata.page_count">
                     {{ t('detail.pages', { count: book.metadata.page_count }) }}
                   </template>
@@ -641,20 +641,20 @@ function openBookmarkInReader(bm: Bookmark): void {
                 </dd>
               </div>
               <div v-if="formattedLanguage" class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.language') }}</dt>
-                <dd class="font-medium text-[var(--ctp-text)]">{{ formattedLanguage }}</dd>
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.language') }}</dt>
+                <dd class="font-medium text-[var(--md-sys-color-on-surface)]">{{ formattedLanguage }}</dd>
               </div>
               <div v-if="book.metadata.publisher" class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.publisher') }}</dt>
-                <dd class="truncate font-medium text-[var(--ctp-text)]">{{ book.metadata.publisher }}</dd>
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.publisher') }}</dt>
+                <dd class="truncate font-medium text-[var(--md-sys-color-on-surface)]">{{ book.metadata.publisher }}</dd>
               </div>
               <div v-if="book.metadata.published_at" class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.publishedAt') }}</dt>
-                <dd class="font-medium text-[var(--ctp-text)]">{{ book.metadata.published_at }}</dd>
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.publishedAt') }}</dt>
+                <dd class="font-medium text-[var(--md-sys-color-on-surface)]">{{ book.metadata.published_at }}</dd>
               </div>
               <div v-if="book.metadata.isbn" class="flex justify-between gap-3">
-                <dt class="text-[var(--ctp-subtext0)]">{{ t('detail.isbn') }}</dt>
-                <dd class="font-mono font-medium text-[var(--ctp-text)]">{{ book.metadata.isbn }}</dd>
+                <dt class="text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.isbn') }}</dt>
+                <dd class="font-mono font-medium text-[var(--md-sys-color-on-surface)]">{{ book.metadata.isbn }}</dd>
               </div>
             </dl>
           </div>
@@ -662,124 +662,120 @@ function openBookmarkInReader(bm: Bookmark): void {
       </section>
     </div>
 
-    <!-- Clean Spacious Metadata Edit Dialog -->
-    <div
-      v-if="editModalOpen"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    <!-- Metadata Edit Dialog (MD3) -->
+    <MdDialog
+      :open="editModalOpen"
+      :title="t('detail.editMetadata')"
+      max-width="max-w-xl"
+      @close="editModalOpen = false"
     >
-      <div class="w-full max-w-xl rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-6 shadow-2xl">
-        <div class="mb-5 flex items-center justify-between">
-          <h3 class="text-base font-bold">{{ t('detail.editMetadata') }}</h3>
+      <template #icon>
+        <LuPencil class="h-5 w-5" />
+      </template>
+
+      <div
+        v-if="editErrorMsg"
+        class="mb-4 rounded-xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs font-medium text-[var(--md-sys-color-on-error-container)]"
+      >
+        {{ editErrorMsg }}
+      </div>
+
+      <form id="book-metadata-edit-form" class="space-y-4 py-1" @submit.prevent="saveMetadata">
+        <div>
+          <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.bookTitle') }}</label>
+          <input
+            v-model="formTitle"
+            type="text"
+            required
+            class="md-input h-10 w-full text-sm"
+          />
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div>
+            <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.authors') }}</label>
+            <input
+              v-model="formAuthors"
+              type="text"
+              class="md-input h-10 w-full text-sm"
+            />
+          </div>
+          <div>
+            <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.tags') }}</label>
+            <input
+              v-model="formTags"
+              type="text"
+              class="md-input h-10 w-full text-sm"
+            />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div>
+            <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.language') }}</label>
+            <input
+              v-model="formLanguage"
+              type="text"
+              placeholder="zh-CN / en"
+              class="md-input h-9 w-full text-xs"
+            />
+          </div>
+          <div>
+            <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.isbn') }}</label>
+            <input
+              v-model="formIsbn"
+              type="text"
+              class="md-input h-9 w-full text-xs"
+            />
+          </div>
+          <div>
+            <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.publisher') }}</label>
+            <input
+              v-model="formPublisher"
+              type="text"
+              class="md-input h-9 w-full text-xs"
+            />
+          </div>
+          <div>
+            <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.publishedAt') }}</label>
+            <input
+              v-model="formPublishedAt"
+              type="text"
+              placeholder="2024"
+              class="md-input h-9 w-full text-xs"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label class="mb-1 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">{{ t('detail.description') }}</label>
+          <textarea
+            v-model="formDescription"
+            rows="5"
+            class="md-input w-full py-2 text-sm"
+          />
+        </div>
+      </form>
+
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
           <button
             type="button"
-            class="rounded-full p-1.5 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]"
+            class="md-btn md-btn-sm md-btn-text md-state"
             @click="editModalOpen = false"
           >
-            <LuX class="h-4 w-4" />
+            {{ t('detail.cancel') }}
+          </button>
+          <button
+            type="submit"
+            form="book-metadata-edit-form"
+            :disabled="saving"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+          >
+            {{ t('detail.saveChanges') }}
           </button>
         </div>
-
-        <div
-          v-if="editErrorMsg"
-          class="mb-4 rounded-xl bg-[var(--ctp-red)]/15 px-3.5 py-2.5 text-xs font-medium text-[var(--ctp-red)]"
-        >
-          {{ editErrorMsg }}
-        </div>
-
-        <form class="space-y-4" @submit.prevent="saveMetadata">
-          <div>
-            <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.bookTitle') }}</label>
-            <input
-              v-model="formTitle"
-              type="text"
-              required
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3.5 py-2 text-sm outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-
-          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.authors') }}</label>
-              <input
-                v-model="formAuthors"
-                type="text"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3.5 py-2 text-sm outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.tags') }}</label>
-              <input
-                v-model="formTags"
-                type="text"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3.5 py-2 text-sm outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div>
-              <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.language') }}</label>
-              <input
-                v-model="formLanguage"
-                type="text"
-                placeholder="zh-CN / en"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3 py-2 text-xs outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.isbn') }}</label>
-              <input
-                v-model="formIsbn"
-                type="text"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3 py-2 text-xs outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.publisher') }}</label>
-              <input
-                v-model="formPublisher"
-                type="text"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3 py-2 text-xs outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.publishedAt') }}</label>
-              <input
-                v-model="formPublishedAt"
-                type="text"
-                placeholder="2024"
-                class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3 py-2 text-xs outline-none focus:border-[var(--ctp-accent)]"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">{{ t('detail.description') }}</label>
-            <textarea
-              v-model="formDescription"
-              rows="5"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3.5 py-2 text-sm outline-none focus:border-[var(--ctp-accent)]"
-            />
-          </div>
-
-          <div class="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              class="rounded-xl px-4 py-2 text-xs font-medium text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]"
-              @click="editModalOpen = false"
-            >
-              {{ t('detail.cancel') }}
-            </button>
-            <button
-              type="submit"
-              :disabled="saving"
-              class="rounded-xl bg-[var(--ctp-accent)] px-5 py-2 text-xs font-semibold text-[var(--ctp-on-accent)]"
-            >
-              {{ t('detail.saveChanges') }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+      </template>
+    </MdDialog>
   </div>
 </template>

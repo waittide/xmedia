@@ -94,7 +94,6 @@ function subtreeContainsActive(node: TocTreeNode, active: string | null | undefi
 
 function autoExpandInitialAndActive(): void {
   const next = new Set(expandedKeys.value)
-  // If nothing expanded yet, expand the first volume (or volume containing active chapter)
   let matchedAny = false
   const walk = (nodes: TocTreeNode[]) => {
     for (const n of nodes) {
@@ -152,7 +151,7 @@ function onVolumeRowClick(node: TocTreeNode): void {
 
 <template>
   <div>
-    <p v-if="items.length === 0" class="py-6 text-center text-xs text-[var(--ctp-subtext0)]">
+    <p v-if="items.length === 0" class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
       {{ t('reader.noToc') }}
     </p>
 
@@ -160,12 +159,12 @@ function onVolumeRowClick(node: TocTreeNode): void {
       <!-- Expand / Collapse All Controls when Volumes exist -->
       <div
         v-if="hasHierarchy"
-        class="mb-2 flex items-center justify-between px-2 text-[11px] text-[var(--ctp-subtext0)]"
+        class="mb-2 flex items-center justify-between px-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
       >
         <span>{{ t('reader.volumeStructureHint', { volumes: parentKeys.length }) }}</span>
         <button
           type="button"
-          class="font-medium text-[var(--ctp-accent)] hover:underline"
+          class="font-medium text-[var(--md-sys-color-primary)] hover:underline"
           @click="toggleExpandAll"
         >
           {{ allExpanded ? t('reader.collapseAll') : t('reader.expandAll') }}
@@ -180,13 +179,13 @@ function onVolumeRowClick(node: TocTreeNode): void {
               class="group flex items-center justify-between gap-1.5 rounded-xl px-2 py-2 text-xs font-semibold transition"
               :class="
                 subtreeContainsActive(root, activeHref)
-                  ? 'bg-[var(--ctp-accent-soft)]/70 text-[var(--ctp-accent)]'
-                  : 'text-[var(--ctp-text)] hover:bg-[var(--ctp-mantle)]'
+                  ? 'bg-[var(--md-sys-color-secondary-container)]/75 text-[var(--md-sys-color-on-secondary-container)]'
+                  : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]'
               "
             >
               <button
                 type="button"
-                class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+                class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-highest)] hover:text-[var(--md-sys-color-on-surface)]"
                 @click.stop="toggleExpand(root.key)"
               >
                 <LuChevronRight
@@ -203,7 +202,7 @@ function onVolumeRowClick(node: TocTreeNode): void {
                 {{ root.item.title }}
               </button>
 
-              <span class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/60 px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)]">
+              <span class="shrink-0 rounded-md bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
                 {{ root.children.length }}
               </span>
             </div>
@@ -211,16 +210,16 @@ function onVolumeRowClick(node: TocTreeNode): void {
             <!-- Nested Chapters under Volume -->
             <div
               v-if="expandedKeys.has(root.key)"
-              class="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--ctp-surface0)] pl-2"
+              class="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--md-sys-color-outline-variant)]/70 pl-2"
             >
               <div v-for="child in root.children" :key="child.key">
                 <template v-if="child.children.length > 0">
                   <div
-                    class="flex items-center justify-between gap-1.5 rounded-xl px-2 py-1.5 text-xs font-semibold text-[var(--ctp-text)] hover:bg-[var(--ctp-mantle)]"
+                    class="flex items-center justify-between gap-1.5 rounded-xl px-2 py-1.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]"
                   >
                     <button
                       type="button"
-                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--ctp-subtext0)]"
+                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)]"
                       @click.stop="toggleExpand(child.key)"
                     >
                       <LuChevronRight
@@ -235,14 +234,14 @@ function onVolumeRowClick(node: TocTreeNode): void {
                     >
                       {{ child.item.title }}
                     </button>
-                    <span class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/60 px-1.5 py-0.5 text-[10px] text-[var(--ctp-subtext1)]">
+                    <span class="shrink-0 rounded-md bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
                       {{ child.children.length }}
                     </span>
                   </div>
 
                   <div
                     v-if="expandedKeys.has(child.key)"
-                    class="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--ctp-surface0)] pl-2"
+                    class="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--md-sys-color-outline-variant)]/70 pl-2"
                   >
                     <button
                       v-for="leaf in child.children"
@@ -251,8 +250,8 @@ function onVolumeRowClick(node: TocTreeNode): void {
                       class="flex w-full items-center rounded-xl px-2.5 py-1.5 text-left text-xs transition"
                       :class="
                         isHrefMatch(leaf.item.href, activeHref)
-                          ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                          : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-mantle)] hover:text-[var(--ctp-text)]'
+                          ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                          : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
                       "
                       @click="emit('select', leaf.item.href)"
                     >
@@ -267,8 +266,8 @@ function onVolumeRowClick(node: TocTreeNode): void {
                   class="flex w-full items-center rounded-xl px-2.5 py-1.5 text-left text-xs transition"
                   :class="
                     isHrefMatch(child.item.href, activeHref)
-                      ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                      : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-mantle)] hover:text-[var(--ctp-text)]'
+                      ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                      : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
                   "
                   @click="emit('select', child.item.href)"
                 >
@@ -285,8 +284,8 @@ function onVolumeRowClick(node: TocTreeNode): void {
             class="flex w-full items-center rounded-xl px-3 py-2 text-left text-xs transition"
             :class="
               isHrefMatch(root.item.href, activeHref)
-                ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-                : 'text-[var(--ctp-text)] hover:bg-[var(--ctp-mantle)]'
+                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]'
             "
             @click="emit('select', root.item.href)"
           >

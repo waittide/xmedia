@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LuSearch, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
@@ -96,6 +97,11 @@ const kindOptions = computed(() => [
   { value: 'all', label: t('catalog.kindAll') },
   { value: 'standalone', label: t('catalog.kindStandalone') },
   { value: 'episodes', label: t('catalog.kindEpisodes') },
+])
+
+const tabOptions = computed(() => [
+  { value: 'videos' as const, label: t('nav.moviesAndClips') },
+  { value: 'shows' as const, label: t('nav.shows') },
 ])
 
 const sortOptions = computed(() => [
@@ -229,50 +235,34 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
         <div class="flex items-center gap-2">
-          <h1 class="text-2xl font-extrabold tracking-tight">{{ pageTitle }}</h1>
+          <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
+            {{ pageTitle }}
+          </h1>
           <button
             v-if="selectedLibrary || selectedGenre || selectedTag || kindFilter !== 'all'"
             type="button"
-            class="inline-flex items-center gap-1 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+            class="md-chip md-state"
             @click="clearScopeFilters"
           >
             <span>{{ t('nav.all') }}</span>
             <LuX class="h-3 w-3" />
           </button>
         </div>
-        <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ pageSubtitle }}</p>
+        <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          {{ pageSubtitle }}
+        </p>
       </div>
 
       <RefreshButton size="md" :action="refreshPage" />
     </div>
 
     <!-- Videos / Shows Tabs -->
-    <div class="inline-flex gap-1 rounded-2xl bg-[var(--ctp-shell)] p-1">
-      <button
-        type="button"
-        class="rounded-xl px-4 py-2 text-xs font-semibold transition"
-        :class="
-          activeTab === 'videos'
-            ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-        "
-        @click="selectTab('videos')"
-      >
-        {{ t('nav.moviesAndClips') }}
-      </button>
-      <button
-        type="button"
-        class="rounded-xl px-4 py-2 text-xs font-semibold transition"
-        :class="
-          activeTab === 'shows'
-            ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-        "
-        @click="selectTab('shows')"
-      >
-        {{ t('nav.shows') }}
-      </button>
-    </div>
+    <MdSegmentedButton
+      :model-value="activeTab"
+      :options="tabOptions"
+      size="md"
+      @update:model-value="selectTab($event)"
+    />
 
     <!-- Filters Row -->
     <div
@@ -281,13 +271,13 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
     >
       <div class="relative">
         <LuSearch
-          class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+          class="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
         />
         <input
           v-model="search"
           type="text"
           :placeholder="t('common.filterPlaceholder')"
-          class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pl-8.5 pr-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-9 w-full pl-8.5 pr-3 text-xs"
           @input="fetchActive"
         />
       </div>
@@ -332,7 +322,7 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
     <template v-if="activeTab === 'videos'">
       <div
         v-if="videos.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('common.noResults') }}
       </div>
@@ -350,7 +340,7 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
     <template v-else>
       <div
         v-if="shows.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('common.noResults') }}
       </div>

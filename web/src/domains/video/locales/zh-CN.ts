@@ -115,6 +115,10 @@ export default {
     nextEpisode: '下一集',
     pip: '画中画',
     fullscreen: '全屏',
+    loading: '正在加载视频…',
+    loadErrorTitle: '视频加载失败',
+    loadErrorDesc: '无法获取视频信息或播放流，请检查网络后重试。',
+    retry: '重试',
   },
   admin: {
     managedBadge: '托管上传',

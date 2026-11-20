@@ -236,16 +236,16 @@ function formatLibraryScanText(lib: LibraryDto): string {
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>
         <div class="flex items-center gap-2.5">
-          <h1 class="text-2xl font-extrabold tracking-tight text-[var(--ctp-text)]">
+          <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ headerMeta.title }}
           </h1>
           <span
-            class="rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-0.5 text-xs font-bold text-[var(--ctp-accent)]"
+            class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-xs font-bold text-[var(--md-sys-color-on-primary-container)]"
           >
             {{ headerMeta.total }}
           </span>
         </div>
-        <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
           {{ headerMeta.subtitle }}
         </p>
       </div>
@@ -257,7 +257,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
         <RouterLink
           v-if="kind === 'libraries' && authStore.isAdmin"
           to="/settings?tab=libraries"
-          class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
+          class="md-btn md-btn-filled md-btn-sm md-state"
         >
           <LuSettings class="h-3.5 w-3.5" />
           <span>{{ t('collections.manageLibraries') }}</span>
@@ -272,12 +272,12 @@ function formatLibraryScanText(lib: LibraryDto): string {
             v-model="newPlaylistName"
             type="text"
             :placeholder="t('nav.playlistNamePlaceholder')"
-            class="h-9 w-52 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-9 w-52 text-xs"
           />
           <button
             type="submit"
             :disabled="!newPlaylistName.trim() || creatingPlaylist"
-            class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-50"
+            class="md-btn md-btn-filled md-btn-sm md-state"
           >
             <LuFolderPlus class="h-3.5 w-3.5" />
             <span>{{ t('nav.newPlaylist') }}</span>
@@ -287,23 +287,21 @@ function formatLibraryScanText(lib: LibraryDto): string {
     </div>
 
     <!-- Search + Sort Toolbar -->
-    <div
-      class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-shell)] p-3"
-    >
+    <div class="md-card-filled flex flex-wrap items-center justify-between gap-3 p-3">
       <div class="relative min-w-[220px] max-w-md flex-1">
         <LuSearch
-          class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+          class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
         />
         <input
           v-model="filterKeyword"
           type="text"
           :placeholder="t('collections.searchPlaceholder')"
-          class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pl-9 pr-8 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-9 w-full pl-9 pr-8 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
         />
         <button
           v-if="filterKeyword"
           type="button"
-          class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+          class="md-icon-btn md-icon-btn-sm md-state absolute right-1 top-1/2 -translate-y-1/2"
           @click="filterKeyword = ''"
         >
           <LuX class="h-3.5 w-3.5" />
@@ -324,7 +322,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
     <template v-if="kind === 'libraries'">
       <div
         v-if="filteredLibraries.length === 0"
-        class="card-soft rounded-2xl bg-[var(--ctp-shell)] py-14 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('collections.emptyResult') }}
       </div>
@@ -333,7 +331,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
         <div
           v-for="lib in filteredLibraries"
           :key="lib.id"
-          class="group card-soft flex flex-col justify-between rounded-2xl bg-[var(--ctp-shell)] p-5 transition hover:border-[var(--ctp-accent)]/60"
+          class="group md-card-filled flex flex-col justify-between border border-[var(--md-sys-color-outline-variant)]/50 p-5 transition hover:border-[var(--md-sys-color-primary)]/50 hover:bg-[var(--md-sys-color-surface-container)]"
         >
           <div>
             <div class="flex items-start justify-between gap-3">
@@ -343,18 +341,18 @@ function formatLibraryScanText(lib: LibraryDto): string {
                 @click="openLibrary(lib.id)"
               >
                 <div
-                  class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+                  class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
                 >
                   <LuLibrary class="h-5 w-5" />
                 </div>
                 <div class="min-w-0">
                   <h3
-                    class="truncate text-sm font-bold text-[var(--ctp-text)] group-hover:text-[var(--ctp-accent)]"
+                    class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
                   >
                     {{ lib.name }}
                   </h3>
                   <span
-                    class="mt-0.5 inline-block rounded bg-[var(--ctp-surface0)]/65 px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)]"
+                    class="mt-0.5 inline-block rounded bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
                   >
                     {{
                       lib.kind.type === 'managed'
@@ -366,7 +364,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
               </button>
 
               <span
-                class="shrink-0 rounded-full bg-[var(--ctp-canvas)] px-2.5 py-1 text-xs font-bold text-[var(--ctp-text)]"
+                class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-1 text-xs font-bold text-[var(--md-sys-color-on-surface)]"
               >
                 {{ t('common.tracksCount', { count: lib.track_count }) }}
               </span>
@@ -374,25 +372,25 @@ function formatLibraryScanText(lib: LibraryDto): string {
 
             <p
               v-if="lib.kind.type === 'local_mount'"
-              class="mt-3 truncate font-mono text-[11px] text-[var(--ctp-subtext0)]"
+              class="mt-3 truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
               :title="lib.kind.root_path"
             >
               {{ lib.kind.root_path }}
             </p>
             <p
               v-if="lib.kind.type === 'local_mount'"
-              class="mt-1 text-xs text-[var(--ctp-subtext1)]"
+              class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ formatLibraryScanText(lib) }}
             </p>
           </div>
 
           <div
-            class="mt-4 flex items-center justify-between border-t border-[var(--ctp-surface0)]/60 pt-3"
+            class="mt-4 flex items-center justify-between border-t border-[var(--md-sys-color-outline-variant)]/50 pt-3"
           >
             <button
               type="button"
-              class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+              class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
               @click="openLibrary(lib.id)"
             >
               <span>{{ t('collections.seeAll') }}</span>
@@ -403,7 +401,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
               v-if="lib.kind.type === 'local_mount' && authStore.isAdmin"
               type="button"
               :disabled="scanningId === lib.id || lib.scan_status.state === 'scanning'"
-              class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)] disabled:opacity-50"
+              class="md-btn md-btn-outlined md-btn-sm md-state"
               @click="triggerLibraryScan(lib)"
             >
               <LuRefreshCw
@@ -423,7 +421,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
     <template v-else-if="kind === 'playlists'">
       <div
         v-if="filteredPlaylists.length === 0"
-        class="card-soft rounded-2xl bg-[var(--ctp-shell)] py-14 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('collections.emptyResult') }}
       </div>
@@ -432,7 +430,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
         <div
           v-for="pl in filteredPlaylists"
           :key="pl.id"
-          class="group card-soft flex flex-col justify-between rounded-2xl bg-[var(--ctp-shell)] p-5 transition hover:border-[var(--ctp-accent)]/60"
+          class="group md-card-filled flex flex-col justify-between border border-[var(--md-sys-color-outline-variant)]/50 p-5 transition hover:border-[var(--md-sys-color-primary)]/50 hover:bg-[var(--md-sys-color-surface-container)]"
         >
           <div class="flex items-start justify-between gap-3">
             <button
@@ -450,18 +448,18 @@ function formatLibraryScanText(lib: LibraryDto): string {
               />
               <div
                 v-else
-                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+                class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
               >
                 <LuListMusic class="h-5 w-5" />
               </div>
 
               <div class="min-w-0">
                 <h3
-                  class="truncate text-sm font-bold text-[var(--ctp-text)] group-hover:text-[var(--ctp-accent)]"
+                  class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
                 >
                   {{ pl.name }}
                 </h3>
-                <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">
+                <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
                   {{ t('common.tracksCount', { count: pl.track_count }) }}
                 </p>
               </div>
@@ -469,21 +467,21 @@ function formatLibraryScanText(lib: LibraryDto): string {
           </div>
 
           <div
-            class="mt-4 flex items-center justify-between border-t border-[var(--ctp-surface0)]/60 pt-3"
+            class="mt-4 flex items-center justify-between border-t border-[var(--md-sys-color-outline-variant)]/50 pt-3"
           >
             <button
               type="button"
-              class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+              class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
               @click="openPlaylist(pl.id)"
             >
               <span>{{ t('collections.seeAll') }}</span>
               <LuArrowUpRight class="h-3.5 w-3.5" />
             </button>
 
-            <div v-if="canEditPlaylist(pl)" class="flex items-center gap-1">
+            <div v-if="canEditPlaylist(pl)" class="flex items-center gap-0.5">
               <button
                 type="button"
-                class="rounded-lg p-1.5 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+                class="md-icon-btn md-icon-btn-sm md-state"
                 :title="t('playlist.renameTitle')"
                 @click="renamePlaylistPrompt(pl)"
               >
@@ -491,7 +489,7 @@ function formatLibraryScanText(lib: LibraryDto): string {
               </button>
               <button
                 type="button"
-                class="rounded-lg p-1.5 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-red)]/10 hover:text-[var(--ctp-red)]"
+                class="md-icon-btn md-icon-btn-sm md-state hover:text-[var(--md-sys-color-error)]"
                 :title="t('common.delete')"
                 @click="removePlaylist(pl)"
               >
@@ -503,11 +501,11 @@ function formatLibraryScanText(lib: LibraryDto): string {
       </div>
     </template>
 
-    <!-- 3. Genres Grid -->
+    <!-- 3. Genres / Tags Grid -->
     <template v-else>
       <div
         v-if="filteredGenres.length === 0"
-        class="card-soft rounded-2xl bg-[var(--ctp-shell)] py-14 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('collections.emptyResult') }}
       </div>
@@ -517,28 +515,31 @@ function formatLibraryScanText(lib: LibraryDto): string {
           v-for="g in filteredGenres"
           :key="g.name"
           type="button"
-          class="group card-soft flex items-center justify-between gap-2.5 rounded-2xl bg-[var(--ctp-shell)] px-4 py-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--ctp-accent)]"
+          class="group md-card-filled md-state flex items-center justify-between gap-2.5 border border-[var(--md-sys-color-outline-variant)]/50 px-4 py-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--md-sys-color-primary)]/60"
           @click="openGenre(g.name)"
         >
           <span class="flex min-w-0 items-center gap-2.5">
             <span
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
             >
               <LuTag class="h-4 w-4" />
             </span>
             <span class="min-w-0">
               <span
-                class="block truncate text-xs font-bold text-[var(--ctp-text)] group-hover:text-[var(--ctp-accent)]"
+                class="block truncate text-xs font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
               >
                 {{ g.name }}
               </span>
-              <span v-if="g.album_count !== null" class="block text-[10px] text-[var(--ctp-subtext0)]">
+              <span
+                v-if="g.album_count !== null"
+                class="block text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+              >
                 {{ t('common.albumsCount', { count: g.album_count }) }}
               </span>
             </span>
           </span>
           <span
-            class="shrink-0 rounded-full bg-[var(--ctp-canvas)] px-2 py-0.5 text-[11px] font-semibold text-[var(--ctp-subtext0)]"
+            class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
           >
             {{ g.song_count }}
           </span>

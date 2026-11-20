@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
-import AppDialog from '@/components/ui/AppDialog.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { api } from '@/domains/comic/api'
@@ -104,59 +104,59 @@ async function onSave(): Promise<void> {
 </script>
 
 <template>
-  <AppDialog
+  <MdDialog
     :open="open"
     :title="t('metadata.editSeriesTitle')"
-    max-width-class="max-w-2xl"
+    max-width="max-w-2xl"
     @close="emit('close')"
   >
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div class="sm:col-span-2">
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.title') }}
         </label>
         <input
           v-model="title"
           type="text"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input h-10 w-full text-sm"
         />
       </div>
 
       <div class="sm:col-span-2">
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.altTitles') }}
         </label>
         <input
           v-model="altTitles"
           type="text"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input h-10 w-full text-sm"
         />
       </div>
 
       <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.writers') }}
         </label>
         <input
           v-model="writers"
           type="text"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input h-10 w-full text-sm"
         />
       </div>
 
       <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.pencillers') }}
         </label>
         <input
           v-model="pencillers"
           type="text"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input h-10 w-full text-sm"
         />
       </div>
 
       <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.status') }}
         </label>
         <AppSelect
@@ -167,7 +167,7 @@ async function onSave(): Promise<void> {
       </div>
 
       <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.readingDirection') }}
         </label>
         <AppSelect
@@ -178,69 +178,69 @@ async function onSave(): Promise<void> {
       </div>
 
       <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.publisher') }}
         </label>
         <input
           v-model="publisher"
           type="text"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input h-10 w-full text-sm"
         />
       </div>
 
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
             {{ t('metadata.year') }}
           </label>
           <input
             v-model="year"
             type="number"
-            class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+            class="md-input h-10 w-full text-sm"
           />
         </div>
         <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
             {{ t('metadata.ageRating') }}
           </label>
           <input
             v-model="ageRating"
             type="text"
-            class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+            class="md-input h-10 w-full text-sm"
           />
         </div>
       </div>
 
       <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.genres') }}
         </label>
         <input
           v-model="genres"
           type="text"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input h-10 w-full text-sm"
         />
       </div>
 
       <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.tags') }}
         </label>
         <input
           v-model="tags"
           type="text"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input h-10 w-full text-sm"
         />
       </div>
 
       <div class="sm:col-span-2">
-        <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('metadata.summary') }}
         </label>
         <textarea
           v-model="summary"
           rows="4"
-          class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+          class="md-input w-full py-2.5 text-sm"
         />
       </div>
 
@@ -250,21 +250,23 @@ async function onSave(): Promise<void> {
     </div>
 
     <template #footer>
-      <button
-        type="button"
-        class="rounded-xl border border-[var(--border-subtle)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-hover)]"
-        @click="emit('close')"
-      >
-        {{ t('metadata.cancel') }}
-      </button>
-      <button
-        type="button"
-        :disabled="saving"
-        class="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent-contrast)] hover:opacity-90 disabled:opacity-50"
-        @click="onSave"
-      >
-        {{ t('metadata.save') }}
-      </button>
+      <div class="ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          class="md-btn md-btn-text md-state"
+          @click="emit('close')"
+        >
+          {{ t('metadata.cancel') }}
+        </button>
+        <button
+          type="button"
+          :disabled="saving"
+          class="md-btn md-btn-filled md-state"
+          @click="onSave"
+        >
+          {{ t('metadata.save') }}
+        </button>
+      </div>
     </template>
-  </AppDialog>
+  </MdDialog>
 </template>

@@ -37,7 +37,7 @@ const src = computed(() => {
 
 <template>
   <div
-    class="relative flex items-center justify-center overflow-hidden bg-gradient-to-br from-[var(--ctp-surface0)] via-[var(--ctp-mantle)] to-[var(--ctp-accent-soft)] select-none"
+    class="relative flex items-center justify-center overflow-hidden bg-gradient-to-br from-[var(--md-sys-color-surface-container-highest)] via-[var(--md-sys-color-surface-container)] to-[var(--md-sys-color-primary-container)] select-none"
     :class="[aspect === 'poster' ? 'aspect-[2/3]' : 'aspect-video', rounded]"
   >
     <img
@@ -49,7 +49,7 @@ const src = computed(() => {
       class="h-full w-full object-cover"
       @error="failed = true"
     />
-    <LuFilm v-else class="h-1/3 w-1/3 text-[var(--ctp-subtext0)]/50" />
+    <LuFilm v-else class="h-1/3 w-1/3 text-[var(--md-sys-color-on-surface-variant)]/50" />
     <slot />
   </div>
 </template>

@@ -137,6 +137,8 @@ export default {
     queueTitle: 'Play Queue',
     queueSubtitle: '',
     clearQueue: 'Clear Queue',
+    clearQueueConfirmTitle: 'Clear play queue?',
+    clearQueueConfirm: 'Remove all {count} tracks from the current queue? Playback will stop.',
     syncFromCloud: 'Restore Saved Queue',
     qualityRaw: 'Original Direct',
     qualityOpus128: 'Opus 128k',

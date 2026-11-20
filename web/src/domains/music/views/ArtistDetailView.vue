@@ -44,20 +44,22 @@ watch(() => route.params.id, loadArtist)
         <div class="flex flex-wrap gap-1.5">
           <span
             v-if="detail.artist.is_album_artist"
-            class="rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-0.5 text-[11px] font-bold text-[var(--ctp-accent)]"
+            class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-[11px] font-bold text-[var(--md-sys-color-on-primary-container)]"
           >
             {{ t('catalog.badgeAlbumArtist') }}
           </span>
           <span
             v-if="detail.artist.is_track_artist"
-            class="rounded-full bg-[var(--ctp-surface0)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--ctp-subtext1)]"
+            class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
           >
             {{ t('catalog.badgeTrackArtist') }}
           </span>
         </div>
 
-        <h1 class="text-3xl font-extrabold tracking-tight">{{ detail.artist.name }}</h1>
-        <p class="text-xs text-[var(--ctp-subtext0)]">
+        <h1 class="text-3xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
+          {{ detail.artist.name }}
+        </h1>
+        <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('common.albumsCount', { count: detail.artist.album_count }) }} ·
           {{ t('common.tracksCount', { count: detail.artist.track_count }) }}
         </p>
@@ -66,7 +68,7 @@ watch(() => route.params.id, loadArtist)
           <button
             v-if="detail.top_tracks.length > 0"
             type="button"
-            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-md transition hover:opacity-95"
+            class="md-btn md-btn-filled md-state"
             @click="playerStore.playQueue(detail.top_tracks, 0)"
           >
             <LuPlay class="h-4 w-4 fill-current" />
@@ -76,7 +78,7 @@ watch(() => route.params.id, loadArtist)
           <button
             v-if="detail.top_tracks.length > 0"
             type="button"
-            class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2.5 text-xs font-semibold transition hover:bg-[var(--ctp-surface0)]"
+            class="md-btn md-btn-tonal md-state"
             @click="playerStore.shuffleAndPlay(detail.top_tracks)"
           >
             <LuShuffle class="h-4 w-4" />
@@ -85,15 +87,15 @@ watch(() => route.params.id, loadArtist)
 
           <button
             type="button"
-            class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] transition hover:bg-[var(--ctp-surface0)]"
+            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)]"
             @click="musicStore.toggleArtistStar(detail.artist)"
           >
             <LuHeart
               class="h-4 w-4"
               :class="
                 detail.artist.starred_at
-                  ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]'
-                  : 'text-[var(--ctp-subtext0)]'
+                  ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
+                  : 'text-[var(--md-sys-color-on-surface-variant)]'
               "
             />
           </button>
@@ -104,19 +106,25 @@ watch(() => route.params.id, loadArtist)
     </div>
 
     <section v-if="detail.albums.length > 0">
-      <h2 class="mb-3 text-base font-bold">{{ t('nav.albums') }}</h2>
+      <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('nav.albums') }}
+      </h2>
       <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
         <AlbumCard v-for="al in detail.albums" :key="al.id" :album="al" />
       </div>
     </section>
 
     <section v-if="detail.top_tracks.length > 0">
-      <h2 class="mb-3 text-base font-bold">{{ t('catalog.topTracks') }}</h2>
+      <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('catalog.topTracks') }}
+      </h2>
       <TrackTable :tracks="detail.top_tracks" />
     </section>
 
     <section v-if="detail.appears_on_tracks.length > 0">
-      <h2 class="mb-3 text-base font-bold">{{ t('catalog.appearsOn') }}</h2>
+      <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('catalog.appearsOn') }}
+      </h2>
       <TrackTable :tracks="detail.appears_on_tracks" />
     </section>
   </div>

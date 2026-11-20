@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { LuPlay, LuShuffle, LuSearch, LuHeart, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
@@ -139,6 +140,15 @@ const artistRoleOptions = computed(() => [
   { value: 'album_artist', label: t('catalog.artistRoleAlbum') },
   { value: 'track_artist', label: t('catalog.artistRoleTrack') },
 ])
+
+const catalogTabOptions = computed(
+  () =>
+    [
+      { value: 'songs', label: t('nav.songs') },
+      { value: 'albums', label: t('nav.albums') },
+      { value: 'artists', label: t('nav.artists') },
+    ] as const,
+)
 
 const tracksTotalPages = computed(() => Math.max(1, Math.ceil(tracksTotal.value / tracksPageSize)))
 const albumsTotalPages = computed(() => Math.max(1, Math.ceil(albumsTotal.value / albumsPageSize)))
@@ -279,18 +289,20 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
       <div class="flex items-center gap-3">
         <div>
           <div class="flex items-center gap-2">
-            <h1 class="text-2xl font-extrabold tracking-tight">{{ pageTitle }}</h1>
+            <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
+              {{ pageTitle }}
+            </h1>
             <button
               v-if="selectedLibrary || selectedGenre || selectedTag"
               type="button"
-              class="inline-flex items-center gap-1 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+              class="md-chip md-chip-selected md-state"
               @click="clearScopeFilters"
             >
               <span>{{ t('nav.all') }}</span>
               <LuX class="h-3 w-3" />
             </button>
           </div>
-          <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">
+          <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             {{ pageSubtitle }}
           </p>
         </div>
@@ -300,7 +312,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
         <template v-if="activeTab === 'songs' && tracks.length > 0">
           <button
             type="button"
-            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-4 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+            class="md-btn md-btn-filled md-btn-sm md-state"
             @click="playerStore.playQueue(tracks, 0)"
           >
             <LuPlay class="h-3.5 w-3.5 fill-current" />
@@ -308,7 +320,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           </button>
           <button
             type="button"
-            class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2 text-xs font-semibold text-[var(--ctp-text)] transition hover:bg-[var(--ctp-surface0)]"
+            class="md-btn md-btn-tonal md-btn-sm md-state"
             @click="playerStore.shuffleAndPlay(tracks)"
           >
             <LuShuffle class="h-3.5 w-3.5" />
@@ -321,44 +333,12 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
 
     <!-- Songs / Albums / Artists Tabs -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="inline-flex gap-1 rounded-2xl bg-[var(--ctp-shell)] p-1">
-        <button
-          type="button"
-          class="rounded-xl px-4 py-2 text-xs font-semibold transition"
-          :class="
-            activeTab === 'songs'
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-          "
-          @click="selectTab('songs')"
-        >
-          {{ t('nav.songs') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-xl px-4 py-2 text-xs font-semibold transition"
-          :class="
-            activeTab === 'albums'
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-          "
-          @click="selectTab('albums')"
-        >
-          {{ t('nav.albums') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-xl px-4 py-2 text-xs font-semibold transition"
-          :class="
-            activeTab === 'artists'
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-          "
-          @click="selectTab('artists')"
-        >
-          {{ t('nav.artists') }}
-        </button>
-      </div>
+      <MdSegmentedButton
+        :model-value="activeTab"
+        :options="catalogTabOptions"
+        size="md"
+        @update:model-value="selectTab($event)"
+      />
     </div>
 
     <!-- 1. SONGS TAB -->
@@ -369,13 +349,13 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
       >
         <div class="relative">
           <LuSearch
-            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
           />
           <input
             v-model="search"
             type="text"
             :placeholder="t('common.filterPlaceholder')"
-            class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pl-8.5 pr-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
             @input="tracksPage = 1; fetchSongs()"
           />
         </div>
@@ -410,7 +390,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
 
       <div
         v-if="tracks.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('common.noResults') }}
       </div>
@@ -418,7 +398,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
 
       <div
         v-if="tracksTotalPages > 1"
-        class="flex items-center justify-between pt-2 text-xs text-[var(--ctp-subtext0)]"
+        class="flex items-center justify-between pt-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         <span>
           {{ t('common.pageInfo', { page: tracksPage, totalPages: tracksTotalPages, total: tracksTotal }) }}
@@ -427,7 +407,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           <button
             type="button"
             :disabled="tracksPage <= 1"
-            class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 py-1.5 font-medium text-[var(--ctp-text)] disabled:opacity-40"
+            class="md-btn md-btn-outlined md-btn-sm md-state"
             @click="tracksPage -= 1; fetchSongs()"
           >
             {{ t('common.prevPage') }}
@@ -435,7 +415,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           <button
             type="button"
             :disabled="tracksPage >= tracksTotalPages"
-            class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 py-1.5 font-medium text-[var(--ctp-text)] disabled:opacity-40"
+            class="md-btn md-btn-outlined md-btn-sm md-state"
             @click="tracksPage += 1; fetchSongs()"
           >
             {{ t('common.nextPage') }}
@@ -449,13 +429,13 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
       <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
         <div class="relative">
           <LuSearch
-            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
           />
           <input
             v-model="search"
             type="text"
             :placeholder="t('common.filterPlaceholder')"
-            class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pl-8.5 pr-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
             @input="albumsPage = 1; fetchAlbums()"
           />
         </div>
@@ -482,7 +462,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
 
       <div
         v-if="albums.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('common.noResults') }}
       </div>
@@ -492,7 +472,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
 
       <div
         v-if="albumsTotalPages > 1"
-        class="flex items-center justify-between pt-2 text-xs text-[var(--ctp-subtext0)]"
+        class="flex items-center justify-between pt-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         <span>
           {{ t('common.pageInfo', { page: albumsPage, totalPages: albumsTotalPages, total: albumsTotal }) }}
@@ -501,7 +481,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           <button
             type="button"
             :disabled="albumsPage <= 1"
-            class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 py-1.5 font-medium text-[var(--ctp-text)] disabled:opacity-40"
+            class="md-btn md-btn-outlined md-btn-sm md-state"
             @click="albumsPage -= 1; fetchAlbums()"
           >
             {{ t('common.prevPage') }}
@@ -509,7 +489,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           <button
             type="button"
             :disabled="albumsPage >= albumsTotalPages"
-            class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3 py-1.5 font-medium text-[var(--ctp-text)] disabled:opacity-40"
+            class="md-btn md-btn-outlined md-btn-sm md-state"
             @click="albumsPage += 1; fetchAlbums()"
           >
             {{ t('common.nextPage') }}
@@ -523,13 +503,13 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
       <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:max-w-xl">
         <div class="relative">
           <LuSearch
-            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
           />
           <input
             v-model="search"
             type="text"
             :placeholder="t('common.filterPlaceholder')"
-            class="h-9 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pl-8.5 pr-3 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
             @input="fetchArtists"
           />
         </div>
@@ -543,7 +523,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
 
       <div
         v-if="artists.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('common.noResults') }}
       </div>
@@ -552,7 +532,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
         <div
           v-for="ar in artists"
           :key="ar.id"
-          class="group relative flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--ctp-mantle)]"
+          class="group relative flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--md-sys-color-surface-container)]"
           @click="router.push(`/music/artists/${ar.id}`)"
         >
           <div class="relative mb-3 w-3/4">
@@ -565,37 +545,37 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
             />
             <button
               type="button"
-              class="absolute right-0 bottom-0 flex h-7 w-7 items-center justify-center rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow transition hover:scale-110"
+              class="md-icon-btn md-icon-btn-sm md-state absolute right-0 bottom-0 h-7 w-7 border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface)] shadow-[var(--md-sys-elevation-1)] transition hover:scale-110"
               @click.stop="musicStore.toggleArtistStar(ar)"
             >
               <LuHeart
                 class="h-3.5 w-3.5"
                 :class="
                   ar.starred_at
-                    ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]'
-                    : 'text-[var(--ctp-subtext0)]'
+                    ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
+                    : 'text-[var(--md-sys-color-on-surface-variant)]'
                 "
               />
             </button>
           </div>
 
-          <h3 class="w-full truncate text-xs font-bold text-[var(--ctp-text)]">
+          <h3 class="w-full truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
             {{ ar.name }}
           </h3>
-          <p class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
+          <p class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('common.albumsCount', { count: ar.album_count }) }} ·
             {{ t('common.tracksCount', { count: ar.track_count }) }}
           </p>
           <div class="mt-1.5 flex flex-wrap justify-center gap-1">
             <span
               v-if="ar.is_album_artist"
-              class="rounded-md bg-[var(--ctp-accent-soft)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--ctp-accent)]"
+              class="rounded-md bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
             >
               {{ t('catalog.badgeAlbumArtist') }}
             </span>
             <span
               v-if="ar.is_track_artist && !ar.is_album_artist"
-              class="rounded-md bg-[var(--ctp-surface0)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--ctp-subtext1)]"
+              class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ t('catalog.badgeTrackArtist') }}
             </span>

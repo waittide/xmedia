@@ -306,13 +306,13 @@ async function refreshPage(): Promise<void> {
 
 <template>
   <div class="mx-auto max-w-6xl px-6 py-6 sm:px-8">
-    <!-- Top Filter & View Controls Bar (BeePub BookBrowser style) -->
+    <!-- Top Filter & View Controls Bar -->
     <div class="mb-6 space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <!-- Left: Sort & Filter Pill Triggers + Active Filter Chips -->
         <div class="flex flex-wrap items-center gap-2">
-          <div class="inline-flex h-8 items-center gap-1.5 rounded-full bg-[var(--ctp-mantle)] px-3 text-xs font-medium text-[var(--ctp-subtext1)]">
-            <LuArrowUpDown class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
+          <div class="inline-flex h-8 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-surface-container)] px-3 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
+            <LuArrowUpDown class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
             <AppSelect
               :model-value="catalogStore.sortBy"
               :options="sortOptions"
@@ -321,7 +321,7 @@ async function refreshPage(): Promise<void> {
             />
             <button
               type="button"
-              class="ml-1 rounded px-1 text-[11px] font-semibold text-[var(--ctp-accent)] hover:bg-[var(--ctp-surface0)]"
+              class="ml-1 rounded px-1 text-[11px] font-semibold text-[var(--md-sys-color-primary)] hover:bg-[var(--md-sys-color-surface-container-highest)]"
               @click="
                 catalogStore.sortOrder = catalogStore.sortOrder === 'desc' ? 'asc' : 'desc';
                 triggerRefetch()
@@ -333,12 +333,8 @@ async function refreshPage(): Promise<void> {
 
           <button
             type="button"
-            class="inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition"
-            :class="
-              showFilters || hasFilterPills
-                ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                : 'bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]'
-            "
+            class="md-chip md-state !rounded-full"
+            :class="showFilters || hasFilterPills ? 'md-chip-selected' : ''"
             @click="showFilters = !showFilters"
           >
             <LuSlidersHorizontal class="h-3.5 w-3.5" />
@@ -350,7 +346,7 @@ async function refreshPage(): Promise<void> {
             v-for="fmt in catalogStore.filterFormats"
             :key="`fmt-${fmt}`"
             type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 text-xs font-medium text-[var(--ctp-accent)]"
+            class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5"
             @click="removeFormatChip(fmt)"
           >
             <span>{{ fmt.toUpperCase() }}</span>
@@ -361,7 +357,7 @@ async function refreshPage(): Promise<void> {
             v-for="libId in catalogStore.filterLibraryIds"
             :key="`lib-${libId}`"
             type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 text-xs font-medium text-[var(--ctp-accent)]"
+            class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5"
             @click="removeLibraryChip(libId)"
           >
             <span>{{ resolveLibraryName(libId) }}</span>
@@ -372,7 +368,7 @@ async function refreshPage(): Promise<void> {
             v-for="author in catalogStore.filterAuthors"
             :key="`au-${author}`"
             type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 text-xs font-medium text-[var(--ctp-accent)]"
+            class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5"
             @click="removeAuthorChip(author)"
           >
             <span>{{ author }}</span>
@@ -382,7 +378,7 @@ async function refreshPage(): Promise<void> {
           <button
             v-if="catalogStore.filterTags.length > 1"
             type="button"
-            class="inline-flex h-7 items-center rounded-full border border-[var(--ctp-accent)]/50 bg-[var(--ctp-canvas)] px-2 text-[11px] font-bold text-[var(--ctp-accent)]"
+            class="md-chip md-state !h-7 !rounded-full !border-[var(--md-sys-color-primary)]/50 !px-2 !text-[11px] font-bold !text-[var(--md-sys-color-primary)]"
             @click="
               catalogStore.filterTagMode = catalogStore.filterTagMode === 'any' ? 'all' : 'any';
               triggerRefetch()
@@ -395,7 +391,7 @@ async function refreshPage(): Promise<void> {
             v-for="tg in catalogStore.filterTags"
             :key="`tg-${tg}`"
             type="button"
-            class="inline-flex h-7 items-center gap-1 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 text-xs font-medium text-[var(--ctp-accent)]"
+            class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5"
             @click="removeTagChip(tg)"
           >
             <span>#{{ tg }}</span>
@@ -405,20 +401,20 @@ async function refreshPage(): Promise<void> {
 
         <!-- Right: Count + Refresh + Grid/Table Switcher -->
         <div class="flex items-center gap-2.5">
-          <span class="text-xs text-[var(--ctp-subtext0)]">
+          <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('catalog.totalBooks', { count: catalogStore.total }) }}
           </span>
 
           <RefreshButton :action="refreshPage" :busy="catalogStore.loading" />
 
-          <div class="flex items-center rounded-xl bg-[var(--ctp-mantle)] p-0.5">
+          <div class="flex items-center rounded-full bg-[var(--md-sys-color-surface-container)] p-0.5">
             <button
               type="button"
-              class="flex h-7 w-8 items-center justify-center rounded-lg transition"
+              class="md-state flex h-7 w-8 items-center justify-center rounded-full transition"
               :class="
                 catalogStore.viewMode === 'grid'
-                  ? 'bg-[var(--ctp-canvas)] text-[var(--ctp-accent)] shadow-sm'
-                  : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'
+                  ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                  : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
               "
               :title="t('catalog.gridView')"
               @click="catalogStore.setViewMode('grid')"
@@ -427,11 +423,11 @@ async function refreshPage(): Promise<void> {
             </button>
             <button
               type="button"
-              class="flex h-7 w-8 items-center justify-center rounded-lg transition"
+              class="md-state flex h-7 w-8 items-center justify-center rounded-full transition"
               :class="
                 catalogStore.viewMode === 'list'
-                  ? 'bg-[var(--ctp-canvas)] text-[var(--ctp-accent)] shadow-sm'
-                  : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'
+                  ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                  : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
               "
               :title="t('catalog.tableView')"
               @click="catalogStore.setViewMode('list')"
@@ -445,7 +441,7 @@ async function refreshPage(): Promise<void> {
       <!-- Expandable Multi-Select Filter Drawer Bar -->
       <div
         v-if="showFilters"
-        class="card-soft space-y-3 rounded-2xl bg-[var(--ctp-shell)] p-4"
+        class="md-card-filled space-y-3 p-4"
       >
         <div
           class="grid grid-cols-1 gap-3"
@@ -475,14 +471,14 @@ async function refreshPage(): Promise<void> {
             @update:model-value="(vals) => { catalogStore.filterTags = vals; triggerRefetch() }"
           >
             <template #header>
-              <div class="grid grid-cols-2 gap-1 rounded-xl bg-[var(--ctp-mantle)] p-0.5 text-[11px] font-semibold">
+              <div class="grid grid-cols-2 gap-1 rounded-full bg-[var(--md-sys-color-surface-container)] p-0.5 text-[11px] font-semibold">
                 <button
                   type="button"
-                  class="rounded-lg py-1 transition"
+                  class="rounded-full py-1 transition"
                   :class="
                     catalogStore.filterTagMode === 'any'
-                      ? 'bg-[var(--ctp-canvas)] text-[var(--ctp-accent)] shadow-sm'
-                      : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'
+                      ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                      : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
                   "
                   @click="catalogStore.filterTagMode = 'any'; triggerRefetch()"
                 >
@@ -490,11 +486,11 @@ async function refreshPage(): Promise<void> {
                 </button>
                 <button
                   type="button"
-                  class="rounded-lg py-1 transition"
+                  class="rounded-full py-1 transition"
                   :class="
                     catalogStore.filterTagMode === 'all'
-                      ? 'bg-[var(--ctp-canvas)] text-[var(--ctp-accent)] shadow-sm'
-                      : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'
+                      ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                      : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
                   "
                   @click="catalogStore.filterTagMode = 'all'; triggerRefetch()"
                 >
@@ -514,7 +510,7 @@ async function refreshPage(): Promise<void> {
           />
         </div>
 
-        <div class="flex items-center justify-between border-t border-[var(--ctp-surface0)]/60 pt-2.5">
+        <div class="flex items-center justify-between border-t border-[var(--md-sys-color-outline-variant)]/55 pt-2.5">
           <AppCheckbox
             v-model="catalogStore.includeMissing"
             :label="t('search.includeMissing')"
@@ -523,7 +519,7 @@ async function refreshPage(): Promise<void> {
           <button
             v-if="hasFilterPills"
             type="button"
-            class="text-xs font-semibold text-[var(--ctp-accent)] hover:underline"
+            class="text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
             @click="catalogStore.resetFilters()"
           >
             {{ t('search.reset') }}
@@ -531,26 +527,26 @@ async function refreshPage(): Promise<void> {
         </div>
       </div>
 
-      <!-- Selection Bulk Toolbar (Teldrive FileSelectionToolbar style) -->
+      <!-- Selection Bulk Toolbar -->
       <div
         v-if="catalogStore.selectedBookIds.size > 0"
-        class="flex items-center justify-between rounded-2xl bg-[var(--ctp-accent-soft)] px-4 py-2 text-xs"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-secondary-container)] px-4 py-2 text-xs text-[var(--md-sys-color-on-secondary-container)]"
       >
-        <span class="font-semibold text-[var(--ctp-accent)]">
+        <span class="font-semibold">
           {{ t('catalog.selectedCount', { count: catalogStore.selectedBookIds.size }) }}
         </span>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
-            class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2.5 py-1 font-medium text-[var(--ctp-text)] shadow-sm"
+            class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm"
             @click="batchFavorite(true)"
           >
-            <LuHeart class="h-3.5 w-3.5 text-[var(--ctp-red)]" />
+            <LuHeart class="h-3.5 w-3.5 text-[var(--md-sys-color-error)]" />
             <span>{{ t('catalog.batchStar') }}</span>
           </button>
           <button
             type="button"
-            class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2.5 py-1 font-medium text-[var(--ctp-subtext1)] shadow-sm hover:text-[var(--ctp-text)]"
+            class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)] shadow-sm hover:text-[var(--md-sys-color-on-surface)]"
             @click="batchFavorite(false)"
           >
             <span>{{ t('catalog.batchUnstar') }}</span>
@@ -558,15 +554,15 @@ async function refreshPage(): Promise<void> {
           <button
             v-if="authStore.isAdmin"
             type="button"
-            class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-canvas)] px-2.5 py-1 font-medium text-[var(--ctp-text)] shadow-sm"
+            class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm"
             @click="batchAddTag"
           >
-            <LuTag class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+            <LuTag class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
             <span>{{ t('catalog.batchAddTag') }}</span>
           </button>
           <button
             type="button"
-            class="rounded-lg px-2 py-1 text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]"
+            class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-secondary-container)]"
             @click="catalogStore.clearSelection()"
           >
             {{ t('catalog.clearSelection') }}
@@ -578,16 +574,16 @@ async function refreshPage(): Promise<void> {
     <!-- Empty State -->
     <div
       v-if="!catalogStore.loading && catalogStore.books.length === 0"
-      class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] py-20 text-center"
+      class="md-card-filled flex flex-col items-center justify-center rounded-3xl py-20 text-center"
     >
-      <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]">
+      <div class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]">
         <LuBookOpen class="h-7 w-7" />
       </div>
       <h3 class="text-base font-bold">{{ t('catalog.emptyTitle') }}</h3>
-      <p class="mt-1 max-w-sm text-xs text-[var(--ctp-subtext0)]">{{ t('catalog.emptyHint') }}</p>
+      <p class="mt-1 max-w-sm text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ t('catalog.emptyHint') }}</p>
     </div>
 
-    <!-- Cover Grid View (BeePub BookGrid) -->
+    <!-- Cover Grid View -->
     <div
       v-else-if="catalogStore.viewMode === 'grid'"
       class="grid grid-cols-2 gap-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
@@ -599,14 +595,14 @@ async function refreshPage(): Promise<void> {
       />
     </div>
 
-    <!-- Clean Data Table View (BeePub BookTable + Teldrive FileBrowser) -->
+    <!-- Clean Data Table View -->
     <div
       v-else
-      class="card-soft overflow-hidden rounded-2xl bg-[var(--ctp-shell)]"
+      class="md-card-filled overflow-hidden"
     >
       <table class="w-full border-collapse text-left text-sm">
         <thead>
-          <tr class="border-b border-[var(--ctp-surface0)]/70 text-xs text-[var(--ctp-subtext0)]">
+          <tr class="border-b border-[var(--md-sys-color-outline-variant)]/55 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             <th class="w-10 py-3 pl-4">
               <AppCheckbox
                 :model-value="allCurrentSelected"
@@ -621,11 +617,11 @@ async function refreshPage(): Promise<void> {
             <th class="hidden py-3 pr-4 text-right font-medium sm:table-cell">{{ t('catalog.colSize') }}</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-[var(--ctp-surface0)]/50">
+        <tbody class="divide-y divide-[var(--md-sys-color-outline-variant)]/40">
           <tr
             v-for="book in catalogStore.books"
             :key="book.id"
-            class="group cursor-pointer transition hover:bg-[var(--ctp-canvas)]"
+            class="group cursor-pointer transition hover:bg-[var(--md-sys-color-surface-container-high)]/65"
             @click="router.push(`/book/items/${book.id}`)"
           >
             <td class="py-2.5 pl-4" @click.stop>
@@ -637,8 +633,8 @@ async function refreshPage(): Promise<void> {
             <td class="py-2.5 pr-2" @click.stop>
               <button
                 type="button"
-                class="text-[var(--ctp-subtext0)] transition hover:scale-110"
-                :class="book.is_favorite ? '!text-[var(--ctp-red)]' : ''"
+                class="text-[var(--md-sys-color-on-surface-variant)] transition hover:scale-110"
+                :class="book.is_favorite ? '!text-[var(--md-sys-color-error)]' : ''"
                 @click="toggleBookFavorite(book)"
               >
                 <LuHeart class="h-4 w-4" :class="book.is_favorite ? 'fill-current' : ''" />
@@ -653,14 +649,14 @@ async function refreshPage(): Promise<void> {
                   class="h-10 w-7 shrink-0 rounded object-cover shadow-sm"
                 />
                 <div class="min-w-0">
-                  <p class="truncate font-semibold text-[var(--ctp-text)] group-hover:text-[var(--ctp-accent)]">
+                  <p class="truncate font-semibold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]">
                     {{ book.metadata.title }}
                   </p>
                   <div v-if="book.metadata.tags.length > 0" class="mt-0.5 flex gap-1">
                     <span
                       v-for="tg in book.metadata.tags.slice(0, 2)"
                       :key="tg"
-                      class="rounded bg-[var(--ctp-surface0)]/60 px-1.5 py-0.2 text-[10px] text-[var(--ctp-subtext1)]"
+                      class="rounded bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
                     >
                       {{ tg }}
                     </span>
@@ -668,21 +664,21 @@ async function refreshPage(): Promise<void> {
                 </div>
               </div>
             </td>
-            <td class="hidden py-2.5 pr-4 text-xs text-[var(--ctp-subtext1)] md:table-cell">
+            <td class="hidden py-2.5 pr-4 text-xs text-[var(--md-sys-color-on-surface-variant)] md:table-cell">
               {{ book.metadata.authors.join(', ') || t('catalog.unknownAuthor') }}
             </td>
             <td class="hidden py-2.5 pr-4 text-xs sm:table-cell">
-              <span v-if="book.progress" class="font-medium text-[var(--ctp-accent)]">
+              <span v-if="book.progress" class="font-medium text-[var(--md-sys-color-primary)]">
                 {{ Math.round(book.progress.progress_percent) }}%
               </span>
-              <span v-else class="text-[var(--ctp-subtext0)]">—</span>
+              <span v-else class="text-[var(--md-sys-color-on-surface-variant)]">—</span>
             </td>
             <td class="py-2.5 pr-4">
-              <span class="rounded-md bg-[var(--ctp-mantle)] px-2 py-0.5 text-[10px] font-bold uppercase text-[var(--ctp-subtext1)]">
+              <span class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-bold uppercase text-[var(--md-sys-color-on-surface-variant)]">
                 {{ book.format }}
               </span>
             </td>
-            <td class="hidden py-2.5 pr-4 text-right text-xs text-[var(--ctp-subtext0)] sm:table-cell">
+            <td class="hidden py-2.5 pr-4 text-right text-xs text-[var(--md-sys-color-on-surface-variant)] sm:table-cell">
               {{ formatBytes(book.file_size) }}
             </td>
           </tr>
@@ -698,19 +694,19 @@ async function refreshPage(): Promise<void> {
       <button
         type="button"
         :disabled="catalogStore.page <= 1"
-        class="inline-flex h-9 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] px-3 text-xs font-medium disabled:opacity-35"
+        class="md-btn md-btn-sm md-btn-outlined md-state"
         @click="goPage(catalogStore.page - 1)"
       >
         <LuChevronLeft class="h-4 w-4" />
         <span>{{ t('catalog.prevPage') }}</span>
       </button>
-      <span class="text-xs text-[var(--ctp-subtext0)]">
+      <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('catalog.pageInfo', { page: catalogStore.page, totalPages }) }}
       </span>
       <button
         type="button"
         :disabled="catalogStore.page >= totalPages"
-        class="inline-flex h-9 items-center gap-1 rounded-xl border border-[var(--ctp-surface0)] px-3 text-xs font-medium disabled:opacity-35"
+        class="md-btn md-btn-sm md-btn-outlined md-state"
         @click="goPage(catalogStore.page + 1)"
       >
         <span>{{ t('catalog.nextPage') }}</span>

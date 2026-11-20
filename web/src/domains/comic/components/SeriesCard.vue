@@ -47,7 +47,7 @@ function quickRead(ev: MouseEvent): void {
     @click="openDetail"
   >
     <div
-      class="book-shadow relative aspect-[2/3] w-full overflow-hidden rounded-xl bg-[var(--bg-mantle)]"
+      class="book-shadow relative aspect-[2/3] w-full overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)]"
     >
       <img
         v-if="series.cover_url"
@@ -59,7 +59,7 @@ function quickRead(ev: MouseEvent): void {
       />
       <div
         v-else
-        class="flex h-full w-full flex-col items-center justify-center gap-2 p-4 text-center text-[var(--text-secondary)]"
+        class="flex h-full w-full flex-col items-center justify-center gap-2 p-4 text-center text-[var(--md-sys-color-on-surface-variant)]"
       >
         <LuBookOpen class="h-8 w-8 opacity-55" />
         <span class="line-clamp-2 text-xs font-medium">{{ series.title }}</span>
@@ -68,13 +68,13 @@ function quickRead(ev: MouseEvent): void {
       <!-- Top Badges -->
       <div class="absolute top-2 right-2 left-2 flex items-center justify-between gap-1">
         <span
-          class="rounded-md bg-black/65 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-xs"
+          class="rounded-full bg-black/65 px-2 py-0.5 text-[10px] font-semibold text-white backdrop-blur-xs"
         >
           {{ t('home.chaptersCount', { count: series.chapter_count }) }}
         </span>
         <span
           v-if="series.is_favorite"
-          class="flex h-6 w-6 items-center justify-center rounded-full bg-rose-500/90 text-white shadow-sm"
+          class="flex h-6 w-6 items-center justify-center rounded-full bg-[var(--md-sys-color-error)] text-[var(--md-sys-color-on-error)] shadow-[var(--md-sys-elevation-1)]"
         >
           <LuHeart class="h-3 w-3 fill-current" />
         </span>
@@ -84,7 +84,7 @@ function quickRead(ev: MouseEvent): void {
       <button
         v-if="series.continue_reading"
         type="button"
-        class="absolute right-2.5 bottom-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-[var(--accent)] text-[var(--accent-contrast)] opacity-0 shadow-lg transition group-hover:opacity-100 hover:scale-105"
+        class="md-state absolute right-2.5 bottom-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] opacity-0 shadow-[var(--md-sys-elevation-2)] transition group-hover:opacity-100 hover:scale-105"
         @click="quickRead"
       >
         <LuPlay class="h-4 w-4 fill-current" />
@@ -96,7 +96,7 @@ function quickRead(ev: MouseEvent): void {
         class="absolute right-0 bottom-0 left-0 h-1 bg-black/40"
       >
         <div
-          class="h-full bg-[var(--accent)] transition-all"
+          class="h-full bg-[var(--md-sys-color-primary)] transition-all"
           :style="{ width: progressPercent + '%' }"
         />
       </div>
@@ -104,11 +104,11 @@ function quickRead(ev: MouseEvent): void {
 
     <div class="min-w-0 px-0.5">
       <div
-        class="line-clamp-1 text-sm font-semibold text-[var(--text-primary)] transition group-hover:text-[var(--accent)]"
+        class="line-clamp-1 text-sm font-semibold text-[var(--md-sys-color-on-surface)] transition group-hover:text-[var(--md-sys-color-primary)]"
       >
         {{ series.title }}
       </div>
-      <div class="mt-0.5 line-clamp-1 text-xs text-[var(--text-secondary)]">
+      <div class="mt-0.5 line-clamp-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
         {{
           subtitleOverride ||
           [...series.writers, ...series.pencillers].join(' · ') ||

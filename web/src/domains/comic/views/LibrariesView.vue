@@ -7,7 +7,7 @@ import { api } from '@/domains/comic/api'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useUploadStore } from '@/stores/uploads'
-import AppDialog from '@/components/ui/AppDialog.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { Library } from '@/domains/comic/types'
 
@@ -101,8 +101,12 @@ async function removeLibrary(lib: Library): Promise<void> {
   <div class="mx-auto max-w-5xl space-y-6 p-6 sm:p-8">
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h2 class="text-lg font-bold text-[var(--text-primary)]">{{ t('libraries.title') }}</h2>
-        <p class="text-xs text-[var(--text-secondary)]">{{ t('libraries.subtitle') }}</p>
+        <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
+          {{ t('libraries.title') }}
+        </h2>
+        <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          {{ t('libraries.subtitle') }}
+        </p>
       </div>
 
       <div class="flex items-center gap-2.5">
@@ -112,26 +116,29 @@ async function removeLibrary(lib: Library): Promise<void> {
           <button
             type="button"
             :disabled="scanningAll"
-          class="inline-flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-3.5 py-2 text-xs font-semibold text-[var(--text-primary)] hover:bg-[var(--surface-hover)] disabled:opacity-50"
-          @click="scanAll"
-        >
-          <LuRefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': scanningAll }" />
-          <span>{{ t('libraries.scanAll') }}</span>
-        </button>
+            class="md-btn md-btn-sm md-btn-tonal md-state"
+            @click="scanAll"
+          >
+            <LuRefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': scanningAll }" />
+            <span>{{ t('libraries.scanAll') }}</span>
+          </button>
 
-        <button
-          type="button"
-          class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)] px-4 py-2 text-xs font-semibold text-[var(--accent-contrast)] hover:opacity-90"
-          @click="createOpen = true"
-        >
-          <LuPlus class="h-4 w-4" />
-          <span>{{ t('libraries.addLibrary') }}</span>
-        </button>
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            @click="createOpen = true"
+          >
+            <LuPlus class="h-4 w-4" />
+            <span>{{ t('libraries.addLibrary') }}</span>
+          </button>
         </template>
       </div>
     </div>
 
-    <p v-if="errorMsg" class="rounded-xl bg-red-500/10 px-4 py-2.5 text-xs text-red-500">
+    <p
+      v-if="errorMsg"
+      class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-2.5 text-xs font-medium text-[var(--md-sys-color-on-error-container)]"
+    >
       {{ errorMsg }}
     </p>
 
@@ -139,29 +146,34 @@ async function removeLibrary(lib: Library): Promise<void> {
       <div
         v-for="lib in libraries"
         :key="lib.id"
-        class="flex flex-col justify-between gap-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-surface)] p-5"
+        class="md-card-filled flex flex-col justify-between gap-4 border border-[var(--md-sys-color-outline-variant)]/50 p-5"
       >
         <div class="space-y-2">
           <div class="flex items-center justify-between gap-2">
             <button
               type="button"
-              class="flex items-center gap-2.5 text-left text-base font-bold text-[var(--text-primary)] hover:text-[var(--accent)]"
+              class="flex items-center gap-2.5 text-left text-base font-bold text-[var(--md-sys-color-on-surface)] transition hover:text-[var(--md-sys-color-primary)]"
               @click="router.push({ path: '/comic/series', query: { library_id: lib.id } })"
             >
-              <LuFolderOpen class="h-5 w-5 text-[var(--accent)]" />
+              <LuFolderOpen class="h-5 w-5 text-[var(--md-sys-color-primary)]" />
               <span>{{ lib.name }}</span>
             </button>
-            <span class="rounded-full bg-[var(--bg-mantle)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--text-secondary)]">
+            <span
+              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+            >
               {{ lib.kind === 'managed_upload' ? t('libraries.kindManaged') : t('libraries.kindLocal') }}
             </span>
           </div>
 
-          <div class="truncate font-mono text-xs text-[var(--text-secondary)]">
+          <div class="truncate font-mono text-xs text-[var(--md-sys-color-on-surface-variant)]">
             {{ lib.root_path }}
           </div>
 
-          <div class="text-xs text-[var(--text-secondary)]">
-            <span v-if="lib.scan_state.state === 'scanning'" class="text-[var(--accent)]">
+          <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+            <span
+              v-if="lib.scan_state.state === 'scanning'"
+              class="font-medium text-[var(--md-sys-color-primary)]"
+            >
               {{ t('libraries.stateScanning') }}
             </span>
             <span v-else-if="lib.scan_state.state === 'completed'">
@@ -172,7 +184,10 @@ async function removeLibrary(lib: Library): Promise<void> {
                 })
               }}
             </span>
-            <span v-else-if="lib.scan_state.state === 'failed'" class="text-red-500">
+            <span
+              v-else-if="lib.scan_state.state === 'failed'"
+              class="text-[var(--md-sys-color-error)]"
+            >
               {{ t('libraries.stateFailed', { error: lib.scan_state.error }) }}
             </span>
             <span v-else>{{ t('libraries.stateIdle') }}</span>
@@ -181,12 +196,12 @@ async function removeLibrary(lib: Library): Promise<void> {
 
         <div
           v-if="auth.isAdmin && lib.kind !== 'managed_upload'"
-          class="flex items-center justify-end gap-2 border-t border-[var(--border-subtle)] pt-3"
+          class="flex items-center justify-end gap-2 border-t border-[var(--md-sys-color-outline-variant)]/50 pt-3"
         >
           <button
             type="button"
             :disabled="scanningIds[lib.id]"
-            class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--accent)]/12 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/20 disabled:opacity-50"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
             @click="scanSingle(lib.id)"
           >
             <LuRefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': scanningIds[lib.id] }" />
@@ -195,7 +210,7 @@ async function removeLibrary(lib: Library): Promise<void> {
 
           <button
             type="button"
-            class="rounded-xl p-1.5 text-[var(--text-secondary)] hover:bg-red-500/10 hover:text-red-500"
+            class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
             @click="removeLibrary(lib)"
           >
             <LuTrash2 class="h-4 w-4" />
@@ -204,52 +219,54 @@ async function removeLibrary(lib: Library): Promise<void> {
       </div>
     </div>
 
-    <AppDialog
+    <MdDialog
       :open="createOpen"
       :title="t('libraries.addLibrary')"
-      max-width-class="max-w-md"
+      max-width="max-w-md"
       @close="createOpen = false"
     >
       <div class="space-y-4">
         <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
             {{ t('libraries.nameLabel') }}
           </label>
           <input
             v-model="newName"
             type="text"
             :placeholder="t('libraries.namePlaceholder')"
-            class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+            class="md-input h-10 w-full text-sm"
           />
         </div>
         <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--text-primary)]">
+          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
             {{ t('libraries.pathLabel') }}
           </label>
           <input
             v-model="newPath"
             type="text"
             :placeholder="t('libraries.pathPlaceholder')"
-            class="w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-base)] px-3.5 py-2 font-mono text-sm text-[var(--text-primary)] focus:border-[var(--accent)] focus:outline-none"
+            class="md-input h-10 w-full font-mono text-sm"
           />
         </div>
       </div>
       <template #footer>
-        <button
-          type="button"
-          class="rounded-xl border border-[var(--border-subtle)] px-4 py-2 text-sm text-[var(--text-secondary)]"
-          @click="createOpen = false"
-        >
-          {{ t('common.cancel') }}
-        </button>
-        <button
-          type="button"
-          class="rounded-xl bg-[var(--accent)] px-4 py-2 text-sm font-semibold text-[var(--accent-contrast)]"
-          @click="createLibrary"
-        >
-          {{ t('common.save') }}
-        </button>
+        <div class="ml-auto flex items-center gap-2">
+          <button
+            type="button"
+            class="md-btn md-btn-text md-state"
+            @click="createOpen = false"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            class="md-btn md-btn-filled md-state"
+            @click="createLibrary"
+          >
+            {{ t('common.save') }}
+          </button>
+        </div>
       </template>
-    </AppDialog>
+    </MdDialog>
   </div>
 </template>

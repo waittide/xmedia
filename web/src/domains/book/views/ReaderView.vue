@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import {
@@ -15,6 +15,7 @@ import { api } from '@/domains/book/api'
 import { useThemeStore } from '@/stores/theme'
 import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
 import ThemePopover from '@/components/ThemePopover.vue'
+import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import TocTree from '@/domains/book/components/TocTree.vue'
 const EpubReader = defineAsyncComponent(() => import('@/domains/book/readers/EpubReader.vue'))
 const TxtReader = defineAsyncComponent(() => import('@/domains/book/readers/TxtReader.vue'))
@@ -43,6 +44,17 @@ const bookmarkLabel = ref('')
 const epubRef = ref<ReaderHandle | null>(null)
 const txtRef = ref<ReaderHandle | null>(null)
 const pdfRef = ref<ReaderHandle | null>(null)
+
+const flowOptions = computed<SegmentedOption<'paginated' | 'scrolled'>[]>(() => [
+  { value: 'paginated', label: t('reader.paginated') },
+  { value: 'scrolled', label: t('reader.scrolled') },
+])
+
+const fontOptions = computed<SegmentedOption<string>[]>(() => [
+  { value: 'system-ui', label: t('reader.fontSystem') },
+  { value: 'serif', label: t('reader.fontSerif') },
+  { value: 'mono', label: t('reader.fontMono') },
+])
 
 interface PendingProgressPayload {
   progress_percent: number
@@ -201,20 +213,20 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
 </script>
 
 <template>
-  <div class="flex h-screen flex-col overflow-hidden bg-[var(--ctp-shell)] text-[var(--ctp-text)]">
+  <div class="flex h-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)]">
     <!-- Distraction-free Top Reader Control Bar -->
-    <header class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4">
+    <header class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] px-4">
       <div class="flex min-w-0 items-center gap-2.5">
         <button
           type="button"
-          class="flex items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+          class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
           @click="exitReader"
         >
           <LuChevronLeft class="h-4 w-4" />
           <span class="hidden sm:inline">{{ t('reader.backToBook') }}</span>
         </button>
 
-        <div class="h-4 w-px bg-[var(--ctp-surface0)]" />
+        <div class="h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
 
         <div class="min-w-0">
           <h1 class="truncate text-sm font-bold">{{ book?.metadata.title }}</h1>
@@ -224,18 +236,18 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
       <div class="flex items-center gap-1.5">
         <span
           v-if="currentLocation"
-          class="hidden rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--ctp-accent)] sm:inline-block"
+          class="hidden rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-1 text-xs font-semibold text-[var(--md-sys-color-on-primary-container)] sm:inline-block"
         >
           {{ Math.round(currentLocation.progress_percent) }}%
         </span>
 
         <button
           type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-full transition"
+          class="md-icon-btn md-icon-btn-sm md-state !h-9 !w-9"
           :class="
             activePanel === 'toc'
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]'
+              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
           "
           :title="t('reader.toc')"
           @click="togglePanel('toc')"
@@ -245,11 +257,11 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
 
         <button
           type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-full transition"
+          class="md-icon-btn md-icon-btn-sm md-state !h-9 !w-9"
           :class="
             activePanel === 'bookmarks'
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]'
+              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
           "
           :title="t('reader.bookmarks')"
           @click="togglePanel('bookmarks')"
@@ -260,11 +272,11 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
         <button
           v-if="book?.format !== 'pdf'"
           type="button"
-          class="flex h-9 w-9 items-center justify-center rounded-full transition"
+          class="md-icon-btn md-icon-btn-sm md-state !h-9 !w-9"
           :class="
             activePanel === 'typography'
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]'
+              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
           "
           :title="t('reader.typography')"
           @click="togglePanel('typography')"
@@ -278,7 +290,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
 
     <!-- Main Reader Area + Slide-Out Drawer -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
-      <div v-if="loading" class="flex flex-1 items-center justify-center text-sm text-[var(--ctp-subtext0)]">
+      <div v-if="loading" class="flex flex-1 items-center justify-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('reader.loadingBook') }}
       </div>
 
@@ -309,9 +321,9 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
       <!-- Drawer for TOC / Bookmarks / Typography -->
       <aside
         v-if="activePanel !== 'none'"
-        class="absolute bottom-0 right-0 top-0 z-30 flex w-80 flex-col border-l border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] shadow-2xl"
+        class="absolute bottom-0 right-0 top-0 z-30 flex w-80 flex-col border-l border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)]"
       >
-        <div class="flex items-center justify-between border-b border-[var(--ctp-surface0)] px-4 py-3">
+        <div class="flex items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/55 px-4 py-3">
           <h2 class="text-sm font-bold">
             {{
               activePanel === 'toc'
@@ -323,7 +335,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
           </h2>
           <button
             type="button"
-            class="rounded-full p-1 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]"
+            class="md-icon-btn md-icon-btn-sm md-state"
             @click="activePanel = 'none'"
           >
             <LuX class="h-4 w-4" />
@@ -346,11 +358,11 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
               v-model="bookmarkLabel"
               type="text"
               :placeholder="t('reader.bookmarkTitlePlaceholder')"
-              class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-3 py-2 text-xs outline-none focus:border-[var(--ctp-accent)]"
+              class="md-input h-9 w-full text-xs"
             />
             <button
               type="submit"
-              class="flex w-full items-center justify-center gap-1.5 rounded-full bg-[var(--ctp-accent)] py-2 text-xs font-semibold text-[var(--ctp-on-accent)]"
+              class="md-btn md-btn-sm md-btn-filled md-state w-full"
             >
               <LuPlus class="h-3.5 w-3.5" />
               <span>{{ t('reader.addBookmark') }}</span>
@@ -358,27 +370,27 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
           </form>
 
           <div class="flex-1 space-y-2 overflow-y-auto">
-            <p v-if="bookmarks.length === 0" class="py-6 text-center text-xs text-[var(--ctp-subtext0)]">
+            <p v-if="bookmarks.length === 0" class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('reader.noBookmarks') }}
             </p>
             <div
               v-for="bm in bookmarks"
               :key="bm.id"
-              class="group flex items-center justify-between gap-2 rounded-2xl bg-[var(--ctp-mantle)] px-3 py-2.5 text-xs"
+              class="group flex items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-3 py-2.5 text-xs"
             >
               <button
                 type="button"
                 class="min-w-0 flex-1 text-left"
                 @click="jumpToTarget(bm.location.locator, bm.location.scroll_ratio ?? 0)"
               >
-                <div class="truncate font-semibold text-[var(--ctp-text)]">{{ bm.title }}</div>
-                <div class="mt-0.5 text-[11px] text-[var(--ctp-accent)]">
+                <div class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">{{ bm.title }}</div>
+                <div class="mt-0.5 text-[11px] text-[var(--md-sys-color-primary)]">
                   {{ Math.round(bm.location.progress_percent) }}%
                 </div>
               </button>
               <button
                 type="button"
-                class="rounded-full p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-red)]"
+                class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
                 @click="handleRemoveBookmark(bm.id)"
               >
                 <LuTrash2 class="h-3.5 w-3.5" />
@@ -390,66 +402,31 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
         <!-- Typography & Flow Panel -->
         <div v-else class="flex-1 space-y-5 overflow-y-auto p-5 text-xs">
           <div v-if="book?.format === 'epub'">
-            <label class="mb-2 block font-semibold text-[var(--ctp-subtext0)]">
+            <label class="mb-2 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('reader.flowMode') }}
             </label>
-            <div class="grid grid-cols-2 gap-1.5 rounded-full bg-[var(--ctp-mantle)] p-1">
-              <button
-                type="button"
-                class="rounded-full py-1.5 font-semibold transition"
-                :class="
-                  themeStore.reader.flow === 'paginated'
-                    ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                    : 'text-[var(--ctp-subtext1)]'
-                "
-                @click="themeStore.updateReaderPreferences({ flow: 'paginated' })"
-              >
-                {{ t('reader.paginated') }}
-              </button>
-              <button
-                type="button"
-                class="rounded-full py-1.5 font-semibold transition"
-                :class="
-                  themeStore.reader.flow === 'scrolled'
-                    ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                    : 'text-[var(--ctp-subtext1)]'
-                "
-                @click="themeStore.updateReaderPreferences({ flow: 'scrolled' })"
-              >
-                {{ t('reader.scrolled') }}
-              </button>
-            </div>
+            <MdSegmentedButton
+              :model-value="themeStore.reader.flow"
+              :options="flowOptions"
+              class="w-full"
+              @update:model-value="(v) => themeStore.updateReaderPreferences({ flow: v })"
+            />
           </div>
 
           <div>
-            <label class="mb-2 block font-semibold text-[var(--ctp-subtext0)]">
+            <label class="mb-2 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('reader.fontFamily') }}
             </label>
-            <div class="grid grid-cols-3 gap-1.5">
-              <button
-                v-for="opt in [
-                  { k: 'system-ui', label: t('reader.fontSystem') },
-                  { k: 'serif', label: t('reader.fontSerif') },
-                  { k: 'mono', label: t('reader.fontMono') },
-                ]"
-                :key="opt.k"
-                type="button"
-                class="rounded-xl border px-2 py-2 font-medium transition"
-                :class="
-                  themeStore.reader.font_family === opt.k
-                    ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]'
-                "
-                @click="themeStore.updateReaderPreferences({ font_family: opt.k })"
-              >
-                {{ opt.label }}
-              </button>
-            </div>
+            <MdSegmentedButton
+              :model-value="themeStore.reader.font_family"
+              :options="fontOptions"
+              @update:model-value="(v) => themeStore.updateReaderPreferences({ font_family: v })"
+            />
           </div>
 
           <div>
             <div class="mb-1.5 flex justify-between">
-              <span class="font-semibold text-[var(--ctp-subtext0)]">{{ t('reader.fontSize') }}</span>
+              <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.fontSize') }}</span>
               <span>{{ themeStore.reader.font_size }} px</span>
             </div>
             <input
@@ -458,7 +435,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
               max="30"
               step="1"
               :value="themeStore.reader.font_size"
-              class="w-full accent-[var(--ctp-accent)]"
+              class="w-full accent-[var(--md-sys-color-primary)]"
               @input="
                 themeStore.updateReaderPreferences({
                   font_size: Number(($event.target as HTMLInputElement).value),
@@ -469,7 +446,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
 
           <div>
             <div class="mb-1.5 flex justify-between">
-              <span class="font-semibold text-[var(--ctp-subtext0)]">{{ t('reader.lineHeight') }}</span>
+              <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.lineHeight') }}</span>
               <span>{{ themeStore.reader.line_height.toFixed(2) }}</span>
             </div>
             <input
@@ -478,7 +455,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
               max="2.4"
               step="0.05"
               :value="themeStore.reader.line_height"
-              class="w-full accent-[var(--ctp-accent)]"
+              class="w-full accent-[var(--md-sys-color-primary)]"
               @input="
                 themeStore.updateReaderPreferences({
                   line_height: Number(($event.target as HTMLInputElement).value),
@@ -489,7 +466,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
 
           <div>
             <div class="mb-1.5 flex justify-between">
-              <span class="font-semibold text-[var(--ctp-subtext0)]">{{ t('reader.margin') }}</span>
+              <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.margin') }}</span>
               <span>{{ themeStore.reader.margin_px }} px</span>
             </div>
             <input
@@ -498,7 +475,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
               max="120"
               step="8"
               :value="themeStore.reader.margin_px"
-              class="w-full accent-[var(--ctp-accent)]"
+              class="w-full accent-[var(--md-sys-color-primary)]"
               @input="
                 themeStore.updateReaderPreferences({
                   margin_px: Number(($event.target as HTMLInputElement).value),

@@ -14,8 +14,12 @@ import {
   LuRefreshCw,
   LuRepeat,
   LuSearch,
-  LuX,
+  LuSlidersHorizontal,
 } from 'vue-icons-plus/lu'
+import MdDialog from '@/components/ui/MdDialog.vue'
+import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
+import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import ThemePopover from '@/components/ThemePopover.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import OnlineDownloadModal, {
@@ -59,17 +63,45 @@ const savingShelf = ref(false)
 
 const tocOpen = ref(false)
 const tocQuery = ref('')
+const typographyOpen = ref(false)
 const switchSourceOpen = ref(false)
 const searchingAlts = ref(false)
 const altCandidates = ref<AggregatedSearchItemDto[]>([])
 const switchingKey = ref<string | null>(null)
 const downloadOpen = ref(false)
 
-const fontSize = ref(themeStore.reader.font_size || 18)
-const lineHeight = ref(themeStore.reader.line_height || 1.85)
 const maxWidthPx = ref(800)
-
 const contentScrollRef = ref<HTMLElement | null>(null)
+
+// Sync typography preferences directly with themeStore (shared with local book reader)
+const fontSize = computed<number>({
+  get: () => themeStore.reader.font_size || 18,
+  set: (v) => {
+    const clamped = Math.min(30, Math.max(13, Math.round(v)))
+    themeStore.updateReaderPreferences({ font_size: clamped })
+  },
+})
+
+const lineHeight = computed<number>({
+  get: () => themeStore.reader.line_height || 1.85,
+  set: (v) => {
+    const clamped = Math.min(2.4, Math.max(1.3, Number(v.toFixed(2))))
+    themeStore.updateReaderPreferences({ line_height: clamped })
+  },
+})
+
+const fontFamilyStyle = computed(() => {
+  const key = themeStore.reader.font_family
+  if (key === 'serif') return '"Noto Serif SC", "Source Han Serif SC", Georgia, serif'
+  if (key === 'mono') return '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace'
+  return '"Inter", "Noto Sans SC", system-ui, sans-serif'
+})
+
+const fontOptions: SegmentedOption<string>[] = [
+  { value: 'system-ui', label: '无衬线' },
+  { value: 'serif', label: '衬线体' },
+  { value: 'mono', label: '等宽' },
+]
 
 const readableChapters = computed(() =>
   chapters.value.filter((c) => !c.is_volume && Boolean(c.url)),
@@ -117,6 +149,188 @@ const downloadTarget = computed<OnlineDownloadTarget | null>(() => {
   }
 })
 
+function readQueryStr(key: string): string {
+  const val = route.query[key]
+  return typeof val === 'string' ? val : ''
+}
+
+function buildRouteQueryFromCtx(ctx: ReaderContext): Record<string, string> {
+  const q: Record<string, string> = {
+    sourceId: ctx.sourceId,
+    sourceName: ctx.sourceName,
+    bookUrl: ctx.bookUrl,
+    tocUrl: ctx.tocUrl,
+    name: ctx.name,
+    author: ctx.author,
+    chapter: String(ctx.currentChapterIndex || 0),
+  }
+  if (ctx.shelfId) q.shelfId = ctx.shelfId
+  if (ctx.coverUrl) q.coverUrl = ctx.coverUrl
+  return q
+}
+
+function syncContextToUrlAndStorage(ctx: ReaderContext): void {
+  try {
+    sessionStorage.setItem('xmedia_online_reader_ctx', JSON.stringify(ctx))
+  } catch {
+    // ignore storage errors
+  }
+  const nextQuery = buildRouteQueryFromCtx(ctx)
+  const same =
+    Object.keys(nextQuery).length === Object.keys(route.query).length &&
+    Object.entries(nextQuery).every(([k, v]) => route.query[k] === v)
+  if (!same) {
+    void router.replace({ path: route.path, query: nextQuery })
+  }
+}
+
+// Chinese numeral -> Arabic digit helper for fuzzy chapter matching
+const CN_DIGITS: Record<string, number> = {
+  零: 0,
+  〇: 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+}
+const CN_UNITS: Record<string, number> = {
+  十: 10,
+  百: 100,
+  千: 1000,
+  万: 10000,
+}
+
+function parseChineseInt(token: string): number | null {
+  if (!token) return null
+  if (/^\d+$/.test(token)) return Number.parseInt(token, 10)
+  let total = 0
+  let section = 0
+  let number = 0
+  let matched = false
+  for (const ch of token) {
+    if (ch in CN_DIGITS) {
+      number = CN_DIGITS[ch]!
+      matched = true
+    } else if (ch in CN_UNITS) {
+      const unit = CN_UNITS[ch]!
+      matched = true
+      if (unit === 10000) {
+        section = (section + number) * unit
+        total += section
+        section = 0
+        number = 0
+      } else {
+        if (number === 0 && unit === 10) number = 1
+        section += number * unit
+        number = 0
+      }
+    } else {
+      return null
+    }
+  }
+  return matched ? total + section + number : null
+}
+
+function normalizeChapterTitle(raw: string): string {
+  return raw
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}_-]+/gu, '')
+}
+
+function extractChapterSignature(raw: string): { num: number | null; body: string; norm: string } {
+  const cleaned = raw.normalize('NFKC').trim()
+  const norm = normalizeChapterTitle(cleaned)
+  const m = cleaned.match(/^(?:第\s*)?([0-9零〇一二两三四五六七八九十百千万]+)\s*(?:[章回节话卷集幕篇]|[\s.:：、\-]+)(.*)$/i)
+  if (m) {
+    const num = parseChineseInt(m[1] ?? '')
+    const body = normalizeChapterTitle(m[2] ?? '')
+    return { num, body, norm }
+  }
+  return { num: null, body: norm, norm }
+}
+
+function diceSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0
+  if (a === b) return 1
+  if (a.length < 2 || b.length < 2) {
+    return a.includes(b) || b.includes(a) ? 0.6 : 0
+  }
+  const bigrams = new Map<string, number>()
+  for (let i = 0; i < a.length - 1; i += 1) {
+    const bg = a.slice(i, i + 2)
+    bigrams.set(bg, (bigrams.get(bg) ?? 0) + 1)
+  }
+  let overlap = 0
+  for (let i = 0; i < b.length - 1; i += 1) {
+    const bg = b.slice(i, i + 2)
+    const cnt = bigrams.get(bg) ?? 0
+    if (cnt > 0) {
+      overlap += 1
+      bigrams.set(bg, cnt - 1)
+    }
+  }
+  return (2 * overlap) / (a.length - 1 + (b.length - 1))
+}
+
+function matchChapterIndexByTitle(
+  targetTitle: string,
+  list: OnlineChapterItem[],
+  fallbackIdx: number,
+): number {
+  const srcSig = extractChapterSignature(targetTitle)
+  if (!srcSig.norm) return fallbackIdx
+
+  let bestIdx = -1
+  let bestScore = 0
+
+  for (let i = 0; i < list.length; i += 1) {
+    const ch = list[i]
+    if (!ch || ch.is_volume || !ch.url) continue
+    const candSig = extractChapterSignature(ch.title)
+    if (!candSig.norm) continue
+
+    let score = 0
+    if (candSig.norm === srcSig.norm) {
+      score = 1.0
+    } else if (srcSig.body && candSig.body && srcSig.body === candSig.body) {
+      score = srcSig.num !== null && candSig.num === srcSig.num ? 0.98 : 0.9
+    } else if (
+      srcSig.norm.length >= 3 &&
+      candSig.norm.length >= 3 &&
+      (candSig.norm.includes(srcSig.norm) || srcSig.norm.includes(candSig.norm))
+    ) {
+      const ratio = Math.min(srcSig.norm.length, candSig.norm.length) / Math.max(srcSig.norm.length, candSig.norm.length)
+      score = 0.72 + ratio * 0.2
+    } else {
+      const simFull = diceSimilarity(srcSig.norm, candSig.norm)
+      const simBody = srcSig.body && candSig.body ? diceSimilarity(srcSig.body, candSig.body) : 0
+      score = Math.max(simFull, simBody)
+      if (srcSig.num !== null && candSig.num !== null && srcSig.num === candSig.num) {
+        score = Math.max(score, 0.7 + simBody * 0.25)
+      }
+    }
+
+    // Small proximity bonus to break ties in favor of nearby index
+    const dist = Math.abs(i - fallbackIdx)
+    const tieBreaker = Math.max(0, 0.02 - dist * 0.0001)
+    const finalScore = score + tieBreaker
+
+    if (finalScore > bestScore) {
+      bestScore = finalScore
+      bestIdx = i
+    }
+  }
+
+  return bestIdx >= 0 && bestScore >= 0.45 ? bestIdx : fallbackIdx
+}
+
 function buildBookJsCtx(idx: number, title: string): BookJsContextInput {
   const c = readerCtx.value!
   return {
@@ -132,40 +346,114 @@ function buildBookJsCtx(idx: number, title: string): BookJsContextInput {
 }
 
 async function initReader(): Promise<void> {
-  const shelfIdQuery = typeof route.query.shelfId === 'string' ? route.query.shelfId : ''
+  const shelfIdQuery = readQueryStr('shelfId')
+  const sourceIdQuery = readQueryStr('sourceId')
+  const sourceNameQuery = readQueryStr('sourceName')
+  const bookUrlQuery = readQueryStr('bookUrl')
+  const tocUrlQuery = readQueryStr('tocUrl')
+  const nameQuery = readQueryStr('name')
+  const authorQuery = readQueryStr('author')
+  const coverUrlQuery = readQueryStr('coverUrl')
+  const chapterQuery = readQueryStr('chapter')
+  const parsedChapter = chapterQuery ? Number.parseInt(chapterQuery, 10) : NaN
+
+  let storedCtx: ReaderContext | null = null
   const rawStored = sessionStorage.getItem('xmedia_online_reader_ctx')
   if (rawStored) {
     try {
-      const parsed = JSON.parse(rawStored) as ReaderContext
-      if (!shelfIdQuery || parsed.shelfId === shelfIdQuery) {
-        readerCtx.value = parsed
-      }
+      storedCtx = JSON.parse(rawStored) as ReaderContext
     } catch {
-      // ignore invalid storage
+      storedCtx = null
     }
   }
 
-  if (!readerCtx.value && shelfIdQuery) {
-    try {
-      const shelf = await onlineBookApi.listShelf()
-      const found = shelf.find((b) => b.id === shelfIdQuery)
-      if (found) {
-        readerCtx.value = {
-          shelfId: found.id,
-          sourceId: found.source_id,
-          sourceName: found.source_name,
-          name: found.name,
-          author: found.author,
-          bookUrl: found.book_url,
-          tocUrl: found.toc_url,
-          coverUrl: found.cover_url,
-          intro: found.intro,
-          currentChapterIndex: found.current_chapter_index,
-        }
+  // 1. Prefer explicit route query parameters (supports multi-tab & refresh for non-shelf books)
+  if (sourceIdQuery && bookUrlQuery) {
+    const matchesStored =
+      storedCtx &&
+      storedCtx.sourceId === sourceIdQuery &&
+      storedCtx.bookUrl === bookUrlQuery
+
+    let resolvedTocUrl = tocUrlQuery || (matchesStored ? storedCtx!.tocUrl : '')
+    let resolvedName = nameQuery || (matchesStored ? storedCtx!.name : '')
+    let resolvedAuthor = authorQuery || (matchesStored ? storedCtx!.author : '')
+    let resolvedSourceName = sourceNameQuery || (matchesStored ? storedCtx!.sourceName : '')
+    let resolvedCoverUrl = coverUrlQuery || (matchesStored ? storedCtx!.coverUrl : null)
+    let resolvedIntro = matchesStored ? storedCtx!.intro : null
+
+    if (!resolvedTocUrl) {
+      try {
+        const info = await onlineBookApi.fetchBookInfo(sourceIdQuery, bookUrlQuery, {
+          name: resolvedName,
+          author: resolvedAuthor,
+          book_url: bookUrlQuery,
+          toc_url: '',
+          cover_url: resolvedCoverUrl,
+          intro: resolvedIntro,
+        })
+        resolvedTocUrl = info.detail.toc_url
+        resolvedName = info.detail.name || resolvedName
+        resolvedAuthor = info.detail.author || resolvedAuthor
+        resolvedSourceName = info.source_name || resolvedSourceName
+        resolvedCoverUrl = info.detail.cover_url ?? resolvedCoverUrl
+        resolvedIntro = info.detail.intro ?? resolvedIntro
+      } catch {
+        // will be handled below if tocUrl still missing
       }
-    } catch {
-      // ignore
     }
+
+    if (resolvedTocUrl) {
+      readerCtx.value = {
+        shelfId: shelfIdQuery || (matchesStored ? storedCtx!.shelfId : undefined),
+        sourceId: sourceIdQuery,
+        sourceName: resolvedSourceName,
+        name: resolvedName,
+        author: resolvedAuthor,
+        bookUrl: bookUrlQuery,
+        tocUrl: resolvedTocUrl,
+        coverUrl: resolvedCoverUrl,
+        intro: resolvedIntro,
+        currentChapterIndex: Number.isFinite(parsedChapter) && parsedChapter >= 0
+          ? parsedChapter
+          : (matchesStored ? storedCtx!.currentChapterIndex : 0),
+      }
+    }
+  }
+
+  // 2. Resolve from shelfId if not yet constructed
+  if (!readerCtx.value && shelfIdQuery) {
+    if (storedCtx && storedCtx.shelfId === shelfIdQuery) {
+      readerCtx.value = storedCtx
+    } else {
+      try {
+        const shelf = await onlineBookApi.listShelf()
+        const found = shelf.find((b) => b.id === shelfIdQuery)
+        if (found) {
+          readerCtx.value = {
+            shelfId: found.id,
+            sourceId: found.source_id,
+            sourceName: found.source_name,
+            name: found.name,
+            author: found.author,
+            bookUrl: found.book_url,
+            tocUrl: found.toc_url,
+            coverUrl: found.cover_url,
+            intro: found.intro,
+            currentChapterIndex:
+              Number.isFinite(parsedChapter) && parsedChapter >= 0
+                ? parsedChapter
+                : found.current_chapter_index,
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // 3. Fallback to sessionStorage if no query params were provided
+  if (!readerCtx.value && storedCtx && !shelfIdQuery) {
+    readerCtx.value = storedCtx
   }
 
   if (!readerCtx.value) {
@@ -173,10 +461,11 @@ async function initReader(): Promise<void> {
     return
   }
 
+  syncContextToUrlAndStorage(readerCtx.value)
   await loadTocAndOpen(readerCtx.value.currentChapterIndex || 0)
 }
 
-async function loadTocAndOpen(targetIdx: number): Promise<void> {
+async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<void> {
   const ctx = readerCtx.value
   if (!ctx) return
   loadingToc.value = true
@@ -185,14 +474,18 @@ async function loadTocAndOpen(targetIdx: number): Promise<void> {
     const tocRes = await onlineBookApi.fetchToc(
       ctx.sourceId,
       ctx.tocUrl,
-      buildBookJsCtx(targetIdx, ''),
+      buildBookJsCtx(targetIdx, matchTitle || ''),
     )
     chapters.value = tocRes.chapters
     if (tocRes.chapters.length === 0) {
       errorMsg.value = '目录为空，请检查书源状态或尝试换源'
       return
     }
-    let idx = Math.max(0, Math.min(targetIdx, tocRes.chapters.length - 1))
+    const clampedFallback = Math.max(0, Math.min(targetIdx, tocRes.chapters.length - 1))
+    let idx = matchTitle
+      ? matchChapterIndexByTitle(matchTitle, tocRes.chapters, clampedFallback)
+      : clampedFallback
+
     if (tocRes.chapters[idx]?.is_volume || !tocRes.chapters[idx]?.url) {
       const firstReadable = tocRes.chapters.findIndex((c) => !c.is_volume && Boolean(c.url))
       if (firstReadable >= 0) idx = firstReadable
@@ -235,9 +528,9 @@ async function openChapter(idx: number, forceRefresh = false): Promise<void> {
       contentScrollRef.value.scrollTop = 0
     }
 
-    // Persist reading progress if in online shelf
+    // Persist reading progress in URL query, sessionStorage, and online shelf
     ctx.currentChapterIndex = idx
-    sessionStorage.setItem('xmedia_online_reader_ctx', JSON.stringify(ctx))
+    syncContextToUrlAndStorage(ctx)
     if (ctx.shelfId) {
       void onlineBookApi
         .updateShelfBook(ctx.shelfId, {
@@ -294,7 +587,7 @@ async function handleSaveToShelf(): Promise<void> {
       total_chapters: chapters.value.length,
     })
     ctx.shelfId = saved.id
-    sessionStorage.setItem('xmedia_online_reader_ctx', JSON.stringify(ctx))
+    syncContextToUrlAndStorage(ctx)
     snackbar.show({ message: `已将《${ctx.name}》加入在线书架并记录当前进度` })
   } catch (err) {
     snackbar.show({
@@ -330,6 +623,7 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
   if (!ctx) return
   const key = `${item.source_id}:${item.book.book_url}`
   switchingKey.value = key
+  const previousTitle = currentChapter.value?.title || chapterTitle.value || ''
   try {
     const detailRes = await onlineBookApi.fetchBookInfo(item.source_id, item.book.book_url, {
       name: item.book.name,
@@ -350,10 +644,15 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
         toc_url: ctx.tocUrl,
       })
     }
-    sessionStorage.setItem('xmedia_online_reader_ctx', JSON.stringify(ctx))
+    syncContextToUrlAndStorage(ctx)
     switchSourceOpen.value = false
-    snackbar.show({ message: `已切换至书源「${item.source_name}」` })
-    await loadTocAndOpen(activeIndex.value)
+    await loadTocAndOpen(activeIndex.value, previousTitle)
+    const matchedTitle = currentChapter.value?.title || chapterTitle.value
+    snackbar.show({
+      message: matchedTitle
+        ? `已切换至书源「${item.source_name}」· 已定位至「${matchedTitle}」`
+        : `已切换至书源「${item.source_name}」`,
+    })
   } catch (err) {
     snackbar.show({
       message: err instanceof Error ? err.message : String(err),
@@ -365,7 +664,17 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
-  if (ev.target instanceof HTMLInputElement || ev.target instanceof HTMLTextAreaElement) return
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return
+  const target = ev.target
+  if (
+    target instanceof HTMLElement &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable)
+  ) {
+    return
+  }
   if (ev.key === 'ArrowLeft' && prevReadableIndex.value !== null) {
     ev.preventDefault()
     void openChapter(prevReadableIndex.value)
@@ -419,13 +728,13 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="flex shrink-0 items-center gap-1">
-        <!-- Font size quick controls -->
+        <!-- Font size quick controls (synced to themeStore) -->
         <div class="hidden items-center gap-0.5 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 md:flex">
           <button
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
             title="减小字号"
-            @click="fontSize = Math.max(13, fontSize - 1)"
+            @click="fontSize = fontSize - 1"
           >
             <LuMinus class="h-3.5 w-3.5" />
           </button>
@@ -434,11 +743,27 @@ onBeforeUnmount(() => {
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
             title="增大字号"
-            @click="fontSize = Math.min(30, fontSize + 1)"
+            @click="fontSize = fontSize + 1"
           >
             <LuPlus class="h-3.5 w-3.5" />
           </button>
         </div>
+
+        <button
+          type="button"
+          class="md-icon-btn md-icon-btn-sm md-state"
+          :class="
+            typographyOpen
+              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
+          "
+          title="排版设置"
+          @click="typographyOpen = !typographyOpen"
+        >
+          <LuSlidersHorizontal class="h-4 w-4" />
+        </button>
+
+        <ThemePopover />
 
         <button
           v-if="readerCtx && !readerCtx.shelfId"
@@ -531,7 +856,11 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <article v-else class="pb-16">
+        <article
+          v-else
+          class="pb-16"
+          :style="{ fontFamily: fontFamilyStyle }"
+        >
           <h1
             class="mb-8 text-center font-bold tracking-tight"
             :style="{ fontSize: `${Math.round(fontSize * 1.3)}px` }"
@@ -597,122 +926,149 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- TOC Slide-Over Drawer -->
-    <Teleport to="body">
-      <div
-        v-if="tocOpen"
-        class="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-[1px]"
-        @click.self="tocOpen = false"
-      >
-        <div
-          class="flex h-full w-full max-w-sm flex-col bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)]"
-        >
-          <div class="flex items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/45 px-4 py-3.5">
-            <span class="text-sm font-semibold">目录 ({{ chapters.length }})</span>
-            <button
-              type="button"
-              class="md-icon-btn md-icon-btn-sm md-state"
-              @click="tocOpen = false"
-            >
-              <LuX class="h-4 w-4" />
-            </button>
-          </div>
+    <!-- Typography Side Sheet (synced with themeStore) -->
+    <MdSideSheet
+      :open="typographyOpen"
+      title="排版设置"
+      subtitle="与本地阅读器共享字体、字号与行高偏好"
+      width-class="w-full max-w-xs"
+      @close="typographyOpen = false"
+    >
+      <div class="space-y-5 text-xs">
+        <div>
+          <label class="mb-2 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
+            字体
+          </label>
+          <MdSegmentedButton
+            :model-value="themeStore.reader.font_family"
+            :options="fontOptions"
+            @update:model-value="(v) => themeStore.updateReaderPreferences({ font_family: v })"
+          />
+        </div>
 
-          <div class="border-b border-[var(--md-sys-color-outline-variant)]/35 p-3">
-            <div class="relative">
-              <LuSearch class="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]" />
-              <input
-                v-model="tocQuery"
-                type="text"
-                placeholder="筛选章节标题…"
-                class="md-input h-9 w-full !pl-9 text-xs"
-              />
-            </div>
+        <div>
+          <div class="mb-1.5 flex justify-between">
+            <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">字号</span>
+            <span class="font-mono">{{ fontSize }} px</span>
           </div>
+          <input
+            type="range"
+            min="13"
+            max="30"
+            step="1"
+            :value="fontSize"
+            class="w-full accent-[var(--md-sys-color-primary)]"
+            @input="fontSize = Number(($event.target as HTMLInputElement).value)"
+          />
+        </div>
 
-          <div class="flex-1 overflow-y-auto p-2">
-            <button
-              v-for="ch in filteredToc"
-              :key="`toc-${ch.index}`"
-              type="button"
-              :disabled="ch.is_volume || !ch.url"
-              class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs transition"
-              :class="
-                ch.is_volume
-                  ? 'mt-2 font-bold text-[var(--md-sys-color-primary)] opacity-90'
-                  : ch.index === activeIndex
-                    ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                    : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
-              "
-              @click="openChapter(ch.index)"
-            >
-              <span class="truncate">{{ ch.title }}</span>
-            </button>
+        <div>
+          <div class="mb-1.5 flex justify-between">
+            <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">行高</span>
+            <span class="font-mono">{{ lineHeight.toFixed(2) }}</span>
           </div>
+          <input
+            type="range"
+            min="1.3"
+            max="2.4"
+            step="0.05"
+            :value="lineHeight"
+            class="w-full accent-[var(--md-sys-color-primary)]"
+            @input="lineHeight = Number(($event.target as HTMLInputElement).value)"
+          />
         </div>
       </div>
-    </Teleport>
+    </MdSideSheet>
 
-    <!-- Switch Source Modal -->
-    <Teleport to="body">
-      <div
-        v-if="switchSourceOpen"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px]"
-        @click.self="switchSourceOpen = false"
-      >
-        <div
-          class="flex max-h-[82vh] w-full max-w-lg flex-col overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)]"
-        >
-          <div class="flex items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/45 px-5 py-4">
-            <h2 class="text-sm font-semibold">换源 · {{ readerCtx?.name }}</h2>
-            <button
-              type="button"
-              class="md-icon-btn md-icon-btn-sm md-state"
-              @click="switchSourceOpen = false"
-            >
-              <LuX class="h-4 w-4" />
-            </button>
-          </div>
-
-          <div class="flex-1 space-y-2 overflow-y-auto p-4 text-xs">
-            <div v-if="searchingAlts" class="flex items-center justify-center py-10 text-[var(--md-sys-color-on-surface-variant)]">
-              <LuLoader2 class="mr-2 h-4 w-4 animate-spin" />
-              <span>正在聚合搜索其他书源…</span>
-            </div>
-            <div v-else-if="altCandidates.length === 0" class="py-10 text-center text-[var(--md-sys-color-on-surface-variant)]">
-              暂未搜到其他书源的匹配条目
-            </div>
-            <button
-              v-for="(item, idx) in altCandidates"
-              :key="`alt-${item.source_id}-${idx}`"
-              type="button"
-              :disabled="switchingKey !== null"
-              class="flex w-full items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3 text-left transition hover:brightness-105"
-              @click="handleSelectAltSource(item)"
-            >
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">
-                    {{ item.book.name }}
-                  </span>
-                  <span class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]">
-                    {{ item.source_name }}
-                  </span>
-                </div>
-                <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                  {{ item.book.author || '佚名' }}
-                  <span v-if="item.book.last_chapter"> · {{ item.book.last_chapter }}</span>
-                </p>
-              </div>
-              <LuLoader2
-                v-if="switchingKey === `${item.source_id}:${item.book.book_url}`"
-                class="h-4 w-4 shrink-0 animate-spin"
-              />
-            </button>
-          </div>
+    <!-- TOC Side Sheet -->
+    <MdSideSheet
+      :open="tocOpen"
+      :title="`目录 (${chapters.length})`"
+      width-class="w-full max-w-sm"
+      @close="tocOpen = false"
+    >
+      <template #subheader>
+        <div class="relative">
+          <LuSearch class="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]" />
+          <input
+            v-model="tocQuery"
+            type="text"
+            placeholder="筛选章节标题…"
+            class="md-input h-9 w-full !pl-9 text-xs"
+          />
         </div>
+      </template>
+
+      <div class="space-y-0.5">
+        <button
+          v-for="ch in filteredToc"
+          :key="`toc-${ch.index}`"
+          type="button"
+          :disabled="ch.is_volume || !ch.url"
+          class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs transition"
+          :class="
+            ch.is_volume
+              ? 'mt-2 font-bold text-[var(--md-sys-color-primary)] opacity-90'
+              : ch.index === activeIndex
+                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
+          "
+          @click="openChapter(ch.index)"
+        >
+          <span class="truncate">{{ ch.title }}</span>
+        </button>
       </div>
-    </Teleport>
+    </MdSideSheet>
+
+    <!-- Switch Source Dialog -->
+    <MdDialog
+      :open="switchSourceOpen"
+      :title="`换源 · ${readerCtx?.name ?? ''}`"
+      subtitle="切换书源后将按当前章节标题自动模糊定位对应章节"
+      max-width="max-w-lg"
+      @close="switchSourceOpen = false"
+    >
+      <template #icon>
+        <LuRepeat class="h-5 w-5" />
+      </template>
+
+      <div class="space-y-2 py-1 text-xs">
+        <div v-if="searchingAlts" class="flex items-center justify-center py-10 text-[var(--md-sys-color-on-surface-variant)]">
+          <LuLoader2 class="mr-2 h-4 w-4 animate-spin" />
+          <span>正在聚合搜索其他书源…</span>
+        </div>
+        <div v-else-if="altCandidates.length === 0" class="py-10 text-center text-[var(--md-sys-color-on-surface-variant)]">
+          暂未搜到其他书源的匹配条目
+        </div>
+        <button
+          v-for="(item, idx) in altCandidates"
+          :key="`alt-${item.source_id}-${idx}`"
+          type="button"
+          :disabled="switchingKey !== null"
+          class="md-state flex w-full items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3 text-left transition hover:brightness-105"
+          @click="handleSelectAltSource(item)"
+        >
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">
+                {{ item.book.name }}
+              </span>
+              <span class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]">
+                {{ item.source_name }}
+              </span>
+            </div>
+            <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              {{ item.book.author || '佚名' }}
+              <span v-if="item.book.last_chapter"> · {{ item.book.last_chapter }}</span>
+            </p>
+          </div>
+          <LuLoader2
+            v-if="switchingKey === `${item.source_id}:${item.book.book_url}`"
+            class="h-4 w-4 shrink-0 animate-spin"
+          />
+        </button>
+      </div>
+    </MdDialog>
 
     <OnlineDownloadModal
       :open="downloadOpen"

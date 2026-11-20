@@ -140,8 +140,12 @@ watch(() => musicStore.catalogVersion, loadContinueData)
     <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-extrabold tracking-tight">{{ t('continueView.title') }}</h1>
-        <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">{{ t('continueView.subtitle') }}</p>
+        <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
+          {{ t('continueView.title') }}
+        </h1>
+        <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          {{ t('continueView.subtitle') }}
+        </p>
       </div>
 
       <RefreshButton size="md" :action="loadContinueData" :busy="loading" />
@@ -150,20 +154,22 @@ watch(() => musicStore.catalogVersion, loadContinueData)
     <!-- Empty State -->
     <div
       v-if="!loading && !hasAnyContent"
-      class="card-soft flex flex-col items-center justify-center rounded-3xl bg-[var(--ctp-shell)] px-6 py-16 text-center"
+      class="md-card-filled flex flex-col items-center justify-center rounded-3xl px-6 py-16 text-center"
     >
       <div
-        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
       >
         <LuClock class="h-7 w-7" />
       </div>
-      <h2 class="text-base font-bold">{{ t('continueView.emptyTitle') }}</h2>
-      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <h2 class="text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('continueView.emptyTitle') }}
+      </h2>
+      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('continueView.emptyDesc') }}
       </p>
       <button
         type="button"
-        class="mt-5 inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-5 py-2 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
+        class="md-btn md-btn-filled md-state mt-5"
         @click="router.push('/music/songs')"
       >
         <LuPlay class="h-3.5 w-3.5 fill-current" />
@@ -174,9 +180,11 @@ watch(() => musicStore.catalogVersion, loadContinueData)
     <template v-else-if="hasAnyContent">
       <!-- 1. Saved / Active Play Queue Resume Card -->
       <section v-if="resumeSession">
-        <h2 class="mb-3 text-base font-bold">{{ t('continueView.savedQueueSection') }}</h2>
+        <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+          {{ t('continueView.savedQueueSection') }}
+        </h2>
         <div
-          class="card-soft flex flex-col justify-between gap-5 rounded-3xl bg-[var(--ctp-shell)] p-5 sm:flex-row sm:items-center"
+          class="md-card-filled flex flex-col justify-between gap-5 rounded-3xl border border-[var(--md-sys-color-outline-variant)]/50 p-5 sm:flex-row sm:items-center"
         >
           <div class="flex min-w-0 flex-1 items-center gap-4">
             <CoverImage
@@ -189,12 +197,12 @@ watch(() => musicStore.catalogVersion, loadContinueData)
             <div class="min-w-0 flex-1 space-y-1.5">
               <div class="flex flex-wrap items-center gap-2">
                 <span
-                  class="inline-flex items-center gap-1 rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--ctp-accent)]"
+                  class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
                 >
                   <LuListMusic class="h-3 w-3" />
                   {{ t('continueView.queueCountBadge', { count: resumeSession.tracks.length }) }}
                 </span>
-                <span class="font-mono text-[11px] text-[var(--ctp-subtext0)]">
+                <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                   {{
                     t('continueView.resumeAt', {
                       time: formatTime(resumeSession.posSecs),
@@ -204,16 +212,18 @@ watch(() => musicStore.catalogVersion, loadContinueData)
                 </span>
               </div>
 
-              <h3 class="truncate text-base font-extrabold text-[var(--ctp-text)]">
+              <h3 class="truncate text-base font-extrabold text-[var(--md-sys-color-on-surface)]">
                 {{ resumeSession.track.title }}
               </h3>
-              <p class="truncate text-xs text-[var(--ctp-subtext0)]">
+              <p class="truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
                 {{ resumeSession.track.artist_name }} · {{ resumeSession.track.album_title }}
               </p>
 
-              <div class="h-1.5 w-full max-w-md overflow-hidden rounded-full bg-[var(--ctp-surface0)]">
+              <div
+                class="h-1.5 w-full max-w-md overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
+              >
                 <div
-                  class="h-full rounded-full bg-[var(--ctp-accent)] transition-all"
+                  class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all"
                   :style="{ width: `${resumeSession.percent}%` }"
                 />
               </div>
@@ -223,7 +233,7 @@ watch(() => musicStore.catalogVersion, loadContinueData)
           <div class="flex shrink-0 items-center gap-2.5">
             <button
               type="button"
-              class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+              class="md-btn md-btn-filled md-state"
               @click="handleResumeQueue"
             >
               <LuPlay class="h-3.5 w-3.5 fill-current" />
@@ -232,7 +242,7 @@ watch(() => musicStore.catalogVersion, loadContinueData)
 
             <button
               type="button"
-              class="inline-flex items-center gap-1.5 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-2.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:bg-[var(--ctp-surface0)]"
+              class="md-btn md-btn-tonal md-state"
               @click="playerStore.queueOpen = true"
             >
               <LuListMusic class="h-3.5 w-3.5" />
@@ -244,12 +254,14 @@ watch(() => musicStore.catalogVersion, loadContinueData)
 
       <!-- 2. Audio Bookmarks -->
       <section v-if="bookmarks.length > 0">
-        <h2 class="mb-3 text-base font-bold">{{ t('continueView.bookmarksSection') }}</h2>
+        <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+          {{ t('continueView.bookmarksSection') }}
+        </h2>
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
           <div
             v-for="bm in bookmarks"
             :key="bm.track.id"
-            class="group card-soft flex items-center justify-between gap-3.5 rounded-2xl bg-[var(--ctp-shell)] p-3.5 transition hover:border-[var(--ctp-accent)]/60"
+            class="group md-card-filled flex items-center justify-between gap-3.5 border border-[var(--md-sys-color-outline-variant)]/50 p-3.5 transition hover:border-[var(--md-sys-color-primary)]/50 hover:bg-[var(--md-sys-color-surface-container)]"
           >
             <button
               type="button"
@@ -264,15 +276,17 @@ watch(() => musicStore.catalogVersion, loadContinueData)
                 class="h-14 w-14 shrink-0"
               />
               <div class="min-w-0 flex-1">
-                <p class="truncate text-xs font-bold text-[var(--ctp-text)] group-hover:text-[var(--ctp-accent)]">
+                <p
+                  class="truncate text-xs font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
+                >
                   {{ bm.track.title }}
                 </p>
-                <p class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
+                <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                   {{ bm.track.artist_name }}
                 </p>
                 <div class="mt-1.5 flex items-center gap-2">
                   <span
-                    class="inline-flex items-center gap-1 rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 font-mono text-[10px] font-semibold text-[var(--ctp-accent)]"
+                    class="inline-flex items-center gap-1 rounded-md bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
                   >
                     <LuBookmark class="h-2.5 w-2.5" />
                     {{
@@ -282,7 +296,10 @@ watch(() => musicStore.catalogVersion, loadContinueData)
                       })
                     }}
                   </span>
-                  <span v-if="bm.comment" class="truncate text-[11px] text-[var(--ctp-subtext0)]">
+                  <span
+                    v-if="bm.comment"
+                    class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+                  >
                     {{ bm.comment }}
                   </span>
                 </div>
@@ -292,7 +309,7 @@ watch(() => musicStore.catalogVersion, loadContinueData)
             <div class="flex shrink-0 items-center gap-1">
               <button
                 type="button"
-                class="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
+                class="md-icon-btn md-icon-btn-sm md-state bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)] hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
                 :title="t('continueView.resumeBtn')"
                 @click="playBookmark(bm)"
               >
@@ -300,7 +317,7 @@ watch(() => musicStore.catalogVersion, loadContinueData)
               </button>
               <button
                 type="button"
-                class="flex h-8 w-8 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-red)]/10 hover:text-[var(--ctp-red)]"
+                class="md-icon-btn md-icon-btn-sm md-state hover:text-[var(--md-sys-color-error)]"
                 :title="t('common.delete')"
                 @click="deleteBookmark(bm.track.id)"
               >
@@ -313,7 +330,9 @@ watch(() => musicStore.catalogVersion, loadContinueData)
 
       <!-- 3. Recently Played Albums -->
       <section v-if="recentAlbums.length > 0">
-        <h2 class="mb-3 text-base font-bold">{{ t('continueView.recentAlbumsSection') }}</h2>
+        <h2 class="mb-3 text-base font-bold text-[var(--md-sys-color-on-surface)]">
+          {{ t('continueView.recentAlbumsSection') }}
+        </h2>
         <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
           <AlbumCard v-for="al in recentAlbums" :key="al.id" :album="al" />
         </div>
@@ -322,11 +341,13 @@ watch(() => musicStore.catalogVersion, loadContinueData)
       <!-- 4. Recently Played Tracks -->
       <section v-if="recentTracks.length > 0">
         <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 class="text-base font-bold">{{ t('continueView.recentTracksSection') }}</h2>
+          <h2 class="text-base font-bold text-[var(--md-sys-color-on-surface)]">
+            {{ t('continueView.recentTracksSection') }}
+          </h2>
           <div class="flex items-center gap-2">
             <button
               type="button"
-              class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-4 py-1.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+              class="md-btn md-btn-filled md-btn-sm md-state"
               @click="playerStore.playQueue(recentTracks, 0)"
             >
               <LuPlay class="h-3.5 w-3.5 fill-current" />
@@ -334,7 +355,7 @@ watch(() => musicStore.catalogVersion, loadContinueData)
             </button>
             <button
               type="button"
-              class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-1.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:bg-[var(--ctp-surface0)]"
+              class="md-btn md-btn-tonal md-btn-sm md-state"
               @click="playerStore.shuffleAndPlay(recentTracks)"
             >
               <LuShuffle class="h-3.5 w-3.5" />

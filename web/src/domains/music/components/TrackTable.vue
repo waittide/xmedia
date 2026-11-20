@@ -152,15 +152,32 @@ function handleOutside(ev: MouseEvent): void {
   activeMenuIdx.value = null
 }
 
-onMounted(() => document.addEventListener('mousedown', handleOutside))
-onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
+function handleKeydown(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape' && activeMenuIdx.value !== null) {
+    activeMenuIdx.value = null
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('mousedown', handleOutside)
+  window.addEventListener('keydown', handleKeydown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', handleOutside)
+  window.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
-  <div class="overflow-x-auto rounded-2xl border border-[var(--ctp-surface0)]/75 bg-[var(--ctp-shell)]/55">
+  <div
+    class="md-card-filled overflow-x-auto border border-[var(--md-sys-color-outline-variant)]/50"
+  >
     <table class="w-full border-collapse text-left text-xs">
       <thead>
-        <tr class="border-b border-[var(--ctp-surface0)]/80 text-[11px] font-semibold uppercase tracking-wider text-[var(--ctp-subtext0)]">
+        <tr
+          class="border-b border-[var(--md-sys-color-outline-variant)]/60 text-[11px] font-semibold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]"
+        >
           <th class="w-11 px-3 py-3 text-center">{{ t('catalog.colIndex') }}</th>
           <th class="px-3 py-3">{{ t('catalog.colTitle') }}</th>
           <th v-if="showAlbum" class="hidden px-3 py-3 md:table-cell">{{ t('catalog.colAlbum') }}</th>
@@ -169,35 +186,37 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
           <th class="w-20 px-3 py-3 text-right"></th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-[var(--ctp-surface0)]/45">
+      <tbody class="divide-y divide-[var(--md-sys-color-outline-variant)]/35">
         <tr
           v-for="(tr, idx) in tracks"
           :key="`${tr.id}-${idx}`"
-          class="group cursor-pointer transition hover:bg-[var(--ctp-row-hover)]"
+          class="group cursor-pointer transition hover:bg-[var(--md-sys-color-surface-container-high)]/60"
           :class="
             playerStore.currentTrack?.id === tr.id
-              ? 'bg-[var(--ctp-accent-soft)]/65'
+              ? 'bg-[var(--md-sys-color-secondary-container)]/55'
               : ''
           "
         >
           <td class="px-3 py-2.5 text-center" @click="handlePlayRow(idx)">
             <button
               type="button"
-              class="inline-flex h-7 w-7 items-center justify-center rounded-lg"
+              class="inline-flex h-7 w-7 items-center justify-center rounded-full"
             >
               <LuPause
                 v-if="playerStore.currentTrack?.id === tr.id && playerStore.isPlaying"
-                class="h-3.5 w-3.5 text-[var(--ctp-accent)]"
+                class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]"
               />
               <LuVolume2
                 v-else-if="playerStore.currentTrack?.id === tr.id"
-                class="h-3.5 w-3.5 text-[var(--ctp-accent)]"
+                class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]"
               />
               <template v-else>
-                <span class="text-[var(--ctp-subtext0)] group-hover:hidden">
+                <span class="text-[var(--md-sys-color-on-surface-variant)] group-hover:hidden">
                   {{ tr.track_number ?? idx + 1 }}
                 </span>
-                <LuPlay class="hidden h-3.5 w-3.5 fill-current text-[var(--ctp-text)] group-hover:block" />
+                <LuPlay
+                  class="hidden h-3.5 w-3.5 fill-current text-[var(--md-sys-color-on-surface)] group-hover:block"
+                />
               </template>
             </button>
           </td>
@@ -218,22 +237,24 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
                     class="truncate font-semibold"
                     :class="
                       playerStore.currentTrack?.id === tr.id
-                        ? 'text-[var(--ctp-accent)]'
-                        : 'text-[var(--ctp-text)]'
+                        ? 'text-[var(--md-sys-color-primary)]'
+                        : 'text-[var(--md-sys-color-on-surface)]'
                     "
                   >
                     {{ tr.title }}
                   </span>
                   <span
                     v-if="tr.has_lyrics"
-                    class="shrink-0 rounded bg-[var(--ctp-accent-soft)] px-1 py-0.2 text-[9px] font-bold text-[var(--ctp-accent)]"
+                    class="shrink-0 rounded bg-[var(--md-sys-color-primary-container)] px-1 py-0.2 text-[9px] font-bold text-[var(--md-sys-color-on-primary-container)]"
                   >
                     LRC
                   </span>
                 </div>
-                <div class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--ctp-subtext0)]">
+                <div
+                  class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+                >
                   <span
-                    class="truncate hover:text-[var(--ctp-accent)] hover:underline"
+                    class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
                     @click.stop="router.push(`/music/artists/${tr.artist_id}`)"
                   >
                     {{ tr.artist_name }}
@@ -242,7 +263,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
                     v-for="tg in tr.tags ?? []"
                     :key="tg"
                     type="button"
-                    class="rounded bg-[var(--ctp-surface0)]/65 px-1.5 py-0.2 text-[9px] font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-accent-soft)] hover:text-[var(--ctp-accent)]"
+                    class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.2 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-secondary-container)] hover:text-[var(--md-sys-color-on-secondary-container)]"
                     @click.stop="router.push({ path: '/music/songs', query: { tag: tg } })"
                   >
                     #{{ tg }}
@@ -255,7 +276,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
           <td v-if="showAlbum" class="hidden max-w-[14rem] px-3 py-2.5 md:table-cell">
             <button
               type="button"
-              class="max-w-full truncate text-left text-[var(--ctp-subtext1)] hover:text-[var(--ctp-accent)] hover:underline"
+              class="max-w-full truncate text-left text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)] hover:underline"
               @click.stop="router.push(`/music/albums/${tr.album_id}`)"
             >
               {{ tr.album_title }}
@@ -267,38 +288,40 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
               class="inline-flex items-center rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold"
               :class="
                 tr.is_lossless
-                  ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                  : 'bg-[var(--ctp-surface0)]/70 text-[var(--ctp-subtext1)]'
+                  ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+                  : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
               "
             >
               {{ formatQuality(tr) }}
             </span>
           </td>
 
-          <td class="px-3 py-2.5 text-right font-mono text-[11px] text-[var(--ctp-subtext0)]">
+          <td
+            class="px-3 py-2.5 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+          >
             {{ formatDuration(tr.duration_secs) }}
           </td>
 
           <td class="px-3 py-2.5 text-right">
-            <div class="inline-flex items-center justify-end gap-1">
+            <div class="inline-flex items-center justify-end gap-0.5">
               <button
                 type="button"
-                class="rounded-lg p-1.5 transition hover:bg-[var(--ctp-surface0)]"
+                class="md-icon-btn md-icon-btn-sm md-state"
                 @click.stop="musicStore.toggleTrackStar(tr)"
               >
                 <LuHeart
                   class="h-3.5 w-3.5"
                   :class="
                     tr.starred_at
-                      ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]'
-                      : 'text-[var(--ctp-subtext0)]'
+                      ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
+                      : 'text-[var(--md-sys-color-on-surface-variant)]'
                   "
                 />
               </button>
 
               <button
                 type="button"
-                class="rounded-lg p-1.5 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+                class="md-icon-btn md-icon-btn-sm md-state"
                 @click="openRowMenu($event, idx)"
               >
                 <LuMoreHorizontal class="h-4 w-4" />
@@ -311,83 +334,95 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
   </div>
 
   <Teleport to="body">
-    <div
-      v-if="activeMenuIdx !== null && tracks[activeMenuIdx]"
-      ref="menuRef"
-      :style="menuPos"
-      class="fixed z-[115] w-56 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 text-xs text-[var(--ctp-text)] shadow-2xl"
-    >
-      <button
-        type="button"
-        class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
-        @click="playerStore.enqueueNext(tracks[activeMenuIdx]!); activeMenuIdx = null"
-      >
-        <LuListPlus class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
-        <span>{{ t('common.addToQueue') }}</span>
-      </button>
-
-      <button
-        v-if="authStore.isAdmin"
-        type="button"
-        class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
-        @click="editTrackTags(tracks[activeMenuIdx]!)"
-      >
-        <LuTag class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-        <span>{{ globalT('musicTags.editTags') }}</span>
-      </button>
-
-      <button
-        type="button"
-        class="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
-        @click="createPlaylistWithTrack(tracks[activeMenuIdx]!)"
-      >
-        <LuPlus class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-        <span>{{ t('nav.newPlaylist') }}</span>
-      </button>
-
+    <Transition name="md-fade">
       <div
-        v-if="musicStore.playlists.length > 0"
-        class="my-1 max-h-28 overflow-y-auto border-t border-[var(--ctp-surface0)]/60 pt-1"
+        v-if="activeMenuIdx !== null && tracks[activeMenuIdx]"
+        ref="menuRef"
+        role="menu"
+        :style="menuPos"
+        class="fixed z-[var(--z-popover)] w-56 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-1.5 text-xs text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
       >
         <button
-          v-for="pl in musicStore.playlists"
-          :key="pl.id"
           type="button"
-          class="flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-mantle)] hover:text-[var(--ctp-text)]"
-          @click="addToExistingPlaylist(pl.id, tracks[activeMenuIdx]!)"
+          role="menuitem"
+          class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
+          @click="playerStore.enqueueNext(tracks[activeMenuIdx]!); activeMenuIdx = null"
         >
-          <span class="truncate">+ {{ pl.name }}</span>
-          <span class="font-mono text-[10px] text-[var(--ctp-subtext0)]">{{ pl.track_count }}</span>
+          <LuListPlus class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
+          <span>{{ t('common.addToQueue') }}</span>
+        </button>
+
+        <button
+          v-if="authStore.isAdmin"
+          type="button"
+          role="menuitem"
+          class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
+          @click="editTrackTags(tracks[activeMenuIdx]!)"
+        >
+          <LuTag class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+          <span>{{ globalT('musicTags.editTags') }}</span>
+        </button>
+
+        <button
+          type="button"
+          role="menuitem"
+          class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
+          @click="createPlaylistWithTrack(tracks[activeMenuIdx]!)"
+        >
+          <LuPlus class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+          <span>{{ t('nav.newPlaylist') }}</span>
+        </button>
+
+        <div
+          v-if="musicStore.playlists.length > 0"
+          class="my-1 max-h-28 overflow-y-auto border-t border-[var(--md-sys-color-outline-variant)]/50 pt-1"
+        >
+          <button
+            v-for="pl in musicStore.playlists"
+            :key="pl.id"
+            type="button"
+            role="menuitem"
+            class="md-state flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
+            @click="addToExistingPlaylist(pl.id, tracks[activeMenuIdx]!)"
+          >
+            <span class="truncate">+ {{ pl.name }}</span>
+            <span class="font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+              {{ pl.track_count }}
+            </span>
+          </button>
+        </div>
+
+        <a
+          :href="buildDownloadUrl(tracks[activeMenuIdx]!.id)"
+          role="menuitem"
+          class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
+          @click="activeMenuIdx = null"
+        >
+          <LuDownload class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
+          <span>{{ t('common.download') }}</span>
+        </a>
+
+        <button
+          v-if="removable"
+          type="button"
+          role="menuitem"
+          class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)]"
+          @click="emit('remove', activeMenuIdx); activeMenuIdx = null"
+        >
+          <LuTrash2 class="h-3.5 w-3.5" />
+          <span>{{ t('playlist.removeTrack') }}</span>
+        </button>
+        <button
+          v-if="authStore.isAdmin"
+          type="button"
+          role="menuitem"
+          class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)]"
+          @click="confirmDeleteTrack(tracks[activeMenuIdx]!)"
+        >
+          <LuTrash2 class="h-3.5 w-3.5" />
+          <span>{{ t('common.delete') }}</span>
         </button>
       </div>
-
-      <a
-        :href="buildDownloadUrl(tracks[activeMenuIdx]!.id)"
-        class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:bg-[var(--ctp-mantle)]"
-        @click="activeMenuIdx = null"
-      >
-        <LuDownload class="h-3.5 w-3.5 text-[var(--ctp-subtext0)]" />
-        <span>{{ t('common.download') }}</span>
-      </a>
-
-      <button
-        v-if="removable"
-        type="button"
-        class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--ctp-red)] transition hover:bg-[var(--ctp-red)]/10"
-        @click="emit('remove', activeMenuIdx); activeMenuIdx = null"
-      >
-        <LuTrash2 class="h-3.5 w-3.5" />
-        <span>{{ t('playlist.removeTrack') }}</span>
-      </button>
-      <button
-        v-if="authStore.isAdmin"
-        type="button"
-        class="mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--ctp-red)] transition hover:bg-[var(--ctp-red)]/10"
-        @click="confirmDeleteTrack(tracks[activeMenuIdx]!)"
-      >
-        <LuTrash2 class="h-3.5 w-3.5" />
-        <span>{{ t('common.delete') }}</span>
-      </button>
-    </div>
+    </Transition>
   </Teleport>
 </template>

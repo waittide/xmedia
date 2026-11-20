@@ -85,17 +85,19 @@ watch(() => route.params.id, loadShow)
           <span
             v-for="g in [...detail.show.genres, ...detail.show.tags]"
             :key="g"
-            class="rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-0.5 text-[11px] font-bold text-[var(--ctp-accent)]"
+            class="rounded-full bg-[var(--md-sys-color-secondary-container)] px-2.5 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-on-secondary-container)]"
           >
             {{ g }}
           </span>
         </div>
 
-        <h1 class="text-2xl font-extrabold tracking-tight sm:text-3xl">
+        <h1
+          class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)] sm:text-3xl"
+        >
           {{ detail.show.title }}
         </h1>
 
-        <p class="text-xs text-[var(--ctp-subtext1)]">
+        <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
           <span v-if="detail.show.year">{{ detail.show.year }} · </span>
           <span>{{ t('common.seasonsCount', { count: detail.show.season_count }) }} · </span>
           <span>
@@ -110,7 +112,7 @@ watch(() => route.params.id, loadShow)
 
         <p
           v-if="detail.show.summary"
-          class="max-w-3xl text-xs leading-relaxed text-[var(--ctp-subtext0)]"
+          class="max-w-3xl text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
         >
           {{ detail.show.summary }}
         </p>
@@ -119,7 +121,7 @@ watch(() => route.params.id, loadShow)
           <button
             v-if="primaryPlayEpisode"
             type="button"
-            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-md transition hover:opacity-95"
+            class="md-btn md-btn-filled md-state"
             @click="router.push(`/video/watch/${primaryPlayEpisode.id}`)"
           >
             <LuPlay class="h-4 w-4 fill-current" />
@@ -128,15 +130,15 @@ watch(() => route.params.id, loadShow)
 
           <button
             type="button"
-            class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] transition hover:bg-[var(--ctp-surface0)]"
+            class="md-icon-btn md-state bg-[var(--md-sys-color-surface-container-high)]"
             @click="videoStore.toggleShowFavorite(detail.show)"
           >
             <LuHeart
               class="h-4 w-4"
               :class="
                 detail.show.is_favorite
-                  ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]'
-                  : 'text-[var(--ctp-subtext0)]'
+                  ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
+                  : 'text-[var(--md-sys-color-on-surface-variant)]'
               "
             />
           </button>
@@ -144,7 +146,7 @@ watch(() => route.params.id, loadShow)
           <button
             v-if="authStore.isAdmin"
             type="button"
-            class="inline-flex items-center gap-1.5 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-3.5 py-2 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
+            class="md-btn md-btn-tonal md-state"
             @click="editShowOpen = true"
           >
             <LuPencil class="h-3.5 w-3.5" />
@@ -158,16 +160,19 @@ watch(() => route.params.id, loadShow)
 
     <!-- Season Selector & Episodes -->
     <div v-if="detail.seasons.length > 0" class="space-y-4">
-      <div v-if="detail.seasons.length > 1" class="flex flex-wrap gap-1.5 rounded-2xl bg-[var(--ctp-shell)] p-1.5 w-fit">
+      <div
+        v-if="detail.seasons.length > 1"
+        class="flex w-fit flex-wrap gap-1.5 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] p-1.5"
+      >
         <button
           v-for="sg in detail.seasons"
           :key="sg.season_number"
           type="button"
-          class="rounded-xl px-4 py-1.5 text-xs font-semibold transition"
+          class="md-state rounded-xl px-4 py-1.5 text-xs font-semibold transition"
           :class="
             selectedSeason === sg.season_number
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           @click="selectedSeason = sg.season_number"
         >

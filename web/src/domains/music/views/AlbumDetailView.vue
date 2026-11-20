@@ -68,23 +68,26 @@ watch(() => route.params.id, loadAlbum)
         <div class="flex flex-wrap items-center gap-2">
           <span
             v-if="detail.album.is_compilation"
-            class="rounded-full bg-[var(--ctp-accent-soft)] px-2.5 py-0.5 text-[11px] font-bold text-[var(--ctp-accent)]"
+            class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-[11px] font-bold text-[var(--md-sys-color-on-primary-container)]"
           >
             {{ t('catalog.compilationBadge') }}
           </span>
-          <span v-if="detail.album.genre" class="text-xs font-medium text-[var(--ctp-subtext0)]">
+          <span
+            v-if="detail.album.genre"
+            class="text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]"
+          >
             {{ detail.album.genre }}
           </span>
         </div>
 
-        <h1 class="text-2xl font-extrabold tracking-tight sm:text-3xl">
+        <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)] sm:text-3xl">
           {{ detail.album.title }}
         </h1>
 
-        <div class="flex flex-wrap items-center gap-2 text-xs text-[var(--ctp-subtext1)]">
+        <div class="flex flex-wrap items-center gap-2 text-xs text-[var(--md-sys-color-on-surface-variant)]">
           <button
             type="button"
-            class="font-bold text-[var(--ctp-text)] hover:text-[var(--ctp-accent)] hover:underline"
+            class="font-bold text-[var(--md-sys-color-on-surface)] hover:text-[var(--md-sys-color-primary)] hover:underline"
             @click="router.push(`/music/artists/${detail.album.album_artist_id}`)"
           >
             {{ detail.album.album_artist_name }}
@@ -97,7 +100,7 @@ watch(() => route.params.id, loadAlbum)
         <div class="flex flex-wrap items-center gap-2.5 pt-2">
           <button
             type="button"
-            class="inline-flex items-center gap-2 rounded-full bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-bold text-[var(--ctp-on-accent)] shadow-md transition hover:opacity-95"
+            class="md-btn md-btn-filled md-state"
             @click="playerStore.playQueue(detail.tracks, 0)"
           >
             <LuPlay class="h-4 w-4 fill-current" />
@@ -106,7 +109,7 @@ watch(() => route.params.id, loadAlbum)
 
           <button
             type="button"
-            class="inline-flex items-center gap-2 rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] px-4 py-2.5 text-xs font-semibold transition hover:bg-[var(--ctp-surface0)]"
+            class="md-btn md-btn-tonal md-state"
             @click="playerStore.shuffleAndPlay(detail.tracks)"
           >
             <LuShuffle class="h-4 w-4" />
@@ -115,15 +118,15 @@ watch(() => route.params.id, loadAlbum)
 
           <button
             type="button"
-            class="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] transition hover:bg-[var(--ctp-surface0)]"
+            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)]"
             @click="musicStore.toggleAlbumStar(detail.album)"
           >
             <LuHeart
               class="h-4 w-4"
               :class="
                 detail.album.starred_at
-                  ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]'
-                  : 'text-[var(--ctp-subtext0)]'
+                  ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
+                  : 'text-[var(--md-sys-color-on-surface-variant)]'
               "
             />
           </button>
@@ -137,7 +140,7 @@ watch(() => route.params.id, loadAlbum)
     <div v-for="[discNum, discTracks] in discGroups" :key="discNum" class="space-y-2">
       <h3
         v-if="discGroups.length > 1"
-        class="px-1 text-xs font-bold uppercase tracking-wider text-[var(--ctp-subtext0)]"
+        class="px-1 text-xs font-bold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ t('catalog.discHeader', { disc: discNum }) }}
       </h3>

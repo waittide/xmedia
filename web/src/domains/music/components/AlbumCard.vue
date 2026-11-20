@@ -31,7 +31,7 @@ async function onStar(ev: MouseEvent): Promise<void> {
 
 <template>
   <div
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--ctp-mantle)]"
+    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container)]"
     @click="router.push(`/music/albums/${album.id}`)"
   >
     <div class="relative mb-2.5">
@@ -48,18 +48,22 @@ async function onStar(ev: MouseEvent): Promise<void> {
         >
           <button
             type="button"
-            class="flex h-8 w-8 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-sm transition hover:scale-105"
+            class="md-icon-btn md-icon-btn-sm md-state bg-black/45 text-white backdrop-blur-sm hover:scale-105 hover:text-white"
             @click="onStar"
           >
             <LuHeart
               class="h-4 w-4"
-              :class="album.starred_at ? 'fill-[var(--ctp-red)] text-[var(--ctp-red)]' : ''"
+              :class="
+                album.starred_at
+                  ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
+                  : ''
+              "
             />
           </button>
 
           <button
             type="button"
-            class="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-lg transition hover:scale-105"
+            class="md-state flex h-10 w-10 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105"
             :title="t('common.playAll')"
             @click="quickPlayAlbum"
           >
@@ -69,12 +73,14 @@ async function onStar(ev: MouseEvent): Promise<void> {
       </CoverImage>
     </div>
 
-    <h3 class="truncate text-xs font-bold text-[var(--ctp-text)]">
+    <h3 class="truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
       {{ album.title }}
     </h3>
-    <div class="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-[var(--ctp-subtext0)]">
+    <div
+      class="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+    >
       <span
-        class="truncate hover:text-[var(--ctp-accent)] hover:underline"
+        class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
         @click.stop="router.push(`/music/artists/${album.album_artist_id}`)"
       >
         {{ album.album_artist_name }}
