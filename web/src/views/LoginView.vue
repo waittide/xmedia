@@ -30,35 +30,41 @@ async function onSubmit(): Promise<void> {
 </script>
 
 <template>
-  <div class="flex min-h-screen flex-col bg-[var(--ctp-shell)] text-[var(--ctp-text)]">
+  <div
+    class="flex min-h-screen flex-col bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)]"
+  >
     <header class="flex items-center justify-between px-6 py-4">
       <div class="flex items-center gap-2.5">
         <div
-          class="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm"
+          class="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)]"
         >
           <LuLayers class="h-5 w-5" />
         </div>
-        <span class="text-lg font-bold tracking-tight">{{ t('app.name') }}</span>
+        <span class="md-title-medium tracking-tight">{{ t('app.name') }}</span>
       </div>
       <ThemePopover show-language />
     </header>
 
     <main class="flex flex-1 items-center justify-center p-4">
       <div
-        class="w-full max-w-md rounded-[28px] border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-8 shadow-xl"
+        class="w-full max-w-md rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] p-8 shadow-[var(--md-sys-elevation-2)]"
       >
-        <h1 class="mb-6 text-2xl font-bold">{{ t('auth.loginTitle') }}</h1>
+        <h1 class="md-headline-small mb-6 text-[var(--md-sys-color-on-surface)]">
+          {{ t('auth.loginTitle') }}
+        </h1>
 
         <div
           v-if="errorMsg"
-          class="mb-4 rounded-2xl bg-[var(--ctp-red)]/15 px-4 py-3 text-xs font-medium text-[var(--ctp-red)]"
+          class="mb-4 rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs font-medium text-[var(--md-sys-color-on-error-container)]"
         >
           {{ errorMsg }}
         </div>
 
         <form class="space-y-4" @submit.prevent="onSubmit">
           <div>
-            <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+            <label
+              class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+            >
               {{ t('auth.username') }}
             </label>
             <input
@@ -67,12 +73,14 @@ async function onSubmit(): Promise<void> {
               required
               autocomplete="username"
               :placeholder="t('auth.usernamePlaceholder')"
-              class="w-full rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-4 py-2.5 text-sm outline-none transition focus:border-[var(--ctp-accent)]"
+              class="md-input h-11 w-full text-sm"
             />
           </div>
 
           <div>
-            <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+            <label
+              class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+            >
               {{ t('auth.password') }}
             </label>
             <input
@@ -81,14 +89,14 @@ async function onSubmit(): Promise<void> {
               required
               autocomplete="current-password"
               :placeholder="t('auth.passwordPlaceholder')"
-              class="w-full rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-4 py-2.5 text-sm outline-none transition focus:border-[var(--ctp-accent)]"
+              class="md-input h-11 w-full text-sm"
             />
           </div>
 
           <button
             type="submit"
             :disabled="submitting"
-            class="mt-2 w-full rounded-full bg-[var(--ctp-accent)] py-3 text-sm font-semibold text-[var(--ctp-on-accent)] shadow-md transition hover:opacity-95 disabled:opacity-60"
+            class="md-btn md-btn-filled mt-2 h-11 w-full"
           >
             {{ submitting ? t('common.loading') : t('auth.signInBtn') }}
           </button>

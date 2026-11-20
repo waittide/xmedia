@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
 
 const props = withDefaults(
@@ -19,6 +20,15 @@ const props = withDefaults(
 const emit = defineEmits<{
   close: []
 }>()
+
+const { t, te, locale } = useI18n()
+const closeLabel = computed(() =>
+  te('common.close')
+    ? t('common.close')
+    : String(locale.value).toLowerCase().startsWith('zh')
+      ? '关闭'
+      : 'Close',
+)
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && props.open) {
@@ -48,8 +58,8 @@ onBeforeUnmount(() => {
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[var(--z-sheet)] flex justify-end bg-black/38 backdrop-blur-[1px]"
-        @click.self="emit('close')"
+        class="fixed inset-0 z-[var(--z-sheet)] flex justify-end bg-[var(--md-sys-color-scrim)]/35 backdrop-blur-[1px]"
+        @mousedown.self="emit('close')"
       >
         <Transition name="md-sheet-right" appear>
           <aside
@@ -61,12 +71,12 @@ onBeforeUnmount(() => {
             <!-- Side Sheet Header -->
             <div class="flex items-start justify-between gap-3 px-6 pt-6 pb-4">
               <div class="min-w-0">
-                <h3 class="text-lg leading-snug font-semibold tracking-tight">
+                <h3 class="md-title-large leading-snug tracking-tight">
                   {{ title }}
                 </h3>
                 <p
                   v-if="subtitle"
-                  class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+                  class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   {{ subtitle }}
                 </p>
@@ -74,7 +84,7 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
-                aria-label="关闭侧栏"
+                :aria-label="closeLabel"
                 @click="emit('close')"
               >
                 <LuX class="h-4 w-4" />

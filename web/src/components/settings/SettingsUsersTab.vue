@@ -5,6 +5,7 @@ import { LuTrash2, LuUserPlus } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
+import { useSnackbarStore } from '@/stores/snackbar'
 import type { UserDto, UserRole } from '@/types/api'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
@@ -14,10 +15,12 @@ const emit = defineEmits<{
   error: [message: string]
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
+const snackbarStore = useSnackbarStore()
 
+const isZh = computed(() => String(locale.value).toLowerCase().startsWith('zh'))
 const users = ref<UserDto[]>([])
 const newUsername = ref('')
 const newDisplayName = ref('')
@@ -84,10 +87,22 @@ async function handleActiveToggle(u: UserDto, nextActive: boolean): Promise<void
 async function handleResetUserPassword(u: UserDto): Promise<void> {
   const pwd = resetPwdMap.value[u.id]?.trim()
   if (!pwd) return
+  const confirmed = await dialogStore.confirm({
+    title: t('admin.resetPasswordBtn'),
+    message: isZh.value
+      ? `确定重置用户「${u.username}」的登录密码？`
+      : `Reset password for user "${u.username}"?`,
+    confirmText: t('admin.resetPasswordBtn'),
+    danger: true,
+  })
+  if (!confirmed) return
   emit('error', '')
   try {
     await api.updateUser(u.id, { password: pwd })
     resetPwdMap.value[u.id] = ''
+    snackbarStore.show(
+      isZh.value ? `已重置用户「${u.username}」的密码` : `Password reset for "${u.username}"`,
+    )
   } catch (err) {
     emit('error', err instanceof Error ? err.message : String(err))
   }
@@ -111,14 +126,18 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
 </script>
 
 <template>
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold">{{ t('admin.createUserTitle') }}</h2>
-    <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('admin.createUserDesc') }}</p>
+  <section class="md-card-outlined p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('admin.createUserTitle') }}
+    </h2>
+    <p class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]">
+      {{ t('admin.createUserDesc') }}
+    </p>
 
     <form class="mt-4 space-y-4" @submit.prevent="handleCreateUser">
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('auth.username') }}
           </label>
           <input
@@ -127,24 +146,24 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
             required
             minlength="2"
             :placeholder="t('auth.usernamePlaceholder')"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full text-xs"
           />
         </div>
 
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('auth.displayName') }}
           </label>
           <input
             v-model="newDisplayName"
             type="text"
             :placeholder="t('auth.displayNamePlaceholder')"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full text-xs"
           />
         </div>
 
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('auth.password') }}
           </label>
           <input
@@ -153,12 +172,12 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
             required
             minlength="6"
             :placeholder="t('auth.passwordPlaceholder')"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full text-xs"
           />
         </div>
 
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('admin.userRoleLabel') }}
           </label>
           <AppSelect
@@ -172,7 +191,7 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
       <button
         type="submit"
         :disabled="creatingUser"
-        class="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-55"
+        class="md-btn md-btn-filled"
       >
         <LuUserPlus class="h-4 w-4" />
         <span>{{ t('admin.createUserBtn') }}</span>
@@ -180,9 +199,11 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
     </form>
   </section>
 
-  <section class="card-soft space-y-3 rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <section class="md-card-outlined space-y-3 p-6">
     <div class="flex items-center justify-between gap-3">
-      <h2 class="text-sm font-bold">{{ t('admin.usersListTitle') }}</h2>
+      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('admin.usersListTitle') }}
+      </h2>
       <RefreshButton
         :action="async () => { users = await api.listUsers() }"
       />
@@ -191,18 +212,20 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
     <div
       v-for="u in users"
       :key="u.id"
-      class="flex flex-col justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4 lg:flex-row lg:items-center"
+      class="md-card-filled flex flex-col justify-between gap-3 p-4 lg:flex-row lg:items-center"
     >
       <div class="min-w-0">
         <div class="flex items-center gap-2">
-          <span class="truncate text-sm font-bold text-[var(--ctp-text)]">
+          <span class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
             {{ u.display_name || u.username }}
           </span>
-          <span class="font-mono text-xs text-[var(--ctp-subtext0)]">@{{ u.username }}</span>
+          <span class="font-mono text-xs text-[var(--md-sys-color-on-surface-variant)]">
+            @{{ u.username }}
+          </span>
         </div>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2.5">
+      <div class="flex flex-wrap items-center gap-3">
         <div class="w-36">
           <AppSelect
             :model-value="u.role"
@@ -229,11 +252,12 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
             type="password"
             minlength="6"
             :placeholder="t('admin.resetPasswordPlaceholder')"
-            class="h-8 w-36 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-8 w-36 !px-2.5 text-xs"
           />
           <button
             type="submit"
-            class="h-8 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2.5 text-xs font-medium text-[var(--ctp-text)] hover:border-[var(--ctp-accent)]"
+            :disabled="!resetPwdMap[u.id]?.trim()"
+            class="md-btn md-btn-sm md-btn-outlined"
           >
             {{ t('admin.resetPasswordBtn') }}
           </button>
@@ -242,8 +266,9 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
         <button
           v-if="u.id !== authStore.user?.id"
           type="button"
-          class="rounded-xl p-1.5 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-red)]/10 hover:text-[var(--ctp-red)]"
+          class="md-icon-btn md-icon-btn-sm hover:!text-[var(--md-sys-color-error)]"
           :title="t('admin.deleteUser')"
+          :aria-label="t('admin.deleteUser')"
           @click="handleDeleteUser(u)"
         >
           <LuTrash2 class="h-4 w-4" />

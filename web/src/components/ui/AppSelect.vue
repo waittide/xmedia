@@ -194,19 +194,19 @@ onBeforeUnmount(unbindGlobalListeners)
     role="combobox"
     :aria-expanded="open"
     :disabled="disabled"
-    class="inline-flex items-center justify-between gap-2 text-left text-xs transition outline-none select-none disabled:opacity-50"
+    class="inline-flex cursor-pointer items-center justify-between gap-2 text-left text-xs transition outline-none select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] disabled:cursor-not-allowed disabled:opacity-45"
     :class="[
       variant === 'inline'
-        ? 'bg-transparent font-medium text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+        ? 'bg-transparent font-medium text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
         : variant === 'compact'
-          ? 'h-8 rounded-xl border bg-[var(--md-sys-color-surface-container-highest,var(--ctp-canvas))] px-3 font-medium text-[var(--md-sys-color-on-surface,var(--ctp-text))]'
+          ? 'h-8 rounded-[var(--md-sys-shape-corner-sm)] border bg-[var(--md-sys-color-surface)] px-3 font-medium text-[var(--md-sys-color-on-surface)]'
           : size === 'sm'
-            ? 'h-9 w-full rounded-xl border bg-[var(--md-sys-color-surface-container-highest,var(--ctp-canvas))] px-3 font-medium text-[var(--md-sys-color-on-surface,var(--ctp-text))]'
-            : 'h-10 w-full rounded-xl border bg-[var(--md-sys-color-surface-container-highest,var(--ctp-canvas))] px-3.5 font-medium text-[var(--md-sys-color-on-surface,var(--ctp-text))]',
+            ? 'h-9 w-full rounded-[var(--md-sys-shape-corner-sm)] border bg-[var(--md-sys-color-surface)] px-3 font-medium text-[var(--md-sys-color-on-surface)]'
+            : 'h-10 w-full rounded-[var(--md-sys-shape-corner-sm)] border bg-[var(--md-sys-color-surface)] px-3.5 font-medium text-[var(--md-sys-color-on-surface)]',
       variant !== 'inline' &&
         (open
-          ? 'border-[var(--md-sys-color-primary,var(--ctp-accent))] ring-2 ring-[var(--ctp-accent-soft)]'
-          : 'border-[var(--md-sys-color-outline-variant,var(--ctp-surface0))]/60 hover:border-[var(--md-sys-color-outline,var(--ctp-surface1))]'),
+          ? 'border-[var(--md-sys-color-primary)] ring-1 ring-[var(--md-sys-color-primary)]'
+          : 'border-[var(--md-sys-color-outline)] hover:border-[var(--md-sys-color-on-surface)]'),
     ]"
     @click="toggleMenu"
     @keydown="onTriggerKeydown"
@@ -215,8 +215,8 @@ onBeforeUnmount(unbindGlobalListeners)
       {{ selectedOption ? selectedOption.label : placeholder }}
     </span>
     <LuChevronDown
-      class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)] transition-transform duration-150"
-      :class="open ? 'rotate-180 text-[var(--ctp-accent)]' : ''"
+      class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)] transition-transform duration-150"
+      :class="open ? 'rotate-180 text-[var(--md-sys-color-primary)]' : ''"
     />
   </button>
 
@@ -226,19 +226,19 @@ onBeforeUnmount(unbindGlobalListeners)
       ref="menuRef"
       role="listbox"
       :style="menuStyle"
-      class="z-[var(--z-popover)] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 text-[var(--ctp-text)] shadow-2xl"
+      class="z-[var(--z-popover)] overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] bg-[var(--md-sys-color-surface-container)] p-1.5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
       @keydown="onMenuKeydown"
     >
       <div v-if="showSearchBox" class="relative mb-1.5 px-1 pt-0.5">
         <LuSearch
-          class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+          class="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
         />
         <input
           ref="searchInputRef"
           v-model="query"
           type="text"
           :placeholder="searchPlaceholder || t('common.filterPlaceholder')"
-          class="h-8 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] pl-8 pr-2.5 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-8 w-full !pr-2.5 !pl-8 text-xs"
         />
       </div>
 
@@ -249,13 +249,13 @@ onBeforeUnmount(unbindGlobalListeners)
           type="button"
           role="option"
           :aria-selected="opt.value === modelValue"
-          class="flex w-full items-center justify-between gap-3 rounded-xl px-3 py-2 text-left text-xs transition"
+          class="md-state flex w-full cursor-pointer items-center justify-between gap-3 rounded-[var(--md-sys-shape-corner-xs)] px-3 py-2 text-left text-xs transition"
           :class="[
             opt.value === modelValue
-              ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
               : idx === highlightedIdx
-                ? 'bg-[var(--ctp-mantle)] text-[var(--ctp-text)]'
-                : 'text-[var(--ctp-text)] hover:bg-[var(--ctp-mantle)]',
+                ? 'bg-[color-mix(in_srgb,var(--md-sys-color-on-surface)_8%,transparent)] text-[var(--md-sys-color-on-surface)]'
+                : 'text-[var(--md-sys-color-on-surface)]',
           ]"
           @mouseenter="highlightedIdx = idx"
           @click="selectValue(opt.value)"
@@ -264,11 +264,14 @@ onBeforeUnmount(unbindGlobalListeners)
           <span class="flex shrink-0 items-center gap-1.5">
             <span
               v-if="opt.badge !== undefined"
-              class="rounded-md bg-[var(--ctp-surface0)]/70 px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)]"
+              class="rounded-md bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ opt.badge }}
             </span>
-            <LuCheck v-if="opt.value === modelValue" class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+            <LuCheck
+              v-if="opt.value === modelValue"
+              class="h-3.5 w-3.5 text-[var(--md-sys-color-on-secondary-container)]"
+            />
           </span>
         </button>
       </div>

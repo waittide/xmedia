@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuCheck,
@@ -9,15 +10,21 @@ import {
   LuSun,
 } from 'vue-icons-plus/lu'
 import AppColorPicker from '@/components/ui/AppColorPicker.vue'
+import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import { useThemeStore } from '@/stores/theme'
 import {
   CATPPUCCIN_ACCENT_HEX,
   CATPPUCCIN_ACCENTS,
   DARK_PALETTE_PRESETS,
+  DEFAULT_ACCENT_MODE,
   LIGHT_PALETTE_PRESETS,
+  chooseContrastText,
   normalizeHex,
+  type AccentMode,
   type CatppuccinAccent,
   type CustomPaletteTokens,
+  type PalettePreset,
+  type ThemeMode,
 } from '@/theme/catppuccin'
 import type { LocaleCode } from '@/types/api'
 
@@ -29,6 +36,18 @@ const localeOptions: { code: LocaleCode; nativeLabel: string; subLabel: string }
   { code: 'en-US', nativeLabel: 'English', subLabel: 'English (US)' },
 ]
 
+const themeModeOptions = computed<SegmentedOption<ThemeMode>[]>(() => [
+  { value: 'system', label: t('theme.system'), icon: LuMonitor },
+  { value: 'light', label: t('theme.light'), icon: LuSun },
+  { value: 'dark', label: t('theme.dark'), icon: LuMoon },
+])
+
+const accentModeOptions = computed<SegmentedOption<AccentMode>[]>(() => [
+  { value: 'preset', label: t('theme.accentModePreset') },
+  { value: 'catppuccin', label: t('theme.accentModeCatppuccin') },
+  { value: 'custom', label: t('theme.accentModeCustom') },
+])
+
 const customTokenFields: { key: keyof CustomPaletteTokens; labelKey: string }[] = [
   { key: 'canvas', labelKey: 'theme.tokenCanvas' },
   { key: 'shell', labelKey: 'theme.tokenShell' },
@@ -36,6 +55,47 @@ const customTokenFields: { key: keyof CustomPaletteTokens; labelKey: string }[] 
   { key: 'text', labelKey: 'theme.tokenText' },
   { key: 'subtext', labelKey: 'theme.tokenSubtext' },
 ]
+
+interface PalettePoolConfig {
+  kind: 'light' | 'dark'
+  titleKey: string
+  presets: readonly PalettePreset[]
+  selectedId: string
+  customTokens: CustomPaletteTokens
+  swatchRingClass: string
+}
+
+const palettePools = computed<PalettePoolConfig[]>(() => [
+  {
+    kind: 'light',
+    titleKey: 'theme.lightPaletteTitle',
+    presets: LIGHT_PALETTE_PRESETS,
+    selectedId: themeStore.lightPreset,
+    customTokens: themeStore.customLight,
+    swatchRingClass: 'border-black/15',
+  },
+  {
+    kind: 'dark',
+    titleKey: 'theme.darkPaletteTitle',
+    presets: DARK_PALETTE_PRESETS,
+    selectedId: themeStore.darkPreset,
+    customTokens: themeStore.customDark,
+    swatchRingClass: 'border-white/20',
+  },
+])
+
+function selectPoolPreset(kind: 'light' | 'dark', presetId: string): void {
+  if (kind === 'light') {
+    themeStore.setLightPreset(presetId)
+  } else {
+    themeStore.setDarkPreset(presetId)
+  }
+}
+
+function selectPoolCustom(pool: PalettePoolConfig): void {
+  if (pool.selectedId === 'custom') return
+  themeStore.seedCustomFromActivePreset(pool.kind)
+}
 
 function accentHex(acc: CatppuccinAccent): string {
   return CATPPUCCIN_ACCENT_HEX[themeStore.isDark ? 'dark' : 'light'][acc]
@@ -50,271 +110,162 @@ function onCustomTokenInput(
   const normalized = normalizeHex(raw, fallback)
   themeStore.updateCustomPalette(kind, { [field]: normalized })
 }
+
+function handleResetDefaults(): void {
+  themeStore.resetPalettesToDefault()
+  themeStore.setAccentMode(DEFAULT_ACCENT_MODE)
+}
 </script>
 
 <template>
   <!-- Language -->
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold">{{ t('theme.languageTitle') }}</h2>
+  <section class="md-card-outlined p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('theme.languageTitle') }}
+    </h2>
 
     <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
       <button
         v-for="loc in localeOptions"
         :key="loc.code"
         type="button"
-        class="flex items-center justify-between rounded-xl border px-4 py-3 text-left transition"
+        class="md-state flex cursor-pointer items-center justify-between rounded-[var(--md-sys-shape-corner-md)] border px-4 py-3 text-left transition"
         :class="
           themeStore.locale === loc.code
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] hover:border-[var(--ctp-surface1)]'
+            ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+            : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] hover:border-[var(--md-sys-color-outline)]'
         "
         @click="themeStore.setLocale(loc.code)"
       >
         <div>
-          <p class="text-sm font-semibold text-[var(--ctp-text)]">{{ loc.nativeLabel }}</p>
-          <p class="text-xs text-[var(--ctp-subtext0)]">{{ loc.subLabel }}</p>
+          <p class="md-title-small">{{ loc.nativeLabel }}</p>
+          <p
+            class="md-body-small mt-0.5"
+            :class="
+              themeStore.locale === loc.code
+                ? 'opacity-80'
+                : 'text-[var(--md-sys-color-on-surface-variant)]'
+            "
+          >
+            {{ loc.subLabel }}
+          </p>
         </div>
-        <LuCheck
-          v-if="themeStore.locale === loc.code"
-          class="h-4 w-4 text-[var(--ctp-accent)]"
-        />
+        <LuCheck v-if="themeStore.locale === loc.code" class="h-4 w-4 shrink-0" />
       </button>
     </div>
   </section>
 
   <!-- Theme Mode -->
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <section class="md-card-outlined p-6">
     <div class="flex flex-wrap items-center justify-between gap-2">
-      <h2 class="text-sm font-bold">{{ t('theme.modeTitle') }}</h2>
+      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('theme.modeTitle') }}
+      </h2>
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
-        @click="themeStore.resetPalettesToDefault()"
+        class="md-btn md-btn-sm md-btn-outlined"
+        @click="handleResetDefaults"
       >
         <LuRotateCw class="h-3.5 w-3.5" />
         <span>{{ t('theme.resetDefaults') }}</span>
       </button>
     </div>
 
-    <div class="mt-4 grid grid-cols-3 gap-3">
-      <button
-        type="button"
-        class="flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition"
-        :class="
-          themeStore.themeMode === 'system'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
-        "
-        @click="themeStore.setThemeMode('system')"
-      >
-        <LuMonitor class="h-4 w-4" />
-        <span>{{ t('theme.system') }}</span>
-      </button>
-
-      <button
-        type="button"
-        class="flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition"
-        :class="
-          themeStore.themeMode === 'light'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
-        "
-        @click="themeStore.setThemeMode('light')"
-      >
-        <LuSun class="h-4 w-4" />
-        <span>{{ t('theme.light') }}</span>
-      </button>
-
-      <button
-        type="button"
-        class="flex items-center justify-center gap-2 rounded-xl border py-2.5 text-xs font-semibold transition"
-        :class="
-          themeStore.themeMode === 'dark'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
-        "
-        @click="themeStore.setThemeMode('dark')"
-      >
-        <LuMoon class="h-4 w-4" />
-        <span>{{ t('theme.dark') }}</span>
-      </button>
+    <div class="mt-4">
+      <MdSegmentedButton
+        :model-value="themeStore.themeMode"
+        :options="themeModeOptions"
+        @update:model-value="themeStore.setThemeMode($event)"
+      />
     </div>
   </section>
 
-  <!-- Light Palette Pool -->
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold">{{ t('theme.lightPaletteTitle') }}</h2>
+  <!-- Light & Dark Palette Pools (Unified Template) -->
+  <section v-for="pool in palettePools" :key="pool.kind" class="md-card-outlined p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t(pool.titleKey) }}
+    </h2>
 
     <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <button
-        v-for="preset in LIGHT_PALETTE_PRESETS"
+        v-for="preset in pool.presets"
         :key="preset.id"
         type="button"
-        class="flex items-center justify-between rounded-xl border px-3.5 py-3 text-left text-xs font-semibold transition"
+        class="md-state flex cursor-pointer items-center justify-between rounded-[var(--md-sys-shape-corner-md)] border px-3.5 py-3 text-left text-xs font-medium transition"
         :class="
-          themeStore.lightPreset === preset.id
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
+          pool.selectedId === preset.id
+            ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+            : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] hover:border-[var(--md-sys-color-outline)]'
         "
-        @click="themeStore.setLightPreset(preset.id)"
-      >
-        <div class="flex min-w-0 items-center gap-2">
-          <span class="flex -space-x-1">
-            <span
-              class="h-3.5 w-3.5 rounded-full border border-black/15"
-              :style="{ backgroundColor: preset.tokens.canvas }"
-            />
-            <span
-              class="h-3.5 w-3.5 rounded-full border border-black/15"
-              :style="{ backgroundColor: preset.tokens.shell }"
-            />
-            <span
-              class="h-3.5 w-3.5 rounded-full border border-black/15"
-              :style="{ backgroundColor: preset.defaultAccent }"
-            />
-          </span>
-          <span class="truncate">{{ t(`theme.presets.${preset.id}`) }}</span>
-        </div>
-        <LuCheck v-if="themeStore.lightPreset === preset.id" class="h-4 w-4 shrink-0" />
-      </button>
-
-      <button
-        type="button"
-        class="flex items-center justify-between rounded-xl border px-3.5 py-3 text-left text-xs font-semibold transition"
-        :class="
-          themeStore.lightPreset === 'custom'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
-        "
-        @click="
-          themeStore.lightPreset === 'custom'
-            ? undefined
-            : themeStore.seedCustomFromActivePreset('light')
-        "
-      >
-        <span class="flex items-center gap-2">
-          <LuSlidersHorizontal class="h-3.5 w-3.5 shrink-0" />
-          <span>{{ t('theme.customPalette') }}</span>
-        </span>
-        <LuCheck v-if="themeStore.lightPreset === 'custom'" class="h-4 w-4 shrink-0" />
-      </button>
-    </div>
-
-    <div
-      v-if="themeStore.lightPreset === 'custom'"
-      class="mt-4 grid grid-cols-2 gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4 sm:grid-cols-5"
-    >
-      <div v-for="f in customTokenFields" :key="`light-${f.key}`">
-        <label class="mb-1.5 block truncate text-[11px] font-medium text-[var(--ctp-subtext0)]">
-          {{ t(f.labelKey) }}
-        </label>
-        <div class="flex items-center gap-1.5">
-          <AppColorPicker
-            :model-value="themeStore.customLight[f.key]"
-            @update:model-value="themeStore.updateCustomPalette('light', { [f.key]: $event })"
-          />
-          <input
-            type="text"
-            :value="themeStore.customLight[f.key]"
-            maxlength="7"
-            class="h-8 w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 font-mono text-xs outline-none focus:border-[var(--ctp-accent)]"
-            @change="
-              onCustomTokenInput(
-                'light',
-                f.key,
-                ($event.target as HTMLInputElement).value,
-                themeStore.customLight[f.key],
-              )
-            "
-          />
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Dark Palette Pool -->
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold">{{ t('theme.darkPaletteTitle') }}</h2>
-
-    <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <button
-        v-for="preset in DARK_PALETTE_PRESETS"
-        :key="preset.id"
-        type="button"
-        class="flex items-center justify-between rounded-xl border px-3.5 py-3 text-left text-xs font-semibold transition"
-        :class="
-          themeStore.darkPreset === preset.id
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
-        "
-        @click="themeStore.setDarkPreset(preset.id)"
+        @click="selectPoolPreset(pool.kind, preset.id)"
       >
         <span class="flex min-w-0 items-center gap-2">
           <span class="flex -space-x-1">
             <span
-              class="h-3.5 w-3.5 rounded-full border border-white/20"
+              class="h-3.5 w-3.5 rounded-full border"
+              :class="pool.swatchRingClass"
               :style="{ backgroundColor: preset.tokens.canvas }"
             />
             <span
-              class="h-3.5 w-3.5 rounded-full border border-white/20"
+              class="h-3.5 w-3.5 rounded-full border"
+              :class="pool.swatchRingClass"
               :style="{ backgroundColor: preset.tokens.shell }"
             />
             <span
-              class="h-3.5 w-3.5 rounded-full border border-white/20"
+              class="h-3.5 w-3.5 rounded-full border"
+              :class="pool.swatchRingClass"
               :style="{ backgroundColor: preset.defaultAccent }"
             />
           </span>
           <span class="truncate">{{ t(`theme.presets.${preset.id}`) }}</span>
         </span>
-        <LuCheck v-if="themeStore.darkPreset === preset.id" class="h-4 w-4 shrink-0" />
+        <LuCheck v-if="pool.selectedId === preset.id" class="h-4 w-4 shrink-0" />
       </button>
 
       <button
         type="button"
-        class="flex items-center justify-between rounded-xl border px-3.5 py-3 text-left text-xs font-semibold transition"
+        class="md-state flex cursor-pointer items-center justify-between rounded-[var(--md-sys-shape-corner-md)] border px-3.5 py-3 text-left text-xs font-medium transition"
         :class="
-          themeStore.darkPreset === 'custom'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]'
+          pool.selectedId === 'custom'
+            ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+            : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] hover:border-[var(--md-sys-color-outline)]'
         "
-        @click="
-          themeStore.darkPreset === 'custom'
-            ? undefined
-            : themeStore.seedCustomFromActivePreset('dark')
-        "
+        @click="selectPoolCustom(pool)"
       >
         <span class="flex items-center gap-2">
           <LuSlidersHorizontal class="h-3.5 w-3.5 shrink-0" />
           <span>{{ t('theme.customPalette') }}</span>
         </span>
-        <LuCheck v-if="themeStore.darkPreset === 'custom'" class="h-4 w-4 shrink-0" />
+        <LuCheck v-if="pool.selectedId === 'custom'" class="h-4 w-4 shrink-0" />
       </button>
     </div>
 
     <div
-      v-if="themeStore.darkPreset === 'custom'"
-      class="mt-4 grid grid-cols-2 gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4 sm:grid-cols-5"
+      v-if="pool.selectedId === 'custom'"
+      class="md-card-filled mt-4 grid grid-cols-2 gap-3 p-4 sm:grid-cols-5"
     >
-      <div v-for="f in customTokenFields" :key="`dark-${f.key}`">
-        <label class="mb-1.5 block truncate text-[11px] font-medium text-[var(--ctp-subtext0)]">
+      <div v-for="f in customTokenFields" :key="`${pool.kind}-${f.key}`">
+        <label
+          class="md-label-small mb-1.5 block truncate text-[var(--md-sys-color-on-surface-variant)]"
+        >
           {{ t(f.labelKey) }}
         </label>
         <div class="flex items-center gap-1.5">
           <AppColorPicker
-            :model-value="themeStore.customDark[f.key]"
-            @update:model-value="themeStore.updateCustomPalette('dark', { [f.key]: $event })"
+            :model-value="pool.customTokens[f.key]"
+            @update:model-value="themeStore.updateCustomPalette(pool.kind, { [f.key]: $event })"
           />
           <input
             type="text"
-            :value="themeStore.customDark[f.key]"
+            :value="pool.customTokens[f.key]"
             maxlength="7"
-            class="h-8 w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 font-mono text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-8 w-full !px-2 font-mono text-xs"
             @change="
               onCustomTokenInput(
-                'dark',
+                pool.kind,
                 f.key,
                 ($event.target as HTMLInputElement).value,
-                themeStore.customDark[f.key],
+                pool.customTokens[f.key],
               )
             "
           />
@@ -324,48 +275,17 @@ function onCustomTokenInput(
   </section>
 
   <!-- 3-Mode Accent Color -->
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold">{{ t('theme.accentTitle') }}</h2>
+  <section class="md-card-outlined p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('theme.accentTitle') }}
+    </h2>
 
-    <div class="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-      <button
-        type="button"
-        class="rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition"
-        :class="
-          themeStore.accentMode === 'preset'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
-        "
-        @click="themeStore.setAccentMode('preset')"
-      >
-        {{ t('theme.accentModePreset') }}
-      </button>
-
-      <button
-        type="button"
-        class="rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition"
-        :class="
-          themeStore.accentMode === 'catppuccin'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
-        "
-        @click="themeStore.setAccentMode('catppuccin')"
-      >
-        {{ t('theme.accentModeCatppuccin') }}
-      </button>
-
-      <button
-        type="button"
-        class="rounded-xl border px-3.5 py-2.5 text-xs font-semibold transition"
-        :class="
-          themeStore.accentMode === 'custom'
-            ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-            : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-text)]'
-        "
-        @click="themeStore.setAccentMode('custom')"
-      >
-        {{ t('theme.accentModeCustom') }}
-      </button>
+    <div class="mt-4">
+      <MdSegmentedButton
+        :model-value="themeStore.accentMode"
+        :options="accentModeOptions"
+        @update:model-value="themeStore.setAccentMode($event)"
+      />
     </div>
 
     <div
@@ -376,15 +296,15 @@ function onCustomTokenInput(
         v-for="acc in CATPPUCCIN_ACCENTS"
         :key="acc"
         type="button"
-        class="flex h-8 w-8 items-center justify-center rounded-full transition hover:scale-110"
+        class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full transition hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
         :style="{ backgroundColor: accentHex(acc) }"
         :title="t(`theme.accents.${acc}`)"
         @click="themeStore.setCatppuccinAccent(acc)"
       >
         <LuCheck
           v-if="themeStore.accent === acc"
-          class="h-4 w-4"
-          :style="{ color: themeStore.isDark ? '#11111b' : '#ffffff' }"
+          class="h-4 w-4 stroke-[2.5]"
+          :style="{ color: chooseContrastText(accentHex(acc)) }"
         />
       </button>
     </div>
@@ -401,7 +321,7 @@ function onCustomTokenInput(
         type="text"
         :value="themeStore.customAccent"
         maxlength="7"
-        class="h-9 w-32 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 font-mono text-xs outline-none focus:border-[var(--ctp-accent)]"
+        class="md-input h-9 w-32 font-mono text-xs"
         @change="
           themeStore.setCustomAccentHex(
             normalizeHex(($event.target as HTMLInputElement).value, themeStore.customAccent),

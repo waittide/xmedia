@@ -222,13 +222,13 @@ onBeforeUnmount(unbindGlobalListeners)
     type="button"
     :aria-expanded="open"
     :disabled="disabled"
-    class="inline-flex h-9 w-full items-center justify-between gap-2 rounded-xl border bg-[var(--ctp-canvas)] px-3 text-left text-xs font-medium transition outline-none select-none disabled:opacity-50"
+    class="inline-flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-[var(--md-sys-shape-corner-sm)] border px-3 text-left text-xs font-medium transition outline-none select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] disabled:cursor-not-allowed disabled:opacity-45"
     :class="[
       open
-        ? 'border-[var(--ctp-accent)] ring-2 ring-[var(--ctp-accent-soft)]'
+        ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] ring-1 ring-[var(--md-sys-color-primary)]'
         : modelValue.length > 0
-          ? 'border-[var(--ctp-accent)]/65 bg-[var(--ctp-accent-soft)]/35 text-[var(--ctp-accent)]'
-          : 'border-[var(--ctp-surface0)] text-[var(--ctp-text)] hover:border-[var(--ctp-surface1)]',
+          ? 'border-[var(--md-sys-color-primary)]/70 bg-[var(--md-sys-color-secondary-container)]/70 text-[var(--md-sys-color-on-secondary-container)]'
+          : 'border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] hover:border-[var(--md-sys-color-on-surface)]',
     ]"
     @click="toggleMenu"
   >
@@ -236,13 +236,13 @@ onBeforeUnmount(unbindGlobalListeners)
     <span class="flex shrink-0 items-center gap-1">
       <span
         v-if="modelValue.length > 1"
-        class="rounded-full bg-[var(--ctp-accent)] px-1.5 py-0.2 text-[10px] font-bold text-[var(--ctp-on-accent)]"
+        class="rounded-full bg-[var(--md-sys-color-primary)] px-1.5 py-0.2 text-[10px] font-bold text-[var(--md-sys-color-on-primary)]"
       >
         {{ modelValue.length }}
       </span>
       <LuChevronDown
-        class="h-3.5 w-3.5 text-[var(--ctp-subtext0)] transition-transform duration-150"
-        :class="open ? 'rotate-180 text-[var(--ctp-accent)]' : ''"
+        class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)] transition-transform duration-150"
+        :class="open ? 'rotate-180 text-[var(--md-sys-color-primary)]' : ''"
       />
     </span>
   </button>
@@ -252,27 +252,32 @@ onBeforeUnmount(unbindGlobalListeners)
       v-if="open"
       ref="menuRef"
       :style="menuStyle"
-      class="z-[var(--z-popover)] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 text-[var(--ctp-text)] shadow-2xl"
+      class="z-[var(--z-popover)] overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] bg-[var(--md-sys-color-surface-container)] p-2 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
     >
       <!-- Optional Header Controls Slot (e.g. Tag Match Any / Match All toggle) -->
-      <div v-if="$slots.header" class="mb-2 border-b border-[var(--ctp-surface0)]/65 pb-2">
+      <div
+        v-if="$slots.header"
+        class="mb-2 border-b border-[var(--md-sys-color-outline-variant)]/60 pb-2"
+      >
         <slot name="header" />
       </div>
 
       <!-- Instant Search Filter for Long Lists -->
       <div v-if="showSearchBox" class="relative mb-1.5">
-        <LuSearch class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]" />
+        <LuSearch
+          class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
+        />
         <input
           ref="searchInputRef"
           v-model="query"
           type="text"
           :placeholder="resolvedSearchPlaceholder"
-          class="h-8 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] pl-8 pr-7 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-8 w-full !pr-7 !pl-8 text-xs"
         />
         <button
           v-if="query"
           type="button"
-          class="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+          class="absolute top-1/2 right-2 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
           @click="query = ''"
         >
           <LuX class="h-3.5 w-3.5" />
@@ -283,7 +288,7 @@ onBeforeUnmount(unbindGlobalListeners)
       <div class="max-h-60 space-y-0.5 overflow-y-auto pr-0.5">
         <div
           v-if="renderedOptions.length === 0"
-          class="py-6 text-center text-xs text-[var(--ctp-subtext0)]"
+          class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
         >
           {{ resolvedNoMatchText }}
         </div>
@@ -292,21 +297,21 @@ onBeforeUnmount(unbindGlobalListeners)
           v-for="opt in renderedOptions"
           :key="opt.value"
           type="button"
-          class="flex w-full items-center justify-between gap-2.5 rounded-xl px-2.5 py-1.5 text-left text-xs transition"
+          class="md-state flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[var(--md-sys-shape-corner-xs)] px-2.5 py-1.5 text-left text-xs transition"
           :class="
             selectedSet.has(opt.value)
-              ? 'bg-[var(--ctp-accent-soft)]/70 font-semibold text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-text)] hover:bg-[var(--ctp-mantle)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface)]'
           "
           @click="toggleValue(opt.value)"
         >
           <span class="flex min-w-0 items-center gap-2">
             <span
-              class="flex h-4 w-4 shrink-0 items-center justify-center rounded border transition"
+              class="flex h-4 w-4 shrink-0 items-center justify-center rounded-[2px] border-2 transition"
               :class="
                 selectedSet.has(opt.value)
-                  ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                  : 'border-[var(--ctp-surface1)] bg-[var(--ctp-canvas)]'
+                  ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
+                  : 'border-[var(--md-sys-color-on-surface-variant)] bg-transparent'
               "
             >
               <LuCheck v-if="selectedSet.has(opt.value)" class="h-3 w-3 stroke-[3]" />
@@ -316,7 +321,7 @@ onBeforeUnmount(unbindGlobalListeners)
 
           <span
             v-if="opt.badge !== undefined"
-            class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/70 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-[var(--ctp-subtext1)]"
+            class="shrink-0 rounded-md bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-[var(--md-sys-color-on-surface-variant)]"
           >
             {{ opt.badge }}
           </span>
@@ -324,7 +329,7 @@ onBeforeUnmount(unbindGlobalListeners)
 
         <p
           v-if="matchedOptions.length > MAX_RENDERED_ITEMS"
-          class="px-2 py-1.5 text-center text-[10px] text-[var(--ctp-subtext0)]"
+          class="px-2 py-1.5 text-center text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
         >
           {{ formatShowingTop(MAX_RENDERED_ITEMS, matchedOptions.length) }}
         </p>
@@ -333,14 +338,14 @@ onBeforeUnmount(unbindGlobalListeners)
       <!-- Footer Clear Action -->
       <div
         v-if="modelValue.length > 0"
-        class="mt-1.5 flex items-center justify-between border-t border-[var(--ctp-surface0)]/65 pt-1.5 px-1"
+        class="mt-1.5 flex items-center justify-between border-t border-[var(--md-sys-color-outline-variant)]/60 px-1 pt-1.5"
       >
-        <span class="text-[11px] text-[var(--ctp-subtext0)]">
+        <span class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
           {{ formatSelectedCount(modelValue.length) }}
         </span>
         <button
           type="button"
-          class="text-[11px] font-semibold text-[var(--ctp-accent)] hover:underline"
+          class="cursor-pointer text-[11px] font-semibold text-[var(--md-sys-color-primary)] hover:underline"
           @click="clearAll"
         >
           {{ resolvedClearText }}

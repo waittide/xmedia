@@ -9,6 +9,7 @@ const props = withDefaults(
     step?: number
     buffered?: number
     commitOnRelease?: boolean
+    alwaysShowThumb?: boolean
     disabled?: boolean
     ariaLabel?: string
   }>(),
@@ -18,6 +19,7 @@ const props = withDefaults(
     step: 1,
     buffered: 0,
     commitOnRelease: false,
+    alwaysShowThumb: false,
     disabled: false,
     ariaLabel: 'slider',
   },
@@ -115,8 +117,9 @@ function onKeydown(ev: KeyboardEvent): void {
   }
   if (next !== null) {
     ev.preventDefault()
-    emit('update:modelValue', next)
-    emit('change', next)
+    const rounded = props.step > 0 ? Number(next.toFixed(4)) : next
+    emit('update:modelValue', rounded)
+    emit('change', rounded)
   }
 }
 </script>
@@ -130,7 +133,7 @@ function onKeydown(ev: KeyboardEvent): void {
     :aria-valuemin="min"
     :aria-valuemax="max"
     :aria-valuenow="Math.round(effectiveValue * 100) / 100"
-    class="group relative flex h-5 w-full cursor-pointer items-center select-none outline-none touch-none"
+    class="group relative flex h-6 w-full cursor-pointer items-center select-none touch-none focus-visible:outline-none"
     :class="disabled ? 'pointer-events-none opacity-45' : ''"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
@@ -138,21 +141,29 @@ function onKeydown(ev: KeyboardEvent): void {
     @pointercancel="onPointerUp"
     @keydown="onKeydown"
   >
-    <div class="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--ctp-surface0)] transition-all group-hover:h-2">
+    <div
+      class="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)] transition-all group-hover:h-2"
+    >
       <div
         v-if="bufferedPercent > 0"
-        class="absolute inset-y-0 left-0 rounded-full bg-[var(--ctp-surface2)]/65"
+        class="absolute inset-y-0 left-0 rounded-full bg-[var(--md-sys-color-outline-variant)]"
         :style="{ width: `${bufferedPercent}%` }"
       />
       <div
-        class="absolute inset-y-0 left-0 rounded-full bg-[var(--ctp-accent)]"
+        class="absolute inset-y-0 left-0 rounded-full bg-[var(--md-sys-color-primary)]"
         :style="{ width: `${fillPercent}%` }"
       />
     </div>
 
     <span
-      class="pointer-events-none absolute h-3.5 w-3.5 -translate-x-1/2 rounded-full bg-[var(--ctp-accent)] ring-2 ring-[var(--ctp-canvas)] shadow-sm transition-transform"
-      :class="dragging ? 'scale-125' : 'scale-0 group-hover:scale-100 group-focus-visible:scale-100'"
+      class="pointer-events-none absolute h-4 w-4 -translate-x-1/2 rounded-full bg-[var(--md-sys-color-primary)] ring-2 ring-[var(--md-sys-color-surface)] shadow-[var(--md-sys-elevation-1)] transition-transform group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-primary)]"
+      :class="
+        dragging
+          ? 'scale-125'
+          : alwaysShowThumb
+            ? 'scale-100 group-hover:scale-110'
+            : 'scale-0 group-hover:scale-100 group-focus-visible:scale-100'
+      "
       :style="{ left: `${fillPercent}%` }"
     />
   </div>

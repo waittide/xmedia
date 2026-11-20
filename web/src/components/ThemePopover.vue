@@ -7,6 +7,7 @@ import {
   CATPPUCCIN_ACCENT_HEX,
   DARK_PALETTE_PRESETS,
   LIGHT_PALETTE_PRESETS,
+  chooseContrastText,
   type CatppuccinAccent,
   type ThemeMode,
 } from '@/theme/catppuccin'
@@ -72,7 +73,7 @@ function accentColorHex(accent: CatppuccinAccent): string {
     <div v-if="showLanguage" class="relative">
       <button
         type="button"
-        class="flex h-9 items-center gap-1.5 rounded-xl px-2.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+        class="md-state md-label-medium flex h-9 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
         @click="langOpen = !langOpen; open = false"
       >
         <LuGlobe class="h-4 w-4" />
@@ -80,17 +81,17 @@ function accentColorHex(accent: CatppuccinAccent): string {
       </button>
       <div
         v-if="langOpen"
-        class="absolute right-0 top-11 z-50 w-36 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 shadow-xl"
+        class="absolute top-11 right-0 z-[var(--z-popover)] w-40 rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-surface-container)] p-1.5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
       >
         <button
           v-for="loc in locales"
           :key="loc.code"
           type="button"
-          class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-xs transition"
+          class="md-state flex w-full cursor-pointer items-center justify-between rounded-[var(--md-sys-shape-corner-sm)] px-3 py-2 text-xs transition"
           :class="
             themeStore.locale === loc.code
-              ? 'bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-              : 'text-[var(--ctp-text)] hover:bg-[var(--ctp-surface0)]'
+              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+              : 'text-[var(--md-sys-color-on-surface)]'
           "
           @click="themeStore.setLocale(loc.code); langOpen = false"
         >
@@ -102,32 +103,36 @@ function accentColorHex(accent: CatppuccinAccent): string {
 
     <button
       type="button"
-      class="flex h-9 w-9 items-center justify-center rounded-xl text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+      class="md-icon-btn md-state h-9 w-9"
       :title="t('theme.title')"
+      :aria-label="t('theme.title')"
       @click="open = !open; langOpen = false"
     >
-      <LuPalette class="h-4 w-4 text-[var(--ctp-accent)]" />
+      <LuPalette class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
     </button>
 
     <div
       v-if="open"
-      class="absolute right-0 top-11 z-50 w-80 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4 shadow-2xl"
+      class="absolute top-11 right-0 z-[var(--z-popover)] w-80 rounded-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
     >
-      <div class="mb-3">
-        <div class="mb-1.5 text-xs font-medium text-[var(--ctp-subtext0)]">
+      <div class="mb-3.5">
+        <div class="md-label-medium mb-2 text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('theme.modeTitle') }}
         </div>
-        <div class="grid grid-cols-3 gap-1 rounded-xl bg-[var(--ctp-mantle)] p-1">
+        <div
+          class="grid grid-cols-3 overflow-hidden rounded-full border border-[var(--md-sys-color-outline)]"
+        >
           <button
-            v-for="m in modes"
+            v-for="(m, idx) in modes"
             :key="m.value"
             type="button"
-            class="flex items-center justify-center gap-1 rounded-lg py-1.5 text-xs font-medium transition"
-            :class="
+            class="md-state flex h-9 cursor-pointer items-center justify-center gap-1.5 text-xs font-medium transition"
+            :class="[
+              idx > 0 ? 'border-l border-[var(--md-sys-color-outline)]' : '',
               themeStore.themeMode === m.value
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm'
-                : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-            "
+                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]',
+            ]"
             @click="themeStore.setThemeMode(m.value)"
           >
             <LuSun v-if="m.value === 'light'" class="h-3.5 w-3.5" />
@@ -138,8 +143,8 @@ function accentColorHex(accent: CatppuccinAccent): string {
         </div>
       </div>
 
-      <div class="mb-3">
-        <div class="mb-1.5 text-xs font-medium text-[var(--ctp-subtext0)]">
+      <div class="mb-3.5">
+        <div class="md-label-medium mb-2 text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('theme.activePaletteTitle') }}
         </div>
         <div class="grid grid-cols-2 gap-1.5">
@@ -147,11 +152,11 @@ function accentColorHex(accent: CatppuccinAccent): string {
             v-for="preset in currentPresets"
             :key="preset.id"
             type="button"
-            class="flex items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left text-xs font-medium transition"
+            class="md-state flex cursor-pointer items-center gap-2 rounded-[var(--md-sys-shape-corner-sm)] border px-2.5 py-2 text-left text-xs font-medium transition"
             :class="
               themeStore.activePresetId === preset.id
-                ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-text)]'
-                : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)]'
+                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)]'
             "
             @click="selectPreset(preset.id)"
           >
@@ -165,7 +170,7 @@ function accentColorHex(accent: CatppuccinAccent): string {
       </div>
 
       <div>
-        <div class="mb-1.5 text-xs font-medium text-[var(--ctp-subtext0)]">
+        <div class="md-label-medium mb-2 text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('theme.accentTitle') }}
         </div>
         <div class="grid grid-cols-7 gap-1.5">
@@ -173,15 +178,15 @@ function accentColorHex(accent: CatppuccinAccent): string {
             v-for="acc in CATPPUCCIN_ACCENTS"
             :key="acc"
             type="button"
-            class="flex h-7 w-7 items-center justify-center rounded-full transition hover:scale-110"
+            class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full transition hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
             :style="{ backgroundColor: accentColorHex(acc) }"
             :title="t(`theme.accents.${acc}`)"
             @click="themeStore.setCatppuccinAccent(acc)"
           >
             <LuCheck
               v-if="themeStore.accentMode === 'catppuccin' && themeStore.accent === acc"
-              class="h-3.5 w-3.5"
-              :style="{ color: themeStore.isDark ? '#11111b' : '#ffffff' }"
+              class="h-3.5 w-3.5 stroke-[2.5]"
+              :style="{ color: chooseContrastText(accentColorHex(acc)) }"
             />
           </button>
         </div>

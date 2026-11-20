@@ -141,7 +141,7 @@ export const LIGHT_PALETTE_PRESETS: readonly PalettePreset[] = [
   {
     id: 'warm-paper',
     kind: 'light',
-    defaultAccent: '#b4632a',
+    defaultAccent: '#a85923',
     tokens: {
       canvas: '#fdfbf7',
       shell: '#f4efe4',
@@ -154,7 +154,7 @@ export const LIGHT_PALETTE_PRESETS: readonly PalettePreset[] = [
   {
     id: 'rose-pine-dawn',
     kind: 'light',
-    defaultAccent: '#907aa9',
+    defaultAccent: '#7e6699',
     tokens: {
       canvas: '#faf4ed',
       shell: '#f2e9e1',
@@ -162,7 +162,7 @@ export const LIGHT_PALETTE_PRESETS: readonly PalettePreset[] = [
       text: '#575279',
       subtext: '#797593',
     },
-    semantic: { red: '#b4637a', green: '#286983', yellow: '#ea9d34' },
+    semantic: { red: '#aa566f', green: '#286983', yellow: '#ea9d34' },
   },
   {
     id: 'solarized-light',
@@ -312,6 +312,10 @@ export function rgbToHex(r: number, g: number, b: number): string {
   )
 }
 
+export const DEFAULT_LIGHT_PRESET_ID = 'material-you-light'
+export const DEFAULT_DARK_PRESET_ID = 'material-you-dark'
+export const DEFAULT_ACCENT_MODE: AccentMode = 'preset'
+
 function mixHex(hexA: string, hexB: string, weightA: number): string {
   const [r1, g1, b1] = parseHexRgb(hexA)
   const [r2, g2, b2] = parseHexRgb(hexB)
@@ -319,10 +323,93 @@ function mixHex(hexA: string, hexB: string, weightA: number): string {
   return rgbToHex(r1 * w + r2 * (1 - w), g1 * w + g2 * (1 - w), b1 * w + b2 * (1 - w))
 }
 
-function chooseContrastText(bgHex: string): string {
-  const [r, g, b] = parseHexRgb(bgHex)
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255
-  return luminance > 0.58 ? '#11111b' : '#ffffff'
+function srgbChannelToLinear(channel: number): number {
+  const s = channel / 255
+  return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+}
+
+/** WCAG 2.1 relative luminance in [0, 1]. */
+export function relativeLuminance(hex: string): number {
+  const [r, g, b] = parseHexRgb(hex)
+  return (
+    0.2126 * srgbChannelToLinear(r) +
+    0.7152 * srgbChannelToLinear(g) +
+    0.0722 * srgbChannelToLinear(b)
+  )
+}
+
+/** WCAG 2.1 contrast ratio in [1, 21]. */
+export function contrastRatio(hexA: string, hexB: string): number {
+  const l1 = relativeLuminance(hexA)
+  const l2 = relativeLuminance(hexB)
+  const lighter = Math.max(l1, l2)
+  const darker = Math.min(l1, l2)
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+/** Choose the higher-contrast text color against bgHex per WCAG 2.1. */
+export function chooseContrastText(
+  bgHex: string,
+  darkText = '#0b0d14',
+  lightText = '#ffffff',
+): string {
+  return contrastRatio(bgHex, darkText) >= contrastRatio(bgHex, lightText) ? darkText : lightText
+}
+
+/** Ensure fgHex meets at least minRatio (default WCAG AA 4.5:1) against bgHex. */
+function ensureContrast(fgHex: string, bgHex: string, minRatio = 4.5): string {
+  if (contrastRatio(fgHex, bgHex) >= minRatio) return fgHex
+  const target = chooseContrastText(bgHex, '#0b0d14', '#ffffff')
+  let low = 0
+  let high = 1
+  let best = target
+  for (let i = 0; i < 10; i++) {
+    const mid = (low + high) / 2
+    const candidate = mixHex(target, fgHex, mid)
+    if (contrastRatio(candidate, bgHex) >= minRatio) {
+      best = candidate
+      high = mid
+    } else {
+      low = mid
+    }
+  }
+  return best
+}
+
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  const rn = r / 255
+  const gn = g / 255
+  const bn = b / 255
+  const max = Math.max(rn, gn, bn)
+  const min = Math.min(rn, gn, bn)
+  const l = (max + min) / 2
+  const d = max - min
+  if (d === 0) return [0, 0, l]
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+  let h = 0
+  if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60
+  else if (max === gn) h = ((bn - rn) / d + 2) * 60
+  else h = ((rn - gn) / d + 4) * 60
+  return [h, s, l]
+}
+
+function hslToHex(h: number, s: number, l: number): string {
+  const hue = ((h % 360) + 360) % 360
+  const sat = Math.max(0, Math.min(1, s))
+  const lig = Math.max(0, Math.min(1, l))
+  const c = (1 - Math.abs(2 * lig - 1)) * sat
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1))
+  const m = lig - c / 2
+  let r1 = 0
+  let g1 = 0
+  let b1 = 0
+  if (hue < 60) [r1, g1, b1] = [c, x, 0]
+  else if (hue < 120) [r1, g1, b1] = [x, c, 0]
+  else if (hue < 180) [r1, g1, b1] = [0, c, x]
+  else if (hue < 240) [r1, g1, b1] = [0, x, c]
+  else if (hue < 300) [r1, g1, b1] = [x, 0, c]
+  else [r1, g1, b1] = [c, 0, x]
+  return rgbToHex((r1 + m) * 255, (g1 + m) * 255, (b1 + m) * 255)
 }
 
 export function normalizeHex(input: string, fallback: string): string {
@@ -397,116 +484,143 @@ export function applyResolvedPaletteToDom(
 ): void {
   const [r, g, b] = parseHexRgb(resolved.accent)
   const rgbTuple = `${r} ${g} ${b}`
+  const [primaryH, primaryS] = rgbToHsl(r, g, b)
   const root = document.documentElement
 
   root.dataset.theme = isDark ? 'dark' : 'light'
   root.dataset.palette = presetId
 
-  root.style.setProperty('--ctp-base', resolved.canvas)
-  root.style.setProperty('--ctp-mantle', resolved.mantle)
-  root.style.setProperty('--ctp-crust', resolved.shell)
-  root.style.setProperty('--ctp-surface0', resolved.surface0)
-  root.style.setProperty('--ctp-surface1', resolved.surface1)
-  root.style.setProperty('--ctp-surface2', resolved.surface2)
-  root.style.setProperty('--ctp-subtext0', resolved.subtext0)
-  root.style.setProperty('--ctp-subtext1', resolved.subtext1)
-  root.style.setProperty('--ctp-text', resolved.text)
-  root.style.setProperty('--ctp-accent', resolved.accent)
-  root.style.setProperty('--ctp-accent-rgb', rgbTuple)
-  root.style.setProperty('--ctp-accent-soft', `rgb(${rgbTuple} / 0.15)`)
-  root.style.setProperty('--ctp-accent-medium', `rgb(${rgbTuple} / 0.25)`)
-  root.style.setProperty('--ctp-on-accent', resolved.onAccent)
-  root.style.setProperty('--ctp-canvas', resolved.canvas)
-  root.style.setProperty('--ctp-shell', resolved.shell)
-  root.style.setProperty('--ctp-search', resolved.mantle)
-  root.style.setProperty('--ctp-row-hover', mixHex(resolved.canvas, resolved.surface0, 0.65))
-  root.style.setProperty('--ctp-red', resolved.red)
-  root.style.setProperty('--ctp-green', resolved.green)
-  root.style.setProperty('--ctp-yellow', resolved.yellow)
-
-  // Material Design 3 (Material You) dynamic tonal surface & container tokens
+  // Material Design 3 (Material You) monotonic tonal surface & container tokens
   const surface = resolved.canvas
-  const surfaceDim = isDark
-    ? mixHex(surface, '#000000', 0.86)
-    : mixHex(surface, resolved.surface0, 0.62)
-  const surfaceBright = isDark
-    ? mixHex(surface, '#ffffff', 0.86)
-    : mixHex(surface, '#ffffff', 0.25)
+  const surfaceLum = relativeLuminance(surface)
 
-  const containerLowest = isDark
-    ? mixHex(surface, '#000000', 0.72)
-    : mixHex(surface, '#ffffff', 0.15)
-  const containerLow = isDark
-    ? mixHex(mixHex(surface, resolved.shell, 0.35), resolved.accent, 0.96)
-    : mixHex(mixHex(surface, resolved.shell, 0.45), resolved.accent, 0.97)
-  const containerDefault = isDark
-    ? mixHex(resolved.shell, resolved.accent, 0.94)
-    : mixHex(resolved.shell, resolved.accent, 0.95)
-  const containerHigh = isDark
-    ? mixHex(mixHex(resolved.shell, resolved.surface0, 0.5), resolved.accent, 0.91)
-    : mixHex(mixHex(resolved.shell, resolved.surface0, 0.62), resolved.accent, 0.93)
-  const containerHighest = isDark
-    ? mixHex(resolved.surface0, resolved.accent, 0.88)
-    : mixHex(resolved.surface0, resolved.accent, 0.90)
+  let surfaceDim: string
+  let surfaceBright: string
+  let containerLowest: string
+  let containerLow: string
+  let containerDefault: string
+  let containerHigh: string
+  let containerHighest: string
 
+  if (isDark) {
+    // Dark mode: strictly brighten from lowest -> surface -> low -> default -> high -> highest -> bright.
+    // Never allow a dark Catppuccin shell/crust (darker than canvas) to invert container hierarchy.
+    const rawElevated =
+      relativeLuminance(resolved.surface0) > surfaceLum + 0.012
+        ? resolved.surface0
+        : mixHex(surface, resolved.text, 0.78)
+    const [er, eg, eb] = parseHexRgb(rawElevated)
+    const [, , elevL] = rgbToHsl(er, eg, eb)
+    const safeTint = hslToHex(primaryH, Math.min(primaryS, 0.42), Math.max(elevL, 0.24))
+    const tintedTop = mixHex(rawElevated, safeTint, 0.92)
+
+    surfaceDim = mixHex(surface, '#000000', 0.88)
+    containerLowest =
+      relativeLuminance(resolved.shell) < surfaceLum - 0.002
+        ? mixHex(resolved.shell, '#000000', 0.86)
+        : mixHex(surface, '#000000', 0.74)
+    containerLow = mixHex(surface, tintedTop, 0.72)
+    containerDefault = mixHex(surface, tintedTop, 0.48)
+    containerHigh = mixHex(surface, tintedTop, 0.22)
+    containerHighest = mixHex(tintedTop, resolved.text, 0.94)
+    surfaceBright = mixHex(tintedTop, resolved.text, 0.82)
+  } else {
+    // Light mode: strictly darken from lowest -> surface -> low -> default -> high -> highest -> dim.
+    const rawDeep =
+      relativeLuminance(resolved.surface0) < surfaceLum - 0.035
+        ? resolved.surface0
+        : mixHex(surface, resolved.text, 0.86)
+    const [dr, dg, db] = parseHexRgb(rawDeep)
+    const [, , deepL] = rgbToHsl(dr, dg, db)
+    const safeTint = hslToHex(primaryH, Math.min(primaryS, 0.4), Math.min(deepL, 0.84))
+    const tintedDeep = mixHex(rawDeep, safeTint, 0.94)
+
+    surfaceBright = mixHex(surface, '#ffffff', 0.35)
+    containerLowest = mixHex(surface, '#ffffff', 0.22)
+    containerLow = mixHex(surface, tintedDeep, 0.78)
+    containerDefault = mixHex(surface, tintedDeep, 0.56)
+    containerHigh = mixHex(surface, tintedDeep, 0.32)
+    containerHighest = mixHex(surface, tintedDeep, 0.1)
+    surfaceDim = mixHex(tintedDeep, resolved.text, 0.92)
+  }
+
+  // MD3 Primary, Secondary & Tertiary Roles (hue-shifted from primary, uncoupled from warning/success)
+  const primary = resolved.accent
+  const onPrimary = chooseContrastText(primary)
   const primaryContainer = isDark
-    ? mixHex(resolved.accent, surface, 0.34)
-    : mixHex(resolved.accent, '#ffffff', 0.18)
-  const onPrimaryContainer = isDark
-    ? mixHex(resolved.accent, '#ffffff', 0.22)
-    : mixHex(resolved.accent, '#081020', 0.45)
+    ? mixHex(primary, surface, 0.34)
+    : mixHex(primary, '#ffffff', 0.18)
+  const onPrimaryContainer = ensureContrast(
+    isDark ? mixHex(primary, '#ffffff', 0.24) : mixHex(primary, '#081020', 0.42),
+    primaryContainer,
+  )
 
+  const secondarySat = primaryS < 0.06 ? primaryS : Math.max(0.14, Math.min(0.36, primaryS * 0.42))
+  const secondary = hslToHex((primaryH + 8) % 360, secondarySat, isDark ? 0.76 : 0.38)
+  const onSecondary = chooseContrastText(secondary)
   const secondaryContainer = isDark
-    ? mixHex(resolved.accent, containerHighest, 0.24)
-    : mixHex(resolved.accent, containerHigh, 0.16)
-  const onSecondaryContainer = isDark
-    ? mixHex(resolved.text, '#ffffff', 0.78)
-    : mixHex(resolved.accent, '#10141c', 0.32)
+    ? mixHex(secondary, containerHighest, 0.26)
+    : mixHex(secondary, '#ffffff', 0.18)
+  const onSecondaryContainer = ensureContrast(
+    isDark ? mixHex(secondary, '#ffffff', 0.22) : mixHex(secondary, '#10141c', 0.38),
+    secondaryContainer,
+  )
 
-  const tertiarySeed = isDark ? resolved.yellow : resolved.green
+  const tertiarySat = primaryS < 0.06 ? 0.24 : Math.max(0.32, Math.min(0.62, primaryS * 0.76))
+  const tertiary = hslToHex((primaryH + 60) % 360, tertiarySat, isDark ? 0.78 : 0.38)
+  const onTertiary = chooseContrastText(tertiary)
   const tertiaryContainer = isDark
-    ? mixHex(tertiarySeed, surface, 0.24)
-    : mixHex(tertiarySeed, '#ffffff', 0.16)
-  const onTertiaryContainer = isDark
-    ? mixHex(tertiarySeed, '#ffffff', 0.25)
-    : mixHex(tertiarySeed, '#0e1a12', 0.45)
+    ? mixHex(tertiary, surface, 0.3)
+    : mixHex(tertiary, '#ffffff', 0.18)
+  const onTertiaryContainer = ensureContrast(
+    isDark ? mixHex(tertiary, '#ffffff', 0.22) : mixHex(tertiary, '#10141c', 0.4),
+    tertiaryContainer,
+  )
 
+  // Semantic roles (Error / Success / Warning) with guaranteed WCAG AA contrast
   const onError = chooseContrastText(resolved.red)
   const errorContainer = isDark
     ? mixHex(resolved.red, surface, 0.28)
-    : mixHex(resolved.red, '#ffffff', 0.14)
-  const onErrorContainer = isDark
-    ? mixHex(resolved.red, '#ffffff', 0.2)
-    : mixHex(resolved.red, '#2b0609', 0.45)
+    : mixHex(resolved.red, '#ffffff', 0.15)
+  const onErrorContainer = ensureContrast(
+    isDark ? mixHex(resolved.red, '#ffffff', 0.22) : mixHex(resolved.red, '#2b0609', 0.42),
+    errorContainer,
+  )
 
   const successContainer = isDark
-    ? mixHex(resolved.green, surface, 0.24)
+    ? mixHex(resolved.green, surface, 0.26)
     : mixHex(resolved.green, '#ffffff', 0.16)
-  const onSuccessContainer = isDark
-    ? mixHex(resolved.green, '#ffffff', 0.2)
-    : mixHex(resolved.green, '#09210e', 0.42)
+  const onSuccessContainer = ensureContrast(
+    isDark ? mixHex(resolved.green, '#ffffff', 0.22) : mixHex(resolved.green, '#09210e', 0.4),
+    successContainer,
+  )
 
   const warningContainer = isDark
-    ? mixHex(resolved.yellow, surface, 0.24)
+    ? mixHex(resolved.yellow, surface, 0.26)
     : mixHex(resolved.yellow, '#ffffff', 0.18)
-  const onWarningContainer = isDark
-    ? mixHex(resolved.yellow, '#ffffff', 0.22)
-    : mixHex(resolved.yellow, '#2c1900', 0.42)
+  const onWarningContainer = ensureContrast(
+    isDark ? mixHex(resolved.yellow, '#ffffff', 0.22) : mixHex(resolved.yellow, '#2c1900', 0.4),
+    warningContainer,
+  )
 
   const outline = mixHex(resolved.subtext0, surface, 0.65)
   const outlineVariant = mixHex(resolved.surface0, surface, 0.72)
+  const scrim = '#000000'
 
   const inverseSurface = isDark
-    ? mixHex(resolved.text, resolved.accent, 0.9)
-    : mixHex(resolved.text, resolved.accent, 0.88)
+    ? mixHex(resolved.text, primary, 0.92)
+    : mixHex(resolved.text, primary, 0.9)
   const inverseOnSurface = chooseContrastText(inverseSurface)
-  const inversePrimary = isDark
-    ? mixHex(resolved.accent, resolved.canvas, 0.68)
-    : mixHex(resolved.accent, '#ffffff', 0.55)
+  const inversePrimary = ensureContrast(
+    isDark ? mixHex(primary, resolved.canvas, 0.62) : mixHex(primary, '#ffffff', 0.52),
+    inverseSurface,
+  )
 
   const [tr, tg, tb] = parseHexRgb(resolved.text)
-  const onSurfaceRgb = [tr, tg, tb].join(' ')
+  const onSurfaceRgb = `${tr} ${tg} ${tb}`
 
+  // Write MD3 System Color Tokens
+  root.style.colorScheme = isDark ? 'dark' : 'light'
   root.style.setProperty('--md-sys-color-surface', surface)
   root.style.setProperty('--md-sys-color-surface-dim', surfaceDim)
   root.style.setProperty('--md-sys-color-surface-bright', surfaceBright)
@@ -520,13 +634,18 @@ export function applyResolvedPaletteToDom(
   root.style.setProperty('--md-sys-color-on-surface-variant', resolved.subtext0)
   root.style.setProperty('--md-sys-color-outline', outline)
   root.style.setProperty('--md-sys-color-outline-variant', outlineVariant)
+  root.style.setProperty('--md-sys-color-scrim', scrim)
 
-  root.style.setProperty('--md-sys-color-primary', resolved.accent)
-  root.style.setProperty('--md-sys-color-on-primary', resolved.onAccent)
+  root.style.setProperty('--md-sys-color-primary', primary)
+  root.style.setProperty('--md-sys-color-on-primary', onPrimary)
   root.style.setProperty('--md-sys-color-primary-container', primaryContainer)
   root.style.setProperty('--md-sys-color-on-primary-container', onPrimaryContainer)
+  root.style.setProperty('--md-sys-color-secondary', secondary)
+  root.style.setProperty('--md-sys-color-on-secondary', onSecondary)
   root.style.setProperty('--md-sys-color-secondary-container', secondaryContainer)
   root.style.setProperty('--md-sys-color-on-secondary-container', onSecondaryContainer)
+  root.style.setProperty('--md-sys-color-tertiary', tertiary)
+  root.style.setProperty('--md-sys-color-on-tertiary', onTertiary)
   root.style.setProperty('--md-sys-color-tertiary-container', tertiaryContainer)
   root.style.setProperty('--md-sys-color-on-tertiary-container', onTertiaryContainer)
 
@@ -545,18 +664,35 @@ export function applyResolvedPaletteToDom(
   root.style.setProperty('--md-sys-color-inverse-on-surface', inverseOnSurface)
   root.style.setProperty('--md-sys-color-inverse-primary', inversePrimary)
 
-  // Keep legacy --ctp-shell / --ctp-mantle harmonized with MD3 tonal containers
-  root.style.setProperty('--ctp-shell', containerDefault)
+  // Legacy --ctp-* compatibility aliases (single write, harmonized with MD3 tonal containers)
+  root.style.setProperty('--ctp-base', surface)
+  root.style.setProperty('--ctp-canvas', surface)
+  root.style.setProperty('--ctp-crust', containerLowest)
   root.style.setProperty('--ctp-mantle', containerLow)
+  root.style.setProperty('--ctp-shell', containerDefault)
   root.style.setProperty('--ctp-search', containerHigh)
+  root.style.setProperty('--ctp-surface0', containerHighest)
+  root.style.setProperty('--ctp-surface1', resolved.surface1)
+  root.style.setProperty('--ctp-surface2', resolved.surface2)
+  root.style.setProperty('--ctp-subtext0', resolved.subtext0)
+  root.style.setProperty('--ctp-subtext1', resolved.subtext1)
+  root.style.setProperty('--ctp-text', resolved.text)
+  root.style.setProperty('--ctp-accent', primary)
+  root.style.setProperty('--ctp-accent-rgb', rgbTuple)
+  root.style.setProperty('--ctp-accent-soft', `rgb(${rgbTuple} / 0.15)`)
+  root.style.setProperty('--ctp-accent-medium', `rgb(${rgbTuple} / 0.25)`)
+  root.style.setProperty('--ctp-on-accent', onPrimary)
+  root.style.setProperty('--ctp-row-hover', mixHex(surface, containerHighest, 0.65))
+  root.style.setProperty('--ctp-red', resolved.red)
+  root.style.setProperty('--ctp-green', resolved.green)
+  root.style.setProperty('--ctp-yellow', resolved.yellow)
 
-  // Synchronize xcomic semantic tokens to the exact same resolved palette
-  root.style.colorScheme = isDark ? 'dark' : 'light'
+  // Legacy xcomic semantic tokens synchronized with MD3 palette
   root.style.setProperty('--bg-base', surface)
   root.style.setProperty('--bg-mantle', containerDefault)
   root.style.setProperty('--bg-surface', containerLow)
   root.style.setProperty('--text-primary', resolved.text)
   root.style.setProperty('--text-secondary', resolved.subtext0)
-  root.style.setProperty('--accent', resolved.accent)
-  root.style.setProperty('--accent-contrast', resolved.onAccent)
+  root.style.setProperty('--accent', primary)
+  root.style.setProperty('--accent-contrast', onPrimary)
 }

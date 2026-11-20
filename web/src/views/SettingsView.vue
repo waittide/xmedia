@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -21,11 +21,30 @@ import SettingsUsersTab from '@/components/settings/SettingsUsersTab.vue'
 
 type SettingsTab = 'appearance' | 'preferences' | 'account' | 'libraries' | 'users'
 
+interface SettingsNavItem {
+  id: SettingsTab
+  labelKey: string
+  icon: Component
+  adminOnly?: boolean
+}
+
+const ALL_NAV_ITEMS: readonly SettingsNavItem[] = [
+  { id: 'appearance', labelKey: 'settings.navAppearance', icon: LuPalette },
+  { id: 'preferences', labelKey: 'settings.navPreferences', icon: LuRadio },
+  { id: 'account', labelKey: 'settings.navAccount', icon: LuKeyRound },
+  { id: 'libraries', labelKey: 'settings.navLibraries', icon: LuLibrary, adminOnly: true },
+  { id: 'users', labelKey: 'settings.navUsers', icon: LuUsers, adminOnly: true },
+]
+
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
+
+const visibleNavItems = computed(() =>
+  ALL_NAV_ITEMS.filter((item) => !item.adminOnly || authStore.isAdmin),
+)
 
 function resolveTabFromQuery(): SettingsTab {
   const q = route.query.tab
@@ -57,84 +76,37 @@ function selectTab(tab: SettingsTab): void {
 <template>
   <div class="mx-auto max-w-5xl px-6 py-8 sm:px-8">
     <div class="mb-8">
-      <h1 class="text-2xl font-bold tracking-tight">{{ t('settings.title') }}</h1>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('settings.subtitle') }}</p>
+      <h1 class="md-headline-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('settings.title') }}
+      </h1>
+      <p
+        v-if="t('settings.subtitle')"
+        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
+      >
+        {{ t('settings.subtitle') }}
+      </p>
     </div>
 
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_minmax(0,1fr)]">
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
       <!-- Left Settings Category Rail (MD3 Full-Pill Active Indicator) -->
       <nav class="flex gap-1 overflow-x-auto lg:flex-col">
-        <button
-          type="button"
-          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
-          :class="
-            activeTab === 'appearance'
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-          "
-          @click="selectTab('appearance')"
-        >
-          <LuPalette class="h-4 w-4" />
-          <span>{{ t('settings.navAppearance') }}</span>
-        </button>
-
-        <button
-          type="button"
-          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
-          :class="
-            activeTab === 'preferences'
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-          "
-          @click="selectTab('preferences')"
-        >
-          <LuRadio class="h-4 w-4" />
-          <span>{{ t('settings.navPreferences') }}</span>
-        </button>
-
-        <button
-          type="button"
-          class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
-          :class="
-            activeTab === 'account'
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-          "
-          @click="selectTab('account')"
-        >
-          <LuKeyRound class="h-4 w-4" />
-          <span>{{ t('settings.navAccount') }}</span>
-        </button>
-
-        <template v-if="authStore.isAdmin">
-          <div class="my-2 hidden h-px bg-[var(--md-sys-color-outline-variant)]/50 lg:block" />
-
+        <template v-for="(item, idx) in visibleNavItems" :key="item.id">
+          <div
+            v-if="item.adminOnly && idx > 0 && !visibleNavItems[idx - 1]?.adminOnly"
+            class="my-2 hidden h-px bg-[var(--md-sys-color-outline-variant)]/60 lg:block"
+          />
           <button
             type="button"
-            class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
+            class="md-state md-label-large flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-full px-4 text-left"
             :class="
-              activeTab === 'libraries'
+              activeTab === item.id
                 ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
                 : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
             "
-            @click="selectTab('libraries')"
+            @click="selectTab(item.id)"
           >
-            <LuLibrary class="h-4 w-4" />
-            <span>{{ t('settings.navLibraries') }}</span>
-          </button>
-
-          <button
-            type="button"
-            class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
-            :class="
-              activeTab === 'users'
-                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-            "
-            @click="selectTab('users')"
-          >
-            <LuUsers class="h-4 w-4" />
-            <span>{{ t('settings.navUsers') }}</span>
+            <component :is="item.icon" class="h-4 w-4 shrink-0" />
+            <span>{{ t(item.labelKey) }}</span>
           </button>
         </template>
       </nav>
@@ -143,7 +115,7 @@ function selectTab(tab: SettingsTab): void {
       <div class="min-w-0 space-y-6">
         <div
           v-if="errorMsg"
-          class="flex items-center gap-2 rounded-xl border border-[var(--ctp-red)]/40 bg-[var(--ctp-red)]/10 px-4 py-3 text-xs text-[var(--ctp-red)]"
+          class="flex items-center gap-2 rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs font-medium text-[var(--md-sys-color-on-error-container)]"
         >
           <LuAlertCircle class="h-4 w-4 shrink-0" />
           <span>{{ errorMsg }}</span>
@@ -152,11 +124,13 @@ function selectTab(tab: SettingsTab): void {
         <template v-if="activeTab === 'appearance'">
           <AppearanceSettingsPanel />
 
-          <section class="md-card-filled p-6">
-            <h2 class="text-sm font-bold">{{ t('layoutCustomizer.title') }}</h2>
+          <section class="md-card-outlined p-6">
+            <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+              {{ t('layoutCustomizer.title') }}
+            </h2>
             <p
               v-if="t('layoutCustomizer.subtitle')"
-              class="mt-1 mb-4 text-xs text-[var(--ctp-subtext0)]"
+              class="md-body-small mt-1 mb-4 text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ t('layoutCustomizer.subtitle') }}
             </p>

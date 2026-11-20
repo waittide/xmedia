@@ -118,14 +118,14 @@ const summaryText = computed(() => {
           <LuAlertCircle v-else-if="failedCount > 0" class="h-4 w-4" />
           <LuCheckCircle2 v-else class="h-4 w-4" />
         </div>
-        <p class="truncate text-xs font-semibold text-[var(--ctp-text)]">{{ summaryText }}</p>
+        <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">{{ summaryText }}</p>
       </div>
 
       <div class="flex shrink-0 items-center gap-1" @click.stop>
         <button
           v-if="completedCount > 0"
           type="button"
-          class="rounded-lg px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+          class="md-state rounded-full px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
           @click="emit('clearCompleted')"
         >
           {{ t('transfers.clearCompleted') }}
@@ -133,7 +133,7 @@ const summaryText = computed(() => {
 
         <button
           type="button"
-          class="rounded-lg p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+          class="md-icon-btn md-icon-btn-sm md-state"
           @click="emit('update:collapsed', !collapsed)"
         >
           <LuChevronUp v-if="collapsed" class="h-4 w-4" />
@@ -143,7 +143,7 @@ const summaryText = computed(() => {
         <button
           v-if="activeTasks.length === 0"
           type="button"
-          class="rounded-lg p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)] hover:text-[var(--ctp-text)]"
+          class="md-icon-btn md-icon-btn-sm md-state"
           @click="emit('dismissAll')"
         >
           <LuX class="h-4 w-4" />
@@ -152,27 +152,30 @@ const summaryText = computed(() => {
     </div>
 
     <!-- Overall Top Progress Bar -->
-    <div v-if="activeTasks.length > 0" class="relative h-1 w-full overflow-hidden bg-[var(--ctp-surface0)]">
+    <div
+      v-if="activeTasks.length > 0"
+      class="relative h-1 w-full overflow-hidden bg-[var(--md-sys-color-surface-container-highest)]"
+    >
       <div
         v-if="overallProgress !== null"
-        class="h-full bg-[var(--ctp-accent)] transition-all duration-200"
+        class="h-full bg-[var(--md-sys-color-primary)] transition-all duration-200"
         :style="{ width: `${overallProgress}%` }"
       />
       <div
         v-else
-        class="task-indeterminate-bar h-full w-2/5 rounded-full bg-[var(--ctp-accent)]"
+        class="task-indeterminate-bar h-full w-2/5 rounded-full bg-[var(--md-sys-color-primary)]"
       />
     </div>
 
     <!-- Task Rows -->
     <div
       v-if="!collapsed"
-      class="max-h-64 divide-y divide-[var(--ctp-surface0)]/60 overflow-y-auto"
+      class="max-h-64 divide-y divide-[var(--md-sys-color-outline-variant)]/50 overflow-y-auto"
     >
       <div
         v-for="task in tasks"
         :key="task.id"
-        class="space-y-1.5 px-4 py-2.5 text-xs transition hover:bg-[var(--ctp-row-hover)]"
+        class="space-y-1.5 px-4 py-2.5 text-xs transition hover:bg-[color-mix(in_srgb,var(--md-sys-color-on-surface)_6%,transparent)]"
         :class="task.clickable ? 'cursor-pointer' : ''"
         @click="task.clickable && emit('selectTask', task)"
       >
@@ -180,46 +183,46 @@ const summaryText = computed(() => {
           <div class="flex min-w-0 items-center gap-2">
             <LuRefreshCw
               v-if="task.kind === 'scan'"
-              class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]"
-              :class="task.status === 'running' ? 'animate-spin text-[var(--ctp-accent)]' : ''"
+              class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
+              :class="task.status === 'running' ? 'animate-spin text-[var(--md-sys-color-primary)]' : ''"
             />
             <LuUpload
               v-else-if="task.kind === 'upload'"
-              class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]"
+              class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
             />
             <LuFolderSearch
               v-else-if="task.kind === 'browse'"
-              class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]"
+              class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
             />
             <LuFileSignature
               v-else-if="task.kind === 'rename'"
-              class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]"
+              class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
             />
             <LuSparkles
               v-else
-              class="h-3.5 w-3.5 shrink-0 text-[var(--ctp-subtext0)]"
+              class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
             />
-            <p class="truncate font-semibold text-[var(--ctp-text)]">{{ task.title }}</p>
+            <p class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">{{ task.title }}</p>
           </div>
 
           <div class="flex shrink-0 items-center gap-1.5">
             <span
               v-if="(task.status === 'running' || task.status === 'queued') && task.progress !== null"
-              class="font-mono text-[11px] font-bold text-[var(--ctp-accent)]"
+              class="font-mono text-[11px] font-bold text-[var(--md-sys-color-primary)]"
             >
               {{ task.progress }}%
             </span>
             <LuCheckCircle2
               v-if="task.status === 'completed'"
-              class="h-4 w-4 shrink-0 text-[var(--ctp-green)]"
+              class="h-4 w-4 shrink-0 text-[var(--md-sys-color-success)]"
             />
             <LuAlertCircle
               v-else-if="task.status === 'failed'"
-              class="h-4 w-4 shrink-0 text-[var(--ctp-red)]"
+              class="h-4 w-4 shrink-0 text-[var(--md-sys-color-error)]"
             />
             <LuLoader2
               v-else-if="task.status === 'running' && task.progress === null"
-              class="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--ctp-accent)]"
+              class="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--md-sys-color-primary)]"
             />
           </div>
         </div>
@@ -228,10 +231,10 @@ const summaryText = computed(() => {
           class="truncate text-[11px]"
           :class="
             task.status === 'failed'
-              ? 'text-[var(--ctp-red)]'
+              ? 'text-[var(--md-sys-color-error)]'
               : task.status === 'completed'
-                ? 'text-[var(--ctp-green)]'
-                : 'text-[var(--ctp-subtext0)]'
+                ? 'text-[var(--md-sys-color-success)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)]'
           "
         >
           {{ task.subtitle }}
@@ -240,16 +243,16 @@ const summaryText = computed(() => {
         <!-- Per-Task Progress Bar -->
         <div
           v-if="task.status === 'running' || task.status === 'queued'"
-          class="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--ctp-surface0)]"
+          class="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
         >
           <div
             v-if="task.progress !== null"
-            class="h-full rounded-full bg-[var(--ctp-accent)] transition-all duration-150"
+            class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all duration-150"
             :style="{ width: `${task.progress}%` }"
           />
           <div
             v-else
-            class="task-indeterminate-bar h-full w-2/5 rounded-full bg-[var(--ctp-accent)]"
+            class="task-indeterminate-bar h-full w-2/5 rounded-full bg-[var(--md-sys-color-primary)]"
           />
         </div>
       </div>

@@ -224,7 +224,7 @@ onBeforeUnmount(unbindGlobalListeners)
     ref="triggerRef"
     type="button"
     :title="t('theme.pickColor')"
-    class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--ctp-surface1)] bg-[var(--ctp-mantle)] p-0.5 transition hover:border-[var(--ctp-accent)]"
+    class="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-[var(--md-sys-shape-corner-sm)] border border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] p-0.5 transition hover:border-[var(--md-sys-color-primary)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
     @click="toggleOpen"
   >
     <span
@@ -238,12 +238,12 @@ onBeforeUnmount(unbindGlobalListeners)
       v-if="open"
       ref="panelRef"
       :style="panelStyle"
-      class="z-[var(--z-popover)] rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3 text-[var(--ctp-text)] shadow-2xl"
+      class="z-[var(--z-popover)] rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-surface-container)] p-3 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
     >
       <!-- 2D Saturation / Value Canvas -->
       <div
         ref="svBoxRef"
-        class="relative h-32 w-full cursor-crosshair overflow-hidden rounded-xl select-none touch-none"
+        class="relative h-32 w-full cursor-crosshair overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] select-none touch-none"
         :style="{ backgroundColor: pureHueHex }"
         @pointerdown="onSvPointerDown"
         @pointermove="onSvPointerMove"
@@ -280,7 +280,7 @@ onBeforeUnmount(unbindGlobalListeners)
           v-for="sw in QUICK_SWATCHES"
           :key="sw"
           type="button"
-          class="h-5 w-5 rounded-full border border-black/15 transition hover:scale-110"
+          class="h-5 w-5 cursor-pointer rounded-full border border-black/15 transition hover:scale-110"
           :style="{ backgroundColor: sw }"
           @click="selectSwatch(sw)"
         />
@@ -288,14 +288,14 @@ onBeforeUnmount(unbindGlobalListeners)
 
       <!-- Hex Input -->
       <div class="mt-2.5 flex items-center gap-2">
-        <span class="text-[11px] font-medium text-[var(--ctp-subtext0)]">
+        <span class="md-label-small text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('theme.hexInputLabel') }}
         </span>
         <input
           v-model="hexDraft"
           type="text"
           maxlength="7"
-          class="h-7 min-w-0 flex-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 min-w-0 flex-1 !px-2 font-mono text-xs"
           @change="commitHexDraft"
         />
       </div>

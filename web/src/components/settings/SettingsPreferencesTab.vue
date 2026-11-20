@@ -18,6 +18,8 @@ import type {
 } from '@/types/api'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import AppSlider from '@/components/ui/AppSlider.vue'
+import { useCopyFeedback } from './clipboard'
 
 const { t } = useI18n()
 const { t: bookT } = useBookI18n()
@@ -25,8 +27,8 @@ const { t: comicT } = useComicI18n()
 const authStore = useAuthStore()
 const playerStore = usePlayerStore()
 const themeStore = useThemeStore()
+const { copiedKey, copyText } = useCopyFeedback()
 
-const copiedKey = ref('')
 const originUrl = computed(() => window.location.origin)
 const bookmarks = ref<BookmarkDto[]>([])
 
@@ -104,30 +106,6 @@ onMounted(async () => {
   }
 })
 
-async function copyText(key: string, val: string): Promise<void> {
-  if (!val) return
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(val)
-    } else {
-      throw new Error('clipboard API unavailable')
-    }
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = val
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-  }
-  copiedKey.value = key
-  setTimeout(() => {
-    if (copiedKey.value === key) copiedKey.value = ''
-  }, 1500)
-}
-
 function formatBookmarkPos(ms: number): string {
   const totalSecs = Math.floor(ms / 1000)
   const m = Math.floor(totalSecs / 60)
@@ -147,27 +125,29 @@ async function removeBookmark(trackId: string): Promise<void> {
 
 <template>
   <!-- FFmpeg Engine Status -->
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <section class="md-card-outlined p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h2 class="text-sm font-bold">{{ t('settings.ffmpegStatusTitle') }}</h2>
+        <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+          {{ t('settings.ffmpegStatusTitle') }}
+        </h2>
         <p
           v-if="authStore.capabilities?.ffmpeg.ffmpeg_version"
-          class="mt-1 font-mono text-xs text-[var(--ctp-subtext0)]"
+          class="md-body-small mt-1 font-mono text-[var(--md-sys-color-on-surface-variant)]"
         >
           {{ authStore.capabilities.ffmpeg.ffmpeg_version }}
         </p>
       </div>
       <span
         v-if="authStore.capabilities?.ffmpeg.ffmpeg_available"
-        class="inline-flex items-center gap-1.5 rounded-full bg-[var(--ctp-green)]/15 px-3 py-1 text-xs font-semibold text-[var(--ctp-green)]"
+        class="md-label-medium inline-flex items-center gap-1.5 rounded-full bg-[var(--md-sys-color-success-container)] px-3 py-1 text-[var(--md-sys-color-on-success-container)]"
       >
         <LuCheckCircle2 class="h-4 w-4" />
         <span>{{ t('settings.ffmpegAvailable') }}</span>
       </span>
       <span
         v-else
-        class="inline-flex items-center gap-1.5 rounded-full bg-[var(--ctp-yellow)]/15 px-3 py-1 text-xs font-semibold text-[var(--ctp-yellow)]"
+        class="md-label-medium inline-flex items-center gap-1.5 rounded-full bg-[var(--md-sys-color-warning-container)] px-3 py-1 text-[var(--md-sys-color-on-warning-container)]"
       >
         <LuAlertCircle class="h-4 w-4" />
         <span>{{ t('settings.ffmpegMissing') }}</span>
@@ -176,18 +156,22 @@ async function removeBookmark(trackId: string): Promise<void> {
   </section>
 
   <!-- Book Reader Preferences -->
-  <section
-    v-if="authStore.hasModule('book')"
-    class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6"
-  >
+  <section v-if="authStore.hasModule('book')" class="md-card-outlined space-y-4 p-6">
     <div>
-      <h2 class="text-sm font-bold">{{ t('settings.bookPrefsTitle') }}</h2>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('settings.bookPrefsDesc') }}</p>
+      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('settings.bookPrefsTitle') }}
+      </h2>
+      <p
+        v-if="t('settings.bookPrefsDesc')"
+        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
+      >
+        {{ t('settings.bookPrefsDesc') }}
+      </p>
     </div>
 
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
-        <label class="mb-1.5 block text-xs font-medium text-[var(--ctp-subtext0)]">
+        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
           {{ bookT('reader.fontFamily') }}
         </label>
         <AppSelect
@@ -198,7 +182,7 @@ async function removeBookmark(trackId: string): Promise<void> {
       </div>
 
       <div>
-        <label class="mb-1.5 block text-xs font-medium text-[var(--ctp-subtext0)]">
+        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('settings.bookFlowLabel') }}
         </label>
         <AppSelect
@@ -209,69 +193,85 @@ async function removeBookmark(trackId: string): Promise<void> {
       </div>
 
       <div>
-        <div class="mb-1 flex justify-between text-xs">
-          <span class="text-[var(--ctp-subtext0)]">{{ t('settings.bookFontSize') }}</span>
-          <span class="font-mono">{{ themeStore.reader.font_size }} px</span>
+        <div class="mb-1.5 flex items-center justify-between text-xs">
+          <span class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]">
+            {{ t('settings.bookFontSize') }}
+          </span>
+          <span class="font-mono font-medium text-[var(--md-sys-color-on-surface)]">
+            {{ themeStore.reader.font_size }} px
+          </span>
         </div>
-        <input
-          type="range"
-          min="13"
-          max="28"
-          step="1"
-          :value="themeStore.reader.font_size"
-          class="w-full accent-[var(--ctp-accent)]"
-          @change="themeStore.updateReaderPreferences({ font_size: Number(($event.target as HTMLInputElement).value) })"
+        <AppSlider
+          :model-value="themeStore.reader.font_size"
+          :min="13"
+          :max="28"
+          :step="1"
+          :aria-label="t('settings.bookFontSize')"
+          always-show-thumb
+          @update:model-value="themeStore.updateReaderPreferences({ font_size: $event })"
         />
       </div>
 
       <div>
-        <div class="mb-1 flex justify-between text-xs">
-          <span class="text-[var(--ctp-subtext0)]">{{ bookT('reader.lineHeight') }}</span>
-          <span class="font-mono">{{ themeStore.reader.line_height }}</span>
+        <div class="mb-1.5 flex items-center justify-between text-xs">
+          <span class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]">
+            {{ bookT('reader.lineHeight') }}
+          </span>
+          <span class="font-mono font-medium text-[var(--md-sys-color-on-surface)]">
+            {{ themeStore.reader.line_height }}
+          </span>
         </div>
-        <input
-          type="range"
-          min="1.3"
-          max="2.4"
-          step="0.1"
-          :value="themeStore.reader.line_height"
-          class="w-full accent-[var(--ctp-accent)]"
-          @change="themeStore.updateReaderPreferences({ line_height: Number(($event.target as HTMLInputElement).value) })"
+        <AppSlider
+          :model-value="themeStore.reader.line_height"
+          :min="1.3"
+          :max="2.4"
+          :step="0.1"
+          :aria-label="bookT('reader.lineHeight')"
+          always-show-thumb
+          @update:model-value="themeStore.updateReaderPreferences({ line_height: $event })"
         />
       </div>
     </div>
   </section>
 
   <!-- Comic Reader Preferences -->
-  <section
-    v-if="authStore.hasModule('comic')"
-    class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6"
-  >
+  <section v-if="authStore.hasModule('comic')" class="md-card-outlined space-y-4 p-6">
     <div>
-      <h2 class="text-sm font-bold">{{ t('settings.comicPrefsTitle') }}</h2>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('settings.comicPrefsDesc') }}</p>
+      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('settings.comicPrefsTitle') }}
+      </h2>
+      <p
+        v-if="t('settings.comicPrefsDesc')"
+        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
+      >
+        {{ t('settings.comicPrefsDesc') }}
+      </p>
     </div>
 
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
-        <label class="mb-1.5 block text-xs font-medium text-[var(--ctp-subtext0)]">
+        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
           {{ comicT('settings.defaultReaderMode') }}
         </label>
         <AppSelect
           :model-value="themeStore.comic.default_reader_mode"
           :options="comicModeOptions"
-          @update:model-value="themeStore.updateComicPreferences({ default_reader_mode: $event as ComicReaderMode })"
+          @update:model-value="
+            themeStore.updateComicPreferences({ default_reader_mode: $event as ComicReaderMode })
+          "
         />
       </div>
 
       <div>
-        <label class="mb-1.5 block text-xs font-medium text-[var(--ctp-subtext0)]">
+        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
           {{ comicT('settings.defaultFitMode') }}
         </label>
         <AppSelect
           :model-value="themeStore.comic.default_fit_mode"
           :options="comicFitOptions"
-          @update:model-value="themeStore.updateComicPreferences({ default_fit_mode: $event as ComicFitMode })"
+          @update:model-value="
+            themeStore.updateComicPreferences({ default_fit_mode: $event as ComicFitMode })
+          "
         />
       </div>
     </div>
@@ -291,13 +291,15 @@ async function removeBookmark(trackId: string): Promise<void> {
   </section>
 
   <!-- Music Playback Preferences & Bookmarks -->
-  <section
-    v-if="authStore.hasModule('music')"
-    class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6"
-  >
+  <section v-if="authStore.hasModule('music')" class="md-card-outlined space-y-4 p-6">
     <div>
-      <h2 class="text-sm font-bold">{{ t('settings.playbackDefaultQuality') }}</h2>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('settings.playbackDefaultQuality') }}
+      </h2>
+      <p
+        v-if="t('settings.playbackDefaultQualityDesc')"
+        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
+      >
         {{ t('settings.playbackDefaultQualityDesc') }}
       </p>
     </div>
@@ -306,37 +308,44 @@ async function removeBookmark(trackId: string): Promise<void> {
       <AppSelect
         :model-value="themeStore.playback.transcode_profile"
         :options="musicQualityOptions"
-        @update:model-value="themeStore.updatePlaybackPreferences({ transcode_profile: $event as TranscodeProfile })"
+        @update:model-value="
+          themeStore.updatePlaybackPreferences({ transcode_profile: $event as TranscodeProfile })
+        "
       />
     </div>
 
-    <div v-if="bookmarks.length > 0" class="border-t border-[var(--ctp-surface0)] pt-4">
-      <h3 class="mb-2.5 text-xs font-bold text-[var(--ctp-subtext1)]">
+    <div
+      v-if="bookmarks.length > 0"
+      class="border-t border-[var(--md-sys-color-outline-variant)]/60 pt-4"
+    >
+      <h3 class="md-label-medium mb-2.5 text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('settings.bookmarksTitle') }}
       </h3>
       <div class="space-y-2">
         <div
           v-for="bm in bookmarks"
           :key="bm.track.id"
-          class="flex items-center justify-between rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2.5 text-xs"
+          class="md-card-filled flex items-center justify-between px-3.5 py-2.5 text-xs"
         >
           <div class="min-w-0 flex-1">
-            <p class="truncate font-semibold text-[var(--ctp-text)]">{{ bm.track.title }}</p>
-            <p class="truncate text-[11px] text-[var(--ctp-subtext0)]">
+            <p class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">
+              {{ bm.track.title }}
+            </p>
+            <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               {{ bm.track.artist_name }} · {{ formatBookmarkPos(bm.position_ms) }}
             </p>
           </div>
-          <div class="ml-3 flex items-center gap-1.5">
+          <div class="ml-3 flex items-center gap-1">
             <button
               type="button"
-              class="rounded-lg bg-[var(--ctp-accent-soft)] p-1.5 text-[var(--ctp-accent)] hover:opacity-85"
+              class="md-icon-btn md-icon-btn-sm bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]"
               @click="playBookmark(bm)"
             >
               <LuPlay class="h-3.5 w-3.5 fill-current" />
             </button>
             <button
               type="button"
-              class="rounded-lg p-1.5 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-red)]/10 hover:text-[var(--ctp-red)]"
+              class="md-icon-btn md-icon-btn-sm hover:!text-[var(--md-sys-color-error)]"
               @click="removeBookmark(bm.track.id)"
             >
               <LuTrash2 class="h-3.5 w-3.5" />
@@ -348,20 +357,26 @@ async function removeBookmark(trackId: string): Promise<void> {
   </section>
 
   <!-- Video Playback Preferences -->
-  <section
-    v-if="authStore.hasModule('video')"
-    class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6"
-  >
+  <section v-if="authStore.hasModule('video')" class="md-card-outlined space-y-4 p-6">
     <div>
-      <h2 class="text-sm font-bold">{{ t('settings.videoPrefsTitle') }}</h2>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('settings.videoPrefsDesc') }}</p>
+      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('settings.videoPrefsTitle') }}
+      </h2>
+      <p
+        v-if="t('settings.videoPrefsDesc')"
+        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
+      >
+        {{ t('settings.videoPrefsDesc') }}
+      </p>
     </div>
 
     <div class="max-w-md">
       <AppSelect
         :model-value="themeStore.video.default_quality"
         :options="videoQualityOptions"
-        @update:model-value="themeStore.updateVideoPreferences({ default_quality: $event as VideoQualityProfile })"
+        @update:model-value="
+          themeStore.updateVideoPreferences({ default_quality: $event as VideoQualityProfile })
+        "
       />
     </div>
 
@@ -373,31 +388,30 @@ async function removeBookmark(trackId: string): Promise<void> {
   </section>
 
   <!-- Open Protocols Client Guide (OPDS / PSE / OpenSubsonic) -->
-  <section
-    v-if="protocolEndpoints.length > 0"
-    class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6"
-  >
+  <section v-if="protocolEndpoints.length > 0" class="md-card-outlined space-y-4 p-6">
     <div>
-      <h2 class="text-sm font-bold">{{ t('settings.protocolsGuideTitle') }}</h2>
-      <p class="mt-1 text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+        {{ t('settings.protocolsGuideTitle') }}
+      </h2>
+      <p class="md-body-small mt-1 leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('settings.protocolsGuideDesc') }}
       </p>
     </div>
 
     <div class="space-y-3">
       <div v-for="ep in protocolEndpoints" :key="ep.key">
-        <label class="mb-1 block text-xs font-medium text-[var(--ctp-subtext0)]">
+        <label class="md-label-medium mb-1 block text-[var(--md-sys-color-on-surface-variant)]">
           {{ ep.label }}
         </label>
         <div class="flex items-center gap-2">
           <input
             readonly
             :value="ep.url"
-            class="h-9 flex-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 font-mono text-xs text-[var(--ctp-text)] outline-none"
+            class="md-input h-9 min-w-0 flex-1 font-mono text-xs"
           />
           <button
             type="button"
-            class="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90"
+            class="md-btn md-btn-sm md-btn-filled shrink-0"
             @click="copyText(ep.key, ep.url)"
           >
             <LuCheck v-if="copiedKey === ep.key" class="h-3.5 w-3.5" />
@@ -408,9 +422,13 @@ async function removeBookmark(trackId: string): Promise<void> {
       </div>
     </div>
 
-    <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-2.5 text-xs">
-      <span class="font-semibold text-[var(--ctp-subtext1)]">{{ t('settings.subsonicAuthModes') }}：</span>
-      <span class="text-[var(--ctp-subtext0)]">{{ t('settings.subsonicAuthModesVal') }}</span>
+    <div class="md-card-filled px-3.5 py-2.5 text-xs">
+      <span class="font-semibold text-[var(--md-sys-color-on-surface)]">
+        {{ t('settings.subsonicAuthModes') }}：
+      </span>
+      <span class="text-[var(--md-sys-color-on-surface-variant)]">
+        {{ t('settings.subsonicAuthModesVal') }}
+      </span>
     </div>
   </section>
 </template>

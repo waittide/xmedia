@@ -170,14 +170,18 @@ function formatScanStatus(lib: CoreLibraryDto): string {
 </script>
 
 <template>
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold">{{ t('admin.mountLibraryTitle') }}</h2>
-    <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('admin.mountLibraryDesc') }}</p>
+  <section class="md-card-outlined p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('admin.mountLibraryTitle') }}
+    </h2>
+    <p class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]">
+      {{ t('admin.mountLibraryDesc') }}
+    </p>
 
     <form class="mt-4 space-y-4" @submit.prevent="handleMountLibrary">
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('admin.libraryKind') }}
           </label>
           <AppSelect
@@ -188,7 +192,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         </div>
 
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('admin.libraryName') }}
           </label>
           <input
@@ -196,12 +200,12 @@ function formatScanStatus(lib: CoreLibraryDto): string {
             type="text"
             required
             :placeholder="t('admin.libraryNamePlaceholder')"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full text-xs"
           />
         </div>
 
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('admin.libraryPath') }}
           </label>
           <input
@@ -209,7 +213,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
             type="text"
             required
             :placeholder="t('admin.libraryPathPlaceholder')"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full font-mono text-xs"
           />
         </div>
       </div>
@@ -219,7 +223,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         <button
           type="submit"
           :disabled="mounting"
-          class="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-90 disabled:opacity-55"
+          class="md-btn md-btn-filled"
         >
           <LuLibrary class="h-4 w-4" />
           <span>{{ scanNow ? t('admin.mountAndScanBtn') : t('admin.mountOnlyBtn') }}</span>
@@ -228,7 +232,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
     </form>
   </section>
 
-  <section class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <section class="md-card-outlined space-y-4 p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="w-48">
         <AppSelect
@@ -243,10 +247,10 @@ function formatScanStatus(lib: CoreLibraryDto): string {
         <button
           type="button"
           :disabled="scanningAll"
-          class="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+          class="md-btn md-btn-outlined"
           @click="handleScanAll"
         >
-          <LuRefreshCw class="h-3.5 w-3.5" :class="scanningAll ? 'animate-spin' : ''" />
+          <LuRefreshCw class="h-4 w-4" :class="scanningAll ? 'animate-spin' : ''" />
           <span>{{ t('admin.scanAllBtn') }}</span>
         </button>
       </div>
@@ -256,18 +260,20 @@ function formatScanStatus(lib: CoreLibraryDto): string {
       <div
         v-for="lib in filteredLibraries"
         :key="lib.id"
-        class="flex flex-col justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4 sm:flex-row sm:items-center"
+        class="md-card-filled flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"
       >
         <div class="min-w-0 flex-1 space-y-1">
           <div class="flex flex-wrap items-center gap-2">
             <span
-              class="rounded-md bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[11px] font-bold text-[var(--ctp-accent)]"
+              class="md-label-small rounded-full bg-[var(--md-sys-color-secondary-container)] px-2.5 py-0.5 text-[var(--md-sys-color-on-secondary-container)]"
             >
               {{ t(`app.domains.${lib.media_kind}`) }}
             </span>
-            <p class="truncate text-sm font-bold text-[var(--ctp-text)]">{{ lib.name }}</p>
+            <p class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+              {{ lib.name }}
+            </p>
             <span
-              class="rounded-full bg-[var(--ctp-mantle)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--ctp-subtext0)]"
+              class="md-label-small rounded-full bg-[var(--md-sys-color-surface-container-low)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{
                 lib.kind.type === 'managed'
@@ -275,18 +281,20 @@ function formatScanStatus(lib: CoreLibraryDto): string {
                   : t('admin.localMountBadge')
               }}
             </span>
-            <span class="text-xs font-semibold text-[var(--ctp-subtext1)]">
+            <span class="md-body-small font-medium text-[var(--md-sys-color-on-surface-variant)]">
               · {{ t('admin.itemsCountBadge', { count: lib.item_count }) }}
             </span>
           </div>
 
           <p
             v-if="lib.kind.type === 'local_mount'"
-            class="truncate font-mono text-xs text-[var(--ctp-subtext0)]"
+            class="md-body-small truncate font-mono text-[var(--md-sys-color-on-surface-variant)]"
           >
             {{ lib.kind.root_path }}
           </p>
-          <p class="text-xs text-[var(--ctp-subtext0)]">{{ formatScanStatus(lib) }}</p>
+          <p class="md-body-small text-[var(--md-sys-color-on-surface-variant)]">
+            {{ formatScanStatus(lib) }}
+          </p>
         </div>
 
         <div class="flex shrink-0 items-center gap-2">
@@ -294,7 +302,7 @@ function formatScanStatus(lib: CoreLibraryDto): string {
             v-if="lib.kind.type === 'local_mount'"
             type="button"
             :disabled="scanningId === lib.id || lib.scan_status.state === 'scanning'"
-            class="inline-flex h-9 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent-soft)] px-3 text-xs font-semibold text-[var(--ctp-accent)] transition hover:opacity-85 disabled:opacity-50"
+            class="md-btn md-btn-sm md-btn-tonal"
             @click="handleRescan(lib)"
           >
             <LuRefreshCw
@@ -311,8 +319,9 @@ function formatScanStatus(lib: CoreLibraryDto): string {
           <button
             v-if="lib.kind.type === 'local_mount'"
             type="button"
-            class="rounded-xl p-2 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-red)]/10 hover:text-[var(--ctp-red)]"
+            class="md-icon-btn md-icon-btn-sm hover:!text-[var(--md-sys-color-error)]"
             :title="t('admin.deleteLibrary')"
+            :aria-label="t('admin.deleteLibrary')"
             @click="handleDeleteLibrary(lib)"
           >
             <LuTrash2 class="h-4 w-4" />

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, watch } from 'vue'
+import { computed, onBeforeUnmount, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
 
 const props = withDefaults(
@@ -10,6 +11,7 @@ const props = withDefaults(
     maxWidth?: string
     closeOnBackdrop?: boolean
     hideClose?: boolean
+    footerAlign?: 'between' | 'end'
   }>(),
   {
     title: '',
@@ -17,12 +19,22 @@ const props = withDefaults(
     maxWidth: 'max-w-2xl',
     closeOnBackdrop: true,
     hideClose: false,
+    footerAlign: 'between',
   },
 )
 
 const emit = defineEmits<{
   close: []
 }>()
+
+const { t, te, locale } = useI18n()
+const closeLabel = computed(() =>
+  te('common.close')
+    ? t('common.close')
+    : String(locale.value).toLowerCase().startsWith('zh')
+      ? '关闭'
+      : 'Close',
+)
 
 function onKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape' && props.open) {
@@ -52,8 +64,8 @@ onBeforeUnmount(() => {
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
-        @click.self="closeOnBackdrop && emit('close')"
+        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-[var(--md-sys-color-scrim)]/40 p-4 backdrop-blur-[2px]"
+        @mousedown.self="closeOnBackdrop && emit('close')"
       >
         <Transition name="md-dialog" appear>
           <div
@@ -62,7 +74,7 @@ onBeforeUnmount(() => {
             class="flex max-h-[90vh] w-full flex-col overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
             :class="maxWidth"
           >
-            <!-- MD3 Dialog Header (clean tonal spacing, no harsh hairline) -->
+            <!-- MD3 Dialog Header -->
             <div
               v-if="title || $slots.header || $slots.icon"
               class="flex items-start justify-between gap-4 px-6 pt-6 pb-3"
@@ -76,12 +88,12 @@ onBeforeUnmount(() => {
                     <slot name="icon" />
                   </div>
                   <div class="min-w-0">
-                    <h3 class="text-lg leading-snug font-semibold tracking-tight">
+                    <h3 class="md-title-large leading-snug tracking-tight">
                       {{ title }}
                     </h3>
                     <p
                       v-if="subtitle"
-                      class="mt-1 text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
+                      class="md-body-small mt-1 leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
                     >
                       {{ subtitle }}
                     </p>
@@ -95,7 +107,7 @@ onBeforeUnmount(() => {
                   v-if="!hideClose"
                   type="button"
                   class="md-icon-btn md-icon-btn-sm md-state"
-                  aria-label="关闭"
+                  :aria-label="closeLabel"
                   @click="emit('close')"
                 >
                   <LuX class="h-4 w-4" />
@@ -111,7 +123,8 @@ onBeforeUnmount(() => {
             <!-- MD3 Dialog Action Bar -->
             <div
               v-if="$slots.footer"
-              class="flex flex-wrap items-center justify-between gap-2 px-6 pt-3 pb-5"
+              class="flex flex-wrap items-center gap-2 px-6 pt-3 pb-5"
+              :class="footerAlign === 'end' ? 'justify-end' : 'justify-between'"
             >
               <slot name="footer" />
             </div>
