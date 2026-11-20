@@ -71,16 +71,27 @@ export interface ScraperPrioritiesDto {
   video: string[]
 }
 
+export interface ProviderConfigOverrideDto {
+  enabled?: boolean | null
+  http_proxy?: string | null
+  locale?: string | null
+  timeout_secs?: number | null
+  user_agent?: string | null
+}
+
 export interface PublicSettingsDto {
   roots: ManagedRootDto[]
   has_tmdb_api_key: boolean
   tmdb_api_key_masked: string | null
   has_bangumi_token: boolean
   bangumi_token_masked: string | null
+  has_qishui_cookie?: boolean
+  qishui_cookie_masked?: string | null
   http_proxy: string | null
   enable_adult_scrapers?: boolean
   rename_templates: RenameTemplatesDto
   scraper_priorities: ScraperPrioritiesDto
+  provider_configs?: Record<string, ProviderConfigOverrideDto>
   default_scrape_locale: string
   scrape_cache_ttl_ms: number
   inbox?: InboxConfigDto
@@ -96,10 +107,12 @@ export interface PublicSettingsDto {
 export interface UpdateToolSettingsInput {
   tmdb_api_key?: string
   bangumi_access_token?: string
+  qishui_cookie?: string
   http_proxy?: string
   enable_adult_scrapers?: boolean
   rename_templates?: RenameTemplatesDto
   scraper_priorities?: ScraperPrioritiesDto
+  provider_configs?: Record<string, ProviderConfigOverrideDto>
   default_scrape_locale?: string
   scrape_cache_ttl_ms?: number
   inbox?: InboxConfigDto
@@ -572,6 +585,8 @@ export interface ProviderStatusDto {
   website: string
   supported_targets: ScrapeTargetKind[]
   requires_api_key: boolean
+  enabled: boolean
+  credentials_ready: boolean
   configured: boolean
 }
 

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -6,7 +7,8 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 
 use crate::domain::config::{
-    InboxConfig, ProviderCredentials, RenameTemplates, ScraperPriorities, ToolSettings,
+    InboxConfig, ProviderConfigOverride, ProviderCredentials, RenameTemplates, ScraperPriorities,
+    ToolSettings,
 };
 use crate::domain::ports::ConfigRepositoryPort;
 use crate::domain::workspace::{ManagedRoot, RootId};
@@ -18,10 +20,13 @@ pub struct PublicSettingsDto {
     pub tmdb_api_key_masked: Option<String>,
     pub has_bangumi_token: bool,
     pub bangumi_token_masked: Option<String>,
+    pub has_qishui_cookie: bool,
+    pub qishui_cookie_masked: Option<String>,
     pub http_proxy: Option<String>,
     pub enable_adult_scrapers: bool,
     pub rename_templates: RenameTemplates,
     pub scraper_priorities: ScraperPriorities,
+    pub provider_configs: BTreeMap<String, ProviderConfigOverride>,
     pub default_scrape_locale: String,
     pub scrape_cache_ttl_ms: u64,
     pub inbox: InboxConfig,
@@ -38,10 +43,12 @@ pub struct PublicSettingsDto {
 pub struct UpdateSettingsInput {
     pub tmdb_api_key: Option<String>,
     pub bangumi_access_token: Option<String>,
+    pub qishui_cookie: Option<String>,
     pub http_proxy: Option<String>,
     pub enable_adult_scrapers: Option<bool>,
     pub rename_templates: Option<RenameTemplates>,
     pub scraper_priorities: Option<ScraperPriorities>,
+    pub provider_configs: Option<BTreeMap<String, ProviderConfigOverride>>,
     pub default_scrape_locale: Option<String>,
     pub scrape_cache_ttl_ms: Option<u64>,
     pub inbox: Option<InboxConfig>,
@@ -157,6 +164,17 @@ impl ToolSettingsService {
             settings.credentials.bangumi_access_token =
                 (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
+        if let Some(cookie) = input.qishui_cookie {
+            let trimmed = cookie.trim();
+            if trimmed.is_empty() {
+                settings.credentials.extra.remove("qishui_cookie");
+            } else {
+                settings
+                    .credentials
+                    .extra
+                    .insert("qishui_cookie".to_string(), trimmed.to_string());
+            }
+        }
         if let Some(proxy) = input.http_proxy {
             let trimmed = proxy.trim();
             settings.credentials.http_proxy = (!trimmed.is_empty()).then(|| trimmed.to_string());
@@ -169,6 +187,20 @@ impl ToolSettingsService {
         }
         if let Some(prio) = input.scraper_priorities {
             settings.scraper_priorities = prio;
+        }
+        if let Some(cfgs) = input.provider_configs {
+            for (provider_id, raw_cfg) in cfgs {
+                let id = provider_id.trim().to_string();
+                if id.is_empty() {
+                    continue;
+                }
+                let normalized = raw_cfg.normalized();
+                if normalized.is_empty() {
+                    settings.provider_configs.remove(&id);
+                } else {
+                    settings.provider_configs.insert(id, normalized);
+                }
+            }
         }
         if let Some(loc) = input.default_scrape_locale
             && !loc.trim().is_empty()
@@ -215,10 +247,13 @@ impl ToolSettingsService {
                 .as_deref()
                 .is_some_and(|t| !t.trim().is_empty()),
             bangumi_token_masked: mask_secret(s.credentials.bangumi_access_token.as_deref()),
+            has_qishui_cookie: s.credentials.get_extra("qishui_cookie").is_some(),
+            qishui_cookie_masked: mask_secret(s.credentials.get_extra("qishui_cookie")),
             http_proxy: s.credentials.http_proxy,
             enable_adult_scrapers: s.credentials.enable_adult_scrapers,
             rename_templates: s.rename_templates,
             scraper_priorities: s.scraper_priorities,
+            provider_configs: s.provider_configs,
             default_scrape_locale: s.default_scrape_locale,
             scrape_cache_ttl_ms: s.scrape_cache_ttl_ms,
             inbox: s.inbox,

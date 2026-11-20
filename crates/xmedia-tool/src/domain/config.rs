@@ -18,11 +18,65 @@ pub struct ProviderCredentials {
     pub http_proxy: Option<String>,
     #[serde(default)]
     pub user_agent: Option<String>,
+    /// Optional per-request timeout in seconds (clamped to 5..=120; default 20).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     /// Opt-in gate for adult/R18 metadata scrapers (e.g. nhentai, Hanime1). Default: false.
     #[serde(default)]
     pub enable_adult_scrapers: bool,
     #[serde(default)]
     pub extra: BTreeMap<String, String>,
+}
+
+/// Per-scraper independent configuration overrides (enable/disable + network/locale overrides).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ProviderConfigOverride {
+    /// Explicit enable/disable switch (`None` uses default: adult scrapers false, others true).
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Independent HTTP/SOCKS5 proxy override (empty inherits global proxy).
+    #[serde(default)]
+    pub http_proxy: Option<String>,
+    /// Independent scrape locale override (empty inherits global default locale).
+    #[serde(default)]
+    pub locale: Option<String>,
+    /// Independent request timeout in seconds (empty inherits default 20s).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Independent User-Agent header override.
+    #[serde(default)]
+    pub user_agent: Option<String>,
+}
+
+impl ProviderConfigOverride {
+    pub fn normalized(mut self) -> Self {
+        let trim_opt = |opt: Option<String>| {
+            opt.and_then(|s| {
+                let t = s.trim();
+                (!t.is_empty()).then(|| t.to_string())
+            })
+        };
+        self.http_proxy = trim_opt(self.http_proxy);
+        self.locale = trim_opt(self.locale);
+        self.user_agent = trim_opt(self.user_agent);
+        self.timeout_secs = self
+            .timeout_secs
+            .filter(|&v| v > 0)
+            .map(|v| v.clamp(5, 120));
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.http_proxy.is_none()
+            && self.locale.is_none()
+            && self.timeout_secs.is_none()
+            && self.user_agent.is_none()
+    }
+}
+
+pub fn is_adult_provider_id(provider_id: &str) -> bool {
+    matches!(provider_id, "nhentai" | "hanime1")
 }
 
 impl ProviderCredentials {
@@ -328,6 +382,8 @@ pub struct ToolSettings {
     pub rename_templates: RenameTemplates,
     #[serde(default)]
     pub scraper_priorities: ScraperPriorities,
+    #[serde(default)]
+    pub provider_configs: BTreeMap<String, ProviderConfigOverride>,
     #[serde(default = "default_locale")]
     pub default_scrape_locale: String,
     /// Metadata cache TTL in milliseconds (`0` disables caching).
@@ -346,6 +402,7 @@ impl Default for ToolSettings {
             credentials: ProviderCredentials::default(),
             rename_templates: RenameTemplates::default(),
             scraper_priorities: ScraperPriorities::default(),
+            provider_configs: BTreeMap::new(),
             default_scrape_locale: default_locale(),
             scrape_cache_ttl_ms: default_scrape_cache_ttl_ms(),
             inbox: InboxConfig::default(),
@@ -356,4 +413,59 @@ impl Default for ToolSettings {
 
 fn default_locale() -> String {
     "zh-CN".to_string()
+}
+
+impl ToolSettings {
+    /// Returns whether a scraper provider is enabled (explicit per-provider switch takes priority).
+    pub fn is_provider_enabled(&self, provider_id: &str) -> bool {
+        if let Some(enabled) = self
+            .provider_configs
+            .get(provider_id)
+            .and_then(|cfg| cfg.enabled)
+        {
+            return enabled;
+        }
+        if is_adult_provider_id(provider_id) {
+            return self.credentials.enable_adult_scrapers;
+        }
+        true
+    }
+
+    /// Builds effective credentials for a specific scraper provider by merging per-provider overrides.
+    pub fn credentials_for_provider(&self, provider_id: &str) -> ProviderCredentials {
+        let mut creds = self.credentials.clone();
+        if is_adult_provider_id(provider_id) && self.is_provider_enabled(provider_id) {
+            creds.enable_adult_scrapers = true;
+        }
+        if let Some(cfg) = self.provider_configs.get(provider_id) {
+            if let Some(ref proxy) = cfg.http_proxy
+                && !proxy.trim().is_empty()
+            {
+                creds.http_proxy = Some(proxy.trim().to_string());
+            }
+            if let Some(ref ua) = cfg.user_agent
+                && !ua.trim().is_empty()
+            {
+                creds.user_agent = Some(ua.trim().to_string());
+            }
+            if let Some(secs) = cfg.timeout_secs {
+                creds.timeout_secs = Some(secs.clamp(5, 120));
+            }
+        }
+        creds
+    }
+
+    /// Resolves effective locale for a specific scraper provider (per-provider override > fallback).
+    pub fn locale_for_provider(&self, provider_id: &str, fallback_locale: &str) -> String {
+        if let Some(loc) = self
+            .provider_configs
+            .get(provider_id)
+            .and_then(|cfg| cfg.locale.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return loc.to_string();
+        }
+        fallback_locale.to_string()
+    }
 }

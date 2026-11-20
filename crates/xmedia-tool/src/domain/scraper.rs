@@ -44,6 +44,8 @@ pub struct ProviderDescriptor {
 pub struct ProviderStatusDto {
     #[serde(flatten)]
     pub descriptor: ProviderDescriptor,
+    pub enabled: bool,
+    pub credentials_ready: bool,
     pub configured: bool,
 }
 

@@ -2304,4 +2304,109 @@ The Dark Forest.
             "vertical version"
         );
     }
+
+    #[tokio::test]
+    async fn per_provider_switch_and_overrides_work_independently() {
+        use std::collections::BTreeMap;
+
+        use crate::application::settings::UpdateSettingsInput;
+        use crate::domain::config::ProviderConfigOverride;
+        use crate::domain::scraper::ScrapeTargetKind;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = XMediaToolApp::init(XMediaToolConfig {
+            data_dir: dir.path().join("data"),
+            initial_roots: Vec::new(),
+            password: None,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        })
+        .await
+        .unwrap();
+
+        // Default states: douban enabled, nhentai disabled
+        let initial = app.scraping.list_providers(None, None).await.unwrap();
+        let douban = initial
+            .iter()
+            .find(|p| p.descriptor.id == "douban")
+            .unwrap();
+        let nhentai = initial
+            .iter()
+            .find(|p| p.descriptor.id == "nhentai")
+            .unwrap();
+        assert!(douban.enabled && douban.configured);
+        assert!(!nhentai.enabled && !nhentai.configured);
+
+        // Disable douban, enable nhentai with independent proxy & locale, set qishui cookie
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "douban".to_string(),
+            ProviderConfigOverride {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        );
+        overrides.insert(
+            "nhentai".to_string(),
+            ProviderConfigOverride {
+                enabled: Some(true),
+                http_proxy: Some("http://127.0.0.1:7890".to_string()),
+                locale: Some("ja-JP".to_string()),
+                timeout_secs: Some(45),
+                user_agent: Some("CustomUA/1.0".to_string()),
+            },
+        );
+        let pub_settings = app
+            .settings
+            .update_settings(UpdateSettingsInput {
+                provider_configs: Some(overrides),
+                qishui_cookie: Some("session=abc123456".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(pub_settings.has_qishui_cookie);
+        assert_eq!(
+            pub_settings
+                .provider_configs
+                .get("nhentai")
+                .and_then(|c| c.timeout_secs),
+            Some(45)
+        );
+
+        let updated = app.scraping.list_providers(None, None).await.unwrap();
+        let douban2 = updated
+            .iter()
+            .find(|p| p.descriptor.id == "douban")
+            .unwrap();
+        let nhentai2 = updated
+            .iter()
+            .find(|p| p.descriptor.id == "nhentai")
+            .unwrap();
+        assert!(!douban2.enabled && !douban2.configured);
+        assert!(nhentai2.enabled && nhentai2.configured);
+
+        // Effective credentials merge only affects nhentai, not bangumi
+        let raw = app.settings.get_raw().await.unwrap();
+        let nh_creds = raw.credentials_for_provider("nhentai");
+        let bgm_creds = raw.credentials_for_provider("bangumi");
+        assert_eq!(
+            nh_creds.http_proxy.as_deref(),
+            Some("http://127.0.0.1:7890")
+        );
+        assert_eq!(nh_creds.timeout_secs, Some(45));
+        assert_eq!(nh_creds.user_agent.as_deref(), Some("CustomUA/1.0"));
+        assert_eq!(bgm_creds.http_proxy, None);
+        assert_eq!(bgm_creds.timeout_secs, None);
+        assert_eq!(raw.locale_for_provider("nhentai", "zh-CN"), "ja-JP");
+        assert_eq!(raw.locale_for_provider("bangumi", "zh-CN"), "zh-CN");
+
+        // Disabled provider rejects fetch_detail cleanly
+        let err = app
+            .scraping
+            .fetch_detail("douban", "12345", ScrapeTargetKind::Book, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("已禁用"));
+    }
 }

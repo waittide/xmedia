@@ -15,11 +15,12 @@ pub fn build_http_client(creds: &ProviderCredentials) -> DomainResult<Client> {
         .filter(|s| !s.trim().is_empty())
         .unwrap_or(DEFAULT_TOOL_USER_AGENT);
 
+    let timeout_secs = creds.timeout_secs.map(|s| s.clamp(5, 120)).unwrap_or(20);
     let mut builder = Client::builder()
         .user_agent(ua)
         .http1_ignore_invalid_headers_in_responses(true)
-        .timeout(Duration::from_secs(20))
-        .connect_timeout(Duration::from_secs(10));
+        .timeout(Duration::from_secs(timeout_secs))
+        .connect_timeout(Duration::from_secs(timeout_secs.min(10)));
 
     if let Some(proxy_url) = creds
         .http_proxy

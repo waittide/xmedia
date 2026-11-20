@@ -1,24 +1,28 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import {
+  LuAlertCircle,
   LuArrowDown,
   LuArrowUp,
   LuCheckCircle2,
-  LuKey,
   LuSave,
+  LuSettings,
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
 import { toolApi } from '../../api'
 import { formatBytes } from '../../i18n'
 import type {
+  ProviderConfigOverrideDto,
   ProviderStatusDto,
   PublicSettingsDto,
   ScrapeCacheStatsDto,
   ScraperPrioritiesDto,
 } from '../../types'
+import ScraperProviderConfigDialog from './ScraperProviderConfigDialog.vue'
 
 const MS_PER_HOUR = 3_600_000
 const MS_PER_DAY = 24 * MS_PER_HOUR
@@ -57,10 +61,7 @@ const cachePresets = [
   { label: '30 天', days: 30, hours: 0 },
 ]
 
-const tmdbKeyInput = ref('')
-const bangumiTokenInput = ref('')
 const proxyInput = ref('')
-const enableAdultScrapers = ref(false)
 const scrapeLocale = ref('zh-CN')
 const cacheDays = ref(7)
 const cacheHours = ref(0)
@@ -68,6 +69,8 @@ const cacheStats = ref<ScrapeCacheStatsDto | null>(null)
 const clearingCache = ref(false)
 const cacheClearedBanner = ref<string | null>(null)
 const saving = ref(false)
+const busyProviderId = ref<string | null>(null)
+const editingProvider = ref<ProviderStatusDto | null>(null)
 const allProviders = ref<ProviderStatusDto[]>([])
 const priorities = ref<ScraperPrioritiesDto>({
   book: [
@@ -87,7 +90,19 @@ const priorities = ref<ScraperPrioritiesDto>({
     'openlibrary',
   ],
   comic: ['bangumi', 'douban', 'neodb', 'anilist', 'mangadex', 'nhentai'],
-  music: ['qq', 'netease', 'kugou', 'kuwo', 'migu', 'taihe', 'qishui', 'itunes', 'bangumi', 'musicbrainz', 'lrclib'],
+  music: [
+    'qq',
+    'netease',
+    'kugou',
+    'kuwo',
+    'migu',
+    'taihe',
+    'qishui',
+    'itunes',
+    'bangumi',
+    'musicbrainz',
+    'lrclib',
+  ],
   video: ['tmdb', 'bangumi', 'hanime1'],
 })
 
@@ -105,16 +120,9 @@ function hydrateCacheDurationFromMs(ms: number): void {
   }
   const d = Math.floor(ms / MS_PER_DAY)
   let h = Math.floor((ms % MS_PER_DAY) / MS_PER_HOUR)
-  if (d === 0 && h === 0 && ms > 0) {
-    h = 1
-  }
+  if (d === 0 && h === 0 && ms > 0) h = 1
   cacheDays.value = d
   cacheHours.value = h
-}
-
-function applyCachePreset(days: number, hours: number): void {
-  cacheDays.value = days
-  cacheHours.value = hours
 }
 
 watch(
@@ -122,7 +130,6 @@ watch(
   (s) => {
     if (!s) return
     proxyInput.value = s.http_proxy ?? ''
-    enableAdultScrapers.value = Boolean(s.enable_adult_scrapers)
     scrapeLocale.value = s.default_scrape_locale || 'zh-CN'
     hydrateCacheDurationFromMs(s.scrape_cache_ttl_ms)
     priorities.value = {
@@ -135,6 +142,10 @@ watch(
   { immediate: true },
 )
 
+async function loadProviders(): Promise<void> {
+  allProviders.value = await toolApi.listProviders()
+}
+
 async function loadCacheStats(): Promise<void> {
   try {
     cacheStats.value = await toolApi.getScrapeCacheStats()
@@ -144,12 +155,7 @@ async function loadCacheStats(): Promise<void> {
 }
 
 onMounted(async () => {
-  await Promise.allSettled([
-    toolApi.listProviders().then((res) => {
-      allProviders.value = res
-    }),
-    loadCacheStats(),
-  ])
+  await Promise.allSettled([loadProviders(), loadCacheStats()])
 })
 
 function domainSupportsProvider(dom: MediaKind, p: ProviderStatusDto): boolean {
@@ -182,17 +188,85 @@ const orderedProvidersForDomain = computed<ProviderStatusDto[]>(() => {
     .filter((p): p is ProviderStatusDto => Boolean(p))
 })
 
-function moveProviderPriority(dom: MediaKind, idx: number, delta: -1 | 1): void {
+function providerHasCustomConfig(providerId: string): boolean {
+  const cfg: ProviderConfigOverrideDto | undefined = props.settings?.provider_configs?.[providerId]
+  const hasOverride = Boolean(cfg?.http_proxy || cfg?.locale || cfg?.timeout_secs || cfg?.user_agent)
+  if (hasOverride) return true
+  if (providerId === 'tmdb') return Boolean(props.settings?.has_tmdb_api_key)
+  if (providerId === 'bangumi') return Boolean(props.settings?.has_bangumi_token)
+  if (providerId === 'qishui') return Boolean(props.settings?.has_qishui_cookie)
+  return false
+}
+
+function providerStatusBadge(prov: ProviderStatusDto): { label: string; cls: string } {
+  if (!prov.enabled) {
+    return {
+      label: '已禁用',
+      cls: 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]',
+    }
+  }
+  if (!prov.credentials_ready) {
+    return {
+      label: prov.requires_api_key ? '需配置密钥' : '未就绪',
+      cls: 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]',
+    }
+  }
+  return {
+    label: '已就绪',
+    cls: 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]',
+  }
+}
+
+async function toggleProviderEnabled(prov: ProviderStatusDto, nextEnabled: boolean): Promise<void> {
+  if (busyProviderId.value === prov.id) return
+  busyProviderId.value = prov.id
+  emit('error', null)
+  try {
+    const existing = props.settings?.provider_configs?.[prov.id] ?? {}
+    const next = await toolApi.updateSettings({
+      provider_configs: {
+        [prov.id]: {
+          ...existing,
+          enabled: nextEnabled,
+        },
+      },
+    })
+    emit('updated', next)
+    await loadProviders()
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : String(err))
+  } finally {
+    busyProviderId.value = null
+  }
+}
+
+async function moveProviderPriority(dom: MediaKind, idx: number, delta: -1 | 1): Promise<void> {
   const current = normalizeDomainOrder(dom, priorities.value[dom])
   const targetIdx = idx + delta
   if (targetIdx < 0 || targetIdx >= current.length) return
   const copy = [...current]
   const [moved] = copy.splice(idx, 1)
   copy.splice(targetIdx, 0, moved!)
-  priorities.value = {
-    ...priorities.value,
-    [dom]: copy,
+  const nextPriorities: ScraperPrioritiesDto = {
+    book: dom === 'book' ? copy : normalizeDomainOrder('book', priorities.value.book),
+    comic: dom === 'comic' ? copy : normalizeDomainOrder('comic', priorities.value.comic),
+    music: dom === 'music' ? copy : normalizeDomainOrder('music', priorities.value.music),
+    video: dom === 'video' ? copy : normalizeDomainOrder('video', priorities.value.video),
   }
+  priorities.value = nextPriorities
+  emit('error', null)
+  try {
+    const next = await toolApi.updateSettings({ scraper_priorities: nextPriorities })
+    emit('updated', next)
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : String(err))
+  }
+}
+
+async function handleProviderDialogUpdated(next: PublicSettingsDto): Promise<void> {
+  emit('updated', next)
+  emit('saved')
+  await loadProviders()
 }
 
 async function handleClearCache(): Promise<void> {
@@ -212,52 +286,20 @@ async function handleClearCache(): Promise<void> {
   }
 }
 
-async function handleSaveSettings(): Promise<void> {
+async function handleSaveGlobalSettings(): Promise<void> {
   saving.value = true
   emit('error', null)
   try {
-    const normalizedPrio: ScraperPrioritiesDto = {
-      book: normalizeDomainOrder('book', priorities.value.book),
-      comic: normalizeDomainOrder('comic', priorities.value.comic),
-      music: normalizeDomainOrder('music', priorities.value.music),
-      video: normalizeDomainOrder('video', priorities.value.video),
-    }
     const next = await toolApi.updateSettings({
-      tmdb_api_key: tmdbKeyInput.value.trim() ? tmdbKeyInput.value.trim() : undefined,
-      bangumi_access_token: bangumiTokenInput.value.trim()
-        ? bangumiTokenInput.value.trim()
-        : undefined,
       http_proxy: proxyInput.value,
-      enable_adult_scrapers: enableAdultScrapers.value,
       default_scrape_locale: scrapeLocale.value,
       scrape_cache_ttl_ms: computedCacheTtlMs.value,
-      scraper_priorities: normalizedPrio,
     })
-    tmdbKeyInput.value = ''
-    bangumiTokenInput.value = ''
     emit('updated', next)
-    await Promise.allSettled([
-      toolApi.listProviders().then((res) => {
-        allProviders.value = res
-      }),
-      loadCacheStats(),
-    ])
+    await Promise.allSettled([loadProviders(), loadCacheStats()])
     emit('saved')
   } catch (err) {
     emit('error', err instanceof Error ? err.message : String(err))
-  } finally {
-    saving.value = false
-  }
-}
-
-async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
-  saving.value = true
-  try {
-    const next = await toolApi.updateSettings(
-      which === 'tmdb' ? { tmdb_api_key: '' } : { bangumi_access_token: '' },
-    )
-    emit('updated', next)
-    allProviders.value = await toolApi.listProviders()
   } finally {
     saving.value = false
   }
@@ -266,17 +308,13 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
 
 <template>
   <!-- Domain Priority Waterfall Section -->
-  <section class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <section class="md-card-filled space-y-4 p-6">
     <div>
-      <h2 class="text-sm font-bold text-[var(--ctp-text)]">
-        「{{ domainBadgeLabels[domainSubTab] }}」刮削源优先级与瀑布流填充
+      <h2 class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+        「{{ domainBadgeLabels[domainSubTab] }}」刮削源与优先级
       </h2>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
-        点击工具栏「刮削」添加后台任务时，严格按
-        <strong class="text-[var(--ctp-text)]">
-          本地已有非空信息 → 第 1 优先级源 → 第 2 优先级源 → 低优先级源
-        </strong>
-        顺序依次补齐缺失字段
+      <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+        按顺序依次补齐缺失字段；可单独启停任意刮削源或点击设置图标独立配置密钥、语言与代理
       </p>
     </div>
 
@@ -284,74 +322,101 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
       <div
         v-for="(prov, idx) in orderedProvidersForDomain"
         :key="prov.id"
-        class="flex items-center justify-between gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 py-3"
+        class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3 transition"
+        :class="!prov.enabled ? 'opacity-65' : ''"
       >
         <div class="flex min-w-0 items-center gap-3">
           <span
-            class="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-[var(--ctp-accent-soft)] font-mono text-xs font-bold text-[var(--ctp-accent)]"
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--md-sys-color-secondary-container)] font-mono text-xs font-semibold text-[var(--md-sys-color-on-secondary-container)]"
           >
             {{ idx + 1 }}
           </span>
           <div class="min-w-0">
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-bold text-[var(--ctp-text)]">{{ prov.name }}</span>
+            <div class="flex flex-wrap items-center gap-2">
+              <span class="text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
+                {{ prov.name }}
+              </span>
               <span
                 class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
-                :class="
-                  prov.configured
-                    ? 'bg-emerald-500/15 text-emerald-500'
-                    : 'bg-amber-500/15 text-amber-500'
-                "
+                :class="providerStatusBadge(prov).cls"
               >
-                {{ prov.configured ? '已就绪' : prov.requires_api_key ? '需配置密钥' : '未启用' }}
+                {{ providerStatusBadge(prov).label }}
               </span>
             </div>
-            <p class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
+            <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               {{ prov.description }}
             </p>
           </div>
         </div>
 
-        <div class="flex shrink-0 items-center gap-1">
+        <!-- Per-provider Controls: [Switch] [Settings] [Up] [Down] -->
+        <div class="flex shrink-0 items-center gap-1.5">
+          <AppSwitch
+            :model-value="prov.enabled"
+            :disabled="busyProviderId === prov.id"
+            :title="prov.enabled ? '禁用此刮削源' : '启用此刮削源'"
+            @update:model-value="(val) => toggleProviderEnabled(prov, val)"
+          />
+
+          <button
+            type="button"
+            class="md-icon-btn md-icon-btn-sm md-state relative"
+            :class="
+              providerHasCustomConfig(prov.id)
+                ? '!text-[var(--md-sys-color-primary)]'
+                : ''
+            "
+            title="独立配置此刮削源（密钥 / 语言 / 代理 / 超时）"
+            @click="editingProvider = prov"
+          >
+            <LuSettings class="h-4 w-4" />
+            <span
+              v-if="providerHasCustomConfig(prov.id)"
+              class="absolute top-1.5 right-1.5 h-1.5 w-1.5 rounded-full bg-[var(--md-sys-color-primary)]"
+            />
+          </button>
+
+          <div class="mx-0.5 h-4 w-px bg-[var(--md-sys-color-outline-variant)]/70" />
+
           <button
             type="button"
             :disabled="idx === 0"
-            class="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-35"
+            class="md-icon-btn md-icon-btn-sm md-state"
             title="提高优先级"
             @click="moveProviderPriority(domainSubTab, idx, -1)"
           >
-            <LuArrowUp class="h-3.5 w-3.5" />
+            <LuArrowUp class="h-4 w-4" />
           </button>
           <button
             type="button"
             :disabled="idx === orderedProvidersForDomain.length - 1"
-            class="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-35"
+            class="md-icon-btn md-icon-btn-sm md-state"
             title="降低优先级"
             @click="moveProviderPriority(domainSubTab, idx, 1)"
           >
-            <LuArrowDown class="h-3.5 w-3.5" />
+            <LuArrowDown class="h-4 w-4" />
           </button>
         </div>
       </div>
     </div>
   </section>
 
-  <!-- Metadata Cache Duration (Days + Hours -> Backend ms) -->
-  <section class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <!-- Metadata Cache Duration -->
+  <section class="md-card-filled space-y-4 p-6">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 class="text-sm font-bold text-[var(--ctp-text)]">刮削元数据缓存</h2>
-        <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
-          自动持久化缓存各数据源的搜索与详情元数据，避免同系列剧集/专辑重复请求外部接口（设为 0 天 0 小时将禁用缓存）
+        <h2 class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">刮削元数据缓存</h2>
+        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          自动缓存各数据源搜索与详情结果，避免重复请求（设为 0 天 0 小时将禁用缓存）
         </p>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-1.5">
         <RefreshButton :action="loadCacheStats" />
         <button
           type="button"
           :disabled="clearingCache || !cacheStats || cacheStats.total_entries === 0"
-          class="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs font-semibold text-[var(--ctp-subtext1)] transition hover:border-red-500/50 hover:text-red-500 disabled:opacity-45"
+          class="md-btn md-btn-sm md-btn-outlined md-state"
           @click="handleClearCache"
         >
           <LuTrash2 class="h-3.5 w-3.5" />
@@ -362,15 +427,15 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
 
     <div
       v-if="cacheClearedBanner"
-      class="rounded-xl bg-emerald-500/12 px-3 py-2 text-xs font-medium text-emerald-500"
+      class="rounded-2xl bg-[var(--md-sys-color-success-container)] px-3.5 py-2 text-xs font-medium text-[var(--md-sys-color-on-success-container)]"
     >
       {{ cacheClearedBanner }}
     </div>
 
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
-        <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
-          缓存天数 (天)
+        <label class="mb-1.5 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
+          缓存天数
         </label>
         <div class="relative">
           <input
@@ -378,17 +443,17 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             type="number"
             min="0"
             max="3650"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pr-10 pl-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full pr-10 font-mono text-xs"
           />
-          <span class="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-xs text-[var(--ctp-subtext0)]">
+          <span class="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             天
           </span>
         </div>
       </div>
 
       <div>
-        <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
-          缓存小时 (0 - 23 小时)
+        <label class="mb-1.5 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
+          缓存小时 (0–23)
         </label>
         <div class="relative">
           <input
@@ -396,37 +461,33 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
             type="number"
             min="0"
             max="23"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pr-12 pl-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full pr-12 font-mono text-xs"
           />
-          <span class="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-xs text-[var(--ctp-subtext0)]">
+          <span class="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             小时
           </span>
         </div>
       </div>
     </div>
 
-    <!-- Quick Presets + Millisecond Precision Info -->
     <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
       <div class="flex flex-wrap items-center gap-1.5">
-        <span class="text-[11px] text-[var(--ctp-subtext0)]">快捷预设：</span>
         <button
           v-for="preset in cachePresets"
           :key="preset.label"
           type="button"
-          class="rounded-lg border px-2.5 py-1 text-[11px] font-medium transition"
+          class="md-chip md-state"
           :class="
-            cacheDays === preset.days && cacheHours === preset.hours
-              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] font-semibold text-[var(--ctp-accent)]'
-              : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)]'
+            cacheDays === preset.days && cacheHours === preset.hours ? 'md-chip-selected' : ''
           "
-          @click="applyCachePreset(preset.days, preset.hours)"
+          @click="cacheDays = preset.days; cacheHours = preset.hours"
         >
           {{ preset.label }}
         </button>
       </div>
 
-      <div class="font-mono text-[11px] text-[var(--ctp-subtext0)]">
-        后端存储精度：{{ computedCacheTtlMs.toLocaleString() }} ms
+      <div class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+        {{ computedCacheTtlMs.toLocaleString() }} ms
         <template v-if="cacheStats">
           · 有效 {{ cacheStats.valid_entries }} / {{ cacheStats.total_entries }} 条 ({{
             formatBytes(cacheStats.total_bytes)
@@ -436,129 +497,58 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
     </div>
   </section>
 
-  <!-- Locale, Proxy & API Keys -->
-  <section class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold text-[var(--ctp-text)]">刮削语言、网络代理与第三方凭证</h2>
+  <!-- Global Defaults: Locale, Proxy & FFprobe Status -->
+  <section class="md-card-filled space-y-4 p-6">
+    <div>
+      <h2 class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">全局抓取默认设置</h2>
+      <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+        未单独配置的刮削源将默认继承以下语言与网络代理设置
+      </p>
+    </div>
 
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
-        <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
           默认元数据抓取语言
         </label>
         <AppSelect v-model="scrapeLocale" :options="scrapeLocaleOptions" />
       </div>
 
       <div>
-        <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
-          HTTP / SOCKS5 代理（可选）
+        <label class="mb-1.5 block text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
+          全局 HTTP / SOCKS5 代理（可选）
         </label>
         <input
           v-model="proxyInput"
           type="text"
           placeholder="例如 http://127.0.0.1:7890 或 socks5h://127.0.0.1:1080"
-          class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-10 w-full font-mono text-xs"
         />
       </div>
     </div>
 
-    <div class="space-y-2 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2 text-xs font-bold text-[var(--ctp-text)]">
-          <LuKey class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-          <span>TMDB API Key / v4 Read Access Token</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span
-            v-if="settings?.has_tmdb_api_key"
-            class="rounded-full bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-500"
-          >
-            已配置 {{ settings.tmdb_api_key_masked }}
-          </span>
-          <button
-            v-if="settings?.has_tmdb_api_key"
-            type="button"
-            class="text-[11px] text-red-400 hover:underline"
-            @click="clearSecret('tmdb')"
-          >
-            清空
-          </button>
-        </div>
-      </div>
-      <input
-        v-model="tmdbKeyInput"
-        type="password"
-        placeholder="输入新的 TMDB v3 API Key 或 v4 Bearer Token（留空保持不变）"
-        class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/60 px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-      />
-    </div>
-
-    <div class="space-y-2 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2 text-xs font-bold text-[var(--ctp-text)]">
-          <LuKey class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-          <span>Bangumi Access Token（可选，解锁更高频限额）</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span
-            v-if="settings?.has_bangumi_token"
-            class="rounded-full bg-emerald-500/15 px-2.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-500"
-          >
-            已配置 {{ settings.bangumi_token_masked }}
-          </span>
-          <button
-            v-if="settings?.has_bangumi_token"
-            type="button"
-            class="text-[11px] text-red-400 hover:underline"
-            @click="clearSecret('bangumi')"
-          >
-            清空
-          </button>
-        </div>
-      </div>
-      <input
-        v-model="bangumiTokenInput"
-        type="password"
-        placeholder="输入 Bangumi 个人令牌（留空保持不变）"
-        class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/60 px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-      />
-    </div>
-
-    <!-- R18 / Adult Scrapers Opt-in Toggle -->
-    <div
-      class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-3.5"
-    >
-      <div class="min-w-0 flex-1">
-        <div class="text-xs font-bold text-[var(--ctp-text)]">
-          启用 R18 / 成人向刮削源（nhentai / Hanime1）
-        </div>
-        <div class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
-          默认关闭以避免普通漫画与剧集批量刮削误匹配；开启后支持 nhentai（漫画）与 Hanime1（动漫），建议配合上方 HTTP 代理使用
-        </div>
-      </div>
-      <AppSwitch v-model="enableAdultScrapers" />
-    </div>
-
-    <!-- FFprobe Status -->
     <div
       v-if="ffmpegStatus"
-      class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-3"
+      class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3"
     >
       <div>
-        <div class="text-xs font-bold text-[var(--ctp-text)]">FFmpeg / FFprobe 流探测引擎</div>
-        <div class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
+        <div class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+          FFmpeg / FFprobe 流探测引擎
+        </div>
+        <div class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
           {{ ffmpegStatus.ffmpeg_version || '用于探测视频分辨率、编码、内封音轨与字幕流' }}
         </div>
       </div>
       <span
         v-if="ffmpegStatus.ffprobe_available"
-        class="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-500"
+        class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2.5 py-1 text-[11px] font-semibold text-[var(--md-sys-color-on-success-container)]"
       >
         <LuCheckCircle2 class="h-3.5 w-3.5" />
         <span>已就绪</span>
       </span>
       <span
         v-else
-        class="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2.5 py-1 text-[11px] font-semibold text-amber-500"
+        class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-warning-container)] px-2.5 py-1 text-[11px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
       >
         <LuAlertCircle class="h-3.5 w-3.5" />
         <span>未检测到 ffprobe</span>
@@ -569,12 +559,21 @@ async function clearSecret(which: 'tmdb' | 'bangumi'): Promise<void> {
       <button
         type="button"
         :disabled="saving"
-        class="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
-        @click="handleSaveSettings"
+        class="md-btn md-btn-filled md-state"
+        @click="handleSaveGlobalSettings"
       >
         <LuSave class="h-4 w-4" />
-        <span>{{ saving ? '保存中…' : '保存刮削与缓存设置' }}</span>
+        <span>{{ saving ? '保存中…' : '保存全局设置' }}</span>
       </button>
     </div>
   </section>
+
+  <!-- Per-Provider Independent Settings Dialog -->
+  <ScraperProviderConfigDialog
+    :open="Boolean(editingProvider)"
+    :provider="editingProvider"
+    :settings="settings"
+    @close="editingProvider = null"
+    @updated="handleProviderDialogUpdated"
+  />
 </template>

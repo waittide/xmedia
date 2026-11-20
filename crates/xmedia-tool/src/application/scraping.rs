@@ -208,8 +208,13 @@ impl ScrapingOrchestratorService {
             {
                 continue;
             }
+            let enabled = raw_settings.is_provider_enabled(&desc.id);
+            let prov_creds = raw_settings.credentials_for_provider(&desc.id);
+            let credentials_ready = p.is_configured(&prov_creds);
             out.push(ProviderStatusDto {
-                configured: p.is_configured(&raw_settings.credentials),
+                enabled,
+                credentials_ready,
+                configured: enabled && credentials_ready,
                 descriptor: desc,
             });
         }
@@ -229,7 +234,6 @@ impl ScrapingOrchestratorService {
             .unwrap_or_else(|| raw_settings.default_scrape_locale.clone());
         query.locale = Some(effective_locale.clone());
         let ttl_ms = raw_settings.scrape_cache_ttl_ms;
-        let creds = raw_settings.credentials;
         let domain = query.target.map(ScrapeTargetKind::media_kind);
         let ordered = self.sort_providers_by_priority(
             domain,
@@ -256,7 +260,11 @@ impl ScrapingOrchestratorService {
                 if !query.providers.is_empty() && !query.providers.iter().any(|id| id == &desc.id) {
                     return false;
                 }
-                p.is_configured(&creds)
+                if !raw_settings.is_provider_enabled(&desc.id) {
+                    return false;
+                }
+                let prov_creds = raw_settings.credentials_for_provider(&desc.id);
+                p.is_configured(&prov_creds)
             })
             .collect();
 
@@ -267,12 +275,13 @@ impl ScrapingOrchestratorService {
         let provider_count = selected.len();
         let mut set = JoinSet::new();
         for (order_idx, provider) in selected.into_iter().enumerate() {
-            let q = query.clone();
-            let c = creds.clone();
-            let loc = effective_locale.clone();
+            let id = provider.descriptor().id;
+            let loc = raw_settings.locale_for_provider(&id, &effective_locale);
+            let mut q = query.clone();
+            q.locale = Some(loc.clone());
+            let c = raw_settings.credentials_for_provider(&id);
             let cache = self.cache.clone();
             set.spawn(async move {
-                let id = provider.descriptor().id;
                 if let Some(cached) = cache.get_search(&id, &q, &loc, ttl_ms) {
                     return (order_idx, cached);
                 }
@@ -327,7 +336,6 @@ impl ScrapingOrchestratorService {
             .unwrap_or_else(|| raw_settings.default_scrape_locale.clone());
         query.locale = Some(effective_locale.clone());
         let ttl_ms = raw_settings.scrape_cache_ttl_ms;
-        let creds = raw_settings.credentials;
         let domain = query.target.map(ScrapeTargetKind::media_kind);
 
         // Preserve user's configured priority order (or explicit ordered list when passed)
@@ -356,7 +364,11 @@ impl ScrapingOrchestratorService {
                 if !query.providers.is_empty() && !query.providers.iter().any(|id| id == &desc.id) {
                     return false;
                 }
-                p.is_configured(&creds)
+                if !raw_settings.is_provider_enabled(&desc.id) {
+                    return false;
+                }
+                let prov_creds = raw_settings.credentials_for_provider(&desc.id);
+                p.is_configured(&prov_creds)
             })
             .collect();
 
@@ -379,12 +391,13 @@ impl ScrapingOrchestratorService {
         let provider_count = selected.len();
         let mut search_set = JoinSet::new();
         for (order_idx, provider) in selected.iter().cloned().enumerate() {
-            let q = query.clone();
-            let c = creds.clone();
-            let loc = effective_locale.clone();
+            let id = provider.descriptor().id;
+            let loc = raw_settings.locale_for_provider(&id, &effective_locale);
+            let mut q = query.clone();
+            q.locale = Some(loc.clone());
+            let c = raw_settings.credentials_for_provider(&id);
             let cache = self.cache.clone();
             search_set.spawn(async move {
-                let id = provider.descriptor().id;
                 if let Some(cached) = cache.get_search(&id, &q, &loc, ttl_ms) {
                     return (order_idx, cached);
                 }
@@ -423,8 +436,8 @@ impl ScrapingOrchestratorService {
             let prov_desc = provider.descriptor();
             selected_by_provider.insert(prov_desc.id.clone(), top_cand.clone());
 
-            let loc = effective_locale.clone();
-            let c = creds.clone();
+            let loc = raw_settings.locale_for_provider(&prov_desc.id, &effective_locale);
+            let c = raw_settings.credentials_for_provider(&prov_desc.id);
             let cache = self.cache.clone();
             detail_set.spawn(async move {
                 let id = prov_desc.id.clone();
@@ -523,10 +536,10 @@ impl ScrapingOrchestratorService {
         locale: Option<&str>,
     ) -> DomainResult<ScrapedMetadata> {
         let raw_settings = self.settings.get_raw().await?;
-        let effective_locale = locale
+        let base_locale = locale
             .filter(|l| !l.trim().is_empty())
             .unwrap_or(&raw_settings.default_scrape_locale);
-        let creds = raw_settings.credentials;
+        let effective_locale = raw_settings.locale_for_provider(provider_id, base_locale);
 
         let provider = self
             .providers
@@ -536,6 +549,14 @@ impl ScrapingOrchestratorService {
                 DomainError::NotFound(format!("scraper provider '{provider_id}' not registered"))
             })?;
 
+        if !raw_settings.is_provider_enabled(provider_id) {
+            return Err(DomainError::Validation(format!(
+                "刮削源 '{}' 已禁用，请在设置中启用后重试",
+                provider.descriptor().name
+            )));
+        }
+
+        let creds = raw_settings.credentials_for_provider(provider_id);
         if !provider.is_configured(&creds) {
             return Err(DomainError::Validation(format!(
                 "provider '{}' requires API credentials in Settings",
@@ -546,19 +567,19 @@ impl ScrapingOrchestratorService {
         let ttl_ms = raw_settings.scrape_cache_ttl_ms;
         if let Some(cached) =
             self.cache
-                .get_detail(provider_id, target, external_id, effective_locale, ttl_ms)
+                .get_detail(provider_id, target, external_id, &effective_locale, ttl_ms)
         {
             return Ok(cached);
         }
 
         let detail = provider
-            .fetch_detail(external_id, target, effective_locale, &creds)
+            .fetch_detail(external_id, target, &effective_locale, &creds)
             .await?;
         self.cache.put_detail(
             provider_id,
             target,
             external_id,
-            effective_locale,
+            &effective_locale,
             ttl_ms,
             &detail,
         );
