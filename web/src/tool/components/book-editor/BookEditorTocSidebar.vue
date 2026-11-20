@@ -216,20 +216,20 @@ function onTocDrop(targetIdx: number): void {
     <div class="grid grid-cols-2 gap-1.5">
       <button
         type="button"
-        class="inline-flex items-center justify-center gap-1 rounded-lg border border-[var(--ctp-accent)]/35 bg-[var(--ctp-accent-soft)]/70 px-2 py-1 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)]"
+        class="md-btn md-btn-sm md-btn-tonal md-state w-full"
         title="在当前项下方插入顶层分卷 (L0)，并自动将其后同级章节归入该卷"
         @click="emit('insertVolumeBelow', activeIndex)"
       >
-        <LuFolderPlus class="h-3 w-3" />
+        <LuFolderPlus class="h-3.5 w-3.5" />
         <span>新建卷</span>
       </button>
       <button
         type="button"
-        class="inline-flex items-center justify-center gap-1 rounded-lg bg-[var(--ctp-accent-soft)] px-2 py-1 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
+        class="md-btn md-btn-sm md-btn-tonal md-state w-full"
         title="在当前项下方插入新章节"
         @click="emit('insertBelow', activeIndex)"
       >
-        <LuPlus class="h-3 w-3" />
+        <LuPlus class="h-3.5 w-3.5" />
         <span>新建章</span>
       </button>
     </div>
@@ -375,18 +375,18 @@ function onTocDrop(targetIdx: number): void {
 
       <button
         type="button"
-        class="shrink-0 rounded px-1 py-0.2 font-mono text-[9px] font-bold transition hover:bg-[var(--ctp-canvas)]"
+        class="shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-semibold transition hover:opacity-90"
         :class="
           ch.level > 0
-            ? 'bg-[var(--ctp-mantle)] text-[var(--ctp-subtext0)]'
+            ? 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
             : isVolumeEntry(ch, idx)
-              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'bg-[var(--ctp-surface0)]/75 text-[var(--ctp-text)]'
+              ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+              : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
         "
-        title="点击切换顶层卷/章 (L0) 与子章 (L1)"
+        title="点击切换顶层（卷/章）与子章层级"
         @click.stop="emit('toggleLevel', idx)"
       >
-        {{ ch.level > 0 ? '子章' : isVolumeEntry(ch, idx) ? '卷' : '卷/章' }}
+        {{ ch.level > 0 ? '子章' : isVolumeEntry(ch, idx) ? '卷' : '章' }}
       </button>
 
       <!-- Inline Rename Input vs Title Label -->
