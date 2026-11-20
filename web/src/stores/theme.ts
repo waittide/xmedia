@@ -167,6 +167,9 @@ export const useThemeStore = defineStore('theme', () => {
   )
 
   let syncTimer: ReturnType<typeof setTimeout> | null = null
+  let lastAppliedPalette: ReturnType<typeof resolvePalette> | null = null
+  let lastAppliedDark: boolean | null = null
+  let lastAppliedPreset: string | null = null
 
   function toUserPreferences(): UserPreferences {
     return {
@@ -188,10 +191,30 @@ export const useThemeStore = defineStore('theme', () => {
     }
   }
 
-  function applyNow(): void {
-    applyResolvedPaletteToDom(activePalette.value, isDark.value, activePresetId.value)
-    setAppLocale(locale.value)
+  function persistLocalPrefs(): void {
     localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(toUserPreferences()))
+  }
+
+  function applyPaletteIfChanged(): void {
+    const pal = activePalette.value
+    const dark = isDark.value
+    const preset = activePresetId.value
+    if (
+      pal === lastAppliedPalette &&
+      dark === lastAppliedDark &&
+      preset === lastAppliedPreset
+    ) {
+      return
+    }
+    lastAppliedPalette = pal
+    lastAppliedDark = dark
+    lastAppliedPreset = preset
+    applyResolvedPaletteToDom(pal, dark, preset)
+  }
+
+  function applyVisualChange(): void {
+    applyPaletteIfChanged()
+    persistLocalPrefs()
   }
 
   function scheduleServerSync(): void {
@@ -222,44 +245,46 @@ export const useThemeStore = defineStore('theme', () => {
     if (prefs.music) playback.value = { ...DEFAULT_MUSIC_PREFS, ...prefs.music }
     if (prefs.video) video.value = { ...DEFAULT_VIDEO_PREFS, ...prefs.video }
     workspaceLayout.value = sanitizeWorkspaceLayout(prefs.workspace_layout)
-    applyNow()
+    applyPaletteIfChanged()
+    setAppLocale(locale.value)
+    persistLocalPrefs()
   }
 
   function setThemeMode(mode: ThemeMode): void {
     themeMode.value = mode
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
   function setLightPreset(presetId: string): void {
     lightPreset.value = presetId
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
   function setDarkPreset(presetId: string): void {
     darkPreset.value = presetId
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
   function setCatppuccinAccent(next: CatppuccinAccent): void {
     accentMode.value = 'catppuccin'
     accent.value = next
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
   function setAccentMode(mode: AccentMode): void {
     accentMode.value = mode
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
   function setCustomAccentHex(hex: string): void {
     accentMode.value = 'custom'
     customAccent.value = hex
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
@@ -274,7 +299,7 @@ export const useThemeStore = defineStore('theme', () => {
       customDark.value = { ...customDark.value, ...patch }
       darkPreset.value = 'custom'
     }
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
@@ -292,7 +317,7 @@ export const useThemeStore = defineStore('theme', () => {
       customDark.value = { ...src.tokens }
       darkPreset.value = 'custom'
     }
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
@@ -303,37 +328,38 @@ export const useThemeStore = defineStore('theme', () => {
     accent.value = 'blue'
     customLight.value = { ...DEFAULT_CUSTOM_LIGHT }
     customDark.value = { ...DEFAULT_CUSTOM_DARK }
-    applyNow()
+    applyVisualChange()
     scheduleServerSync()
   }
 
   function setLocale(next: LocaleCode): void {
     locale.value = next
-    applyNow()
+    setAppLocale(locale.value)
+    persistLocalPrefs()
     scheduleServerSync()
   }
 
   function updateReaderPreferences(patch: Partial<ReaderPreferences>): void {
     reader.value = { ...reader.value, ...patch }
-    applyNow()
+    persistLocalPrefs()
     scheduleServerSync()
   }
 
   function updateComicPreferences(patch: Partial<ComicReaderPreferences>): void {
     comic.value = { ...comic.value, ...patch }
-    applyNow()
+    persistLocalPrefs()
     scheduleServerSync()
   }
 
   function updatePlaybackPreferences(patch: Partial<PlaybackPreferences>): void {
     playback.value = { ...playback.value, ...patch }
-    applyNow()
+    persistLocalPrefs()
     scheduleServerSync()
   }
 
   function updateVideoPreferences(patch: Partial<VideoPlaybackPreferences>): void {
     video.value = { ...video.value, ...patch }
-    applyNow()
+    persistLocalPrefs()
     scheduleServerSync()
   }
 
@@ -348,7 +374,7 @@ export const useThemeStore = defineStore('theme', () => {
       ...workspaceLayout.value,
       [domain]: next,
     }
-    applyNow()
+    persistLocalPrefs()
     scheduleServerSync()
   }
 
@@ -357,14 +383,14 @@ export const useThemeStore = defineStore('theme', () => {
       ...workspaceLayout.value,
       [domain]: sanitizeDomainLayout(domain, DEFAULT_WORKSPACE_LAYOUT[domain]),
     }
-    applyNow()
+    persistLocalPrefs()
     scheduleServerSync()
   }
 
   watch(
     [activePalette, isDark, activePresetId],
     () => {
-      applyResolvedPaletteToDom(activePalette.value, isDark.value, activePresetId.value)
+      applyPaletteIfChanged()
     },
     { immediate: true },
   )

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref, watch, type Component } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, ref, watch, type Component } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
@@ -54,14 +54,40 @@ async function loadHome(force = false): Promise<void> {
 }
 
 async function refreshPage(): Promise<void> {
-  await Promise.all([loadHome(true), videoStore.refreshSidebar()])
+  await Promise.all([loadHome(true), videoStore.refreshSidebar(true)])
 }
 
-onMounted(() => void loadHome(false))
-onActivated(() => void loadHome(false))
+let viewActive = true
+let dirtyWhileInactive = false
+
+onMounted(() => {
+  viewActive = true
+  void loadHome(false)
+})
+
+onActivated(() => {
+  viewActive = true
+  if (dirtyWhileInactive) {
+    dirtyWhileInactive = false
+    void loadHome(true)
+  } else {
+    void loadHome(false)
+  }
+})
+
+onDeactivated(() => {
+  viewActive = false
+})
+
 watch(
   () => [videoStore.catalogVersion, uploadStore.versionCounter],
-  () => void loadHome(true),
+  () => {
+    if (!viewActive) {
+      dirtyWhileInactive = true
+      return
+    }
+    void loadHome(true)
+  },
 )
 
 interface StatCardItem {

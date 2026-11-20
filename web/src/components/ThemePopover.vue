@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuPalette, LuSun, LuMoon, LuMonitor, LuCheck, LuGlobe } from 'vue-icons-plus/lu'
 import {
@@ -30,7 +30,13 @@ function handleOutside(ev: MouseEvent): void {
   }
 }
 
-onMounted(() => document.addEventListener('mousedown', handleOutside))
+watch(
+  () => open.value || langOpen.value,
+  (isAnyOpen) => {
+    if (isAnyOpen) document.addEventListener('mousedown', handleOutside)
+    else document.removeEventListener('mousedown', handleOutside)
+  },
+)
 onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 
 const modes: { value: ThemeMode; labelKey: string }[] = [

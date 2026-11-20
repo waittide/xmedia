@@ -162,7 +162,7 @@ export interface OnlineShelfBookDto {
 }
 
 export type OnlineDownloadFormat = 'epub' | 'txt'
-export type DownloadJobStatus = 'pending' | 'running' | 'completed' | 'failed'
+export type DownloadJobStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 export interface OnlineDownloadJobDto {
   id: string
@@ -176,6 +176,8 @@ export interface OnlineDownloadJobDto {
   total_chapters: number
   processed_chapters: number
   failed_chapters: number
+  chapters_per_sec?: number
+  elapsed_ms?: number
   current_chapter_title: string | null
   output_file_name: string | null
   file_size: number | null
@@ -407,4 +409,14 @@ export const onlineBookApi = {
 
   getDownload: (id: string): Promise<OnlineDownloadJobDto> =>
     requestJson(`/book/online/downloads/${encodeURIComponent(id)}`),
+
+  cancelDownload: (id: string): Promise<OnlineDownloadJobDto> =>
+    requestJson(`/book/online/downloads/${encodeURIComponent(id)}/cancel`, {
+      method: 'POST',
+    }),
+
+  deleteDownload: (id: string): Promise<void> =>
+    requestJson(`/book/online/downloads/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
 }

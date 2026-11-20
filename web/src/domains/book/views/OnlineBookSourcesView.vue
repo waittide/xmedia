@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import {
+  LuBan,
   LuBookMarked,
   LuBookOpen,
   LuDownload,
@@ -54,14 +55,22 @@ const hasSearched = ref(false)
 const addingShelfKey = ref<string | null>(null)
 const openingKey = ref<string | null>(null)
 
-// Download modal
+// Download modal & unified single polling loop
 const downloadTarget = ref<OnlineDownloadTarget | null>(null)
-let downloadsPollTimer: ReturnType<typeof setInterval> | null = null
+const modalTrackedJobId = ref<string | null>(null)
+const busyDownloadId = ref<string | null>(null)
+let downloadsPollTimer: ReturnType<typeof setTimeout> | null = null
+let downloadsPollInFlight = false
+let isUnmounted = false
 
 const enabledSources = computed(() => sources.value.filter((s) => s.enabled))
 const hasActiveDownloads = computed(() =>
   downloads.value.some((j) => j.status === 'pending' || j.status === 'running'),
 )
+const modalTrackedJob = computed<OnlineDownloadJobDto | null>(() => {
+  if (!modalTrackedJobId.value) return null
+  return downloads.value.find((j) => j.id === modalTrackedJobId.value) ?? null
+})
 
 async function loadAll(): Promise<void> {
   loadingInit.value = true
@@ -98,31 +107,45 @@ async function refreshSources(): Promise<void> {
   }
 }
 
-function ensureDownloadPolling(): void {
-  if (hasActiveDownloads.value && !downloadsPollTimer) {
-    downloadsPollTimer = setInterval(async () => {
-      try {
-        downloads.value = await onlineBookApi.listDownloads()
-        if (!hasActiveDownloads.value && downloadsPollTimer) {
-          clearInterval(downloadsPollTimer)
-          downloadsPollTimer = null
-        }
-      } catch {
-        // ignore
-      }
-    }, 1500)
+function stopDownloadPolling(): void {
+  if (downloadsPollTimer) {
+    clearTimeout(downloadsPollTimer)
+    downloadsPollTimer = null
   }
 }
 
+function ensureDownloadPolling(): void {
+  if (isUnmounted) return
+  if (!hasActiveDownloads.value) {
+    stopDownloadPolling()
+    return
+  }
+  if (downloadsPollTimer || downloadsPollInFlight) return
+  downloadsPollTimer = setTimeout(async () => {
+    downloadsPollTimer = null
+    if (isUnmounted || !hasActiveDownloads.value) return
+    downloadsPollInFlight = true
+    try {
+      downloads.value = await onlineBookApi.listDownloads()
+    } catch {
+      // ignore transient network errors
+    } finally {
+      downloadsPollInFlight = false
+      if (!isUnmounted && hasActiveDownloads.value) {
+        ensureDownloadPolling()
+      }
+    }
+  }, 1200)
+}
+
 onMounted(() => {
+  isUnmounted = false
   void loadAll()
 })
 
 onBeforeUnmount(() => {
-  if (downloadsPollTimer) {
-    clearInterval(downloadsPollTimer)
-    downloadsPollTimer = null
-  }
+  isUnmounted = true
+  stopDownloadPolling()
 })
 
 function toggleSourceFilter(id: string): void {
@@ -330,8 +353,60 @@ async function handleRemoveShelf(book: OnlineShelfBookDto): Promise<void> {
 }
 
 function handleJobUpdated(job: OnlineDownloadJobDto): void {
+  modalTrackedJobId.value = job.id
   downloads.value = [job, ...downloads.value.filter((j) => j.id !== job.id)]
   ensureDownloadPolling()
+}
+
+function closeDownloadModal(): void {
+  downloadTarget.value = null
+  modalTrackedJobId.value = null
+}
+
+function formatDownloadSpeed(cps?: number): string {
+  if (typeof cps !== 'number' || !Number.isFinite(cps) || cps <= 0) return ''
+  return `${cps.toFixed(1)} 章/秒`
+}
+
+async function handleCancelDownload(job: OnlineDownloadJobDto): Promise<void> {
+  if (busyDownloadId.value === job.id) return
+  busyDownloadId.value = job.id
+  try {
+    const updated = await onlineBookApi.cancelDownload(job.id)
+    downloads.value = downloads.value.map((j) => (j.id === updated.id ? updated : j))
+    if (!hasActiveDownloads.value) {
+      stopDownloadPolling()
+    }
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    busyDownloadId.value = null
+  }
+}
+
+async function handleDeleteDownload(job: OnlineDownloadJobDto): Promise<void> {
+  if (busyDownloadId.value === job.id) return
+  busyDownloadId.value = job.id
+  try {
+    await onlineBookApi.deleteDownload(job.id)
+    downloads.value = downloads.value.filter((j) => j.id !== job.id)
+    if (modalTrackedJobId.value === job.id) {
+      modalTrackedJobId.value = null
+    }
+    if (!hasActiveDownloads.value) {
+      stopDownloadPolling()
+    }
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    busyDownloadId.value = null
+  }
 }
 </script>
 
@@ -418,8 +493,12 @@ function handleJobUpdated(job: OnlineDownloadJobDto): void {
               {{ job.format.toUpperCase() }} ·
               <template v-if="job.status === 'running' || job.status === 'pending'">
                 {{ job.processed_chapters }} / {{ job.total_chapters || '?' }} 章
+                <template v-if="formatDownloadSpeed(job.chapters_per_sec)">
+                  · {{ formatDownloadSpeed(job.chapters_per_sec) }}
+                </template>
               </template>
               <template v-else-if="job.status === 'completed'">已完成</template>
+              <template v-else-if="job.status === 'cancelled'">已取消</template>
               <template v-else>失败：{{ job.error }}</template>
             </span>
           </div>
@@ -428,6 +507,16 @@ function handleJobUpdated(job: OnlineDownloadJobDto): void {
               v-if="job.status === 'running' || job.status === 'pending'"
               class="h-3.5 w-3.5 animate-spin text-[var(--md-sys-color-primary)]"
             />
+            <button
+              v-if="job.status === 'running' || job.status === 'pending'"
+              type="button"
+              :disabled="busyDownloadId === job.id"
+              class="md-btn md-btn-sm md-btn-outlined md-state"
+              @click="handleCancelDownload(job)"
+            >
+              <LuBan class="h-3.5 w-3.5" />
+              <span>取消</span>
+            </button>
             <a
               v-if="job.status === 'completed'"
               :href="buildOnlineDownloadFileUrl(job.id)"
@@ -445,6 +534,16 @@ function handleJobUpdated(job: OnlineDownloadJobDto): void {
             >
               <LuBookOpen class="h-3.5 w-3.5" />
               <span>查看入库书</span>
+            </button>
+            <button
+              v-if="job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled'"
+              type="button"
+              :disabled="busyDownloadId === job.id"
+              class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-error)]"
+              title="删除记录与文件"
+              @click="handleDeleteDownload(job)"
+            >
+              <LuTrash2 class="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
@@ -759,7 +858,9 @@ function handleJobUpdated(job: OnlineDownloadJobDto): void {
     <OnlineDownloadModal
       :open="downloadTarget !== null"
       :target="downloadTarget"
-      @close="downloadTarget = null"
+      :external-job="modalTrackedJob"
+      :disable-polling="true"
+      @close="closeDownloadModal"
       @job-updated="handleJobUpdated"
     />
   </div>

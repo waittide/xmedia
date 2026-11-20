@@ -28,6 +28,8 @@ export const usePlayerStore = defineStore('player', () => {
 
   let scrobbledCurrent = false
   let queueSyncTimer: ReturnType<typeof setTimeout> | null = null
+  let pendingSeekHandler: (() => void) | null = null
+  let lyricsLoadedTrackId: string | null = null
   let playHistory: number[] = []
   let shufflePool: number[] = []
 
@@ -163,16 +165,25 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
+  function clearPendingSeek(): void {
+    if (pendingSeekHandler) {
+      audio.removeEventListener('loadedmetadata', pendingSeekHandler)
+      pendingSeekHandler = null
+    }
+  }
+
   async function fetchLyricsFor(trackId: string): Promise<void> {
     lyricsLoading.value = true
     try {
       const res = await api.getTrackLyrics(trackId)
       if (currentTrack.value?.id === trackId) {
         lyrics.value = res
+        lyricsLoadedTrackId = trackId
       }
     } catch {
       if (currentTrack.value?.id === trackId) {
         lyrics.value = null
+        lyricsLoadedTrackId = trackId
       }
     } finally {
       if (currentTrack.value?.id === trackId) {
@@ -180,6 +191,13 @@ export const usePlayerStore = defineStore('player', () => {
       }
     }
   }
+
+  watch(lyricsOpen, (isOpen) => {
+    const tr = currentTrack.value
+    if (isOpen && tr && lyricsLoadedTrackId !== tr.id && !lyricsLoading.value) {
+      void fetchLyricsFor(tr.id)
+    }
+  })
 
   function resetShuffleAndHistory(): void {
     playHistory = []
@@ -223,21 +241,31 @@ export const usePlayerStore = defineStore('player', () => {
     currentTimeSecs.value = startAtSecs
     bufferedRatio.value = 0
 
+    clearPendingSeek()
     audio.src = buildStreamUrl(track.id, profile, streamOffsetSecs.value, track.format)
     audio.load()
 
     if (!useServerOffset && startAtSecs > 0) {
-      audio.addEventListener(
-        'loadedmetadata',
-        () => {
+      const targetTrackId = track.id
+      const handler = (): void => {
+        clearPendingSeek()
+        if (currentTrack.value?.id === targetTrackId) {
           audio.currentTime = startAtSecs
-        },
-        { once: true },
-      )
+        }
+      }
+      pendingSeekHandler = handler
+      audio.addEventListener('loadedmetadata', handler, { once: true })
     }
 
     updateMediaSession(track)
-    void fetchLyricsFor(track.id)
+    if (lyricsLoadedTrackId !== track.id) {
+      lyrics.value = null
+      lyricsLoadedTrackId = null
+      lyricsLoading.value = false
+    }
+    if (lyricsOpen.value && lyricsLoadedTrackId !== track.id) {
+      void fetchLyricsFor(track.id)
+    }
 
     if (autoPlay) {
       try {
@@ -450,11 +478,13 @@ export const usePlayerStore = defineStore('player', () => {
       .filter((i) => i !== idx)
       .map((i) => (i > idx ? i - 1 : i))
     if (queue.value.length === 0) {
+      clearPendingSeek()
       audio.pause()
       audio.removeAttribute('src')
       currentIndex.value = -1
       currentTimeSecs.value = 0
       lyrics.value = null
+      lyricsLoadedTrackId = null
       resetShuffleAndHistory()
     } else if (wasCurrent) {
       currentIndex.value = Math.min(idx, queue.value.length - 1)
@@ -475,12 +505,14 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function clearQueue(): void {
+    clearPendingSeek()
     audio.pause()
     audio.removeAttribute('src')
     queue.value = []
     currentIndex.value = -1
     currentTimeSecs.value = 0
     lyrics.value = null
+    lyricsLoadedTrackId = null
     resetShuffleAndHistory()
     scheduleQueueSync()
   }
@@ -490,6 +522,7 @@ export const usePlayerStore = defineStore('player', () => {
       clearTimeout(queueSyncTimer)
       queueSyncTimer = null
     }
+    clearPendingSeek()
     audio.pause()
     audio.removeAttribute('src')
     audio.load()
@@ -507,6 +540,7 @@ export const usePlayerStore = defineStore('player', () => {
     queueOpen.value = false
     lyricsLoading.value = false
     lyrics.value = null
+    lyricsLoadedTrackId = null
     scrobbledCurrent = false
     resetShuffleAndHistory()
     updateMediaSession(null)
@@ -516,6 +550,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (!getStoredToken()) return
     if (queueSyncTimer) clearTimeout(queueSyncTimer)
     queueSyncTimer = setTimeout(() => {
+      queueSyncTimer = null
       void api
         .savePlayQueue({
           track_ids: queue.value.map((t) => t.id),
@@ -524,6 +559,36 @@ export const usePlayerStore = defineStore('player', () => {
         })
         .catch(() => {})
     }, 800)
+  }
+
+  function flushQueueOnPageHide(): void {
+    const token = getStoredToken()
+    if (!token || queue.value.length === 0) return
+    if (queueSyncTimer) {
+      clearTimeout(queueSyncTimer)
+      queueSyncTimer = null
+    }
+    try {
+      void fetch('/api/v1/music/play-queue', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          track_ids: queue.value.map((t) => t.id),
+          current_track_id: currentTrack.value?.id ?? null,
+          position_ms: Math.round(currentTimeSecs.value * 1000),
+        }),
+        keepalive: true,
+      })
+    } catch {
+      // ignore unload errors
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', flushQueueOnPageHide)
   }
 
   async function restoreRemoteQueue(force = false): Promise<void> {

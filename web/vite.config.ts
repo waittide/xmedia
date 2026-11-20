@@ -11,7 +11,34 @@ export default defineConfig({
     },
   },
   build: {
-    chunkSizeWarningLimit: 1200,
+    chunkSizeWarningLimit: 600,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (
+            id.includes('/node_modules/vue/') ||
+            id.includes('/node_modules/@vue/') ||
+            id.includes('/node_modules/vue-router/') ||
+            id.includes('/node_modules/pinia/') ||
+            id.includes('/node_modules/vue-i18n/') ||
+            id.includes('/node_modules/@intlify/')
+          ) {
+            return 'vue-vendor'
+          }
+          if (id.includes('/node_modules/vue-icons-plus/')) {
+            return 'icons'
+          }
+          if (id.includes('/node_modules/pdfjs-dist/')) {
+            return 'pdf-vendor'
+          }
+          if (id.includes('/node_modules/epubjs/') || id.includes('/node_modules/jszip/')) {
+            return 'epub-vendor'
+          }
+          return undefined
+        },
+      },
+    },
   },
   server: {
     port: 5173,

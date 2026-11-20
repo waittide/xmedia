@@ -53,6 +53,9 @@ const pendingNextChapterTap = ref(false)
 const toastMessage = ref('')
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 let progressTimer: ReturnType<typeof setTimeout> | null = null
+let pendingProgress: { chapterId: string; page: number; completed?: boolean } | null = null
+let webtoonObserver: IntersectionObserver | null = null
+const visibleWebtoonPages = new Set<number>()
 
 const webtoonContainerRef = ref<HTMLDivElement | null>(null)
 
@@ -150,8 +153,11 @@ const fitOptions = computed(() => [
 ]))
 
 async function loadChapter(chapterId: string, queryPage?: number, seamlessToast = false): Promise<void> {
+  flushPendingProgress()
+  teardownWebtoonObserver()
   loading.value = true
   pendingNextChapterTap.value = false
+  preloadedSet.clear()
   Object.keys(widePages).forEach((k) => delete widePages[Number(k)])
 
   try {
@@ -195,7 +201,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
-  if (progressTimer) clearTimeout(progressTimer)
+  flushPendingProgress()
+  teardownWebtoonObserver()
+  preloadedSet.clear()
   if (toastTimer) clearTimeout(toastTimer)
 })
 
@@ -242,6 +250,17 @@ function preloadAround(centerPage: number): void {
   }
 }
 
+function flushPendingProgress(): void {
+  if (progressTimer) {
+    clearTimeout(progressTimer)
+    progressTimer = null
+  }
+  if (!pendingProgress) return
+  const payload = pendingProgress
+  pendingProgress = null
+  void api.updateProgress(payload.chapterId, payload.page, payload.completed).catch(() => {})
+}
+
 function scheduleSaveProgress(forceCompleted?: boolean): void {
   if (!ctx.value) return
   const chapterId = ctx.value.chapter.id
@@ -249,9 +268,10 @@ function scheduleSaveProgress(forceCompleted?: boolean): void {
   const reachedEnd = highestInSpread >= totalPages.value
   const completed = forceCompleted ?? (reachedEnd ? true : undefined)
 
+  pendingProgress = { chapterId, page: highestInSpread, completed }
   if (progressTimer) clearTimeout(progressTimer)
   progressTimer = setTimeout(() => {
-    void api.updateProgress(chapterId, highestInSpread, completed)
+    flushPendingProgress()
   }, 260)
 }
 
@@ -420,22 +440,54 @@ function scrollToWebtoonPage(pageNum: number): void {
   }
 }
 
-function onWebtoonScroll(): void {
+function teardownWebtoonObserver(): void {
+  if (webtoonObserver) {
+    webtoonObserver.disconnect()
+    webtoonObserver = null
+  }
+  visibleWebtoonPages.clear()
+}
+
+function setupWebtoonObserver(): void {
+  teardownWebtoonObserver()
   const container = webtoonContainerRef.value
-  if (!container) return
-  const midY = container.getBoundingClientRect().top + container.clientHeight * 0.4
+  if (!container || readerMode.value !== 'webtoon' || loading.value || !ctx.value) return
+  webtoonObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        const p = Number((entry.target as HTMLElement).dataset.page)
+        if (!p) continue
+        if (entry.isIntersecting) visibleWebtoonPages.add(p)
+        else visibleWebtoonPages.delete(p)
+      }
+      if (visibleWebtoonPages.size > 0) {
+        const minVisible = Math.min(...visibleWebtoonPages)
+        if (minVisible !== currentPage.value) {
+          currentPage.value = minVisible
+        }
+      }
+    },
+    {
+      root: container,
+      rootMargin: '-35% 0px -55% 0px',
+      threshold: 0,
+    },
+  )
   const nodes = container.querySelectorAll<HTMLElement>('[data-page]')
   for (const node of nodes) {
-    const rect = node.getBoundingClientRect()
-    if (rect.top <= midY && rect.bottom >= midY) {
-      const p = Number(node.dataset.page)
-      if (p && p !== currentPage.value) {
-        currentPage.value = p
-      }
-      break
-    }
+    webtoonObserver.observe(node)
   }
 }
+
+watch(
+  () => [readerMode.value, ctx.value?.chapter.id, loading.value] as const,
+  async ([mode, chapterId, isLoading]) => {
+    teardownWebtoonObserver()
+    if (mode !== 'webtoon' || !chapterId || isLoading) return
+    await nextTick()
+    setupWebtoonObserver()
+  },
+)
 
 const currentPageBookmark = computed<ComicBookmark | null>(
   () => chapterBookmarks.value.find((b) => b.page_number === currentPage.value) ?? null,
@@ -683,7 +735,6 @@ async function togglePageBookmark(): Promise<void> {
         v-if="readerMode === 'webtoon'"
         ref="webtoonContainerRef"
         class="h-full w-full overflow-y-auto scroll-smooth"
-        @scroll.passive="onWebtoonScroll"
       >
         <div
           class="mx-auto flex flex-col items-center"

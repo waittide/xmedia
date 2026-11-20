@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   LuPlay,
@@ -138,7 +138,10 @@ function handleOutside(ev: MouseEvent): void {
   menuOpen.value = false
 }
 
-onMounted(() => document.addEventListener('mousedown', handleOutside))
+watch(menuOpen, (isOpen) => {
+  if (isOpen) document.addEventListener('mousedown', handleOutside)
+  else document.removeEventListener('mousedown', handleOutside)
+})
 onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 </script>
 

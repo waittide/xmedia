@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuChevronDown, LuSearch, LuX } from 'vue-icons-plus/lu'
 
@@ -108,6 +108,7 @@ const renderedOptions = computed(() =>
 )
 
 function updatePosition(): void {
+  if (!open.value) return
   const el = triggerRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
@@ -193,19 +194,26 @@ watch(renderedOptions, () => {
   if (open.value) void nextTick(updatePosition)
 })
 
-onMounted(() => {
+function bindGlobalListeners(): void {
   document.addEventListener('mousedown', handleOutsideMouseDown)
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('resize', handleViewportChange)
   window.addEventListener('scroll', handleViewportChange, true)
-})
+}
 
-onBeforeUnmount(() => {
+function unbindGlobalListeners(): void {
   document.removeEventListener('mousedown', handleOutsideMouseDown)
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('resize', handleViewportChange)
   window.removeEventListener('scroll', handleViewportChange, true)
+}
+
+watch(open, (isOpen) => {
+  if (isOpen) bindGlobalListeners()
+  else unbindGlobalListeners()
 })
+
+onBeforeUnmount(unbindGlobalListeners)
 </script>
 
 <template>

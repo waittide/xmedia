@@ -48,6 +48,8 @@ const hudVisible = ref(true)
 
 let hudHideTimer: ReturnType<typeof setTimeout> | null = null
 let progressSaveTimer: ReturnType<typeof setInterval> | null = null
+let pendingLoadedMetadataHandler: (() => void) | null = null
+let exitPersisted = false
 
 const isTranscodedStream = computed(() => {
   if (!detail.value) return false
@@ -139,11 +141,19 @@ function revealHud(): void {
   }, 3200)
 }
 
+function clearPendingSeekHandler(): void {
+  if (pendingLoadedMetadataHandler && videoEl.value) {
+    videoEl.value.removeEventListener('loadedmetadata', pendingLoadedMetadataHandler)
+  }
+  pendingLoadedMetadataHandler = null
+}
+
 function loadStreamAt(startSecs: number, autoPlay = true): void {
   const el = videoEl.value
   const d = detail.value
   if (!el || !d) return
 
+  clearPendingSeekHandler()
   musicPlayerStore.pause()
 
   const useServerOffset = isTranscodedStream.value && startSecs > 0
@@ -162,13 +172,12 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
   el.muted = muted.value
 
   if (!useServerOffset && startSecs > 0) {
-    el.addEventListener(
-      'loadedmetadata',
-      () => {
-        el.currentTime = startSecs
-      },
-      { once: true },
-    )
+    const handler = (): void => {
+      clearPendingSeekHandler()
+      el.currentTime = startSecs
+    }
+    pendingLoadedMetadataHandler = handler
+    el.addEventListener('loadedmetadata', handler, { once: true })
   }
 
   if (autoPlay) {
@@ -179,6 +188,7 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
 }
 
 async function initVideo(): Promise<void> {
+  exitPersisted = false
   musicPlayerStore.pause()
   const id = String(route.params.id || '')
   if (!id) return
@@ -206,7 +216,10 @@ async function initVideo(): Promise<void> {
   revealHud()
 }
 
-async function persistProgress(completedOverride?: boolean): Promise<void> {
+async function persistProgress(
+  completedOverride?: boolean,
+  options?: { bumpCatalog?: boolean },
+): Promise<void> {
   const d = detail.value
   if (!d) return
   const roundedDur = Math.round(totalDurationSecs.value)
@@ -224,7 +237,9 @@ async function persistProgress(completedOverride?: boolean): Promise<void> {
       selected_audio_stream: selectedAudioStream.value,
       selected_subtitle: selectedSubtitleId.value,
     })
-    videoStore.bumpCatalogVersion()
+    if (options?.bumpCatalog) {
+      videoStore.bumpCatalogVersion()
+    }
   } catch {
     // ignore transient network errors
   }
@@ -332,20 +347,23 @@ function onDurationChange(): void {
 function onVideoPause(): void {
   isPlaying.value = false
   hudVisible.value = true
-  if (videoEl.value?.ended) return
+  if (exitPersisted || videoEl.value?.ended) return
   void persistProgress()
 }
 
 function onVideoEnded(): void {
   isPlaying.value = false
-  void persistProgress(true)
+  void persistProgress(true, { bumpCatalog: true })
   if (themeStore.video.autoplay_next && detail.value?.next_episode_id) {
     void router.replace(`/video/watch/${detail.value.next_episode_id}`)
   }
 }
 
 function goBack(): void {
-  void persistProgress()
+  if (!exitPersisted) {
+    exitPersisted = true
+    void persistProgress(undefined, { bumpCatalog: true })
+  }
   if (window.history.state?.back) {
     router.back()
   } else if (detail.value?.video.show_id) {
@@ -385,7 +403,11 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  void persistProgress()
+  if (!exitPersisted) {
+    exitPersisted = true
+    void persistProgress(undefined, { bumpCatalog: true })
+  }
+  clearPendingSeekHandler()
   if (hudHideTimer) clearTimeout(hudHideTimer)
   if (progressSaveTimer) clearInterval(progressSaveTimer)
   window.removeEventListener('keydown', onKeydown)

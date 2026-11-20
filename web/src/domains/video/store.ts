@@ -20,7 +20,13 @@ export const useVideoStore = defineStore('video', () => {
   const tags = ref<VideoTagStat[]>([])
   const catalogVersion = ref(0)
 
-  async function refreshSidebar(): Promise<void> {
+  const SIDEBAR_CACHE_TTL_MS = 5000
+  let sidebarInFlight: Promise<void> | null = null
+  let lastSidebarLoadedAt = 0
+  let sidebarDirtyAfterInFlight = false
+  let sidebarDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+  async function runSidebarFetch(): Promise<void> {
     const [libsRes, shelvesRes, videosRes, showsRes] = await Promise.allSettled([
       api.listLibraries(),
       api.listShelves(),
@@ -63,6 +69,34 @@ export const useVideoStore = defineStore('video', () => {
     tags.value = Array.from(tagCounts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    lastSidebarLoadedAt = Date.now()
+  }
+
+  async function refreshSidebar(force = false): Promise<void> {
+    if (sidebarInFlight) {
+      if (force) sidebarDirtyAfterInFlight = true
+      return sidebarInFlight
+    }
+    if (!force && lastSidebarLoadedAt > 0 && Date.now() - lastSidebarLoadedAt < SIDEBAR_CACHE_TTL_MS) {
+      return
+    }
+    const task = runSidebarFetch().finally(() => {
+      sidebarInFlight = null
+      if (sidebarDirtyAfterInFlight) {
+        sidebarDirtyAfterInFlight = false
+        void refreshSidebar(true).catch(() => {})
+      }
+    })
+    sidebarInFlight = task
+    return task
+  }
+
+  function scheduleRefreshSidebar(): void {
+    if (sidebarDebounceTimer) clearTimeout(sidebarDebounceTimer)
+    sidebarDebounceTimer = setTimeout(() => {
+      sidebarDebounceTimer = null
+      void refreshSidebar(true).catch(() => {})
+    }, 250)
   }
 
   function bumpCatalogVersion(): void {
@@ -93,7 +127,7 @@ export const useVideoStore = defineStore('video', () => {
         description: detail.shelf.description,
         video_ids: ids,
       })
-      await refreshSidebar()
+      await refreshSidebar(true)
     }
   }
 
@@ -101,11 +135,17 @@ export const useVideoStore = defineStore('video', () => {
     () => eventsStore.domainRefreshTick.video,
     () => {
       bumpCatalogVersion()
-      void refreshSidebar().catch(() => {})
+      scheduleRefreshSidebar()
     },
   )
 
   function resetState(): void {
+    if (sidebarDebounceTimer) {
+      clearTimeout(sidebarDebounceTimer)
+      sidebarDebounceTimer = null
+    }
+    lastSidebarLoadedAt = 0
+    sidebarDirtyAfterInFlight = false
     libraries.value = []
     shelves.value = []
     shows.value = []

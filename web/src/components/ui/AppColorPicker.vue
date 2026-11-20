@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { normalizeHex, parseHexRgb, rgbToHex } from '@/theme/catppuccin'
 
@@ -95,6 +95,7 @@ watch(
 const pureHueHex = computed(() => hsvToHex(hue.value, 1, 1))
 
 function updatePosition(): void {
+  if (!open.value) return
   const el = triggerRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
@@ -198,17 +199,24 @@ function handleOutside(ev: MouseEvent): void {
   open.value = false
 }
 
-onMounted(() => {
+function bindGlobalListeners(): void {
   document.addEventListener('mousedown', handleOutside)
   window.addEventListener('resize', updatePosition)
   window.addEventListener('scroll', updatePosition, true)
-})
+}
 
-onBeforeUnmount(() => {
+function unbindGlobalListeners(): void {
   document.removeEventListener('mousedown', handleOutside)
   window.removeEventListener('resize', updatePosition)
   window.removeEventListener('scroll', updatePosition, true)
+}
+
+watch(open, (isOpen) => {
+  if (isOpen) bindGlobalListeners()
+  else unbindGlobalListeners()
 })
+
+onBeforeUnmount(unbindGlobalListeners)
 </script>
 
 <template>

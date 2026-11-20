@@ -38,7 +38,6 @@ import { useMusicStore } from '@/domains/music/store'
 
 import { useVideoStore } from '@/domains/video/store'
 
-import { fetchHomeOverview } from '@/config/homeCache'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
@@ -218,6 +217,7 @@ const searchPlaceholder = computed(() => {
 })
 
 function updateSearchDropdownPosition(): void {
+  if (!comicSearchFocused.value) return
   const el = searchWrapRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
@@ -444,29 +444,10 @@ function handleGlobalKeydown(ev: KeyboardEvent): void {
   }
 }
 
-let idlePrewarmTimer: ReturnType<typeof setTimeout> | null = null
-
-async function prewarmOtherDomains(): Promise<void> {
-  const loaders: Record<MediaKind, () => Promise<unknown>> = {
-    book: () => import('@/domains/book/views/HomeView.vue'),
-    comic: () => import('@/domains/comic/views/HomeView.vue'),
-    music: () => import('@/domains/music/views/HomeView.vue'),
-    video: () => import('@/domains/video/views/HomeView.vue'),
-  }
-  const others = authStore.enabledModules.filter((k) => k !== domainStore.activeDomain)
-  await Promise.allSettled(others.map((k) => loaders[k]()))
-  for (const kind of others) {
-    await fetchHomeOverview(kind).catch(() => {})
-  }
-}
-
 onMounted(() => {
   document.addEventListener('mousedown', handleOutsideClick)
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('resize', updateSearchDropdownPosition)
-  idlePrewarmTimer = setTimeout(() => {
-    void prewarmOtherDomains()
-  }, 350)
 })
 
 onBeforeUnmount(() => {
@@ -475,7 +456,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', updateSearchDropdownPosition)
   if (comicSearchTimer) clearTimeout(comicSearchTimer)
   if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
-  if (idlePrewarmTimer) clearTimeout(idlePrewarmTimer)
 })
 </script>
 

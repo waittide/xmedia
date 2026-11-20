@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
+  LuBan,
   LuBookOpen,
   LuCheckCircle2,
   LuDownload,
@@ -32,6 +33,8 @@ export interface OnlineDownloadTarget {
 const props = defineProps<{
   open: boolean
   target: OnlineDownloadTarget | null
+  externalJob?: OnlineDownloadJobDto | null
+  disablePolling?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -48,15 +51,56 @@ const startChapter = ref(1)
 const endChapter = ref(100)
 const importToLibrary = ref(false)
 const starting = ref(false)
+const cancelling = ref(false)
 const errorMsg = ref<string | null>(null)
-const activeJob = ref<OnlineDownloadJobDto | null>(null)
-let pollTimer: ReturnType<typeof setInterval> | null = null
+const localJob = ref<OnlineDownloadJobDto | null>(null)
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let pollSeq = 0
+
+const activeJob = computed<OnlineDownloadJobDto | null>(() => {
+  if (props.externalJob && localJob.value && props.externalJob.id === localJob.value.id) {
+    return props.externalJob
+  }
+  return localJob.value
+})
+
+function isJobActive(status: OnlineDownloadJobDto['status']): boolean {
+  return status === 'pending' || status === 'running'
+}
 
 function stopPolling(): void {
+  pollSeq += 1
   if (pollTimer) {
-    clearInterval(pollTimer)
+    clearTimeout(pollTimer)
     pollTimer = null
   }
+}
+
+function scheduleStandalonePoll(jobId: string): void {
+  if (props.disablePolling || !props.open) return
+  stopPolling()
+  const seq = pollSeq
+  const tick = async (): Promise<void> => {
+    if (seq !== pollSeq || !props.open || props.disablePolling) return
+    try {
+      const next = await onlineBookApi.getDownload(jobId)
+      if (seq !== pollSeq || !props.open) return
+      localJob.value = next
+      emit('jobUpdated', next)
+      if (!isJobActive(next.status)) {
+        stopPolling()
+        return
+      }
+      pollTimer = setTimeout(() => {
+        void tick()
+      }, 1200)
+    } catch {
+      stopPolling()
+    }
+  }
+  pollTimer = setTimeout(() => {
+    void tick()
+  }, 1200)
 }
 
 watch(
@@ -65,7 +109,8 @@ watch(
     stopPolling()
     if (!isOpen || !t) return
     errorMsg.value = null
-    activeJob.value = null
+    localJob.value = null
+    cancelling.value = false
     format.value = 'epub'
     useRange.value = false
     startChapter.value = 1
@@ -81,6 +126,12 @@ const progressPct = computed(() => {
   const j = activeJob.value
   if (!j || j.total_chapters <= 0) return 0
   return Math.min(100, Math.round((j.processed_chapters / j.total_chapters) * 100))
+})
+
+const speedLabel = computed(() => {
+  const cps = activeJob.value?.chapters_per_sec
+  if (typeof cps !== 'number' || !Number.isFinite(cps) || cps <= 0) return ''
+  return `${cps.toFixed(1)} 章/秒`
 })
 
 async function handleStart(): Promise<void> {
@@ -101,27 +152,35 @@ async function handleStart(): Promise<void> {
       end_chapter: useRange.value ? Math.max(0, endChapter.value - 1) : undefined,
       import_to_library: authStore.isAdmin && importToLibrary.value,
     })
-    activeJob.value = job
+    localJob.value = job
     emit('jobUpdated', job)
 
-    stopPolling()
-    pollTimer = setInterval(async () => {
-      if (!activeJob.value) return
-      try {
-        const next = await onlineBookApi.getDownload(activeJob.value.id)
-        activeJob.value = next
-        emit('jobUpdated', next)
-        if (next.status === 'completed' || next.status === 'failed') {
-          stopPolling()
-        }
-      } catch {
-        stopPolling()
-      }
-    }, 900)
+    if (!props.disablePolling && isJobActive(job.status)) {
+      scheduleStandalonePoll(job.id)
+    }
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
     starting.value = false
+  }
+}
+
+async function handleCancelJob(): Promise<void> {
+  const j = activeJob.value
+  if (!j || !isJobActive(j.status) || cancelling.value) return
+  cancelling.value = true
+  errorMsg.value = null
+  try {
+    const updated = await onlineBookApi.cancelDownload(j.id)
+    localJob.value = updated
+    emit('jobUpdated', updated)
+    if (!isJobActive(updated.status)) {
+      stopPolling()
+    }
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    cancelling.value = false
   }
 }
 
@@ -257,24 +316,40 @@ function openImportedBook(): void {
                   v-else-if="activeJob.status === 'completed'"
                   class="h-4 w-4 text-emerald-500"
                 />
+                <LuBan
+                  v-else-if="activeJob.status === 'cancelled'"
+                  class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]"
+                />
                 <span>
                   {{
                     activeJob.status === 'completed'
                       ? '打包完成'
-                      : activeJob.status === 'failed'
-                        ? '打包失败'
-                        : '正在抓取章节…'
+                      : activeJob.status === 'cancelled'
+                        ? '已取消'
+                        : activeJob.status === 'failed'
+                          ? '打包失败'
+                          : '正在抓取章节…'
                   }}
                 </span>
               </span>
               <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                 {{ activeJob.processed_chapters }} / {{ activeJob.total_chapters || '?' }} 章
+                <template v-if="isJobActive(activeJob.status) && speedLabel">
+                  · {{ speedLabel }}
+                </template>
               </span>
             </div>
 
             <div class="h-2 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]">
               <div
-                class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all duration-300"
+                class="h-full rounded-full transition-all duration-300"
+                :class="
+                  activeJob.status === 'cancelled'
+                    ? 'bg-[var(--md-sys-color-outline)]'
+                    : activeJob.status === 'failed'
+                      ? 'bg-[var(--md-sys-color-error)]'
+                      : 'bg-[var(--md-sys-color-primary)]'
+                "
                 :style="{ width: `${activeJob.status === 'completed' ? 100 : progressPct}%` }"
               />
             </div>
@@ -322,11 +397,28 @@ function openImportedBook(): void {
           class="flex items-center justify-end gap-2 border-t border-[var(--md-sys-color-outline-variant)]/40 px-5 py-3"
         >
           <button
+            v-if="activeJob && isJobActive(activeJob.status)"
+            type="button"
+            :disabled="cancelling"
+            class="md-btn md-btn-sm md-btn-outlined md-state mr-auto text-[var(--md-sys-color-error)]"
+            @click="handleCancelJob"
+          >
+            <LuLoader2 v-if="cancelling" class="h-3.5 w-3.5 animate-spin" />
+            <LuBan v-else class="h-3.5 w-3.5" />
+            <span>{{ cancelling ? '取消中…' : '取消任务' }}</span>
+          </button>
+          <button
             type="button"
             class="md-btn md-btn-sm md-btn-text md-state"
             @click="emit('close')"
           >
-            {{ activeJob ? '后台运行 / 关闭' : '取消' }}
+            {{
+              activeJob && isJobActive(activeJob.status)
+                ? '后台运行 / 关闭'
+                : activeJob
+                  ? '关闭'
+                  : '取消'
+            }}
           </button>
           <button
             v-if="!activeJob"

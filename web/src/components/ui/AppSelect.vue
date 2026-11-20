@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuChevronDown, LuSearch } from 'vue-icons-plus/lu'
 
@@ -57,6 +57,7 @@ const filteredOptions = computed(() => {
 const showSearchBox = computed(() => props.searchable || props.options.length > 8)
 
 function updatePosition(): void {
+  if (!open.value) return
   const el = triggerRef.value
   if (!el) return
   const rect = el.getBoundingClientRect()
@@ -166,17 +167,24 @@ watch(filteredOptions, () => {
   if (open.value) void nextTick(updatePosition)
 })
 
-onMounted(() => {
+function bindGlobalListeners(): void {
   document.addEventListener('mousedown', handleOutsideMouseDown)
   window.addEventListener('resize', handleViewportChange)
   window.addEventListener('scroll', handleViewportChange, true)
-})
+}
 
-onBeforeUnmount(() => {
+function unbindGlobalListeners(): void {
   document.removeEventListener('mousedown', handleOutsideMouseDown)
   window.removeEventListener('resize', handleViewportChange)
   window.removeEventListener('scroll', handleViewportChange, true)
+}
+
+watch(open, (isOpen) => {
+  if (isOpen) bindGlobalListeners()
+  else unbindGlobalListeners()
 })
+
+onBeforeUnmount(unbindGlobalListeners)
 </script>
 
 <template>
