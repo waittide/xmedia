@@ -39,6 +39,7 @@ const props = defineProps<{
   snapshot: DirectorySnapshot | null
   loadingDir: boolean
   artworkVersion: number
+  artworkVersions?: Record<string, number>
   stats: {
     total: number
     complete: number
@@ -321,7 +322,14 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
               >
                 <img
                   v-if="file.completeness.has_cover"
-                  :src="buildArtworkUrl(file.root_id, file.rel_path, file.media_kind, artworkVersion)"
+                  :src="
+                    buildArtworkUrl(
+                      file.root_id,
+                      file.rel_path,
+                      file.media_kind,
+                      artworkVersion + (artworkVersions?.[`${file.root_id}::${file.rel_path}`] ?? 0),
+                    )
+                  "
                   :alt="file.display_title"
                   loading="lazy"
                   class="h-full w-full object-cover"

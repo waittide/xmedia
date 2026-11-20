@@ -65,6 +65,7 @@ watch(
       void loadHistory()
     }
   },
+  { immediate: true },
 )
 
 watch(scopeAllRoots, () => {

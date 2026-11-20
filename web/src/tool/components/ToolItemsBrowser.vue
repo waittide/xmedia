@@ -96,6 +96,7 @@ const props = defineProps<{
   snapshot: DirectorySnapshot | null
   inspectingPath: string | null
   artworkVersion: number
+  artworkVersions?: Record<string, number>
 }>()
 
 const emit = defineEmits<{
@@ -883,7 +884,7 @@ function relativeDirBadge(relPath: string): string | null {
                     file.root_id,
                     file.rel_path,
                     file.media_kind,
-                    artworkVersion,
+                    artworkVersion + (artworkVersions?.[`${file.root_id}::${file.rel_path}`] ?? 0),
                     file.media_kind === 'video' ? 'poster' : 'cover',
                   )
                 "

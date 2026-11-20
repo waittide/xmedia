@@ -13,9 +13,27 @@ export default defineConfig({
   build: {
     outDir: 'dist-tool',
     emptyOutDir: true,
-    chunkSizeWarningLimit: 1200,
+    chunkSizeWarningLimit: 500,
     rollupOptions: {
       input: fileURLToPath(new URL('./tool.html', import.meta.url)),
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (
+            id.includes('/node_modules/vue/') ||
+            id.includes('/node_modules/@vue/') ||
+            id.includes('/node_modules/pinia/') ||
+            id.includes('/node_modules/vue-i18n/') ||
+            id.includes('/node_modules/@intlify/')
+          ) {
+            return 'vue-vendor'
+          }
+          if (id.includes('/node_modules/vue-icons-plus/')) {
+            return 'icons'
+          }
+          return undefined
+        },
+      },
     },
   },
   server: {

@@ -45,6 +45,7 @@ const props = defineProps<{
   entries: MediaFileEntry[]
   savedPaths: Set<string>
   artworkVersion: number
+  artworkVersions?: Record<string, number>
   sidebarCollapsed: boolean
   hasPrev: boolean
   hasNext: boolean
@@ -152,10 +153,15 @@ const canSaveMetadata = computed(() => {
   return true
 })
 
+function resolveArtworkVersion(rootId: string, relPath: string): number {
+  return props.artworkVersion + (props.artworkVersions?.[`${rootId}::${relPath}`] ?? 0)
+}
+
 // Strictly reflects persisted on-disk artwork — only updates when the item itself changes
 const artworkSrc = computed(() => {
   if (!props.detail) return ''
   const kind = props.detail.entry.media_kind
+  const ver = resolveArtworkVersion(props.detail.entry.root_id, props.detail.entry.rel_path)
   if (props.detail.metadata.kind === 'video') {
     const slot = videoArtworkSlot.value
     const has =
@@ -169,7 +175,7 @@ const artworkSrc = computed(() => {
       props.detail.entry.root_id,
       props.detail.entry.rel_path,
       'video',
-      props.artworkVersion,
+      ver,
       slot,
     )
   }
@@ -178,7 +184,7 @@ const artworkSrc = computed(() => {
     props.detail.entry.root_id,
     props.detail.entry.rel_path,
     kind,
-    props.artworkVersion,
+    ver,
     'cover',
   )
 })
@@ -766,7 +772,7 @@ defineExpose({
                         entry.root_id,
                         entry.rel_path,
                         entry.media_kind,
-                        artworkVersion,
+                        resolveArtworkVersion(entry.root_id, entry.rel_path),
                         entry.media_kind === 'video' ? 'poster' : 'cover',
                       )
                     "

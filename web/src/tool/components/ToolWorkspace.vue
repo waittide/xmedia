@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch, type Component } from 'vue'
 import {
   LuAlertCircle,
   LuBookOpen,
@@ -31,29 +31,34 @@ import type {
   PublicSettingsDto,
   ToolStatusDto,
 } from '../types'
-import AutoScrapeOptionsModal from './AutoScrapeOptionsModal.vue'
-import BatchMetadataModal from './BatchMetadataModal.vue'
-import BatchRenameModal from './BatchRenameModal.vue'
-import MetadataHistoryModal from './MetadataHistoryModal.vue'
-import BookContentEditorModal from './BookContentEditorModal.vue'
-import BookNormalizeEpubModal from './BookNormalizeEpubModal.vue'
-import ComicPageManagerModal from './ComicPageManagerModal.vue'
-import ComicSeriesToolsModal from './ComicSeriesToolsModal.vue'
-import MusicToolboxModal from './MusicToolboxModal.vue'
-import DryRunScrapeModal from './DryRunScrapeModal.vue'
-import VideoToolboxModal from './VideoToolboxModal.vue'
-import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
-import ScrapeQueueSidebar from './scrape/ScrapeQueueSidebar.vue'
-import ScrapeWorkbenchView from './scrape/ScrapeWorkbenchView.vue'
+import type MetadataInspectorDrawerType from './MetadataInspectorDrawer.vue'
+import type ScrapeWorkbenchViewType from './scrape/ScrapeWorkbenchView.vue'
 import ToolHomeView from './ToolHomeView.vue'
 import ToolItemsBrowser from './ToolItemsBrowser.vue'
-import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
+import type { ToolSettingsTab } from './ToolSettingsView.vue'
 import ToolSidebar from './ToolSidebar.vue'
-import ToolTasksDrawer, {
-  type InspectTaskItemPayload,
-  type ReviewItemsPayload,
+import type {
+  InspectTaskItemPayload,
+  ReviewItemsPayload,
 } from './ToolTasksDrawer.vue'
 import ToolTopHeader from './ToolTopHeader.vue'
+
+const AutoScrapeOptionsModal = defineAsyncComponent(() => import('./AutoScrapeOptionsModal.vue'))
+const BatchMetadataModal = defineAsyncComponent(() => import('./BatchMetadataModal.vue'))
+const BatchRenameModal = defineAsyncComponent(() => import('./BatchRenameModal.vue'))
+const MetadataHistoryModal = defineAsyncComponent(() => import('./MetadataHistoryModal.vue'))
+const BookContentEditorModal = defineAsyncComponent(() => import('./BookContentEditorModal.vue'))
+const BookNormalizeEpubModal = defineAsyncComponent(() => import('./BookNormalizeEpubModal.vue'))
+const ComicPageManagerModal = defineAsyncComponent(() => import('./ComicPageManagerModal.vue'))
+const ComicSeriesToolsModal = defineAsyncComponent(() => import('./ComicSeriesToolsModal.vue'))
+const MusicToolboxModal = defineAsyncComponent(() => import('./MusicToolboxModal.vue'))
+const DryRunScrapeModal = defineAsyncComponent(() => import('./DryRunScrapeModal.vue'))
+const VideoToolboxModal = defineAsyncComponent(() => import('./VideoToolboxModal.vue'))
+const MetadataInspectorDrawer = defineAsyncComponent(() => import('./MetadataInspectorDrawer.vue'))
+const ScrapeQueueSidebar = defineAsyncComponent(() => import('./scrape/ScrapeQueueSidebar.vue'))
+const ScrapeWorkbenchView = defineAsyncComponent(() => import('./scrape/ScrapeWorkbenchView.vue'))
+const ToolSettingsView = defineAsyncComponent(() => import('./ToolSettingsView.vue'))
+const ToolTasksDrawer = defineAsyncComponent(() => import('./ToolTasksDrawer.vue'))
 
 defineProps<{
   status: ToolStatusDto | null
@@ -153,6 +158,10 @@ const previousWorkspaceNav = ref<'home' | 'items'>(
   activeNav.value === 'settings' ? 'home' : activeNav.value,
 )
 const tasksDrawerOpen = ref(false)
+const tasksDrawerMounted = ref(false)
+watch(tasksDrawerOpen, (isOpen) => {
+  if (isOpen) tasksDrawerMounted.value = true
+})
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
 function loadSavedViewMode(): BrowseViewMode {
   const saved = localStorage.getItem('xmedia_tool.view_mode')
@@ -175,6 +184,7 @@ const notifyingRescan = ref(false)
 let dirLoadSeq = 0
 let inspectSeq = 0
 let suppressHashSync = false
+let initialLoaded = false
 
 const settings = ref<PublicSettingsDto | null>(null)
 const domainNavMemory = ref<Record<MediaKind, { rootId: string; relPath: string }>>({
@@ -194,13 +204,28 @@ const dirError = ref<string | null>(null)
 const selectedPaths = ref<Set<string>>(new Set())
 const inspectingPath = ref<string | null>(null)
 const activeDetail = ref<MediaFileDetail | null>(null)
-const inspectorRef = ref<InstanceType<typeof MetadataInspectorDrawer> | null>(null)
-const scrapeWorkbenchRef = ref<InstanceType<typeof ScrapeWorkbenchView> | null>(null)
+const inspectorRef = ref<InstanceType<typeof MetadataInspectorDrawerType> | null>(null)
+const scrapeWorkbenchRef = ref<InstanceType<typeof ScrapeWorkbenchViewType> | null>(null)
 const scrapeWorkbenchActive = ref(false)
 const scrapeWorkbenchPaths = ref<string[] | null>(null)
 const scrapeWorkbenchSavedPaths = ref<Set<string>>(new Set())
 const loadingInspector = ref(false)
 const artworkVersion = ref(1)
+const fileArtworkVersions = reactive<Record<string, number>>({})
+
+function artworkVersionKey(rootId: string, relPath: string): string {
+  return `${rootId}::${relPath}`
+}
+
+function bumpFileArtworkVersion(rootId: string, relPath: string): void {
+  if (!rootId || !relPath) return
+  const key = artworkVersionKey(rootId, relPath)
+  fileArtworkVersions[key] = (fileArtworkVersions[key] ?? 0) + 1
+}
+
+function getFileArtworkVersion(rootId: string, relPath: string): number {
+  return artworkVersion.value + (fileArtworkVersions[artworkVersionKey(rootId, relPath)] ?? 0)
+}
 
 async function confirmActiveEditorClean(): Promise<boolean> {
   if (scrapeWorkbenchRef.value) {
@@ -733,6 +758,7 @@ async function loadInitial(): Promise<void> {
   }
   await activateDomainWorkspace(activeDomain.value)
   syncHashFromState(true)
+  initialLoaded = true
 }
 
 async function loadAllDomainRoots(): Promise<void> {
@@ -1262,7 +1288,10 @@ async function confirmDeleteFiles(): Promise<void> {
 async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): Promise<void> {
   const prevRel = activeDetail.value?.entry.rel_path
   if (bumpArt) {
-    artworkVersion.value += 1
+    bumpFileArtworkVersion(updated.entry.root_id, updated.entry.rel_path)
+    if (prevRel && prevRel !== updated.entry.rel_path) {
+      bumpFileArtworkVersion(updated.entry.root_id, prevRel)
+    }
   }
   activeDetail.value = updated
   inspectingPath.value = entrySelectionKey(updated.entry)
@@ -1394,7 +1423,14 @@ async function handleDryRunManualScrape(entries: MediaFileEntry[]): Promise<void
 async function handleBatchMetadataCompleted(
   report: BatchMetadataEditReportDto,
 ): Promise<void> {
-  artworkVersion.value += 1
+  const targeted = selectedEntriesForRename.value
+  if (targeted.length > 0) {
+    for (const entry of targeted) {
+      bumpFileArtworkVersion(entry.root_id, entry.rel_path)
+    }
+  } else {
+    artworkVersion.value += 1
+  }
   await reloadCurrentScope()
   if (activeDetail.value) {
     const stillHere = (snapshot.value?.files ?? []).find(
@@ -1657,7 +1693,7 @@ async function handleTxtConvertedToEpub(
   epubDetail: MediaFileDetail,
   deletedSourceTxt: boolean,
 ): Promise<void> {
-  artworkVersion.value += 1
+  bumpFileArtworkVersion(epubDetail.entry.root_id, epubDetail.entry.rel_path)
   await reloadCurrentScope()
   activeDetail.value = epubDetail
   inspectingPath.value = entrySelectionKey(epubDetail.entry)
@@ -1670,8 +1706,11 @@ async function handleTxtConvertedToEpub(
 }
 
 watch(
-  () => domainRoots.value.map((r) => r.id).join(','),
-  () => {
+  () => [activeDomain.value, domainRoots.value.map((r) => r.id).join(',')] as const,
+  ([dom, rootsKey], [prevDom, prevRootsKey]) => {
+    if (!initialLoaded) return
+    // Domain transitions are handled explicitly by switchDomain() / handleHashChange() -> activateDomainWorkspace()
+    if (dom !== prevDom || rootsKey === prevRootsKey) return
     const roots = domainRoots.value
     if (roots.length === 0) {
       activeRootId.value = ''
@@ -1740,7 +1779,12 @@ function openBookNormalizeModal(entries: MediaFileEntry[]): void {
 }
 
 async function handleBookNormalizeCompleted(report: NormalizeBooksBatchReportDto): Promise<void> {
-  artworkVersion.value += 1
+  const rootId = effectiveBookNormalizeRootId.value
+  for (const it of report.items) {
+    if (!it.error) {
+      bumpFileArtworkVersion(rootId, it.output_rel_path || it.source_rel_path)
+    }
+  }
   await reloadCurrentScope()
   if (activeDetail.value) {
     const matchedItem = report.items.find(
@@ -1914,7 +1958,10 @@ onMounted(() => {
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('hashchange', handleHashChange)
   offFileScraped = taskStore.onFileScraped((updated, prevRelPath) => {
-    artworkVersion.value += 1
+    bumpFileArtworkVersion(updated.entry.root_id, updated.entry.rel_path)
+    if (prevRelPath && prevRelPath !== updated.entry.rel_path) {
+      bumpFileArtworkVersion(updated.entry.root_id, prevRelPath)
+    }
     const moved = Boolean(prevRelPath && prevRelPath !== updated.entry.rel_path)
     const prevKey = entrySelectionKey({
       root_id: updated.entry.root_id,
@@ -1979,7 +2026,6 @@ onMounted(() => {
         clearTimeout(scrapeRefreshTimer)
         scrapeRefreshTimer = null
       }
-      artworkVersion.value += 1
       void reloadCurrentScope()
     }
   })
@@ -2031,6 +2077,7 @@ onBeforeUnmount(() => {
         :active-path="activeDetail?.entry.rel_path ?? null"
         :saved-paths="scrapeWorkbenchSavedPaths"
         :artwork-version="artworkVersion"
+        :artwork-versions="fileArtworkVersions"
         :has-prev="hasPrevInspect"
         :has-next="hasNextInspect"
         @close-mobile="mobileMenuOpen = false"
@@ -2071,6 +2118,7 @@ onBeforeUnmount(() => {
           :entries="workbenchQueueEntries"
           :saved-paths="scrapeWorkbenchSavedPaths"
           :artwork-version="artworkVersion"
+          :artwork-versions="fileArtworkVersions"
           :sidebar-collapsed="collapsed"
           :has-prev="hasPrevInspect"
           :has-next="hasNextInspect"
@@ -2109,6 +2157,7 @@ onBeforeUnmount(() => {
             :snapshot="snapshot"
             :loading-dir="loadingDir"
             :artwork-version="artworkVersion"
+            :artwork-versions="fileArtworkVersions"
             :stats="stats"
             @open-items="(f) => selectCompletenessFilter(f ?? 'all')"
             @inspect-file="inspectEntry"
@@ -2152,6 +2201,7 @@ onBeforeUnmount(() => {
             :snapshot="snapshot"
             :inspecting-path="inspectingPath"
             :artwork-version="artworkVersion"
+            :artwork-versions="fileArtworkVersions"
             @open-settings-roots="openSettingsTab('roots')"
             @select-root="selectRoot"
             @enter-folder="enterFolder"
@@ -2205,7 +2255,7 @@ onBeforeUnmount(() => {
               v-else-if="activeDetail"
               ref="inspectorRef"
               :detail="activeDetail"
-              :artwork-version="artworkVersion"
+              :artwork-version="getFileArtworkVersion(activeDetail.entry.root_id, activeDetail.entry.rel_path)"
               :settings="settings"
               :show-candidates="false"
               :has-prev="hasPrevInspect"
@@ -2233,7 +2283,7 @@ onBeforeUnmount(() => {
     </div>
 
     <BatchMetadataModal
-      v-if="effectiveModalRootId"
+      v-if="batchMetadataModalOpen && effectiveModalRootId"
       :open="batchMetadataModalOpen"
       :root-id="effectiveModalRootId"
       :domain="activeDomain"
@@ -2244,6 +2294,7 @@ onBeforeUnmount(() => {
     />
 
     <MetadataHistoryModal
+      v-if="historyModalOpen"
       :open="historyModalOpen"
       :root-id="effectiveHistoryRootId"
       @close="historyModalOpen = false"
@@ -2251,7 +2302,7 @@ onBeforeUnmount(() => {
     />
 
     <BatchRenameModal
-      v-if="settings && effectiveModalRootId"
+      v-if="renameModalOpen && settings && effectiveModalRootId"
       :open="renameModalOpen"
       :root-id="effectiveModalRootId"
       :entries="renameTargetEntries ?? selectedEntriesForRename"
@@ -2262,6 +2313,7 @@ onBeforeUnmount(() => {
     />
 
     <BookContentEditorModal
+      v-if="bookEditorOpen"
       :open="bookEditorOpen"
       :entry="bookEditorEntry"
       @close="bookEditorOpen = false"
@@ -2270,7 +2322,7 @@ onBeforeUnmount(() => {
     />
 
     <BookNormalizeEpubModal
-      v-if="effectiveBookNormalizeRootId"
+      v-if="bookNormalizeOpen && effectiveBookNormalizeRootId"
       :open="bookNormalizeOpen"
       :root-id="effectiveBookNormalizeRootId"
       :entries="bookNormalizeEntries"
@@ -2279,6 +2331,7 @@ onBeforeUnmount(() => {
     />
 
     <ComicPageManagerModal
+      v-if="comicPageManagerOpen"
       :open="comicPageManagerOpen"
       :entry="comicPageManagerEntry"
       @close="comicPageManagerOpen = false"
@@ -2286,6 +2339,7 @@ onBeforeUnmount(() => {
     />
 
     <ComicSeriesToolsModal
+      v-if="comicSeriesToolsOpen"
       :open="comicSeriesToolsOpen"
       :root-id="effectiveComicRootId"
       :entries="selectedComicEntries"
@@ -2294,6 +2348,7 @@ onBeforeUnmount(() => {
     />
 
     <MusicToolboxModal
+      v-if="musicToolsOpen"
       :open="musicToolsOpen"
       :root-id="effectiveMusicRootId"
       :entries="musicToolsEntries"
@@ -2303,6 +2358,7 @@ onBeforeUnmount(() => {
     />
 
     <VideoToolboxModal
+      v-if="videoToolsOpen"
       :open="videoToolsOpen"
       :root-id="effectiveVideoRootId"
       :entries="videoToolsEntries"
@@ -2312,6 +2368,7 @@ onBeforeUnmount(() => {
     />
 
     <AutoScrapeOptionsModal
+      v-if="autoScrapeModalOpen"
       :open="autoScrapeModalOpen"
       :domain="activeDomain"
       :entries="autoScrapeTargetEntries"
@@ -2322,6 +2379,7 @@ onBeforeUnmount(() => {
     />
 
     <DryRunScrapeModal
+      v-if="dryRunModalOpen"
       :open="dryRunModalOpen"
       :root-id="effectiveDryRunRootId"
       :entries="dryRunTargetEntries ?? selectedEntriesForRename"
@@ -2413,6 +2471,7 @@ onBeforeUnmount(() => {
 
     <!-- Slide-Over Tasks Drawer (Opened from Top Bar Progress Pill or List Inline Banner) -->
     <ToolTasksDrawer
+      v-if="tasksDrawerMounted"
       :open="tasksDrawerOpen"
       @close="tasksDrawerOpen = false"
       @review-items="handleReviewUnmatchedItems"

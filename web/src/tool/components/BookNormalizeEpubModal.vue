@@ -102,6 +102,7 @@ watch(
       form.skip_normalized = bookEntries.value.length > 1 || origBackupCount.value > 0
     }
   },
+  { immediate: true },
 )
 
 const formatBreakdown = computed(() => {

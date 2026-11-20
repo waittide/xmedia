@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   LuAlertCircle,
   LuBan,
@@ -41,7 +41,7 @@ export interface InspectTaskItemPayload {
   openCandidates?: boolean
 }
 
-defineProps<{
+const props = defineProps<{
   open: boolean
 }>()
 
@@ -62,17 +62,31 @@ const nowMs = ref(Date.now())
 
 let tickTimer: ReturnType<typeof setInterval> | null = null
 
-onMounted(() => {
-  tickTimer = setInterval(() => {
-    if (taskStore.activeCount > 0) {
-      nowMs.value = Date.now()
-    }
-  }, 1000)
-})
+function stopTickTimer(): void {
+  if (tickTimer) {
+    clearInterval(tickTimer)
+    tickTimer = null
+  }
+}
 
-onBeforeUnmount(() => {
-  if (tickTimer) clearInterval(tickTimer)
-})
+watch(
+  () => props.open && taskStore.activeCount > 0,
+  (shouldTick) => {
+    if (shouldTick) {
+      nowMs.value = Date.now()
+      if (!tickTimer) {
+        tickTimer = setInterval(() => {
+          nowMs.value = Date.now()
+        }, 1000)
+      }
+    } else {
+      stopTickTimer()
+    }
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(stopTickTimer)
 
 // Auto-expand active or newly created scrape tasks unless explicitly collapsed by user
 watch(
@@ -145,35 +159,94 @@ function setSubFilter(taskId: string, filter: SubItemFilter): void {
   }
 }
 
-function subCounts(task: ToolTaskEntry) {
-  const list = task.subItems ?? []
-  let running = 0
-  let queued = 0
-  let matched = 0
-  let unmatched = 0
-  let failed = 0
-  for (const it of list) {
-    if (it.status === 'running') running += 1
-    else if (it.status === 'queued') queued += 1
-    else if (it.status === 'matched') matched += 1
-    else if (it.status === 'unmatched') unmatched += 1
-    else if (it.status === 'failed' || it.status === 'cancelled') failed += 1
+interface TaskSubCounts {
+  total: number
+  running: number
+  queued: number
+  matched: number
+  unmatched: number
+  failed: number
+}
+
+interface TaskSubView {
+  counts: TaskSubCounts
+  runningItems: ScrapeSubItem[]
+  filteredItems: ScrapeSubItem[]
+  filterPills: Array<{ id: SubItemFilter; label: string }>
+}
+
+const EMPTY_SUB_VIEW: TaskSubView = {
+  counts: { total: 0, running: 0, queued: 0, matched: 0, unmatched: 0, failed: 0 },
+  runningItems: [],
+  filteredItems: [],
+  filterPills: [],
+}
+
+const taskSubViewMap = computed<Map<string, TaskSubView>>(() => {
+  const map = new Map<string, TaskSubView>()
+  const t = txt.value.tasks
+  for (const task of filteredTasks.value) {
+    const list = task.subItems
+    if (!list || list.length === 0) continue
+    let running = 0
+    let queued = 0
+    let matched = 0
+    let unmatched = 0
+    let failed = 0
+    const runningItems: ScrapeSubItem[] = []
+    for (const it of list) {
+      if (it.status === 'running') {
+        running += 1
+        runningItems.push(it)
+      } else if (it.status === 'queued') {
+        queued += 1
+      } else if (it.status === 'matched') {
+        matched += 1
+      } else if (it.status === 'unmatched') {
+        unmatched += 1
+      } else if (it.status === 'failed' || it.status === 'cancelled') {
+        failed += 1
+      }
+    }
+    const counts: TaskSubCounts = {
+      total: list.length,
+      running,
+      queued,
+      matched,
+      unmatched,
+      failed,
+    }
+    const f = subItemFilters.value[task.id] ?? 'all'
+    let filteredItems: ScrapeSubItem[]
+    if (f === 'all') {
+      filteredItems = list
+    } else if (f === 'running') {
+      filteredItems = list.filter((it) => it.status === 'running' || it.status === 'queued')
+    } else if (f === 'matched') {
+      filteredItems = list.filter((it) => it.status === 'matched')
+    } else if (f === 'unmatched') {
+      filteredItems = list.filter((it) => it.status === 'unmatched')
+    } else {
+      filteredItems = list.filter((it) => it.status === 'failed' || it.status === 'cancelled')
+    }
+    const filterPills: Array<{ id: SubItemFilter; label: string }> = [
+      { id: 'all', label: `${t.filterAll} (${counts.total})` },
+    ]
+    if (running + queued > 0) {
+      filterPills.push({ id: 'running', label: `${t.filterActive} (${running + queued})` })
+    }
+    filterPills.push({ id: 'matched', label: `${t.statusMatched} (${matched})` })
+    filterPills.push({ id: 'unmatched', label: `${t.statusUnmatched} (${unmatched})` })
+    if (failed > 0) {
+      filterPills.push({ id: 'failed', label: `${t.statusFailed} (${failed})` })
+    }
+    map.set(task.id, { counts, runningItems, filteredItems, filterPills })
   }
-  return { total: list.length, running, queued, matched, unmatched, failed }
-}
+  return map
+})
 
-function runningSubItems(task: ToolTaskEntry): ScrapeSubItem[] {
-  return (task.subItems ?? []).filter((it) => it.status === 'running')
-}
-
-function filteredSubItems(task: ToolTaskEntry): ScrapeSubItem[] {
-  const list = task.subItems ?? []
-  const f = getSubFilter(task.id)
-  if (f === 'all') return list
-  if (f === 'running') return list.filter((it) => it.status === 'running' || it.status === 'queued')
-  if (f === 'matched') return list.filter((it) => it.status === 'matched')
-  if (f === 'unmatched') return list.filter((it) => it.status === 'unmatched')
-  return list.filter((it) => it.status === 'failed' || it.status === 'cancelled')
+function getTaskSubView(taskId: string): TaskSubView {
+  return taskSubViewMap.value.get(taskId) ?? EMPTY_SUB_VIEW
 }
 
 function progressPct(task: ToolTaskEntry): number | null {
@@ -390,38 +463,38 @@ function formatElapsed(task: ToolTaskEntry): string {
                     <template v-if="progressPct(task) !== null">({{ progressPct(task) }}%)</template>
                   </span>
                   <span
-                    v-if="subCounts(task).matched > 0"
+                    v-if="getTaskSubView(task.id).counts.matched > 0"
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-success-container)]"
                   >
                     <LuCheckCircle2 class="h-3 w-3" />
-                    <span>{{ txt.tasks.statusMatched }} {{ subCounts(task).matched }}</span>
+                    <span>{{ txt.tasks.statusMatched }} {{ getTaskSubView(task.id).counts.matched }}</span>
                   </span>
                   <span
-                    v-if="subCounts(task).running > 0"
+                    v-if="getTaskSubView(task.id).counts.running > 0"
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-primary-container)]"
                   >
                     <LuLoader2 class="h-3 w-3 animate-spin" />
-                    <span>{{ txt.tasks.filterActive }} {{ subCounts(task).running }}</span>
+                    <span>{{ txt.tasks.filterActive }} {{ getTaskSubView(task.id).counts.running }}</span>
                   </span>
                   <span
-                    v-if="subCounts(task).queued > 0"
+                    v-if="getTaskSubView(task.id).counts.queued > 0"
                     class="rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface-variant)]"
                   >
-                    {{ txt.tasks.statusQueued }} {{ subCounts(task).queued }}
+                    {{ txt.tasks.statusQueued }} {{ getTaskSubView(task.id).counts.queued }}
                   </span>
                   <span
-                    v-if="subCounts(task).unmatched > 0"
+                    v-if="getTaskSubView(task.id).counts.unmatched > 0"
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-warning-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-warning-container)]"
                   >
                     <LuAlertCircle class="h-3 w-3" />
-                    <span>{{ txt.tasks.statusUnmatched }} {{ subCounts(task).unmatched }}</span>
+                    <span>{{ txt.tasks.statusUnmatched }} {{ getTaskSubView(task.id).counts.unmatched }}</span>
                   </span>
                   <span
-                    v-if="subCounts(task).failed > 0"
+                    v-if="getTaskSubView(task.id).counts.failed > 0"
                     class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-error-container)] px-2.5 py-0.5 font-medium text-[var(--md-sys-color-on-error-container)]"
                   >
                     <LuAlertCircle class="h-3 w-3" />
-                    <span>{{ txt.tasks.statusFailed }} {{ subCounts(task).failed }}</span>
+                    <span>{{ txt.tasks.statusFailed }} {{ getTaskSubView(task.id).counts.failed }}</span>
                   </span>
                 </div>
 
@@ -440,12 +513,12 @@ function formatElapsed(task: ToolTaskEntry): string {
 
                 <!-- Currently Processing Active Lanes Banner -->
                 <div
-                  v-if="task.status === 'running' && runningSubItems(task).length > 0"
+                  v-if="task.status === 'running' && getTaskSubView(task.id).runningItems.length > 0"
                   class="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--md-sys-color-primary)]"
                 >
                   <span class="font-semibold">{{ txt.tasks.runningNow }}:</span>
                   <span
-                    v-for="rItem in runningSubItems(task)"
+                    v-for="rItem in getTaskSubView(task.id).runningItems"
                     :key="rItem.relPath"
                     class="inline-flex max-w-[18rem] items-center gap-1 rounded-full bg-[var(--md-sys-color-primary-container)]/70 px-2.5 py-0.5 text-[var(--md-sys-color-on-primary-container)]"
                   >
@@ -553,33 +626,7 @@ function formatElapsed(task: ToolTaskEntry): string {
             class="flex flex-wrap items-center gap-1.5 border-b border-[var(--md-sys-color-outline-variant)]/30 px-4 py-2.5 sm:px-5"
           >
             <button
-              v-for="pill in [
-                { id: 'all' as const, label: `${txt.tasks.filterAll} (${subCounts(task).total})` },
-                ...(subCounts(task).running + subCounts(task).queued > 0
-                  ? [
-                      {
-                        id: 'running' as const,
-                        label: `${txt.tasks.filterActive} (${subCounts(task).running + subCounts(task).queued})`,
-                      },
-                    ]
-                  : []),
-                {
-                  id: 'matched' as const,
-                  label: `${txt.tasks.statusMatched} (${subCounts(task).matched})`,
-                },
-                {
-                  id: 'unmatched' as const,
-                  label: `${txt.tasks.statusUnmatched} (${subCounts(task).unmatched})`,
-                },
-                ...(subCounts(task).failed > 0
-                  ? [
-                      {
-                        id: 'failed' as const,
-                        label: `${txt.tasks.statusFailed} (${subCounts(task).failed})`,
-                      },
-                    ]
-                  : []),
-              ]"
+              v-for="pill in getTaskSubView(task.id).filterPills"
               :key="pill.id"
               type="button"
               class="md-state rounded-full px-2.5 py-1 text-[11px] font-medium transition"
@@ -595,7 +642,7 @@ function formatElapsed(task: ToolTaskEntry): string {
           </div>
 
           <div
-            v-if="filteredSubItems(task).length === 0"
+            v-if="getTaskSubView(task.id).filteredItems.length === 0"
             class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
           >
             {{ txt.tasks.noSubItemsInFilter }}
@@ -606,7 +653,7 @@ function formatElapsed(task: ToolTaskEntry): string {
             class="max-h-96 divide-y divide-[var(--md-sys-color-outline-variant)]/30 overflow-y-auto"
           >
             <div
-              v-for="sub in filteredSubItems(task)"
+              v-for="sub in getTaskSubView(task.id).filteredItems"
               :key="`${sub.rootId}:${sub.relPath}`"
               class="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5 text-xs transition hover:bg-[var(--md-sys-color-surface-container)] sm:px-5"
             >

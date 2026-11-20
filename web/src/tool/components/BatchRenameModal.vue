@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   LuAlertTriangle,
   LuArrowRight,
@@ -151,9 +151,19 @@ function seedTemplatesForEntries(): void {
 }
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+let requestSeq = 0
+let suppressPreviewWatch = false
+
+function clearDebounceTimer(): void {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
+}
 
 async function runPreview(): Promise<void> {
   if (!props.open || props.entries.length === 0) return
+  const seq = ++requestSeq
   loadingPreview.value = true
   inlineProgressPct.value = 0
   errorMsg.value = null
@@ -166,13 +176,14 @@ async function runPreview(): Promise<void> {
     ephemeral: true,
   })
   try {
-    plans.value = await toolApi.previewRename(
+    const nextPlans = await toolApi.previewRename(
       props.rootId,
       props.entries.map((e) => e.rel_path),
       templateInput.value.trim() || null,
       dominantKind.value,
       dominantKind.value === 'video' ? episodeTemplateInput.value.trim() || null : undefined,
       (prog) => {
+        if (seq !== requestSeq) return
         taskStore.updateTask(taskId, prog)
         if (prog.total && prog.total > 0) {
           inlineProgressPct.value = Math.min(100, Math.round((prog.processed / prog.total) * 100))
@@ -180,43 +191,62 @@ async function runPreview(): Promise<void> {
       },
       conflictPolicy.value,
     )
-    taskStore.completeTask(taskId, `已生成 ${plans.value.length.toLocaleString()} 条预览方案`)
+    if (seq !== requestSeq || !props.open) return
+    plans.value = nextPlans
+    taskStore.completeTask(taskId, `已生成 ${nextPlans.length.toLocaleString()} 条预览方案`)
   } catch (err) {
+    if (seq !== requestSeq) return
     const msg = err instanceof Error ? err.message : String(err)
     errorMsg.value = msg
     taskStore.failTask(taskId, msg)
   } finally {
-    loadingPreview.value = false
-    inlineProgressPct.value = null
+    if (seq === requestSeq) {
+      loadingPreview.value = false
+      inlineProgressPct.value = null
+    }
   }
 }
 
 watch(
   () => props.open,
   (isOpen) => {
+    clearDebounceTimer()
     if (isOpen) {
+      suppressPreviewWatch = true
       excludedPaths.value = new Set()
       showUnchanged.value = false
       conflictPolicy.value = 'skip'
       seedTemplatesForEntries()
+      void nextTick(() => {
+        suppressPreviewWatch = false
+      })
       void runPreview()
       void loadUndoHistory()
+    } else {
+      requestSeq += 1
     }
   },
+  { immediate: true },
 )
 
 watch([templateInput, episodeTemplateInput], () => {
-  if (!props.open) return
-  if (debounceTimer) clearTimeout(debounceTimer)
+  if (!props.open || suppressPreviewWatch) return
+  clearDebounceTimer()
   debounceTimer = setTimeout(() => {
+    debounceTimer = null
     void runPreview()
   }, 260)
 })
 
 watch(conflictPolicy, () => {
-  if (!props.open) return
-  if (debounceTimer) clearTimeout(debounceTimer)
+  if (!props.open || suppressPreviewWatch) return
+  clearDebounceTimer()
   void runPreview()
+})
+
+onBeforeUnmount(() => {
+  clearDebounceTimer()
+  requestSeq += 1
 })
 
 async function insertTokenAtCursor(

@@ -28,6 +28,7 @@ const props = defineProps<{
   activePath: string | null
   savedPaths: Set<string>
   artworkVersion: number
+  artworkVersions?: Record<string, number>
   hasPrev: boolean
   hasNext: boolean
 }>()
@@ -279,7 +280,7 @@ const filteredEntries = computed(() => {
                   entry.root_id,
                   entry.rel_path,
                   entry.media_kind,
-                  artworkVersion,
+                  artworkVersion + (artworkVersions?.[`${entry.root_id}::${entry.rel_path}`] ?? 0),
                   entry.media_kind === 'video' ? 'poster' : 'cover',
                 )
               "
