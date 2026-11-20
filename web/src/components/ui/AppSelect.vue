@@ -15,6 +15,7 @@ const props = withDefaults(
     options: SelectOption[]
     placeholder?: string
     variant?: 'field' | 'inline' | 'compact'
+    size?: 'sm' | 'md'
     searchable?: boolean
     searchPlaceholder?: string
     disabled?: boolean
@@ -22,6 +23,7 @@ const props = withDefaults(
   {
     placeholder: '',
     variant: 'field',
+    size: 'md',
     searchable: false,
     searchPlaceholder: '',
     disabled: false,
@@ -189,12 +191,14 @@ onBeforeUnmount(() => {
       variant === 'inline'
         ? 'bg-transparent font-medium text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
         : variant === 'compact'
-          ? 'h-8 rounded-xl border bg-[var(--ctp-canvas)] px-2.5 font-medium text-[var(--ctp-text)]'
-          : 'h-9 w-full rounded-xl border bg-[var(--ctp-canvas)] px-3 font-medium text-[var(--ctp-text)]',
+          ? 'h-8 rounded-xl border bg-[var(--md-sys-color-surface-container-highest,var(--ctp-canvas))] px-3 font-medium text-[var(--md-sys-color-on-surface,var(--ctp-text))]'
+          : size === 'sm'
+            ? 'h-9 w-full rounded-xl border bg-[var(--md-sys-color-surface-container-highest,var(--ctp-canvas))] px-3 font-medium text-[var(--md-sys-color-on-surface,var(--ctp-text))]'
+            : 'h-10 w-full rounded-xl border bg-[var(--md-sys-color-surface-container-highest,var(--ctp-canvas))] px-3.5 font-medium text-[var(--md-sys-color-on-surface,var(--ctp-text))]',
       variant !== 'inline' &&
         (open
-          ? 'border-[var(--ctp-accent)] ring-2 ring-[var(--ctp-accent-soft)]'
-          : 'border-[var(--ctp-surface0)] hover:border-[var(--ctp-surface1)]'),
+          ? 'border-[var(--md-sys-color-primary,var(--ctp-accent))] ring-2 ring-[var(--ctp-accent-soft)]'
+          : 'border-[var(--md-sys-color-outline-variant,var(--ctp-surface0))]/60 hover:border-[var(--md-sys-color-outline,var(--ctp-surface1))]'),
     ]"
     @click="toggleMenu"
     @keydown="onTriggerKeydown"

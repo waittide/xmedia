@@ -237,27 +237,30 @@ body,
     box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 }
 
-/* MD3 Input Field */
-.md-input {
-  background-color: var(--md-sys-color-surface-container-highest);
-  color: var(--md-sys-color-on-surface);
-  border: 1px solid transparent;
-  border-radius: var(--md-sys-shape-corner-md);
-  outline: none;
-  transition:
-    background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-    border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-    box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
-}
+/* MD3 Input Field (placed in @layer components so utility classes like pr-10 / pl-9 override cleanly) */
+@layer components {
+  .md-input {
+    padding-inline: 0.875rem;
+    background-color: var(--md-sys-color-surface-container-highest);
+    color: var(--md-sys-color-on-surface);
+    border: 1px solid transparent;
+    border-radius: var(--md-sys-shape-corner-md);
+    outline: none;
+    transition:
+      background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+      box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+  }
 
-.md-input:hover {
-  border-color: var(--md-sys-color-outline-variant);
-}
+  .md-input:hover {
+    border-color: var(--md-sys-color-outline-variant);
+  }
 
-.md-input:focus {
-  background-color: var(--md-sys-color-surface-container-lowest);
-  border-color: var(--md-sys-color-primary);
-  box-shadow: 0 0 0 1px var(--md-sys-color-primary);
+  .md-input:focus {
+    background-color: var(--md-sys-color-surface-container-lowest);
+    border-color: var(--md-sys-color-primary);
+    box-shadow: 0 0 0 1px var(--md-sys-color-primary);
+  }
 }
 
 /* MD3 Navigation Active Indicator Pill */

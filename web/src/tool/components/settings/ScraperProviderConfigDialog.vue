@@ -258,7 +258,7 @@ async function handleSave(): Promise<void> {
           v-model="secretInput"
           type="password"
           :placeholder="secretSpec.placeholder"
-          class="md-input h-10 w-full font-mono text-xs"
+          class="md-input h-10 w-full px-3.5 font-mono text-xs"
         />
       </div>
 
@@ -302,7 +302,7 @@ async function handleSave(): Promise<void> {
               min="5"
               max="120"
               placeholder="默认 20"
-              class="md-input h-9 w-full font-mono text-xs"
+              class="md-input h-9 w-full px-3 font-mono text-xs"
             />
           </div>
         </div>
@@ -319,7 +319,7 @@ async function handleSave(): Promise<void> {
                 ? `留空继承全局代理：${settings.http_proxy}`
                 : '例如 http://127.0.0.1:7890 或 socks5h://127.0.0.1:1080'
             "
-            class="md-input h-9 w-full font-mono text-xs"
+            class="md-input h-9 w-full px-3 font-mono text-xs"
           />
         </div>
 
@@ -331,7 +331,7 @@ async function handleSave(): Promise<void> {
             v-model="userAgent"
             type="text"
             placeholder="留空使用默认 User-Agent"
-            class="md-input h-9 w-full font-mono text-xs"
+            class="md-input h-9 w-full px-3 font-mono text-xs"
           />
         </div>
       </div>

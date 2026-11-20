@@ -443,7 +443,7 @@ async function handleSaveGlobalSettings(): Promise<void> {
             type="number"
             min="0"
             max="3650"
-            class="md-input h-10 w-full pr-10 font-mono text-xs"
+            class="md-input h-10 w-full pl-3.5 pr-10 font-mono text-xs"
           />
           <span class="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             天
@@ -461,7 +461,7 @@ async function handleSaveGlobalSettings(): Promise<void> {
             type="number"
             min="0"
             max="23"
-            class="md-input h-10 w-full pr-12 font-mono text-xs"
+            class="md-input h-10 w-full pl-3.5 pr-12 font-mono text-xs"
           />
           <span class="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             小时
@@ -522,7 +522,7 @@ async function handleSaveGlobalSettings(): Promise<void> {
           v-model="proxyInput"
           type="text"
           placeholder="例如 http://127.0.0.1:7890 或 socks5h://127.0.0.1:1080"
-          class="md-input h-10 w-full font-mono text-xs"
+          class="md-input h-10 w-full px-3.5 font-mono text-xs"
         />
       </div>
     </div>
