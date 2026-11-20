@@ -1,6 +1,7 @@
 pub mod http;
 pub mod js_runtime;
 pub mod model;
+pub mod packager;
 pub mod rule;
 
 use std::collections::HashMap;

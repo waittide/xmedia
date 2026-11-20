@@ -1,4 +1,5 @@
 pub mod extractors;
+pub mod online;
 pub mod opds_v1;
 pub mod opds_v2;
 pub mod rest;
@@ -8,7 +9,7 @@ use axum::Router;
 use state::BookHttpState;
 
 pub fn rest_router(state: BookHttpState) -> Router {
-    rest::router().with_state(state)
+    rest::router().merge(online::router()).with_state(state)
 }
 
 pub fn opds_router(state: BookHttpState) -> Router {

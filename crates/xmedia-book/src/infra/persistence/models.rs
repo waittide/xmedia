@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::domain::book::{BookFormat, BookMetadata, BookSource};
 use crate::domain::reading::ReadingLocation;
+use crate::source::model::SourceRuntimeState;
 
 #[derive(Debug, toasty::Model)]
 #[table = "book_books"]
@@ -110,6 +111,69 @@ pub(crate) struct BookShelfModel {
 
     #[column(type = text)]
     pub book_ids: toasty::Json<Vec<Uuid>>,
+
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, toasty::Model)]
+#[table = "book_sources"]
+pub(crate) struct BookSourceRecordModel {
+    #[key]
+    pub id: Uuid,
+
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+
+    #[column(type = text)]
+    pub raw_json: String,
+
+    #[column(type = text)]
+    pub runtime_state: toasty::Json<SourceRuntimeState>,
+
+    pub last_test_ok: Option<bool>,
+    pub last_test_msg: Option<String>,
+
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, toasty::Model)]
+#[table = "book_online_books"]
+pub(crate) struct BookOnlineShelfModel {
+    #[key]
+    pub id: Uuid,
+
+    #[index]
+    pub user_id: Uuid,
+
+    #[index]
+    pub source_id: Uuid,
+
+    pub name: String,
+    pub author: String,
+
+    #[column(type = text)]
+    pub book_url: String,
+
+    #[column(type = text)]
+    pub toc_url: String,
+
+    pub cover_url: Option<String>,
+
+    #[column(type = text)]
+    pub intro: Option<String>,
+
+    pub kind: Option<String>,
+    pub last_chapter: Option<String>,
+    pub total_chapters: i64,
+    pub current_chapter_index: i64,
+    pub current_chapter_title: Option<String>,
+    pub scroll_ratio: f64,
 
     pub created_at: Timestamp,
     pub updated_at: Timestamp,

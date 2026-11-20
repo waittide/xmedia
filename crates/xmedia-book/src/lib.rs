@@ -16,6 +16,7 @@ use xmedia_core::domain::repository::LibraryRepository;
 use application::BookServices;
 use application::catalog::BookCatalogService;
 use application::lifecycle::BookDomainLifecycle;
+use application::online::BookOnlineService;
 use application::reading::BookReadingService;
 use infra::parser::CompositeBookParser;
 use infra::persistence::repositories::{ToastyBookReadingRepository, ToastyBookRepository};
@@ -31,7 +32,7 @@ pub fn init_book_module(
     events: Arc<dyn RealtimeEventPort>,
 ) -> DomainResult<BookServices> {
     let books = Arc::new(ToastyBookRepository::new(db.clone()));
-    let readings = Arc::new(ToastyBookReadingRepository::new(db));
+    let readings = Arc::new(ToastyBookReadingRepository::new(db.clone()));
     let parser = Arc::new(CompositeBookParser);
     let storage = Arc::new(LocalBookStorage::new(data_dir)?);
     let scanner = Arc::new(LocalBookScanner);
@@ -55,8 +56,9 @@ pub fn init_book_module(
         storage,
     ));
     let reading = Arc::new(BookReadingService::new(readings, books));
+    let online = Arc::new(BookOnlineService::new(db, data_dir, catalog.clone())?);
 
-    Ok(BookServices::new(catalog, reading))
+    Ok(BookServices::new(catalog, reading, online))
 }
 
 #[cfg(test)]
@@ -485,5 +487,291 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(bms.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
+        use std::time::Duration;
+
+        use axum::routing::get;
+
+        use crate::application::online::{
+            AddOnlineShelfInput, BookOnlineService, DownloadJobStatus, OnlineDownloadFormat,
+            StartDownloadInput, UpdateOnlineShelfInput,
+        };
+        use crate::source::BookSourceEngine;
+        use crate::source::http::HttpClientConfig;
+        use crate::source::model::{BookJsContext, ChapterJsContext};
+
+        let mock_app = Router::new()
+            .route(
+                "/search",
+                get(|| async {
+                    r#"<html><body><div class="item">
+                      <a class="t" href="/b/1">剑来</a>
+                      <span class="a">烽火戏诸侯</span>
+                    </div></body></html>"#
+                }),
+            )
+            .route(
+                "/b/1",
+                get(|| async {
+                    r#"<html><body>
+                      <h1 id="title">剑来</h1>
+                      <div id="intro">大千世界，无奇不有。</div>
+                      <ul id="toc">
+                        <li><a href="/b/1/c1">第一章 惊蛰</a></li>
+                        <li><a href="/b/1/c2">第二章 开门</a></li>
+                      </ul>
+                    </body></html>"#
+                }),
+            )
+            .route(
+                "/b/1/c1",
+                get(|| async { r#"<div id="body"><p>二月二，龙抬头。</p></div>"# }),
+            )
+            .route(
+                "/b/1/c2",
+                get(|| async { r#"<div id="body"><p>小镇少年走出门外。</p></div>"# }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("online_test.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut model_set = ModelSet::new();
+        register_core_models(&mut model_set);
+        register_book_models(&mut model_set);
+        let mut db = Db::builder()
+            .models(model_set)
+            .connect(&db_url)
+            .await
+            .unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+        let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
+        let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+        let security = Arc::new(SecurityManager::new("book-secret"));
+        let tokens = Arc::new(JwtTokenService::new("book-secret", 3600));
+        let events = Arc::new(BroadcastEventHub::default());
+        let auth_svc = Arc::new(AuthService::new(
+            users_repo,
+            security,
+            tokens,
+            lifecycles.clone(),
+        ));
+        let session = auth_svc
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: Some("Admin".into()),
+                password: "password123".into(),
+            })
+            .await
+            .unwrap();
+        let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+        let lib_svc = Arc::new(LibraryService::new(
+            libs_repo.clone(),
+            events.clone(),
+            lifecycles,
+        ));
+        let book_services =
+            init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
+
+        let online_svc = Arc::new(
+            BookOnlineService::with_engine(
+                db,
+                tmp.path(),
+                book_services.catalog.clone(),
+                BookSourceEngine::new(
+                    HttpClientConfig {
+                        allow_private_ips: true,
+                        ..Default::default()
+                    },
+                    Duration::from_secs(10),
+                ),
+                true,
+            )
+            .unwrap(),
+        );
+
+        let raw_source = serde_json::json!({
+            "bookSourceName": "本地Mock书源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "searchUrl": "/search?q={{key}}",
+            "ruleSearch": {
+                "bookList": "class.item",
+                "name": "class.t@text",
+                "author": "class.a@text",
+                "bookUrl": "class.t@href"
+            },
+            "ruleBookInfo": {
+                "name": "id.title@text",
+                "intro": "id.intro@text"
+            },
+            "ruleToc": {
+                "chapterList": "#toc li a",
+                "chapterName": "text",
+                "chapterUrl": "href"
+            },
+            "ruleContent": {
+                "content": "id.body@html"
+            }
+        })
+        .to_string();
+
+        let imported = online_svc
+            .import_sources(&admin, &raw_source)
+            .await
+            .unwrap();
+        assert_eq!(imported.imported_count, 1);
+        let source_id = imported.sources[0].id;
+
+        let search = online_svc.search("剑来", None, 1).await.unwrap();
+        assert_eq!(search.items.len(), 1);
+        let hit = &search.items[0];
+        assert_eq!(hit.book.name, "剑来");
+
+        let detail = online_svc
+            .fetch_book_info(source_id, &hit.book.book_url, None)
+            .await
+            .unwrap();
+        let toc = online_svc
+            .fetch_toc(source_id, &detail.detail.toc_url, BookJsContext::default())
+            .await
+            .unwrap();
+        assert_eq!(toc.chapters.len(), 2);
+
+        // First read fetches remotely; second read hits disk cache
+        let c1 = online_svc
+            .fetch_chapter_content(
+                source_id,
+                &toc.chapters[0].url,
+                BookJsContext::default(),
+                ChapterJsContext {
+                    index: 0,
+                    title: toc.chapters[0].title.clone(),
+                    url: toc.chapters[0].url.clone(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(!c1.cached);
+        assert_eq!(c1.content.content, "二月二，龙抬头。");
+
+        let c1_cached = online_svc
+            .fetch_chapter_content(
+                source_id,
+                &toc.chapters[0].url,
+                BookJsContext::default(),
+                ChapterJsContext {
+                    index: 0,
+                    title: toc.chapters[0].title.clone(),
+                    url: toc.chapters[0].url.clone(),
+                },
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(c1_cached.cached);
+
+        // Online shelf add + progress update
+        let shelf_item = online_svc
+            .add_to_shelf(
+                admin.id,
+                AddOnlineShelfInput {
+                    source_id,
+                    name: detail.detail.name.clone(),
+                    author: hit.book.author.clone(),
+                    book_url: detail.detail.book_url.clone(),
+                    toc_url: detail.detail.toc_url.clone(),
+                    cover_url: detail.detail.cover_url.clone(),
+                    intro: detail.detail.intro.clone(),
+                    kind: None,
+                    last_chapter: Some(toc.chapters[1].title.clone()),
+                    total_chapters: Some(2),
+                },
+            )
+            .await
+            .unwrap();
+        let updated_shelf = online_svc
+            .update_shelf_book(
+                admin.id,
+                shelf_item.id,
+                UpdateOnlineShelfInput {
+                    current_chapter_index: Some(1),
+                    current_chapter_title: Some("第二章 开门".into()),
+                    scroll_ratio: Some(0.5),
+                    total_chapters: None,
+                    last_chapter: None,
+                    toc_url: None,
+                    source_id: None,
+                    book_url: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_shelf.current_chapter_index, 1);
+
+        // Background download -> EPUB 3.0 -> auto import into local library
+        let job = online_svc
+            .start_download(
+                &admin,
+                StartDownloadInput {
+                    source_id,
+                    book_name: "剑来".into(),
+                    author: "烽火戏诸侯".into(),
+                    book_url: detail.detail.book_url.clone(),
+                    toc_url: detail.detail.toc_url.clone(),
+                    cover_url: None,
+                    intro: detail.detail.intro.clone(),
+                    format: OnlineDownloadFormat::Epub,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut finished = job;
+        for _ in 0..80 {
+            finished = online_svc
+                .get_download(admin.id, finished.id)
+                .await
+                .unwrap();
+            if matches!(
+                finished.status,
+                DownloadJobStatus::Completed | DownloadJobStatus::Failed
+            ) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            finished.status,
+            DownloadJobStatus::Completed,
+            "{finished:?}"
+        );
+        assert_eq!(finished.processed_chapters, 2);
+        assert!(finished.imported_book_id.is_some());
+
+        let (fname, mime, epub_bytes) = online_svc
+            .read_download_file(admin.id, finished.id)
+            .await
+            .unwrap();
+        assert_eq!(fname, "剑来.epub");
+        assert_eq!(mime, "application/epub+zip");
+        assert!(epub_bytes.starts_with(b"PK"));
+
+        server_handle.abort();
     }
 }
