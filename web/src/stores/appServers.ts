@@ -2,30 +2,32 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import {
   appHostApi,
-  type CreateServerPayload,
-  type ServerProfile,
-  type TestServerPayload,
-  type TestServerResponse,
+  type CreateRemoteSourcePayload,
+  type RemoteSourceSummaryDto,
+  type TestRemoteSourcePayload,
+  type TestRemoteSourceResponse,
+  type UpdateRemoteSourcePayload,
 } from '@/api/appHost'
-import { useAuthStore } from '@/stores/auth'
-import { resetAllSessionState } from '@/stores/sessionReset'
+import type { AuthSessionDto, MediaKind } from '@/types/api'
 
-export const useAppServersStore = defineStore('appServers', () => {
+export const useAppClientStore = defineStore('appClient', () => {
   const initialized = ref(false)
-  const isClientApp = ref(false)
+  const isStandaloneApp = ref(false)
   const appVersion = ref<string | null>(null)
-  const servers = ref<ServerProfile[]>([])
-  const activeServerId = ref<string | null>(null)
-  const loading = ref(false)
+  const enabledModules = ref<MediaKind[]>(['book', 'comic', 'music', 'video'])
+  const remoteSourceCount = ref(0)
+  const remoteSources = ref<RemoteSourceSummaryDto[]>([])
+  const loadingSources = ref(false)
 
-  const activeServer = computed<ServerProfile | null>(() => {
-    if (!activeServerId.value) return null
-    return servers.value.find((item) => item.id === activeServerId.value) ?? null
-  })
-
-  const hasActiveServer = computed(() => activeServer.value !== null)
+  const opdsSources = computed(() =>
+    remoteSources.value.filter((source) => source.protocol === 'opds'),
+  )
+  const subsonicSources = computed(() =>
+    remoteSources.value.filter((source) => source.protocol === 'subsonic'),
+  )
 
   let bootstrapPromise: Promise<void> | null = null
+  let autoSessionPromise: Promise<AuthSessionDto> | null = null
 
   async function bootstrap(): Promise<void> {
     if (initialized.value) return
@@ -35,25 +37,17 @@ export const useAppServersStore = defineStore('appServers', () => {
       try {
         const health = await appHostApi.probe()
         if (!health) {
-          isClientApp.value = false
+          isStandaloneApp.value = false
           appVersion.value = null
-          servers.value = []
-          activeServerId.value = null
+          remoteSourceCount.value = 0
+          remoteSources.value = []
           return
         }
 
-        isClientApp.value = true
+        isStandaloneApp.value = true
         appVersion.value = health.version || null
-        activeServerId.value = health.active_server?.id ?? null
-        if (health.active_server) {
-          servers.value = [health.active_server]
-        }
-
-        try {
-          await refreshServers()
-        } catch {
-          // Keep health probe snapshot if server list request fails transiently
-        }
+        remoteSourceCount.value = health.remote_source_count
+        enabledModules.value = health.enabled_modules
       } finally {
         initialized.value = true
         bootstrapPromise = null
@@ -63,88 +57,76 @@ export const useAppServersStore = defineStore('appServers', () => {
     return bootstrapPromise
   }
 
-  async function refreshServers(): Promise<void> {
-    if (!isClientApp.value) return
-    loading.value = true
+  async function fetchAutoSession(): Promise<AuthSessionDto> {
+    if (autoSessionPromise) return autoSessionPromise
+    autoSessionPromise = appHostApi.fetchAutoSession().finally(() => {
+      autoSessionPromise = null
+    })
+    return autoSessionPromise
+  }
+
+  async function refreshSources(): Promise<RemoteSourceSummaryDto[]> {
+    if (!isStandaloneApp.value) return []
+    loadingSources.value = true
     try {
-      const res = await appHostApi.listServers()
-      servers.value = res.servers
-      activeServerId.value = res.active_server_id
+      const res = await appHostApi.listRemoteSources()
+      remoteSources.value = res.sources
+      remoteSourceCount.value = res.sources.length
+      return res.sources
     } finally {
-      loading.value = false
+      loadingSources.value = false
     }
   }
 
-  function resetAuthForServerSwitch(): void {
-    const authStore = useAuthStore()
-    resetAllSessionState()
-    authStore.clearLocalSession()
-    authStore.initialized = false
-    authStore.capabilities = null
-    authStore.needsSetup = false
+  async function createSource(
+    payload: CreateRemoteSourcePayload,
+  ): Promise<RemoteSourceSummaryDto> {
+    const res = await appHostApi.createRemoteSource(payload)
+    remoteSources.value = res.sources
+    remoteSourceCount.value = res.sources.length
+    return res.source
   }
 
-  async function rebootstrapActiveServer(): Promise<'/setup' | '/login' | '/'> {
-    const authStore = useAuthStore()
-    resetAuthForServerSwitch()
-    try {
-      await authStore.bootstrap()
-    } catch (err) {
-      authStore.initialized = false
-      throw err
-    }
-    if (authStore.needsSetup) return '/setup'
-    return authStore.isAuthenticated ? '/' : '/login'
+  async function updateSource(
+    id: string,
+    payload: UpdateRemoteSourcePayload,
+  ): Promise<RemoteSourceSummaryDto> {
+    const res = await appHostApi.updateRemoteSource(id, payload)
+    remoteSources.value = res.sources
+    remoteSourceCount.value = res.sources.length
+    return res.source
   }
 
-  async function testServer(payload: TestServerPayload): Promise<TestServerResponse> {
-    return appHostApi.testServer(payload)
+  async function deleteSource(id: string): Promise<void> {
+    const res = await appHostApi.deleteRemoteSource(id)
+    remoteSources.value = res.sources
+    remoteSourceCount.value = res.sources.length
   }
 
-  async function addServer(
-    payload: CreateServerPayload,
-  ): Promise<{ server: ServerProfile; nextRoute: '/setup' | '/login' | '/' | null }> {
-    const res = await appHostApi.addServer(payload)
-    servers.value = res.servers
-    activeServerId.value = res.active_server_id
-    if (payload.activate !== false) {
-      const nextRoute = await rebootstrapActiveServer()
-      return { server: res.server, nextRoute }
-    }
-    return { server: res.server, nextRoute: null }
-  }
-
-  async function activateServer(id: string): Promise<'/setup' | '/login' | '/'> {
-    const res = await appHostApi.activateServer(id)
-    servers.value = res.servers
-    activeServerId.value = res.active_server_id
-    return rebootstrapActiveServer()
-  }
-
-  async function deleteServer(id: string): Promise<void> {
-    const wasActive = activeServerId.value === id
-    const res = await appHostApi.deleteServer(id)
-    servers.value = res.servers
-    activeServerId.value = res.active_server_id
-    if (wasActive) {
-      resetAuthForServerSwitch()
-    }
+  async function testSource(
+    payload: TestRemoteSourcePayload,
+  ): Promise<TestRemoteSourceResponse> {
+    return appHostApi.testRemoteSource(payload)
   }
 
   return {
     initialized,
-    isClientApp,
+    isStandaloneApp,
     appVersion,
-    servers,
-    activeServerId,
-    activeServer,
-    hasActiveServer,
-    loading,
+    enabledModules,
+    remoteSourceCount,
+    remoteSources,
+    opdsSources,
+    subsonicSources,
+    loadingSources,
     bootstrap,
-    refreshServers,
-    testServer,
-    addServer,
-    activateServer,
-    deleteServer,
+    fetchAutoSession,
+    refreshSources,
+    createSource,
+    updateSource,
+    deleteSource,
+    testSource,
   }
 })
+
+export const useAppServersStore = useAppClientStore

@@ -1,10 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { ApiRequestError, setUnauthorizedHandler } from '@/api/client'
+import { getStoredToken, setUnauthorizedHandler } from '@/api/client'
 import { ensureBookLocale } from '@/domains/book/i18n'
 import { ensureComicLocale } from '@/domains/comic/i18n'
 import { ensureMusicLocale } from '@/domains/music/i18n'
 import { ensureVideoLocale } from '@/domains/video/i18n'
-import { useAppServersStore } from '@/stores/appServers'
+import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { MediaKind } from '@/types/api'
@@ -35,9 +35,7 @@ export const router = createRouter({
   routes: [
     {
       path: '/connect',
-      name: 'connect',
-      component: () => import('@/views/ConnectServerView.vue'),
-      meta: { public: true, fullscreen: true },
+      redirect: '/',
     },
     {
       path: '/setup',
@@ -357,7 +355,12 @@ export const router = createRouter({
           meta: { domain: 'video' as MediaKind },
         },
 
-        // Unified Settings
+        // Unified Settings & Standalone Remote Protocol Hub
+        {
+          path: 'remote',
+          name: 'remote-sources',
+          component: () => import('@/views/RemoteSourcesView.vue'),
+        },
         {
           path: 'settings',
           name: 'settings',
@@ -377,12 +380,23 @@ export const router = createRouter({
 })
 
 setUnauthorizedHandler(() => {
+  const appClient = useAppClientStore()
   const auth = useAuthStore()
   auth.clearLocalSession()
+  if (appClient.isStandaloneApp) {
+    void appClient
+      .fetchAutoSession()
+      .then((session) => {
+        auth.applySession(session)
+      })
+      .catch(() => {
+        // ignore transient auto-session errors
+      })
+    return
+  }
   if (
     router.currentRoute.value.name !== 'login' &&
-    router.currentRoute.value.name !== 'setup' &&
-    router.currentRoute.value.name !== 'connect'
+    router.currentRoute.value.name !== 'setup'
   ) {
     void router.replace('/login')
   }
@@ -391,61 +405,53 @@ setUnauthorizedHandler(() => {
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   const domainStore = useDomainStore()
-  const appServers = useAppServersStore()
+  const appClient = useAppClientStore()
 
-  await appServers.bootstrap()
+  await appClient.bootstrap()
 
-  if (appServers.isClientApp) {
-    if (to.name === 'connect') {
+  if (appClient.isStandaloneApp) {
+    if (!auth.isAuthenticated && !getStoredToken()) {
+      const session = await appClient.fetchAutoSession()
+      auth.applySession(session)
+    }
+
+    if (!auth.initialized) {
+      await auth.bootstrap()
+    }
+
+    if (!auth.isAuthenticated) {
+      const session = await appClient.fetchAutoSession()
+      auth.applySession(session)
+      auth.initialized = false
+      await auth.bootstrap()
+    }
+
+    if (to.name === 'login' || to.name === 'setup') {
+      return '/'
+    }
+  } else {
+    if (to.name === 'remote-sources') {
+      return '/'
+    }
+
+    await auth.bootstrap()
+
+    if (auth.needsSetup) {
+      if (to.name !== 'setup') return { name: 'setup' }
       return true
     }
-    if (!appServers.hasActiveServer) {
-      return { name: 'connect' }
+
+    if (to.name === 'setup') {
+      return auth.isAuthenticated ? '/' : { name: 'login' }
     }
-  } else if (to.name === 'connect') {
-    return '/'
-  }
 
-  try {
-    await auth.bootstrap()
-  } catch (err) {
-    auth.initialized = false
-    if (appServers.isClientApp) {
-      if (err instanceof ApiRequestError && err.code === 'no_server_configured') {
-        await appServers.refreshServers().catch(() => {
-          // ignore refresh errors before redirecting
-        })
-        return { name: 'connect' }
-      }
-      if (err instanceof ApiRequestError && err.status === 503) {
-        await appServers.refreshServers().catch(() => {
-          // ignore refresh errors before redirecting
-        })
-      }
-      const message = err instanceof Error ? err.message : String(err)
-      return {
-        name: 'connect',
-        query: message ? { error: message } : undefined,
-      }
+    if (!auth.isAuthenticated && !to.meta.public) {
+      return { name: 'login' }
     }
-    throw err
-  }
 
-  if (auth.needsSetup) {
-    if (to.name !== 'setup') return { name: 'setup' }
-    return true
-  }
-
-  if (to.name === 'setup') {
-    return auth.isAuthenticated ? '/' : { name: 'login' }
-  }
-
-  if (!auth.isAuthenticated && !to.meta.public) {
-    return { name: 'login' }
-  }
-
-  if (auth.isAuthenticated && to.name === 'login') {
-    return '/'
+    if (auth.isAuthenticated && to.name === 'login') {
+      return '/'
+    }
   }
 
   const routeDomain = to.meta.domain as MediaKind | undefined

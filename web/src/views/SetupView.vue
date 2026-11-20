@@ -2,14 +2,12 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { LuLayers, LuServer, LuSparkles } from 'vue-icons-plus/lu'
-import { useAppServersStore } from '@/stores/appServers'
+import { LuLayers, LuSparkles } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
 import ThemePopover from '@/components/ThemePopover.vue'
 
 const { t } = useI18n()
 const router = useRouter()
-const appServersStore = useAppServersStore()
 const authStore = useAuthStore()
 
 const username = ref('admin')
@@ -64,32 +62,6 @@ async function onSubmit(): Promise<void> {
         <div
           class="w-full max-w-md rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-8 shadow-[var(--md-sys-elevation-2)]"
         >
-        <div
-          v-if="appServersStore.isClientApp"
-          class="mb-5 flex items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-3.5 py-2.5 ring-1 ring-[var(--md-sys-color-outline-variant)]/45"
-        >
-          <div class="flex min-w-0 items-center gap-2.5">
-            <LuServer class="h-4 w-4 shrink-0 text-[var(--md-sys-color-primary)]" />
-            <div class="min-w-0">
-              <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-                {{ appServersStore.activeServer?.name || t('server.unnamed') }}
-              </p>
-              <p
-                v-if="appServersStore.activeServer?.url"
-                class="truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ appServersStore.activeServer.url }}
-              </p>
-            </div>
-          </div>
-          <RouterLink
-            to="/connect"
-            class="md-btn md-btn-text md-btn-sm shrink-0 !px-2.5"
-          >
-            {{ t('server.switchServer') }}
-          </RouterLink>
-        </div>
-
         <div class="mb-6 flex items-center gap-3">
           <div
             class="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"

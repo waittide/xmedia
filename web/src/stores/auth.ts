@@ -4,7 +4,7 @@ import { api, getStoredToken, setStoredToken } from '@/api/client'
 import { setHomeCacheUser } from '@/config/homeCache'
 import { resetAllSessionState } from '@/stores/sessionReset'
 import { useThemeStore } from '@/stores/theme'
-import type { MediaKind, SystemCapabilitiesDto, UserDto } from '@/types/api'
+import type { AuthSessionDto, MediaKind, SystemCapabilitiesDto, UserDto } from '@/types/api'
 
 export const useAuthStore = defineStore('auth', () => {
   const user = ref<UserDto | null>(null)
@@ -98,6 +98,12 @@ export const useAuthStore = defineStore('auth', () => {
     clearLocalSession()
   }
 
+  function applySession(session: AuthSessionDto): void {
+    setStoredToken(session.token)
+    needsSetup.value = false
+    applyAuthenticatedUser(session.user)
+  }
+
   function setUser(next: UserDto): void {
     user.value = next
     setHomeCacheUser(next.id)
@@ -115,6 +121,7 @@ export const useAuthStore = defineStore('auth', () => {
     bootstrap,
     setupAdmin,
     login,
+    applySession,
     clearLocalSession,
     logout,
     setUser,

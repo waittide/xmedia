@@ -1,48 +1,155 @@
-export interface ServerProfile {
+import type { AuthSessionDto, MediaKind } from '@/types/api'
+
+export type RemoteProtocol = 'opds' | 'subsonic'
+export type SubsonicAlbumListType = 'newest' | 'random' | 'alphabeticalByName'
+
+export interface StandaloneHealthResponse {
+  mode: 'standalone'
+  version: string
+  remote_source_count: number
+  enabled_modules: MediaKind[]
+}
+
+export interface RemoteSourceSummaryDto {
   id: string
   name: string
+  protocol: RemoteProtocol
   url: string
+  username: string
+  has_password: boolean
   allow_insecure_tls: boolean
-  last_connected_at?: number | null
+  last_ok_at?: number | null
 }
 
-export interface AppHealthResponse {
-  mode: 'tauri'
-  version: string
-  active_server: ServerProfile | null
-  has_servers: boolean
+export interface RemoteSourcesListResponse {
+  sources: RemoteSourceSummaryDto[]
 }
 
-export interface AppServersListResponse {
-  active_server_id: string | null
-  servers: ServerProfile[]
+export interface RemoteSourceMutationResponse {
+  source: RemoteSourceSummaryDto
+  sources: RemoteSourceSummaryDto[]
 }
 
-export interface AppServerMutationResponse {
-  active_server_id: string | null
-  server: ServerProfile
-  servers: ServerProfile[]
-}
-
-export interface CreateServerPayload {
+export interface CreateRemoteSourcePayload {
   name: string
+  protocol: RemoteProtocol
   url: string
-  allow_insecure_tls: boolean
-  activate?: boolean
-}
-
-export interface TestServerPayload {
-  url: string
+  username?: string
+  password?: string
   allow_insecure_tls: boolean
 }
 
-export interface TestServerResponse {
+export interface UpdateRemoteSourcePayload {
+  name?: string
+  protocol?: RemoteProtocol
+  url?: string
+  username?: string
+  password?: string
+  allow_insecure_tls?: boolean
+}
+
+export interface TestRemoteSourcePayload {
+  protocol: RemoteProtocol
+  url: string
+  username?: string
+  password?: string
+  allow_insecure_tls: boolean
+}
+
+export interface TestRemoteSourceResponse {
   ok: boolean
   latency_ms: number
-  normalized_url: string
-  needs_setup?: boolean
-  version?: string
+  protocol: string
+  detail?: string
   error?: string
+}
+
+export interface OpdsNavLinkDto {
+  title: string
+  href: string
+  count?: number | null
+}
+
+export interface OpdsDownloadLinkDto {
+  href: string
+  title: string
+  format: string
+  media_type: string
+}
+
+export interface OpdsEntryDto {
+  id: string
+  title: string
+  authors: string[]
+  summary?: string | null
+  cover_url?: string | null
+  updated?: string | null
+  downloads: OpdsDownloadLinkDto[]
+}
+
+export interface OpdsFeedDto {
+  title: string
+  url: string
+  opds_version: string
+  search_url?: string | null
+  next_url?: string | null
+  nav_links: OpdsNavLinkDto[]
+  entries: OpdsEntryDto[]
+}
+
+export interface OpdsImportPayload {
+  url: string
+  filename?: string
+}
+
+export interface OpdsImportResponse {
+  media_kind: 'book' | 'comic'
+  imported_id: string
+  title: string
+}
+
+export interface SubsonicAlbumDto {
+  id: string
+  name: string
+  artist: string
+  year?: number | null
+  song_count?: number | null
+  duration?: number | null
+  cover_url?: string | null
+}
+
+export interface SubsonicSongDto {
+  id: string
+  title: string
+  artist: string
+  album: string
+  track?: number | null
+  duration?: number | null
+  suffix?: string | null
+  bit_rate?: number | null
+  size?: number | null
+  cover_url?: string | null
+  stream_url: string
+}
+
+export interface SubsonicAlbumsResponse {
+  albums: SubsonicAlbumDto[]
+}
+
+export interface SubsonicAlbumDetailResponse {
+  album: SubsonicAlbumDto
+  songs: SubsonicSongDto[]
+}
+
+export interface SubsonicSearchResponse {
+  albums: SubsonicAlbumDto[]
+  songs: SubsonicSongDto[]
+}
+
+export interface SubsonicImportResponse {
+  media_kind: 'music'
+  imported_id: string
+  title: string
 }
 
 function isJsonResponse(res: Response): boolean {
@@ -86,13 +193,13 @@ async function requestAppJson<T>(path: string, init: RequestInit = {}): Promise<
   }
 
   if (!isJsonResponse(res)) {
-    throw new Error('Unexpected non-JSON response from client host')
+    throw new Error('Unexpected non-JSON response from standalone host')
   }
 
   return (await res.json()) as T
 }
 
-export async function probeAppHost(): Promise<AppHealthResponse | null> {
+export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
   try {
     const res = await fetch('/_app/health', {
       method: 'GET',
@@ -102,15 +209,18 @@ export async function probeAppHost(): Promise<AppHealthResponse | null> {
     if (!res.ok || !isJsonResponse(res)) {
       return null
     }
-    const data = (await res.json()) as Partial<AppHealthResponse> | null
-    if (!data || typeof data !== 'object' || data.mode !== 'tauri') {
+    const data = (await res.json()) as Partial<StandaloneHealthResponse> | null
+    if (!data || typeof data !== 'object' || data.mode !== 'standalone') {
       return null
     }
     return {
-      mode: 'tauri',
+      mode: 'standalone',
       version: typeof data.version === 'string' ? data.version : '',
-      active_server: data.active_server ?? null,
-      has_servers: Boolean(data.has_servers),
+      remote_source_count:
+        typeof data.remote_source_count === 'number' ? data.remote_source_count : 0,
+      enabled_modules: Array.isArray(data.enabled_modules)
+        ? data.enabled_modules
+        : ['book', 'comic', 'music', 'video'],
     }
   } catch {
     return null
@@ -120,28 +230,89 @@ export async function probeAppHost(): Promise<AppHealthResponse | null> {
 export const appHostApi = {
   probe: probeAppHost,
 
-  listServers: () => requestAppJson<AppServersListResponse>('/servers', { method: 'GET' }),
+  fetchAutoSession: () => requestAppJson<AuthSessionDto>('/auto-session', { method: 'GET' }),
 
-  addServer: (payload: CreateServerPayload) =>
-    requestAppJson<AppServerMutationResponse>('/servers', {
+  listRemoteSources: () =>
+    requestAppJson<RemoteSourcesListResponse>('/remote-sources', { method: 'GET' }),
+
+  createRemoteSource: (payload: CreateRemoteSourcePayload) =>
+    requestAppJson<RemoteSourceMutationResponse>('/remote-sources', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
-  activateServer: (id: string) =>
-    requestAppJson<AppServerMutationResponse>(
-      `/servers/${encodeURIComponent(id)}/activate`,
-      { method: 'PUT' },
+  updateRemoteSource: (id: string, payload: UpdateRemoteSourcePayload) =>
+    requestAppJson<RemoteSourceMutationResponse>(
+      `/remote-sources/${encodeURIComponent(id)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
     ),
 
-  deleteServer: (id: string) =>
-    requestAppJson<AppServersListResponse>(`/servers/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    }),
+  deleteRemoteSource: (id: string) =>
+    requestAppJson<RemoteSourcesListResponse>(
+      `/remote-sources/${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    ),
 
-  testServer: (payload: TestServerPayload) =>
-    requestAppJson<TestServerResponse>('/servers/test', {
+  testRemoteSource: (payload: TestRemoteSourcePayload) =>
+    requestAppJson<TestRemoteSourceResponse>('/remote-sources/test', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+
+  browseOpds: (id: string, params?: { url?: string; q?: string }) => {
+    const query = new URLSearchParams()
+    if (params?.url) query.set('url', params.url)
+    if (params?.q) query.set('q', params.q)
+    const qs = query.toString()
+    return requestAppJson<OpdsFeedDto>(
+      `/opds/${encodeURIComponent(id)}/browse${qs ? `?${qs}` : ''}`,
+      { method: 'GET' },
+    )
+  },
+
+  importOpdsEntry: (id: string, payload: OpdsImportPayload) =>
+    requestAppJson<OpdsImportResponse>(`/opds/${encodeURIComponent(id)}/import`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  listSubsonicAlbums: (
+    id: string,
+    params?: { type?: SubsonicAlbumListType; size?: number; offset?: number },
+  ) => {
+    const query = new URLSearchParams()
+    query.set('type', params?.type ?? 'newest')
+    query.set('size', String(params?.size ?? 30))
+    query.set('offset', String(params?.offset ?? 0))
+    return requestAppJson<SubsonicAlbumsResponse>(
+      `/subsonic/${encodeURIComponent(id)}/albums?${query.toString()}`,
+      { method: 'GET' },
+    )
+  },
+
+  getSubsonicAlbum: (id: string, albumId: string) =>
+    requestAppJson<SubsonicAlbumDetailResponse>(
+      `/subsonic/${encodeURIComponent(id)}/albums/${encodeURIComponent(albumId)}`,
+      { method: 'GET' },
+    ),
+
+  searchSubsonic: (id: string, q: string) => {
+    const query = new URLSearchParams({ q })
+    return requestAppJson<SubsonicSearchResponse>(
+      `/subsonic/${encodeURIComponent(id)}/search?${query.toString()}`,
+      { method: 'GET' },
+    )
+  },
+
+  importSubsonicSong: (id: string, songId: string, filename?: string) =>
+    requestAppJson<SubsonicImportResponse>(
+      `/subsonic/${encodeURIComponent(id)}/import/${encodeURIComponent(songId)}`,
+      {
+        method: 'POST',
+        body: JSON.stringify(filename ? { filename } : {}),
+      },
+    ),
 }

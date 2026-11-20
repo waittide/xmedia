@@ -5,6 +5,7 @@ import { useI18n } from 'vue-i18n'
 import {
   LuBookOpen,
   LuClapperboard,
+  LuCloud,
   LuDisc3,
   LuFileUp,
   LuFolderUp,
@@ -16,14 +17,13 @@ import {
   LuPanelLeftClose,
   LuPanelLeftOpen,
   LuSearch,
-  LuServer,
   LuSettings,
   LuSun,
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
-import { useAppServersStore } from '@/stores/appServers'
+import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
@@ -49,7 +49,7 @@ const { t } = useI18n()
 
 const route = useRoute()
 const router = useRouter()
-const appServersStore = useAppServersStore()
+const appClientStore = useAppClientStore()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
@@ -685,6 +685,23 @@ onBeforeUnmount(() => {
           </Transition>
         </div>
 
+        <!-- Standalone Remote Protocol Sources Button -->
+        <RouterLink
+          v-if="appClientStore.isStandaloneApp"
+          to="/remote"
+          class="md-icon-btn md-state"
+          :class="
+            route.name === 'remote-sources'
+              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
+          "
+          :title="t('remote.navEntry')"
+          :aria-label="t('remote.navEntry')"
+          @click="uploadMenuOpen = false; accountMenuOpen = false; mobileMenuOpen = false"
+        >
+          <LuCloud class="h-[18px] w-[18px]" />
+        </RouterLink>
+
         <!-- Global Background Tasks Button with SVG Progress Ring -->
         <div class="relative inline-flex items-center justify-center">
           <button
@@ -797,16 +814,19 @@ onBeforeUnmount(() => {
                   @{{ authStore.user?.username }} ·
                   {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
                 </p>
-                <p
-                  v-if="appServersStore.isClientApp && appServersStore.activeServer"
-                  class="mt-1 flex items-center gap-1 truncate font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  <LuServer class="h-3 w-3 shrink-0 text-[var(--md-sys-color-primary)]" />
-                  <span class="truncate">{{ appServersStore.activeServer.name }}</span>
-                </p>
               </div>
 
               <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/50" />
+
+              <RouterLink
+                v-if="appClientStore.isStandaloneApp"
+                to="/remote"
+                class="md-state flex items-center gap-2.5 rounded-full px-3 py-2 text-xs font-medium text-[var(--md-sys-color-on-surface)]"
+                @click="accountMenuOpen = false; mobileMenuOpen = false"
+              >
+                <LuCloud class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+                <span>{{ t('remote.navEntry') }}</span>
+              </RouterLink>
 
               <RouterLink
                 to="/settings"
@@ -817,17 +837,8 @@ onBeforeUnmount(() => {
                 <span>{{ t('nav.settings') }}</span>
               </RouterLink>
 
-              <RouterLink
-                v-if="appServersStore.isClientApp"
-                to="/connect"
-                class="md-state flex items-center gap-2.5 rounded-full px-3 py-2 text-xs font-medium text-[var(--md-sys-color-on-surface)]"
-                @click="accountMenuOpen = false; mobileMenuOpen = false"
-              >
-                <LuServer class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
-                <span>{{ t('server.switchServer') }}</span>
-              </RouterLink>
-
               <button
+                v-if="!appClientStore.isStandaloneApp"
                 type="button"
                 class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-error)]"
                 @click="handleSignOut"
