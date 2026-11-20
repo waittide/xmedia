@@ -2,6 +2,7 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
+pub mod source;
 
 use std::path::Path;
 use std::sync::Arc;
