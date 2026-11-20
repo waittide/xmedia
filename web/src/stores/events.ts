@@ -4,7 +4,7 @@ import { getStoredToken } from '@/api/client'
 import { invalidateHomeCache } from '@/config/homeCache'
 import type { MediaKind } from '@/types/api'
 
-interface WsEventFrame {
+interface SseEventFrame {
   event:
     | 'library_scan_started'
     | 'library_scan_progress'
@@ -22,6 +22,9 @@ interface WsEventFrame {
   message?: string
 }
 
+const RECONNECT_BASE_DELAY_MS = 2000
+const RECONNECT_MAX_DELAY_MS = 30000
+
 export interface ScanTaskState {
   library_id: string
   library_name: string
@@ -37,6 +40,7 @@ export interface ScanTaskState {
 }
 
 export const useEventsStore = defineStore('events', () => {
+  const connected = ref(false)
   const scanTasks = ref<Record<string, ScanTaskState>>({})
   const domainRefreshTick = ref<Record<MediaKind, number>>({
     book: 0,
@@ -74,8 +78,74 @@ export const useEventsStore = defineStore('events', () => {
   const anyScanning = computed(() => Object.keys(activeScans.value).length > 0)
   const firstActiveScan = computed(() => Object.values(activeScans.value)[0] ?? null)
 
-  let ws: WebSocket | null = null
+  let eventSource: EventSource | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let reconnectAttempts = 0
+  let intentionalDisconnect = false
+  let waitingForOnline = false
+
+  function isOffline(): boolean {
+    return typeof navigator !== 'undefined' && navigator.onLine === false
+  }
+
+  function clearReconnectTimer(): void {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+  }
+
+  function clearOnlineListener(): void {
+    if (waitingForOnline && typeof window !== 'undefined') {
+      window.removeEventListener('online', handleOnline)
+      waitingForOnline = false
+    }
+  }
+
+  function waitForOnline(): void {
+    if (waitingForOnline || typeof window === 'undefined') return
+    waitingForOnline = true
+    window.addEventListener('online', handleOnline)
+  }
+
+  function handleOnline(): void {
+    clearOnlineListener()
+    if (intentionalDisconnect || !getStoredToken()) return
+    reconnectAttempts = 0
+    connect()
+  }
+
+  function closeEventSource(): void {
+    if (eventSource) {
+      const es = eventSource
+      eventSource = null
+      es.onopen = null
+      es.onmessage = null
+      es.onerror = null
+      es.close()
+    }
+    connected.value = false
+  }
+
+  function scheduleReconnect(): void {
+    if (intentionalDisconnect || !getStoredToken()) return
+    clearReconnectTimer()
+    if (isOffline()) {
+      waitForOnline()
+      return
+    }
+    const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempts, RECONNECT_MAX_DELAY_MS)
+    reconnectAttempts += 1
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null
+      if (intentionalDisconnect || !getStoredToken()) return
+      if (isOffline()) {
+        waitForOnline()
+        return
+      }
+      connect()
+    }, delay)
+  }
 
   function bumpDomain(kind: MediaKind): void {
     invalidateHomeCache(kind)
@@ -99,21 +169,29 @@ export const useEventsStore = defineStore('events', () => {
   }
 
   function connect(): void {
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
-    }
+    intentionalDisconnect = false
+    clearReconnectTimer()
+    clearOnlineListener()
     const token = getStoredToken()
-    if (!token || ws) return
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(
-      `${proto}//${window.location.host}/api/v1/events/ws?token=${encodeURIComponent(token)}`,
-    )
-    ws = socket
+    if (!token || eventSource) return
+    if (isOffline()) {
+      waitForOnline()
+      return
+    }
 
-    socket.onmessage = (ev) => {
+    const es = new EventSource(`/api/v1/events/stream?token=${encodeURIComponent(token)}`)
+    eventSource = es
+
+    es.onopen = () => {
+      if (eventSource !== es) return
+      connected.value = true
+      reconnectAttempts = 0
+    }
+
+    es.onmessage = (ev) => {
+      if (eventSource !== es) return
       try {
-        const msg = JSON.parse(String(ev.data)) as WsEventFrame
+        const msg = JSON.parse(String(ev.data)) as SseEventFrame
         if (msg.event === 'library_scan_started' && msg.library_id) {
           const prev = scanTasks.value[msg.library_id]
           scanTasks.value[msg.library_id] = {
@@ -176,35 +254,24 @@ export const useEventsStore = defineStore('events', () => {
       }
     }
 
-    socket.onclose = () => {
-      if (ws !== socket) return
-      ws = null
-      if (getStoredToken()) {
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null
-          connect()
-        }, 3000)
-      }
+    es.onerror = () => {
+      if (eventSource !== es) return
+      closeEventSource()
+      scheduleReconnect()
     }
   }
 
   function disconnect(): void {
-    if (reconnectTimer) {
-      clearTimeout(reconnectTimer)
-      reconnectTimer = null
-    }
-    if (ws) {
-      const socket = ws
-      ws = null
-      socket.onclose = null
-      socket.onmessage = null
-      socket.onerror = null
-      socket.close()
-    }
+    intentionalDisconnect = true
+    reconnectAttempts = 0
+    clearReconnectTimer()
+    clearOnlineListener()
+    closeEventSource()
     scanTasks.value = {}
   }
 
   return {
+    connected,
     scanTasks,
     scanTaskList,
     activeScans,

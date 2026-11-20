@@ -24,7 +24,7 @@ use xmedia_core::infra::persistence::repositories::{
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
 use xmedia_core::{ensure_core_schema, ensure_sqlite_parent_dir, register_core_models};
 
-use gateway::{GatewayState, core_api_router};
+use gateway::{FfmpegStatusCache, GatewayState, core_api_router};
 
 #[derive(Debug, Clone)]
 pub struct XMediaConfig {
@@ -235,8 +235,10 @@ impl XMediaApp {
         let gateway_state = GatewayState {
             auth: auth.clone(),
             libraries: libraries.clone(),
+            libraries_repo,
             events: events.clone(),
             ffmpeg,
+            ffmpeg_status_cache: FfmpegStatusCache::new(),
             enabled_modules: Arc::new(enabled_modules.clone()),
             external_web_dir: cfg.external_web_dir,
         };
@@ -249,7 +251,8 @@ impl XMediaApp {
             .and(NotForContentType::const_new("image/"))
             .and(NotForContentType::const_new("application/octet-stream"))
             .and(NotForContentType::const_new("application/epub+zip"))
-            .and(NotForContentType::const_new("application/pdf"));
+            .and(NotForContentType::const_new("application/pdf"))
+            .and(NotForContentType::const_new("text/event-stream"));
 
         let spa_service = axum::routing::get(static_files::serve_spa).with_state(gateway_state);
 
@@ -409,5 +412,97 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(sub_res.status(), StatusCode::OK);
+
+        // 5. Verify SSE endpoint auth (401 without token, 200 with ?token= and Authorization header)
+        let unauth_sse = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/events/stream")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauth_sse.status(), StatusCode::UNAUTHORIZED);
+
+        let header_sse = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/events/stream")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(header_sse.status(), StatusCode::OK);
+        assert!(
+            header_sse
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.starts_with("text/event-stream"))
+        );
+        assert_eq!(
+            header_sse
+                .headers()
+                .get("x-accel-buffering")
+                .and_then(|v| v.to_str().ok()),
+            Some("no")
+        );
+        drop(header_sse);
+
+        // 6. Verify SSE ?token= query auth + live SystemEvent JSON frame delivery
+        let query_sse = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/events/stream?token={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(query_sse.status(), StatusCode::OK);
+        assert!(
+            query_sse
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.starts_with("text/event-stream"))
+        );
+
+        use futures_core::Stream;
+        use std::future::poll_fn;
+        use std::pin::Pin;
+        use std::time::Duration;
+        use xmedia_core::application::ports::{RealtimeEventPort, SystemEvent};
+        use xmedia_core::domain::library::MediaKind;
+
+        app_instance.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Book,
+        });
+
+        let mut data_stream = query_sse.into_body().into_data_stream();
+        let chunk = tokio::time::timeout(
+            Duration::from_secs(2),
+            poll_fn(|cx| Pin::new(&mut data_stream).poll_next(cx)),
+        )
+        .await
+        .expect("timed out waiting for SSE event frame")
+        .expect("SSE stream ended unexpectedly")
+        .expect("SSE body chunk error");
+
+        let raw_frame = String::from_utf8(chunk.to_vec()).unwrap();
+        let data_line = raw_frame
+            .lines()
+            .find_map(|line| line.strip_prefix("data:"))
+            .map(str::trim)
+            .expect("SSE frame must contain a data: line");
+        let parsed: serde_json::Value = serde_json::from_str(data_line).unwrap();
+        assert_eq!(parsed["event"], "media_changed");
+        assert_eq!(parsed["media_kind"], "book");
     }
 }

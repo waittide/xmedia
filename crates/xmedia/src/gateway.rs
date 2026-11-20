@@ -1,25 +1,32 @@
+use std::convert::Infallible;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::{Json, Router};
+use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{RwLock, mpsc};
 use uuid::Uuid;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::dto::{
-    ChangePasswordInput, CreateLibraryInput, CreateUserInput, LibraryDto, LoginInput,
-    RenameLibraryInput, SetupAdminInput, SetupStatusDto, SystemCapabilitiesDto, UpdateUserInput,
-    UserDto,
+    ChangePasswordInput, CreateLibraryInput, CreateUserInput, FfmpegStatusDto, LibraryDto,
+    LoginInput, RenameLibraryInput, SetupAdminInput, SetupStatusDto, SystemCapabilitiesDto,
+    UpdateUserInput, UserDto,
 };
 use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::library::{LibraryId, MediaKind, ScanStatus};
+use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{User, UserId, UserPreferences};
 use xmedia_core::http::{
     ApiError, ApiResult, attach_cookie, authenticate_web_parts, build_clear_cookie,
@@ -28,12 +35,65 @@ use xmedia_core::http::{
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 
+const FFMPEG_STATUS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+#[derive(Clone)]
+struct CachedFfmpegStatus {
+    status: FfmpegStatusDto,
+    fetched_at: Instant,
+}
+
+#[derive(Clone, Default)]
+pub struct FfmpegStatusCache {
+    inner: Arc<RwLock<Option<CachedFfmpegStatus>>>,
+}
+
+impl FfmpegStatusCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn get_or_refresh(&self, ffmpeg: &FfmpegToolkit) -> FfmpegStatusDto {
+        self.get_or_refresh_with_ttl(ffmpeg, FFMPEG_STATUS_CACHE_TTL)
+            .await
+    }
+
+    async fn get_or_refresh_with_ttl(
+        &self,
+        ffmpeg: &FfmpegToolkit,
+        ttl: Duration,
+    ) -> FfmpegStatusDto {
+        {
+            let guard = self.inner.read().await;
+            if let Some(entry) = guard.as_ref()
+                && entry.fetched_at.elapsed() < ttl
+            {
+                return entry.status.clone();
+            }
+        }
+        let mut guard = self.inner.write().await;
+        if let Some(entry) = guard.as_ref()
+            && entry.fetched_at.elapsed() < ttl
+        {
+            return entry.status.clone();
+        }
+        let status = ffmpeg.check_status().await;
+        *guard = Some(CachedFfmpegStatus {
+            status: status.clone(),
+            fetched_at: Instant::now(),
+        });
+        status
+    }
+}
+
 #[derive(Clone)]
 pub struct GatewayState {
     pub auth: Arc<AuthService>,
     pub libraries: Arc<LibraryService>,
+    pub libraries_repo: Arc<dyn LibraryRepository>,
     pub events: Arc<BroadcastEventHub>,
     pub ffmpeg: FfmpegToolkit,
+    pub ffmpeg_status_cache: FfmpegStatusCache,
     pub enabled_modules: Arc<Vec<MediaKind>>,
     pub external_web_dir: Option<PathBuf>,
 }
@@ -74,7 +134,7 @@ pub fn core_api_router() -> Router<GatewayState> {
         .route("/libraries/{id}/scan", post(trigger_library_scan))
         .route("/system/capabilities", get(system_capabilities))
         .route("/system/overview", get(system_overview))
-        .route("/events/ws", get(events_ws))
+        .route("/events/stream", get(events_stream))
 }
 
 #[derive(Serialize)]
@@ -269,7 +329,10 @@ async fn trigger_library_scan(
 async fn system_capabilities(
     State(state): State<GatewayState>,
 ) -> ApiResult<Json<SystemCapabilitiesDto>> {
-    let ffmpeg = state.ffmpeg.check_status().await;
+    let ffmpeg = state
+        .ffmpeg_status_cache
+        .get_or_refresh(&state.ffmpeg)
+        .await;
     Ok(Json(SystemCapabilitiesDto {
         version: env!("CARGO_PKG_VERSION").to_string(),
         modules: (*state.enabled_modules).clone(),
@@ -281,7 +344,10 @@ async fn system_overview(
     State(state): State<GatewayState>,
     CoreWebAuth(_user): CoreWebAuth,
 ) -> ApiResult<Json<SystemOverviewDto>> {
-    let ffmpeg = state.ffmpeg.check_status().await;
+    let ffmpeg = state
+        .ffmpeg_status_cache
+        .get_or_refresh(&state.ffmpeg)
+        .await;
     let libraries = state.libraries.list_libraries(None).await?;
     let mut domains = Vec::with_capacity(state.enabled_modules.len());
 
@@ -309,15 +375,62 @@ async fn system_overview(
     }))
 }
 
-async fn events_ws(
-    ws: WebSocketUpgrade,
+struct SseEventStream {
+    rx: mpsc::Receiver<Result<Event, Infallible>>,
+}
+
+impl Stream for SseEventStream {
+    type Item = Result<Event, Infallible>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.rx.poll_recv(cx)
+    }
+}
+
+fn spawn_sse_event_stream(
+    mut rx: tokio::sync::broadcast::Receiver<SystemEvent>,
+    initial_events: Vec<SystemEvent>,
+) -> SseEventStream {
+    let (tx, stream_rx) = mpsc::channel::<Result<Event, Infallible>>(64);
+    tokio::spawn(async move {
+        for ev in initial_events {
+            let Ok(event) = Event::default().json_data(&ev) else {
+                continue;
+            };
+            if tx.send(Ok(event)).await.is_err() {
+                return;
+            }
+        }
+        loop {
+            tokio::select! {
+                biased;
+                _ = tx.closed() => break,
+                recv = rx.recv() => match recv {
+                    Ok(event) => {
+                        let Ok(sse_event) = Event::default().json_data(&event) else {
+                            continue;
+                        };
+                        if tx.send(Ok(sse_event)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        }
+    });
+    SseEventStream { rx: stream_rx }
+}
+
+async fn events_stream(
     State(state): State<GatewayState>,
     CoreWebAuth(_user): CoreWebAuth,
 ) -> Response {
     let rx = state.events.subscribe();
     let initial_scans = state
-        .libraries
-        .list_libraries(None)
+        .libraries_repo
+        .list_all()
         .await
         .unwrap_or_default()
         .into_iter()
@@ -332,32 +445,121 @@ async fn events_ws(
             _ => None,
         })
         .collect::<Vec<_>>();
-    ws.on_upgrade(move |socket| forward_events(socket, rx, initial_scans))
+
+    let stream = spawn_sse_event_stream(rx, initial_scans);
+    let mut res = Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response();
+    res.headers_mut()
+        .insert("x-accel-buffering", HeaderValue::from_static("no"));
+    res
 }
 
-async fn forward_events(
-    mut socket: WebSocket,
-    mut rx: tokio::sync::broadcast::Receiver<SystemEvent>,
-    initial_events: Vec<SystemEvent>,
-) {
-    for ev in initial_events {
-        if let Ok(json) = serde_json::to_string(&ev)
-            && socket.send(Message::Text(json.into())).await.is_err()
-        {
-            return;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::future::poll_fn;
+    use tokio::sync::broadcast;
+
+    async fn next_event(stream: &mut SseEventStream) -> Option<Result<Event, Infallible>> {
+        poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await
     }
-    loop {
-        match rx.recv().await {
-            Ok(event) => {
-                if let Ok(json) = serde_json::to_string(&event)
-                    && socket.send(Message::Text(json.into())).await.is_err()
-                {
-                    break;
-                }
+
+    #[tokio::test]
+    async fn sse_stream_forwards_events_and_cleans_up_receiver_on_drop() {
+        let (tx, rx) = broadcast::channel(16);
+        assert_eq!(tx.receiver_count(), 1);
+
+        let initial = vec![SystemEvent::LibraryScanProgress {
+            library_id: LibraryId::new(),
+            library_name: "Books".into(),
+            media_kind: MediaKind::Book,
+            scanned: 3,
+            total: Some(10),
+        }];
+        let mut stream = spawn_sse_event_stream(rx, initial);
+
+        let first = tokio::time::timeout(Duration::from_secs(2), next_event(&mut stream))
+            .await
+            .unwrap();
+        assert!(first.is_some());
+
+        tx.send(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Video,
+        })
+        .unwrap();
+        let live = tokio::time::timeout(Duration::from_secs(2), next_event(&mut stream))
+            .await
+            .unwrap();
+        assert!(live.is_some());
+
+        // Dropping the SSE stream must terminate the forwarding task and drop the broadcast receiver
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while tx.receiver_count() > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            Err(RecvError::Lagged(_)) => continue,
-            Err(RecvError::Closed) => break,
-        }
+        })
+        .await
+        .expect("broadcast receiver should be dropped promptly after SSE client disconnect");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn ffmpeg_status_cache_reuses_result_within_ttl_and_refreshes_after() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let counter_path = tmp.path().join("invocations.log");
+        let fake_bin = tmp.path().join("fake-ffmpeg.sh");
+        let script = format!(
+            "#!/bin/sh\necho x >> \"{}\"\necho 'ffmpeg version fake-1.0'\n",
+            counter_path.display()
+        );
+        std::fs::write(&fake_bin, script).unwrap();
+        let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake_bin, perms).unwrap();
+
+        let toolkit = FfmpegToolkit::new(
+            fake_bin.to_string_lossy().to_string(),
+            fake_bin.to_string_lossy().to_string(),
+        );
+        let cache = FfmpegStatusCache::new();
+        let ttl = Duration::from_millis(80);
+
+        let s1 = cache.get_or_refresh_with_ttl(&toolkit, ttl).await;
+        assert!(s1.ffmpeg_available);
+        assert!(s1.ffprobe_available);
+        assert_eq!(
+            s1.ffmpeg_version.as_deref(),
+            Some("ffmpeg version fake-1.0")
+        );
+
+        // Second & third calls within TTL must hit cache without spawning subprocesses
+        let s2 = cache.get_or_refresh_with_ttl(&toolkit, ttl).await;
+        let s3 = cache.get_or_refresh_with_ttl(&toolkit, ttl).await;
+        assert_eq!(s2.ffmpeg_version, s1.ffmpeg_version);
+        assert_eq!(s3.ffmpeg_version, s1.ffmpeg_version);
+
+        let count_after_cached = std::fs::read_to_string(&counter_path)
+            .unwrap()
+            .lines()
+            .count();
+        assert_eq!(
+            count_after_cached, 2,
+            "expected exactly 1 ffmpeg + 1 ffprobe invocation within TTL"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let _s4 = cache.get_or_refresh_with_ttl(&toolkit, ttl).await;
+        let count_after_expiry = std::fs::read_to_string(&counter_path)
+            .unwrap()
+            .lines()
+            .count();
+        assert_eq!(
+            count_after_expiry, 4,
+            "expected cache refresh after TTL expiry"
+        );
     }
 }

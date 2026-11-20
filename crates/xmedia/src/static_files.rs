@@ -28,9 +28,9 @@ fn normalize_asset_path(uri_path: &str) -> Option<PathBuf> {
     Some(clean)
 }
 
-fn asset_response(path_hint: &str, bytes: Vec<u8>, immutable: bool) -> Response {
+fn asset_response(path_hint: &str, body: impl Into<Body>, immutable: bool) -> Response {
     let mime = mime_guess::from_path(path_hint).first_or_octet_stream();
-    let mut res = (StatusCode::OK, Body::from(bytes)).into_response();
+    let mut res = (StatusCode::OK, body.into()).into_response();
     if let Ok(ct) = HeaderValue::from_str(mime.as_ref()) {
         res.headers_mut().insert(CONTENT_TYPE, ct);
     }
@@ -87,11 +87,11 @@ pub async fn serve_spa(State(state): State<GatewayState>, uri: Uri) -> Response 
     if !rel_str.is_empty()
         && let Some(embedded) = EmbeddedWebAssets::get(&rel_str)
     {
-        return asset_response(&rel_str, embedded.data.into_owned(), is_hashed_asset);
+        return asset_response(&rel_str, embedded.data, is_hashed_asset);
     }
 
     if let Some(index) = EmbeddedWebAssets::get("index.html") {
-        return asset_response("index.html", index.data.into_owned(), false);
+        return asset_response("index.html", index.data, false);
     }
 
     Html(

@@ -17,6 +17,7 @@ db-mysql = ["xmedia-core/db-mysql", "toasty/mysql"]
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
+futures-core.workspace = true
 mime_guess.workspace = true
 rust-embed.workspace = true
 serde.workspace = true

@@ -28,9 +28,11 @@ fn normalize_asset_path(uri_path: &str) -> Option<PathBuf> {
     Some(clean)
 }
 
-fn asset_response(path_hint: &str, bytes: Vec<u8>, immutable: bool) -> Response {
+const TOOL_INDEX_CANDIDATES: [&str; 2] = ["tool.html", "index.html"];
+
+fn asset_response(path_hint: &str, body: impl Into<Body>, immutable: bool) -> Response {
     let mime = mime_guess::from_path(path_hint).first_or_octet_stream();
-    let mut res = (StatusCode::OK, Body::from(bytes)).into_response();
+    let mut res = (StatusCode::OK, body.into()).into_response();
     if let Ok(ct) = HeaderValue::from_str(mime.as_ref()) {
         res.headers_mut().insert(CONTENT_TYPE, ct);
     }
@@ -72,25 +74,20 @@ pub async fn serve_tool_spa(State(state): State<ToolHttpState>, uri: Uri) -> Res
                 return asset_response(&rel_str, bytes, is_hashed_asset);
             }
         }
-        for html_name in ["index.html", "tool.html"] {
-            let html_file = ext_dir.join(html_name);
-            if html_file.is_file()
-                && let Ok(bytes) = tokio::fs::read(&html_file).await
-            {
-                return asset_response("index.html", bytes, false);
-            }
+        if let Some((html_name, bytes)) = read_external_index(ext_dir).await {
+            return asset_response(html_name, bytes, false);
         }
     }
 
     if !rel_str.is_empty()
         && let Some(embedded) = EmbeddedToolWebAssets::get(&rel_str)
     {
-        return asset_response(&rel_str, embedded.data.into_owned(), is_hashed_asset);
+        return asset_response(&rel_str, embedded.data, is_hashed_asset);
     }
 
-    for html_name in ["tool.html", "index.html"] {
+    for html_name in TOOL_INDEX_CANDIDATES {
         if let Some(index) = EmbeddedToolWebAssets::get(html_name) {
-            return asset_response("index.html", index.data.into_owned(), false);
+            return asset_response(html_name, index.data, false);
         }
     }
 
@@ -99,4 +96,35 @@ pub async fn serve_tool_spa(State(state): State<ToolHttpState>, uri: Uri) -> Res
          <body><h1>xmedia-tool is running</h1><p>Frontend assets are not built yet.</p></body></html>",
     )
     .into_response()
+}
+
+async fn read_external_index(ext_dir: &Path) -> Option<(&'static str, Vec<u8>)> {
+    for html_name in TOOL_INDEX_CANDIDATES {
+        let html_file = ext_dir.join(html_name);
+        if html_file.is_file()
+            && let Ok(bytes) = tokio::fs::read(&html_file).await
+        {
+            return Some((html_name, bytes));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn external_index_prefers_tool_html_then_falls_back_to_index_html() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("index.html"), b"<html>index</html>").unwrap();
+        let (name, bytes) = read_external_index(tmp.path()).await.unwrap();
+        assert_eq!(name, "index.html");
+        assert_eq!(bytes, b"<html>index</html>");
+
+        std::fs::write(tmp.path().join("tool.html"), b"<html>tool</html>").unwrap();
+        let (name, bytes) = read_external_index(tmp.path()).await.unwrap();
+        assert_eq!(name, "tool.html");
+        assert_eq!(bytes, b"<html>tool</html>");
+    }
 }
