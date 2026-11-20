@@ -22,26 +22,35 @@ export const useAuthStore = defineStore('auth', () => {
     return enabledModules.value.includes(kind)
   }
 
+  let bootstrapPromise: Promise<void> | null = null
+
   async function bootstrap(): Promise<void> {
     if (initialized.value) return
-    const themeStore = useThemeStore()
-    try {
-      const [cap, status] = await Promise.all([api.capabilities(), api.setupStatus()])
-      capabilities.value = cap
-      needsSetup.value = status.needs_setup
-      if (!status.needs_setup && getStoredToken()) {
-        try {
-          const me = await api.me()
-          user.value = me
-          setHomeCacheUser(me.id)
-          themeStore.hydrateFromUser(me.preferences)
-        } catch {
-          clearLocalSession()
+    if (bootstrapPromise) return bootstrapPromise
+
+    bootstrapPromise = (async () => {
+      const themeStore = useThemeStore()
+      try {
+        const [cap, status] = await Promise.all([api.capabilities(), api.setupStatus()])
+        capabilities.value = cap
+        needsSetup.value = status.needs_setup
+        if (!status.needs_setup && getStoredToken()) {
+          try {
+            const me = await api.me()
+            user.value = me
+            setHomeCacheUser(me.id)
+            themeStore.hydrateFromUser(me.preferences)
+          } catch {
+            clearLocalSession()
+          }
         }
+      } finally {
+        initialized.value = true
+        bootstrapPromise = null
       }
-    } finally {
-      initialized.value = true
-    }
+    })()
+
+    return bootstrapPromise
   }
 
   function applyAuthenticatedUser(nextUser: UserDto): void {

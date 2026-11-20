@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import type { Component } from 'vue'
+import { nextTick, ref, watch, type Component } from 'vue'
 import {
+  LuCheck,
   LuChevronDown,
   LuChevronRight,
   LuFolderPlus,
+  LuLoader2,
   LuRefreshCw,
   LuSlidersHorizontal,
   LuTrash2,
+  LuX,
 } from 'vue-icons-plus/lu'
 import type { MediaKind } from '@/types/api'
 import { useWorkspaceSidebar } from './useWorkspaceSidebar'
@@ -32,6 +35,7 @@ const {
   activeSidebarGroups,
   creatingGroupId,
   newCollectionName,
+  creatingCollection,
   SIDEBAR_PREVIEW_LIMIT,
   isGroupFolded,
   toggleGroupFold,
@@ -39,8 +43,18 @@ const {
   toggleGroupExpanded,
   visibleGroupItems,
   toggleCreateForGroup,
+  cancelCreateCollection,
   handleCreateCollection,
 } = useWorkspaceSidebar(() => emit('closeMobile'))
+
+const createInputRef = ref<HTMLInputElement[] | HTMLInputElement | null>(null)
+
+watch(creatingGroupId, async (id) => {
+  if (!id) return
+  await nextTick()
+  const el = Array.isArray(createInputRef.value) ? createInputRef.value[0] : createInputRef.value
+  el?.focus()
+})
 </script>
 
 <template>
@@ -235,15 +249,38 @@ const {
         <div v-if="!isGroupFolded(group.id)" class="space-y-0.5">
           <form
             v-if="group.canCreate && creatingGroupId === group.id"
-            class="mb-2 px-2"
+            class="mb-2 flex items-center gap-1 px-1.5"
             @submit.prevent="handleCreateCollection"
           >
             <input
+              ref="createInputRef"
               v-model="newCollectionName"
               type="text"
+              :disabled="creatingCollection"
               :placeholder="group.createPlaceholder"
-              class="md-input h-9 w-full px-3 text-xs"
+              class="md-input h-9 min-w-0 flex-1 px-3 text-xs"
+              @keydown.escape.stop.prevent="cancelCreateCollection"
             />
+            <button
+              type="submit"
+              :disabled="!newCollectionName.trim() || creatingCollection"
+              :title="t('common.confirm')"
+              :aria-label="t('common.confirm')"
+              class="md-icon-btn md-icon-btn-sm md-state !h-8 !w-8 shrink-0 text-[var(--md-sys-color-primary)] disabled:opacity-35"
+            >
+              <LuLoader2 v-if="creatingCollection" class="h-3.5 w-3.5 animate-spin" />
+              <LuCheck v-else class="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              :disabled="creatingCollection"
+              :title="t('common.cancel')"
+              :aria-label="t('common.cancel')"
+              class="md-icon-btn md-icon-btn-sm md-state !h-8 !w-8 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
+              @click="cancelCreateCollection"
+            >
+              <LuX class="h-4 w-4" />
+            </button>
           </form>
 
           <div
@@ -281,8 +318,9 @@ const {
               <button
                 v-if="sub.onDelete"
                 type="button"
-                class="hidden rounded-full p-1 opacity-70 group-hover:inline-flex hover:text-[var(--md-sys-color-error)] hover:opacity-100"
+                class="inline-flex rounded-full p-1 opacity-100 transition-opacity hover:text-[var(--md-sys-color-error)] focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
                 :title="t('common.delete')"
+                :aria-label="t('common.delete')"
                 @click.stop="sub.onDelete()"
               >
                 <LuTrash2 class="h-3.5 w-3.5" />

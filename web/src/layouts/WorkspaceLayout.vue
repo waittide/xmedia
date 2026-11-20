@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -19,23 +19,18 @@ import {
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
 import { useThemeStore } from '@/stores/theme'
-import { useUploadStore } from '@/stores/uploads'
+import { getAcceptedUploadExtensions, useUploadStore } from '@/stores/uploads'
 import type { MediaKind } from '@/types/api'
 
 import { useCatalogStore } from '@/domains/book/store'
-
-import { api as comicApi, withAuthUrl } from '@/domains/comic/api'
-import { useComicI18n } from '@/domains/comic/i18n'
 import { useSidebarStore as useComicSidebarStore } from '@/domains/comic/store'
-import type { SeriesSummaryDto } from '@/domains/comic/types'
-
 import { usePlayerStore } from '@/domains/music/player'
 import { useMusicStore } from '@/domains/music/store'
-
 import { useVideoStore } from '@/domains/video/store'
 
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
@@ -45,7 +40,6 @@ import UploadShelf from '@/components/UploadShelf.vue'
 import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
 
 const { t } = useI18n()
-const { t: comicT } = useComicI18n()
 
 const route = useRoute()
 const router = useRouter()
@@ -54,6 +48,7 @@ const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
 const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
+const escapeStack = useEscapeStack()
 
 const bookStore = useCatalogStore()
 const comicSidebarStore = useComicSidebarStore()
@@ -70,18 +65,37 @@ const dragDepth = ref(0)
 
 const filePickerRef = ref<HTMLInputElement | null>(null)
 const mainScrollRef = ref<HTMLElement | null>(null)
-const searchWrapRef = ref<HTMLFormElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
-const comicSearchDropdownRef = ref<HTMLDivElement | null>(null)
 const accountMenuRef = ref<HTMLElement | null>(null)
 
 const comicSearchQuery = ref('')
 const videoSearchQuery = ref('')
-const comicSearchFocused = ref(false)
-const comicSearchResults = ref<SeriesSummaryDto[]>([])
-const comicSearchLoading = ref(false)
-const searchRect = ref({ top: 56, left: 0, width: 480 })
-let comicSearchTimer: ReturnType<typeof setTimeout> | null = null
+
+// LIFO Escape stack: pressing Esc closes only the topmost active layer
+escapeStack.register(
+  () => mobileMenuOpen.value,
+  () => {
+    mobileMenuOpen.value = false
+  },
+)
+escapeStack.register(
+  () => accountMenuOpen.value,
+  () => {
+    accountMenuOpen.value = false
+  },
+)
+escapeStack.register(
+  () => playerStore.lyricsOpen,
+  () => {
+    playerStore.lyricsOpen = false
+  },
+)
+escapeStack.register(
+  () => playerStore.queueOpen,
+  () => {
+    playerStore.queueOpen = false
+  },
+)
 
 const loadedDomains = new Set<MediaKind>()
 
@@ -113,7 +127,6 @@ let sidebarLoadTimer: ReturnType<typeof setTimeout> | null = null
 watch(
   () => domainStore.activeDomain,
   (next) => {
-    comicSearchFocused.value = false
     if (mainScrollRef.value) {
       mainScrollRef.value.scrollTop = 0
     }
@@ -129,6 +142,21 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => [route.name, route.query.q] as const,
+  ([name, q]) => {
+    const str = typeof q === 'string' ? q : ''
+    if (name === 'comic-series-list') {
+      comicSearchQuery.value = str
+    } else if (name === 'video-catalog') {
+      videoSearchQuery.value = str
+    } else if (name === 'music-search') {
+      musicStore.globalSearchQuery = str
+    }
+  },
+  { immediate: true },
+)
+
 const domainTabs = computed<Array<{ kind: MediaKind; label: string; icon: Component }>>(() => {
   const all: Array<{ kind: MediaKind; label: string; icon: Component }> = [
     { kind: 'book', label: t('app.domains.book'), icon: LuBookOpen },
@@ -139,31 +167,9 @@ const domainTabs = computed<Array<{ kind: MediaKind; label: string; icon: Compon
   return all.filter((item) => authStore.hasModule(item.kind))
 })
 
-const acceptedExtensions = computed(() => {
-  const exts: string[] = []
-  if (authStore.hasModule('book')) exts.push('.epub', '.txt', '.pdf')
-  if (authStore.hasModule('comic')) exts.push('.cbz', '.zip')
-  if (authStore.hasModule('music')) {
-    exts.push('.flac', '.mp3', '.m4a', '.aac', '.alac', '.ogg', '.opus', '.wav', '.lrc')
-  }
-  if (authStore.hasModule('video')) {
-    exts.push(
-      '.mp4',
-      '.mkv',
-      '.webm',
-      '.mov',
-      '.avi',
-      '.ts',
-      '.m4v',
-      '.flv',
-      '.srt',
-      '.vtt',
-      '.ass',
-      '.ssa',
-    )
-  }
-  return exts.join(',')
-})
+const acceptedExtensions = computed(() =>
+  getAcceptedUploadExtensions(authStore.enabledModules),
+)
 
 const showMusicBar = computed(
   () =>
@@ -190,7 +196,7 @@ function handleSidebarButtonClick(): void {
   localStorage.setItem('xmedia.sidebar_collapsed', collapsed.value ? '1' : '0')
 }
 
-// Search logic across 4 domains
+// Unified search state across 4 domains
 const activeSearchValue = computed({
   get(): string {
     const d = domainStore.activeDomain
@@ -216,63 +222,8 @@ const searchPlaceholder = computed(() => {
   return t('common.searchVideo')
 })
 
-function updateSearchDropdownPosition(): void {
-  if (!comicSearchFocused.value) return
-  const el = searchWrapRef.value
-  if (!el) return
-  const rect = el.getBoundingClientRect()
-  searchRect.value = {
-    top: rect.bottom + 8,
-    left: rect.left,
-    width: rect.width,
-  }
-}
-
-async function runComicLiveSearch(q: string): Promise<void> {
-  const trimmed = q.trim()
-  if (!trimmed) {
-    comicSearchResults.value = []
-    return
-  }
-  comicSearchLoading.value = true
-  try {
-    const list = await comicApi.listSeries({ search: trimmed })
-    comicSearchResults.value = list.slice(0, 8)
-  } finally {
-    comicSearchLoading.value = false
-  }
-}
-
-watch(comicSearchQuery, (q) => {
-  if (comicSearchTimer) clearTimeout(comicSearchTimer)
-  if (!q.trim()) {
-    comicSearchResults.value = []
-    return
-  }
-  comicSearchTimer = setTimeout(() => {
-    void runComicLiveSearch(q)
-  }, 160)
-})
-
-async function onSearchFocus(): Promise<void> {
-  if (domainStore.activeDomain !== 'comic') return
-  comicSearchFocused.value = true
-  await nextTick()
-  updateSearchDropdownPosition()
-  if (comicSearchQuery.value.trim()) {
-    void runComicLiveSearch(comicSearchQuery.value)
-  }
-}
-
-function selectComicSearchResult(id: string): void {
-  comicSearchFocused.value = false
-  comicSearchQuery.value = ''
-  void router.push(`/comic/series/${id}`)
-}
-
 async function submitGlobalSearch(): Promise<void> {
   const d = domainStore.activeDomain
-  comicSearchFocused.value = false
   if (d === 'book') {
     const q = bookStore.keyword.trim()
     bookStore.page = 1
@@ -318,7 +269,6 @@ function clearGlobalSearch(): void {
     }
   } else if (d === 'comic') {
     comicSearchQuery.value = ''
-    comicSearchResults.value = []
     if (route.name === 'comic-series-list' && route.query.q) {
       const nextQuery = { ...route.query }
       delete nextQuery.q
@@ -339,7 +289,7 @@ function clearGlobalSearch(): void {
   }
 }
 
-// Domain Navigation Helpers
+// Upload & Drag-and-Drop
 function triggerUploadPicker(): void {
   filePickerRef.value?.click()
 }
@@ -417,13 +367,6 @@ function handleOutsideClick(ev: MouseEvent): void {
   if (accountMenuOpen.value && accountMenuRef.value && !accountMenuRef.value.contains(target)) {
     accountMenuOpen.value = false
   }
-  if (
-    comicSearchFocused.value &&
-    !searchWrapRef.value?.contains(target) &&
-    !comicSearchDropdownRef.value?.contains(target)
-  ) {
-    comicSearchFocused.value = false
-  }
 }
 
 function handleGlobalKeydown(ev: KeyboardEvent): void {
@@ -433,35 +376,24 @@ function handleGlobalKeydown(ev: KeyboardEvent): void {
   } else if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'b') {
     ev.preventDefault()
     handleSidebarButtonClick()
-  } else if (ev.key === 'Escape') {
-    commandPaletteOpen.value = false
-    mobileMenuOpen.value = false
-    accountMenuOpen.value = false
-    layoutCustomizerOpen.value = false
-    comicSearchFocused.value = false
-    playerStore.lyricsOpen = false
-    playerStore.queueOpen = false
   }
 }
 
 onMounted(() => {
   document.addEventListener('mousedown', handleOutsideClick)
   window.addEventListener('keydown', handleGlobalKeydown)
-  window.addEventListener('resize', updateSearchDropdownPosition)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', handleOutsideClick)
   window.removeEventListener('keydown', handleGlobalKeydown)
-  window.removeEventListener('resize', updateSearchDropdownPosition)
-  if (comicSearchTimer) clearTimeout(comicSearchTimer)
   if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
 })
 </script>
 
 <template>
   <div
-    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--ctp-shell)] text-[var(--ctp-text)]"
+    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)]"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent
     @dragleave.prevent="onDragLeave"
@@ -480,22 +412,24 @@ onBeforeUnmount(() => {
     <!-- Full-Window Drag & Drop Overlay -->
     <div
       v-if="dragDepth > 0"
-      class="pointer-events-none fixed inset-3 z-50 flex flex-col items-center justify-center rounded-3xl border-2 border-dashed border-[var(--ctp-accent)] bg-[var(--ctp-canvas)]/90 backdrop-blur-md"
+      class="pointer-events-none fixed inset-3 z-[var(--z-modal)] flex flex-col items-center justify-center rounded-[28px] border-2 border-dashed border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface-container-high)]/92 backdrop-blur-md"
     >
       <div
-        class="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+        class="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
       >
         <LuUpload class="h-7 w-7" />
       </div>
-      <p class="text-base font-bold text-[var(--ctp-text)]">{{ t('transfers.dropOverlayTitle') }}</p>
-      <p class="mt-1 px-4 text-center text-xs text-[var(--ctp-subtext0)]">
+      <p class="text-base font-bold text-[var(--md-sys-color-on-surface)]">
+        {{ t('transfers.dropOverlayTitle') }}
+      </p>
+      <p class="mt-1 px-4 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('transfers.dropOverlayHint') }}
       </p>
     </div>
 
     <!-- Full-Width MD3 Top App Bar -->
     <header
-      class="flex h-16 shrink-0 items-center justify-between gap-3 bg-[var(--md-sys-color-surface-container)] px-3 select-none sm:px-4"
+      class="flex h-16 shrink-0 items-center justify-between gap-2.5 bg-[var(--md-sys-color-surface-container)] px-3 select-none sm:gap-3 sm:px-4"
     >
       <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Switcher -->
       <div class="flex shrink-0 items-center gap-2">
@@ -535,10 +469,20 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Center: Authentic MD3 Search Bar -->
+      <!-- Center: Mobile Global Search Trigger Pill (< sm) -->
+      <button
+        type="button"
+        class="md-state flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3.5 text-left text-xs text-[var(--md-sys-color-on-surface-variant)] sm:hidden"
+        :aria-label="t('common.search')"
+        @click="commandPaletteOpen = true"
+      >
+        <LuSearch class="h-4 w-4 shrink-0" />
+        <span class="truncate">{{ activeSearchValue || t('common.search') + '…' }}</span>
+      </button>
+
+      <!-- Center: Unified MD3 Search Bar (sm+) -->
       <form
-        ref="searchWrapRef"
-        class="relative mx-auto max-w-md flex-1 lg:max-w-lg"
+        class="relative mx-auto hidden max-w-md flex-1 sm:block lg:max-w-lg"
         @submit.prevent="submitGlobalSearch"
       >
         <LuSearch
@@ -550,13 +494,13 @@ onBeforeUnmount(() => {
           type="text"
           :placeholder="searchPlaceholder"
           class="h-11 w-full rounded-full bg-[var(--md-sys-color-surface-container-high)] pr-14 pl-11 text-[13px] text-[var(--md-sys-color-on-surface)] placeholder-[var(--md-sys-color-on-surface-variant)] outline-none transition duration-200 focus:bg-[var(--md-sys-color-surface-container-lowest)] focus:shadow-[var(--md-sys-elevation-2)]"
-          @focus="onSearchFocus"
         />
         <button
           v-if="!activeSearchValue"
           type="button"
-          class="md-state absolute top-1/2 right-3 hidden -translate-y-1/2 rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)] sm:inline"
+          class="md-state absolute top-1/2 right-3 inline-flex -translate-y-1/2 items-center rounded-full bg-[var(--md-sys-color-surface-container)] px-2.5 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
           :title="t('common.search') + ' (⌘K)'"
+          :aria-label="t('common.search')"
           @click="commandPaletteOpen = true"
         >
           ⌘K
@@ -565,6 +509,7 @@ onBeforeUnmount(() => {
           v-else
           type="button"
           class="md-icon-btn md-icon-btn-sm md-state absolute top-1/2 right-1.5 -translate-y-1/2"
+          :aria-label="t('common.cancel')"
           @click="clearGlobalSearch"
         >
           <LuX class="h-4 w-4" />
@@ -625,7 +570,7 @@ onBeforeUnmount(() => {
           <Transition name="md-dialog">
             <div
               v-if="accountMenuOpen"
-              class="absolute top-12 right-0 z-50 w-56 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
+              class="absolute top-12 right-0 z-[var(--z-popover)] w-56 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
             >
               <div class="px-3 py-2">
                 <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
@@ -660,69 +605,6 @@ onBeforeUnmount(() => {
           </Transition>
         </div>
       </div>
-
-      <!-- Comic Live Search Dropdown -->
-      <Teleport to="body">
-        <div
-          v-if="
-            domainStore.activeDomain === 'comic' &&
-            comicSearchFocused &&
-            comicSearchQuery.trim().length > 0
-          "
-          ref="comicSearchDropdownRef"
-          class="fixed z-[var(--z-popover)] max-h-96 overflow-y-auto rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 shadow-2xl"
-          :style="{
-            top: searchRect.top + 'px',
-            left: searchRect.left + 'px',
-            width: searchRect.width + 'px',
-          }"
-        >
-          <div
-            v-if="!comicSearchLoading && comicSearchResults.length === 0"
-            class="py-6 text-center text-xs text-[var(--ctp-subtext0)]"
-          >
-            {{ t('common.noResults') }}
-          </div>
-          <button
-            v-for="item in comicSearchResults"
-            :key="item.id"
-            type="button"
-            class="flex w-full items-center gap-3 rounded-xl p-2 text-left transition hover:bg-[var(--ctp-row-hover)]"
-            @click="selectComicSearchResult(item.id)"
-          >
-            <div class="h-12 w-9 shrink-0 overflow-hidden rounded-md bg-[var(--ctp-mantle)]">
-              <img
-                v-if="item.cover_url"
-                :src="withAuthUrl(item.cover_url)"
-                :alt="item.title"
-                class="h-full w-full object-cover"
-              />
-              <div
-                v-else
-                class="flex h-full w-full items-center justify-center text-[var(--ctp-subtext0)]"
-              >
-                <LuBookOpen class="h-3.5 w-3.5" />
-              </div>
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-xs font-semibold text-[var(--ctp-text)]">
-                {{ item.title }}
-              </div>
-              <div class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
-                {{
-                  [...item.writers, ...item.pencillers].join(' · ') ||
-                  comicT('home.chaptersCount', { count: item.chapter_count })
-                }}
-              </div>
-            </div>
-            <span
-              class="rounded-lg bg-[var(--ctp-mantle)] px-2 py-0.5 text-[11px] text-[var(--ctp-subtext0)]"
-            >
-              {{ comicT('home.chaptersCount', { count: item.chapter_count }) }}
-            </span>
-          </button>
-        </div>
-      </Teleport>
     </header>
 
     <!-- Middle Body: Collapsible Domain Sidebar + Flush Rounded Main Canvas -->

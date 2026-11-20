@@ -24,9 +24,11 @@ import {
   LuTv,
   LuUser,
 } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useDomainStore } from '@/stores/domain'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import { useBookI18n } from '@/domains/book/i18n'
 import { useCatalogStore, type NavSection as BookNavSection } from '@/domains/book/store'
@@ -63,7 +65,9 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
   const authStore = useAuthStore()
   const dialogStore = useDialogStore()
   const domainStore = useDomainStore()
+  const snackbarStore = useSnackbarStore()
   const themeStore = useThemeStore()
+  const escapeStack = useEscapeStack()
 
   const bookStore = useCatalogStore()
   const comicSidebarStore = useComicSidebarStore()
@@ -72,6 +76,18 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
 
   const creatingGroupId = ref<string | null>(null)
   const newCollectionName = ref('')
+  const creatingCollection = ref(false)
+
+  function cancelCreateCollection(): void {
+    if (creatingCollection.value) return
+    creatingGroupId.value = null
+    newCollectionName.value = ''
+  }
+
+  escapeStack.register(
+    () => creatingGroupId.value !== null,
+    () => cancelCreateCollection(),
+  )
 
   watch(
     () => domainStore.activeDomain,
@@ -235,30 +251,46 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
   // Inline shelf/playlist create & delete handlers
   async function handleCreateCollection(): Promise<void> {
     const name = newCollectionName.value.trim()
-    if (!name) return
+    if (!name || creatingCollection.value) return
     const d = domainStore.activeDomain
-    newCollectionName.value = ''
-    creatingGroupId.value = null
+    creatingCollection.value = true
 
-    if (d === 'book') {
-      const created = await bookApi.createShelf(name)
-      await bookStore.refreshSidebarData()
-      await openBookSection('shelf', created.id)
-    } else if (d === 'comic') {
-      const created = await comicApi.createShelf({ name })
-      await comicSidebarStore.refresh()
-      onCloseMobile()
-      await router.push({ path: '/comic/series', query: { shelf_id: created.id } })
-    } else if (d === 'music') {
-      const created = await musicApi.createPlaylist({ name })
-      await musicStore.refreshSidebar()
-      onCloseMobile()
-      await router.push(`/music/playlists/${created.playlist.id}`)
-    } else {
-      const created = await videoApi.createShelf({ name })
-      await videoStore.refreshSidebar()
-      onCloseMobile()
-      await router.push(`/video/shelves/${created.shelf.id}`)
+    try {
+      if (d === 'book') {
+        const created = await bookApi.createShelf(name)
+        await bookStore.refreshSidebarData()
+        newCollectionName.value = ''
+        creatingGroupId.value = null
+        await openBookSection('shelf', created.id)
+      } else if (d === 'comic') {
+        const created = await comicApi.createShelf({ name })
+        await comicSidebarStore.refresh()
+        newCollectionName.value = ''
+        creatingGroupId.value = null
+        onCloseMobile()
+        await router.push({ path: '/comic/series', query: { shelf_id: created.id } })
+      } else if (d === 'music') {
+        const created = await musicApi.createPlaylist({ name })
+        await musicStore.refreshSidebar()
+        newCollectionName.value = ''
+        creatingGroupId.value = null
+        onCloseMobile()
+        await router.push(`/music/playlists/${created.playlist.id}`)
+      } else {
+        const created = await videoApi.createShelf({ name })
+        await videoStore.refreshSidebar()
+        newCollectionName.value = ''
+        creatingGroupId.value = null
+        onCloseMobile()
+        await router.push(`/video/shelves/${created.shelf.id}`)
+      }
+    } catch (err) {
+      snackbarStore.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
+    } finally {
+      creatingCollection.value = false
     }
   }
 
@@ -269,10 +301,36 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
       danger: true,
     })
     if (!ok) return
-    await bookApi.deleteShelf(id)
-    await bookStore.refreshSidebarData()
-    if (bookStore.activeSection === 'shelf' && bookStore.activeShelfId === id) {
-      await openBookSection('all')
+    try {
+      await bookApi.deleteShelf(id)
+      await bookStore.refreshSidebarData()
+      if (bookStore.activeSection === 'shelf' && bookStore.activeShelfId === id) {
+        await openBookSection('all')
+      }
+    } catch (err) {
+      snackbarStore.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
+    }
+  }
+
+  async function handleDeleteBookBookmark(bm: BookBookmarkItemDto): Promise<void> {
+    const label = `${bm.book_title} · ${bm.bookmark.title}`
+    const ok = await dialogStore.confirm({
+      title: t('common.delete'),
+      message: label,
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await bookApi.deleteBookmark(bm.bookmark.id)
+      await bookStore.refreshSidebarData()
+    } catch (err) {
+      snackbarStore.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
     }
   }
 
@@ -283,10 +341,35 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
       danger: true,
     })
     if (!ok) return
-    await comicApi.deleteShelf(id)
-    await comicSidebarStore.refresh()
-    if (activeComicShelfId.value === id) {
-      await router.push('/comic/series')
+    try {
+      await comicApi.deleteShelf(id)
+      await comicSidebarStore.refresh()
+      if (activeComicShelfId.value === id) {
+        await router.push('/comic/series')
+      }
+    } catch (err) {
+      snackbarStore.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
+    }
+  }
+
+  async function handleDeleteComicBookmark(id: string, label: string): Promise<void> {
+    const ok = await dialogStore.confirm({
+      title: t('common.delete'),
+      message: label,
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await comicApi.deleteBookmark(id)
+      await comicSidebarStore.refresh()
+    } catch (err) {
+      snackbarStore.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
     }
   }
 
@@ -297,10 +380,17 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
       danger: true,
     })
     if (!ok) return
-    await musicApi.deletePlaylist(pl.id)
-    await musicStore.refreshSidebar()
-    if (route.path === `/music/playlists/${pl.id}`) {
-      await router.push('/music/songs')
+    try {
+      await musicApi.deletePlaylist(pl.id)
+      await musicStore.refreshSidebar()
+      if (route.path === `/music/playlists/${pl.id}`) {
+        await router.push('/music/songs')
+      }
+    } catch (err) {
+      snackbarStore.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
     }
   }
 
@@ -311,10 +401,17 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
       danger: true,
     })
     if (!ok) return
-    await videoApi.deleteShelf(sh.id)
-    await videoStore.refreshSidebar()
-    if (route.path === `/video/shelves/${sh.id}`) {
-      await router.push('/video/catalog')
+    try {
+      await videoApi.deleteShelf(sh.id)
+      await videoStore.refreshSidebar()
+      if (route.path === `/video/shelves/${sh.id}`) {
+        await router.push('/video/catalog')
+      }
+    } catch (err) {
+      snackbarStore.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
     }
   }
 
@@ -605,10 +702,7 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
               icon: LuBookmark,
               active: false,
               onClick: () => openBookBookmark(bm),
-              onDelete: () =>
-                void bookApi
-                  .deleteBookmark(bm.bookmark.id)
-                  .then(() => bookStore.refreshSidebarData()),
+              onDelete: () => void handleDeleteBookBookmark(bm),
             })),
           }
         default:
@@ -744,9 +838,10 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
                   `/comic/read/${encodeURIComponent(bm.bookmark.chapter_id)}?page=${bm.bookmark.page_number}`,
                 ),
               onDelete: () =>
-                void comicApi
-                  .deleteBookmark(bm.bookmark.id)
-                  .then(() => comicSidebarStore.refresh()),
+                void handleDeleteComicBookmark(
+                  bm.bookmark.id,
+                  `${bm.series_title} #${bm.chapter_number} (P${bm.bookmark.page_number})`,
+                ),
             })),
           }
         default:
@@ -990,6 +1085,7 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
     activeSidebarGroups,
     creatingGroupId,
     newCollectionName,
+    creatingCollection,
     SIDEBAR_PREVIEW_LIMIT,
     isGroupFolded,
     toggleGroupFold,
@@ -997,6 +1093,7 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
     toggleGroupExpanded,
     visibleGroupItems,
     toggleCreateForGroup,
+    cancelCreateCollection,
     handleCreateCollection,
   }
 }

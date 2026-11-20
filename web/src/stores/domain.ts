@@ -31,7 +31,11 @@ export const useDomainStore = defineStore('domain', () => {
     const cleanPath = fullPath.split('?')[0] ?? fullPath
     if (cleanPath === '/book' || cleanPath.startsWith('/book/')) {
       setActiveDomain('book')
-      if (!cleanPath.startsWith('/book/read/')) {
+      if (
+        !cleanPath.startsWith('/book/read/') &&
+        cleanPath !== '/book/online/read' &&
+        !cleanPath.startsWith('/book/online/read/')
+      ) {
         lastDomainRoute.value.book = fullPath
       }
     } else if (cleanPath === '/comic' || cleanPath.startsWith('/comic/')) {
@@ -41,14 +45,12 @@ export const useDomainStore = defineStore('domain', () => {
       }
     } else if (cleanPath === '/music' || cleanPath.startsWith('/music/')) {
       setActiveDomain('music')
+      lastDomainRoute.value.music = fullPath
     } else if (cleanPath === '/video' || cleanPath.startsWith('/video/')) {
       setActiveDomain('video')
       if (!cleanPath.startsWith('/video/watch/')) {
         lastDomainRoute.value.video = fullPath
       }
-    }
-    if (cleanPath === '/music' || cleanPath.startsWith('/music/')) {
-      lastDomainRoute.value.music = fullPath
     }
   }
 
