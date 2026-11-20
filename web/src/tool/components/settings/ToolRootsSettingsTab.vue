@@ -206,9 +206,6 @@ async function handleTestWebhook(): Promise<void> {
     <h2 class="text-sm font-bold text-[var(--ctp-text)]">
       新增「{{ domainBadgeLabels[domainSubTab] }}」本地目录
     </h2>
-    <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
-      各媒体类型的挂载目录彼此隔离，切换上方类型 Tab 可分别管理不同领域的目录
-    </p>
 
     <form class="mt-4 space-y-4" @submit.prevent="handleAddRoot">
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-12">

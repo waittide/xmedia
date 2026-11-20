@@ -1126,7 +1126,7 @@ defineExpose({
             等待选择刮削源结果
           </p>
           <p class="max-w-[260px] text-[11px] leading-relaxed opacity-80">
-            在中间搜索并点击「多源瀑布聚合结果」或任意候选源条目，即可在此处编辑并写入原文件；落盘后左侧会自动刷新为最新条目信息。
+            点击中间候选结果即可编辑并写入原文件
           </p>
           <button
             v-if="canSaveMetadata"

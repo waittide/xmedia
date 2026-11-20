@@ -147,7 +147,7 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
     <!-- Top Actions -->
     <div class="flex flex-wrap items-center justify-between gap-2">
       <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-        支持导入标准阅读（Legado）书源 JSON（含 CSS / JSONPath / 正则 / jsLib / loginUi 登录面板）
+        导入 Legado JSON 书源
       </p>
 
       <div class="flex items-center gap-2">
@@ -221,7 +221,7 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
     >
       <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">尚未导入任何书源</p>
       <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-        点击上方「上传 JSON 文件」或「粘贴导入书源」即可接入阅读（Legado）书源
+        上传或粘贴 Legado JSON 导入书源
       </p>
     </div>
 

@@ -56,7 +56,6 @@ function onCustomTokenInput(
   <!-- Language -->
   <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
     <h2 class="text-sm font-bold">{{ t('theme.languageTitle') }}</h2>
-    <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.languageDesc') }}</p>
 
     <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
       <button
@@ -85,11 +84,8 @@ function onCustomTokenInput(
 
   <!-- Theme Mode -->
   <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <div class="flex flex-wrap items-start justify-between gap-2">
-      <div>
-        <h2 class="text-sm font-bold">{{ t('theme.modeTitle') }}</h2>
-        <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.modeDesc') }}</p>
-      </div>
+    <div class="flex flex-wrap items-center justify-between gap-2">
+      <h2 class="text-sm font-bold">{{ t('theme.modeTitle') }}</h2>
       <button
         type="button"
         class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-1.5 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:text-[var(--ctp-text)]"
@@ -148,7 +144,6 @@ function onCustomTokenInput(
   <!-- Light Palette Pool -->
   <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
     <h2 class="text-sm font-bold">{{ t('theme.lightPaletteTitle') }}</h2>
-    <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.lightPaletteDesc') }}</p>
 
     <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <button
@@ -240,7 +235,6 @@ function onCustomTokenInput(
   <!-- Dark Palette Pool -->
   <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
     <h2 class="text-sm font-bold">{{ t('theme.darkPaletteTitle') }}</h2>
-    <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.darkPaletteDesc') }}</p>
 
     <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
       <button
@@ -332,7 +326,6 @@ function onCustomTokenInput(
   <!-- 3-Mode Accent Color -->
   <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
     <h2 class="text-sm font-bold">{{ t('theme.accentTitle') }}</h2>
-    <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">{{ t('theme.accentDesc') }}</p>
 
     <div class="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
       <button

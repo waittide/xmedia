@@ -315,7 +315,7 @@ async function handleUndoLastBatch(): Promise<void> {
   <MdDialog
     :open="open"
     :title="'批量元数据编辑 · ' + domainFieldLabels.domainName"
-    :subtitle="'将作用于已选 ' + entries.length + ' 个文件 · 仅修改非空字段，写入前自动保存可回滚快照'"
+    :subtitle="'已选 ' + entries.length + ' 个文件 · 仅修改非空字段'"
     max-width="max-w-2xl"
     @close="emit('close')"
   >

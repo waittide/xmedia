@@ -52,7 +52,7 @@ function lockFilledBookFields(): void {
     class="flex items-center gap-2 rounded-xl border border-[var(--ctp-accent)]/35 bg-[var(--ctp-accent-soft)]/50 px-3 py-2 text-xs text-[var(--ctp-accent)]"
   >
     <LuFileText class="h-4 w-4 shrink-0" />
-    <span>当前为 {{ bookFormat.toUpperCase() }} 文件，单书目录按 Calibre 规范写入 metadata.opf / cover，多书混放目录写入同名旁路文件，归档移动自动同步。</span>
+    <span>{{ bookFormat.toUpperCase() }} 元数据将写入旁路文件（metadata.opf / cover）</span>
   </div>
 
   <div
@@ -62,9 +62,9 @@ function lockFilledBookFields(): void {
     <span class="flex items-center gap-1.5 text-[var(--ctp-subtext1)]">
       <LuLock class="h-3.5 w-3.5 text-amber-500" />
       <span>
-        防刮削字段锁：已锁
+        字段锁：已锁
         <strong class="text-[var(--ctp-text)]">{{ form.lockedFields.length }}</strong>
-        项（保存后单本/批量刮削均跳过被锁字段）
+        项（刮削时跳过）
       </span>
     </span>
     <div class="flex items-center gap-1.5">

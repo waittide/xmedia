@@ -211,9 +211,7 @@ async function handleRun(): Promise<void> {
             class="flex items-start gap-2 rounded-2xl bg-[var(--md-sys-color-primary-container)]/55 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]"
           >
             <LuCheckCircle2 class="mt-0.5 h-4 w-4 shrink-0" />
-            <span>
-              该书籍已标记为规范化 EPUB 3.0。继续执行将按下方新参数重新处理；若无需保留二次备份，可取消勾选「保留源文件」。
-            </span>
+            <span>该书已规范化，继续将按新参数重新处理。</span>
           </div>
 
           <!-- Source Retention Option (Highlighted, Default: Keep) -->
@@ -241,11 +239,11 @@ async function handleRun(): Promise<void> {
                 </div>
                 <p class="mt-1 text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
                   <template v-if="form.keep_source">
-                    TXT / PDF 保留原文件并生成同名 .epub；EPUB 源会先将原文件备份为
-                    <code class="rounded bg-[var(--md-sys-color-surface-container-high)] px-1 font-mono text-[10px]">原名.orig.epub</code>，规范化结果写回原文件名。
+                    TXT / PDF 保留原文件并生成 .epub；EPUB 备份为
+                    <code class="rounded bg-[var(--md-sys-color-surface-container-high)] px-1 font-mono text-[10px]">.orig.epub</code>。
                   </template>
                   <template v-else>
-                    TXT / PDF 转换成功后将删除源文件（含同名旁路）；EPUB 源直接原子覆盖原文件。
+                    转换后删除 TXT / PDF 源文件，EPUB 直接覆盖原文件。
                   </template>
                 </p>
               </div>
@@ -260,7 +258,7 @@ async function handleRun(): Promise<void> {
                   压缩封面与内嵌插图
                 </div>
                 <div class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                  文本/XHTML/CSS 始终以最高级别 Deflate (9) 压缩；图片仅在确实缩小或超限时替换
+                  仅在图片超限或体积缩小时替换
                 </div>
               </div>
               <input
@@ -334,7 +332,7 @@ async function handleRun(): Promise<void> {
                 :disabled="running"
                 class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
               />
-              <span>生成 / 更新标准化书籍简介扉页（xmedia_jacket.xhtml）</span>
+              <span>生成 / 更新书籍简介扉页</span>
             </label>
 
             <label class="flex cursor-pointer items-center gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
@@ -344,7 +342,7 @@ async function handleRun(): Promise<void> {
                 :disabled="running"
                 class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
               />
-              <span>清理 EPUB 中未引用的孤立图片及系统垃圾（__MACOSX / .DS_Store）</span>
+              <span>清理未引用图片与系统垃圾文件</span>
             </label>
 
             <label class="flex cursor-pointer items-center gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
@@ -354,7 +352,7 @@ async function handleRun(): Promise<void> {
                 :disabled="running"
                 class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
               />
-              <span>扫描版 PDF（无文字层）自动提取页面图片并压缩打包为图页 EPUB</span>
+              <span>扫描版 PDF 自动转为图页 EPUB</span>
             </label>
 
             <label class="flex cursor-pointer items-center justify-between gap-2 text-xs text-[var(--md-sys-color-on-surface)]">

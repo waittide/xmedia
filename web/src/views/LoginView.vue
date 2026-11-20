@@ -47,8 +47,7 @@ async function onSubmit(): Promise<void> {
       <div
         class="w-full max-w-md rounded-[28px] border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-8 shadow-xl"
       >
-        <h1 class="text-2xl font-bold">{{ t('auth.loginTitle') }}</h1>
-        <p class="mt-1 mb-6 text-sm text-[var(--ctp-subtext0)]">{{ t('auth.loginSubtitle') }}</p>
+        <h1 class="mb-6 text-2xl font-bold">{{ t('auth.loginTitle') }}</h1>
 
         <div
           v-if="errorMsg"

@@ -268,16 +268,11 @@ async function handleBatchSyncAlbum(): Promise<void> {
             <div class="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]">
               <LuMusic class="h-4 w-4" />
             </div>
-            <div>
-              <h3 class="text-sm font-semibold">
-                音乐精校工具箱
-                <span v-if="isSingleMode && primaryEntry"> · {{ primaryEntry.file_name }}</span>
-                <span v-else>（已选 {{ sortedEntries.length }} 首曲目）</span>
-              </h3>
-              <p class="text-[11px] text-[var(--ctp-subtext0)]">
-                LRC 歌词时间轴微调与双向同步 · 封面瘦身 · ReplayGain 响度 · CUE 整轨分轨 · 专辑聚类同步
-              </p>
-            </div>
+            <h3 class="text-sm font-semibold">
+              音乐精校工具箱
+              <span v-if="isSingleMode && primaryEntry"> · {{ primaryEntry.file_name }}</span>
+              <span v-else>（已选 {{ sortedEntries.length }} 首曲目）</span>
+            </h3>
           </div>
           <button
             type="button"

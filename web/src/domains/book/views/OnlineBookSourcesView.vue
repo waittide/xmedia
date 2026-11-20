@@ -345,7 +345,7 @@ function handleJobUpdated(job: OnlineDownloadJobDto): void {
           <span>在线书源</span>
         </h1>
         <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          兼容阅读（Legado）书源规则与 JS 沙箱，支持聚合搜书、在线追更阅读与整本打包 EPUB / TXT 入库
+          聚合搜书、追更与打包
         </p>
       </div>
 

@@ -240,7 +240,7 @@ function openImportedBook(): void {
             >
               <AppCheckbox
                 v-model="importToLibrary"
-                label="打包完成后一键入库到本地托管图书库（自动支持 OPDS 与离线永久阅读）"
+                label="打包后自动入库"
               />
             </div>
           </template>

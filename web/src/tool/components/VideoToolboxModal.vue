@@ -239,16 +239,11 @@ async function handleBatchRemap(): Promise<void> {
             <div class="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]">
               <LuFilm class="h-4 w-4" />
             </div>
-            <div>
-              <h3 class="text-sm font-semibold">
-                影视字幕与剧集工具箱
-                <span v-if="isSingleMode && primaryEntry"> · {{ primaryEntry.file_name }}</span>
-                <span v-else>（已选 {{ sortedEntries.length }} 集视频）</span>
-              </h3>
-              <p class="text-[11px] text-[var(--ctp-subtext0)]">
-                外挂字幕转 UTF-8 / 简繁 / 时间轴微调 / Jellyfin 语言重命名 · 内封字幕抽取 · 番剧绝对集数映射
-              </p>
-            </div>
+            <h3 class="text-sm font-semibold">
+              影视字幕与剧集工具箱
+              <span v-if="isSingleMode && primaryEntry"> · {{ primaryEntry.file_name }}</span>
+              <span v-else>（已选 {{ sortedEntries.length }} 集视频）</span>
+            </h3>
           </div>
           <button
             type="button"

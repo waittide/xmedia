@@ -321,14 +321,9 @@ function onDropAt(targetIdx: number): void {
             >
               <LuSlidersHorizontal class="h-4.5 w-4.5" />
             </div>
-            <div>
-              <h3 class="text-base font-bold text-[var(--ctp-text)]">
-                {{ t('layoutCustomizer.title') }}
-              </h3>
-              <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">
-                {{ t('layoutCustomizer.subtitle') }}
-              </p>
-            </div>
+            <h3 class="text-base font-bold text-[var(--ctp-text)]">
+              {{ t('layoutCustomizer.title') }}
+            </h3>
           </div>
 
           <button
