@@ -32,6 +32,10 @@ use crate::infra::inspectors::book_content::{
     polish_epub_book, read_book_content, read_epub_internal_asset, resegment_txt_file,
     save_book_content, transform_book_content_batch,
 };
+use crate::infra::inspectors::book_normalize::{
+    NormalizeBookItemReportDto, NormalizeBookToEpubOptions, NormalizeBooksBatchReportDto,
+    normalize_book_to_epub,
+};
 use crate::infra::inspectors::comic::is_generic_comic_folder;
 use crate::infra::inspectors::comic_ops::{
     BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
@@ -1350,6 +1354,122 @@ impl MediaWorkbenchService {
             .inspect_file(root_id, rel_path, Some(MediaKind::Book))
             .await?;
         Ok((report, detail))
+    }
+
+    pub async fn normalize_books_to_epub(
+        &self,
+        root_id: RootId,
+        rel_paths: &[String],
+        options: NormalizeBookToEpubOptions,
+    ) -> DomainResult<NormalizeBooksBatchReportDto> {
+        if rel_paths.is_empty() {
+            return Err(DomainError::Validation("请至少选择一本图书".into()));
+        }
+
+        let mut items = Vec::with_capacity(rel_paths.len());
+        let mut succeeded = 0usize;
+        let mut failed = 0usize;
+        let mut total_before_bytes = 0u64;
+        let mut total_after_bytes = 0u64;
+
+        for rel in rel_paths {
+            let resolved = self
+                .resolve_writable_media_file(root_id, rel, Some(MediaKind::Book))
+                .await;
+            let (root, sandbox, _) = match resolved {
+                Ok(v) => v,
+                Err(err) => {
+                    failed += 1;
+                    items.push(NormalizeBookItemReportDto {
+                        source_rel_path: rel.clone(),
+                        output_rel_path: None,
+                        backup_rel_path: None,
+                        source_format: Path::new(rel)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or_default()
+                            .to_ascii_lowercase(),
+                        before_bytes: 0,
+                        after_bytes: 0,
+                        chapter_count: 0,
+                        compressed_images: 0,
+                        removed_orphans: 0,
+                        deleted_source: false,
+                        error: Some(err.to_string()),
+                    });
+                    continue;
+                }
+            };
+
+            let abs = sandbox.abs_path;
+            let root_path = root.path.clone();
+            let opts_clone = options.clone();
+            let result =
+                tokio::task::spawn_blocking(move || normalize_book_to_epub(&abs, &opts_clone))
+                    .await
+                    .map_err(|e| DomainError::Storage(format!("normalize book task failed: {e}")))
+                    .and_then(|r| r);
+
+            match result {
+                Ok(out) => {
+                    succeeded += 1;
+                    total_before_bytes = total_before_bytes.saturating_add(out.before_bytes);
+                    total_after_bytes = total_after_bytes.saturating_add(out.after_bytes);
+                    let output_rel = out
+                        .output_path
+                        .strip_prefix(&root_path)
+                        .map(path_to_slash)
+                        .ok();
+                    let backup_rel = out
+                        .backup_path
+                        .as_ref()
+                        .and_then(|bp| bp.strip_prefix(&root_path).ok())
+                        .map(path_to_slash);
+                    items.push(NormalizeBookItemReportDto {
+                        source_rel_path: rel.clone(),
+                        output_rel_path: output_rel,
+                        backup_rel_path: backup_rel,
+                        source_format: out.source_format,
+                        before_bytes: out.before_bytes,
+                        after_bytes: out.after_bytes,
+                        chapter_count: out.chapter_count,
+                        compressed_images: out.compressed_images,
+                        removed_orphans: out.removed_orphans,
+                        deleted_source: out.deleted_source,
+                        error: None,
+                    });
+                }
+                Err(err) => {
+                    failed += 1;
+                    items.push(NormalizeBookItemReportDto {
+                        source_rel_path: rel.clone(),
+                        output_rel_path: None,
+                        backup_rel_path: None,
+                        source_format: Path::new(rel)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or_default()
+                            .to_ascii_lowercase(),
+                        before_bytes: 0,
+                        after_bytes: 0,
+                        chapter_count: 0,
+                        compressed_images: 0,
+                        removed_orphans: 0,
+                        deleted_source: false,
+                        error: Some(err.to_string()),
+                    });
+                }
+            }
+        }
+
+        Ok(NormalizeBooksBatchReportDto {
+            total: rel_paths.len(),
+            succeeded,
+            failed,
+            total_before_bytes,
+            total_after_bytes,
+            items,
+        })
     }
 
     pub async fn get_comic_pages(

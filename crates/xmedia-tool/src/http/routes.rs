@@ -48,6 +48,9 @@ use crate::infra::inspectors::book_content::{
     BookContentDocumentDto, EditableBookChapterDto, InsertedEpubImageDto, SaveBookChapterInput,
     TransformBookContentResultDto,
 };
+use crate::infra::inspectors::book_normalize::{
+    NormalizeBookToEpubOptions, NormalizeBooksBatchReportDto,
+};
 use crate::infra::inspectors::comic_ops::{
     BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
     ComicOptimizeReportDto, ComicPagesSnapshotDto, MergeComicsReportDto, SaveComicPageInput,
@@ -126,6 +129,7 @@ pub fn tool_api_router() -> Router<ToolHttpState> {
             post(transform_book_content).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
         )
         .route("/books/polish", post(polish_book))
+        .route("/books/normalize-epub", post(normalize_books_to_epub_route))
         .route(
             "/books/convert-epub",
             post(convert_txt_book_to_epub).layer(DefaultBodyLimit::max(64 * 1024 * 1024)),
@@ -1004,6 +1008,26 @@ async fn polish_book(
         removed_orphan_files: report.removed_orphan_files,
         detail,
     }))
+}
+
+#[derive(Deserialize)]
+struct NormalizeBooksToEpubRequest {
+    root_id: Uuid,
+    paths: Vec<String>,
+    #[serde(default)]
+    options: NormalizeBookToEpubOptions,
+}
+
+async fn normalize_books_to_epub_route(
+    _auth: ToolAuthGuard,
+    State(state): State<ToolHttpState>,
+    Json(req): Json<NormalizeBooksToEpubRequest>,
+) -> ApiResult<Json<NormalizeBooksBatchReportDto>> {
+    let report = state
+        .workbench
+        .normalize_books_to_epub(RootId(req.root_id), &req.paths, req.options)
+        .await?;
+    Ok(Json(report))
 }
 
 async fn upload_book_epub_image(

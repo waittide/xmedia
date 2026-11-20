@@ -1,5 +1,6 @@
 pub mod book;
 pub mod book_content;
+pub mod book_normalize;
 pub mod comic;
 pub mod comic_ops;
 pub mod music;

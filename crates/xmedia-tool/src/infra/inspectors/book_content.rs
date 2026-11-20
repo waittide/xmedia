@@ -49,7 +49,7 @@ static DEFAULT_PROSE_FALSE_CHAPTER_RE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("valid prose false chapter regex")
 });
 
-const DEFAULT_EPUB_CSS: &str = r#"body {
+pub(crate) const DEFAULT_EPUB_CSS: &str = r#"body {
   font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Serif CJK SC", "Microsoft YaHei", serif;
   line-height: 1.8;
   margin: 0;
@@ -588,7 +588,7 @@ fn split_xhtml_head_and_body(full_xhtml: &str) -> (Option<String>, String) {
     (head, body_inner)
 }
 
-fn extract_heading_from_xhtml(full_xhtml: &str) -> Option<String> {
+pub(crate) fn extract_heading_from_xhtml(full_xhtml: &str) -> Option<String> {
     static H_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"(?is)<(?:h1|h2|h3|title)\b[^>]*>(?P<t>.*?)</(?:h1|h2|h3|title)>")
             .expect("valid heading regex")
@@ -605,7 +605,7 @@ fn extract_heading_from_xhtml(full_xhtml: &str) -> Option<String> {
     None
 }
 
-fn wrap_full_xhtml_document(
+pub(crate) fn wrap_full_xhtml_document(
     title: &str,
     lang: &str,
     preserved_head: Option<&str>,
@@ -645,28 +645,28 @@ fn wrap_full_xhtml_document(
 }
 
 #[derive(Clone, Debug)]
-struct ManifestNode {
-    id: String,
-    href: String,
-    full_path: String,
-    media_type: String,
-    properties: Option<String>,
+pub(crate) struct ManifestNode {
+    pub(crate) id: String,
+    pub(crate) href: String,
+    pub(crate) full_path: String,
+    pub(crate) media_type: String,
+    pub(crate) properties: Option<String>,
 }
 
-struct EpubStructureInfo {
-    opf_path: String,
-    opf_dir: PathBuf,
-    raw_opf: String,
-    package_version: String,
-    unique_id: String,
-    toc_ncx_attr: Option<String>,
-    spine_page_progression: Option<String>,
-    cover_meta_id: Option<String>,
-    manifest: Vec<ManifestNode>,
-    spine_idrefs: Vec<String>,
+pub(crate) struct EpubStructureInfo {
+    pub(crate) opf_path: String,
+    pub(crate) opf_dir: PathBuf,
+    pub(crate) raw_opf: String,
+    pub(crate) package_version: String,
+    pub(crate) unique_id: String,
+    pub(crate) toc_ncx_attr: Option<String>,
+    pub(crate) spine_page_progression: Option<String>,
+    pub(crate) cover_meta_id: Option<String>,
+    pub(crate) manifest: Vec<ManifestNode>,
+    pub(crate) spine_idrefs: Vec<String>,
 }
 
-fn percent_decode_path(raw: &str) -> String {
+pub(crate) fn percent_decode_path(raw: &str) -> String {
     let bytes = raw.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -688,7 +688,7 @@ fn percent_decode_path(raw: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|_| raw.to_string())
 }
 
-fn read_zip_bytes<R: Read + std::io::Seek>(
+pub(crate) fn read_zip_bytes<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
     entry_path: &str,
 ) -> Option<Vec<u8>> {
@@ -708,7 +708,7 @@ fn read_zip_bytes<R: Read + std::io::Seek>(
     None
 }
 
-fn parse_epub_structure<R: Read + std::io::Seek>(
+pub(crate) fn parse_epub_structure<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
 ) -> DomainResult<EpubStructureInfo> {
     let container_bytes = read_zip_bytes(archive, "META-INF/container.xml")
@@ -802,7 +802,7 @@ fn parse_epub_structure<R: Read + std::io::Seek>(
     })
 }
 
-fn parse_nav_toc_map(nav_bytes: &[u8], nav_dir: &Path) -> HashMap<String, (String, u8)> {
+pub(crate) fn parse_nav_toc_map(nav_bytes: &[u8], nav_dir: &Path) -> HashMap<String, (String, u8)> {
     let xml = String::from_utf8_lossy(nav_bytes);
     let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(true);
@@ -879,7 +879,7 @@ fn parse_nav_toc_map(nav_bytes: &[u8], nav_dir: &Path) -> HashMap<String, (Strin
     out
 }
 
-fn parse_ncx_toc_map(ncx_bytes: &[u8], ncx_dir: &Path) -> HashMap<String, (String, u8)> {
+pub(crate) fn parse_ncx_toc_map(ncx_bytes: &[u8], ncx_dir: &Path) -> HashMap<String, (String, u8)> {
     let xml = String::from_utf8_lossy(ncx_bytes);
     let mut reader = Reader::from_str(&xml);
     reader.config_mut().trim_text(true);
@@ -950,7 +950,7 @@ fn parse_ncx_toc_map(ncx_bytes: &[u8], ncx_dir: &Path) -> HashMap<String, (Strin
     out
 }
 
-fn is_nav_manifest_node(m: &ManifestNode) -> bool {
+pub(crate) fn is_nav_manifest_node(m: &ManifestNode) -> bool {
     m.properties
         .as_deref()
         .is_some_and(|p| p.split_whitespace().any(|tok| tok == "nav"))
@@ -1121,7 +1121,7 @@ fn read_epub_chapters_and_styles(
     Ok((chapters, stylesheets))
 }
 
-fn relative_href_from_dir(from_dir: &Path, target_full_path: &str) -> String {
+pub(crate) fn relative_href_from_dir(from_dir: &Path, target_full_path: &str) -> String {
     let from_comps: Vec<String> = from_dir
         .components()
         .filter_map(|c| match c {
@@ -1153,7 +1153,7 @@ fn relative_href_from_dir(from_dir: &Path, target_full_path: &str) -> String {
 }
 
 /// Renders an EPUB 3 Navigation Document (`nav.xhtml`) supporting 2-level Volume -> Chapter nesting.
-fn render_nav_xhtml(
+pub(crate) fn render_nav_xhtml(
     book_title: &str,
     lang: &str,
     items: &[(String, String, u8)],
@@ -1221,7 +1221,7 @@ fn render_nav_xhtml(
 }
 
 /// Renders an EPUB 2 NCX Table of Contents (`toc.ncx`) for universal reader compatibility.
-fn render_toc_ncx(
+pub(crate) fn render_toc_ncx(
     book_uid: &str,
     book_title: &str,
     items: &[(String, String, u8)],
@@ -1647,7 +1647,7 @@ fn save_epub_content(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn rebuild_opf_manifest_and_spine(
+pub(crate) fn rebuild_opf_manifest_and_spine(
     raw_opf: &str,
     manifest: &[ManifestNode],
     spine_ids: &[String],
@@ -2109,7 +2109,7 @@ pub fn insert_epub_image(
     })
 }
 
-fn render_book_jacket_xhtml(
+pub(crate) fn render_book_jacket_xhtml(
     meta: &BookFileMeta,
     cover_rel_href: Option<&str>,
     css_rel_href: Option<&str>,
