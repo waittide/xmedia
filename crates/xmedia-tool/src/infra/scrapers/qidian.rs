@@ -369,21 +369,51 @@ impl ScraperProviderPort for QidianProvider {
         if bid.is_empty() {
             return Err(DomainError::Validation("empty Qidian book id".into()));
         }
-        let client = build_browser_http_client(creds, true)?;
-        let url = format!("https://m.qidian.com/book/{bid}.html");
-        let resp = client
-            .get(&url)
+        let mobile_client = build_browser_http_client(creds, true)?;
+        let mobile_url = format!("https://m.qidian.com/book/{bid}.html");
+        let mut last_err: Option<DomainError> = None;
+
+        match mobile_client
+            .get(&mobile_url)
             .header(reqwest::header::REFERER, "https://m.qidian.com/")
             .send()
             .await
-            .map_err(|e| DomainError::Storage(format!("Qidian detail failed: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(DomainError::NotFound(format!(
-                "Qidian book '{bid}' returned HTTP {}",
-                resp.status()
-            )));
+        {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(html) = read_response_text(resp, UTF_8).await {
+                    match parse_qidian_detail_html(&bid, &html) {
+                        Ok(meta) => return Ok(meta),
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+            }
+            Ok(resp) => {
+                last_err = Some(DomainError::NotFound(format!(
+                    "Qidian book '{bid}' returned HTTP {}",
+                    resp.status()
+                )));
+            }
+            Err(e) => {
+                last_err = Some(DomainError::Storage(format!("Qidian detail failed: {e}")));
+            }
         }
-        let html = read_response_text(resp, UTF_8).await?;
-        parse_qidian_detail_html(&bid, &html)
+
+        // Fallback to PC book page (serves OpenGraph og:novel:* tags and works for books missing on m.qidian.com)
+        let desktop_client = build_browser_http_client(creds, false)?;
+        let desktop_url = format!("https://www.qidian.com/book/{bid}/");
+        if let Ok(resp) = desktop_client
+            .get(&desktop_url)
+            .header(reqwest::header::REFERER, "https://www.qidian.com/")
+            .send()
+            .await
+            && resp.status().is_success()
+            && let Ok(html) = read_response_text(resp, UTF_8).await
+            && let Ok(meta) = parse_qidian_detail_html(&bid, &html)
+        {
+            return Ok(meta);
+        }
+
+        Err(last_err
+            .unwrap_or_else(|| DomainError::NotFound(format!("Qidian book '{bid}' not found"))))
     }
 }

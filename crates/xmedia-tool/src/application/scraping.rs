@@ -449,20 +449,8 @@ impl ScrapingOrchestratorService {
                         d
                     }
                     Err(err) => {
-                        warn!("scraper provider '{id}' top detail failed: {err}");
-                        // Fallback to candidate fields if detail endpoint failed
-                        ScrapedMetadata {
-                            provider_id: top_cand.provider_id,
-                            external_id: top_cand.external_id,
-                            target: Some(top_cand.target),
-                            title: Some(top_cand.title),
-                            year: top_cand.year,
-                            summary: top_cand.summary,
-                            cover_url: top_cand.cover_url,
-                            synced_lyrics: top_cand.synced_lyrics,
-                            plain_lyrics: top_cand.plain_lyrics,
-                            ..Default::default()
-                        }
+                        warn!("scraper provider '{id}' top detail failed (falling back to search candidate): {err}");
+                        fallback_metadata_from_candidate(&top_cand)
                     }
                 };
                 (order_idx, id, prov_desc.name, detail)
@@ -2182,6 +2170,110 @@ fn build_auto_query_from_detail(d: &MediaFileDetail) -> ScrapeQuery {
     }
 }
 
+fn fallback_metadata_from_candidate(cand: &ScrapeCandidate) -> ScrapedMetadata {
+    let mut creators: Vec<String> = Vec::new();
+    let mut genres: Vec<String> = Vec::new();
+    let mut series_or_album: Option<String> = None;
+    let mut publisher_or_studio: Option<String> = None;
+    let mut language: Option<String> = None;
+
+    const CN_NOVEL_PROVIDERS: &[&str] = &[
+        "qidian", "fanqie", "qimao", "zongheng", "jjwxc", "sfacg", "ciweimao", "faloo",
+    ];
+    const MUSIC_PROVIDERS: &[&str] = &[
+        "qq_music",
+        "netease",
+        "kugou",
+        "kuwo",
+        "taihe",
+        "qishui",
+        "musicbrainz",
+        "itunes",
+        "lrclib",
+    ];
+
+    if let Some(sub) = cand
+        .subtitle
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let parts: Vec<&str> = sub
+            .split(" · ")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if CN_NOVEL_PROVIDERS.contains(&cand.provider_id.as_str()) {
+            if let Some(first) = parts.first() {
+                creators.push((*first).to_string());
+            }
+            if let Some(second) = parts.get(1) {
+                genres.push((*second).to_string());
+            }
+        } else if MUSIC_PROVIDERS.contains(&cand.provider_id.as_str()) {
+            if let Some(first) = parts.first() {
+                for artist in first
+                    .split(['/', '、'])
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    if !creators.iter().any(|c| c == artist) {
+                        creators.push(artist.to_string());
+                    }
+                }
+            }
+            if let Some(second) = parts.get(1) {
+                series_or_album = Some((*second).to_string());
+            }
+        } else if matches!(
+            cand.target,
+            ScrapeTargetKind::Book | ScrapeTargetKind::Comic
+        ) {
+            if let Some(first) = parts.first() {
+                for author in first.split(" / ").map(str::trim).filter(|s| !s.is_empty()) {
+                    if !creators.iter().any(|c| c == author) {
+                        creators.push(author.to_string());
+                    }
+                }
+            }
+            if let Some(second) = parts.get(1) {
+                publisher_or_studio = Some((*second).to_string());
+            }
+        }
+    }
+
+    if CN_NOVEL_PROVIDERS.contains(&cand.provider_id.as_str()) {
+        if publisher_or_studio.is_none() && !cand.provider_name.trim().is_empty() {
+            publisher_or_studio = Some(cand.provider_name.clone());
+        }
+        language = Some("zh-CN".to_string());
+    }
+
+    let mut external_ids = BTreeMap::new();
+    if !cand.provider_id.trim().is_empty() && !cand.external_id.trim().is_empty() {
+        external_ids.insert(cand.provider_id.clone(), cand.external_id.clone());
+    }
+
+    ScrapedMetadata {
+        provider_id: cand.provider_id.clone(),
+        external_id: cand.external_id.clone(),
+        target: Some(cand.target),
+        title: Some(cand.title.clone()),
+        series_or_album,
+        creators,
+        publisher_or_studio,
+        year: cand.year,
+        language,
+        summary: cand.summary.clone(),
+        genres,
+        cover_url: cand.cover_url.clone(),
+        synced_lyrics: cand.synced_lyrics.clone(),
+        plain_lyrics: cand.plain_lyrics.clone(),
+        external_ids,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2251,5 +2343,32 @@ mod tests {
         let empty_means_all = filter_scraped_metadata_by_groups(raw, &[]);
         assert_eq!(empty_means_all.title.as_deref(), Some("Test"));
         assert!(empty_means_all.synced_lyrics.is_some());
+    }
+
+    #[test]
+    fn fallback_metadata_from_candidate_preserves_novel_author_and_category() {
+        let cand = ScrapeCandidate {
+            provider_id: "fanqie".into(),
+            provider_name: "番茄小说".into(),
+            external_id: "7171641987538357284".into(),
+            target: ScrapeTargetKind::Book,
+            title: "测试小说".into(),
+            subtitle: Some("测试作者 · 玄幻脑洞".into()),
+            year: Some(2023),
+            summary: Some("一段简介".into()),
+            cover_url: Some("https://example.com/c.jpg".into()),
+            synced_lyrics: None,
+            plain_lyrics: None,
+        };
+        let meta = fallback_metadata_from_candidate(&cand);
+        assert_eq!(meta.title.as_deref(), Some("测试小说"));
+        assert_eq!(meta.creators, vec!["测试作者"]);
+        assert_eq!(meta.genres, vec!["玄幻脑洞"]);
+        assert_eq!(meta.publisher_or_studio.as_deref(), Some("番茄小说"));
+        assert_eq!(meta.language.as_deref(), Some("zh-CN"));
+        assert_eq!(
+            meta.external_ids.get("fanqie").map(String::as_str),
+            Some("7171641987538357284")
+        );
     }
 }

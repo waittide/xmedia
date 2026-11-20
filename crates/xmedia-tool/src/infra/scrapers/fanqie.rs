@@ -224,6 +224,108 @@ pub(crate) fn parse_fanqie_detail_html(book_id: &str, html: &str) -> DomainResul
     })
 }
 
+pub(crate) fn parse_fanqie_mobile_detail_json(
+    book_id: &str,
+    body: &str,
+) -> DomainResult<ScrapedMetadata> {
+    let root: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+        DomainError::NotFound(format!("Fanqie mobile book '{book_id}' invalid JSON"))
+    })?;
+    let data = root.get("data").filter(|v| v.is_object()).ok_or_else(|| {
+        DomainError::NotFound(format!("Fanqie mobile book '{book_id}' not found"))
+    })?;
+
+    let title = data
+        .get("book_name")
+        .or_else(|| data.get("title"))
+        .and_then(|v| v.as_str())
+        .map(strip_inline_html)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            DomainError::NotFound(format!("Fanqie mobile book '{book_id}' not found"))
+        })?;
+
+    let author = data
+        .get("author")
+        .and_then(|v| v.as_str())
+        .map(strip_inline_html)
+        .filter(|s| !s.is_empty());
+
+    let summary = data
+        .get("abstract")
+        .or_else(|| data.get("book_abstract_v2"))
+        .and_then(|v| v.as_str())
+        .map(strip_html_to_text)
+        .filter(|s| !s.is_empty());
+
+    let category = data
+        .get("category")
+        .and_then(|v| v.as_str())
+        .map(strip_inline_html)
+        .filter(|s| !s.is_empty());
+
+    let mut genres: Vec<String> = category.clone().into_iter().collect();
+    let mut tags: Vec<String> = category.into_iter().collect();
+    if let Some(raw_tags) = data.get("tags").and_then(|v| v.as_str()) {
+        for part in raw_tags.split([',', '，', ';', '；', '、', '·']) {
+            let t = strip_inline_html(part);
+            if !t.is_empty() {
+                if genres.is_empty() {
+                    genres.push(t.clone());
+                }
+                if !tags.contains(&t) {
+                    tags.push(t);
+                }
+            }
+        }
+    }
+
+    let cover_url = data
+        .get("expand_thumb_url")
+        .or_else(|| data.get("thumb_url"))
+        .or_else(|| data.get("audio_thumb_uri"))
+        .and_then(|v| v.as_str())
+        .and_then(normalize_cover_url);
+
+    let rating = data
+        .get("score")
+        .and_then(|v| {
+            v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+        })
+        .map(|s| s as f32)
+        .filter(|&r| r > 0.0);
+
+    let (year, published_date) = data
+        .get("create_time")
+        .or_else(|| data.get("last_publish_time"))
+        .and_then(|v| v.as_str())
+        .map(parse_year_and_date)
+        .unwrap_or((None, None));
+
+    let mut external_ids = std::collections::BTreeMap::new();
+    external_ids.insert("fanqie".to_string(), book_id.to_string());
+
+    Ok(ScrapedMetadata {
+        provider_id: "fanqie".to_string(),
+        external_id: book_id.to_string(),
+        target: Some(ScrapeTargetKind::Book),
+        title: Some(title),
+        creators: author.into_iter().collect(),
+        publisher_or_studio: Some("番茄小说".to_string()),
+        year,
+        published_date,
+        language: Some("zh-CN".to_string()),
+        rating,
+        summary,
+        genres,
+        tags,
+        cover_url,
+        external_ids,
+        ..Default::default()
+    })
+}
+
 #[async_trait]
 impl ScraperProviderPort for FanqieProvider {
     fn descriptor(&self) -> ProviderDescriptor {
@@ -314,19 +416,90 @@ impl ScraperProviderPort for FanqieProvider {
         }
         let client = build_browser_http_client(creds, false)?;
         let url = format!("https://fanqienovel.com/page/{book_id}");
-        let resp = client
+        let mut last_err: Option<DomainError> = None;
+
+        match client
             .get(&url)
             .header(reqwest::header::REFERER, "https://fanqienovel.com/")
             .send()
             .await
-            .map_err(|e| DomainError::Storage(format!("Fanqie detail failed: {e}")))?;
-        if !resp.status().is_success() {
-            return Err(DomainError::NotFound(format!(
-                "Fanqie book '{book_id}' returned HTTP {}",
-                resp.status()
-            )));
+        {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(html) = read_response_text(resp, UTF_8).await {
+                    match parse_fanqie_detail_html(&book_id, &html) {
+                        Ok(meta) => return Ok(meta),
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+            }
+            Ok(resp) => {
+                last_err = Some(DomainError::NotFound(format!(
+                    "Fanqie book '{book_id}' returned HTTP {}",
+                    resp.status()
+                )));
+            }
+            Err(e) => {
+                last_err = Some(DomainError::Storage(format!("Fanqie detail failed: {e}")));
+            }
         }
-        let html = read_response_text(resp, UTF_8).await?;
-        parse_fanqie_detail_html(&book_id, &html)
+
+        // Fallback to Fanqie mobile book info API (covers app-only / copyright / non-web books that 404 on fanqienovel.com)
+        let mobile_client = build_browser_http_client(creds, true)?;
+        if let Ok(resp) = mobile_client
+            .get("https://novel.snssdk.com/api/novel/book/info/v1/")
+            .query(&[
+                ("book_id", book_id.as_str()),
+                ("aid", "13"),
+                ("device_platform", "android"),
+            ])
+            .send()
+            .await
+            && resp.status().is_success()
+            && let Ok(body) = read_response_text(resp, UTF_8).await
+            && let Ok(meta) = parse_fanqie_mobile_detail_json(&book_id, &body)
+        {
+            return Ok(meta);
+        }
+
+        Err(last_err
+            .unwrap_or_else(|| DomainError::NotFound(format!("Fanqie book '{book_id}' not found"))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_fanqie_mobile_detail_json_fallback() {
+        let json = r#"{
+            "code": 0,
+            "data": {
+                "book_id": "7171641987538357284",
+                "book_name": "测试番茄书名",
+                "author": "测试作者",
+                "abstract": "第一段<br>第二段",
+                "category": "都市日常",
+                "tags": "都市日常,轻松,日常",
+                "thumb_url": "https://p3-novel.byteimg.com/cover.jpg",
+                "score": "9.2",
+                "create_time": "2023-05-10"
+            }
+        }"#;
+        let meta = parse_fanqie_mobile_detail_json("7171641987538357284", json)
+            .expect("mobile fallback json should parse");
+        assert_eq!(meta.title.as_deref(), Some("测试番茄书名"));
+        assert_eq!(meta.creators, vec!["测试作者"]);
+        assert_eq!(meta.genres, vec!["都市日常"]);
+        assert_eq!(meta.tags, vec!["都市日常", "轻松", "日常"]);
+        assert_eq!(meta.year, Some(2023));
+        assert_eq!(meta.rating, Some(9.2));
+        assert_eq!(
+            meta.summary.as_deref(),
+            Some(
+                "第一段
+第二段"
+            )
+        );
     }
 }

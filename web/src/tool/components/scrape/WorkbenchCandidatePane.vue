@@ -559,6 +559,102 @@ async function runSearch(): Promise<void> {
   }
 }
 
+const CN_NOVEL_PROVIDER_IDS = new Set([
+  'qidian',
+  'fanqie',
+  'qimao',
+  'zongheng',
+  'jjwxc',
+  'sfacg',
+  'ciweimao',
+  'faloo',
+])
+const MUSIC_PROVIDER_IDS = new Set([
+  'qq_music',
+  'netease',
+  'kugou',
+  'kuwo',
+  'taihe',
+  'qishui',
+  'musicbrainz',
+  'itunes',
+  'lrclib',
+])
+
+function buildCandidateFallbackMeta(c: ScrapeCandidate): ScrapedMetadata {
+  const creators: string[] = []
+  const genres: string[] = []
+  let seriesOrAlbum: string | null = null
+  let publisherOrStudio: string | null = null
+  let language: string | null = null
+
+  const sub = (c.subtitle ?? '').trim()
+  if (sub) {
+    const parts = sub
+      .split(' · ')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    if (CN_NOVEL_PROVIDER_IDS.has(c.provider_id)) {
+      if (parts[0]) creators.push(parts[0])
+      if (parts[1]) genres.push(parts[1])
+    } else if (MUSIC_PROVIDER_IDS.has(c.provider_id)) {
+      if (parts[0]) {
+        for (const a of parts[0]
+          .split(/[/、]/)
+          .map((s) => s.trim())
+          .filter(Boolean)) {
+          if (!creators.includes(a)) creators.push(a)
+        }
+      }
+      if (parts[1]) seriesOrAlbum = parts[1]
+    } else if (c.target === 'book' || c.target === 'comic') {
+      if (parts[0]) {
+        for (const a of parts[0]
+          .split(' / ')
+          .map((s) => s.trim())
+          .filter(Boolean)) {
+          if (!creators.includes(a)) creators.push(a)
+        }
+      }
+      if (parts[1]) publisherOrStudio = parts[1]
+    }
+  }
+
+  if (CN_NOVEL_PROVIDER_IDS.has(c.provider_id)) {
+    if (!publisherOrStudio && c.provider_name.trim()) {
+      publisherOrStudio = c.provider_name.trim()
+    }
+    language = 'zh-CN'
+  }
+
+  return {
+    provider_id: c.provider_id,
+    external_id: c.external_id,
+    target: c.target,
+    title: c.title || null,
+    original_title: null,
+    series_or_album: seriesOrAlbum,
+    creators,
+    illustrators_or_directors: [],
+    cast: [],
+    publisher_or_studio: publisherOrStudio,
+    year: c.year ?? null,
+    published_date: null,
+    language,
+    isbn: null,
+    rating: null,
+    track_or_episode_number: null,
+    disc_or_season_number: null,
+    summary: c.summary ?? null,
+    genres,
+    tags: [],
+    cover_url: c.cover_url ?? null,
+    backdrop_url: null,
+    synced_lyrics: c.synced_lyrics ?? null,
+    plain_lyrics: c.plain_lyrics ?? null,
+  }
+}
+
 async function resolveCandidateDetail(c: ScrapeCandidate): Promise<ScrapedMetadata | null> {
   const key = candKey(c)
   const cached = detailCache.value.get(key)
@@ -570,9 +666,13 @@ async function resolveCandidateDetail(c: ScrapeCandidate): Promise<ScrapedMetada
     next.set(key, meta)
     detailCache.value = next
     return meta
-  } catch (err) {
-    searchError.value = err instanceof Error ? err.message : String(err)
-    return null
+  } catch {
+    // Gracefully fall back to search-stage candidate metadata when the detail page returns 404/unavailable
+    const fallback = buildCandidateFallbackMeta(c)
+    const next = new Map(detailCache.value)
+    next.set(key, fallback)
+    detailCache.value = next
+    return fallback
   } finally {
     if (loadingDetailKey.value === key) {
       loadingDetailKey.value = null
