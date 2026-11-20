@@ -27,10 +27,14 @@ import { useToolTaskStore, type ScrapeSubItem, type ToolTaskEntry } from '../tas
 type TaskStatusFilter = 'all' | 'active' | 'completed' | 'failed'
 type SubItemFilter = 'all' | 'running' | 'matched' | 'unmatched' | 'failed'
 
+export interface ReviewItemRef {
+  rootId: string
+  relPath: string
+}
+
 export interface ReviewItemsPayload {
   domain: MediaKind
-  rootId: string
-  relPaths: string[]
+  items: ReviewItemRef[]
   openCandidates?: boolean
 }
 
@@ -276,8 +280,7 @@ function reviewTaskUnmatched(task: ToolTaskEntry): void {
   emit('close')
   emit('reviewItems', {
     domain: task.domain ?? first.mediaKind,
-    rootId: first.rootId,
-    relPaths: targets.filter((t) => t.rootId === first.rootId).map((t) => t.relPath),
+    items: targets.map((t) => ({ rootId: t.rootId, relPath: t.relPath })),
     openCandidates: true,
   })
 }
@@ -289,8 +292,7 @@ function reviewTaskAllResults(task: ToolTaskEntry): void {
   emit('close')
   emit('reviewItems', {
     domain: task.domain ?? first.mediaKind,
-    rootId: first.rootId,
-    relPaths: targets.filter((t) => t.rootId === first.rootId).map((t) => t.relPath),
+    items: targets.map((t) => ({ rootId: t.rootId, relPath: t.relPath })),
     openCandidates: false,
   })
 }

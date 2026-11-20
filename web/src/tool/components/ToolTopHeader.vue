@@ -236,7 +236,7 @@ defineExpose({ focusSearch })
         <LuClock class="h-[18px] w-[18px]" />
         <span
           v-if="taskStore.unresolvedCount > 0"
-          class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-amber-500 ring-2 ring-[var(--md-sys-color-surface-container)]"
+          class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-[var(--md-sys-color-warning)] ring-2 ring-[var(--md-sys-color-surface-container)]"
         />
       </button>
 

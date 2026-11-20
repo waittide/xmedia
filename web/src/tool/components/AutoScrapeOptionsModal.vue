@@ -11,14 +11,18 @@ import MdDialog from '@/components/ui/MdDialog.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
+import {
+  buildAutoScrapeOptionsFromPrefs,
+  loadAutoScrapePrefs,
+  saveAutoScrapePrefs,
+  saveLastAutoScrapeOptions,
+} from '../autoScrapePrefs'
 import type {
   AutoScrapeMatchMode,
   AutoScrapeOptionsDto,
   MediaFileEntry,
   ProviderStatusDto,
 } from '../types'
-
-const STORAGE_KEY = 'xmedia_tool.auto_scrape_prefs.v1'
 
 const props = defineProps<{
   open: boolean
@@ -54,57 +58,30 @@ const domainNameMap: Record<MediaKind, string> = {
 }
 
 function loadSavedPrefs(): void {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return
-    const parsed = JSON.parse(raw) as Partial<{
-      match_mode: AutoScrapeMatchMode
-      only_fill_missing: boolean
-      apply_cover: boolean
-      write_sidecar_lrc: boolean
-      organize_by_template: boolean
-      field_basic: boolean
-      field_summary: boolean
-      field_tags: boolean
-      field_lyrics: boolean
-    }>
-    if (parsed.match_mode === 'strict' || parsed.match_mode === 'standard' || parsed.match_mode === 'loose') {
-      matchMode.value = parsed.match_mode
-    }
-    if (typeof parsed.only_fill_missing === 'boolean') onlyFillMissing.value = parsed.only_fill_missing
-    if (typeof parsed.apply_cover === 'boolean') applyCover.value = parsed.apply_cover
-    if (typeof parsed.write_sidecar_lrc === 'boolean') writeSidecarLrc.value = parsed.write_sidecar_lrc
-    if (typeof parsed.organize_by_template === 'boolean') {
-      organizeByTemplate.value = parsed.organize_by_template
-    }
-    if (typeof parsed.field_basic === 'boolean') fieldBasic.value = parsed.field_basic
-    if (typeof parsed.field_summary === 'boolean') fieldSummary.value = parsed.field_summary
-    if (typeof parsed.field_tags === 'boolean') fieldTags.value = parsed.field_tags
-    if (typeof parsed.field_lyrics === 'boolean') fieldLyrics.value = parsed.field_lyrics
-  } catch {
-    // ignore malformed local prefs
-  }
+  const parsed = loadAutoScrapePrefs()
+  matchMode.value = parsed.match_mode
+  onlyFillMissing.value = parsed.only_fill_missing
+  applyCover.value = parsed.apply_cover
+  writeSidecarLrc.value = parsed.write_sidecar_lrc
+  organizeByTemplate.value = parsed.organize_by_template
+  fieldBasic.value = parsed.field_basic
+  fieldSummary.value = parsed.field_summary
+  fieldTags.value = parsed.field_tags
+  fieldLyrics.value = parsed.field_lyrics
 }
 
 function savePrefs(): void {
-  try {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify({
-        match_mode: matchMode.value,
-        only_fill_missing: onlyFillMissing.value,
-        apply_cover: applyCover.value,
-        write_sidecar_lrc: writeSidecarLrc.value,
-        organize_by_template: organizeByTemplate.value,
-        field_basic: fieldBasic.value,
-        field_summary: fieldSummary.value,
-        field_tags: fieldTags.value,
-        field_lyrics: fieldLyrics.value,
-      }),
-    )
-  } catch {
-    // ignore storage quota
-  }
+  saveAutoScrapePrefs({
+    match_mode: matchMode.value,
+    only_fill_missing: onlyFillMissing.value,
+    apply_cover: applyCover.value,
+    write_sidecar_lrc: writeSidecarLrc.value,
+    organize_by_template: organizeByTemplate.value,
+    field_basic: fieldBasic.value,
+    field_summary: fieldSummary.value,
+    field_tags: fieldTags.value,
+    field_lyrics: fieldLyrics.value,
+  })
 }
 
 async function loadDomainProviders(): Promise<void> {
@@ -152,39 +129,43 @@ const hasAnyFieldSelected = computed(
 )
 
 function buildOptions(): AutoScrapeOptionsDto {
-  const groups: string[] = []
-  if (fieldBasic.value) groups.push('basic')
-  if (fieldSummary.value) groups.push('summary')
-  if (fieldTags.value) groups.push('tags')
-  if (props.domain === 'music' && fieldLyrics.value) groups.push('lyrics')
-
   const allConfigured = providers.value.filter((p) => p.configured).map((p) => p.id)
   const customProviders =
     selectedProviderIds.value.length > 0 && selectedProviderIds.value.length < allConfigured.length
       ? [...selectedProviderIds.value]
       : []
 
-  return {
-    match_mode: matchMode.value,
-    only_fill_missing: onlyFillMissing.value,
-    apply_cover: applyCover.value,
-    write_sidecar_lrc: props.domain === 'music' ? writeSidecarLrc.value : false,
-    organize_by_template: organizeByTemplate.value,
-    providers: customProviders,
-    field_groups: groups.length === (props.domain === 'music' ? 4 : 3) ? [] : groups,
-  }
+  return buildAutoScrapeOptionsFromPrefs(
+    {
+      match_mode: matchMode.value,
+      only_fill_missing: onlyFillMissing.value,
+      apply_cover: applyCover.value,
+      write_sidecar_lrc: writeSidecarLrc.value,
+      organize_by_template: organizeByTemplate.value,
+      field_basic: fieldBasic.value,
+      field_summary: fieldSummary.value,
+      field_tags: fieldTags.value,
+      field_lyrics: fieldLyrics.value,
+    },
+    props.domain,
+    customProviders,
+  )
 }
 
 function handleStart(): void {
   if (props.entries.length === 0 || !hasAnyFieldSelected.value) return
   savePrefs()
-  emit('start', props.entries, buildOptions())
+  const opts = buildOptions()
+  saveLastAutoScrapeOptions(props.domain, opts)
+  emit('start', props.entries, opts)
 }
 
 function handleOpenDryRun(): void {
   if (props.entries.length === 0 || !hasAnyFieldSelected.value) return
   savePrefs()
-  emit('openDryRun', props.entries, buildOptions())
+  const opts = buildOptions()
+  saveLastAutoScrapeOptions(props.domain, opts)
+  emit('openDryRun', props.entries, opts)
 }
 </script>
 
@@ -201,149 +182,149 @@ function handleOpenDryRun(): void {
     </template>
 
     <div class="space-y-5 py-2">
-          <!-- 1. Match Strictness Mode -->
-          <div class="space-y-2">
-            <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--ctp-text)]">
-              <LuShieldCheck class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-              <span>匹配严格度</span>
+      <!-- 1. Match Strictness Mode -->
+      <div class="space-y-2">
+        <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
+          <LuShieldCheck class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+          <span>匹配严格度</span>
+        </div>
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <button
+            v-for="m in [
+              {
+                id: 'strict' as const,
+                title: '严格模式',
+                desc: '置信度 ≥ 70，标题+作者/年份强校验，宁缺毋滥',
+              },
+              {
+                id: 'standard' as const,
+                title: '标准模式（推荐）',
+                desc: '置信度 ≥ 45，兼顾命中率与准确性',
+              },
+              {
+                id: 'loose' as const,
+                title: '宽松模式',
+                desc: '只要命中即写入，适合杂乱文件名快速补全',
+              },
+            ]"
+            :key="m.id"
+            type="button"
+            class="md-state rounded-2xl border p-3 text-left transition"
+            :class="
+              matchMode === m.id
+                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/50'
+                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-low)] hover:border-[var(--md-sys-color-outline)]'
+            "
+            @click="matchMode = m.id"
+          >
+            <div class="flex items-center justify-between text-xs font-bold text-[var(--md-sys-color-on-surface)]">
+              <span>{{ m.title }}</span>
+              <LuCheck v-if="matchMode === m.id" class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
             </div>
-            <div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <button
-                v-for="m in [
-                  {
-                    id: 'strict' as const,
-                    title: '严格模式',
-                    desc: '置信度 ≥ 70，标题+作者/年份强校验，宁缺毋滥',
-                  },
-                  {
-                    id: 'standard' as const,
-                    title: '标准模式（推荐）',
-                    desc: '置信度 ≥ 45，兼顾命中率与准确性',
-                  },
-                  {
-                    id: 'loose' as const,
-                    title: '宽松模式',
-                    desc: '只要命中即写入，适合杂乱文件名快速补全',
-                  },
-                ]"
-                :key="m.id"
-                type="button"
-                class="rounded-2xl border p-3 text-left transition"
-                :class="
-                  matchMode === m.id
-                    ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/50'
-                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/40 hover:border-[var(--ctp-surface1)]'
-                "
-                @click="matchMode = m.id"
-              >
-                <div class="flex items-center justify-between text-xs font-bold text-[var(--ctp-text)]">
-                  <span>{{ m.title }}</span>
-                  <LuCheck v-if="matchMode === m.id" class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
-                </div>
-                <p class="mt-1 text-[10px] leading-relaxed text-[var(--ctp-subtext0)]">
-                  {{ m.desc }}
-                </p>
-              </button>
-            </div>
-          </div>
+            <p class="mt-1 text-[10px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
+              {{ m.desc }}
+            </p>
+          </button>
+        </div>
+      </div>
 
-          <!-- 2. Write Strategy -->
-          <div class="space-y-2">
-            <div class="text-xs font-bold text-[var(--ctp-text)]">字段写入策略</div>
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                class="rounded-xl border px-3 py-2.5 text-left transition"
-                :class="
-                  onlyFillMissing
-                    ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/45'
-                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/40'
-                "
-                @click="onlyFillMissing = true"
-              >
-                <div class="text-xs font-bold text-[var(--ctp-text)]">仅补全缺失字段</div>
-                <div class="mt-0.5 text-[10px] text-[var(--ctp-subtext0)]">
-                  保护已有元数据，只填补空白项
-                </div>
-              </button>
-              <button
-                type="button"
-                class="rounded-xl border px-3 py-2.5 text-left transition"
-                :class="
-                  !onlyFillMissing
-                    ? 'border-amber-500/70 bg-amber-500/10'
-                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/40'
-                "
-                @click="onlyFillMissing = false"
-              >
-                <div class="text-xs font-bold text-[var(--ctp-text)]">强制覆盖已有字段</div>
-                <div class="mt-0.5 text-[10px] text-[var(--ctp-subtext0)]">
-                  用在线高优先级源重写选中字段
-                </div>
-              </button>
+      <!-- 2. Write Strategy -->
+      <div class="space-y-2">
+        <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">字段写入策略</div>
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            class="md-state rounded-xl border px-3 py-2.5 text-left transition"
+            :class="
+              onlyFillMissing
+                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/45'
+                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-low)]'
+            "
+            @click="onlyFillMissing = true"
+          >
+            <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">仅补全缺失字段</div>
+            <div class="mt-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+              保护已有元数据，只填补空白项
             </div>
-          </div>
+          </button>
+          <button
+            type="button"
+            class="md-state rounded-xl border px-3 py-2.5 text-left transition"
+            :class="
+              !onlyFillMissing
+                ? 'border-[var(--md-sys-color-warning)]/70 bg-[var(--md-sys-color-warning-container)]/60'
+                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-low)]'
+            "
+            @click="onlyFillMissing = false"
+          >
+            <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">强制覆盖已有字段</div>
+            <div class="mt-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+              用在线高优先级源重写选中字段
+            </div>
+          </button>
+        </div>
+      </div>
 
-          <!-- 3. Field Groups & Extra Actions -->
-          <div class="space-y-2">
-            <div class="text-xs font-bold text-[var(--ctp-text)]">要刮削的字段与附加动作</div>
-            <div
-              class="grid grid-cols-2 gap-2.5 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/35 p-3.5"
-            >
-              <AppCheckbox v-model="fieldBasic" label="基础信息（标题/作者/系列/年份）" />
-              <AppCheckbox v-model="applyCover" label="下载并写入封面 / 海报" />
-              <AppCheckbox v-model="fieldSummary" label="简介 / 剧情概要 / 注释" />
-              <AppCheckbox v-model="fieldTags" label="流派与标签" />
-              <AppCheckbox
-                v-if="domain === 'music'"
-                v-model="fieldLyrics"
-                label="内嵌同步 / 纯文本歌词"
-              />
-              <AppCheckbox
-                v-if="domain === 'music'"
-                v-model="writeSidecarLrc"
-                label="同步导出同名 .lrc 文件"
-              />
-              <div class="col-span-2 border-t border-[var(--ctp-surface0)]/70 pt-2">
-                <AppCheckbox
-                  v-model="organizeByTemplate"
-                  label="刮削后同步按当前领域命名模板重命名并归档目录"
-                />
-              </div>
-            </div>
+      <!-- 3. Field Groups & Extra Actions -->
+      <div class="space-y-2">
+        <div class="text-xs font-bold text-[var(--md-sys-color-on-surface)]">要刮削的字段与附加动作</div>
+        <div
+          class="grid grid-cols-2 gap-2.5 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-low)] p-3.5"
+        >
+          <AppCheckbox v-model="fieldBasic" label="基础信息（标题/作者/系列/年份）" />
+          <AppCheckbox v-model="applyCover" label="下载并写入封面 / 海报" />
+          <AppCheckbox v-model="fieldSummary" label="简介 / 剧情概要 / 注释" />
+          <AppCheckbox v-model="fieldTags" label="流派与标签" />
+          <AppCheckbox
+            v-if="domain === 'music'"
+            v-model="fieldLyrics"
+            label="内嵌同步 / 纯文本歌词"
+          />
+          <AppCheckbox
+            v-if="domain === 'music'"
+            v-model="writeSidecarLrc"
+            label="同步导出同名 .lrc 文件"
+          />
+          <div class="col-span-2 border-t border-[var(--md-sys-color-outline-variant)]/45 pt-2">
+            <AppCheckbox
+              v-model="organizeByTemplate"
+              label="刮削后同步按当前领域命名模板重命名并归档目录"
+            />
           </div>
+        </div>
+      </div>
 
-          <!-- 4. Provider Selection -->
-          <div v-if="providers.length > 0" class="space-y-2">
-            <div class="flex items-center justify-between text-xs font-bold text-[var(--ctp-text)]">
-              <span>本次启用的数据源（按设置页优先级瀑布合并）</span>
-              <span class="text-[10px] font-normal text-[var(--ctp-subtext0)]">
-                已选 {{ selectedProviderIds.length }}/{{ providers.filter((p) => p.configured).length }}
-              </span>
-            </div>
-            <div class="flex flex-wrap gap-1.5">
-              <button
-                v-for="p in providers"
-                :key="p.id"
-                type="button"
-                class="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition"
-                :class="
-                  !p.configured
-                    ? 'border-dashed border-amber-500/45 bg-amber-500/10 text-amber-400'
-                    : selectedProviderIds.includes(p.id)
-                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext0)]'
-                "
-                @click="toggleProvider(p)"
-              >
-                <LuKey v-if="!p.configured && p.requires_api_key" class="h-3 w-3" />
-                <span>{{ p.name }}</span>
-                <span v-if="!p.configured" class="text-[10px]">
-                  {{ p.requires_api_key ? '(去配置)' : '(去启用)' }}
-                </span>
-              </button>
-            </div>
-          </div>
+      <!-- 4. Provider Selection -->
+      <div v-if="providers.length > 0" class="space-y-2">
+        <div class="flex items-center justify-between text-xs font-bold text-[var(--md-sys-color-on-surface)]">
+          <span>本次启用的数据源（按设置页优先级瀑布合并）</span>
+          <span class="text-[10px] font-normal text-[var(--md-sys-color-on-surface-variant)]">
+            已选 {{ selectedProviderIds.length }}/{{ providers.filter((p) => p.configured).length }}
+          </span>
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+          <button
+            v-for="p in providers"
+            :key="p.id"
+            type="button"
+            class="md-state inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition"
+            :class="
+              !p.configured
+                ? 'border-dashed border-[var(--md-sys-color-warning)]/55 bg-[var(--md-sys-color-warning-container)]/50 text-[var(--md-sys-color-on-warning-container)]'
+                : selectedProviderIds.includes(p.id)
+                  ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+                  : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)]'
+            "
+            @click="toggleProvider(p)"
+          >
+            <LuKey v-if="!p.configured && p.requires_api_key" class="h-3 w-3" />
+            <span>{{ p.name }}</span>
+            <span v-if="!p.configured" class="text-[10px]">
+              {{ p.requires_api_key ? '(去配置)' : '(去启用)' }}
+            </span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <template #footer>

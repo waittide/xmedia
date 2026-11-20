@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 import { LuSparkles, LuX } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import type { BookTextTransformOptions } from '../../types'
 
 const CUSTOM_RULES_STORAGE_KEY = 'xmedia.book.customStripPatterns.v1'
@@ -16,6 +17,11 @@ const emit = defineEmits<{
   runTransform: [options: BookTextTransformOptions, label: string]
   close: []
 }>()
+
+const scopeOptions = [
+  { value: 'book', label: '全书范围' },
+  { value: 'chapter', label: '仅当前章' },
+] as const
 
 const cleanWebnovelAds = ref(true)
 const normalizePunctuation = ref(true)
@@ -51,33 +57,21 @@ function handleRunClean(): void {
 
 <template>
   <div
-    class="space-y-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] px-4 py-2.5 text-xs"
+    class="space-y-2 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs"
   >
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-1.5">
-        <div class="inline-flex rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-0.5">
-          <button
-            type="button"
-            class="rounded px-2 py-0.5 text-[11px] font-semibold"
-            :class="transformScope === 'book' ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]' : 'text-[var(--ctp-subtext1)]'"
-            @click="emit('update:transformScope', 'book')"
-          >
-            全书范围
-          </button>
-          <button
-            type="button"
-            class="rounded px-2 py-0.5 text-[11px] font-semibold"
-            :class="transformScope === 'chapter' ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]' : 'text-[var(--ctp-subtext1)]'"
-            @click="emit('update:transformScope', 'chapter')"
-          >
-            仅当前章
-          </button>
-        </div>
+        <MdSegmentedButton
+          :model-value="transformScope"
+          :options="scopeOptions"
+          size="sm"
+          @update:model-value="emit('update:transformScope', $event)"
+        />
 
         <button
           type="button"
           :disabled="transforming"
-          class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
+          class="md-btn md-btn-sm md-btn-outlined md-state disabled:opacity-50"
           title="OpenCC 级繁转简（含台港词汇转换，保护 XHTML 标签）"
           @click="emit('runTransform', { zh_direction: 't2s' }, '繁转简')"
         >
@@ -86,7 +80,7 @@ function handleRunClean(): void {
         <button
           type="button"
           :disabled="transforming"
-          class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
+          class="md-btn md-btn-sm md-btn-outlined md-state disabled:opacity-50"
           title="简转繁（内置多音字词组消歧，避免后/发/干/里误转）"
           @click="emit('runTransform', { zh_direction: 's2t' }, '简转繁')"
         >
@@ -95,7 +89,7 @@ function handleRunClean(): void {
         <button
           type="button"
           :disabled="transforming"
-          class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)] disabled:opacity-50"
+          class="md-btn md-btn-sm md-btn-outlined md-state disabled:opacity-50"
           title="将台版/日版竖排 CSS 改为横排、直角引号「」改为弯引号，并在保存时同步 LTR 翻页方向"
           @click="emit('runTransform', { vertical_to_horizontal: true, convert_quotes_to_horizontal: true }, '竖排转横排')"
         >
@@ -105,21 +99,22 @@ function handleRunClean(): void {
 
       <button
         type="button"
-        class="rounded p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+        class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
+        aria-label="关闭精校面板"
         @click="emit('close')"
       >
         <LuX class="h-3.5 w-3.5" />
       </button>
     </div>
 
-    <div class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--ctp-surface0)]/55 pt-2">
+    <div class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/60 pt-2">
       <div class="flex flex-wrap items-center gap-3">
         <AppCheckbox v-model="cleanWebnovelAds" label="去网文求票/域名水印行" />
         <AppCheckbox v-model="normalizePunctuation" label="中文标点规整 (弯引号/省略号/破折号)" />
         <AppCheckbox v-model="convertCornerQuotes" label="直角引号「」→“”" />
         <button
           type="button"
-          class="text-[11px] font-medium text-[var(--ctp-accent)] hover:underline"
+          class="text-[11px] font-medium text-[var(--md-sys-color-primary)] hover:underline"
           @click="customStripRulesOpen = !customStripRulesOpen"
         >
           {{ customStripRulesOpen ? '收起自定义正则' : '自定义净化正则' }}
@@ -129,7 +124,7 @@ function handleRunClean(): void {
       <button
         type="button"
         :disabled="transforming"
-        class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-3 py-1 text-[11px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95 disabled:opacity-50"
+        class="md-btn md-btn-sm md-btn-filled md-state disabled:opacity-50"
         @click="handleRunClean"
       >
         <LuSparkles class="h-3 w-3" />
@@ -142,7 +137,7 @@ function handleRunClean(): void {
         v-model="customStripRulesText"
         rows="3"
         placeholder="每行输入一条整行匹配剔除正则（自动保存在浏览器本地），例如：^.*本书由某某论坛整理.*$"
-        class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 font-mono text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+        class="md-input w-full p-2 font-mono text-[11px]"
       />
     </div>
   </div>

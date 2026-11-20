@@ -174,23 +174,23 @@ function onTocDrop(targetIdx: number): void {
 <template>
 <!-- COLUMN 1: Fixed-Height Non-Jumping TOC & Chapter Tree -->
 <aside
-  class="flex w-68 shrink-0 flex-col border-r border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] select-none lg:w-76"
+  class="flex w-68 shrink-0 flex-col border-r border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] select-none lg:w-76"
 >
   <!-- TOC Header + Search -->
-  <div class="space-y-2 border-b border-[var(--ctp-surface0)]/65 p-2.5">
+  <div class="space-y-2 border-b border-[var(--md-sys-color-outline-variant)]/70 p-2.5">
     <div class="flex items-center justify-between gap-1.5">
-      <span class="px-1 text-xs font-bold text-[var(--ctp-text)]">
+      <span class="px-1 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
         目录树 ({{ chapters.length }})
       </span>
 
       <div class="flex items-center gap-1">
         <button
           type="button"
-          class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition"
+          class="md-state inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[11px] font-medium transition"
           :class="
             tocToolsOpen
-              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-              : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]'
+              ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+              : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface-variant)] hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-surface)]'
           "
           title="目录层级批量整理与正文标题同步"
           @click="tocToolsOpen = !tocToolsOpen"
@@ -202,7 +202,7 @@ function onTocDrop(targetIdx: number): void {
         <button
           v-if="docFormat === 'txt'"
           type="button"
-          class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+          class="md-state inline-flex items-center gap-1 rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-surface)]"
           @click="regexPanelOpen = !regexPanelOpen"
         >
           <LuChevronDown v-if="regexPanelOpen" class="h-3 w-3" />
@@ -237,18 +237,18 @@ function onTocDrop(targetIdx: number): void {
     <div class="flex items-center gap-1.5">
       <div class="relative min-w-0 flex-1">
         <LuSearch
-          class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+          class="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
         />
         <input
           v-model="tocSearchQuery"
           type="text"
           placeholder="搜索定位章节标题…"
-          class="h-8 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] pr-7 pl-8 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-8 w-full pr-7 pl-8 text-xs"
         />
         <button
           v-if="tocSearchQuery"
           type="button"
-          class="absolute top-1/2 right-2 -translate-y-1/2 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+          class="absolute top-1/2 right-2 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
           @click="tocSearchQuery = ''"
         >
           <LuX class="h-3 w-3" />
@@ -258,11 +258,11 @@ function onTocDrop(targetIdx: number): void {
       <button
         v-if="anomalyCount > 0 || onlyShowAnomalies"
         type="button"
-        class="inline-flex h-8 shrink-0 items-center gap-1 rounded-xl border px-2 text-[11px] font-semibold transition"
+        class="md-state inline-flex h-8 shrink-0 items-center gap-1 rounded-xl border px-2 text-[11px] font-semibold transition"
         :class="
           onlyShowAnomalies
-            ? 'border-amber-500 bg-amber-500/15 text-amber-500'
-            : 'border-amber-500/35 bg-amber-500/8 text-amber-500 hover:bg-amber-500/15'
+            ? 'border-[var(--md-sys-color-warning)] bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+            : 'border-[var(--md-sys-color-warning)]/40 bg-[var(--md-sys-color-warning-container)]/60 text-[var(--md-sys-color-on-warning-container)] hover:bg-[var(--md-sys-color-warning-container)]'
         "
         title="筛选过短残章 (<80字) 或超长疑似漏分章 (>20000字)"
         @click="onlyShowAnomalies = !onlyShowAnomalies"
@@ -276,19 +276,19 @@ function onTocDrop(targetIdx: number): void {
   <!-- Collapsible Batch TOC Hierarchy & Sync Panel -->
   <div
     v-if="tocToolsOpen"
-    class="space-y-1.5 border-b border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/65 p-2 text-[11px]"
+    class="space-y-1.5 border-b border-[var(--md-sys-color-outline-variant)]/75 bg-[var(--md-sys-color-surface-container)] p-2 text-[11px]"
   >
     <div class="grid grid-cols-2 gap-1.5">
       <button
         type="button"
-        class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1.5 font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+        class="md-state rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1.5 font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
         @click="emit('autoDetectHierarchy')"
       >
         自动识别卷/章层级
       </button>
       <button
         type="button"
-        class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1.5 font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+        class="md-state rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1.5 font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
         @click="emit('flattenLevels')"
       >
         全部平铺为一级
@@ -296,7 +296,7 @@ function onTocDrop(targetIdx: number): void {
     </div>
     <button
       type="button"
-      class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1.5 font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+      class="md-state w-full rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-1.5 font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
       @click="emit('syncTitlesFromBody')"
     >
       从各章正文 H1~H3 标题同步目录名
@@ -306,14 +306,14 @@ function onTocDrop(targetIdx: number): void {
   <!-- Collapsible TXT Regex Panel -->
   <div
     v-if="docFormat === 'txt' && regexPanelOpen"
-    class="space-y-2 border-b border-[var(--ctp-surface0)]/70 bg-[var(--ctp-mantle)]/65 p-2.5 text-xs"
+    class="space-y-2 border-b border-[var(--md-sys-color-outline-variant)]/75 bg-[var(--md-sys-color-surface-container)] p-2.5 text-xs"
   >
     <div class="flex flex-wrap gap-1">
       <button
         v-for="p in regexPresets"
         :key="p.label"
         type="button"
-        class="rounded-md border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+        class="md-state rounded-md border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
         @click="chapterRegexInput = p.chapter; volumeRegexInput = p.volume"
       >
         {{ p.label }}
@@ -323,18 +323,18 @@ function onTocDrop(targetIdx: number): void {
       v-model="chapterRegexInput"
       type="text"
       placeholder="章节标题正则（留空默认）"
-      class="h-7 w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 font-mono text-[11px] outline-none focus:border-[var(--ctp-accent)]"
+      class="md-input h-7 w-full px-2 font-mono text-[11px]"
     />
     <input
       v-model="volumeRegexInput"
       type="text"
       placeholder="分卷标题正则（可选）"
-      class="h-7 w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 font-mono text-[11px] outline-none focus:border-[var(--ctp-accent)]"
+      class="md-input h-7 w-full px-2 font-mono text-[11px]"
     />
     <button
       type="button"
       :disabled="resegmenting"
-      class="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[var(--ctp-accent)] py-1.5 text-[11px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95 disabled:opacity-50"
+      class="md-btn md-btn-sm md-btn-filled md-state w-full disabled:opacity-50"
       @click="emit('resegmentTxt', chapterRegexInput.trim() || undefined, volumeRegexInput.trim() || undefined)"
     >
       <LuRefreshCw class="h-3 w-3" :class="resegmenting ? 'animate-spin' : ''" />
@@ -352,13 +352,13 @@ function onTocDrop(targetIdx: number): void {
       :class="[
         ch.level > 0 ? 'pl-5' : '',
         activeIndex === idx
-          ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-          : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/55 hover:text-[var(--ctp-text)]',
+          ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+          : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]',
         dragOverIdx === idx && dragDropPos === 'before'
-          ? 'border-t-2 border-[var(--ctp-accent)]'
+          ? 'border-t-2 border-[var(--md-sys-color-primary)]'
           : '',
         dragOverIdx === idx && dragDropPos === 'after'
-          ? 'border-b-2 border-[var(--ctp-accent)]'
+          ? 'border-b-2 border-[var(--md-sys-color-primary)]'
           : '',
       ]"
       @dragstart="onTocDragStart(idx, $event)"
@@ -395,7 +395,7 @@ function onTocDrop(targetIdx: number): void {
         v-model="renameDraft"
         type="text"
         autofocus
-        class="h-6 min-w-0 flex-1 rounded border border-[var(--ctp-accent)] bg-[var(--ctp-canvas)] px-1.5 text-xs text-[var(--ctp-text)] outline-none"
+        class="h-6 min-w-0 flex-1 rounded border border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface-container-lowest)] px-1.5 text-xs text-[var(--md-sys-color-on-surface)] outline-none"
         @click.stop
         @keydown.enter.prevent="commitInlineRename"
         @keydown.esc.prevent="renamingIdx = null"
@@ -415,8 +415,8 @@ function onTocDrop(targetIdx: number): void {
         class="shrink-0 rounded px-1 py-0.2 text-[9px] font-bold group-hover:hidden"
         :class="
           anomaly === 'short'
-            ? 'bg-amber-500/15 text-amber-500'
-            : 'bg-rose-500/15 text-rose-400'
+            ? 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+            : 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
         "
         :title="anomaly === 'short' ? '疑似残章/空章 (<80字)' : '疑似漏分超长章 (>20000字)'"
       >
@@ -431,7 +431,7 @@ function onTocDrop(targetIdx: number): void {
       >
         <button
           type="button"
-          class="rounded p-1 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-canvas)] hover:text-[var(--ctp-text)]"
+          class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-on-surface)]"
           title="重命名章节标题"
           @click="startInlineRename(idx)"
         >
@@ -440,7 +440,7 @@ function onTocDrop(targetIdx: number): void {
         <button
           v-if="idx > 0"
           type="button"
-          class="rounded p-1 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-canvas)] hover:text-[var(--ctp-accent)]"
+          class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-primary)]"
           title="合并到上一章"
           @click="emit('mergePrev', idx)"
         >
@@ -448,7 +448,7 @@ function onTocDrop(targetIdx: number): void {
         </button>
         <button
           type="button"
-          class="rounded p-1 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-canvas)] hover:text-red-500"
+          class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-error)]"
           title="删除章节"
           @click="emit('delete', idx)"
         >

@@ -94,22 +94,22 @@ async function handleSaveSettings(): Promise<void> {
 </script>
 
 <template>
-  <section class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <section class="md-card-filled space-y-4 p-6">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 class="text-sm font-bold text-[var(--ctp-text)]">
+        <h2 class="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
           「{{ domainBadgeLabels[domainSubTab] }}」默认重命名归档模板
         </h2>
-        <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
           对齐 {{ domainTokenExamples[domainSubTab].spec }}；支持
-          <code class="font-mono text-[var(--ctp-accent)]">:2</code> 零填充与
-          <code class="font-mono text-[var(--ctp-accent)]">&lt;...&gt;</code> 条件段（变量为空自动省略）
+          <code class="font-mono text-[var(--md-sys-color-primary)]">:2</code> 零填充与
+          <code class="font-mono text-[var(--md-sys-color-primary)]">&lt;...&gt;</code> 条件段（变量为空自动省略）
         </p>
       </div>
 
       <button
         type="button"
-        class="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+        class="md-btn md-btn-sm md-btn-outlined md-state"
         @click="resetDomainTemplates(domainSubTab)"
       >
         <LuRotateCcw class="h-3.5 w-3.5" />
@@ -119,80 +119,60 @@ async function handleSaveSettings(): Promise<void> {
 
     <template v-if="domainSubTab === 'book'">
       <div>
-        <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           图书归档路径模板
         </label>
-        <input
-          v-model="templates.book"
-          type="text"
-          class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-        />
+        <input v-model="templates.book" type="text" class="md-input h-10 w-full font-mono text-xs" />
       </div>
     </template>
 
     <template v-else-if="domainSubTab === 'comic'">
       <div>
-        <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           漫画归档路径模板
         </label>
-        <input
-          v-model="templates.comic"
-          type="text"
-          class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-        />
+        <input v-model="templates.comic" type="text" class="md-input h-10 w-full font-mono text-xs" />
       </div>
     </template>
 
     <template v-else-if="domainSubTab === 'music'">
       <div>
-        <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+        <label class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           音乐归档路径模板
         </label>
-        <input
-          v-model="templates.music"
-          type="text"
-          class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-        />
+        <input v-model="templates.music" type="text" class="md-input h-10 w-full font-mono text-xs" />
       </div>
     </template>
 
     <template v-else>
       <div class="space-y-4">
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
             电影 (Movie) 归档路径模板
           </label>
-          <input
-            v-model="templates.video_movie"
-            type="text"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-          />
+          <input v-model="templates.video_movie" type="text" class="md-input h-10 w-full font-mono text-xs" />
         </div>
         <div>
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
             剧集 / 番剧 (TV Show Episode) 归档路径模板
           </label>
-          <input
-            v-model="templates.video_episode"
-            type="text"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
-          />
+          <input v-model="templates.video_episode" type="text" class="md-input h-10 w-full font-mono text-xs" />
         </div>
       </div>
     </template>
 
-    <div class="space-y-2 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3.5">
+    <div class="space-y-2 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] p-3.5">
       <div class="flex flex-wrap items-center gap-1.5">
-        <span class="text-[11px] text-[var(--ctp-subtext0)]">可用占位变量：</span>
+        <span class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">可用占位变量：</span>
         <code
           v-for="tok in domainTokenExamples[domainSubTab].tokens"
           :key="tok"
-          class="rounded-md bg-[var(--ctp-mantle)] px-2 py-0.5 font-mono text-[11px] text-[var(--ctp-accent)]"
+          class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 font-mono text-[11px] text-[var(--md-sys-color-primary)]"
         >
           {{ tok }}
         </code>
       </div>
-      <p class="font-mono text-[11px] text-[var(--ctp-subtext0)]">
+      <p class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
         示例输出：{{ domainTokenExamples[domainSubTab].sample }}
       </p>
     </div>
@@ -201,7 +181,7 @@ async function handleSaveSettings(): Promise<void> {
       <button
         type="button"
         :disabled="saving"
-        class="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
+        class="md-btn md-btn-filled md-state"
         @click="handleSaveSettings"
       >
         <LuSave class="h-4 w-4" />

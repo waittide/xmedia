@@ -21,6 +21,7 @@ import {
   LuHeading3,
   LuImage,
   LuItalic,
+  LuKeyboard,
   LuLanguages,
   LuLoader2,
   LuMinus,
@@ -39,7 +40,10 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { useDialogStore } from '@/stores/dialog'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import { buildEpubAssetUrl, toolApi } from '../api'
 import BookEditorCssPanel, { cssPresets } from './book-editor/BookEditorCssPanel.vue'
@@ -88,7 +92,16 @@ const emit = defineEmits<{
 }>()
 
 const dialogStore = useDialogStore()
+const snackbar = useSnackbarStore()
 const themeStore = useThemeStore()
+
+const surfaceModeOptions = [
+  { value: 'wysiwyg', label: '所见即所得' },
+  { value: 'xhtml', label: 'XHTML 源码' },
+] as const
+
+const SHORTCUT_HELP_TEXT =
+  '快捷键：Ctrl+S 原地保存 · Ctrl+F 查找替换 · Ctrl+Shift+Enter 光标拆章 · Alt+↑/↓ 切换章节 · Esc 退出'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -99,7 +112,6 @@ const polishing = ref(false)
 const uploadingImage = ref(false)
 const errorMsg = ref<string | null>(null)
 const savedBadge = ref(false)
-const statusToast = ref<string | null>(null)
 
 const docFormat = ref<'txt' | 'epub'>('epub')
 const docTitle = ref('')
@@ -127,7 +139,6 @@ const sourceTextareaRef = ref<HTMLTextAreaElement | null>(null)
 let isComposing = false
 let idleSyncTimer: ReturnType<typeof setTimeout> | null = null
 let savedBadgeTimer: ReturnType<typeof setTimeout> | null = null
-let toastTimer: ReturnType<typeof setTimeout> | null = null
 let keySeq = 1
 
 // TOC sidebar reset counter (incremented on document reload)
@@ -149,11 +160,13 @@ const cssPanelOpen = ref(false)
 const transformScope = ref<'book' | 'chapter'>('book')
 const epubImageInputRef = ref<HTMLInputElement | null>(null)
 function showToast(msg: string): void {
-  statusToast.value = msg
-  if (toastTimer) clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => {
-    statusToast.value = null
-  }, 2600)
+  snackbar.show(msg)
+}
+
+function readRootCssToken(name: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback
+  const val = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return val || fallback
 }
 
 function hydrateXhtmlForBrowser(xhtmlBody: string, sourceHref: string | null): string {
@@ -166,9 +179,10 @@ function hydrateXhtmlForBrowser(xhtmlBody: string, sourceHref: string | null): s
 }
 function buildLivePreviewSrcdoc(xhtmlBody: string, sourceHref: string | null): string {
   const hydrated = hydrateXhtmlForBrowser(xhtmlBody, sourceHref)
-  const isDark = themeStore.isDark
-  const bg = isDark ? '#1e1e2e' : '#ffffff'
-  const fg = isDark ? '#cdd6f4' : '#1f2328'
+  const bg = readRootCssToken('--md-sys-color-surface', 'Canvas')
+  const fg = readRootCssToken('--md-sys-color-on-surface', 'CanvasText')
+  const primary = readRootCssToken('--md-sys-color-primary', 'Highlight')
+  const outline = readRootCssToken('--md-sys-color-outline-variant', 'GrayText')
   const epubCss = docStylesheets.value.join('\n')
   const indentRule = indentParagraphs.value ? 'text-indent: 2em;' : 'text-indent: 0;'
 
@@ -190,8 +204,8 @@ function buildLivePreviewSrcdoc(xhtmlBody: string, sourceHref: string | null): s
   h1, h2, h3, h4 { line-height: 1.35; margin: 1em 0 0.7em; }
   p { margin: 0 0 0.8em; ${indentRule} text-align: justify; }
   img, svg { max-width: 100%; height: auto; border-radius: 6px; }
-  blockquote { margin: 1em 0; padding: 0.4em 1em; border-left: 3px solid #89b4fa; opacity: 0.9; }
-  hr { border: none; border-top: 1px solid rgba(128,128,128,0.3); margin: 1.5em 0; }
+  blockquote { margin: 1em 0; padding: 0.4em 1em; border-left: 3px solid ${primary}; opacity: 0.9; }
+  hr { border: none; border-top: 1px solid ${outline}; margin: 1.5em 0; }
   ${epubCss}
 </style>
 </head>
@@ -379,15 +393,18 @@ function toggleLivePreview(): void {
   }
 }
 
-watch(indentParagraphs, () => {
-  if (showLivePreview.value && currentRecord.value) {
-    flushActiveSurfaceToRecord()
-    previewSrcdoc.value = buildLivePreviewSrcdoc(
-      currentRecord.value.xhtmlBody,
-      currentRecord.value.sourceHref,
-    )
-  }
-})
+watch(
+  () => [indentParagraphs.value, themeStore.isDark] as const,
+  () => {
+    if (showLivePreview.value && currentRecord.value) {
+      flushActiveSurfaceToRecord()
+      previewSrcdoc.value = buildLivePreviewSrcdoc(
+        currentRecord.value.xhtmlBody,
+        currentRecord.value.sourceHref,
+      )
+    }
+  },
+)
 
 // ==================== WYSIWYG Formatting Commands ====================
 
@@ -1306,59 +1323,86 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleWorkbenchKeydown)
   if (idleSyncTimer) clearTimeout(idleSyncTimer)
   if (savedBadgeTimer) clearTimeout(savedBadgeTimer)
-  if (toastTimer) clearTimeout(toastTimer)
 })
 </script>
 
 <template>
-  <Teleport to="body">
+  <MdDialog
+    :open="open && Boolean(entry)"
+    max-width="max-w-[98vw] h-[94vh] !max-h-[94vh]"
+    :close-on-backdrop="false"
+    :hide-close="true"
+    @close="requestClose"
+  >
     <div
-      v-if="open && entry"
-      class="fixed inset-0 z-50 flex flex-col overflow-hidden bg-[var(--ctp-canvas)] text-[var(--ctp-text)]"
+      v-if="entry"
+      class="-mx-6 -my-2 flex h-[calc(100%+1rem)] flex-col overflow-hidden bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)]"
     >
       <!-- ==================== TOP WORKBENCH HEADER ==================== -->
       <header
-        class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--ctp-surface0)]/85 bg-[var(--ctp-shell)] px-4 select-none"
+        class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-4 select-none"
       >
         <div class="flex min-w-0 items-center gap-2.5">
           <div
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-xs"
+            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
           >
             <LuBookOpen class="h-4 w-4" />
           </div>
           <div class="min-w-0">
             <div class="flex items-center gap-2">
-              <h1 class="truncate text-sm font-bold text-[var(--ctp-text)]">
+              <h1 class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)]">
                 {{ docTitle || entry.display_title }}
               </h1>
               <span
-                class="shrink-0 rounded-md bg-[var(--ctp-accent-soft)] px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-[var(--ctp-accent)]"
+                class="shrink-0 rounded-md bg-[var(--md-sys-color-secondary-container)] px-1.5 py-0.5 font-mono text-[10px] font-bold uppercase text-[var(--md-sys-color-on-secondary-container)]"
               >
                 {{ docFormat }}
               </span>
               <span
                 v-if="savedBadge"
-                class="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-500"
+                class="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
               >
                 <LuCheck class="h-3 w-3" />
                 <span>已保存</span>
               </span>
               <span
                 v-else-if="hasUnsavedEdits"
-                class="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-500"
+                class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
               >
                 未保存
               </span>
             </div>
-            <p class="truncate text-[11px] text-[var(--ctp-subtext0)]">
-              {{ chapters.length }} 章 · 全书约 {{ totalCharCount.toLocaleString() }} 字 ·
-              快捷键：Ctrl+S 保存 · Ctrl+F 查找替换 · Ctrl+Shift+Enter 拆章
+            <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              {{ chapters.length }} 章 · 全书约 {{ totalCharCount.toLocaleString() }} 字
             </p>
           </div>
         </div>
 
         <!-- Right Save / Convert / Close Actions -->
         <div class="flex shrink-0 items-center gap-2">
+          <div class="group relative">
+            <button
+              type="button"
+              class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
+              :title="SHORTCUT_HELP_TEXT"
+              aria-label="编辑器快捷键说明"
+            >
+              <LuKeyboard class="h-4 w-4" />
+            </button>
+            <div
+              class="pointer-events-none invisible absolute top-full right-0 z-20 mt-1.5 w-64 rounded-2xl border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-high)] p-3 text-[11px] text-[var(--md-sys-color-on-surface)] opacity-0 shadow-[var(--md-sys-elevation-2)] transition group-focus-within:visible group-focus-within:opacity-100 group-hover:visible group-hover:opacity-100"
+            >
+              <p class="mb-1.5 font-semibold text-[var(--md-sys-color-on-surface)]">快捷键一览</p>
+              <ul class="space-y-1 text-[var(--md-sys-color-on-surface-variant)]">
+                <li class="flex justify-between gap-2"><span>原地保存</span><kbd class="font-mono text-[var(--md-sys-color-on-surface)]">Ctrl+S</kbd></li>
+                <li class="flex justify-between gap-2"><span>查找替换</span><kbd class="font-mono text-[var(--md-sys-color-on-surface)]">Ctrl+F</kbd></li>
+                <li class="flex justify-between gap-2"><span>光标拆章</span><kbd class="font-mono text-[var(--md-sys-color-on-surface)]">Ctrl+Shift+Enter</kbd></li>
+                <li class="flex justify-between gap-2"><span>上下章节</span><kbd class="font-mono text-[var(--md-sys-color-on-surface)]">Alt+↑ / ↓</kbd></li>
+                <li class="flex justify-between gap-2"><span>退出工作台</span><kbd class="font-mono text-[var(--md-sys-color-on-surface)]">Esc</kbd></li>
+              </ul>
+            </div>
+          </div>
+
           <template v-if="docFormat === 'txt'">
             <div class="hidden sm:block">
               <AppCheckbox v-model="deleteSourceTxt" label="转后删原 TXT" />
@@ -1367,18 +1411,18 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="saving || converting || chapters.length === 0"
-              class="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 text-xs font-semibold text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] disabled:opacity-50"
+              class="md-btn md-btn-sm md-btn-outlined md-state disabled:opacity-50"
               title="保存修改回原 TXT 文件 (Ctrl+S)"
               @click="handleSaveInPlace"
             >
-              <LuSave class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+              <LuSave class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
               <span>{{ saving ? '保存中…' : '保存 TXT' }}</span>
             </button>
 
             <button
               type="button"
               :disabled="converting || saving || chapters.length === 0"
-              class="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-xs transition hover:opacity-95 disabled:opacity-50"
+              class="md-btn md-btn-sm md-btn-filled md-state disabled:opacity-50"
               @click="handleConvertToEpub"
             >
               <LuBookOpen class="h-3.5 w-3.5" />
@@ -1390,7 +1434,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="polishing || saving || chapters.length === 0"
-              class="inline-flex h-8 items-center gap-1.5 rounded-xl border border-[var(--ctp-accent)]/35 bg-[var(--ctp-canvas)] px-3 text-xs font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)] disabled:opacity-50"
+              class="md-btn md-btn-sm md-btn-tonal md-state disabled:opacity-50"
               title="自动生成/刷新内封简介页、同步 EPUB2/3 双目录并清理未引用冗余资源"
               @click="handlePolishInEditor"
             >
@@ -1402,7 +1446,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               :disabled="saving || polishing || chapters.length === 0"
-              class="inline-flex h-8 items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-xs transition hover:opacity-95 disabled:opacity-50"
+              class="md-btn md-btn-sm md-btn-filled md-state disabled:opacity-50"
               title="原地保存目录与正文到 EPUB，不关闭编辑器 (Ctrl+S)"
               @click="handleSaveInPlace"
             >
@@ -1421,8 +1465,9 @@ onBeforeUnmount(() => {
 
           <button
             type="button"
-            class="flex h-8 w-8 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
+            class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
             title="退出工作台"
+            aria-label="退出工作台"
             @click="requestClose"
           >
             <LuX class="h-4 w-4" />
@@ -1433,10 +1478,14 @@ onBeforeUnmount(() => {
       <!-- Error Banner -->
       <div
         v-if="errorMsg"
-        class="flex shrink-0 items-center justify-between gap-2 border-b border-red-500/30 bg-red-500/10 px-4 py-2 text-xs text-red-400"
+        class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-error)]/30 bg-[var(--md-sys-color-error-container)] px-4 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
       >
         <span>{{ errorMsg }}</span>
-        <button type="button" class="rounded p-0.5 hover:bg-red-500/15" @click="errorMsg = null">
+        <button
+          type="button"
+          class="md-state rounded p-0.5 text-[var(--md-sys-color-on-error-container)]"
+          @click="errorMsg = null"
+        >
           <LuX class="h-3.5 w-3.5" />
         </button>
       </div>
@@ -1444,9 +1493,9 @@ onBeforeUnmount(() => {
       <!-- Loading Skeleton -->
       <div
         v-if="loading"
-        class="flex flex-1 flex-col items-center justify-center gap-2.5 text-xs text-[var(--ctp-subtext0)]"
+        class="flex flex-1 flex-col items-center justify-center gap-2.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
-        <LuLoader2 class="h-6 w-6 animate-spin text-[var(--ctp-accent)]" />
+        <LuLoader2 class="h-6 w-6 animate-spin text-[var(--md-sys-color-primary)]" />
         <span>正在加载电子书目录结构与样式…</span>
       </div>
 
@@ -1475,10 +1524,10 @@ onBeforeUnmount(() => {
         />
 
         <!-- COLUMN 2: Zero-Latency WYSIWYG / XHTML Editor -->
-        <div class="flex min-w-0 flex-1 flex-col bg-[var(--ctp-canvas)]">
+        <div class="flex min-w-0 flex-1 flex-col bg-[var(--md-sys-color-surface)]">
           <!-- Formatting & View Mode Toolbar -->
           <div
-            class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-mantle)]/45 px-3 py-2 select-none"
+            class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 select-none"
           >
             <!-- Left Formatting Buttons (`@mousedown.prevent` keeps caret & selection intact!) -->
             <div class="flex flex-wrap items-center gap-0.5">
@@ -1500,7 +1549,7 @@ onBeforeUnmount(() => {
                   <LuRedo2 class="h-3.5 w-3.5" />
                 </button>
 
-                <span class="mx-1 h-4 w-px bg-[var(--ctp-surface0)]" />
+                <span class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
               </template>
 
               <button
@@ -1544,7 +1593,7 @@ onBeforeUnmount(() => {
                 <LuQuote class="h-3.5 w-3.5" />
               </button>
 
-              <span class="mx-1 h-4 w-px bg-[var(--ctp-surface0)]" />
+              <span class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
 
               <template v-if="surfaceMode === 'wysiwyg'">
                 <button
@@ -1598,25 +1647,25 @@ onBeforeUnmount(() => {
                 <LuMinus class="h-3.5 w-3.5" />
               </button>
 
-              <span class="mx-1 h-4 w-px bg-[var(--ctp-surface0)]" />
+              <span class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
 
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
+                class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]"
                 title="在当前光标位置拆分为上下两章 (Ctrl+Shift+Enter)"
                 @mousedown.prevent="splitChapterAtCursor"
               >
-                <LuScissors class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                <LuScissors class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
                 <span>光标拆章</span>
               </button>
 
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
+                class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]"
                 title="自动清理本章空段落与段首全角/半角冗余空格"
                 @click="cleanChapterTypography"
               >
-                <LuSparkles class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                <LuSparkles class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
                 <span>一键净版</span>
               </button>
 
@@ -1624,21 +1673,21 @@ onBeforeUnmount(() => {
                 v-if="docFormat === 'epub'"
                 type="button"
                 :disabled="uploadingImage"
-                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)] disabled:opacity-50"
+                class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)] disabled:opacity-50"
                 title="上传图片写入 EPUB 资源包并插入当前光标处"
                 @mousedown.prevent="triggerEpubImageUpload"
               >
-                <LuImage class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+                <LuImage class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
                 <span>{{ uploadingImage ? '上传中…' : '插入图片' }}</span>
               </button>
 
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
+                class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
                 :class="
                   proofreadPanelOpen
-                    ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                    : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]'
+                    ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                    : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
                 "
                 title="简繁转换、台版竖排转横排、网文求票净化与中文标点智能规整"
                 @click="proofreadPanelOpen = !proofreadPanelOpen; if (proofreadPanelOpen) cssPanelOpen = false"
@@ -1649,11 +1698,11 @@ onBeforeUnmount(() => {
 
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
+                class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
                 :class="
                   cssPanelOpen
-                    ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                    : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]'
+                    ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                    : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
                 "
                 title="切换中文排版 CSS 预设与编辑全局样式表"
                 @click="cssPanelOpen = !cssPanelOpen; if (cssPanelOpen) proofreadPanelOpen = false"
@@ -1664,11 +1713,11 @@ onBeforeUnmount(() => {
 
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
+                class="md-state inline-flex h-7 items-center gap-1 rounded-lg px-2 text-[11px] font-medium transition"
                 :class="
                   findBarOpen
-                    ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                    : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]'
+                    ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                    : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
                 "
                 title="查找与批量替换 (Ctrl+F)"
                 @click="findBarOpen = !findBarOpen"
@@ -1683,11 +1732,11 @@ onBeforeUnmount(() => {
               <button
                 v-if="surfaceMode === 'wysiwyg'"
                 type="button"
-                class="rounded-lg border px-2 py-1 text-[11px] font-medium transition"
+                class="md-state h-8 rounded-full border px-2.5 text-[11px] font-medium transition"
                 :class="
                   indentParagraphs
-                    ? 'border-[var(--ctp-accent)]/40 bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext0)]'
+                    ? 'border-[var(--md-sys-color-primary)]/40 bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                    : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface-variant)]'
                 "
                 title="切换段落首行缩进两字符显示"
                 @click="indentParagraphs = !indentParagraphs"
@@ -1695,42 +1744,20 @@ onBeforeUnmount(() => {
                 首行缩进
               </button>
 
-              <div
-                class="inline-flex items-center gap-0.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-shell)] p-0.5"
-              >
-                <button
-                  type="button"
-                  class="rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
-                  :class="
-                    surfaceMode === 'wysiwyg'
-                      ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                      : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-                  "
-                  @click="switchSurfaceMode('wysiwyg')"
-                >
-                  所见即所得
-                </button>
-                <button
-                  type="button"
-                  class="rounded-lg px-2.5 py-1 text-[11px] font-semibold transition"
-                  :class="
-                    surfaceMode === 'xhtml'
-                      ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                      : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-                  "
-                  @click="switchSurfaceMode('xhtml')"
-                >
-                  XHTML 源码
-                </button>
-              </div>
+              <MdSegmentedButton
+                :model-value="surfaceMode"
+                :options="surfaceModeOptions"
+                size="sm"
+                @update:model-value="switchSurfaceMode($event)"
+              />
 
               <button
                 type="button"
-                class="inline-flex h-7 items-center gap-1 rounded-xl border px-2.5 text-[11px] font-semibold transition"
+                class="md-state inline-flex h-8 items-center gap-1 rounded-full border px-3 text-[11px] font-semibold transition"
                 :class="
                   showLivePreview
-                    ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                    ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                    : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
                 "
                 title="开启/关闭右侧阅读器真实样式对照预览窗"
                 @click="toggleLivePreview"
@@ -1782,18 +1809,18 @@ onBeforeUnmount(() => {
           />
 
           <!-- Chapter Title Header Input -->
-          <div class="flex shrink-0 items-center gap-3 border-b border-[var(--ctp-surface0)]/55 px-6 py-2.5">
-            <span class="shrink-0 font-mono text-[11px] text-[var(--ctp-subtext0)]">
+          <div class="flex shrink-0 items-center gap-3 border-b border-[var(--md-sys-color-outline-variant)]/60 px-6 py-2.5">
+            <span class="shrink-0 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               #{{ activeIndex + 1 }}
             </span>
             <input
               :value="activeTitle"
               type="text"
               placeholder="输入目录章节标题…"
-              class="min-w-0 flex-1 bg-transparent text-base font-bold text-[var(--ctp-text)] outline-none placeholder:text-[var(--ctp-subtext0)]/50"
+              class="min-w-0 flex-1 bg-transparent text-base font-bold text-[var(--md-sys-color-on-surface)] outline-none placeholder:text-[var(--md-sys-color-on-surface-variant)]/50"
               @input="onActiveTitleInput(($event.target as HTMLInputElement).value)"
             />
-            <span class="shrink-0 font-mono text-[11px] text-[var(--ctp-subtext0)]">
+            <span class="shrink-0 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               本章 {{ activeCharCount.toLocaleString() }} 字
             </span>
           </div>
@@ -1823,7 +1850,7 @@ onBeforeUnmount(() => {
               v-model="sourceBuffer"
               spellcheck="false"
               placeholder="在此编辑章节 <body> 内的 XHTML 源码…"
-              class="h-full w-full resize-none bg-transparent p-5 font-mono text-xs leading-relaxed text-[var(--ctp-text)] outline-none"
+              class="h-full w-full resize-none bg-transparent p-5 font-mono text-xs leading-relaxed text-[var(--md-sys-color-on-surface)] outline-none"
               @input="onSourceTextareaInput"
               @keydown="onSourceKeydown"
             />
@@ -1833,44 +1860,36 @@ onBeforeUnmount(() => {
         <!-- COLUMN 3: Toggleable Real EPUB Stylesheet & Image Live Preview -->
         <aside
           v-if="showLivePreview"
-          class="hidden w-[38%] max-w-xl shrink-0 flex-col border-l border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] lg:flex"
+          class="hidden w-[38%] max-w-xl shrink-0 flex-col border-l border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] lg:flex"
         >
-          <div class="flex h-9 shrink-0 items-center justify-between border-b border-[var(--ctp-surface0)]/65 px-3.5 text-xs">
-            <span class="font-semibold text-[var(--ctp-subtext1)]">阅读器实时排版预览</span>
-            <span class="text-[10px] text-[var(--ctp-subtext0)]">已加载包内 CSS 与原图</span>
+          <div class="flex h-9 shrink-0 items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/70 px-3.5 text-xs">
+            <span class="font-semibold text-[var(--md-sys-color-on-surface)]">阅读器实时排版预览</span>
+            <span class="text-[10px] text-[var(--md-sys-color-on-surface-variant)]">已加载包内 CSS 与原图</span>
           </div>
           <iframe
             :srcdoc="previewSrcdoc"
             title="EPUB Live Preview"
             sandbox="allow-same-origin"
-            class="min-h-0 w-full flex-1 border-0 bg-[var(--ctp-canvas)]"
+            class="min-h-0 w-full flex-1 border-0 bg-[var(--md-sys-color-surface)]"
           />
         </aside>
-
-        <!-- Floating Status Toast -->
-        <div
-          v-if="statusToast"
-          class="pointer-events-none fixed bottom-6 left-1/2 z-50 -translate-x-1/2 rounded-full border border-[var(--ctp-accent)]/35 bg-[var(--ctp-shell)]/95 px-4 py-2 text-xs font-semibold text-[var(--ctp-text)] shadow-xl backdrop-blur-md"
-        >
-          {{ statusToast }}
-        </div>
       </div>
     </div>
-  </Teleport>
+  </MdDialog>
 </template>
 
 <style scoped>
 @reference "tailwindcss";
 
 .tb-btn {
-  @apply flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ctp-subtext1)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)];
+  @apply flex h-7 w-7 items-center justify-center rounded-lg text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)];
 }
 
 .epub-wysiwyg-surface {
   font-family: "Noto Serif CJK SC", "Songti SC", "PingFang SC", "Microsoft YaHei", Georgia, serif;
   font-size: 16px;
   line-height: 1.9;
-  color: var(--ctp-text);
+  color: var(--md-sys-color-on-surface);
   word-break: break-word;
 }
 
@@ -1908,8 +1927,8 @@ onBeforeUnmount(() => {
 .epub-wysiwyg-surface :deep(blockquote) {
   margin: 1em 0;
   padding: 0.5em 1em;
-  border-left: 3px solid var(--ctp-accent);
-  background: color-mix(in srgb, var(--ctp-mantle) 60%, transparent);
+  border-left: 3px solid var(--md-sys-color-primary);
+  background: var(--md-sys-color-surface-container-low);
   border-radius: 0 0.5rem 0.5rem 0;
 }
 
@@ -1918,12 +1937,12 @@ onBeforeUnmount(() => {
   font-size: 0.88em;
   padding: 0.15em 0.4em;
   border-radius: 0.35rem;
-  background: var(--ctp-surface0);
+  background: var(--md-sys-color-surface-container-high);
 }
 
 .epub-wysiwyg-surface :deep(hr) {
   border: none;
-  border-top: 1px solid var(--ctp-surface1);
+  border-top: 1px solid var(--md-sys-color-outline-variant);
   margin: 1.5em 0;
 }
 

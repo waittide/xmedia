@@ -11,6 +11,7 @@ import {
   LuRotateCcw,
 } from 'vue-icons-plus/lu'
 
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -164,17 +165,7 @@ async function handleUndoRename(batch: RenameHistoryBatchDto): Promise<void> {
           size="sm"
         />
 
-        <label
-          v-if="rootId"
-          class="inline-flex cursor-pointer items-center gap-1.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          <input
-            v-model="scopeAllRoots"
-            type="checkbox"
-            class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
-          />
-          <span>全部目录</span>
-        </label>
+        <AppCheckbox v-if="rootId" v-model="scopeAllRoots" label="全部目录" />
       </div>
     </template>
 

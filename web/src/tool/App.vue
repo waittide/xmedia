@@ -70,46 +70,46 @@ onBeforeUnmount(() => {
 <template>
   <div
     v-if="booting"
-    class="flex h-screen w-screen items-center justify-center bg-[var(--ctp-shell)] text-xs text-[var(--ctp-subtext0)]"
+    class="flex h-screen w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] text-xs text-[var(--md-sys-color-on-surface-variant)]"
   >
-    <LuRefreshCw class="mr-2 h-4 w-4 animate-spin text-[var(--ctp-accent)]" />
+    <LuRefreshCw class="mr-2 h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
     <span>{{ txt.boot.connecting }}</span>
   </div>
 
   <!-- Connection Error / Retry State -->
   <div
     v-else-if="bootError || !status"
-    class="flex h-screen w-screen items-center justify-center bg-[var(--ctp-shell)] p-4 text-[var(--ctp-text)]"
+    class="flex h-screen w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
   >
     <div
-      class="w-full max-w-sm space-y-4 rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-6 shadow-2xl"
+      class="w-full max-w-sm space-y-4 rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-6 shadow-[var(--md-sys-elevation-3)]"
     >
       <div class="flex items-center gap-3">
         <div
-          class="flex h-11 w-11 items-center justify-center rounded-2xl bg-red-500/15 text-red-500"
+          class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
         >
           <LuAlertCircle class="h-5 w-5" />
         </div>
         <div>
           <h1 class="text-base font-bold">{{ txt.boot.failedTitle }}</h1>
-          <p class="text-[11px] text-[var(--ctp-subtext0)]">{{ txt.brand }}</p>
+          <p class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">{{ txt.brand }}</p>
         </div>
       </div>
 
-      <p class="text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <p class="text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ txt.boot.failedDesc }}
       </p>
 
       <div
         v-if="bootError"
-        class="rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 font-mono text-[11px] break-all text-red-400"
+        class="rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 font-mono text-[11px] break-all text-[var(--md-sys-color-on-error-container)]"
       >
         {{ bootError }}
       </div>
 
       <button
         type="button"
-        class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--ctp-accent)] py-2.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+        class="md-btn md-btn-filled md-state w-full"
         @click="fetchStatus"
       >
         <LuRefreshCw class="h-3.5 w-3.5" />
@@ -121,52 +121,52 @@ onBeforeUnmount(() => {
   <!-- Password Gate when `--password` / `XMEDIA_TOOL_PASSWORD` is configured -->
   <div
     v-else-if="status?.requires_password && !status.authenticated"
-    class="flex h-screen w-screen items-center justify-center bg-[var(--ctp-shell)] p-4 text-[var(--ctp-text)]"
+    class="flex h-screen w-screen items-center justify-center bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)]"
   >
     <form
-      class="w-full max-w-sm space-y-4 rounded-3xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-6 shadow-2xl"
+      class="w-full max-w-sm space-y-4 rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-6 shadow-[var(--md-sys-elevation-3)]"
       @submit.prevent="handleUnlock"
     >
       <div class="flex items-center gap-3">
         <div
-          class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-sm"
+          class="flex h-11 w-11 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
         >
           <LuWrench class="h-5 w-5" />
         </div>
         <div>
           <h1 class="text-base font-bold">{{ txt.unlock.title }}</h1>
-          <p class="text-[11px] text-[var(--ctp-subtext0)]">v{{ status.version }}</p>
+          <p class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">v{{ status.version }}</p>
         </div>
       </div>
 
-      <p class="text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <p class="text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ txt.unlock.subtitle }}
       </p>
 
       <div
         v-if="unlockError"
-        class="rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+        class="rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
       >
         {{ unlockError }}
       </div>
 
       <div class="relative">
         <LuLock
-          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--ctp-subtext0)]"
+          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
         />
         <input
           v-model="passwordInput"
           type="password"
           autofocus
           :placeholder="txt.unlock.placeholder"
-          class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/65 py-2.5 pr-3 pl-10 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-10 w-full pr-3 pl-10 text-xs"
         />
       </div>
 
       <button
         type="submit"
         :disabled="!passwordInput.trim() || unlocking"
-        class="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--ctp-accent)] py-2.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
+        class="md-btn md-btn-filled md-state w-full"
       >
         <LuRefreshCw v-if="unlocking" class="h-3.5 w-3.5 animate-spin" />
         <span>{{ txt.unlock.submit }}</span>

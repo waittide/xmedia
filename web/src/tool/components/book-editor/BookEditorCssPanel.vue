@@ -44,16 +44,16 @@ const emit = defineEmits<{
 
 <template>
   <div
-    class="space-y-2 border-b border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] px-4 py-2.5 text-xs"
+    class="space-y-2 border-b border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs"
   >
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-1.5">
-        <span class="font-semibold text-[var(--ctp-subtext1)]">中文排版预设：</span>
+        <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">中文排版预设：</span>
         <button
           v-for="preset in cssPresets"
           :key="preset.id"
           type="button"
-          class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 py-1 text-[11px] font-medium text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+          class="md-state rounded-lg border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)] px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
           :title="preset.desc"
           @click="emit('applyPreset', preset.css, preset.label)"
         >
@@ -62,7 +62,8 @@ const emit = defineEmits<{
       </div>
       <button
         type="button"
-        class="rounded p-1 text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]"
+        class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
+        aria-label="关闭样式面板"
         @click="emit('close')"
       >
         <LuX class="h-3.5 w-3.5" />
@@ -73,7 +74,7 @@ const emit = defineEmits<{
       rows="5"
       spellcheck="false"
       placeholder="编辑全局 EPUB CSS 样式表（保存 EPUB 或 TXT 转 EPUB 时自动写入样式文件，右侧预览分屏实时生效）…"
-      class="w-full rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 font-mono text-[11px] leading-relaxed text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+      class="md-input w-full p-2 font-mono text-[11px] leading-relaxed"
       @input="emit('update:modelValue', ($event.target as HTMLTextAreaElement).value)"
     />
   </div>

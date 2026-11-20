@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from 'vue'
 import {
-  LuArrowLeft,
   LuBookOpen,
   LuClapperboard,
   LuDisc3,
@@ -13,15 +12,14 @@ import {
   LuSave,
   LuSkipForward,
   LuX,
-  LuZap,
 } from 'vue-icons-plus/lu'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import type { MediaKind } from '@/types/api'
 import { resolveScraperCoverUrl } from '../../api'
 import type { FieldSourceBadge, ScrapedMetadata } from '../../types'
 import {
   splitListTokens,
   type ApplyFillMode,
-  type ScrapedFieldKey,
 } from '../inspector/useMetadataForm'
 
 export interface CandidatePreviewState {
@@ -46,19 +44,15 @@ const props = withDefaults(
     hasNext?: boolean
     closable?: boolean
     saving?: boolean
-    allowFillLeft?: boolean
   }>(),
   {
     hasNext: false,
     closable: true,
     saving: false,
-    allowFillLeft: true,
   },
 )
 
 const emit = defineEmits<{
-  fillAll: [meta: ScrapedMetadata, mode: ApplyFillMode]
-  fillField: [field: ScrapedFieldKey, meta: ScrapedMetadata, label: string]
   directApply: [meta: ScrapedMetadata, mode: ApplyFillMode, opts?: CandidateApplyOptions]
   directApplyNext: [meta: ScrapedMetadata, mode: ApplyFillMode, opts?: CandidateApplyOptions]
   close: []
@@ -234,7 +228,6 @@ type DraftStringKey = Exclude<keyof DraftFields, 'useCover'>
 interface EditableFieldSpec {
   id: string
   draftKey: DraftStringKey
-  fillKey: ScrapedFieldKey
   label: string
   placeholder: string
   multiline?: boolean
@@ -251,7 +244,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'title',
         draftKey: 'title',
-        fillKey: 'title',
         label: '书名 (dc:title)',
         placeholder: '书名',
         sourceName: sourceBadgeFor('title'),
@@ -259,7 +251,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'creators',
         draftKey: 'creators',
-        fillKey: 'creators',
         label: '作者 (dc:creator，`/` 分隔)',
         placeholder: '作者',
         sourceName: sourceBadgeFor('creators'),
@@ -267,7 +258,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'series_or_album',
         draftKey: 'seriesOrAlbum',
-        fillKey: 'series_or_album',
         label: '系列 / 丛书 (Series)',
         placeholder: '如：三体 / 魔法禁书目录',
         sourceName: sourceBadgeFor('series_or_album'),
@@ -275,7 +265,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'isbn',
         draftKey: 'isbn',
-        fillKey: 'isbn',
         label: 'ISBN',
         placeholder: 'ISBN',
         half: true,
@@ -284,7 +273,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'publisher_or_studio',
         draftKey: 'publisherOrStudio',
-        fillKey: 'publisher_or_studio',
         label: '出版社 (dc:publisher)',
         placeholder: '出版社',
         half: true,
@@ -293,7 +281,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'year',
         draftKey: 'dateOrYear',
-        fillKey: 'year',
         label: '出版日期 (dc:date)',
         placeholder: 'YYYY-MM-DD',
         half: true,
@@ -302,7 +289,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'language',
         draftKey: 'language',
-        fillKey: 'language',
         label: '语言 (dc:language)',
         placeholder: 'zh / en / ja',
         half: true,
@@ -311,7 +297,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'tags',
         draftKey: 'combinedBookTags',
-        fillKey: 'tags',
         label: '标签 / 主题 (dc:subject，`/` 分隔)',
         placeholder: '标签 / 主题',
         sourceName: sourceBadgeFor('tags', 'genres'),
@@ -319,7 +304,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'summary',
         draftKey: 'summary',
-        fillKey: 'summary',
         label: '内容简介 (dc:description)',
         placeholder: '内容简介…',
         multiline: true,
@@ -334,7 +318,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'title',
         draftKey: 'title',
-        fillKey: 'title',
         label: '标题',
         placeholder: '漫画标题',
         sourceName: sourceBadgeFor('title'),
@@ -342,7 +325,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'series_or_album',
         draftKey: 'seriesOrAlbum',
-        fillKey: 'series_or_album',
         label: '系列 / 丛书',
         placeholder: '系列名称',
         sourceName: sourceBadgeFor('series_or_album', 'title'),
@@ -350,7 +332,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'creators',
         draftKey: 'creators',
-        fillKey: 'creators',
         label: '作者 / 编剧',
         placeholder: '作者',
         half: true,
@@ -359,7 +340,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'directors',
         draftKey: 'directors',
-        fillKey: 'directors',
         label: '画师 / 作画',
         placeholder: '画师',
         half: true,
@@ -368,7 +348,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'publisher_or_studio',
         draftKey: 'publisherOrStudio',
-        fillKey: 'publisher_or_studio',
         label: '出版社',
         placeholder: '出版社',
         half: true,
@@ -377,7 +356,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'year',
         draftKey: 'dateOrYear',
-        fillKey: 'year',
         label: '年份 / 日期',
         placeholder: 'YYYY',
         half: true,
@@ -386,7 +364,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'track_or_episode',
         draftKey: 'trackOrEpisode',
-        fillKey: 'track_or_episode',
         label: '卷 / 话号',
         placeholder: '如：1',
         half: true,
@@ -395,7 +372,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'language',
         draftKey: 'language',
-        fillKey: 'language',
         label: '语言',
         placeholder: 'zh / ja / en',
         half: true,
@@ -404,7 +380,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'genres',
         draftKey: 'genres',
-        fillKey: 'genres',
         label: '流派 / 分类',
         placeholder: '流派',
         sourceName: sourceBadgeFor('genres'),
@@ -412,7 +387,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'tags',
         draftKey: 'tags',
-        fillKey: 'tags',
         label: '标签',
         placeholder: '标签',
         sourceName: sourceBadgeFor('tags'),
@@ -420,7 +394,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'summary',
         draftKey: 'summary',
-        fillKey: 'summary',
         label: '内容简介',
         placeholder: '内容简介…',
         multiline: true,
@@ -435,7 +408,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'title',
         draftKey: 'title',
-        fillKey: 'title',
         label: '曲目标题',
         placeholder: '曲目标题',
         sourceName: sourceBadgeFor('title'),
@@ -443,7 +415,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'creators',
         draftKey: 'creators',
-        fillKey: 'creators',
         label: '艺人 / 歌手',
         placeholder: '艺人',
         sourceName: sourceBadgeFor('creators'),
@@ -451,7 +422,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'series_or_album',
         draftKey: 'seriesOrAlbum',
-        fillKey: 'series_or_album',
         label: '所属专辑',
         placeholder: '专辑名',
         sourceName: sourceBadgeFor('series_or_album'),
@@ -459,7 +429,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'disc_or_season',
         draftKey: 'discOrSeason',
-        fillKey: 'disc_or_season',
         label: '碟号',
         placeholder: '1',
         half: true,
@@ -468,7 +437,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'track_or_episode',
         draftKey: 'trackOrEpisode',
-        fillKey: 'track_or_episode',
         label: '音轨号',
         placeholder: '1',
         half: true,
@@ -477,7 +445,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'year',
         draftKey: 'dateOrYear',
-        fillKey: 'year',
         label: '发行年份',
         placeholder: 'YYYY',
         half: true,
@@ -486,7 +453,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'genres',
         draftKey: 'genres',
-        fillKey: 'genres',
         label: '流派',
         placeholder: '流派',
         half: true,
@@ -495,7 +461,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
       {
         id: 'lyrics',
         draftKey: 'lyrics',
-        fillKey: 'lyrics',
         label: '歌词（支持 LRC 或纯文本）',
         placeholder: '暂无歌词…',
         multiline: true,
@@ -509,7 +474,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'title',
       draftKey: 'title',
-      fillKey: 'title',
       label: '标题',
       placeholder: '影片/剧集标题',
       sourceName: sourceBadgeFor('title'),
@@ -517,7 +481,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'original_title',
       draftKey: 'originalTitle',
-      fillKey: 'original_title',
       label: '原作名',
       placeholder: '原作名',
       sourceName: sourceBadgeFor('original_title'),
@@ -525,7 +488,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'series_or_album',
       draftKey: 'seriesOrAlbum',
-      fillKey: 'series_or_album',
       label: '所属剧集 / 系列',
       placeholder: '剧集名',
       sourceName: sourceBadgeFor('series_or_album'),
@@ -533,7 +495,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'disc_or_season',
       draftKey: 'discOrSeason',
-      fillKey: 'disc_or_season',
       label: '季号',
       placeholder: '1',
       half: true,
@@ -542,7 +503,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'track_or_episode',
       draftKey: 'trackOrEpisode',
-      fillKey: 'track_or_episode',
       label: '集号',
       placeholder: '1',
       half: true,
@@ -551,7 +511,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'year',
       draftKey: 'dateOrYear',
-      fillKey: 'year',
       label: '首播 / 年份',
       placeholder: 'YYYY-MM-DD',
       half: true,
@@ -560,7 +519,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'rating',
       draftKey: 'rating',
-      fillKey: 'rating',
       label: '评分',
       placeholder: '8.5',
       half: true,
@@ -569,7 +527,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'publisher_or_studio',
       draftKey: 'publisherOrStudio',
-      fillKey: 'publisher_or_studio',
       label: '制片 / 发行商',
       placeholder: '制片厂',
       sourceName: sourceBadgeFor('publisher_or_studio'),
@@ -577,7 +534,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'directors',
       draftKey: 'directors',
-      fillKey: 'directors',
       label: '导演',
       placeholder: '导演',
       sourceName: sourceBadgeFor('illustrators_or_directors'),
@@ -585,7 +541,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'cast',
       draftKey: 'cast',
-      fillKey: 'cast',
       label: '主演',
       placeholder: '演员（`/` 分隔）',
       sourceName: sourceBadgeFor('cast'),
@@ -593,7 +548,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'genres',
       draftKey: 'genres',
-      fillKey: 'genres',
       label: '流派',
       placeholder: '流派',
       sourceName: sourceBadgeFor('genres'),
@@ -601,7 +555,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'tags',
       draftKey: 'tags',
-      fillKey: 'tags',
       label: '标签',
       placeholder: '标签',
       sourceName: sourceBadgeFor('tags'),
@@ -609,7 +562,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     {
       id: 'summary',
       draftKey: 'summary',
-      fillKey: 'summary',
       label: '剧情简介',
       placeholder: '剧情简介…',
       multiline: true,
@@ -618,24 +570,6 @@ const fieldSpecs = computed<EditableFieldSpec[]>(() => {
     },
   ]
 })
-
-function emitEditedField(spec: EditableFieldSpec): void {
-  const edited = buildEditedMetadata()
-  if (!edited) return
-  emit('fillField', spec.fillKey, edited, spec.label)
-}
-
-function emitEditedCover(): void {
-  const edited = buildEditedMetadata()
-  if (!edited || !edited.cover_url) return
-  emit('fillField', 'cover', edited, '封面')
-}
-
-function emitFillAll(): void {
-  const edited = buildEditedMetadata()
-  if (!edited) return
-  emit('fillAll', edited, props.preview.fillMode)
-}
 
 function emitDirectApply(advanceNext = false): void {
   const edited = buildEditedMetadata()
@@ -675,7 +609,7 @@ defineExpose({
           {{ preview.sourceLabel }}
         </span>
         <span class="truncate text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-          {{ allowFillLeft ? '刮削结果（可编辑）' : '待写入结果（可编辑）' }}
+          待写入结果（可编辑）
         </span>
         <span
           v-if="isDraftEdited"
@@ -787,16 +721,6 @@ defineExpose({
 
             <div class="flex flex-wrap gap-1.5">
               <button
-                v-if="allowFillLeft && draft.useCover && isCoverUsable(preview.meta.cover_url)"
-                type="button"
-                class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                @click="emitEditedCover"
-              >
-                <LuImage class="h-3 w-3" />
-                <span>← 仅用此封面</span>
-              </button>
-
-              <button
                 v-if="isCoverUsable(preview.meta.cover_url)"
                 type="button"
                 class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
@@ -831,17 +755,6 @@ defineExpose({
                   {{ spec.sourceName }}
                 </span>
               </div>
-
-              <button
-                v-if="allowFillLeft && draft[spec.draftKey].trim()"
-                type="button"
-                class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)]/75 px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary-container)] transition hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
-                :title="`将「${spec.label}」填入左侧表单`"
-                @click="emitEditedField(spec)"
-              >
-                <LuArrowLeft class="h-2.5 w-2.5" />
-                <span>填入左栏</span>
-              </button>
             </div>
 
             <textarea
@@ -870,72 +783,44 @@ defineExpose({
           <span>
             写入模式：{{ preview.fillMode === 'overwrite' ? '覆盖' : '仅补空' }}
           </span>
-          <label
-            v-if="!allowFillLeft"
-            class="inline-flex cursor-pointer items-center gap-1 text-[11px]"
-            title="写入元数据后按设置页的默认命名模板重命名并归档目录"
-          >
-            <input
-              v-model="organizeAfterSave"
-              type="checkbox"
-              class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
-            />
-            <span>保存并归档</span>
-          </label>
-          <label
+          <span title="写入元数据后按设置页的默认命名模板重命名并归档目录">
+            <AppCheckbox v-model="organizeAfterSave" label="保存并归档" />
+          </span>
+          <span
             v-if="
-              !allowFillLeft &&
               mediaKind === 'music' &&
               draft.useCover &&
               isCoverUsable(preview.meta.cover_url)
             "
-            class="inline-flex cursor-pointer items-center gap-1 text-[11px]"
             title="写入内嵌封面时同步在专辑目录保存 cover 图片"
           >
-            <input
-              v-model="writeAlbumCover"
-              type="checkbox"
-              class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
-            />
-            <span>同步专辑 cover</span>
-          </label>
+            <AppCheckbox v-model="writeAlbumCover" label="同步专辑 cover" />
+          </span>
         </div>
 
         <div class="flex flex-wrap items-center gap-1.5">
-          <button
-            v-if="allowFillLeft"
-            type="button"
-            :disabled="saving"
-            class="md-btn md-btn-sm md-btn-text md-state"
-            title="把右侧当前编辑内容同步到左侧表单（暂不落盘）"
-            @click="emitFillAll"
-          >
-            <LuArrowLeft class="h-3.5 w-3.5" />
-            <span>填到左栏</span>
-          </button>
           <button
             type="button"
             :disabled="saving"
             class="md-btn md-btn-sm md-state"
             :class="hasNext ? 'md-btn-tonal' : 'md-btn-filled'"
-            :title="allowFillLeft ? '直接以右侧微调后的结果保存并写入文件' : '将右侧结果写入当前原文件 (⌘S)'"
+            title="将右侧结果写入当前原文件 (⌘S)"
             @click="emitDirectApply(false)"
           >
             <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-            <LuZap v-else-if="allowFillLeft" class="h-3.5 w-3.5" />
             <LuSave v-else class="h-3.5 w-3.5" />
-            <span>{{ allowFillLeft ? '采用右侧保存' : '保存' }}</span>
+            <span>保存</span>
           </button>
           <button
             v-if="hasNext"
             type="button"
             :disabled="saving"
             class="md-btn md-btn-sm md-btn-filled md-state"
-            :title="allowFillLeft ? '采用右侧结果写入文件，并自动切换下一项' : '写入当前原文件并切换下一项 (⌘↵)'"
+            title="写入当前原文件并切换下一项 (⌘↵)"
             @click="emitDirectApply(true)"
           >
             <LuSkipForward class="h-3.5 w-3.5" />
-            <span>{{ allowFillLeft ? '采用并下一项' : '保存并下一项' }}</span>
+            <span>保存并下一项</span>
           </button>
         </div>
       </div>

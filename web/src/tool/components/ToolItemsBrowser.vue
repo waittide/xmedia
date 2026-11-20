@@ -26,6 +26,7 @@ import {
   LuPencil,
   LuRadio,
   LuRefreshCw,
+  LuSlidersHorizontal,
   LuSparkles,
   LuTrash2,
   LuUndo2,
@@ -37,6 +38,7 @@ import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl } from '../api'
+import type { ToolCompletenessFilter } from '../completeness'
 import { formatBytes, useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem } from '../tasks'
 import type {
@@ -46,14 +48,7 @@ import type {
   RawFileEntryDto,
 } from '../types'
 
-export type ToolCompletenessFilter =
-  | 'all'
-  | 'incomplete'
-  | 'missing_cover'
-  | 'missing_summary'
-  | 'missing_tag'
-  | 'complete'
-
+export type { ToolCompletenessFilter }
 export type ToolSortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
 
 const props = defineProps<{
@@ -97,6 +92,7 @@ const props = defineProps<{
   inspectingPath: string | null
   artworkVersion: number
   artworkVersions?: Record<string, number>
+  lastScrapeSummary: string
 }>()
 
 const emit = defineEmits<{
@@ -111,7 +107,8 @@ const emit = defineEmits<{
   clearSelection: []
   setSortField: [field: ToolSortField]
   toggleSortDir: []
-  enqueueScrapeSelection: []
+  quickScrapeSelection: []
+  configureScrapeSelection: []
   openScrapeWorkbench: [entries?: MediaFileEntry[]]
   openComicSeriesTools: []
   openMusicToolbox: [entries: MediaFileEntry[]]
@@ -538,16 +535,28 @@ function relativeDirBadge(relPath: string): string | null {
             <span>刮削工作台</span>
           </button>
 
-          <button
+          <div
             v-if="filteredFiles.length > 0 && selectedPaths.size === 0"
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            title="对当前列表批量配置并启动自动刮削"
-            @click="emit('enqueueScrapeSelection')"
+            class="inline-flex items-center overflow-hidden rounded-full bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]"
           >
-            <LuSparkles class="h-3.5 w-3.5" />
-            <span>自动刮削全部 ({{ filteredFiles.length }})</span>
-          </button>
+            <button
+              type="button"
+              class="md-state inline-flex h-8 items-center gap-1.5 pr-2.5 pl-3.5 text-xs font-semibold"
+              :title="`按上次策略一键快刮全部 (${lastScrapeSummary})`"
+              @click="emit('quickScrapeSelection')"
+            >
+              <LuSparkles class="h-3.5 w-3.5" />
+              <span>快刮全部 ({{ filteredFiles.length }})</span>
+            </button>
+            <button
+              type="button"
+              class="md-state inline-flex h-8 items-center border-l border-[var(--md-sys-color-outline-variant)]/50 px-2.5 text-xs"
+              :title="`配置自动刮削策略（当前：${lastScrapeSummary}）`"
+              @click="emit('configureScrapeSelection')"
+            >
+              <LuSlidersHorizontal class="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -712,7 +721,7 @@ function relativeDirBadge(relPath: string): string | null {
               <div class="flex w-24 shrink-0 items-center justify-end gap-0.5 text-[var(--md-sys-color-on-surface-variant)]">
                 <button
                   type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state text-red-400 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/10"
+                  class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-error)] opacity-0 transition group-hover:opacity-100 hover:bg-[var(--md-sys-color-error-container)]/50"
                   title="删除整个文件夹及其内部所有文件"
                   @click.stop="emit('requestDeleteFiles', [folder.rel_path], false)"
                 >
@@ -758,8 +767,8 @@ function relativeDirBadge(relPath: string): string | null {
               <div
                 class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]"
               >
-                <LuImage v-if="rawFileCategory(raw) === 'image'" class="h-4 w-4 text-sky-400" />
-                <LuFileText v-else-if="rawFileCategory(raw) === 'sidecar'" class="h-4 w-4 text-amber-400" />
+                <LuImage v-if="rawFileCategory(raw) === 'image'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+                <LuFileText v-else-if="rawFileCategory(raw) === 'sidecar'" class="h-4 w-4 text-[var(--md-sys-color-warning)]" />
                 <LuBookOpen v-else-if="rawFileCategory(raw) === 'book'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
                 <LuLayers v-else-if="rawFileCategory(raw) === 'comic'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
                 <LuDisc3 v-else-if="rawFileCategory(raw) === 'music'" class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
@@ -825,7 +834,7 @@ function relativeDirBadge(relPath: string): string | null {
 
                 <button
                   type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state text-red-400 hover:bg-red-500/10"
+                  class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-error)] hover:bg-[var(--md-sys-color-error-container)]/50"
                   title="仅删除此原始文件（不删除同名外挂）"
                   @click.stop="emit('requestDeleteFiles', [raw.rel_path], false)"
                 >
@@ -935,7 +944,7 @@ function relativeDirBadge(relPath: string): string | null {
                 </span>
                 <span
                   v-else-if="fileTaskStatus(file) === 'unmatched'"
-                  class="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-500"
+                  class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
                 >
                   未匹配
                 </span>
@@ -1055,7 +1064,7 @@ function relativeDirBadge(relPath: string): string | null {
                 "
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
-                :class="file.completeness.is_normalized ? 'text-emerald-500' : ''"
+                :class="file.completeness.is_normalized ? 'text-[var(--md-sys-color-success)]' : ''"
                 :title="
                   file.completeness.is_normalized
                     ? '已规范化 EPUB 3.0（点击可按新参数重新规范化）'
@@ -1117,7 +1126,7 @@ function relativeDirBadge(relPath: string): string | null {
 
               <button
                 type="button"
-                class="md-icon-btn md-icon-btn-sm md-state text-red-400 hover:bg-red-500/10"
+                class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-error)] hover:bg-[var(--md-sys-color-error-container)]/50"
                 title="删除此条目及同名外挂文件"
                 @click.stop="emit('requestDeleteFiles', [fileSelectionKey(file)], true)"
               >
@@ -1186,138 +1195,35 @@ function relativeDirBadge(relPath: string): string | null {
 
           <div class="mx-1 h-5 w-px bg-[var(--md-sys-color-outline-variant)]" />
 
-          <template v-if="isFolderManagerMode">
-            <template v-if="checkedFiles.length > 0">
+          <template v-if="checkedFiles.length > 0">
+            <div
+              class="inline-flex items-center overflow-hidden rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]"
+            >
               <button
                 type="button"
-                class="md-btn md-btn-sm md-btn-filled md-state"
-                title="对所选文件及所选文件夹内的媒体条目执行批量自动刮削"
-                @click="emit('enqueueScrapeSelection')"
+                class="md-state inline-flex h-8 items-center gap-1.5 pr-2.5 pl-3.5 text-xs font-semibold"
+                :title="`按上次策略一键快刮 (${lastScrapeSummary})`"
+                @click="emit('quickScrapeSelection')"
               >
                 <LuSparkles class="h-3.5 w-3.5" />
-                <span>自动刮削 ({{ checkedFiles.length }})</span>
-              </button>
-
-              <button
-                type="button"
-                class="md-btn md-btn-sm md-btn-tonal md-state"
-                title="在三栏刮削工作台中逐项对照与编辑所选媒体条目"
-                @click="emit('openScrapeWorkbench', checkedFiles)"
-              >
-                <LuColumns3 class="h-3.5 w-3.5" />
-                <span>刮削工作台</span>
-              </button>
-
-              <button
-                type="button"
-                class="md-btn md-btn-sm md-btn-tonal md-state"
-                title="批量修改所选媒体条目的元信息"
-                @click="emit('openBatchMetadata')"
-              >
-                <LuPencil class="h-3.5 w-3.5" />
-                <span>批量编辑</span>
-              </button>
-
-              <button
-                type="button"
-                :disabled="unorganizedCheckedFiles.length === 0"
-                class="md-btn md-btn-sm md-btn-outlined md-state disabled:cursor-not-allowed disabled:opacity-45"
-                :title="
-                  unorganizedCheckedFiles.length === 0
-                    ? '所选条目均已按模板整理归档，无需重复整理'
-                    : unorganizedCheckedFiles.length < checkedFiles.length
-                      ? `按命名模板整理归档（将自动跳过 ${checkedFiles.length - unorganizedCheckedFiles.length} 项已归档条目）`
-                      : '按命名模板整理归档所选媒体条目'
-                "
-                @click="emit('openRename', checkedFiles)"
-              >
-                <LuFileSignature class="h-3.5 w-3.5" />
                 <span>
-                  {{
-                    unorganizedCheckedFiles.length > 0 && unorganizedCheckedFiles.length < checkedFiles.length
-                      ? `整理归档 (${unorganizedCheckedFiles.length})`
-                      : '整理归档'
-                  }}
+                  {{ isFolderManagerMode ? `按上次策略快刮 (${checkedFiles.length})` : '按上次策略快刮' }}
                 </span>
               </button>
-
               <button
-                v-if="selectedBookEntries.length > 0"
                 type="button"
-                class="md-btn md-btn-sm md-btn-text md-state"
-                title="将所选 TXT / EPUB / PDF 批量转为规范化压缩 EPUB 3.0"
-                @click="emit('openBookNormalizeEpub', selectedBookEntries)"
+                class="md-state inline-flex h-8 items-center border-l border-[var(--md-sys-color-on-primary)]/25 px-2.5 text-xs"
+                :title="`配置自动刮削策略（当前：${lastScrapeSummary}）`"
+                @click="emit('configureScrapeSelection')"
               >
-                <LuPackageCheck class="h-3.5 w-3.5" />
-                <span>转规范化 EPUB</span>
+                <LuSlidersHorizontal class="h-3.5 w-3.5" />
               </button>
-
-              <button
-                v-if="selectedComicEntries.length > 0"
-                type="button"
-                class="md-btn md-btn-sm md-btn-text md-state"
-                @click="emit('openComicSeriesTools')"
-              >
-                <LuLayers class="h-3.5 w-3.5" />
-                <span>漫画工具</span>
-              </button>
-
-              <button
-                v-if="selectedMusicEntries.length > 0"
-                type="button"
-                class="md-btn md-btn-sm md-btn-text md-state"
-                @click="emit('openMusicToolbox', selectedMusicEntries)"
-              >
-                <LuMusic class="h-3.5 w-3.5" />
-                <span>音频工具</span>
-              </button>
-
-              <button
-                v-if="selectedVideoEntries.length > 0"
-                type="button"
-                class="md-btn md-btn-sm md-btn-text md-state"
-                @click="emit('openVideoToolbox', selectedVideoEntries)"
-              >
-                <LuFilm class="h-3.5 w-3.5" />
-                <span>视频工具</span>
-              </button>
-            </template>
-
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-outlined md-state !border-red-500/45 !text-red-400 hover:!bg-red-500/10"
-              :title="
-                selectedFolderCount > 0
-                  ? '永久删除所选文件夹（含内部全部文件）及所选原始文件'
-                  : '仅删除所选原始文件本身（不删除同名外挂）'
-              "
-              @click="emit('requestDeleteFiles', selectedRawPaths, false)"
-            >
-              <LuTrash2 class="h-3.5 w-3.5" />
-              <span>
-                {{
-                  selectedFolderCount > 0
-                    ? `删除所选 (${selectedRawPaths.length})`
-                    : `删除文件 (${selectedRawPaths.length})`
-                }}
-              </span>
-            </button>
-          </template>
-
-          <template v-else>
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-filled md-state"
-              @click="emit('enqueueScrapeSelection')"
-            >
-              <LuSparkles class="h-3.5 w-3.5" />
-              <span>自动刮削</span>
-            </button>
+            </div>
 
             <button
               type="button"
               class="md-btn md-btn-sm md-btn-tonal md-state"
-              title="在三栏刮削工作台中逐项对照与编辑已选条目"
+              title="在三栏刮削工作台中逐项对照与编辑所选媒体条目"
               @click="emit('openScrapeWorkbench', checkedFiles)"
             >
               <LuColumns3 class="h-3.5 w-3.5" />
@@ -1327,6 +1233,7 @@ function relativeDirBadge(relPath: string): string | null {
             <button
               type="button"
               class="md-btn md-btn-sm md-btn-tonal md-state"
+              title="批量修改所选媒体条目的元信息"
               @click="emit('openBatchMetadata')"
             >
               <LuPencil class="h-3.5 w-3.5" />
@@ -1341,8 +1248,8 @@ function relativeDirBadge(relPath: string): string | null {
                 unorganizedCheckedFiles.length === 0
                   ? '所选条目均已按模板整理归档，无需重复整理'
                   : unorganizedCheckedFiles.length < checkedFiles.length
-                    ? `按元信息模板重命名并归档目录（将自动跳过 ${checkedFiles.length - unorganizedCheckedFiles.length} 项已归档条目）`
-                    : '按元信息模板重命名并归档目录'
+                    ? `按命名模板整理归档（将自动跳过 ${checkedFiles.length - unorganizedCheckedFiles.length} 项已归档条目）`
+                    : '按命名模板整理归档所选媒体条目'
               "
               @click="emit('openRename', checkedFiles)"
             >
@@ -1357,6 +1264,7 @@ function relativeDirBadge(relPath: string): string | null {
             </button>
 
             <button
+              v-if="!isFolderManagerMode"
               type="button"
               class="md-btn md-btn-sm md-btn-text md-state"
               @click="emit('openDryRun')"
@@ -1404,17 +1312,35 @@ function relativeDirBadge(relPath: string): string | null {
               <LuFilm class="h-3.5 w-3.5" />
               <span>视频工具</span>
             </button>
-
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-outlined md-state !border-red-500/45 !text-red-400 hover:!bg-red-500/10"
-              title="删除所选媒体条目及同名外挂文件"
-              @click="emit('requestDeleteFiles', checkedFiles.map((f) => fileSelectionKey(f)), true)"
-            >
-              <LuTrash2 class="h-3.5 w-3.5" />
-              <span>删除</span>
-            </button>
           </template>
+
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-outlined md-state !border-[var(--md-sys-color-error)]/45 !text-[var(--md-sys-color-error)] hover:!bg-[var(--md-sys-color-error-container)]/40"
+            :title="
+              isFolderManagerMode
+                ? selectedFolderCount > 0
+                  ? '永久删除所选文件夹（含内部全部文件）及所选原始文件'
+                  : '仅删除所选原始文件本身（不删除同名外挂）'
+                : '删除所选媒体条目及同名外挂文件'
+            "
+            @click="
+              isFolderManagerMode
+                ? emit('requestDeleteFiles', selectedRawPaths, false)
+                : emit('requestDeleteFiles', checkedFiles.map((f) => fileSelectionKey(f)), true)
+            "
+          >
+            <LuTrash2 class="h-3.5 w-3.5" />
+            <span>
+              {{
+                isFolderManagerMode
+                  ? selectedFolderCount > 0
+                    ? `删除所选 (${selectedRawPaths.length})`
+                    : `删除文件 (${selectedRawPaths.length})`
+                  : '删除'
+              }}
+            </span>
+          </button>
         </div>
       </Transition>
     </Teleport>

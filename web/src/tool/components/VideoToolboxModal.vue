@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   LuCheck,
   LuDownload,
@@ -7,11 +7,12 @@ import {
   LuListOrdered,
   LuLoader2,
   LuSubtitles,
-  LuX,
 } from 'vue-icons-plus/lu'
 
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { toolApi } from '../api'
 import type {
   MediaFileDetail,
@@ -63,6 +64,21 @@ const startEpisode = ref(1)
 const episodeOffset = ref(-24)
 const writeSeasonNfo = ref(true)
 
+const tabOptions = computed(() => {
+  const list: Array<{ value: 'subtitles' | 'episodes'; label: string; icon: typeof LuFilm }> = []
+  if (isSingleMode.value) {
+    list.push({ value: 'subtitles', label: '字幕精校 & 抽取', icon: LuSubtitles })
+  }
+  list.push({ value: 'episodes', label: '剧集/番剧整季映射', icon: LuListOrdered })
+  return list
+})
+
+const dialogTitle = computed(() =>
+  isSingleMode.value && primaryEntry.value
+    ? `影视字幕与剧集工具箱 · ${primaryEntry.value.file_name}`
+    : `影视字幕与剧集工具箱（已选 ${sortedEntries.value.length} 集视频）`,
+)
+
 const zhSubOptions = [
   { value: '', label: '不转换' },
   { value: 't2s', label: '繁 → 简（保留 ASS 特效）' },
@@ -83,24 +99,6 @@ const remapModeOptions = [
   { value: 'sequential', label: '按文件名自然序顺序重编 (E01, E02...)' },
   { value: 'absolute_offset', label: '番剧绝对集数偏移映射 (如 EP25 - 24 → S02E01)' },
 ]
-
-function handleKeydown(ev: KeyboardEvent): void {
-  if (props.open && ev.key === 'Escape') {
-    ev.preventDefault()
-    emit('close')
-  }
-}
-
-watch(
-  () => props.open,
-  (isOpen) => {
-    if (isOpen) window.addEventListener('keydown', handleKeydown)
-    else window.removeEventListener('keydown', handleKeydown)
-  },
-  { immediate: true },
-)
-
-onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 async function loadVideoContext(): Promise<void> {
   if (!primaryEntry.value) return
@@ -224,250 +222,261 @@ async function handleBatchRemap(): Promise<void> {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
-      @click.self="emit('close')"
-    >
-      <div
-        class="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] text-[var(--ctp-text)] shadow-2xl"
-      >
-        <!-- Header -->
-        <div class="flex items-center justify-between border-b border-[var(--ctp-surface0)] px-5 py-3.5">
-          <div class="flex items-center gap-2.5">
-            <div class="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]">
-              <LuFilm class="h-4 w-4" />
-            </div>
-            <h3 class="text-sm font-semibold">
-              影视字幕与剧集工具箱
-              <span v-if="isSingleMode && primaryEntry"> · {{ primaryEntry.file_name }}</span>
-              <span v-else>（已选 {{ sortedEntries.length }} 集视频）</span>
-            </h3>
-          </div>
-          <button
-            type="button"
-            class="rounded-xl p-1.5 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]"
-            @click="emit('close')"
-          >
-            <LuX class="h-4 w-4" />
-          </button>
+  <MdDialog
+    :open="open"
+    :title="dialogTitle"
+    subtitle="外挂字幕转码 / 简繁 / 时间轴平移、内封字幕轨抽取与剧集整季编号映射"
+    max-width="max-w-2xl"
+    @close="emit('close')"
+  >
+    <template #icon>
+      <LuFilm class="h-5 w-5" />
+    </template>
+
+    <div class="space-y-4 py-1 text-xs">
+      <MdSegmentedButton v-model="activeTab" :options="tabOptions" size="sm" />
+
+      <!-- TAB 1: Subtitles -->
+      <div v-if="activeTab === 'subtitles' && isSingleMode" class="space-y-4">
+        <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-[var(--md-sys-color-on-surface-variant)]">
+          <LuLoader2 class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
+          <span>正在扫描外挂与内封字幕…</span>
         </div>
 
-        <!-- Tabs -->
-        <div class="flex border-b border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/60 px-5 pt-2">
-          <button
-            v-if="isSingleMode"
-            type="button"
-            class="inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium"
-            :class="activeTab === 'subtitles' ? 'border-[var(--ctp-accent)] text-[var(--ctp-accent)]' : 'border-transparent text-[var(--ctp-subtext0)]'"
-            @click="activeTab = 'subtitles'"
-          >
-            <LuSubtitles class="h-3.5 w-3.5" />
-            字幕精校 & 抽取
-          </button>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium"
-            :class="activeTab === 'episodes' ? 'border-[var(--ctp-accent)] text-[var(--ctp-accent)]' : 'border-transparent text-[var(--ctp-subtext0)]'"
-            @click="activeTab = 'episodes'"
-          >
-            <LuListOrdered class="h-3.5 w-3.5" />
-            剧集/番剧整季映射
-          </button>
-        </div>
-
-        <!-- Body -->
-        <div class="min-h-0 flex-1 overflow-y-auto p-5 text-xs">
-          <!-- TAB 1: Subtitles -->
-          <div v-if="activeTab === 'subtitles' && isSingleMode" class="space-y-4">
-            <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-[var(--ctp-subtext0)]">
-              <LuLoader2 class="h-4 w-4 animate-spin" />
-              正在扫描外挂与内封字幕…
+        <template v-else>
+          <!-- Sidecar subtitles -->
+          <div class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-4">
+            <div class="mb-2 font-semibold">外挂字幕精校（共 {{ subtitles.length }} 条）</div>
+            <div v-if="subtitles.length === 0" class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              当前视频目录下未发现伴随外挂字幕（.srt / .ass / .ssa / .vtt）。
             </div>
-
-            <template v-else>
-              <!-- Sidecar subtitles -->
-              <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-4">
-                <div class="mb-2 font-semibold">外挂字幕精校（共 {{ subtitles.length }} 条）</div>
-                <div v-if="subtitles.length === 0" class="text-[11px] text-[var(--ctp-subtext0)]">
-                  当前视频目录下未发现伴随外挂字幕（.srt / .ass / .ssa / .vtt）。
-                </div>
-                <div v-else class="space-y-3">
-                  <div class="space-y-1.5">
-                    <label
-                      v-for="sub in subtitles"
-                      :key="sub.filename"
-                      class="flex cursor-pointer items-center justify-between rounded-xl border px-3 py-2 transition"
+            <div v-else class="space-y-3">
+              <div role="radiogroup" class="space-y-1.5">
+                <button
+                  v-for="sub in subtitles"
+                  :key="sub.filename"
+                  type="button"
+                  role="radio"
+                  :aria-checked="selectedSubName === sub.filename"
+                  class="md-state flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition"
+                  :class="
+                    selectedSubName === sub.filename
+                      ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/45'
+                      : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)]'
+                  "
+                  @click="selectedSubName = sub.filename"
+                >
+                  <div class="flex min-w-0 items-center gap-2.5">
+                    <span
+                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition"
                       :class="
                         selectedSubName === sub.filename
-                          ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/40'
-                          : 'border-[var(--ctp-surface0)] bg-[var(--ctp-panel)]'
+                          ? 'border-[var(--md-sys-color-primary)]'
+                          : 'border-[var(--md-sys-color-outline)]'
                       "
                     >
-                      <div class="flex min-w-0 items-center gap-2">
-                        <input v-model="selectedSubName" type="radio" :value="sub.filename" />
-                        <span class="truncate font-medium">{{ sub.filename }}</span>
-                      </div>
-                      <div class="flex shrink-0 items-center gap-1.5 text-[10px]">
-                        <span
-                          class="rounded-md px-1.5 py-0.5 font-medium"
-                          :class="sub.is_utf8 ? 'bg-emerald-500/15 text-emerald-500' : 'bg-amber-500/15 text-amber-500'"
-                        >
-                          {{ sub.detected_encoding }}
-                        </span>
-                        <span v-if="sub.language_tag" class="rounded-md bg-[var(--ctp-surface0)] px-1.5 py-0.5">
-                          {{ sub.language_tag }}
-                        </span>
-                      </div>
-                    </label>
+                      <span
+                        v-if="selectedSubName === sub.filename"
+                        class="h-2 w-2 rounded-full bg-[var(--md-sys-color-primary)]"
+                      />
+                    </span>
+                    <span class="truncate font-medium">{{ sub.filename }}</span>
                   </div>
-
-                  <div class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
-                    <AppCheckbox v-model="convertUtf8" label="强制转为无 BOM UTF-8（防乱码）" />
-                    <div class="inline-flex items-center gap-2">
-                      <span class="text-[var(--ctp-subtext0)]">简繁转换</span>
-                      <div class="w-48">
-                        <AppSelect
-                          :model-value="subZhDir"
-                          :options="zhSubOptions"
-                          variant="compact"
-                          @update:model-value="(v) => (subZhDir = v as '' | 't2s' | 's2t')"
-                        />
-                      </div>
-                    </div>
-                    <div class="flex items-center gap-1.5 sm:col-span-2">
-                      <span class="text-[var(--ctp-subtext0)]">时间轴平移 (ms)：</span>
-                      <button type="button" class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:border-[var(--ctp-accent)]" @click="subOffsetMs -= 500">-0.5s</button>
-                      <input v-model.number="subOffsetMs" type="number" step="100" class="w-24 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1 text-center" />
-                      <button type="button" class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:border-[var(--ctp-accent)]" @click="subOffsetMs += 500">+0.5s</button>
-                    </div>
-                    <div class="flex flex-wrap items-center gap-2 sm:col-span-2">
-                      <span class="text-[var(--ctp-subtext0)]">规范重命名语言后缀：</span>
-                      <div class="w-44">
-                        <AppSelect v-model="renameLang" :options="renameLangOptions" variant="compact" />
-                      </div>
-                      <AppCheckbox v-if="renameLang" v-model="subForced" label=".forced 强制字幕" />
-                    </div>
-                  </div>
-
-                  <div class="flex justify-end">
-                    <button
-                      type="button"
-                      :disabled="busy || !selectedSubName"
-                      class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] disabled:opacity-50"
-                      @click="handleProcessSubtitle"
+                  <div class="flex shrink-0 items-center gap-1.5 text-[10px]">
+                    <span
+                      class="rounded-full px-2 py-0.5 font-medium"
+                      :class="
+                        sub.is_utf8
+                          ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                          : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+                      "
                     >
-                      <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                      应用字幕精校
-                    </button>
+                      {{ sub.detected_encoding }}
+                    </span>
+                    <span
+                      v-if="sub.language_tag"
+                      class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[var(--md-sys-color-on-surface-variant)]"
+                    >
+                      {{ sub.language_tag }}
+                    </span>
                   </div>
-                </div>
+                </button>
               </div>
 
-              <!-- Embedded subtitle streams -->
-              <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-4">
-                <div class="mb-2 flex items-center justify-between">
-                  <span class="font-semibold">内封字幕流抽取（共 {{ embeddedStreams.length }} 轨）</span>
-                  <div class="w-32">
+              <div class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">
+                <AppCheckbox v-model="convertUtf8" label="强制转为无 BOM UTF-8（防乱码）" />
+                <div class="inline-flex items-center gap-2">
+                  <span class="text-[var(--md-sys-color-on-surface-variant)]">简繁转换</span>
+                  <div class="w-48">
                     <AppSelect
-                      :model-value="extractExt"
-                      :options="extractExtOptions"
+                      :model-value="subZhDir"
+                      :options="zhSubOptions"
                       variant="compact"
-                      @update:model-value="(v) => (extractExt = v as 'srt' | 'ass')"
+                      @update:model-value="(v) => (subZhDir = v as '' | 't2s' | 's2t')"
                     />
                   </div>
                 </div>
-                <div v-if="embeddedStreams.length === 0" class="text-[11px] text-[var(--ctp-subtext0)]">
-                  该视频文件未检测到内封文本字幕轨。
-                </div>
-                <div v-else class="space-y-1.5">
-                  <div
-                    v-for="st in embeddedStreams"
-                    :key="st.stream_index"
-                    class="flex items-center justify-between rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-3 py-2"
+                <div class="flex items-center gap-1.5 sm:col-span-2">
+                  <span class="text-[var(--md-sys-color-on-surface-variant)]">时间轴平移 (ms)：</span>
+                  <button
+                    type="button"
+                    class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+                    @click="subOffsetMs -= 500"
                   >
-                    <div class="min-w-0">
-                      <span class="font-medium">流 #{{ st.stream_index }} · {{ st.codec }}</span>
-                      <span class="ml-2 text-[11px] text-[var(--ctp-subtext0)]">
-                        {{ st.language || 'und' }}{{ st.title ? ` (${st.title})` : '' }}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      :disabled="busy"
-                      class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] px-2.5 py-1 text-[11px] hover:border-[var(--ctp-accent)] disabled:opacity-50"
-                      @click="handleExtractStream(st)"
-                    >
-                      <LuDownload class="h-3 w-3" />
-                      抽取外挂
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </template>
-          </div>
-
-          <!-- TAB 2: Batch Episode Remap -->
-          <div v-else class="space-y-3">
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">剧集名 (ShowTitle)</span>
-                <input v-model="showTitle" type="text" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">季号 (Season · 0 为特别篇)</span>
-                <input v-model.number="seasonNumber" type="number" min="0" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-            </div>
-
-            <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-3.5 space-y-2.5">
-              <div class="font-medium text-[11px] text-[var(--ctp-subtext0)]">集数映射策略</div>
-              <div class="flex flex-wrap items-center gap-3">
-                <div class="w-72">
-                  <AppSelect
-                    :model-value="remapMode"
-                    :options="remapModeOptions"
-                    variant="compact"
-                    @update:model-value="(v) => (remapMode = v as 'sequential' | 'absolute_offset')"
+                    -0.5s
+                  </button>
+                  <input
+                    v-model.number="subOffsetMs"
+                    type="number"
+                    step="100"
+                    class="md-input h-8 w-24 !px-2 text-center text-xs"
                   />
+                  <button
+                    type="button"
+                    class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+                    @click="subOffsetMs += 500"
+                  >
+                    +0.5s
+                  </button>
                 </div>
-                <label v-if="remapMode === 'sequential'" class="inline-flex items-center gap-1.5">
-                  <span>起始集号</span>
-                  <input v-model.number="startEpisode" type="number" min="1" class="w-16 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1" />
-                </label>
-                <label v-else class="inline-flex items-center gap-1.5">
-                  <span>集数偏移量</span>
-                  <input v-model.number="episodeOffset" type="number" class="w-20 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1" />
-                </label>
+                <div class="flex flex-wrap items-center gap-2 sm:col-span-2">
+                  <span class="text-[var(--md-sys-color-on-surface-variant)]">规范重命名语言后缀：</span>
+                  <div class="w-44">
+                    <AppSelect v-model="renameLang" :options="renameLangOptions" variant="compact" />
+                  </div>
+                  <AppCheckbox v-if="renameLang" v-model="subForced" label=".forced 强制字幕" />
+                </div>
               </div>
-              <div class="pt-1">
-                <AppCheckbox v-model="writeSeasonNfo" label="同时在当前目录生成/更新标准 season.nfo" />
+
+              <div class="flex justify-end">
+                <button
+                  type="button"
+                  :disabled="busy || !selectedSubName"
+                  class="md-btn md-btn-sm md-btn-filled md-state"
+                  @click="handleProcessSubtitle"
+                >
+                  <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
+                  <span>应用字幕精校</span>
+                </button>
               </div>
             </div>
+          </div>
 
-            <div class="flex justify-end">
-              <button
-                type="button"
-                :disabled="busy || sortedEntries.length === 0"
-                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] disabled:opacity-50"
-                @click="handleBatchRemap"
+          <!-- Embedded subtitle streams -->
+          <div class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-4">
+            <div class="mb-2 flex items-center justify-between gap-2">
+              <span class="font-semibold">内封字幕流抽取（共 {{ embeddedStreams.length }} 轨）</span>
+              <div class="w-32">
+                <AppSelect
+                  :model-value="extractExt"
+                  :options="extractExtOptions"
+                  variant="compact"
+                  @update:model-value="(v) => (extractExt = v as 'srt' | 'ass')"
+                />
+              </div>
+            </div>
+            <div v-if="embeddedStreams.length === 0" class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              该视频文件未检测到内封文本字幕轨。
+            </div>
+            <div v-else class="space-y-1.5">
+              <div
+                v-for="st in embeddedStreams"
+                :key="st.stream_index"
+                class="flex items-center justify-between rounded-xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] px-3 py-2"
               >
-                <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                应用整季映射（{{ sortedEntries.length }} 集）
-              </button>
+                <div class="min-w-0">
+                  <span class="font-medium">流 #{{ st.stream_index }} · {{ st.codec }}</span>
+                  <span class="ml-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                    {{ st.language || 'und' }}{{ st.title ? ` (${st.title})` : '' }}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  :disabled="busy"
+                  class="md-btn md-btn-sm md-btn-tonal md-state !h-7 !px-2.5 !text-[11px]"
+                  @click="handleExtractStream(st)"
+                >
+                  <LuDownload class="h-3 w-3" />
+                  <span>抽取外挂</span>
+                </button>
+              </div>
             </div>
           </div>
+        </template>
+      </div>
 
-          <div v-if="errorMsg" class="mt-3 rounded-xl bg-rose-500/10 px-3 py-2 text-rose-500">
-            {{ errorMsg }}
+      <!-- TAB 2: Batch Episode Remap -->
+      <div v-else class="space-y-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">剧集名 (ShowTitle)</span>
+            <input v-model="showTitle" type="text" class="md-input h-9 w-full text-xs" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">季号 (Season · 0 为特别篇)</span>
+            <input v-model.number="seasonNumber" type="number" min="0" class="md-input h-9 w-full text-xs" />
+          </label>
+        </div>
+
+        <div class="space-y-2.5 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3.5">
+          <div class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">集数映射策略</div>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="w-72">
+              <AppSelect
+                :model-value="remapMode"
+                :options="remapModeOptions"
+                variant="compact"
+                @update:model-value="(v) => (remapMode = v as 'sequential' | 'absolute_offset')"
+              />
+            </div>
+            <label v-if="remapMode === 'sequential'" class="inline-flex items-center gap-1.5">
+              <span>起始集号</span>
+              <input v-model.number="startEpisode" type="number" min="1" class="md-input h-8 w-16 !px-2 text-xs" />
+            </label>
+            <label v-else class="inline-flex items-center gap-1.5">
+              <span>集数偏移量</span>
+              <input v-model.number="episodeOffset" type="number" class="md-input h-8 w-20 !px-2 text-xs" />
+            </label>
           </div>
-          <div v-if="successMsg" class="mt-3 flex items-center gap-1.5 rounded-xl bg-emerald-500/10 px-3 py-2 text-emerald-500">
-            <LuCheck class="h-4 w-4 shrink-0" />
-            <span>{{ successMsg }}</span>
+          <div class="pt-1">
+            <AppCheckbox v-model="writeSeasonNfo" label="同时在当前目录生成/更新标准 season.nfo" />
           </div>
         </div>
+
+        <div class="flex justify-end">
+          <button
+            type="button"
+            :disabled="busy || sortedEntries.length === 0"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            @click="handleBatchRemap"
+          >
+            <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
+            <span>应用整季映射（{{ sortedEntries.length }} 集）</span>
+          </button>
+        </div>
+      </div>
+
+      <div
+        v-if="errorMsg"
+        class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-error-container)]"
+      >
+        {{ errorMsg }}
+      </div>
+      <div
+        v-if="successMsg"
+        class="flex items-center gap-1.5 rounded-2xl bg-[var(--md-sys-color-success-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-success-container)]"
+      >
+        <LuCheck class="h-4 w-4 shrink-0" />
+        <span>{{ successMsg }}</span>
       </div>
     </div>
-  </Teleport>
+
+    <template #footer>
+      <div class="ml-auto">
+        <button type="button" class="md-btn md-btn-sm md-btn-text md-state" @click="emit('close')">
+          关闭
+        </button>
+      </div>
+    </template>
+  </MdDialog>
 </template>

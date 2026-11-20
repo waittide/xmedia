@@ -17,20 +17,13 @@ import {
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { MediaKind } from '@/types/api'
 import { buildArtworkUrl } from '../api'
+import { isEntryComplete, type ToolCompletenessFilter } from '../completeness'
 import { formatBytes, useToolText } from '../i18n'
 import type {
   DirectorySnapshot,
   ManagedRootDto,
   MediaFileEntry,
 } from '../types'
-
-type CompletenessFilter =
-  | 'all'
-  | 'complete'
-  | 'incomplete'
-  | 'missing_cover'
-  | 'missing_summary'
-  | 'missing_tag'
 
 const props = defineProps<{
   activeDomain: MediaKind
@@ -51,7 +44,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  openItems: [filter?: CompletenessFilter]
+  openItems: [filter?: ToolCompletenessFilter]
   inspectFile: [file: MediaFileEntry]
   scrapeFiles: [files: MediaFileEntry[], labelHint?: string]
   openRenameAll: []
@@ -61,17 +54,6 @@ const emit = defineEmits<{
 
 const txt = useToolText()
 const domainLabels = computed(() => txt.value.domainLabels[props.activeDomain])
-
-function isEntryComplete(e: MediaFileEntry): boolean {
-  const c = e.completeness
-  return (
-    c.has_title &&
-    c.has_creator &&
-    c.has_cover &&
-    c.has_summary_or_lyrics &&
-    c.has_nfo_or_tag_block
-  )
-}
 
 const scopeSubtitle = computed(() => {
   if (!props.activeRootId && props.domainRoots.length > 1) {
@@ -328,6 +310,7 @@ const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value
                       file.rel_path,
                       file.media_kind,
                       artworkVersion + (artworkVersions?.[`${file.root_id}::${file.rel_path}`] ?? 0),
+                      file.media_kind === 'video' ? 'poster' : 'cover',
                     )
                   "
                   :alt="file.display_title"

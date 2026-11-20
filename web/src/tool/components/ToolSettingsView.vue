@@ -15,6 +15,7 @@ import {
   LuSparkles,
 } from 'vue-icons-plus/lu'
 import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
 import type { PublicSettingsDto } from '../types'
@@ -84,10 +85,10 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
     <!-- Top Header (Aligned with Server SettingsView) -->
     <div class="mb-8 flex flex-wrap items-center justify-between gap-4">
       <div>
-        <h1 class="text-2xl font-bold tracking-tight text-[var(--ctp-text)]">
+        <h1 class="text-2xl font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
           {{ t('settings.title') }}
         </h1>
-        <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
           {{ txt.settings.subtitle }}
         </p>
       </div>
@@ -168,7 +169,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
       <div class="min-w-0 space-y-6">
         <div
           v-if="errorMsg"
-          class="flex items-center gap-2 rounded-xl border border-[var(--ctp-red)]/40 bg-[var(--ctp-red)]/10 px-4 py-3 text-xs text-[var(--ctp-red)]"
+          class="flex items-center gap-2 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]"
         >
           <LuAlertCircle class="h-4 w-4 shrink-0" />
           <span>{{ errorMsg }}</span>
@@ -176,32 +177,20 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
 
         <div
           v-if="savedBanner"
-          class="flex items-center gap-2 rounded-xl border border-[var(--ctp-green)]/40 bg-[var(--ctp-green)]/10 px-4 py-3 text-xs font-medium text-[var(--ctp-green)]"
+          class="flex items-center gap-2 rounded-2xl bg-[var(--md-sys-color-success-container)] px-4 py-3 text-xs font-medium text-[var(--md-sys-color-on-success-container)]"
         >
           <LuCheckCircle2 class="h-4 w-4 shrink-0" />
           <span>{{ txt.settings.savedBanner }}</span>
         </div>
 
         <!-- Domain Isolation Sub-Tab Bar (for scrapers / roots / templates) -->
-        <div
-          v-if="activeTab !== 'appearance'"
-          class="flex flex-wrap items-center gap-1.5 rounded-2xl border border-[var(--ctp-surface0)]/80 bg-[var(--ctp-shell)] p-1.5"
-        >
-          <button
-            v-for="dt in domainTabItems"
-            :key="dt.value"
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-semibold transition"
-            :class="
-              domainSubTab === dt.value
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)] shadow-xs'
-                : 'text-[var(--ctp-subtext1)] hover:bg-[var(--ctp-canvas)] hover:text-[var(--ctp-text)]'
-            "
-            @click="selectDomainSubTab(dt.value)"
-          >
-            <component :is="dt.icon" class="h-3.5 w-3.5" />
-            <span>{{ dt.label }}</span>
-          </button>
+        <div v-if="activeTab !== 'appearance'">
+          <MdSegmentedButton
+            :model-value="domainSubTab"
+            :options="domainTabItems"
+            size="md"
+            @update:model-value="selectDomainSubTab($event)"
+          />
         </div>
 
         <template v-if="activeTab === 'appearance'">

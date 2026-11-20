@@ -15,6 +15,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import { buildArtworkUrl } from '../../api'
+import { entryCompositeKey, isEntryComplete } from '../../completeness'
 import { useToolTaskStore, type ScrapeSubItem } from '../../tasks'
 import type { MediaFileEntry } from '../../types'
 
@@ -25,8 +26,8 @@ const props = defineProps<{
   collapsed: boolean
   isCompact: boolean
   entries: MediaFileEntry[]
-  activePath: string | null
-  savedPaths: Set<string>
+  activeKey: string | null
+  savedKeys: Set<string>
   artworkVersion: number
   artworkVersions?: Record<string, number>
   hasPrev: boolean
@@ -46,21 +47,12 @@ const query = ref('')
 const taskStore = useToolTaskStore()
 
 function entryTaskStatus(e: MediaFileEntry): ScrapeSubItem['status'] | undefined {
-  return taskStore.fileStatusMap.get(`${e.root_id}::${e.rel_path}`)
-}
-
-function isComplete(e: MediaFileEntry): boolean {
-  return (
-    e.completeness.has_title &&
-    e.completeness.has_cover &&
-    e.completeness.has_summary_or_lyrics &&
-    e.completeness.has_nfo_or_tag_block
-  )
+  return taskStore.fileStatusMap.get(entryCompositeKey(e))
 }
 
 const activeIndex = computed(() => {
-  if (!props.activePath) return -1
-  return props.entries.findIndex((e) => e.rel_path === props.activePath)
+  if (!props.activeKey) return -1
+  return props.entries.findIndex((e) => entryCompositeKey(e) === props.activeKey)
 })
 
 const counts = computed(() => {
@@ -68,9 +60,9 @@ const counts = computed(() => {
   let missingCover = 0
   let saved = 0
   for (const e of props.entries) {
-    if (!isComplete(e)) incomplete += 1
+    if (!isEntryComplete(e)) incomplete += 1
     if (!e.completeness.has_cover) missingCover += 1
-    if (props.savedPaths.has(e.rel_path)) saved += 1
+    if (props.savedKeys.has(entryCompositeKey(e))) saved += 1
   }
   return {
     all: props.entries.length,
@@ -83,9 +75,9 @@ const counts = computed(() => {
 const filteredEntries = computed(() => {
   const q = query.value.trim().toLowerCase()
   return props.entries.filter((e) => {
-    if (filter.value === 'incomplete' && isComplete(e)) return false
+    if (filter.value === 'incomplete' && isEntryComplete(e)) return false
     if (filter.value === 'missing_cover' && e.completeness.has_cover) return false
-    if (filter.value === 'saved' && !props.savedPaths.has(e.rel_path)) return false
+    if (filter.value === 'saved' && !props.savedKeys.has(entryCompositeKey(e))) return false
     if (q) {
       const hay = `${e.display_title} ${e.file_name} ${e.display_subtitle}`.toLowerCase()
       if (!hay.includes(q)) return false
@@ -258,11 +250,11 @@ const filteredEntries = computed(() => {
 
         <button
           v-for="entry in filteredEntries"
-          :key="entry.rel_path"
+          :key="entryCompositeKey(entry)"
           type="button"
           class="md-state flex w-full items-center gap-2.5 rounded-2xl px-2.5 py-2 text-left transition"
           :class="
-            activePath === entry.rel_path
+            activeKey === entryCompositeKey(entry)
               ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
               : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]/70'
           "
@@ -280,7 +272,7 @@ const filteredEntries = computed(() => {
                   entry.root_id,
                   entry.rel_path,
                   entry.media_kind,
-                  artworkVersion + (artworkVersions?.[`${entry.root_id}::${entry.rel_path}`] ?? 0),
+                  artworkVersion + (artworkVersions?.[entryCompositeKey(entry)] ?? 0),
                   entry.media_kind === 'video' ? 'poster' : 'cover',
                 )
               "
@@ -307,20 +299,20 @@ const filteredEntries = computed(() => {
             <div class="mt-0.5 flex items-center gap-1.5 text-[10px] opacity-75">
               <span class="truncate font-mono">{{ entry.file_name }}</span>
               <span
-                v-if="!savedPaths.has(entry.rel_path) && entryTaskStatus(entry) === 'running'"
+                v-if="!savedKeys.has(entryCompositeKey(entry)) && entryTaskStatus(entry) === 'running'"
                 class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)] opacity-100"
               >
                 <LuLoader2 class="h-2.5 w-2.5 animate-spin" />
                 <span>刮削中</span>
               </span>
               <span
-                v-else-if="!savedPaths.has(entry.rel_path) && entryTaskStatus(entry) === 'unmatched'"
-                class="shrink-0 rounded-full bg-amber-500/20 px-1.5 py-0.25 text-[9px] font-semibold text-amber-500 opacity-100"
+                v-else-if="!savedKeys.has(entryCompositeKey(entry)) && entryTaskStatus(entry) === 'unmatched'"
+                class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-warning-container)] opacity-100"
               >
                 未匹配
               </span>
               <span
-                v-else-if="!savedPaths.has(entry.rel_path) && entryTaskStatus(entry) === 'failed'"
+                v-else-if="!savedKeys.has(entryCompositeKey(entry)) && entryTaskStatus(entry) === 'failed'"
                 class="shrink-0 rounded-full bg-[var(--md-sys-color-error-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-error-container)] opacity-100"
               >
                 失败
@@ -331,17 +323,17 @@ const filteredEntries = computed(() => {
           <!-- Session Saved / Missing Cover Indicator -->
           <div class="shrink-0">
             <LuCheckCircle2
-              v-if="savedPaths.has(entry.rel_path)"
-              class="h-3.5 w-3.5 text-emerald-500"
+              v-if="savedKeys.has(entryCompositeKey(entry))"
+              class="h-3.5 w-3.5 text-[var(--md-sys-color-success)]"
               title="本次会话已保存"
             />
             <span
               v-else-if="!entry.completeness.has_cover"
-              class="block h-2 w-2 rounded-full bg-amber-400"
+              class="block h-2 w-2 rounded-full bg-[var(--md-sys-color-warning)]"
               title="缺封面"
             />
             <span
-              v-else-if="!isComplete(entry)"
+              v-else-if="!isEntryComplete(entry)"
               class="block h-2 w-2 rounded-full bg-[var(--md-sys-color-primary)]/60"
               title="元数据待完善"
             />

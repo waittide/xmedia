@@ -18,6 +18,17 @@ import MdDialog from '@/components/ui/MdDialog.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
+import {
+  formatAutoScrapeSummary,
+  loadLastAutoScrapeOptions,
+  saveLastAutoScrapeOptions,
+} from '../autoScrapePrefs'
+import {
+  completenessScore,
+  entryCompositeKey,
+  isEntryComplete,
+  type ToolCompletenessFilter,
+} from '../completeness'
 import { useToolText } from '../i18n'
 import { useToolTaskStore } from '../tasks'
 import type {
@@ -76,13 +87,7 @@ type PrimaryNavKey = 'home' | 'items' | 'settings'
 type BrowseViewMode = 'flat' | 'folders'
 type SortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
 type SortDir = 'asc' | 'desc'
-type CompletenessFilter =
-  | 'all'
-  | 'complete'
-  | 'incomplete'
-  | 'missing_cover'
-  | 'missing_summary'
-  | 'missing_tag'
+type CompletenessFilter = ToolCompletenessFilter
 
 const VALID_DOMAINS: MediaKind[] = ['book', 'comic', 'music', 'video']
 const PAGE_CHUNK_SIZE = 100
@@ -338,17 +343,6 @@ const domainRoots = computed<ManagedRootDto[]>(() =>
   (settings.value?.roots ?? []).filter((r) => r.default_kind === activeDomain.value),
 )
 
-function isEntryComplete(e: MediaFileEntry): boolean {
-  const c = e.completeness
-  return (
-    c.has_title &&
-    c.has_creator &&
-    c.has_cover &&
-    c.has_summary_or_lyrics &&
-    c.has_nfo_or_tag_block
-  )
-}
-
 const stats = computed(() => {
   const files = snapshot.value?.files ?? []
   let complete = 0
@@ -434,17 +428,6 @@ function toggleSortDir(): void {
   localStorage.setItem('xmedia_tool.sort_dir', sortDir.value)
 }
 
-function completenessScore(e: MediaFileEntry): number {
-  const c = e.completeness
-  return (
-    (c.has_title ? 1 : 0) +
-    (c.has_creator ? 1 : 0) +
-    (c.has_cover ? 1 : 0) +
-    (c.has_summary_or_lyrics ? 1 : 0) +
-    (c.has_nfo_or_tag_block ? 1 : 0)
-  )
-}
-
 const filteredFiles = computed<MediaFileEntry[]>(() => {
   const base = snapshot.value?.files ?? []
   const q = searchQuery.value.trim().toLowerCase()
@@ -455,7 +438,7 @@ const filteredFiles = computed<MediaFileEntry[]>(() => {
     Boolean(focus && focus.size > 0)
 
   const list = base.filter((f) => {
-    if (focus && focus.size > 0 && !focus.has(f.rel_path)) {
+    if (focus && focus.size > 0 && !focus.has(entryCompositeKey(f))) {
       return false
     }
     if (!showRecursive && parentRelOf(f.rel_path) !== currentRelPath.value) {
@@ -1297,12 +1280,14 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
   inspectingPath.value = entrySelectionKey(updated.entry)
 
   if (scrapeWorkbenchActive.value) {
+    const nextKey = entryCompositeKey(updated.entry)
     const nextSaved = new Set(scrapeWorkbenchSavedPaths.value)
-    nextSaved.add(updated.entry.rel_path)
+    nextSaved.add(nextKey)
     scrapeWorkbenchSavedPaths.value = nextSaved
     if (prevRel && prevRel !== updated.entry.rel_path && scrapeWorkbenchPaths.value) {
-      scrapeWorkbenchPaths.value = scrapeWorkbenchPaths.value.map((p) =>
-        p === prevRel ? updated.entry.rel_path : p,
+      const prevComposite = `${updated.entry.root_id}::${prevRel}`
+      scrapeWorkbenchPaths.value = scrapeWorkbenchPaths.value.map((k) =>
+        k === prevComposite ? nextKey : k,
       )
     }
   }
@@ -1372,16 +1357,38 @@ async function handleRenamed(
  * Adds background scrape tasks following:
  * Local non-empty metadata -> High-priority provider -> Low-priority provider
  */
+const scrapeStrategyRev = ref(0)
+const lastScrapeSummary = computed<string>(() => {
+  void scrapeStrategyRev.value
+  return formatAutoScrapeSummary(loadLastAutoScrapeOptions(activeDomain.value))
+})
+
 function enqueueScrapeFiles(
   files: MediaFileEntry[],
   labelHint?: string,
   options?: AutoScrapeOptionsDto,
 ): void {
   if (files.length === 0) return
-  taskStore.enqueueScrapeTask(files, labelHint, options)
+  const effectiveOpts = options ?? loadLastAutoScrapeOptions(files[0]!.media_kind)
+  taskStore.enqueueScrapeTask(files, labelHint, effectiveOpts)
 }
 
-function enqueueScrapeForSelection(): void {
+function quickScrapeSelection(): void {
+  const targets = checkedFiles.value.length > 0 ? [...checkedFiles.value] : [...filteredFiles.value]
+  if (targets.length === 0) return
+  const opts = loadLastAutoScrapeOptions(activeDomain.value)
+  enqueueScrapeFiles(targets, undefined, opts)
+  snackbar.show({
+    message: `已按「${formatAutoScrapeSummary(opts)}」策略提交 ${targets.length} 项快刮任务`,
+    actionLabel: '调整策略',
+    onAction: () => {
+      autoScrapeTargetEntries.value = targets
+      autoScrapeModalOpen.value = true
+    },
+  })
+}
+
+function configureScrapeSelection(): void {
   const targets = checkedFiles.value.length > 0 ? [...checkedFiles.value] : [...filteredFiles.value]
   if (targets.length === 0) return
   autoScrapeTargetEntries.value = targets
@@ -1393,6 +1400,8 @@ function handleAutoScrapeConfirmed(
   options: AutoScrapeOptionsDto,
 ): void {
   autoScrapeModalOpen.value = false
+  saveLastAutoScrapeOptions(activeDomain.value, options)
+  scrapeStrategyRev.value += 1
   enqueueScrapeFiles(entries, undefined, options)
 }
 
@@ -1401,6 +1410,8 @@ function handleAutoScrapeToDryRun(
   options: AutoScrapeOptionsDto,
 ): void {
   autoScrapeModalOpen.value = false
+  saveLastAutoScrapeOptions(activeDomain.value, options)
+  scrapeStrategyRev.value += 1
   if (entries.length > 0 && !resolveModalRootId(entries)) {
     snackbar.show({
       message: '所选条目跨越多个挂载目录，请先从左侧选择单个挂载目录再进行置信度预演',
@@ -1493,15 +1504,40 @@ async function ensureTaskItemDirectoryLoaded(
 }
 
 async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<void> {
-  if (payload.relPaths.length === 0) return
-  await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  if (payload.items.length === 0) return
+  const uniqueRoots = new Set(payload.items.map((it) => it.rootId).filter(Boolean))
+  if (uniqueRoots.size <= 1) {
+    const onlyRootId = Array.from(uniqueRoots)[0] ?? ''
+    if (onlyRootId) {
+      await ensureTaskItemDirectoryLoaded(payload.domain, onlyRootId)
+    }
+  } else {
+    if (activeDomain.value !== payload.domain) {
+      await switchDomain(payload.domain)
+    }
+    if (activeRootId.value !== '' || currentRelPath.value !== '' || !snapshot.value) {
+      activeRootId.value = ''
+      currentRelPath.value = ''
+      await loadAllDomainRoots()
+    }
+  }
+
+  const orderedKeys = payload.items.map((it) => `${it.rootId}::${it.relPath}`)
+  const targetKeySet = new Set(orderedKeys)
   completenessFilter.value = 'all'
-  workbenchFocusPaths.value = new Set(payload.relPaths)
+  workbenchFocusPaths.value = targetKeySet
   setViewMode('flat')
   activeNav.value = 'items'
-  const matchedEntries = (snapshot.value?.files ?? []).filter((f) =>
-    payload.relPaths.includes(f.rel_path),
+
+  const byCompositeKey = new Map(
+    (snapshot.value?.files ?? []).map((f) => [entryCompositeKey(f), f]),
   )
+  const matchedEntries: MediaFileEntry[] = []
+  for (const key of orderedKeys) {
+    const hit = byCompositeKey.get(key)
+    if (hit) matchedEntries.push(hit)
+  }
+
   if (payload.openCandidates ?? true) {
     if (matchedEntries.length > 0) {
       await openScrapeWorkbench(matchedEntries[0], matchedEntries)
@@ -1517,10 +1553,12 @@ async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<
 async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<void> {
   await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
   completenessFilter.value = 'all'
-  workbenchFocusPaths.value = new Set([payload.relPath])
+  workbenchFocusPaths.value = new Set([`${payload.rootId}::${payload.relPath}`])
   setViewMode('flat')
   activeNav.value = 'items'
-  const target = (snapshot.value?.files ?? []).find((f) => f.rel_path === payload.relPath)
+  const target = (snapshot.value?.files ?? []).find(
+    (f) => f.root_id === payload.rootId && f.rel_path === payload.relPath,
+  )
   if (target) {
     if (payload.openCandidates) {
       await openScrapeWorkbench(target, [target])
@@ -1531,7 +1569,7 @@ async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<v
     try {
       const detail = await toolApi.inspectFile(payload.rootId, payload.relPath, payload.domain)
       activeDetail.value = detail
-      inspectingPath.value = detail.entry.rel_path
+      inspectingPath.value = entrySelectionKey(detail.entry)
     } catch (err) {
       snackbar.show({
         message: err instanceof Error ? err.message : String(err),
@@ -1543,7 +1581,9 @@ async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<v
 
 async function handleOpenTaskBookEditor(payload: InspectTaskItemPayload): Promise<void> {
   await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
-  const target = (snapshot.value?.files ?? []).find((f) => f.rel_path === payload.relPath)
+  const target = (snapshot.value?.files ?? []).find(
+    (f) => f.root_id === payload.rootId && f.rel_path === payload.relPath,
+  )
   if (target) {
     openBookContentEditor(target)
     return
@@ -1562,10 +1602,10 @@ async function handleOpenTaskBookEditor(payload: InspectTaskItemPayload): Promis
 const workbenchQueueEntries = computed<MediaFileEntry[]>(() => {
   const scoped = scrapeWorkbenchPaths.value
   if (!scoped) return filteredFiles.value
-  const byPath = new Map((snapshot.value?.files ?? []).map((f) => [f.rel_path, f]))
+  const byKey = new Map((snapshot.value?.files ?? []).map((f) => [entryCompositeKey(f), f]))
   const resolved: MediaFileEntry[] = []
-  for (const p of scoped) {
-    const hit = byPath.get(p)
+  for (const k of scoped) {
+    const hit = byKey.get(k)
     if (hit) resolved.push(hit)
   }
   return resolved.length > 0 ? resolved : filteredFiles.value
@@ -1581,7 +1621,7 @@ async function openScrapeWorkbench(
 ): Promise<void> {
   if (!(await confirmActiveEditorClean())) return
   const scopedList = scopedEntries && scopedEntries.length > 0 ? scopedEntries : null
-  scrapeWorkbenchPaths.value = scopedList ? scopedList.map((e) => e.rel_path) : null
+  scrapeWorkbenchPaths.value = scopedList ? scopedList.map((e) => entryCompositeKey(e)) : null
   scrapeWorkbenchSavedPaths.value = new Set()
   scrapeWorkbenchActive.value = true
   activeNav.value = 'items'
@@ -1591,7 +1631,10 @@ async function openScrapeWorkbench(
     targetEntry ??
     (scopedList ? scopedList[0] : activeDetail.value?.entry ?? filteredFiles.value[0])
   if (target) {
-    if (activeDetail.value?.entry.rel_path !== target.rel_path) {
+    if (
+      !activeDetail.value ||
+      entryCompositeKey(activeDetail.value.entry) !== entryCompositeKey(target)
+    ) {
       await inspectEntry(target)
     }
   }
@@ -1976,9 +2019,11 @@ onMounted(() => {
         nextSel.add(nextKey)
         selectedPaths.value = nextSel
       }
-      if (scrapeWorkbenchPaths.value?.includes(prevRelPath!)) {
-        scrapeWorkbenchPaths.value = scrapeWorkbenchPaths.value.map((p) =>
-          p === prevRelPath ? updated.entry.rel_path : p,
+      const prevComposite = `${updated.entry.root_id}::${prevRelPath!}`
+      const nextComposite = entryCompositeKey(updated.entry)
+      if (scrapeWorkbenchPaths.value?.includes(prevComposite)) {
+        scrapeWorkbenchPaths.value = scrapeWorkbenchPaths.value.map((k) =>
+          k === prevComposite ? nextComposite : k,
         )
       }
     }
@@ -2074,8 +2119,8 @@ onBeforeUnmount(() => {
         :collapsed="collapsed"
         :is-compact="isCompact"
         :entries="workbenchQueueEntries"
-        :active-path="activeDetail?.entry.rel_path ?? null"
-        :saved-paths="scrapeWorkbenchSavedPaths"
+        :active-key="activeDetail ? entryCompositeKey(activeDetail.entry) : null"
+        :saved-keys="scrapeWorkbenchSavedPaths"
         :artwork-version="artworkVersion"
         :artwork-versions="fileArtworkVersions"
         :has-prev="hasPrevInspect"
@@ -2116,7 +2161,7 @@ onBeforeUnmount(() => {
           :detail="activeDetail"
           :loading-detail="loadingInspector"
           :entries="workbenchQueueEntries"
-          :saved-paths="scrapeWorkbenchSavedPaths"
+          :saved-keys="scrapeWorkbenchSavedPaths"
           :artwork-version="artworkVersion"
           :artwork-versions="fileArtworkVersions"
           :sidebar-collapsed="collapsed"
@@ -2202,6 +2247,7 @@ onBeforeUnmount(() => {
             :inspecting-path="inspectingPath"
             :artwork-version="artworkVersion"
             :artwork-versions="fileArtworkVersions"
+            :last-scrape-summary="lastScrapeSummary"
             @open-settings-roots="openSettingsTab('roots')"
             @select-root="selectRoot"
             @enter-folder="enterFolder"
@@ -2213,7 +2259,8 @@ onBeforeUnmount(() => {
             @clear-selection="selectedPaths = new Set(); lastSelectedRelPath = null"
             @set-sort-field="setSortField"
             @toggle-sort-dir="toggleSortDir"
-            @enqueue-scrape-selection="enqueueScrapeForSelection"
+            @quick-scrape-selection="quickScrapeSelection"
+            @configure-scrape-selection="configureScrapeSelection"
             @open-scrape-workbench="(scoped) => openScrapeWorkbench(undefined, scoped)"
             @open-comic-series-tools="openComicSeriesToolsModal"
             @open-music-toolbox="openMusicToolbox"
@@ -2256,8 +2303,6 @@ onBeforeUnmount(() => {
               ref="inspectorRef"
               :detail="activeDetail"
               :artwork-version="getFileArtworkVersion(activeDetail.entry.root_id, activeDetail.entry.rel_path)"
-              :settings="settings"
-              :show-candidates="false"
               :has-prev="hasPrevInspect"
               :has-next="hasNextInspect"
               :position-label="inspectPositionLabel"
@@ -2265,8 +2310,6 @@ onBeforeUnmount(() => {
               @close="activeDetail = null; inspectingPath = null"
               @updated="handleDetailUpdated"
               @open-workbench="(d) => openScrapeWorkbench(d.entry)"
-              @open-settings-scrapers="openSettingsTab('scrapers')"
-              @settings-updated="handleSettingsUpdated"
               @open-content-editor="openBookContentEditor"
               @open-normalize-epub="(e) => openBookNormalizeModal([e])"
               @open-comic-pages="openComicPageManager"
@@ -2398,19 +2441,19 @@ onBeforeUnmount(() => {
       @close="!deletingFiles && (deleteDialogOpen = false)"
     >
       <template #icon>
-        <LuTrash2 class="h-5 w-5 text-red-400" />
+        <LuTrash2 class="h-5 w-5 text-[var(--md-sys-color-error)]" />
       </template>
 
       <div class="space-y-3 py-1">
         <div
           v-if="deleteDialogError"
-          class="rounded-2xl border border-red-500/35 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-400"
+          class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
         >
           {{ deleteDialogError }}
         </div>
 
         <p class="text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
-          即将从磁盘<strong class="text-red-400">永久删除</strong>以下
+          即将从磁盘<strong class="text-[var(--md-sys-color-error)]">永久删除</strong>以下
           <strong class="font-mono text-[var(--md-sys-color-on-surface)]">{{ deleteDialogPaths.length }}</strong>
           {{ deleteDialogFolderCount > 0 ? '项（含文件夹及其内部全部文件）' : '个文件' }}，此操作不可撤销：
         </p>
@@ -2426,12 +2469,12 @@ onBeforeUnmount(() => {
           >
             <LuFolder
               v-if="currentFolderMap.has(p)"
-              class="h-3.5 w-3.5 shrink-0 text-amber-400"
+              class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-warning)]"
             />
             <span class="min-w-0 flex-1 truncate">{{ parseSelectionKey(p).relPath }}</span>
             <span
               v-if="currentFolderMap.has(p)"
-              class="shrink-0 rounded-full bg-red-500/15 px-1.5 py-0.5 font-sans text-[10px] font-medium text-red-400"
+              class="shrink-0 rounded-full bg-[var(--md-sys-color-error-container)] px-1.5 py-0.5 font-sans text-[10px] font-medium text-[var(--md-sys-color-on-error-container)]"
             >
               文件夹 · {{ currentFolderMap.get(p)!.media_file_count }} 项
             </span>
@@ -2458,7 +2501,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             :disabled="deletingFiles"
-            class="inline-flex h-9 items-center gap-1.5 rounded-full bg-red-500 px-4 text-xs font-semibold text-white transition hover:bg-red-600 disabled:opacity-50"
+            class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-error)] text-[var(--md-sys-color-on-error)] hover:opacity-95"
             @click="confirmDeleteFiles"
           >
             <LuLoader2 v-if="deletingFiles" class="h-3.5 w-3.5 animate-spin" />

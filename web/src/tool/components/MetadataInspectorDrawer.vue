@@ -30,36 +30,22 @@ import { formatBytes, formatDuration, useToolText } from '../i18n'
 import type {
   MediaFileDetail,
   MediaFileEntry,
-  PublicSettingsDto,
-  ScrapedMetadata,
 } from '../types'
 import InspectorBookForm from './inspector/InspectorBookForm.vue'
 import InspectorComicForm from './inspector/InspectorComicForm.vue'
 import InspectorMusicForm from './inspector/InspectorMusicForm.vue'
 import InspectorVideoForm from './inspector/InspectorVideoForm.vue'
-import {
-  useMetadataForm,
-  type ApplyFillMode,
-  type ScrapedFieldKey,
-} from './inspector/useMetadataForm'
-import CandidateDetailPreviewPane, {
-  type CandidatePreviewState,
-} from './scrape/CandidateDetailPreviewPane.vue'
-import WorkbenchCandidatePane from './scrape/WorkbenchCandidatePane.vue'
+import { useMetadataForm } from './inspector/useMetadataForm'
 
 const props = withDefaults(
   defineProps<{
     detail: MediaFileDetail
     artworkVersion: number
-    settings?: PublicSettingsDto | null
-    showCandidates?: boolean
     hasPrev?: boolean
     hasNext?: boolean
     positionLabel?: string
   }>(),
   {
-    settings: null,
-    showCandidates: false,
     hasPrev: false,
     hasNext: false,
     positionLabel: '',
@@ -70,10 +56,7 @@ const emit = defineEmits<{
   close: []
   updated: [detail: MediaFileDetail, bumpArtwork: boolean]
   step: [delta: -1 | 1]
-  'update:showCandidates': [open: boolean]
   openWorkbench: [detail: MediaFileDetail]
-  openSettingsScrapers: []
-  settingsUpdated: [settings: PublicSettingsDto]
   openContentEditor: [entry: MediaFileEntry]
   openNormalizeEpub: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
@@ -103,8 +86,6 @@ const {
   toggleVideoFieldLock,
   hydrateForm,
   buildPatchEnvelope,
-  applyScrapedField,
-  applyScrapedMetadata,
 } = useMetadataForm()
 
 const saving = ref(false)
@@ -115,17 +96,6 @@ const coverInputRef = ref<HTMLInputElement | null>(null)
 const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
 const skipNextHydrate = ref(false)
 
-const autoSearchOnSwitch = ref(true)
-const autoSearchTrigger = ref(0)
-const candidatePreview = ref<CandidatePreviewState | null>(null)
-
-function handlePreviewFillField(field: ScrapedFieldKey, meta: ScrapedMetadata, label: string): void {
-  const changed = applyScrapedField(props.detail.entry.media_kind, field, meta, 'overwrite')
-  if (changed) {
-    snackbar.show(`已将「${label}」填入左侧表单，按 ⌘S 保存落盘`)
-  }
-}
-
 watch(
   () => props.detail,
   (d) => {
@@ -135,26 +105,9 @@ watch(
       return
     }
     errorMsg.value = null
-    candidatePreview.value = null
     hydrateForm(d)
-    if (props.showCandidates && autoSearchOnSwitch.value) {
-      autoSearchTrigger.value += 1
-    }
   },
   { immediate: true },
-)
-
-watch(
-  () => props.showCandidates,
-  (open) => {
-    if (!open) {
-      candidatePreview.value = null
-      return
-    }
-    if (props.detail) {
-      autoSearchTrigger.value += 1
-    }
-  },
 )
 
 const isCurrentDirty = isDirty
@@ -352,23 +305,6 @@ async function saveMetadata(
   }
 }
 
-function handleFillAll(meta: ScrapedMetadata, mode: ApplyFillMode): void {
-  const count = applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
-  snackbar.show(`已将 ${count} 个在线字段填入编辑表单（尚未保存）`)
-}
-
-function handleFillField(field: ScrapedFieldKey, meta: ScrapedMetadata): void {
-  const ok = applyScrapedField(props.detail.entry.media_kind, field, meta, 'overwrite')
-  if (ok) {
-    snackbar.show('已回填字段到表单，按 ⌘S 保存落盘')
-  }
-}
-
-async function handleDirectApply(meta: ScrapedMetadata, mode: ApplyFillMode): Promise<void> {
-  applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
-  await saveMetadata(false, false)
-}
-
 function handleKeydown(ev: KeyboardEvent): void {
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
     ev.preventDefault()
@@ -402,14 +338,7 @@ defineExpose({
 
 <template>
   <aside
-    class="flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] transition-[width] duration-300 ease-[var(--md-sys-motion-easing-standard)] lg:rounded-l-[24px]"
-    :class="
-      showCandidates && candidatePreview
-        ? 'max-w-[94vw] lg:w-[960px] xl:w-[1140px] 2xl:w-[1260px]'
-        : showCandidates
-          ? 'lg:w-[760px] xl:w-[860px]'
-          : 'lg:w-[440px] xl:w-[470px]'
-    "
+    class="flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] transition-[width] duration-300 ease-[var(--md-sys-motion-easing-standard)] lg:w-[440px] lg:rounded-l-[24px] xl:w-[470px]"
   >
     <input
       ref="coverInputRef"
@@ -490,17 +419,8 @@ defineExpose({
       </div>
     </div>
 
-    <!-- Main Body: Single Edit Pane OR Dual/Tri Side-by-Side (Edit + Online Candidates + Selected Preview) -->
-    <div
-      class="grid min-h-0 flex-1"
-      :class="
-        showCandidates && candidatePreview
-          ? 'grid-cols-1 lg:grid-cols-[minmax(300px,1fr)_320px_minmax(280px,340px)] xl:grid-cols-[minmax(340px,1fr)_350px_minmax(320px,390px)]'
-          : showCandidates
-            ? 'grid-cols-1 lg:grid-cols-[minmax(0,1fr)_350px] xl:grid-cols-[minmax(0,1fr)_390px]'
-            : 'grid-cols-1'
-      "
-    >
+    <!-- Main Body: Single Edit Pane -->
+    <div class="grid min-h-0 flex-1 grid-cols-1">
       <!-- Left Column: Metadata Form + Artwork -->
       <div class="flex min-h-0 flex-col overflow-hidden">
         <div class="flex-1 space-y-4 overflow-y-auto px-4 pt-1 pb-4">
@@ -710,7 +630,7 @@ defineExpose({
                     class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
                     :class="
                       detail.entry.completeness.is_normalized
-                        ? '!border-emerald-500/35 !bg-emerald-500/10 !text-emerald-500'
+                        ? '!border-[var(--md-sys-color-success)]/45 !bg-[var(--md-sys-color-success-container)] !text-[var(--md-sys-color-on-success-container)]'
                         : ''
                     "
                     :title="
@@ -813,7 +733,7 @@ defineExpose({
 
                 <button
                   type="button"
-                  class="md-chip md-state !h-7 !rounded-full !border-red-500/35 !px-2.5 !text-[11px] !text-red-400 hover:!bg-red-500/10"
+                  class="md-chip md-state !h-7 !rounded-full !border-[var(--md-sys-color-error)]/45 !px-2.5 !text-[11px] !text-[var(--md-sys-color-error)] hover:!bg-[var(--md-sys-color-error-container)]/40"
                   title="删除此媒体条目及同名外挂文件"
                   @click="emit('requestDelete', detail.entry)"
                 >
@@ -903,55 +823,6 @@ defineExpose({
             </button>
           </div>
         </div>
-      </div>
-
-      <!-- Optional Expanded Middle Column: Live Online Candidates & Single-Field Fill -->
-      <div
-        v-if="showCandidates"
-        class="hidden min-h-0 flex-col border-l border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/40 lg:flex"
-      >
-        <div class="flex shrink-0 items-center justify-between px-3.5 pt-2.5 pb-1">
-          <span class="text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            在线候选对照 · 点击选中右侧预览
-          </span>
-          <label class="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            <input
-              v-model="autoSearchOnSwitch"
-              type="checkbox"
-              class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
-            />
-            <span>切项自动搜</span>
-          </label>
-        </div>
-        <div class="min-h-0 flex-1 overflow-hidden">
-          <WorkbenchCandidatePane
-            :detail="detail"
-            :settings="settings"
-            :auto-search-trigger="autoSearchTrigger"
-            :selected-preview-key="candidatePreview?.key ?? null"
-            @fill-all="handleFillAll"
-            @fill-field="handleFillField"
-            @direct-apply="handleDirectApply"
-            @select-preview="candidatePreview = $event"
-            @open-settings="emit('openSettingsScrapers')"
-            @settings-updated="emit('settingsUpdated', $event)"
-          />
-        </div>
-      </div>
-
-      <!-- Optional Expanded Right Column: Mirror Structured Preview of Selected Candidate -->
-      <div
-        v-if="showCandidates && candidatePreview"
-        class="hidden min-h-0 flex-col border-l border-[var(--md-sys-color-outline-variant)]/45 lg:flex"
-      >
-        <CandidateDetailPreviewPane
-          :media-kind="detail.entry.media_kind"
-          :preview="candidatePreview"
-          @fill-all="handleFillAll"
-          @fill-field="handlePreviewFillField"
-          @direct-apply="handleDirectApply"
-          @close="candidatePreview = null"
-        />
       </div>
     </div>
   </aside>

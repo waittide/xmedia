@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   LuCheck,
   LuDisc3,
@@ -9,11 +9,12 @@ import {
   LuScissors,
   LuSlidersHorizontal,
   LuVolume2,
-  LuX,
 } from 'vue-icons-plus/lu'
 
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { toolApi } from '../api'
 import type { MediaFileDetail, MediaFileEntry } from '../types'
 
@@ -51,6 +52,22 @@ const syncMode = ref<'both' | 'sidecar_to_embedded' | 'embedded_to_sidecar' | 'n
 const coverMaxDimStr = ref('1000')
 const coverQuality = ref(86)
 
+const tabOptions = computed(() => {
+  const list: Array<{ value: 'lyrics' | 'audio' | 'album'; label: string; icon: typeof LuMusic }> = []
+  if (isSingleMode.value) {
+    list.push({ value: 'lyrics', label: '歌词精校 & 同步', icon: LuSlidersHorizontal })
+  }
+  list.push({ value: 'audio', label: '响度 / 封面 / CUE 分轨', icon: LuVolume2 })
+  list.push({ value: 'album', label: '专辑聚类批量同步', icon: LuDisc3 })
+  return list
+})
+
+const dialogTitle = computed(() =>
+  isSingleMode.value && primaryEntry.value
+    ? `音乐精校工具箱 · ${primaryEntry.value.file_name}`
+    : `音乐精校工具箱（已选 ${sortedEntries.value.length} 首曲目）`,
+)
+
 const zhOptions = [
   { value: '', label: '不转换' },
   { value: 't2s', label: '繁 → 简' },
@@ -66,24 +83,6 @@ const coverDimOptions = [
   { value: '1000', label: '1000 px（推荐）' },
   { value: '800', label: '800 px' },
 ]
-
-function handleKeydown(ev: KeyboardEvent): void {
-  if (props.open && ev.key === 'Escape') {
-    ev.preventDefault()
-    emit('close')
-  }
-}
-
-watch(
-  () => props.open,
-  (isOpen) => {
-    if (isOpen) window.addEventListener('keydown', handleKeydown)
-    else window.removeEventListener('keydown', handleKeydown)
-  },
-  { immediate: true },
-)
-
-onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
 
 // Album batch sync state
 const albumName = ref('')
@@ -253,281 +252,249 @@ async function handleBatchSyncAlbum(): Promise<void> {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
-      @click.self="emit('close')"
-    >
-      <div
-        class="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] text-[var(--ctp-text)] shadow-2xl"
-      >
-        <!-- Header -->
-        <div class="flex items-center justify-between border-b border-[var(--ctp-surface0)] px-5 py-3.5">
-          <div class="flex items-center gap-2.5">
-            <div class="flex h-8 w-8 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]">
-              <LuMusic class="h-4 w-4" />
-            </div>
-            <h3 class="text-sm font-semibold">
-              音乐精校工具箱
-              <span v-if="isSingleMode && primaryEntry"> · {{ primaryEntry.file_name }}</span>
-              <span v-else>（已选 {{ sortedEntries.length }} 首曲目）</span>
-            </h3>
-          </div>
+  <MdDialog
+    :open="open"
+    :title="dialogTitle"
+    subtitle="歌词偏移精校、ReplayGain 响度归一化、封面瘦身、CUE 无损分轨与专辑批量同步"
+    max-width="max-w-2xl"
+    @close="emit('close')"
+  >
+    <template #icon>
+      <LuMusic class="h-5 w-5" />
+    </template>
+
+    <div class="space-y-4 py-1 text-xs">
+      <MdSegmentedButton v-model="activeTab" :options="tabOptions" size="sm" />
+
+      <!-- TAB 1: Lyrics -->
+      <div v-if="activeTab === 'lyrics' && isSingleMode" class="space-y-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">时间轴偏移 (ms)：</span>
           <button
             type="button"
-            class="rounded-xl p-1.5 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]"
-            @click="emit('close')"
+            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+            @click="offsetMs -= 500"
           >
-            <LuX class="h-4 w-4" />
+            -0.5s
+          </button>
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+            @click="offsetMs -= 100"
+          >
+            -0.1s
+          </button>
+          <input
+            v-model.number="offsetMs"
+            type="number"
+            step="100"
+            class="md-input h-8 w-24 !px-2 text-center text-xs"
+          />
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+            @click="offsetMs += 100"
+          >
+            +0.1s
+          </button>
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+            @click="offsetMs += 500"
+          >
+            +0.5s
           </button>
         </div>
 
-        <!-- Tabs -->
-        <div class="flex border-b border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/60 px-5 pt-2">
-          <button
-            v-if="isSingleMode"
-            type="button"
-            class="inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium"
-            :class="activeTab === 'lyrics' ? 'border-[var(--ctp-accent)] text-[var(--ctp-accent)]' : 'border-transparent text-[var(--ctp-subtext0)]'"
-            @click="activeTab = 'lyrics'"
-          >
-            <LuSlidersHorizontal class="h-3.5 w-3.5" />
-            歌词精校 & 同步
-          </button>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium"
-            :class="activeTab === 'audio' ? 'border-[var(--ctp-accent)] text-[var(--ctp-accent)]' : 'border-transparent text-[var(--ctp-subtext0)]'"
-            @click="activeTab = 'audio'"
-          >
-            <LuVolume2 class="h-3.5 w-3.5" />
-            响度 / 封面 / CUE 分轨
-          </button>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium"
-            :class="activeTab === 'album' ? 'border-[var(--ctp-accent)] text-[var(--ctp-accent)]' : 'border-transparent text-[var(--ctp-subtext0)]'"
-            @click="activeTab = 'album'"
-          >
-            <LuDisc3 class="h-3.5 w-3.5" />
-            专辑聚类批量同步
-          </button>
-        </div>
-
-        <!-- Body -->
-        <div class="min-h-0 flex-1 overflow-y-auto p-5 text-xs">
-          <!-- TAB 1: Lyrics -->
-          <div v-if="activeTab === 'lyrics' && isSingleMode" class="space-y-3">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-[11px] text-[var(--ctp-subtext0)]">时间轴偏移 (ms)：</span>
-              <button
-                type="button"
-                class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:bg-[var(--ctp-surface0)]"
-                @click="offsetMs -= 500"
-              >
-                -0.5s
-              </button>
-              <button
-                type="button"
-                class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:bg-[var(--ctp-surface0)]"
-                @click="offsetMs -= 100"
-              >
-                -0.1s
-              </button>
-              <input
-                v-model.number="offsetMs"
-                type="number"
-                step="100"
-                class="w-24 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1 text-center"
+        <div class="flex flex-wrap items-center gap-4">
+          <AppCheckbox v-model="stripCreditNoise" label="清理头部作词/作曲/版权噪声行" />
+          <div class="inline-flex items-center gap-1.5">
+            <span class="text-[var(--md-sys-color-on-surface-variant)]">简繁转换</span>
+            <div class="w-28">
+              <AppSelect
+                :model-value="zhDirection"
+                :options="zhOptions"
+                variant="compact"
+                @update:model-value="(v) => (zhDirection = v as '' | 't2s' | 's2t')"
               />
-              <button
-                type="button"
-                class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:bg-[var(--ctp-surface0)]"
-                @click="offsetMs += 100"
-              >
-                +0.1s
-              </button>
-              <button
-                type="button"
-                class="rounded-lg border border-[var(--ctp-surface0)] px-2 py-1 hover:bg-[var(--ctp-surface0)]"
-                @click="offsetMs += 500"
-              >
-                +0.5s
-              </button>
-            </div>
-
-            <div class="flex flex-wrap items-center gap-4">
-              <AppCheckbox v-model="stripCreditNoise" label="清理头部作词/作曲/版权噪声行" />
-              <div class="inline-flex items-center gap-1.5">
-                <span class="text-[var(--ctp-subtext0)]">简繁转换</span>
-                <div class="w-28">
-                  <AppSelect
-                    :model-value="zhDirection"
-                    :options="zhOptions"
-                    variant="compact"
-                    @update:model-value="(v) => (zhDirection = v as '' | 't2s' | 's2t')"
-                  />
-                </div>
-              </div>
-              <div class="inline-flex items-center gap-1.5">
-                <span class="text-[var(--ctp-subtext0)]">写入目标</span>
-                <div class="w-48">
-                  <AppSelect
-                    :model-value="syncMode"
-                    :options="syncModeOptions"
-                    variant="compact"
-                    @update:model-value="(v) => (syncMode = v as 'both' | 'sidecar_to_embedded' | 'embedded_to_sidecar' | 'none')"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <textarea
-              v-model="lyricsText"
-              rows="11"
-              placeholder="[00:00.00] 歌词内容（留空则自动读取现有内嵌或侧车歌词）"
-              class="w-full resize-y rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3 font-mono text-[11px] leading-relaxed outline-none focus:border-[var(--ctp-accent)]"
-            />
-
-            <div class="flex justify-end">
-              <button
-                type="button"
-                :disabled="busy"
-                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] disabled:opacity-50"
-                @click="handleProcessLyrics"
-              >
-                <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                应用歌词精校并保存
-              </button>
             </div>
           </div>
-
-          <!-- TAB 2: Audio / ReplayGain / Cover / CUE -->
-          <div v-else-if="activeTab === 'audio'" class="space-y-4">
-            <div class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-4">
-              <div class="mb-1 flex items-center gap-2 font-semibold">
-                <LuVolume2 class="h-4 w-4 text-[var(--ctp-accent)]" />
-                ReplayGain 2.0 响度归一化（FFmpeg EBU R128）
-              </div>
-              <p class="mb-3 text-[11px] text-[var(--ctp-subtext0)]">
-                无损分析音轨集成响度（基准 -18 LUFS）并写入标准 REPLAYGAIN_TRACK_GAIN / ALBUM_GAIN 标签，不重新编码音频。
-              </p>
-              <button
-                type="button"
-                :disabled="busy"
-                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] disabled:opacity-50"
-                @click="handleReplayGain"
-              >
-                <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                计算并写入 ReplayGain（{{ sortedEntries.length }} 首）
-              </button>
-            </div>
-
-            <div v-if="isSingleMode" class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-4">
-              <div class="mb-1 flex items-center gap-2 font-semibold">
-                <LuImage class="h-4 w-4 text-[var(--ctp-accent)]" />
-                内嵌封面压缩瘦身
-              </div>
-              <p class="mb-3 text-[11px] text-[var(--ctp-subtext0)]">
-                检测超大内嵌封面并等比缩放为高画质 JPEG，显著加速播放器加载与扫码。
-              </p>
-              <div class="flex flex-wrap items-center gap-3">
-                <div class="inline-flex items-center gap-1.5">
-                  <span>最大边长</span>
-                  <div class="w-36">
-                    <AppSelect v-model="coverMaxDimStr" :options="coverDimOptions" variant="compact" />
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  :disabled="busy"
-                  class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-3.5 py-1.5 text-xs font-medium hover:border-[var(--ctp-accent)] disabled:opacity-50"
-                  @click="handleOptimizeCover"
-                >
-                  <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                  压缩当前内嵌封面
-                </button>
-              </div>
-            </div>
-
-            <div v-if="isSingleMode" class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-4">
-              <div class="mb-1 flex items-center gap-2 font-semibold">
-                <LuScissors class="h-4 w-4 text-[var(--ctp-accent)]" />
-                整轨音频 + 同名 .cue 一键无损分轨
-              </div>
-              <p class="mb-3 text-[11px] text-[var(--ctp-subtext0)]">
-                自动读取同目录下伴随 .cue 索引（兼容 GBK/UTF-8），使用 FFmpeg 切分为单曲 FLAC 并自动写入曲名、艺人、专辑与音轨号。
-              </p>
-              <button
-                type="button"
-                :disabled="busy"
-                class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-3.5 py-1.5 text-xs font-medium hover:border-[var(--ctp-accent)] disabled:opacity-50"
-                @click="handleSplitCue"
-              >
-                <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                按伴随 .cue 切分为单曲 FLAC
-              </button>
+          <div class="inline-flex items-center gap-1.5">
+            <span class="text-[var(--md-sys-color-on-surface-variant)]">写入目标</span>
+            <div class="w-48">
+              <AppSelect
+                :model-value="syncMode"
+                :options="syncModeOptions"
+                variant="compact"
+                @update:model-value="(v) => (syncMode = v as 'both' | 'sidecar_to_embedded' | 'embedded_to_sidecar' | 'none')"
+              />
             </div>
           </div>
+        </div>
 
-          <!-- TAB 3: Album Cluster Batch Sync -->
-          <div v-else class="space-y-3">
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">专辑名 (Album) · 留空不覆盖</span>
-                <input v-model="albumName" type="text" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">专辑艺人 (AlbumArtist)</span>
-                <input v-model="albumArtist" type="text" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">曲目艺人 (Artist · 可留空保留原值)</span>
-                <input v-model="trackArtist" type="text" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">流派 (Genre)</span>
-                <input v-model="albumGenre" type="text" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">发行年份</span>
-                <input v-model.number="albumYear" type="number" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-              <label class="block">
-                <span class="mb-1 block text-[11px] text-[var(--ctp-subtext0)]">碟号 (DiscNumber)</span>
-                <input v-model.number="discNumber" type="number" min="1" class="w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3 py-2 outline-none focus:border-[var(--ctp-accent)]" />
-              </label>
-            </div>
-            <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70 p-3">
-              <AppCheckbox v-model="autoNumberTracks" label="按文件名自然序自动重编音轨号 (Track 1..N)" />
-              <label v-if="autoNumberTracks" class="inline-flex items-center gap-1.5">
-                <span>起始曲目号</span>
-                <input v-model.number="startTrack" type="number" min="1" class="w-16 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-2 py-1" />
-              </label>
-            </div>
-            <div class="flex justify-end">
-              <button
-                type="button"
-                :disabled="busy"
-                class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] disabled:opacity-50"
-                @click="handleBatchSyncAlbum"
-              >
-                <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
-                同步整张专辑（{{ sortedEntries.length }} 首）
-              </button>
-            </div>
-          </div>
+        <textarea
+          v-model="lyricsText"
+          rows="11"
+          placeholder="[00:00.00] 歌词内容（留空则自动读取现有内嵌或侧车歌词）"
+          class="w-full resize-y rounded-2xl border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] p-3 font-mono text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface)] outline-none focus:border-[var(--md-sys-color-primary)]"
+        />
 
-          <div v-if="errorMsg" class="mt-3 rounded-xl bg-rose-500/10 px-3 py-2 text-rose-500">
-            {{ errorMsg }}
-          </div>
-          <div v-if="successMsg" class="mt-3 flex items-center gap-1.5 rounded-xl bg-emerald-500/10 px-3 py-2 text-emerald-500">
-            <LuCheck class="h-4 w-4 shrink-0" />
-            <span>{{ successMsg }}</span>
-          </div>
+        <div class="flex justify-end">
+          <button
+            type="button"
+            :disabled="busy"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            @click="handleProcessLyrics"
+          >
+            <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
+            <span>应用歌词精校并保存</span>
+          </button>
         </div>
       </div>
+
+      <!-- TAB 2: Audio / ReplayGain / Cover / CUE -->
+      <div v-else-if="activeTab === 'audio'" class="space-y-3.5">
+        <div class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-4">
+          <div class="mb-1 flex items-center gap-2 font-semibold">
+            <LuVolume2 class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+            ReplayGain 2.0 响度归一化（FFmpeg EBU R128）
+          </div>
+          <p class="mb-3 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+            无损分析音轨集成响度（基准 -18 LUFS）并写入标准 REPLAYGAIN_TRACK_GAIN / ALBUM_GAIN 标签，不重新编码音频。
+          </p>
+          <button
+            type="button"
+            :disabled="busy"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            @click="handleReplayGain"
+          >
+            <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
+            <span>计算并写入 ReplayGain（{{ sortedEntries.length }} 首）</span>
+          </button>
+        </div>
+
+        <div
+          v-if="isSingleMode"
+          class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-4"
+        >
+          <div class="mb-1 flex items-center gap-2 font-semibold">
+            <LuImage class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+            内嵌封面压缩瘦身
+          </div>
+          <p class="mb-3 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+            检测超大内嵌封面并等比缩放为高画质 JPEG，显著加速播放器加载与扫码。
+          </p>
+          <div class="flex flex-wrap items-center gap-3">
+            <div class="inline-flex items-center gap-1.5">
+              <span>最大边长</span>
+              <div class="w-36">
+                <AppSelect v-model="coverMaxDimStr" :options="coverDimOptions" variant="compact" />
+              </div>
+            </div>
+            <button
+              type="button"
+              :disabled="busy"
+              class="md-btn md-btn-sm md-btn-tonal md-state"
+              @click="handleOptimizeCover"
+            >
+              <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
+              <span>压缩当前内嵌封面</span>
+            </button>
+          </div>
+        </div>
+
+        <div
+          v-if="isSingleMode"
+          class="rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-4"
+        >
+          <div class="mb-1 flex items-center gap-2 font-semibold">
+            <LuScissors class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+            整轨音频 + 同名 .cue 一键无损分轨
+          </div>
+          <p class="mb-3 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+            自动读取同目录下伴随 .cue 索引（兼容 GBK/UTF-8），使用 FFmpeg 切分为单曲 FLAC 并自动写入曲名、艺人、专辑与音轨号。
+          </p>
+          <button
+            type="button"
+            :disabled="busy"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
+            @click="handleSplitCue"
+          >
+            <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
+            <span>按伴随 .cue 切分为单曲 FLAC</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- TAB 3: Album Cluster Batch Sync -->
+      <div v-else class="space-y-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">专辑名 (Album) · 留空不覆盖</span>
+            <input v-model="albumName" type="text" class="md-input h-9 w-full text-xs" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">专辑艺人 (AlbumArtist)</span>
+            <input v-model="albumArtist" type="text" class="md-input h-9 w-full text-xs" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">曲目艺人 (Artist · 可留空保留原值)</span>
+            <input v-model="trackArtist" type="text" class="md-input h-9 w-full text-xs" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">流派 (Genre)</span>
+            <input v-model="albumGenre" type="text" class="md-input h-9 w-full text-xs" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">发行年份</span>
+            <input v-model.number="albumYear" type="number" class="md-input h-9 w-full text-xs" />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">碟号 (DiscNumber)</span>
+            <input v-model.number="discNumber" type="number" min="1" class="md-input h-9 w-full text-xs" />
+          </label>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-3.5">
+          <AppCheckbox v-model="autoNumberTracks" label="按文件名自然序自动重编音轨号 (Track 1..N)" />
+          <label v-if="autoNumberTracks" class="inline-flex items-center gap-1.5">
+            <span>起始曲目号</span>
+            <input v-model.number="startTrack" type="number" min="1" class="md-input h-8 w-16 !px-2 text-xs" />
+          </label>
+        </div>
+        <div class="flex justify-end">
+          <button
+            type="button"
+            :disabled="busy"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            @click="handleBatchSyncAlbum"
+          >
+            <LuLoader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" />
+            <span>同步整张专辑（{{ sortedEntries.length }} 首）</span>
+          </button>
+        </div>
+      </div>
+
+      <div
+        v-if="errorMsg"
+        class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-error-container)]"
+      >
+        {{ errorMsg }}
+      </div>
+      <div
+        v-if="successMsg"
+        class="flex items-center gap-1.5 rounded-2xl bg-[var(--md-sys-color-success-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-success-container)]"
+      >
+        <LuCheck class="h-4 w-4 shrink-0" />
+        <span>{{ successMsg }}</span>
+      </div>
     </div>
-  </Teleport>
+
+    <template #footer>
+      <div class="ml-auto">
+        <button type="button" class="md-btn md-btn-sm md-btn-text md-state" @click="emit('close')">
+          关闭
+        </button>
+      </div>
+    </template>
+  </MdDialog>
 </template>

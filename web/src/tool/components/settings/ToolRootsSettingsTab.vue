@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { LuFolderPlus, LuTrash2 } from 'vue-icons-plus/lu'
+import { LuCheckCircle2, LuFolderPlus, LuRotateCw, LuSave, LuTrash2 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
@@ -202,27 +202,27 @@ async function handleTestWebhook(): Promise<void> {
 </script>
 
 <template>
-  <section class="card-soft rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold text-[var(--ctp-text)]">
+  <section class="md-card-filled p-6">
+    <h2 class="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
       新增「{{ domainBadgeLabels[domainSubTab] }}」本地目录
     </h2>
 
     <form class="mt-4 space-y-4" @submit.prevent="handleAddRoot">
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-12">
         <div class="sm:col-span-4">
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
             显示别名（可选）
           </label>
           <input
             v-model="newRootName"
             type="text"
             placeholder="默认取文件夹名"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full text-xs"
           />
         </div>
 
         <div class="sm:col-span-8">
-          <label class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+          <label class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
             服务器本地绝对路径
           </label>
           <input
@@ -230,7 +230,7 @@ async function handleTestWebhook(): Promise<void> {
             type="text"
             required
             :placeholder="`例如 /data/media/${domainSubTab}`"
-            class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+            class="md-input h-10 w-full font-mono text-xs"
           />
         </div>
       </div>
@@ -239,7 +239,7 @@ async function handleTestWebhook(): Promise<void> {
         <button
           type="submit"
           :disabled="!newRootPath.trim() || addingRoot"
-          class="inline-flex h-10 items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-50"
+          class="md-btn md-btn-filled md-state"
         >
           <LuFolderPlus class="h-4 w-4" />
           <span>添加到「{{ domainBadgeLabels[domainSubTab] }}」</span>
@@ -248,14 +248,14 @@ async function handleTestWebhook(): Promise<void> {
     </form>
   </section>
 
-  <section class="card-soft space-y-3 rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <h2 class="text-sm font-bold text-[var(--ctp-text)]">
+  <section class="md-card-filled space-y-3 p-6">
+    <h2 class="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
       已登记「{{ domainBadgeLabels[domainSubTab] }}」挂载目录 ({{ filteredRoots.length }})
     </h2>
 
     <div
       v-if="filteredRoots.length === 0"
-      class="rounded-2xl border border-dashed border-[var(--ctp-surface1)] bg-[var(--ctp-canvas)]/60 py-10 text-center text-xs text-[var(--ctp-subtext0)]"
+      class="rounded-2xl border border-dashed border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       当前「{{ domainBadgeLabels[domainSubTab] }}」领域尚未添加本地目录
     </div>
@@ -263,34 +263,34 @@ async function handleTestWebhook(): Promise<void> {
     <div
       v-for="r in filteredRoots"
       :key="r.id"
-      class="flex items-center justify-between gap-3 rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-4"
+      class="flex items-center justify-between gap-3 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] p-4"
     >
       <div class="min-w-0">
         <div class="flex items-center gap-2">
-          <span class="truncate text-sm font-bold text-[var(--ctp-text)]">{{ r.name }}</span>
+          <span class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)]">{{ r.name }}</span>
           <span
-            class="rounded-full bg-[var(--ctp-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--ctp-accent)]"
+            class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
           >
             {{ domainBadgeLabels[domainSubTab] }}
           </span>
           <span
             v-if="r.read_only"
-            class="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-semibold text-amber-500"
+            class="rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
           >
             只读保护
           </span>
         </div>
-        <p class="mt-1 truncate font-mono text-xs text-[var(--ctp-subtext0)]">{{ r.path }}</p>
+        <p class="mt-1 truncate font-mono text-xs text-[var(--md-sys-color-on-surface-variant)]">{{ r.path }}</p>
       </div>
 
       <div class="flex shrink-0 items-center gap-1.5">
         <button
           type="button"
-          class="rounded-xl border px-2.5 py-1.5 text-[11px] font-medium transition"
+          class="md-btn md-btn-sm md-state"
           :class="
             r.read_only
-              ? 'border-amber-500/45 bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
-              : 'border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)]'
+              ? 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+              : 'md-btn-outlined'
           "
           title="切换只读保护模式（只读状态下禁止任何元数据写入、改名与归档修改）"
           @click="handleToggleRootReadOnly(r.id, Boolean(r.read_only))"
@@ -299,7 +299,7 @@ async function handleTestWebhook(): Promise<void> {
         </button>
         <button
           type="button"
-          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-[var(--ctp-subtext0)] transition hover:bg-red-500/10 hover:text-red-500"
+          class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-error-container)]/50 hover:text-[var(--md-sys-color-error)]"
           title="移除目录白名单（不会删除磁盘原文件）"
           @click="handleRemoveRoot(r.id)"
         >
@@ -310,27 +310,27 @@ async function handleTestWebhook(): Promise<void> {
   </section>
 
   <!-- Inbox / Watch Folder Card -->
-  <section class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6">
+  <section class="md-card-filled space-y-4 p-6">
     <div>
-      <h2 class="text-sm font-bold text-[var(--ctp-text)]">
+      <h2 class="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
         热导入收件箱（Inbox / Watch Folder）
       </h2>
-      <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+      <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
         将新下载的媒体文件放入收件箱，一键通过同卷硬链接（PT 保种零额外空间）或移动导入正式挂载目录并可选自动刮削。
       </p>
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <label class="block">
-        <span class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">收件箱目录路径</span>
+        <span class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">收件箱目录路径</span>
         <input
           v-model="inboxPath"
           type="text"
           placeholder="/data/inbox"
-          class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-10 w-full font-mono text-xs"
         />
       </label>
       <div class="block">
-        <span class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">目标导入挂载目录</span>
+        <span class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">目标导入挂载目录</span>
         <AppSelect v-model="inboxTargetRootId" :options="inboxRootOptions" />
       </div>
     </div>
@@ -339,14 +339,17 @@ async function handleTestWebhook(): Promise<void> {
       <AppCheckbox v-model="inboxDeleteSource" label="导入后移除收件箱源文件" />
       <AppCheckbox v-model="inboxAutoScrape" label="导入后自动刮削归档" />
     </div>
-    <div v-if="inboxNotice" class="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs text-emerald-500">
+    <div
+      v-if="inboxNotice"
+      class="rounded-2xl bg-[var(--md-sys-color-success-container)] px-3.5 py-2 text-xs text-[var(--md-sys-color-on-success-container)]"
+    >
       {{ inboxNotice }}
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <button
         type="button"
         :disabled="saving"
-        class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] disabled:opacity-50"
+        class="md-btn md-btn-sm md-btn-filled md-state"
         @click="handleSaveInboxAndWebhook"
       >
         <LuSave class="h-3.5 w-3.5" />
@@ -355,7 +358,7 @@ async function handleTestWebhook(): Promise<void> {
       <button
         type="button"
         :disabled="scanningInbox || !inboxPath.trim() || !inboxTargetRootId"
-        class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-2 text-xs font-semibold text-[var(--ctp-text)] hover:border-[var(--ctp-accent)] disabled:opacity-50"
+        class="md-btn md-btn-sm md-btn-outlined md-state"
         @click="handleScanInbox"
       >
         <LuRotateCw :class="{ 'animate-spin': scanningInbox }" class="h-3.5 w-3.5" />
@@ -365,13 +368,13 @@ async function handleTestWebhook(): Promise<void> {
   </section>
 
   <!-- xmedia Main Server Webhook Card -->
-  <section class="card-soft space-y-4 rounded-2xl bg-[var(--ctp-shell)] p-6">
-    <div class="flex items-center justify-between">
+  <section class="md-card-filled space-y-4 p-6">
+    <div class="flex items-center justify-between gap-3">
       <div>
-        <h2 class="text-sm font-bold text-[var(--ctp-text)]">
+        <h2 class="text-sm font-bold text-[var(--md-sys-color-on-surface)]">
           xmedia 主站增量扫描联动（Webhook）
         </h2>
-        <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
+        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
           整理工具完成重命名、刮削或收件箱导入后，自动通知 xmedia 主站对匹配的挂载媒体库执行增量扫描。
         </p>
       </div>
@@ -379,18 +382,21 @@ async function handleTestWebhook(): Promise<void> {
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <label class="block">
-        <span class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">主站地址 (Base URL)</span>
+        <span class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">主站地址 (Base URL)</span>
         <input
           v-model="webhookBaseUrl"
           type="text"
           placeholder="http://127.0.0.1:8080"
-          class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-10 w-full font-mono text-xs"
         />
       </label>
       <label class="block">
-        <span class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">
+        <span class="mb-1.5 block text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]">
           主站管理员 API Key
-          <span v-if="props.settings?.xmedia_webhook_api_key_masked" class="ml-1 font-normal text-emerald-500">
+          <span
+            v-if="props.settings?.xmedia_webhook_api_key_masked"
+            class="ml-1 font-normal text-[var(--md-sys-color-success)]"
+          >
             (已保存: {{ props.settings.xmedia_webhook_api_key_masked }})
           </span>
         </span>
@@ -398,7 +404,7 @@ async function handleTestWebhook(): Promise<void> {
           v-model="webhookApiKey"
           type="password"
           placeholder="留空则保持已保存的 API Key"
-          class="h-10 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-3.5 font-mono text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-10 w-full font-mono text-xs"
         />
       </label>
     </div>
@@ -407,14 +413,17 @@ async function handleTestWebhook(): Promise<void> {
       <AppCheckbox v-model="webhookNotifyScrape" label="刮削落盘后通知" />
       <AppCheckbox v-model="webhookNotifyInbox" label="收件箱导入后通知" />
     </div>
-    <div v-if="webhookNotice" class="rounded-xl bg-emerald-500/10 px-3 py-2 text-xs text-emerald-500">
+    <div
+      v-if="webhookNotice"
+      class="rounded-2xl bg-[var(--md-sys-color-success-container)] px-3.5 py-2 text-xs text-[var(--md-sys-color-on-success-container)]"
+    >
       {{ webhookNotice }}
     </div>
     <div class="flex flex-wrap items-center gap-2">
       <button
         type="button"
         :disabled="saving"
-        class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-2 text-xs font-semibold text-[var(--ctp-on-accent)] disabled:opacity-50"
+        class="md-btn md-btn-sm md-btn-filled md-state"
         @click="handleSaveInboxAndWebhook"
       >
         <LuSave class="h-3.5 w-3.5" />
@@ -423,7 +432,7 @@ async function handleTestWebhook(): Promise<void> {
       <button
         type="button"
         :disabled="testingWebhook"
-        class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-4 py-2 text-xs font-semibold text-[var(--ctp-text)] hover:border-[var(--ctp-accent)] disabled:opacity-50"
+        class="md-btn md-btn-sm md-btn-outlined md-state"
         @click="handleTestWebhook"
       >
         <LuCheckCircle2 class="h-3.5 w-3.5" />

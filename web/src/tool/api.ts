@@ -87,7 +87,12 @@ export function setToolToken(token: string | null): void {
   }
 }
 
-async function toolRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+interface ToolRequestError extends Error {
+  status?: number
+  streamRouteMissing?: boolean
+}
+
+function buildToolHeaders(init: RequestInit): Headers {
   const headers = new Headers(init.headers)
   const token = getToolToken()
   if (token && !headers.has('Authorization')) {
@@ -96,42 +101,67 @@ async function toolRequest<T>(path: string, init: RequestInit = {}): Promise<T> 
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
+  return headers
+}
 
-  const res = await fetch(`/api/v1/tool${path}`, {
+async function fetchToolResponse(path: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(`/api/v1/tool${path}`, {
     ...init,
-    headers,
+    headers: buildToolHeaders(init),
     credentials: 'same-origin',
   })
+}
 
+function createToolHttpError(
+  path: string,
+  status: number,
+  rawText: string,
+  parsed: unknown,
+  checkStreamRouteMissing = false,
+): ToolRequestError {
+  if (status === 401 && path !== '/auth/unlock') {
+    setToolToken(null)
+    window.dispatchEvent(new CustomEvent('xmedia-tool:unauthorized'))
+  }
+  let errMsg = `HTTP ${status}`
+  if (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    'error' in parsed &&
+    typeof (parsed as { error?: { message?: string } }).error?.message === 'string'
+  ) {
+    errMsg = (parsed as { error: { message: string } }).error.message
+  } else if (checkStreamRouteMissing && rawText.trim()) {
+    errMsg = rawText.trim()
+  }
+  const error = new Error(errMsg) as ToolRequestError
+  error.status = status
+  if (checkStreamRouteMissing && status === 404 && rawText.trim() === 'Not Found') {
+    error.streamRouteMissing = true
+  }
+  return error
+}
+
+function tryParseJson(text: string): unknown {
+  if (!text) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+async function toolRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetchToolResponse(path, init)
   if (res.status === 204) {
     return undefined as T
   }
 
   const text = await res.text()
-  let parsed: unknown = null
-  if (text) {
-    try {
-      parsed = JSON.parse(text)
-    } catch {
-      parsed = text
-    }
-  }
+  const parsed = tryParseJson(text)
 
   if (!res.ok) {
-    if (res.status === 401 && path !== '/auth/unlock') {
-      setToolToken(null)
-      window.dispatchEvent(new CustomEvent('xmedia-tool:unauthorized'))
-    }
-    const errMsg =
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'error' in parsed &&
-      typeof (parsed as { error?: { message?: string } }).error?.message === 'string'
-        ? (parsed as { error: { message: string } }).error.message
-        : `HTTP ${res.status}`
-    const error = new Error(errMsg) as Error & { status?: number }
-    error.status = res.status
-    throw error
+    throw createToolHttpError(path, res.status, text, parsed)
   }
 
   return parsed as T
@@ -142,43 +172,12 @@ async function toolStreamRequest<T>(
   init: RequestInit,
   onProgress: StreamProgressCallback,
 ): Promise<T> {
-  const headers = new Headers(init.headers)
-  const token = getToolToken()
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
-  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json')
-  }
-
-  const res = await fetch(`/api/v1/tool${path}`, {
-    ...init,
-    headers,
-    credentials: 'same-origin',
-  })
+  const res = await fetchToolResponse(path, init)
 
   if (!res.ok) {
-    if (res.status === 401) {
-      setToolToken(null)
-      window.dispatchEvent(new CustomEvent('xmedia-tool:unauthorized'))
-    }
     const text = await res.text()
-    let errMsg = `HTTP ${res.status}`
-    try {
-      const parsed = JSON.parse(text) as { error?: { message?: string } }
-      if (parsed?.error?.message) errMsg = parsed.error.message
-    } catch {
-      if (text.trim()) errMsg = text.trim()
-    }
-    const error = new Error(errMsg) as Error & {
-      status?: number
-      streamRouteMissing?: boolean
-    }
-    error.status = res.status
-    if (res.status === 404 && text.trim() === 'Not Found') {
-      error.streamRouteMissing = true
-    }
-    throw error
+    const parsed = tryParseJson(text)
+    throw createToolHttpError(path, res.status, text, parsed, true)
   }
 
   if (!res.body) {

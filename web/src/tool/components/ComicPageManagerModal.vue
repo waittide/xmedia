@@ -21,6 +21,7 @@ import {
 
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
+import MdDialog from '@/components/ui/MdDialog.vue'
 import { toolApi } from '../api'
 import type {
   ComicImageReencodeFormat,
@@ -98,6 +99,14 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
+const dialogSubtitle = computed(() => {
+  const parts = [`共 ${pages.value.length} 页`, `保留 ${keptCount.value} 页`]
+  if (deletedCount.value > 0) parts.push(`待删除 ${deletedCount.value} 页`)
+  parts.push(`当前体积 ${formatBytes(totalSizeBytes.value)}`)
+  if (isCbzEditable.value) parts.push('支持拖拽调序与点击放大预览')
+  return parts.join(' · ')
+})
+
 function markLoaded(entryName: string): void {
   if (loadedEntries.value.has(entryName)) return
   const next = new Set(loadedEntries.value)
@@ -140,39 +149,39 @@ watch(
   { immediate: true },
 )
 
-function handleKeydown(ev: KeyboardEvent): void {
-  if (!props.open) return
-  if (ev.key === 'Escape') {
-    ev.preventDefault()
-    if (lightboxIdx.value !== null) {
-      lightboxIdx.value = null
-    } else {
-      emit('close')
-    }
-  } else if (lightboxIdx.value !== null && ev.key === 'ArrowLeft') {
+function handleLightboxKeydown(ev: KeyboardEvent): void {
+  if (!props.open || lightboxIdx.value === null) return
+  if (ev.key === 'ArrowLeft') {
     ev.preventDefault()
     if (lightboxIdx.value > 0) lightboxIdx.value -= 1
-  } else if (lightboxIdx.value !== null && ev.key === 'ArrowRight') {
+  } else if (ev.key === 'ArrowRight') {
     ev.preventDefault()
     if (lightboxIdx.value < pages.value.length - 1) lightboxIdx.value += 1
   }
 }
 
 watch(
-  () => props.open,
+  () => lightboxIdx.value !== null,
   (isOpen) => {
     if (isOpen) {
-      window.addEventListener('keydown', handleKeydown)
+      window.addEventListener('keydown', handleLightboxKeydown)
     } else {
-      window.removeEventListener('keydown', handleKeydown)
+      window.removeEventListener('keydown', handleLightboxKeydown)
     }
   },
-  { immediate: true },
 )
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('keydown', handleLightboxKeydown)
 })
+
+function handleDialogClose(): void {
+  if (lightboxIdx.value !== null) {
+    lightboxIdx.value = null
+    return
+  }
+  emit('close')
+}
 
 function movePage(idx: number, delta: number): void {
   const target = idx + delta
@@ -289,76 +298,52 @@ async function handleSave(): Promise<void> {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      v-if="open && entry"
-      class="fixed inset-0 z-[var(--z-modal)] flex flex-col overflow-hidden bg-[var(--ctp-canvas)] text-[var(--ctp-text)]"
-    >
-      <!-- Top Header -->
-      <header
-        class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--ctp-surface0)]/85 bg-[var(--ctp-shell)] px-4 select-none"
+  <MdDialog
+    :open="Boolean(open && entry)"
+    :title="entry ? `漫画页面管理与体积瘦身 · ${entry.file_name}` : '漫画页面管理与体积瘦身'"
+    :subtitle="dialogSubtitle"
+    max-width="max-w-[96vw] h-[94vh]"
+    :close-on-backdrop="lightboxIdx === null"
+    @close="handleDialogClose"
+  >
+    <template #icon>
+      <LuImage class="h-5 w-5" />
+    </template>
+
+    <template #headerActions>
+      <button
+        v-if="deletedCount > 0"
+        type="button"
+        class="md-btn md-btn-sm md-btn-outlined md-state"
+        @click="restoreAll"
       >
-        <div class="flex min-w-0 items-center gap-2.5">
-          <div
-            class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]"
-          >
-            <LuImage class="h-4 w-4" />
-          </div>
-          <div class="min-w-0">
-            <h2 class="truncate text-sm font-semibold">
-              漫画页面管理与体积瘦身 · {{ entry.file_name }}
-            </h2>
-            <p class="truncate text-[11px] text-[var(--ctp-subtext0)]">
-              共 {{ pages.length }} 页 · 保留 {{ keptCount }} 页
-              <span v-if="deletedCount > 0" class="text-rose-500"> · 待删除 {{ deletedCount }} 页</span>
-              · 当前体积 {{ formatBytes(totalSizeBytes) }}
-              <span v-if="isCbzEditable" class="ml-1 opacity-80">· 支持拖拽调序与点击放大预览</span>
-            </p>
-          </div>
-        </div>
+        <LuRotateCcw class="h-3.5 w-3.5" />
+        <span>恢复全部</span>
+      </button>
+      <button
+        type="button"
+        :disabled="saving || loading || !isCbzEditable"
+        class="md-btn md-btn-sm md-btn-filled md-state"
+        @click="handleSave"
+      >
+        <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
+        <LuSave v-else class="h-3.5 w-3.5" />
+        <span>保存重写 CBZ</span>
+      </button>
+    </template>
 
-        <div class="flex items-center gap-2">
-          <button
-            v-if="deletedCount > 0"
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-3 py-1.5 text-xs font-medium hover:bg-[var(--ctp-surface0)]/70"
-            @click="restoreAll"
-          >
-            <LuRotateCcw class="h-3.5 w-3.5" />
-            恢复全部
-          </button>
-          <button
-            type="button"
-            :disabled="saving || loading || !isCbzEditable"
-            class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-3.5 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] shadow-xs transition hover:opacity-90 disabled:opacity-50"
-            @click="handleSave"
-          >
-            <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-            <LuSave v-else class="h-3.5 w-3.5" />
-            保存重写 CBZ
-          </button>
-          <button
-            type="button"
-            title="关闭 (Esc)"
-            class="rounded-xl p-1.5 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]"
-            @click="emit('close')"
-          >
-            <LuX class="h-4 w-4" />
-          </button>
-        </div>
-      </header>
-
+    <div v-if="entry" class="space-y-4 py-1">
       <!-- Optimize / Re-encode Bar -->
       <div
-        class="flex flex-wrap items-center justify-between gap-3 border-b border-[var(--ctp-surface0)]/75 bg-[var(--ctp-panel)]/70 px-4 py-2.5 text-xs"
+        class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs"
       >
         <div class="flex flex-wrap items-center gap-3">
-          <span class="inline-flex items-center gap-1 font-medium text-[var(--ctp-subtext0)]">
-            <LuSparkles class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+          <span class="inline-flex items-center gap-1 font-medium text-[var(--md-sys-color-on-surface-variant)]">
+            <LuSparkles class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
             保存时优化：
           </span>
           <div class="flex items-center gap-1.5">
-            <span class="text-[var(--ctp-subtext0)]">图像编码</span>
+            <span class="text-[var(--md-sys-color-on-surface-variant)]">图像编码</span>
             <div class="w-56">
               <AppSelect
                 :model-value="reencode"
@@ -369,271 +354,284 @@ async function handleSave(): Promise<void> {
             </div>
           </div>
           <div v-if="reencode === 'jpeg'" class="flex items-center gap-2">
-            <span class="text-[var(--ctp-subtext0)]">质量 {{ jpegQuality }}</span>
+            <span class="text-[var(--md-sys-color-on-surface-variant)]">质量 {{ jpegQuality }}</span>
             <div class="w-28">
               <AppSlider v-model="jpegQuality" :min="60" :max="95" :step="2" aria-label="JPEG 质量" />
             </div>
           </div>
           <div class="flex items-center gap-1.5">
-            <span class="text-[var(--ctp-subtext0)]">最大宽度</span>
+            <span class="text-[var(--md-sys-color-on-surface-variant)]">最大宽度</span>
             <div class="w-40">
               <AppSelect v-model="maxWidthStr" :options="maxWidthOptions" variant="compact" />
             </div>
           </div>
         </div>
 
-        <div class="flex items-center gap-2 text-[11px] text-[var(--ctp-subtext0)]">
-          <span v-if="!isCbzEditable" class="text-amber-500">当前为 {{ format.toUpperCase() }}（仅预览，重写支持 CBZ/ZIP）</span>
-          <span v-else-if="statusMsg" class="inline-flex items-center gap-1 font-medium text-emerald-500">
+        <div class="flex items-center gap-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+          <span v-if="!isCbzEditable" class="text-[var(--md-sys-color-warning)]">
+            当前为 {{ format.toUpperCase() }}（仅预览，重写支持 CBZ/ZIP）
+          </span>
+          <span
+            v-else-if="statusMsg"
+            class="inline-flex items-center gap-1 font-medium text-[var(--md-sys-color-success)]"
+          >
             <LuCheck class="h-3.5 w-3.5" /> {{ statusMsg }}
           </span>
-          <span v-else-if="errorMsg" class="font-medium text-rose-500">{{ errorMsg }}</span>
+          <span v-else-if="errorMsg" class="font-medium text-[var(--md-sys-color-error)]">{{ errorMsg }}</span>
           <span v-else>保存时自动剔除 __MACOSX 垃圾、补零重命名并写入 ComicInfo.xml &lt;Pages&gt;</span>
         </div>
       </div>
 
       <!-- Page Grid -->
-      <div class="min-h-0 flex-1 overflow-y-auto p-4">
-        <div v-if="loading" class="flex h-64 items-center justify-center gap-2 text-sm text-[var(--ctp-subtext0)]">
-          <LuLoader2 class="h-5 w-5 animate-spin" />
-          正在读取漫画页面与尺寸信息…
-        </div>
+      <div v-if="loading" class="flex h-64 items-center justify-center gap-2 text-sm text-[var(--md-sys-color-on-surface-variant)]">
+        <LuLoader2 class="h-5 w-5 animate-spin text-[var(--md-sys-color-primary)]" />
+        <span>正在读取漫画页面与尺寸信息…</span>
+      </div>
 
-        <template v-else>
+      <template v-else>
+        <div
+          class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+        >
           <div
-            class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+            v-for="(page, idx) in visiblePages"
+            :key="page.entry_name"
+            :draggable="isCbzEditable"
+            class="group relative flex flex-col overflow-hidden rounded-2xl border transition"
+            :class="[
+              dragOverIdx === idx && dragFromIdx !== idx
+                ? 'scale-[1.01] border-[var(--md-sys-color-primary)] ring-2 ring-[var(--md-sys-color-primary)]'
+                : page.deleted
+                  ? 'border-[var(--md-sys-color-error)]/55 bg-[var(--md-sys-color-error-container)]/30 opacity-45'
+                  : page.page_type === 'FrontCover'
+                    ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface)] shadow-sm'
+                    : 'border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] hover:border-[var(--md-sys-color-primary)]/60',
+            ]"
+            @dragstart="handleDragStart(idx, $event)"
+            @dragover="handleDragOver(idx, $event)"
+            @drop.prevent="handleDrop(idx)"
+            @dragend="handleDragEnd"
           >
+            <!-- Thumbnail -->
             <div
-              v-for="(page, idx) in visiblePages"
-              :key="page.entry_name"
-              :draggable="isCbzEditable"
-              class="group relative flex flex-col overflow-hidden rounded-2xl border transition"
-              :class="[
-                dragOverIdx === idx && dragFromIdx !== idx
-                  ? 'ring-2 ring-[var(--ctp-accent)] border-[var(--ctp-accent)] scale-[1.01]'
-                  : page.deleted
-                    ? 'border-rose-500/50 bg-rose-500/5 opacity-45'
-                    : page.page_type === 'FrontCover'
-                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-panel)] shadow-sm'
-                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] hover:border-[var(--ctp-accent)]/60',
-              ]"
-              @dragstart="handleDragStart(idx, $event)"
-              @dragover="handleDragOver(idx, $event)"
-              @drop.prevent="handleDrop(idx)"
-              @dragend="handleDragEnd"
+              class="relative aspect-[3/4] w-full cursor-zoom-in overflow-hidden bg-[var(--md-sys-color-surface-container)]"
+              @click="lightboxIdx = idx"
             >
-              <!-- Thumbnail -->
               <div
-                class="relative aspect-[3/4] w-full cursor-zoom-in overflow-hidden bg-[var(--ctp-canvas)]"
-                @click="lightboxIdx = idx"
-              >
-                <div
-                  v-if="!loadedEntries.has(page.entry_name)"
-                  class="absolute inset-0 animate-pulse bg-[var(--ctp-surface0)]/55"
-                />
-                <img
-                  :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, page.entry_name, 320, imgVersion)"
-                  :alt="page.entry_name"
-                  loading="lazy"
-                  class="h-full w-full object-contain transition-opacity duration-200"
-                  :class="loadedEntries.has(page.entry_name) ? 'opacity-100' : 'opacity-0'"
-                  @load="markLoaded(page.entry_name)"
-                  @error="markLoaded(page.entry_name)"
-                />
-                <!-- Top badges -->
-                <div class="absolute top-1.5 left-1.5 flex flex-wrap gap-1">
-                  <span class="inline-flex items-center gap-0.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                    <LuGripVertical v-if="isCbzEditable" class="h-2.5 w-2.5 opacity-75" />
-                    #{{ idx + 1 }}
-                  </span>
-                  <span
-                    v-if="page.page_type === 'FrontCover'"
-                    class="rounded-md bg-[var(--ctp-accent)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--ctp-on-accent)]"
-                  >
-                    封面
-                  </span>
-                  <span
-                    v-if="page.double_page"
-                    class="rounded-md bg-indigo-600/90 px-1.5 py-0.5 text-[10px] font-semibold text-white"
-                  >
-                    双页跨页
-                  </span>
-                </div>
-                <span
-                  class="absolute right-1.5 bottom-1.5 rounded-lg bg-black/65 p-1 text-white opacity-0 transition group-hover:opacity-100"
-                  title="放大预览"
-                >
-                  <LuMaximize2 class="h-3 w-3" />
+                v-if="!loadedEntries.has(page.entry_name)"
+                class="absolute inset-0 animate-pulse bg-[var(--md-sys-color-surface-container-high)]"
+              />
+              <img
+                :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, page.entry_name, 320, imgVersion)"
+                :alt="page.entry_name"
+                loading="lazy"
+                class="h-full w-full object-contain transition-opacity duration-200"
+                :class="loadedEntries.has(page.entry_name) ? 'opacity-100' : 'opacity-0'"
+                @load="markLoaded(page.entry_name)"
+                @error="markLoaded(page.entry_name)"
+              />
+              <!-- Top badges -->
+              <div class="absolute top-1.5 left-1.5 flex flex-wrap gap-1">
+                <span class="inline-flex items-center gap-0.5 rounded-md bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  <LuGripVertical v-if="isCbzEditable" class="h-2.5 w-2.5 opacity-75" />
+                  #{{ idx + 1 }}
                 </span>
                 <span
-                  v-if="page.deleted"
-                  class="absolute inset-0 flex items-center justify-center bg-black/50 text-xs font-semibold text-rose-300"
+                  v-if="page.page_type === 'FrontCover'"
+                  class="rounded-md bg-[var(--md-sys-color-primary)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary)]"
                 >
-                  待删除
+                  封面
+                </span>
+                <span
+                  v-if="page.double_page"
+                  class="rounded-md bg-[var(--md-sys-color-tertiary-container)] px-1.5 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-tertiary-container)]"
+                >
+                  双页跨页
                 </span>
               </div>
+              <span
+                class="absolute right-1.5 bottom-1.5 rounded-lg bg-black/65 p-1 text-white opacity-0 transition group-hover:opacity-100"
+                title="放大预览"
+              >
+                <LuMaximize2 class="h-3 w-3" />
+              </span>
+              <span
+                v-if="page.deleted"
+                class="absolute inset-0 flex items-center justify-center bg-black/55 text-xs font-semibold text-[var(--md-sys-color-error)]"
+              >
+                待删除
+              </span>
+            </div>
 
-              <!-- Meta + Actions -->
-              <div class="flex flex-col gap-1.5 p-2">
-                <div class="truncate text-[11px] font-medium" :title="page.entry_name">
-                  {{ page.entry_name.split('/').pop() }}
+            <!-- Meta + Actions -->
+            <div class="flex flex-col gap-1.5 p-2">
+              <div class="truncate text-[11px] font-medium" :title="page.entry_name">
+                {{ page.entry_name.split('/').pop() }}
+              </div>
+              <div class="flex items-center justify-between text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+                <span>{{ page.width && page.height ? `${page.width}×${page.height}` : '—' }}</span>
+                <span>{{ formatBytes(page.file_size) }}</span>
+              </div>
+              <div v-if="isCbzEditable" class="mt-0.5 flex items-center justify-between gap-1">
+                <div class="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    title="前移一页"
+                    :disabled="idx === 0"
+                    class="rounded-lg p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] disabled:opacity-30"
+                    @click="movePage(idx, -1)"
+                  >
+                    <LuArrowLeft class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    title="后移一页"
+                    :disabled="idx === pages.length - 1"
+                    class="rounded-lg p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] disabled:opacity-30"
+                    @click="movePage(idx, 1)"
+                  >
+                    <LuArrowRight class="h-3.5 w-3.5" />
+                  </button>
                 </div>
-                <div class="flex items-center justify-between text-[10px] text-[var(--ctp-subtext0)]">
-                  <span>{{ page.width && page.height ? `${page.width}×${page.height}` : '—' }}</span>
-                  <span>{{ formatBytes(page.file_size) }}</span>
-                </div>
-                <div v-if="isCbzEditable" class="mt-0.5 flex items-center justify-between gap-1">
-                  <div class="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      title="前移一页"
-                      :disabled="idx === 0"
-                      class="rounded-lg p-1 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)] disabled:opacity-30"
-                      @click="movePage(idx, -1)"
-                    >
-                      <LuArrowLeft class="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      title="后移一页"
-                      :disabled="idx === pages.length - 1"
-                      class="rounded-lg p-1 text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)] disabled:opacity-30"
-                      @click="movePage(idx, 1)"
-                    >
-                      <LuArrowRight class="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                  <div class="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      title="设为封面并移至首页"
-                      class="rounded-lg p-1 hover:bg-[var(--ctp-surface0)]"
-                      :class="page.page_type === 'FrontCover' ? 'text-[var(--ctp-accent)]' : 'text-[var(--ctp-subtext0)]'"
-                      @click="setAsCover(idx)"
-                    >
-                      <LuBookOpen class="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      title="标记/取消双页跨页"
-                      class="rounded-lg p-1 hover:bg-[var(--ctp-surface0)]"
-                      :class="page.double_page ? 'text-indigo-500' : 'text-[var(--ctp-subtext0)]'"
-                      @click="toggleDoublePage(idx)"
-                    >
-                      <LuColumns2 class="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      :title="page.deleted ? '恢复此页' : '删除此页（如广告页/空白页）'"
-                      class="rounded-lg p-1 hover:bg-rose-500/15"
-                      :class="page.deleted ? 'text-emerald-500' : 'text-rose-500'"
-                      @click="toggleDelete(idx)"
-                    >
-                      <LuRotateCcw v-if="page.deleted" class="h-3.5 w-3.5" />
-                      <LuTrash2 v-else class="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+                <div class="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    title="设为封面并移至首页"
+                    class="rounded-lg p-1 hover:bg-[var(--md-sys-color-surface-container-high)]"
+                    :class="page.page_type === 'FrontCover' ? 'text-[var(--md-sys-color-primary)]' : 'text-[var(--md-sys-color-on-surface-variant)]'"
+                    @click="setAsCover(idx)"
+                  >
+                    <LuBookOpen class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    title="标记/取消双页跨页"
+                    class="rounded-lg p-1 hover:bg-[var(--md-sys-color-surface-container-high)]"
+                    :class="page.double_page ? 'text-[var(--md-sys-color-primary)]' : 'text-[var(--md-sys-color-on-surface-variant)]'"
+                    @click="toggleDoublePage(idx)"
+                  >
+                    <LuColumns2 class="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    :title="page.deleted ? '恢复此页' : '删除此页（如广告页/空白页）'"
+                    class="rounded-lg p-1 hover:bg-[var(--md-sys-color-error-container)]/50"
+                    :class="page.deleted ? 'text-[var(--md-sys-color-success)]' : 'text-[var(--md-sys-color-error)]'"
+                    @click="toggleDelete(idx)"
+                  >
+                    <LuRotateCcw v-if="page.deleted" class="h-3.5 w-3.5" />
+                    <LuTrash2 v-else class="h-3.5 w-3.5" />
+                  </button>
                 </div>
               </div>
             </div>
           </div>
+        </div>
 
-          <div v-if="hasMorePages" class="mt-6 flex justify-center gap-2">
-            <button
-              type="button"
-              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-4 py-2 text-xs font-medium hover:border-[var(--ctp-accent)]"
-              @click="visibleLimit += PAGE_BATCH_SIZE"
-            >
-              加载更多页面（剩余 {{ pages.length - visibleLimit }} 页）
-            </button>
-            <button
-              type="button"
-              class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-panel)] px-4 py-2 text-xs font-medium text-[var(--ctp-subtext0)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-              @click="visibleLimit = pages.length"
-            >
-              展开全部 {{ pages.length }} 页
-            </button>
-          </div>
-        </template>
-      </div>
+        <div v-if="hasMorePages" class="mt-6 flex justify-center gap-2">
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
+            @click="visibleLimit += PAGE_BATCH_SIZE"
+          >
+            加载更多页面（剩余 {{ pages.length - visibleLimit }} 页）
+          </button>
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-text md-state"
+            @click="visibleLimit = pages.length"
+          >
+            展开全部 {{ pages.length }} 页
+          </button>
+        </div>
+      </template>
 
       <!-- High-res Lightbox Preview -->
-      <div
-        v-if="lightboxIdx !== null && lightboxPage"
-        class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-black/88 text-white backdrop-blur-xs"
-        @click.self="lightboxIdx = null"
-      >
-        <div class="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">
-          <div class="flex items-center gap-2">
-            <span class="rounded-md bg-white/15 px-2 py-0.5 font-semibold">
-              #{{ lightboxIdx + 1 }} / {{ pages.length }}
-            </span>
-            <span class="truncate font-medium">{{ lightboxPage.entry_name }}</span>
-            <span class="text-white/60">
-              {{ lightboxPage.width && lightboxPage.height ? `${lightboxPage.width}×${lightboxPage.height}` : '' }}
-              · {{ formatBytes(lightboxPage.file_size) }}
-            </span>
+      <Teleport to="body">
+        <div
+          v-if="lightboxIdx !== null && lightboxPage"
+          class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-black/88 text-white backdrop-blur-xs"
+          @click.self="lightboxIdx = null"
+        >
+          <div class="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">
+            <div class="flex items-center gap-2">
+              <span class="rounded-md bg-white/15 px-2 py-0.5 font-semibold">
+                #{{ lightboxIdx + 1 }} / {{ pages.length }}
+              </span>
+              <span class="truncate font-medium">{{ lightboxPage.entry_name }}</span>
+              <span class="text-white/60">
+                {{ lightboxPage.width && lightboxPage.height ? `${lightboxPage.width}×${lightboxPage.height}` : '' }}
+                · {{ formatBytes(lightboxPage.file_size) }}
+              </span>
+            </div>
+            <div class="flex items-center gap-2">
+              <template v-if="isCbzEditable">
+                <button
+                  type="button"
+                  class="rounded-full bg-white/10 px-3 py-1 hover:bg-white/20"
+                  @click="setAsCover(lightboxIdx)"
+                >
+                  设为封面
+                </button>
+                <button
+                  type="button"
+                  class="rounded-full px-3 py-1"
+                  :class="
+                    lightboxPage.double_page
+                      ? 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
+                      : 'bg-white/10 hover:bg-white/20'
+                  "
+                  @click="toggleDoublePage(lightboxIdx)"
+                >
+                  {{ lightboxPage.double_page ? '已标双页' : '标为双页' }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-full px-3 py-1"
+                  :class="
+                    lightboxPage.deleted
+                      ? 'bg-[var(--md-sys-color-success)] text-black'
+                      : 'bg-[var(--md-sys-color-error)] text-[var(--md-sys-color-on-error)]'
+                  "
+                  @click="toggleDelete(lightboxIdx)"
+                >
+                  {{ lightboxPage.deleted ? '恢复此页' : '删除此页' }}
+                </button>
+              </template>
+              <button
+                type="button"
+                class="rounded-full bg-white/10 p-1.5 hover:bg-white/20"
+                @click="lightboxIdx = null"
+              >
+                <LuX class="h-4 w-4" />
+              </button>
+            </div>
           </div>
-          <div class="flex items-center gap-2">
-            <template v-if="isCbzEditable">
-              <button
-                type="button"
-                class="rounded-lg bg-white/10 px-2.5 py-1 hover:bg-white/20"
-                @click="setAsCover(lightboxIdx)"
-              >
-                设为封面
-              </button>
-              <button
-                type="button"
-                class="rounded-lg px-2.5 py-1"
-                :class="lightboxPage.double_page ? 'bg-indigo-500/80' : 'bg-white/10 hover:bg-white/20'"
-                @click="toggleDoublePage(lightboxIdx)"
-              >
-                {{ lightboxPage.double_page ? '已标双页' : '标为双页' }}
-              </button>
-              <button
-                type="button"
-                class="rounded-lg px-2.5 py-1"
-                :class="lightboxPage.deleted ? 'bg-emerald-600/80' : 'bg-rose-600/80 hover:bg-rose-600'"
-                @click="toggleDelete(lightboxIdx)"
-              >
-                {{ lightboxPage.deleted ? '恢复此页' : '删除此页' }}
-              </button>
-            </template>
+
+          <div class="relative flex min-h-0 flex-1 items-center justify-center p-4" @click.self="lightboxIdx = null">
             <button
+              v-if="lightboxIdx > 0"
               type="button"
-              class="rounded-lg bg-white/10 p-1.5 hover:bg-white/20"
-              @click="lightboxIdx = null"
+              class="absolute left-4 rounded-full bg-black/60 p-2.5 text-white hover:bg-black/85"
+              @click="lightboxIdx -= 1"
             >
-              <LuX class="h-4 w-4" />
+              <LuChevronLeft class="h-5 w-5" />
+            </button>
+            <img
+              :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, lightboxPage.entry_name, 1400, imgVersion)"
+              :alt="lightboxPage.entry_name"
+              class="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+            />
+            <button
+              v-if="lightboxIdx < pages.length - 1"
+              type="button"
+              class="absolute right-4 rounded-full bg-black/60 p-2.5 text-white hover:bg-black/85"
+              @click="lightboxIdx += 1"
+            >
+              <LuChevronRight class="h-5 w-5" />
             </button>
           </div>
         </div>
-
-        <div class="relative flex min-h-0 flex-1 items-center justify-center p-4" @click.self="lightboxIdx = null">
-          <button
-            v-if="lightboxIdx > 0"
-            type="button"
-            class="absolute left-4 rounded-full bg-black/60 p-2.5 text-white hover:bg-black/85"
-            @click="lightboxIdx -= 1"
-          >
-            <LuChevronLeft class="h-5 w-5" />
-          </button>
-          <img
-            :src="toolApi.comicPageImageUrl(entry.root_id, entry.rel_path, lightboxPage.entry_name, 1400, imgVersion)"
-            :alt="lightboxPage.entry_name"
-            class="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
-          />
-          <button
-            v-if="lightboxIdx < pages.length - 1"
-            type="button"
-            class="absolute right-4 rounded-full bg-black/60 p-2.5 text-white hover:bg-black/85"
-            @click="lightboxIdx += 1"
-          >
-            <LuChevronRight class="h-5 w-5" />
-          </button>
-        </div>
-      </div>
+      </Teleport>
     </div>
-  </Teleport>
+  </MdDialog>
 </template>

@@ -2,12 +2,9 @@
 import { computed, ref, watch } from 'vue'
 import {
   LuArrowDown,
-  LuArrowLeft,
   LuArrowUp,
   LuBan,
   LuCheck,
-  LuChevronDown,
-  LuChevronUp,
   LuImage,
   LuKey,
   LuLayers,
@@ -17,6 +14,7 @@ import {
   LuSparkles,
   LuZap,
 } from 'vue-icons-plus/lu'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { resolveScraperCoverUrl, toolApi } from '../../api'
 import { mergeScrapedClientSide } from '../../merger'
 import type {
@@ -35,28 +33,21 @@ import {
   buildDefaultQueryFromDetail,
   inferTargetKindFromDetail,
   type ApplyFillMode,
-  type ScrapedFieldKey,
 } from '../inspector/useMetadataForm'
 import type { CandidatePreviewState } from './CandidateDetailPreviewPane.vue'
 
-const props = withDefaults(
-  defineProps<{
-    detail: MediaFileDetail | null
-    autoSearchTrigger: number
-    settings?: PublicSettingsDto | null
-    externalKeyword?: string
-    externalArtist?: string
-    selectedPreviewKey?: string | null
-    allowFillLeft?: boolean
-  }>(),
-  {
-    allowFillLeft: true,
-  },
-)
+const MAX_DETAIL_CACHE = 128
+
+const props = defineProps<{
+  detail: MediaFileDetail | null
+  autoSearchTrigger: number
+  settings?: PublicSettingsDto | null
+  externalKeyword?: string
+  externalArtist?: string
+  selectedPreviewKey?: string | null
+}>()
 
 const emit = defineEmits<{
-  fillAll: [meta: ScrapedMetadata, mode: ApplyFillMode]
-  fillField: [field: ScrapedFieldKey, meta: ScrapedMetadata]
   directApply: [meta: ScrapedMetadata, mode: ApplyFillMode]
   selectPreview: [preview: CandidatePreviewState | null]
   openSettings: []
@@ -85,17 +76,41 @@ const candidates = ref<ScrapeCandidate[]>([])
 const serverMergedResult = ref<MergedScrapedResult | null>(null)
 const selectedByProvider = ref<Record<string, ScrapeCandidate>>({})
 const detailsByProvider = ref<Record<string, ScrapedMetadata>>({})
-const mergedExpanded = ref(false)
 const waterfallExpanded = ref(false)
-const expandedKey = ref<string | null>(null)
 const selectedKey = ref<string | null>(null)
 const loadingDetailKey = ref<string | null>(null)
-const detailCache = ref<Map<string, ScrapedMetadata>>(new Map())
+const detailCache = new Map<string, ScrapedMetadata>()
 const brokenCoverUrls = ref<Set<string>>(new Set())
 const recentFlash = ref<string | null>(null)
 
 let hydratingFromDetail = false
 let searchRequestSeq = 0
+
+function getCachedDetail(key: string): ScrapedMetadata | undefined {
+  const hit = detailCache.get(key)
+  if (!hit) return undefined
+  // Refresh LRU order in place
+  detailCache.delete(key)
+  detailCache.set(key, hit)
+  return hit
+}
+
+function setCachedDetail(key: string, value: ScrapedMetadata): void {
+  if (detailCache.has(key)) {
+    detailCache.delete(key)
+  } else if (detailCache.size >= MAX_DETAIL_CACHE) {
+    const oldestKey = detailCache.keys().next().value
+    if (oldestKey !== undefined) {
+      detailCache.delete(oldestKey)
+    }
+  }
+  detailCache.set(key, value)
+}
+
+const fillModeOptions = [
+  { value: 'overwrite' as const, label: '覆盖' },
+  { value: 'fill_missing' as const, label: '仅补空' },
+]
 
 const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>(() => {
   const kind = props.detail?.entry.media_kind
@@ -176,35 +191,6 @@ function markCoverBroken(url: string | null | undefined): void {
   brokenCoverUrls.value = next
 }
 
-function mergedSourceLabelFor(fieldKey: ScrapedFieldKey): string | null {
-  const map = mergedFieldSources.value
-  const lookupKeys: Record<ScrapedFieldKey, string[]> = {
-    cover: ['cover_url'],
-    title: ['title'],
-    original_title: ['original_title'],
-    creators: ['creators'],
-    directors: ['illustrators_or_directors'],
-    cast: ['cast'],
-    series_or_album: ['series_or_album'],
-    publisher_or_studio: ['publisher_or_studio'],
-    year: ['published_date', 'year'],
-    isbn: ['isbn'],
-    rating: ['rating'],
-    language: ['language'],
-    track_or_episode: ['track_or_episode_number'],
-    disc_or_season: ['disc_or_season_number'],
-    genres: ['genres'],
-    tags: ['tags', 'genres'],
-    summary: ['summary'],
-    lyrics: ['synced_lyrics', 'plain_lyrics'],
-  }
-  for (const k of lookupKeys[fieldKey] ?? []) {
-    const badge = map[k]
-    if (badge?.provider_name) return badge.provider_name
-  }
-  return null
-}
-
 function buildLightMetadata(c: ScrapeCandidate): ScrapedMetadata {
   return {
     provider_id: c.provider_id,
@@ -251,7 +237,7 @@ function selectMergedPreview(): void {
 async function selectCandidatePreview(c: ScrapeCandidate): Promise<void> {
   const key = candKey(c)
   selectedKey.value = key
-  const cached = detailCache.value.get(key)
+  const cached = getCachedDetail(key)
   if (cached) {
     emit('selectPreview', {
       key,
@@ -305,13 +291,14 @@ watch(fillMode, () => {
   }
   const hit = candidates.value.find((c) => candKey(c) === selectedKey.value)
   if (hit) {
-    const cached = detailCache.value.get(candKey(hit))
+    const key = candKey(hit)
+    const cached = getCachedDetail(key)
     emit('selectPreview', {
-      key: candKey(hit),
+      key,
       isMerged: false,
       sourceLabel: hit.provider_name,
       meta: cached ?? buildLightMetadata(hit),
-      loading: loadingDetailKey.value === candKey(hit),
+      loading: loadingDetailKey.value === key,
       fieldSources: null,
       fillMode: fillMode.value,
     })
@@ -375,7 +362,6 @@ async function loadProvidersForTarget(
   try {
     const list = await toolApi.listProviders(target, domain)
     providers.value = list
-    // Keep currently enabled ids in provider priority order if valid, else select all configured
     const configuredIds = list.filter((p) => p.configured).map((p) => p.id)
     const retained = configuredIds.filter((id) => enabledProviderIds.value.includes(id))
     enabledProviderIds.value = retained.length > 0 ? retained : configuredIds
@@ -489,9 +475,7 @@ async function runSearch(): Promise<void> {
   selectedByProvider.value = {}
   detailsByProvider.value = {}
   ignoredProviderIds.value = new Set()
-  mergedExpanded.value = false
   waterfallExpanded.value = false
-  expandedKey.value = null
   selectedKey.value = null
   activeSourceFilter.value = 'all'
   emit('selectPreview', null)
@@ -522,15 +506,13 @@ async function runSearch(): Promise<void> {
     candidates.value = resp.candidates
     serverMergedResult.value = resp.merged ?? null
 
-    const nextCache = new Map(detailCache.value)
     const nextDetails: Record<string, ScrapedMetadata> = {}
     for (const [pid, detail] of Object.entries(resp.details_by_provider ?? {})) {
       if (detail) {
         nextDetails[pid] = detail
-        nextCache.set(`${pid}::${detail.external_id}`, detail)
+        setCachedDetail(`${pid}::${detail.external_id}`, detail)
       }
     }
-    detailCache.value = nextCache
     detailsByProvider.value = nextDetails
 
     const nextSelected: Record<string, ScrapeCandidate> = {}
@@ -657,21 +639,16 @@ function buildCandidateFallbackMeta(c: ScrapeCandidate): ScrapedMetadata {
 
 async function resolveCandidateDetail(c: ScrapeCandidate): Promise<ScrapedMetadata | null> {
   const key = candKey(c)
-  const cached = detailCache.value.get(key)
+  const cached = getCachedDetail(key)
   if (cached) return cached
   loadingDetailKey.value = key
   try {
     const meta = await toolApi.getScraperDetail(c.provider_id, c.external_id, c.target)
-    const next = new Map(detailCache.value)
-    next.set(key, meta)
-    detailCache.value = next
+    setCachedDetail(key, meta)
     return meta
   } catch {
-    // Gracefully fall back to search-stage candidate metadata when the detail page returns 404/unavailable
     const fallback = buildCandidateFallbackMeta(c)
-    const next = new Map(detailCache.value)
-    next.set(key, fallback)
-    detailCache.value = next
+    setCachedDetail(key, fallback)
     return fallback
   } finally {
     if (loadingDetailKey.value === key) {
@@ -680,53 +657,14 @@ async function resolveCandidateDetail(c: ScrapeCandidate): Promise<ScrapedMetada
   }
 }
 
-async function handleToggleExpand(c: ScrapeCandidate): Promise<void> {
-  const key = candKey(c)
-  if (expandedKey.value === key) {
-    expandedKey.value = null
-    return
-  }
-  expandedKey.value = key
-  await selectCandidatePreview(c)
-}
-
-async function handleFillCandidateAll(c: ScrapeCandidate): Promise<void> {
-  const meta = await resolveCandidateDetail(c)
-  if (!meta) return
-  emit('fillAll', meta, fillMode.value)
-  flashFeedback(`已整条回填「${meta.title || c.title}」`)
-}
-
 async function handleDirectApplyCandidate(c: ScrapeCandidate): Promise<void> {
   const meta = await resolveCandidateDetail(c)
   if (!meta) return
   emit('directApply', meta, fillMode.value)
 }
 
-function handleQuickFillFromCandidate(c: ScrapeCandidate, field: ScrapedFieldKey): void {
-  const cached = detailCache.value.get(candKey(c))
-  if (cached) {
-    emit('fillField', field, cached)
-    flashFeedback('已填入字段')
-    return
-  }
-  emit('fillField', field, buildLightMetadata(c))
-  flashFeedback('已填入字段')
-}
-
-function handleFillDetailField(field: ScrapedFieldKey, meta: ScrapedMetadata, label: string): void {
-  emit('fillField', field, meta)
-  flashFeedback(`已填入${label}`)
-}
-
-function handleFillMergedAll(): void {
-  if (!mergedMeta.value) return
-  emit('fillAll', mergedMeta.value, fillMode.value)
-  flashFeedback('已将多源聚合结果回填到表单')
-}
-
 watch(
-  () => props.detail?.entry.rel_path,
+  () => (props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''),
   async () => {
     const d = props.detail
     searchRequestSeq += 1
@@ -736,7 +674,6 @@ watch(
       selectedByProvider.value = {}
       detailsByProvider.value = {}
       ignoredProviderIds.value = new Set()
-      mergedExpanded.value = false
       waterfallExpanded.value = false
       selectedKey.value = null
       emit('selectPreview', null)
@@ -757,9 +694,7 @@ watch(
     selectedByProvider.value = {}
     detailsByProvider.value = {}
     ignoredProviderIds.value = new Set()
-    mergedExpanded.value = false
     waterfallExpanded.value = false
-    expandedKey.value = null
     selectedKey.value = null
     searchError.value = null
     emit('selectPreview', null)
@@ -802,68 +737,26 @@ watch(
   },
 )
 
-interface ClickableFieldItem {
-  key: ScrapedFieldKey
-  label: string
-  value: string
-  multiline?: boolean
-}
-
-function extractClickableFields(meta: ScrapedMetadata): ClickableFieldItem[] {
-  const list: ClickableFieldItem[] = []
-  if (meta.title) list.push({ key: 'title', label: '标题', value: meta.title })
-  if (meta.original_title && meta.original_title !== meta.title) {
-    list.push({ key: 'original_title', label: '原作名', value: meta.original_title })
-  }
-  if (meta.creators.length > 0) {
-    list.push({ key: 'creators', label: '作者/艺人', value: meta.creators.join(' / ') })
-  }
-  if (meta.illustrators_or_directors.length > 0) {
-    list.push({
-      key: 'directors',
-      label: '画师/导演',
-      value: meta.illustrators_or_directors.join(' / '),
-    })
-  }
-  if (meta.series_or_album) {
-    list.push({ key: 'series_or_album', label: '系列/专辑', value: meta.series_or_album })
-  }
-  if (meta.publisher_or_studio) {
-    list.push({ key: 'publisher_or_studio', label: '出版/制作', value: meta.publisher_or_studio })
-  }
-  if (meta.published_date || meta.year) {
-    list.push({ key: 'year', label: '年份/日期', value: meta.published_date || String(meta.year) })
-  }
-  if (meta.isbn) list.push({ key: 'isbn', label: 'ISBN', value: meta.isbn })
-  if (meta.rating) list.push({ key: 'rating', label: '评分', value: String(meta.rating) })
-  if (meta.language) list.push({ key: 'language', label: '语言', value: meta.language })
-  if (meta.disc_or_season_number) {
-    list.push({ key: 'disc_or_season', label: '季/碟号', value: String(meta.disc_or_season_number) })
-  }
-  if (meta.track_or_episode_number) {
-    list.push({ key: 'track_or_episode', label: '集/音轨', value: String(meta.track_or_episode_number) })
-  }
-  if (meta.cast.length > 0) {
-    list.push({ key: 'cast', label: '演员', value: meta.cast.slice(0, 8).join(' / ') })
-  }
-  if (meta.genres.length > 0) {
-    list.push({ key: 'genres', label: '流派', value: meta.genres.join(' / ') })
-  }
-  if (meta.tags.length > 0) {
-    list.push({ key: 'tags', label: '标签', value: meta.tags.slice(0, 12).join(' / ') })
-  }
-  if (meta.summary) {
-    list.push({ key: 'summary', label: '简介', value: meta.summary, multiline: true })
-  }
-  if (meta.synced_lyrics || meta.plain_lyrics) {
-    list.push({
-      key: 'lyrics',
-      label: meta.synced_lyrics ? '同步歌词(LRC)' : '纯文本歌词',
-      value: (meta.synced_lyrics || meta.plain_lyrics || '').slice(0, 180),
-      multiline: true,
-    })
-  }
-  return list
+function countPopulatedFields(meta: ScrapedMetadata): number {
+  let count = 0
+  if (meta.title) count += 1
+  if (meta.original_title && meta.original_title !== meta.title) count += 1
+  if (meta.creators.length > 0) count += 1
+  if (meta.illustrators_or_directors.length > 0) count += 1
+  if (meta.series_or_album) count += 1
+  if (meta.publisher_or_studio) count += 1
+  if (meta.published_date || meta.year) count += 1
+  if (meta.isbn) count += 1
+  if (meta.rating) count += 1
+  if (meta.language) count += 1
+  if (meta.disc_or_season_number) count += 1
+  if (meta.track_or_episode_number) count += 1
+  if (meta.cast.length > 0) count += 1
+  if (meta.genres.length > 0) count += 1
+  if (meta.tags.length > 0) count += 1
+  if (meta.summary) count += 1
+  if (meta.synced_lyrics || meta.plain_lyrics) count += 1
+  return count
 }
 
 defineExpose({
@@ -873,74 +766,37 @@ defineExpose({
 
 <template>
   <aside
-    class="flex h-full min-h-0 flex-col border-l border-[var(--ctp-surface0)]/75 bg-[var(--ctp-mantle)]/40"
+    class="flex h-full min-h-0 flex-col bg-[var(--md-sys-color-surface-container-low)]/60"
   >
     <!-- Header & Search Bar -->
-    <div class="shrink-0 space-y-2.5 border-b border-[var(--ctp-surface0)]/75 p-3">
+    <div class="shrink-0 space-y-2.5 border-b border-[var(--md-sys-color-outline-variant)]/50 p-3">
       <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--ctp-text)]">
-          <LuSparkles class="h-3.5 w-3.5 text-[var(--ctp-accent)]" />
+        <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
+          <LuSparkles class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
           <span>在线候选源</span>
           <span
             v-if="candidates.length > 0"
-            class="rounded-full bg-[var(--ctp-surface0)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext1)]"
+            class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
           >
             {{ candidates.length }}
           </span>
         </div>
 
-        <!-- Fill Mode Toggle -->
-        <div
-          class="flex items-center rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-0.5 text-[10px]"
-          title="控制整条回填到表单时的行为"
-        >
-          <button
-            type="button"
-            class="rounded-md px-2 py-0.5 font-semibold transition"
-            :class="
-              fillMode === 'overwrite'
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'
-            "
-            @click="fillMode = 'overwrite'"
-          >
-            覆盖
-          </button>
-          <button
-            type="button"
-            class="rounded-md px-2 py-0.5 font-semibold transition"
-            :class="
-              fillMode === 'fill_missing'
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                : 'text-[var(--ctp-subtext0)] hover:text-[var(--ctp-text)]'
-            "
-            @click="fillMode = 'fill_missing'"
-          >
-            仅补空
-          </button>
-        </div>
+        <!-- Fill Mode Segmented Switcher -->
+        <MdSegmentedButton
+          v-model="fillMode"
+          :options="fillModeOptions"
+          size="sm"
+        />
       </div>
 
       <!-- Target Sub-Kind Switcher (Music / Video / Comic) -->
-      <div
+      <MdSegmentedButton
         v-if="detail && targetTabs.length > 1"
-        class="flex flex-wrap items-center gap-1 rounded-xl bg-[var(--ctp-canvas)] p-0.5 border border-[var(--ctp-surface0)]/80"
-      >
-        <button
-          v-for="tab in targetTabs"
-          :key="tab.value"
-          type="button"
-          class="flex-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition"
-          :class="
-            targetKind === tab.value
-              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-              : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
-          "
-          @click="targetKind = tab.value"
-        >
-          {{ tab.label }}
-        </button>
-      </div>
+        v-model="targetKind"
+        :options="targetTabs"
+        size="sm"
+      />
 
       <!-- Search Inputs -->
       <div class="flex gap-1.5">
@@ -949,13 +805,13 @@ defineExpose({
           type="text"
           :disabled="!detail"
           placeholder="标题 / 关键词 / ID…"
-          class="h-8 min-w-0 flex-1 rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2.5 text-xs text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-50"
+          class="md-input h-8 min-w-0 flex-1 text-xs disabled:opacity-50"
           @keydown.enter.prevent="runSearch"
         />
         <button
           type="button"
           :disabled="!canSearch || searching"
-          class="inline-flex h-8 shrink-0 items-center gap-1 rounded-xl bg-[var(--ctp-accent)] px-3 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-45"
+          class="md-btn md-btn-sm md-btn-filled md-state shrink-0"
           @click="runSearch"
         >
           <LuLoader2 v-if="searching" class="h-3.5 w-3.5 animate-spin" />
@@ -970,14 +826,14 @@ defineExpose({
           v-model="artistOrAuthor"
           type="text"
           placeholder="作者 (可选)"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
         <input
           v-model="isbn"
           type="text"
           placeholder="ISBN (可选)"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
       </div>
@@ -987,21 +843,21 @@ defineExpose({
           v-model="artistOrAuthor"
           type="text"
           placeholder="歌手 (可选)"
-          class="col-span-2 h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
         <input
           v-model="albumOrSeries"
           type="text"
           placeholder="专辑 (可选)"
-          class="col-span-2 h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
         <input
           v-model="yearInput"
           type="text"
           placeholder="年份"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
       </div>
@@ -1014,21 +870,21 @@ defineExpose({
           v-model="seasonInput"
           type="text"
           placeholder="季 (S)"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
         <input
           v-model="episodeInput"
           type="text"
           placeholder="集 (E)"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
         <input
           v-model="yearInput"
           type="text"
           placeholder="年份"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
       </div>
@@ -1038,7 +894,7 @@ defineExpose({
           v-model="yearInput"
           type="text"
           placeholder="上映年份 (可选)"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
           @keydown.enter.prevent="runSearch"
         />
       </div>
@@ -1049,7 +905,7 @@ defineExpose({
           type="text"
           :disabled="!detail"
           placeholder="作者/画师（可选）"
-          class="col-span-2 h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-50"
+          class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px] disabled:opacity-50"
           @keydown.enter.prevent="runSearch"
         />
         <input
@@ -1057,7 +913,7 @@ defineExpose({
           type="text"
           :disabled="!detail"
           placeholder="年份"
-          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-50"
+          class="md-input h-7 !rounded-lg !px-2 text-[11px] disabled:opacity-50"
           @keydown.enter.prevent="runSearch"
         />
       </div>
@@ -1069,13 +925,13 @@ defineExpose({
           :key="p.id"
           type="button"
           :title="p.description"
-          class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition"
+          class="md-state inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition"
           :class="
             !p.configured
-              ? 'border-dashed border-amber-500/45 bg-amber-500/10 text-amber-400'
+              ? 'border-dashed border-[var(--md-sys-color-warning)]/55 bg-[var(--md-sys-color-warning-container)]/50 text-[var(--md-sys-color-on-warning-container)]'
               : enabledProviderIds.includes(p.id)
-                ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
-                : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext0)]'
+                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)]'
           "
           @click="toggleProvider(p)"
         >
@@ -1093,24 +949,24 @@ defineExpose({
       <!-- Flash Feedback -->
       <div
         v-if="recentFlash"
-        class="flex items-center gap-1.5 rounded-lg bg-emerald-500/15 px-2.5 py-1 text-[11px] font-medium text-emerald-500"
+        class="flex items-center gap-1.5 rounded-xl bg-[var(--md-sys-color-success-container)] px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-success-container)]"
       >
         <LuCheck class="h-3 w-3 shrink-0" />
         <span class="truncate">{{ recentFlash }}</span>
       </div>
       <div
         v-if="searchError"
-        class="rounded-lg bg-red-500/12 px-2.5 py-1.5 text-[11px] text-red-400"
+        class="rounded-xl bg-[var(--md-sys-color-error-container)] px-2.5 py-1.5 text-[11px] text-[var(--md-sys-color-on-error-container)]"
       >
         {{ searchError }}
       </div>
     </div>
 
     <!-- Candidate Body -->
-    <div class="min-h-0 flex-1 overflow-y-auto p-3 space-y-2.5">
+    <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3">
       <div
         v-if="!detail"
-        class="flex h-full flex-col items-center justify-center text-center text-xs text-[var(--ctp-subtext0)]"
+        class="flex h-full flex-col items-center justify-center text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         <LuSparkles class="mb-2 h-6 w-6 opacity-40" />
         <p>在左栏选择一个文件开始刮削</p>
@@ -1118,29 +974,25 @@ defineExpose({
 
       <div
         v-else-if="searching"
-        class="flex flex-col items-center justify-center gap-2 py-12 text-xs text-[var(--ctp-subtext0)]"
+        class="flex flex-col items-center justify-center gap-2 py-12 text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
-        <LuLoader2 class="h-5 w-5 animate-spin text-[var(--ctp-accent)]" />
+        <LuLoader2 class="h-5 w-5 animate-spin text-[var(--md-sys-color-primary)]" />
         <span>正在并行查询 {{ enabledProviderIds.length }} 个数据源…</span>
       </div>
 
       <div
         v-else-if="candidates.length === 0"
-        class="flex flex-col items-center justify-center gap-2 py-12 text-center text-xs text-[var(--ctp-subtext0)]"
+        class="flex flex-col items-center justify-center gap-2 py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         <LuSearch class="h-6 w-6 opacity-35" />
         <p>点击上方「搜索」拉取在线候选</p>
         <p class="max-w-[220px] text-[11px] opacity-75">
-          {{
-            allowFillLeft
-              ? '点候选的「← 整条填入」或点任意字段胶囊即可回填至中栏，确认后再保存'
-              : '点击「多源瀑布聚合结果」或任意候选卡片，在右侧预览编辑并保存'
-          }}
+          点击「多源瀑布聚合结果」或任意候选卡片，在右侧预览编辑并保存
         </p>
         <button
           v-if="configuredProviders.length > 0 && canSearch"
           type="button"
-          class="mt-1 inline-flex items-center gap-1 rounded-xl border border-[var(--ctp-accent)]/60 bg-[var(--ctp-accent-soft)] px-3 py-1.5 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
+          class="md-btn md-btn-sm md-btn-tonal md-state mt-1"
           @click="runSearch"
         >
           <LuSearch class="h-3 w-3" />
@@ -1152,12 +1004,12 @@ defineExpose({
         <!-- All-Muted Fallback Banner -->
         <div
           v-if="!mergedMeta && ignoredProviderIds.size > 0"
-          class="flex items-center justify-between gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400"
+          class="flex items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-warning-container)] px-3 py-2 text-[11px] text-[var(--md-sys-color-on-warning-container)]"
         >
           <span>已临时屏蔽全部命中源（{{ ignoredProviderIds.size }} 个）</span>
           <button
             type="button"
-            class="rounded-lg border border-amber-500/40 px-2 py-0.5 text-[10px] font-semibold hover:bg-amber-500/20"
+            class="md-state rounded-full border border-current/35 px-2 py-0.5 text-[10px] font-semibold"
             @click="clearIgnoredProviders"
           >
             恢复全部源
@@ -1170,76 +1022,60 @@ defineExpose({
           class="cursor-pointer rounded-2xl border p-2.5 transition"
           :class="
             selectedKey === '__merged__'
-              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/50 ring-1 ring-[var(--ctp-accent)]/50'
-              : 'border-[var(--ctp-accent)]/40 bg-[var(--ctp-accent-soft)]/30 hover:border-[var(--ctp-accent)]/75'
+              ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/50 ring-1 ring-[var(--md-sys-color-primary)]/45'
+              : 'border-[var(--md-sys-color-primary)]/40 bg-[var(--md-sys-color-primary-container)]/25 hover:border-[var(--md-sys-color-primary)]/75'
           "
           @click="selectMergedPreview"
         >
           <div class="flex items-center justify-between gap-2">
-            <div class="flex items-center gap-1.5 text-[11px] font-bold text-[var(--ctp-accent)]">
+            <div class="flex items-center gap-1.5 text-[11px] font-bold text-[var(--md-sys-color-primary)]">
               <LuLayers class="h-3.5 w-3.5" />
               <span>多源瀑布聚合结果</span>
               <span
-                class="rounded-full bg-[var(--ctp-canvas)]/80 px-1.5 py-0.5 text-[9px] font-medium text-[var(--ctp-subtext1)]"
+                class="rounded-full bg-[var(--md-sys-color-surface)]/85 px-1.5 py-0.5 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
               >
-                {{ extractClickableFields(mergedMeta).length }} 项字段
+                {{ countPopulatedFields(mergedMeta) }} 项字段
               </span>
             </div>
             <span
               v-if="selectedKey === '__merged__'"
-              class="rounded-full bg-[var(--ctp-accent)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--ctp-on-accent)]"
+              class="rounded-full bg-[var(--md-sys-color-primary)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-primary)]"
             >
               预览中
             </span>
           </div>
 
           <div class="mt-2 flex items-start gap-2.5">
-            <!-- Merged Cover Thumbnail (with broken-image fallback) -->
+            <!-- Merged Cover Thumbnail -->
             <button
               type="button"
-              class="group relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]"
-              :title="
-                allowFillLeft
-                  ? isCoverUsable(mergedMeta.cover_url)
-                    ? '点击仅填入这张封面'
-                    : '无可用封面'
-                  : '在右侧预览多源聚合结果'
-              "
-              :disabled="allowFillLeft && !isCoverUsable(mergedMeta.cover_url)"
-              @click.stop="
-                allowFillLeft
-                  ? handleFillDetailField('cover', mergedMeta, '封面')
-                  : selectMergedPreview()
-              "
+              class="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)]"
+              title="在右侧预览多源聚合结果"
+              @click.stop="selectMergedPreview()"
             >
               <img
                 v-if="isCoverUsable(mergedMeta.cover_url)"
                 :src="resolveScraperCoverUrl(mergedMeta.cover_url)"
                 alt=""
+                loading="lazy"
                 referrerpolicy="no-referrer"
                 class="h-full w-full object-cover"
                 @error="markCoverBroken(mergedMeta.cover_url)"
               />
               <div
                 v-else
-                class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--ctp-subtext0)]/55"
+                class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--md-sys-color-on-surface-variant)]/55"
               >
                 <LuImage class="h-3.5 w-3.5" />
                 <span class="text-[8px]">无图</span>
               </div>
-              <span
-                v-if="allowFillLeft && isCoverUsable(mergedMeta.cover_url)"
-                class="absolute inset-0 flex items-center justify-center bg-black/55 text-[9px] font-bold text-white opacity-0 transition group-hover:opacity-100"
-              >
-                用图
-              </span>
             </button>
 
             <div class="min-w-0 flex-1">
-              <div class="line-clamp-2 text-xs font-bold text-[var(--ctp-text)]">
+              <div class="line-clamp-2 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
                 {{ mergedMeta.title || '—' }}
               </div>
-              <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--ctp-subtext0)]">
+              <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                 <span v-if="mergedMeta.creators.length > 0" class="truncate">
                   {{ mergedMeta.creators.join(' / ') }}
                 </span>
@@ -1251,29 +1087,18 @@ defineExpose({
                 </span>
               </div>
 
-              <!-- Unified Action Bar (Matches Candidate Cards) -->
+              <!-- Action Bar -->
               <div class="mt-2 flex flex-wrap items-center gap-1.5">
                 <button
-                  v-if="allowFillLeft"
                   type="button"
-                  class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95"
-                  title="把多源聚合结果填入左侧表单（暂不落盘）"
-                  @click.stop="handleFillMergedAll"
-                >
-                  <LuArrowLeft class="h-3 w-3" />
-                  <span>整条填入</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-medium transition"
+                  class="md-state inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition"
                   :class="
                     waterfallExpanded || ignoredProviderIds.size > 0
-                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/60 text-[var(--ctp-accent)]'
-                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]'
+                      ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+                      : 'border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
                   "
                   title="调整各源优先级、临时屏蔽干扰源或切换单源聚合代表"
-                  @click.stop="waterfallExpanded = !waterfallExpanded; if (waterfallExpanded) mergedExpanded = false; selectMergedPreview()"
+                  @click.stop="waterfallExpanded = !waterfallExpanded; selectMergedPreview()"
                 >
                   <LuSlidersHorizontal class="h-3 w-3" />
                   <span>
@@ -1282,19 +1107,8 @@ defineExpose({
                 </button>
 
                 <button
-                  v-if="allowFillLeft"
                   type="button"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-                  @click.stop="mergedExpanded = !mergedExpanded; if (mergedExpanded) waterfallExpanded = false; selectMergedPreview()"
-                >
-                  <LuChevronUp v-if="mergedExpanded" class="h-3 w-3" />
-                  <LuChevronDown v-else class="h-3 w-3" />
-                  <span>{{ mergedExpanded ? '收起字段' : '逐项挑选' }}</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/50 bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
+                  class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-primary)]/55 bg-[var(--md-sys-color-surface)] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-primary)] transition hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
                   title="直接将聚合结果写入文件并保存"
                   @click.stop="emit('directApply', mergedMeta, fillMode)"
                 >
@@ -1308,15 +1122,15 @@ defineExpose({
           <!-- Interactive Multi-Source Waterfall Priority & Mute Drawer -->
           <div
             v-if="waterfallExpanded"
-            class="mt-2.5 space-y-1.5 border-t border-[var(--ctp-accent)]/25 pt-2"
+            class="mt-2.5 space-y-1.5 border-t border-[var(--md-sys-color-primary)]/25 pt-2"
             @click.stop
           >
-            <div class="flex items-center justify-between text-[10px] text-[var(--ctp-subtext0)]">
+            <div class="flex items-center justify-between text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
               <span>按顺序互补填充，可上下调权、屏蔽干扰源或换选候选：</span>
               <button
                 v-if="ignoredProviderIds.size > 0"
                 type="button"
-                class="shrink-0 font-semibold text-[var(--ctp-accent)] hover:underline"
+                class="shrink-0 font-semibold text-[var(--md-sys-color-primary)] hover:underline"
                 @click="clearIgnoredProviders"
               >
                 全部恢复
@@ -1326,26 +1140,26 @@ defineExpose({
               <div
                 v-for="(brief, idx) in orderedActiveBriefs"
                 :key="brief.id"
-                class="flex items-center justify-between gap-1.5 rounded-lg border px-2 py-1.5 text-[10px] transition"
+                class="flex items-center justify-between gap-1.5 rounded-xl border px-2 py-1.5 text-[10px] transition"
                 :class="
                   ignoredProviderIds.has(brief.id)
-                    ? 'border-dashed border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/40 opacity-55'
-                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/90'
+                    ? 'border-dashed border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] opacity-55'
+                    : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)]'
                 "
               >
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-1">
-                    <span class="font-mono text-[9px] font-bold text-[var(--ctp-accent)]">
+                    <span class="font-mono text-[9px] font-bold text-[var(--md-sys-color-primary)]">
                       #{{ idx + 1 }}
                     </span>
                     <span
-                      class="font-semibold text-[var(--ctp-text)]"
+                      class="font-semibold text-[var(--md-sys-color-on-surface)]"
                       :class="ignoredProviderIds.has(brief.id) ? 'line-through' : ''"
                     >
                       {{ brief.name }}
                     </span>
                   </div>
-                  <div class="truncate text-[9px] text-[var(--ctp-subtext0)]">
+                  <div class="truncate text-[9px] text-[var(--md-sys-color-on-surface-variant)]">
                     {{
                       selectedByProvider[brief.id]?.title ||
                       detailsByProvider[brief.id]?.title ||
@@ -1358,7 +1172,7 @@ defineExpose({
                   <button
                     v-if="(providerCandidateCounts[brief.id] ?? 0) > 1"
                     type="button"
-                    class="rounded-md border border-[var(--ctp-surface0)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+                    class="rounded-full border border-[var(--md-sys-color-outline-variant)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)] hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
                     title="筛选此源下的所有候选以便换选聚合条目"
                     @click="activeSourceFilter = activeSourceFilter === brief.id ? 'all' : brief.id"
                   >
@@ -1366,11 +1180,11 @@ defineExpose({
                   </button>
                   <button
                     type="button"
-                    class="rounded-md p-1 transition"
+                    class="rounded-full p-1 transition"
                     :class="
                       ignoredProviderIds.has(brief.id)
-                        ? 'bg-rose-500/15 text-rose-400'
-                        : 'text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]'
+                        ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+                        : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
                     "
                     :title="ignoredProviderIds.has(brief.id) ? '恢复此源参与聚合' : '临时屏蔽此源'"
                     @click="toggleProviderIgnored(brief.id)"
@@ -1380,7 +1194,7 @@ defineExpose({
                   <button
                     type="button"
                     :disabled="idx === 0"
-                    class="rounded-md p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)] disabled:opacity-30"
+                    class="rounded-full p-1 text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)] disabled:opacity-30"
                     title="提升优先级"
                     @click="moveActiveProviderOrder(idx, -1)"
                   >
@@ -1389,7 +1203,7 @@ defineExpose({
                   <button
                     type="button"
                     :disabled="idx === orderedActiveBriefs.length - 1"
-                    class="rounded-md p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)] disabled:opacity-30"
+                    class="rounded-full p-1 text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)] disabled:opacity-30"
                     title="降低优先级"
                     @click="moveActiveProviderOrder(idx, 1)"
                   >
@@ -1399,68 +1213,17 @@ defineExpose({
               </div>
             </div>
           </div>
-
-          <!-- Collapsible Field-by-Field Drawer for Aggregated Result -->
-          <div
-            v-if="mergedExpanded"
-            class="mt-2.5 border-t border-[var(--ctp-accent)]/25 pt-2"
-            @click.stop
-          >
-            <div class="mb-1.5 text-[10px] font-medium text-[var(--ctp-subtext0)]">
-              点击任意字段即可单独填入左侧表单：
-            </div>
-            <div class="flex flex-wrap gap-1.5">
-              <button
-                v-if="isCoverUsable(mergedMeta.cover_url)"
-                type="button"
-                class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/40 bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
-                @click="handleFillDetailField('cover', mergedMeta, '封面')"
-              >
-                <LuImage class="h-3 w-3" />
-                <span>填入高清封面</span>
-                <span v-if="mergedSourceLabelFor('cover')" class="opacity-75">
-                  · {{ mergedSourceLabelFor('cover') }}
-                </span>
-              </button>
-              <button
-                v-for="field in extractClickableFields(mergedMeta)"
-                :key="field.key"
-                type="button"
-                class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/90 px-2 py-1 text-left text-[10px] text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:bg-[var(--ctp-accent-soft)]/40"
-                :class="field.multiline ? 'w-full' : 'max-w-full'"
-                :title="`点击填入「${field.label}」`"
-                @click="handleFillDetailField(field.key, mergedMeta!, field.label)"
-              >
-                <span class="mr-1 font-bold text-[var(--ctp-accent)]">← {{ field.label }}</span>
-                <span
-                  v-if="mergedSourceLabelFor(field.key)"
-                  class="mr-1 rounded bg-[var(--ctp-surface0)]/80 px-1 py-0.2 text-[9px] font-medium text-[var(--ctp-subtext0)]"
-                >
-                  {{ mergedSourceLabelFor(field.key) }}
-                </span>
-                <span
-                  :class="
-                    field.multiline
-                      ? 'mt-0.5 block line-clamp-3 text-[var(--ctp-subtext1)]'
-                      : 'text-[var(--ctp-subtext1)]'
-                  "
-                >
-                  {{ field.value }}
-                </span>
-              </button>
-            </div>
-          </div>
         </div>
 
         <!-- Source Filter Bar -->
         <div v-if="sourceCounts.length > 1" class="flex flex-wrap gap-1">
           <button
             type="button"
-            class="rounded-lg px-2 py-0.5 text-[10px] font-semibold transition"
+            class="md-state rounded-full px-2.5 py-0.5 text-[10px] font-semibold transition"
             :class="
               activeSourceFilter === 'all'
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                : 'bg-[var(--ctp-surface0)]/60 text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
             "
             @click="activeSourceFilter = 'all'"
           >
@@ -1470,11 +1233,11 @@ defineExpose({
             v-for="src in sourceCounts"
             :key="src.id"
             type="button"
-            class="rounded-lg px-2 py-0.5 text-[10px] font-semibold transition"
+            class="md-state rounded-full px-2.5 py-0.5 text-[10px] font-semibold transition"
             :class="
               activeSourceFilter === src.id
-                ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                : 'bg-[var(--ctp-surface0)]/60 text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
             "
             @click="activeSourceFilter = src.id"
           >
@@ -1486,51 +1249,38 @@ defineExpose({
         <div
           v-for="c in visibleCandidates"
           :key="candKey(c)"
-          class="cursor-pointer rounded-xl border p-2.5 transition"
+          class="cursor-pointer rounded-2xl border p-2.5 transition"
           :class="
             selectedKey === candKey(c)
-              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/25 ring-1 ring-[var(--ctp-accent)]/45'
-              : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] hover:border-[var(--ctp-accent)]/50'
+              ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/35 ring-1 ring-[var(--md-sys-color-primary)]/40'
+              : 'border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] hover:border-[var(--md-sys-color-primary)]/50'
           "
           @click="selectCandidatePreview(c)"
         >
           <div class="flex items-start gap-2.5">
-            <!-- Clickable Cover Thumbnail -->
+            <!-- Cover Thumbnail -->
             <button
               type="button"
-              class="group relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]"
-              :title="
-                allowFillLeft
-                  ? isCoverUsable(c.cover_url)
-                    ? '点击直接填入这张封面'
-                    : '无可用封面'
-                  : '点击在右侧预览此候选详情'
-              "
-              :disabled="allowFillLeft && !isCoverUsable(c.cover_url)"
-              @click.stop="
-                allowFillLeft
-                  ? handleQuickFillFromCandidate(c, 'cover')
-                  : selectCandidatePreview(c)
-              "
+              class="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)]"
+              title="点击在右侧预览此候选详情"
+              @click.stop="selectCandidatePreview(c)"
             >
               <img
                 v-if="isCoverUsable(c.cover_url)"
                 :src="resolveScraperCoverUrl(c.cover_url)"
                 alt=""
+                loading="lazy"
                 referrerpolicy="no-referrer"
                 class="h-full w-full object-cover"
                 @error="markCoverBroken(c.cover_url)"
               />
-              <div v-else class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--ctp-subtext0)]/50">
+              <div
+                v-else
+                class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--md-sys-color-on-surface-variant)]/50"
+              >
                 <LuImage class="h-3.5 w-3.5" />
                 <span class="text-[8px]">无图</span>
               </div>
-              <span
-                v-if="allowFillLeft && isCoverUsable(c.cover_url)"
-                class="absolute inset-0 flex items-center justify-center bg-black/55 text-[9px] font-bold text-white opacity-0 transition group-hover:opacity-100"
-              >
-                用图
-              </span>
             </button>
 
             <!-- Candidate Info -->
@@ -1538,82 +1288,36 @@ defineExpose({
               <div class="flex items-start justify-between gap-1.5">
                 <button
                   type="button"
-                  class="line-clamp-2 text-left text-xs font-bold text-[var(--ctp-text)] transition hover:text-[var(--ctp-accent)]"
+                  class="line-clamp-2 text-left text-xs font-bold text-[var(--md-sys-color-on-surface)] transition hover:text-[var(--md-sys-color-primary)]"
                   title="点击在右侧预览此条目详情"
                   @click.stop="selectCandidatePreview(c)"
                 >
                   {{ c.title }}
                 </button>
                 <span
-                  class="shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-semibold"
+                  class="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold"
                   :class="
                     selectedKey === candKey(c)
-                      ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
-                      : 'bg-[var(--ctp-surface0)]/80 text-[var(--ctp-subtext1)]'
+                      ? 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
+                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
                   "
                 >
                   {{ c.provider_name }}
                 </span>
               </div>
 
-              <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--ctp-subtext0)]">
-                <template v-if="allowFillLeft">
-                  <button
-                    v-if="c.subtitle"
-                    type="button"
-                    class="truncate hover:text-[var(--ctp-accent)] hover:underline"
-                    title="点击单独填入作者/副标题"
-                    @click.stop="handleQuickFillFromCandidate(c, 'creators')"
-                  >
-                    {{ c.subtitle }}
-                  </button>
-                  <button
-                    v-if="c.year"
-                    type="button"
-                    class="font-mono hover:text-[var(--ctp-accent)] hover:underline"
-                    title="点击单独填入年份"
-                    @click.stop="handleQuickFillFromCandidate(c, 'year')"
-                  >
-                    {{ c.year }}
-                  </button>
-                </template>
-                <template v-else>
-                  <span v-if="c.subtitle" class="truncate">{{ c.subtitle }}</span>
-                  <span v-if="c.year" class="font-mono">{{ c.year }}</span>
-                </template>
+              <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                <span v-if="c.subtitle" class="truncate">{{ c.subtitle }}</span>
+                <span v-if="c.year" class="font-mono">{{ c.year }}</span>
               </div>
 
               <!-- Quick Action Buttons -->
               <div class="mt-2 flex flex-wrap items-center gap-1.5">
                 <button
-                  v-if="allowFillLeft"
-                  type="button"
-                  :disabled="loadingDetailKey === candKey(c)"
-                  class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent-soft)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)] disabled:opacity-50"
-                  title="拉取完整详情并整条回填到左侧表单"
-                  @click.stop="handleFillCandidateAll(c)"
-                >
-                  <LuLoader2 v-if="loadingDetailKey === candKey(c)" class="h-3 w-3 animate-spin" />
-                  <LuArrowLeft v-else class="h-3 w-3" />
-                  <span>整条填入</span>
-                </button>
-
-                <button
-                  v-if="allowFillLeft"
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-                  @click.stop="handleToggleExpand(c)"
-                >
-                  <LuChevronUp v-if="expandedKey === candKey(c)" class="h-3 w-3" />
-                  <LuChevronDown v-else class="h-3 w-3" />
-                  <span>逐项挑选</span>
-                </button>
-
-                <button
                   v-if="!isProviderRepresentative(c)"
                   type="button"
                   :disabled="loadingDetailKey === candKey(c)"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/45 bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)] disabled:opacity-50"
+                  class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-primary)]/45 bg-[var(--md-sys-color-surface)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-primary)] transition hover:bg-[var(--md-sys-color-primary-container)] disabled:opacity-50"
                   title="将此候选设为该数据源的聚合代表，并实时重算多源瀑布聚合结果"
                   @click.stop="useCandidateForMerge(c)"
                 >
@@ -1622,7 +1326,7 @@ defineExpose({
                 </button>
                 <span
                   v-else-if="(providerCandidateCounts[c.provider_id] ?? 0) > 1"
-                  class="inline-flex items-center gap-0.5 rounded-lg bg-[var(--ctp-accent-soft)]/50 px-1.5 py-1 text-[9px] font-semibold text-[var(--ctp-accent)]"
+                  class="inline-flex items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
                   title="当前已作为该数据源的聚合代表"
                 >
                   <LuCheck class="h-2.5 w-2.5" />
@@ -1632,57 +1336,12 @@ defineExpose({
                 <button
                   type="button"
                   :disabled="loadingDetailKey === candKey(c)"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-emerald-500/60 hover:text-emerald-500 disabled:opacity-50"
+                  class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-low)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:border-[var(--md-sys-color-success)] hover:text-[var(--md-sys-color-success)] disabled:opacity-50"
                   title="直接写入磁盘（含封面），无需再点保存"
                   @click.stop="handleDirectApplyCandidate(c)"
                 >
                   <LuZap class="h-3 w-3" />
                   <span>直写</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Expanded Field-by-Field Click-to-Fill Drawer -->
-          <div
-            v-if="expandedKey === candKey(c)"
-            class="mt-2.5 border-t border-[var(--ctp-surface0)]/70 pt-2"
-            @click.stop
-          >
-            <div
-              v-if="loadingDetailKey === candKey(c)"
-              class="flex items-center justify-center gap-1.5 py-3 text-[11px] text-[var(--ctp-subtext0)]"
-            >
-              <LuLoader2 class="h-3.5 w-3.5 animate-spin text-[var(--ctp-accent)]" />
-              <span>正在拉取完整详情…</span>
-            </div>
-            <div v-else-if="detailCache.get(candKey(c))" class="space-y-1.5">
-              <div class="text-[10px] font-medium text-[var(--ctp-subtext0)]">
-                点击任意字段即可单独填入左侧表单：
-              </div>
-              <div class="flex flex-wrap gap-1.5">
-                <button
-                  v-if="isCoverUsable(detailCache.get(candKey(c))?.cover_url)"
-                  type="button"
-                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/40 bg-[var(--ctp-accent-soft)]/50 px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
-                  @click="handleFillDetailField('cover', detailCache.get(candKey(c))!, '封面')"
-                >
-                  <LuImage class="h-3 w-3" />
-                  <span>填入高清封面</span>
-                </button>
-                <button
-                  v-for="field in extractClickableFields(detailCache.get(candKey(c))!)"
-                  :key="field.key"
-                  type="button"
-                  class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/80 px-2 py-1 text-left text-[10px] text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:bg-[var(--ctp-accent-soft)]/40"
-                  :class="field.multiline ? 'w-full' : 'max-w-full'"
-                  :title="`点击填入「${field.label}」`"
-                  @click="handleFillDetailField(field.key, detailCache.get(candKey(c))!, field.label)"
-                >
-                  <span class="mr-1 font-bold text-[var(--ctp-accent)]">← {{ field.label }}</span>
-                  <span :class="field.multiline ? 'line-clamp-3 block mt-0.5 text-[var(--ctp-subtext1)]' : 'text-[var(--ctp-subtext1)]'">
-                    {{ field.value }}
-                  </span>
                 </button>
               </div>
             </div>

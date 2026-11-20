@@ -9,16 +9,24 @@ import {
   LuChevronDown,
   LuClapperboard,
   LuDisc3,
+  LuEye,
+  LuFileSignature,
   LuImage,
   LuLayers,
+  LuLoader2,
   LuPanelLeft,
   LuPencil,
+  LuSave,
   LuSearch,
+  LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { buildArtworkUrl, toolApi } from '../../api'
+import { entryCompositeKey, isEntryComplete } from '../../completeness'
 import { formatBytes, formatDuration } from '../../i18n'
 import type {
   MediaFileDetail,
@@ -26,8 +34,11 @@ import type {
   PublicSettingsDto,
   ScrapedMetadata,
 } from '../../types'
+import InspectorBookForm from '../inspector/InspectorBookForm.vue'
+import InspectorComicForm from '../inspector/InspectorComicForm.vue'
+import InspectorMusicForm from '../inspector/InspectorMusicForm.vue'
+import InspectorVideoForm from '../inspector/InspectorVideoForm.vue'
 import {
-  inferTargetKindFromDetail,
   useMetadataForm,
   type ApplyFillMode,
 } from '../inspector/useMetadataForm'
@@ -43,7 +54,7 @@ const props = defineProps<{
   detail: MediaFileDetail | null
   loadingDetail: boolean
   entries: MediaFileEntry[]
-  savedPaths: Set<string>
+  savedKeys: Set<string>
   artworkVersion: number
   artworkVersions?: Record<string, number>
   sidebarCollapsed: boolean
@@ -67,18 +78,20 @@ const emit = defineEmits<{
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 
-// Internal patch builder used solely when committing right-column edits or direct-apply to disk
-const {
-  pendingCoverUrl,
-  pendingBackdropUrl,
-  hydrateForm,
-  buildPatchEnvelope,
-  applyScrapedMetadata,
-} = useMetadataForm()
+// Dedicated form instance for direct left-column inline editing
+const localForm = useMetadataForm()
+// Separate patch builder for committing right-column scraped results
+const applyForm = useMetadataForm()
 
+const localEditMode = ref(false)
 const saving = ref(false)
+const savingLocal = ref(false)
+const polishingBook = ref(false)
+const uploadingArtwork = ref(false)
 const errorMsg = ref<string | null>(null)
 const videoArtworkSlot = ref<'poster' | 'fanart' | 'thumb'>('poster')
+const coverInputRef = ref<HTMLInputElement | null>(null)
+const pendingUploadSlot = ref<'cover' | 'poster' | 'fanart' | 'thumb'>('cover')
 const previewPaneRef = ref<InstanceType<typeof CandidateDetailPreviewPane> | null>(null)
 
 const autoSearchOnSwitch = ref(true)
@@ -86,26 +99,35 @@ const autoSearchTrigger = ref(0)
 const candidatePreview = ref<CandidatePreviewState | null>(null)
 let lastEntryKey = ''
 
-// Plan B: Top dropdown queue picker state
+// Compact queue dropdown (shown only on mobile or when desktop sidebar is collapsed)
+const isMobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 768 : false)
+const showCompactQueueDropdown = computed(() => props.sidebarCollapsed || isMobileViewport.value)
 const queueDropdownOpen = ref(false)
 const dropdownQuery = ref('')
 const dropdownFilter = ref<DropdownFilter>('all')
 
-function isEntryComplete(e: MediaFileEntry): boolean {
-  return (
-    e.completeness.has_title &&
-    e.completeness.has_cover &&
-    e.completeness.has_summary_or_lyrics &&
-    e.completeness.has_nfo_or_tag_block
-  )
+const dropdownFilterOptions = [
+  { value: 'all' as const, label: '全部' },
+  { value: 'incomplete' as const, label: '未完善' },
+  { value: 'missing_cover' as const, label: '缺封面' },
+  { value: 'saved' as const, label: '已存' },
+]
+
+watch(showCompactQueueDropdown, (visible) => {
+  if (!visible) queueDropdownOpen.value = false
+})
+
+function handleResize(): void {
+  isMobileViewport.value = window.innerWidth < 768
 }
 
 const dropdownEntries = computed(() => {
   const q = dropdownQuery.value.trim().toLowerCase()
   return props.entries.filter((e) => {
+    const key = entryCompositeKey(e)
     if (dropdownFilter.value === 'incomplete' && isEntryComplete(e)) return false
     if (dropdownFilter.value === 'missing_cover' && e.completeness.has_cover) return false
-    if (dropdownFilter.value === 'saved' && !props.savedPaths.has(e.rel_path)) return false
+    if (dropdownFilter.value === 'saved' && !props.savedKeys.has(key)) return false
     if (q) {
       const hay = `${e.display_title} ${e.file_name} ${e.display_subtitle}`.toLowerCase()
       if (!hay.includes(q)) return false
@@ -117,24 +139,29 @@ const dropdownEntries = computed(() => {
 const savedSessionCount = computed(() => {
   let n = 0
   for (const e of props.entries) {
-    if (props.savedPaths.has(e.rel_path)) n += 1
+    if (props.savedKeys.has(entryCompositeKey(e))) n += 1
   }
   return n
 })
 
 watch(
-  () => (props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''),
+  () => (props.detail ? entryCompositeKey(props.detail.entry) : ''),
   (key) => {
     if (!key) {
       lastEntryKey = ''
       candidatePreview.value = null
+      localEditMode.value = false
       errorMsg.value = null
       return
+    }
+    if (props.detail) {
+      localForm.hydrateForm(props.detail)
     }
     if (key === lastEntryKey) return
     lastEntryKey = key
     errorMsg.value = null
     candidatePreview.value = null
+    localEditMode.value = false
     videoArtworkSlot.value = 'poster'
     if (autoSearchOnSwitch.value) {
       autoSearchTrigger.value += 1
@@ -143,7 +170,10 @@ watch(
   { immediate: true },
 )
 
-const isCurrentDirty = computed(() => Boolean(previewPaneRef.value?.isEdited))
+const isLocalFormDirty = computed(() => localEditMode.value && localForm.isDirty.value)
+const isCurrentDirty = computed(
+  () => isLocalFormDirty.value || Boolean(previewPaneRef.value?.isEdited),
+)
 
 const canSaveMetadata = computed(() => {
   if (!props.detail) return false
@@ -153,11 +183,20 @@ const canSaveMetadata = computed(() => {
   return true
 })
 
+const videoSlotOptions = computed(() => {
+  if (props.detail?.metadata.kind !== 'video') return []
+  const d = props.detail.metadata.data
+  return [
+    { value: 'poster' as const, label: d.has_poster ? '海报·' : '海报' },
+    { value: 'fanart' as const, label: d.has_fanart ? '背景·' : '背景' },
+    { value: 'thumb' as const, label: d.has_thumb ? '剧照·' : '剧照' },
+  ]
+})
+
 function resolveArtworkVersion(rootId: string, relPath: string): number {
   return props.artworkVersion + (props.artworkVersions?.[`${rootId}::${relPath}`] ?? 0)
 }
 
-// Strictly reflects persisted on-disk artwork — only updates when the item itself changes
 const artworkSrc = computed(() => {
   if (!props.detail) return ''
   const kind = props.detail.entry.media_kind
@@ -302,143 +341,135 @@ const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
   ]
 })
 
-function buildLocalScrapedDraft(d: MediaFileDetail): ScrapedMetadata {
-  const target = inferTargetKindFromDetail(d)
-  const m = d.metadata
-  if (m.kind === 'book') {
-    const b = m.data
-    return {
-      provider_id: 'local',
-      external_id: d.entry.rel_path,
-      target,
-      title: b.title || null,
-      original_title: null,
-      series_or_album: b.series,
-      creators: [...b.authors],
-      illustrators_or_directors: [],
-      cast: [],
-      publisher_or_studio: b.publisher,
-      year: null,
-      published_date: b.published_at,
-      language: b.language,
-      isbn: b.isbn,
-      rating: null,
-      track_or_episode_number: null,
-      disc_or_season_number: null,
-      summary: b.description,
-      genres: [],
-      tags: [...b.tags],
-      cover_url: null,
-      backdrop_url: null,
-      synced_lyrics: null,
-      plain_lyrics: null,
-    }
+function enterLocalEditMode(): void {
+  if (!props.detail || !canSaveMetadata.value) return
+  localForm.hydrateForm(props.detail)
+  localEditMode.value = true
+}
+
+async function exitLocalEditMode(): Promise<void> {
+  if (localForm.isDirty.value) {
+    const ok = await dialogStore.confirm({
+      title: '放弃左栏未保存的修改？',
+      message: '退出编辑模式将丢弃当前左栏未保存的更改。',
+      confirmText: '放弃修改',
+      cancelText: '继续编辑',
+      danger: true,
+    })
+    if (!ok) return
   }
-  if (m.kind === 'comic') {
-    const c = m.data
-    return {
-      provider_id: 'local',
-      external_id: d.entry.rel_path,
-      target,
-      title: c.title,
-      original_title: null,
-      series_or_album: c.series,
-      creators: [...c.writers],
-      illustrators_or_directors: [...c.pencillers],
-      cast: [],
-      publisher_or_studio: c.publisher,
-      year: c.year,
-      published_date: null,
-      language: c.language_iso,
-      isbn: null,
-      rating: null,
-      track_or_episode_number: null,
-      disc_or_season_number: c.volume,
-      summary: c.summary,
-      genres: [...c.genres],
-      tags: [...c.tags],
-      cover_url: null,
-      backdrop_url: null,
-      synced_lyrics: null,
-      plain_lyrics: null,
-    }
+  if (props.detail) {
+    localForm.hydrateForm(props.detail)
   }
-  if (m.kind === 'music') {
-    const mu = m.data
-    return {
-      provider_id: 'local',
-      external_id: d.entry.rel_path,
-      target,
-      title: mu.title || null,
-      original_title: null,
-      series_or_album: mu.album || null,
-      creators: mu.artist ? [mu.artist] : [],
-      illustrators_or_directors: [],
-      cast: [],
-      publisher_or_studio: null,
-      year: mu.year,
-      published_date: null,
-      language: null,
-      isbn: null,
-      rating: null,
-      track_or_episode_number: mu.track_number,
-      disc_or_season_number: mu.disc_number,
-      summary: mu.comment,
-      genres: mu.genre ? [mu.genre] : [],
-      tags: [],
-      cover_url: null,
-      backdrop_url: null,
-      synced_lyrics: mu.sidecar_lrc,
-      plain_lyrics: mu.embedded_lyrics,
-    }
-  }
-  const v = m.data
-  return {
-    provider_id: 'local',
-    external_id: d.entry.rel_path,
-    target,
-    title: v.title || null,
-    original_title: v.original_title,
-    series_or_album: v.show_title,
-    creators: [],
-    illustrators_or_directors: [...v.directors],
-    cast: [...v.actors],
-    publisher_or_studio: v.studio,
-    year: v.year,
-    published_date: null,
-    language: null,
-    isbn: null,
-    rating: v.rating,
-    track_or_episode_number: v.episode_number,
-    disc_or_season_number: v.season_number,
-    summary: v.summary,
-    genres: [...v.genres],
-    tags: [...v.tags],
-    cover_url: null,
-    backdrop_url: null,
-    synced_lyrics: null,
-    plain_lyrics: null,
+  localEditMode.value = false
+}
+
+function triggerLocalArtworkUpload(): void {
+  if (!props.detail) return
+  pendingUploadSlot.value =
+    props.detail.metadata.kind === 'video' ? videoArtworkSlot.value : 'cover'
+  coverInputRef.value?.click()
+}
+
+async function handleLocalArtworkPicked(ev: Event): Promise<void> {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !props.detail) return
+  uploadingArtwork.value = true
+  errorMsg.value = null
+  try {
+    const updated = await toolApi.uploadArtwork(
+      props.detail.entry.root_id,
+      props.detail.entry.rel_path,
+      file,
+      pendingUploadSlot.value,
+      props.detail.entry.media_kind,
+    )
+    lastEntryKey = entryCompositeKey(updated.entry)
+    emit('updated', updated, true)
+    snackbar.show('封面已更新并写入磁盘')
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    uploadingArtwork.value = false
   }
 }
 
-function openLocalDraftInRightPane(): void {
-  if (!props.detail) return
-  candidatePreview.value = {
-    key: `__local__::${props.detail.entry.rel_path}`,
-    isMerged: false,
-    sourceLabel: '手动编辑',
-    meta: buildLocalScrapedDraft(props.detail),
-    loading: false,
-    fieldSources: null,
-    fillMode: 'overwrite',
+async function handlePolishLocalBook(): Promise<void> {
+  if (polishingBook.value || !props.detail || props.detail.entry.media_kind !== 'book') return
+  polishingBook.value = true
+  errorMsg.value = null
+  try {
+    const report = await toolApi.polishBook(
+      props.detail.entry.root_id,
+      props.detail.entry.rel_path,
+    )
+    lastEntryKey = entryCompositeKey(report.detail.entry)
+    localForm.hydrateForm(report.detail)
+    emit('updated', report.detail, true)
+    snackbar.show(
+      `书籍抛光完成 · ${report.jacket_updated ? '简介页已更新' : '目录已同步'}，清理 ${report.removed_orphan_files} 个冗余资源`,
+    )
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    polishingBook.value = false
+  }
+}
+
+async function saveLocalEdit(organizeAfterSave = false, advanceNext = false): Promise<void> {
+  if (!props.detail || !canSaveMetadata.value || savingLocal.value) return
+  savingLocal.value = true
+  errorMsg.value = null
+  try {
+    const envelope = localForm.buildPatchEnvelope(props.detail.entry.media_kind)
+    let updated = await toolApi.writeMetadata(
+      props.detail.entry.root_id,
+      props.detail.entry.rel_path,
+      envelope,
+    )
+    if (organizeAfterSave) {
+      const plan = await toolApi.previewRename(
+        updated.entry.root_id,
+        [updated.entry.rel_path],
+        null,
+        updated.entry.media_kind,
+      )
+      const actionable = plan.find((p) => !p.unchanged && !p.conflict)
+      if (actionable) {
+        await toolApi.executeRename(updated.entry.root_id, [actionable])
+        updated = await toolApi.inspectFile(
+          updated.entry.root_id,
+          actionable.to_rel_path,
+          updated.entry.media_kind,
+        )
+      }
+    }
+    lastEntryKey = entryCompositeKey(updated.entry)
+    localForm.hydrateForm(updated)
+    localEditMode.value = false
+    emit('updated', updated, false)
+    snackbar.show({
+      message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已保存左栏元数据修改',
+      actionLabel: '变更历史',
+      onAction: () => emit('openHistory'),
+    })
+    if (advanceNext && props.hasNext) {
+      emit('step', 1)
+    }
+  } catch (err) {
+    errorMsg.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    savingLocal.value = false
   }
 }
 
 async function confirmDiscardIfDirty(): Promise<boolean> {
   if (!isCurrentDirty.value) return true
   return dialogStore.confirm({
-    title: '放弃右侧未保存的修改？',
-    message: '当前右侧编辑区有尚未写入原文件的微调，切换后这些修改将丢失。',
+    title: '放弃未保存的修改？',
+    message: '当前工作台存在尚未写入原文件的修改，切换后这些修改将丢失。',
     confirmText: '放弃并继续',
     cancelText: '留下编辑',
     danger: true,
@@ -455,7 +486,7 @@ async function requestStep(delta: -1 | 1): Promise<void> {
 
 async function requestPickEntry(entry: MediaFileEntry): Promise<void> {
   queueDropdownOpen.value = false
-  if (props.detail?.entry.rel_path === entry.rel_path) return
+  if (props.detail && entryCompositeKey(props.detail.entry) === entryCompositeKey(entry)) return
   if (!(await confirmDiscardIfDirty())) return
   emit('selectEntry', entry)
 }
@@ -476,10 +507,10 @@ async function handleApplyAndSave(
   saving.value = true
   errorMsg.value = null
   try {
-    hydrateForm(props.detail)
-    applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
+    applyForm.hydrateForm(props.detail)
+    applyForm.applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
 
-    const envelope = buildPatchEnvelope(props.detail.entry.media_kind)
+    const envelope = applyForm.buildPatchEnvelope(props.detail.entry.media_kind)
     let updated = await toolApi.writeMetadata(
       props.detail.entry.root_id,
       props.detail.entry.rel_path,
@@ -487,7 +518,7 @@ async function handleApplyAndSave(
     )
 
     let bumpedArt = false
-    const coverToUpload = pendingCoverUrl.value
+    const coverToUpload = applyForm.pendingCoverUrl.value
     if (coverToUpload) {
       try {
         const slot = updated.entry.media_kind === 'video' ? 'poster' : 'cover'
@@ -515,14 +546,14 @@ async function handleApplyAndSave(
       } catch {
         // Keep persisted metadata even if remote cover download fails
       }
-      pendingCoverUrl.value = null
+      applyForm.pendingCoverUrl.value = null
     }
-    if (pendingBackdropUrl.value && updated.entry.media_kind === 'video') {
+    if (applyForm.pendingBackdropUrl.value && updated.entry.media_kind === 'video') {
       try {
         updated = await toolApi.uploadArtworkFromUrl(
           updated.entry.root_id,
           updated.entry.rel_path,
-          pendingBackdropUrl.value,
+          applyForm.pendingBackdropUrl.value,
           'fanart',
           'video',
         )
@@ -530,7 +561,7 @@ async function handleApplyAndSave(
       } catch {
         // Ignore backdrop fetch failure
       }
-      pendingBackdropUrl.value = null
+      applyForm.pendingBackdropUrl.value = null
     }
 
     const organizeAfterSave = Boolean(opts?.organizeAfterSave)
@@ -552,8 +583,8 @@ async function handleApplyAndSave(
       }
     }
 
-    // Keep current search & right pane open when staying on the same item after in-place save
-    lastEntryKey = `${updated.entry.root_id}::${updated.entry.rel_path}`
+    lastEntryKey = entryCompositeKey(updated.entry)
+    localForm.hydrateForm(updated)
     emit('updated', updated, bumpedArt)
     snackbar.show({
       message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已写入原文件并更新左侧信息',
@@ -579,12 +610,24 @@ function handleKeydown(ev: KeyboardEvent): void {
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
     ev.preventDefault()
-    previewPaneRef.value?.triggerSave(false)
+    if (localEditMode.value && localForm.isDirty.value) {
+      void saveLocalEdit(false, false)
+    } else if (previewPaneRef.value) {
+      previewPaneRef.value.triggerSave(false)
+    } else if (localEditMode.value) {
+      void saveLocalEdit(false, false)
+    }
     return
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
     ev.preventDefault()
-    previewPaneRef.value?.triggerSave(true)
+    if (localEditMode.value && localForm.isDirty.value) {
+      void saveLocalEdit(false, true)
+    } else if (previewPaneRef.value) {
+      previewPaneRef.value.triggerSave(true)
+    } else if (localEditMode.value) {
+      void saveLocalEdit(false, true)
+    }
     return
   }
   if (ev.altKey && ev.key === 'ArrowUp') {
@@ -598,8 +641,14 @@ function handleKeydown(ev: KeyboardEvent): void {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', handleKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', handleKeydown))
+onMounted(() => {
+  window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('resize', handleResize)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', handleResize)
+})
 
 defineExpose({
   isDirty: isCurrentDirty,
@@ -609,8 +658,15 @@ defineExpose({
 
 <template>
   <div class="relative flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface)]">
+    <input
+      ref="coverInputRef"
+      type="file"
+      accept="image/jpeg,image/png,image/webp"
+      class="hidden"
+      @change="handleLocalArtworkPicked"
+    />
 
-    <!-- Plan B: Compact Top Queue Switcher Bar (Always Accessible Even When Sidebar Collapsed) -->
+    <!-- Top Workbench Bar -->
     <div
       class="relative z-20 flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2"
     >
@@ -635,7 +691,7 @@ defineExpose({
         </button>
       </div>
 
-      <!-- Center: Stepper + Clickable Dropdown Queue Picker -->
+      <!-- Center: Stepper + Current Entry Indicator (Dropdown ONLY when mobile or sidebar collapsed) -->
       <div class="relative flex min-w-0 flex-1 items-center justify-center gap-1.5">
         <button
           type="button"
@@ -648,9 +704,10 @@ defineExpose({
         </button>
 
         <button
+          v-if="showCompactQueueDropdown"
           type="button"
           class="md-state flex h-8 max-w-[min(420px,55vw)] min-w-0 items-center gap-2 rounded-full border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] px-3 text-xs font-semibold text-[var(--md-sys-color-on-surface)] transition hover:border-[var(--md-sys-color-primary)]"
-          title="点击展开完整队列并快速跳转"
+          title="点击展开队列并快速跳转"
           @click="queueDropdownOpen = !queueDropdownOpen"
         >
           <span
@@ -674,6 +731,27 @@ defineExpose({
           />
         </button>
 
+        <div
+          v-else
+          class="flex h-8 max-w-[min(440px,48vw)] min-w-0 items-center gap-2 rounded-full bg-[var(--md-sys-color-surface-container)] px-3 text-xs font-semibold text-[var(--md-sys-color-on-surface)]"
+        >
+          <span
+            v-if="positionLabel"
+            class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 font-mono text-[10px] font-bold text-[var(--md-sys-color-on-primary-container)]"
+          >
+            {{ positionLabel }}
+          </span>
+          <span class="min-w-0 flex-1 truncate">
+            {{ detail?.entry.file_name || '未选择条目' }}
+          </span>
+          <span
+            v-if="isCurrentDirty"
+            class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
+          >
+            未保存
+          </span>
+        </div>
+
         <button
           type="button"
           :disabled="!hasNext"
@@ -684,8 +762,8 @@ defineExpose({
           <LuArrowDown class="h-4 w-4" />
         </button>
 
-        <!-- Dropdown Queue Popover -->
-        <template v-if="queueDropdownOpen">
+        <!-- Compact Dropdown Queue Popover (mobile or collapsed sidebar only) -->
+        <template v-if="showCompactQueueDropdown && queueDropdownOpen">
           <div
             class="fixed inset-0 z-30"
             @click="queueDropdownOpen = false"
@@ -719,27 +797,11 @@ defineExpose({
                 />
               </div>
 
-              <div class="flex flex-wrap gap-1">
-                <button
-                  v-for="tab in [
-                    { id: 'all' as const, label: '全部' },
-                    { id: 'incomplete' as const, label: '未完善' },
-                    { id: 'missing_cover' as const, label: '缺封面' },
-                    { id: 'saved' as const, label: '本次已存' },
-                  ]"
-                  :key="tab.id"
-                  type="button"
-                  class="rounded-full px-2.5 py-0.5 text-[10px] font-semibold transition"
-                  :class="
-                    dropdownFilter === tab.id
-                      ? 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
-                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-                  "
-                  @click="dropdownFilter = tab.id"
-                >
-                  {{ tab.label }}
-                </button>
-              </div>
+              <MdSegmentedButton
+                v-model="dropdownFilter"
+                :options="dropdownFilterOptions"
+                size="sm"
+              />
             </div>
 
             <div class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -751,11 +813,11 @@ defineExpose({
               </div>
               <button
                 v-for="entry in dropdownEntries"
-                :key="entry.rel_path"
+                :key="entryCompositeKey(entry)"
                 type="button"
                 class="md-state flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition"
                 :class="
-                  detail?.entry.rel_path === entry.rel_path
+                  detail && entryCompositeKey(detail.entry) === entryCompositeKey(entry)
                     ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
                     : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]'
                 "
@@ -799,12 +861,12 @@ defineExpose({
                   </div>
                 </div>
                 <LuCheckCircle2
-                  v-if="savedPaths.has(entry.rel_path)"
-                  class="h-3.5 w-3.5 shrink-0 text-emerald-500"
+                  v-if="savedKeys.has(entryCompositeKey(entry))"
+                  class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-success)]"
                 />
                 <span
                   v-else-if="!entry.completeness.has_cover"
-                  class="h-2 w-2 shrink-0 rounded-full bg-amber-400"
+                  class="h-2 w-2 shrink-0 rounded-full bg-[var(--md-sys-color-warning)]"
                 />
               </button>
             </div>
@@ -812,22 +874,17 @@ defineExpose({
         </template>
       </div>
 
-      <!-- Right: Progress, Auto Search, Advanced Modal -->
-      <div class="flex shrink-0 items-center gap-2">
+      <!-- Right: Session Saved Counter & Auto Search Toggle -->
+      <div class="flex shrink-0 items-center gap-2.5">
         <span
           class="hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-1 font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)] sm:inline-flex"
         >
           已存 {{ savedSessionCount }} / {{ entries.length }}
         </span>
 
-        <label class="hidden cursor-pointer items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)] lg:inline-flex">
-          <input
-            v-model="autoSearchOnSwitch"
-            type="checkbox"
-            class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
-          />
-          <span>切项自动搜</span>
-        </label>
+        <div class="hidden lg:inline-flex">
+          <AppCheckbox v-model="autoSearchOnSwitch" label="切项自动搜" />
+        </div>
       </div>
     </div>
 
@@ -850,39 +907,63 @@ defineExpose({
       </button>
     </div>
 
-    <!-- MAIN 3-COLUMN WORKBENCH: [Left: Read-Only Current Item] | [Middle: Scraper Sources] | [Right: Editable Result & Save] -->
+    <!-- MAIN 3-COLUMN WORKBENCH: [Left: Current Item (Read/Inline Edit)] | [Middle: Scraper Sources] | [Right: Editable Result & Save] -->
     <div
       v-else
       class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_330px_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.05fr)_370px_minmax(0,1.05fr)]"
     >
-      <!-- COLUMN 1 (LEFT): Strictly Read-Only Current Persisted Entry Info -->
+      <!-- COLUMN 1 (LEFT): Current Persisted Entry with Direct Inline Edit Toggle -->
       <div class="flex min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)]">
         <div
-          class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/45 px-4 py-2.5"
+          class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/45 px-4 py-2"
         >
           <div class="flex min-w-0 items-center gap-1.5">
             <span
-              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-surface)]"
+              class="rounded-full px-2 py-0.5 text-[10px] font-semibold"
+              :class="
+                localEditMode
+                  ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+                  : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)]'
+              "
             >
-              当前条目信息（只读）
+              {{ localEditMode ? '直接编辑中' : '当前条目信息' }}
             </span>
             <span class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               {{ formatBytes(detail.entry.file_size) }}
             </span>
             <span
-              v-if="savedPaths.has(detail.entry.rel_path)"
+              v-if="savedKeys.has(entryCompositeKey(detail.entry))"
               class="shrink-0 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
             >
               已更新
             </span>
           </div>
-          <span class="shrink-0 font-mono text-[10px] uppercase text-[var(--md-sys-color-on-surface-variant)]">
-            {{ detail.entry.extension }}
-          </span>
+
+          <div class="flex shrink-0 items-center gap-1.5">
+            <button
+              v-if="canSaveMetadata && !localEditMode"
+              type="button"
+              class="md-btn md-btn-sm md-btn-tonal md-state !h-7 !px-2.5 !text-[11px]"
+              title="直接在左栏内联编辑当前条目字段"
+              @click="enterLocalEditMode"
+            >
+              <LuPencil class="h-3 w-3" />
+              <span>直接编辑</span>
+            </button>
+            <button
+              v-else-if="localEditMode"
+              type="button"
+              class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
+              @click="exitLocalEditMode"
+            >
+              <LuEye class="h-3 w-3" />
+              <span>退出编辑</span>
+            </button>
+          </div>
         </div>
 
         <div class="flex-1 space-y-3.5 overflow-y-auto px-4 pt-3 pb-5">
-          <!-- Local Persisted Cover & Read-Only File Summary Card -->
+          <!-- Local Persisted Cover & Summary Card -->
           <div class="flex gap-3.5 rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
             <div class="flex shrink-0 flex-col items-center gap-1.5">
               <div
@@ -912,30 +993,12 @@ defineExpose({
                 </div>
               </div>
 
-              <div
-                v-if="detail.metadata.kind === 'video'"
-                class="flex items-center gap-0.5 rounded-full bg-[var(--md-sys-color-surface-container)] p-0.5 text-[10px]"
-              >
-                <button
-                  v-for="slotTab in [
-                    { id: 'poster' as const, label: '海报', ok: detail.metadata.data.has_poster },
-                    { id: 'fanart' as const, label: '背景', ok: detail.metadata.data.has_fanart },
-                    { id: 'thumb' as const, label: '剧照', ok: detail.metadata.data.has_thumb },
-                  ]"
-                  :key="slotTab.id"
-                  type="button"
-                  class="rounded-full px-2 py-0.5 font-medium transition"
-                  :class="
-                    videoArtworkSlot === slotTab.id
-                      ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                      : 'text-[var(--md-sys-color-on-surface-variant)]'
-                  "
-                  @click="videoArtworkSlot = slotTab.id"
-                >
-                  {{ slotTab.label }}
-                  <span v-if="slotTab.ok" class="text-emerald-500">·</span>
-                </button>
-              </div>
+              <MdSegmentedButton
+                v-if="detail.metadata.kind === 'video' && videoSlotOptions.length > 0"
+                v-model="videoArtworkSlot"
+                :options="videoSlotOptions"
+                size="sm"
+              />
             </div>
 
             <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
@@ -997,7 +1060,7 @@ defineExpose({
                 </template>
               </div>
 
-              <!-- Read-Only Completeness Badges -->
+              <!-- Completeness Badges + Inline Artwork Upload -->
               <div class="flex flex-wrap items-center gap-1">
                 <span
                   class="rounded-full px-2 py-0.5 text-[10px] font-medium"
@@ -1037,6 +1100,17 @@ defineExpose({
                 >
                   {{ detail.entry.completeness.has_nfo_or_tag_block ? '有标签' : '缺标签' }}
                 </span>
+
+                <button
+                  v-if="localEditMode"
+                  type="button"
+                  :disabled="uploadingArtwork"
+                  class="md-chip md-state ml-auto !h-6 !rounded-full !px-2 !text-[10px]"
+                  @click="triggerLocalArtworkUpload"
+                >
+                  <LuUpload class="h-2.5 w-2.5" />
+                  <span>{{ uploadingArtwork ? '上传中…' : '上传图片' }}</span>
+                </button>
               </div>
             </div>
           </div>
@@ -1048,13 +1122,43 @@ defineExpose({
             {{ errorMsg }}
           </div>
 
-          <!-- Read-Only Structured Local Metadata Grid (1-to-1 Mirror of Right Column) -->
-          <div class="grid grid-cols-2 gap-2.5">
+          <!-- Inline Domain Metadata Form when editing directly in left pane -->
+          <template v-if="localEditMode">
+            <InspectorMusicForm
+              v-if="detail.metadata.kind === 'music'"
+              :form="localForm.musicForm"
+              :sidecar-lrc-filename="detail.metadata.data.sidecar_lrc_filename"
+              :file-key="entryCompositeKey(detail.entry)"
+            />
+            <InspectorVideoForm
+              v-else-if="detail.metadata.kind === 'video'"
+              :form="localForm.videoForm"
+            />
+            <InspectorComicForm
+              v-else-if="detail.metadata.kind === 'comic'"
+              :form="localForm.comicForm"
+            />
+            <InspectorBookForm
+              v-else-if="detail.metadata.kind === 'book'"
+              :form="localForm.bookForm"
+              :book-format="detail.metadata.data.format"
+              :writable="detail.metadata.data.writable"
+              :is-epub="detail.entry.extension === 'epub'"
+              :has-cover="detail.metadata.data.has_cover"
+              :polishing-book="polishingBook"
+              @polish="handlePolishLocalBook"
+            />
+          </template>
+
+          <!-- Read-Only Structured Local Metadata Grid (double-click any field to start inline editing) -->
+          <div v-else class="grid grid-cols-2 gap-2.5">
             <div
               v-for="field in localReadOnlyFields"
               :key="field.id"
               :class="field.half ? 'col-span-1' : 'col-span-2'"
               class="space-y-1"
+              :title="canSaveMetadata ? '双击直接进入内联编辑' : undefined"
+              @dblclick="canSaveMetadata && enterLocalEditMode()"
             >
               <div class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
                 {{ field.label }}
@@ -1084,6 +1188,43 @@ defineExpose({
             </div>
           </div>
         </div>
+
+        <!-- Left Pane Inline Edit Footer -->
+        <div
+          v-if="localEditMode"
+          class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/75 px-4 py-2.5"
+        >
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-text md-state"
+            @click="exitLocalEditMode"
+          >
+            取消
+          </button>
+          <div class="flex items-center gap-1.5">
+            <button
+              type="button"
+              :disabled="savingLocal"
+              class="md-btn md-btn-sm md-btn-outlined md-state"
+              title="保存修改并按默认模板重命名归档"
+              @click="saveLocalEdit(true, false)"
+            >
+              <LuFileSignature class="h-3.5 w-3.5" />
+              <span>保存并归档</span>
+            </button>
+            <button
+              type="button"
+              :disabled="savingLocal"
+              class="md-btn md-btn-sm md-btn-filled md-state"
+              title="直接写入当前原文件 (⌘S)"
+              @click="saveLocalEdit(false, false)"
+            >
+              <LuLoader2 v-if="savingLocal" class="h-3.5 w-3.5 animate-spin" />
+              <LuSave v-else class="h-3.5 w-3.5" />
+              <span>{{ savingLocal ? '保存中…' : '保存修改' }}</span>
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- COLUMN 2 (MIDDLE): Scraper Sources & Candidate List -->
@@ -1096,7 +1237,6 @@ defineExpose({
             :settings="settings"
             :auto-search-trigger="autoSearchTrigger"
             :selected-preview-key="candidatePreview?.key ?? null"
-            :allow-fill-left="false"
             @direct-apply="(m, mode) => handleApplyAndSave(m, mode, false)"
             @select-preview="candidatePreview = $event"
             @open-settings="emit('openSettingsScrapers')"
@@ -1115,7 +1255,6 @@ defineExpose({
           :has-next="hasNext"
           :closable="false"
           :saving="saving"
-          :allow-fill-left="false"
           @direct-apply="(m, mode, opts) => handleApplyAndSave(m, mode, false, opts)"
           @direct-apply-next="(m, mode, opts) => handleApplyAndSave(m, mode, true, opts)"
         />
@@ -1132,16 +1271,16 @@ defineExpose({
             等待选择刮削源结果
           </p>
           <p class="max-w-[260px] text-[11px] leading-relaxed opacity-80">
-            点击中间候选结果即可编辑并写入原文件
+            点击中间候选结果即可对照编辑并写入，或直接在左栏点击「直接编辑」修改本地字段
           </p>
           <button
-            v-if="canSaveMetadata"
+            v-if="canSaveMetadata && !localEditMode"
             type="button"
             class="md-btn md-btn-sm md-btn-tonal md-state"
-            @click="openLocalDraftInRightPane"
+            @click="enterLocalEditMode"
           >
             <LuPencil class="h-3.5 w-3.5" />
-            <span>基于当前条目手动编辑</span>
+            <span>在左栏直接编辑</span>
           </button>
         </div>
       </div>
