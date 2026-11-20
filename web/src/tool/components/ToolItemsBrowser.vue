@@ -484,25 +484,6 @@ function relativeDirBadge(relPath: string): string | null {
       </div>
 
       <div
-        v-else
-        class="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        <span>
-          文件视图 · 展示当前目录原始文件（含 .opf / .nfo / 封面 / 字幕等外挂），删除仅移除所选文件本身
-        </span>
-        <AppCheckbox
-          v-if="sortedRawFiles.length > 0"
-          :model-value="allRawFilesSelected"
-          :label="
-            selectedPaths.size > 0
-              ? txt.batch.selectedCount.replace('{count}', String(selectedPaths.size))
-              : txt.actions.selectAll
-          "
-          @change="emit('toggleSelectAllRaw', sortedRawFiles.map((f) => f.rel_path))"
-        />
-      </div>
-
-      <div
         v-if="dirError"
         class="mb-4 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]"
       >
