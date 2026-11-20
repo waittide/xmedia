@@ -111,7 +111,8 @@ mod tests {
     use zip::ZipWriter;
     use zip::write::SimpleFileOptions;
 
-    use crate::application::dto::{SeriesQueryFilter, UploadArchiveInput};
+    use crate::application::dto::{SeriesQueryFilter, UpdateProgressInput, UploadArchiveInput};
+    use crate::domain::chapter::ChapterMetadataPatch;
     use crate::http::state::ComicHttpState;
     use crate::http::{opds_router, rest_router};
     use crate::{ensure_comic_schema, init_comic_module, register_comic_models};
@@ -498,5 +499,298 @@ mod tests {
                 .await,
             Err(DomainError::NotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn update_chapter_metadata_preserves_user_reading_progress() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("xmedia_comic_progress_test.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut models = ModelSet::new();
+        register_core_models(&mut models);
+        register_comic_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_comic_schema(&mut db, &db_url).await.unwrap();
+
+        let users = Arc::new(ToastyUserRepository::new(db.clone()));
+        let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+        let security = Arc::new(SecurityManager::new("comic-secret"));
+        let tokens = Arc::new(JwtTokenService::new("comic-secret", 3600));
+        let events = Arc::new(BroadcastEventHub::default());
+
+        let auth = Arc::new(AuthService::new(
+            users,
+            security,
+            tokens,
+            lifecycles.clone(),
+        ));
+        let library_svc = Arc::new(LibraryService::new(
+            libraries_repo.clone(),
+            events.clone(),
+            lifecycles,
+        ));
+        let comic_services =
+            init_comic_module(db, tmp.path(), libraries_repo, &library_svc, events).unwrap();
+
+        let session = auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: Some("Admin".into()),
+                password: "secretpassword".into(),
+            })
+            .await
+            .unwrap();
+        let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+
+        let ch1 = comic_services
+            .catalog
+            .upload_archive(
+                &admin,
+                UploadArchiveInput {
+                    filename: "Progress Series - Ch.1.cbz".into(),
+                    bytes: sample_cbz("Progress Series", "1"),
+                    target_series_id: None,
+                    series_title_override: None,
+                },
+            )
+            .await
+            .unwrap();
+        let ch2 = comic_services
+            .catalog
+            .upload_archive(
+                &admin,
+                UploadArchiveInput {
+                    filename: "Progress Series - Ch.2.cbz".into(),
+                    bytes: sample_cbz("Progress Series", "2"),
+                    target_series_id: Some(ch1.series_id),
+                    series_title_override: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Mark Ch.1 as partially read (page 1 of 2, not completed).
+        comic_services
+            .reading
+            .update_progress(
+                admin.id,
+                ch1.chapter_id,
+                UpdateProgressInput {
+                    current_page: 1,
+                    is_completed: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated_in_progress = comic_services
+            .catalog
+            .update_chapter_metadata(
+                &admin,
+                ch1.chapter_id,
+                ChapterMetadataPatch {
+                    title: Some("Renamed Ch.1".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_in_progress.title, "Renamed Ch.1");
+        assert_eq!(updated_in_progress.current_page, 1);
+        assert!(!updated_in_progress.is_completed);
+
+        // Complete Ch.1 (page 2 of 2) and update metadata again.
+        comic_services
+            .reading
+            .update_progress(
+                admin.id,
+                ch1.chapter_id,
+                UpdateProgressInput {
+                    current_page: 2,
+                    is_completed: Some(true),
+                },
+            )
+            .await
+            .unwrap();
+
+        let updated_completed = comic_services
+            .catalog
+            .update_chapter_metadata(
+                &admin,
+                ch1.chapter_id,
+                ChapterMetadataPatch {
+                    summary: Some("Updated summary".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_completed.summary, "Updated summary");
+        assert_eq!(updated_completed.current_page, 2);
+        assert!(updated_completed.is_completed);
+
+        // Unread Ch.2 should still report (0, false).
+        let updated_unread = comic_services
+            .catalog
+            .update_chapter_metadata(
+                &admin,
+                ch2.chapter_id,
+                ChapterMetadataPatch {
+                    title: Some("Renamed Ch.2".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_unread.current_page, 0);
+        assert!(!updated_unread.is_completed);
+    }
+
+    #[tokio::test]
+    async fn opds_v12_and_v20_routes_render_consistent_feeds() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("xmedia_comic_opds_test.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut models = ModelSet::new();
+        register_core_models(&mut models);
+        register_comic_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_comic_schema(&mut db, &db_url).await.unwrap();
+
+        let users = Arc::new(ToastyUserRepository::new(db.clone()));
+        let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+        let security = Arc::new(SecurityManager::new("comic-secret"));
+        let tokens = Arc::new(JwtTokenService::new("comic-secret", 3600));
+        let events = Arc::new(BroadcastEventHub::default());
+
+        let auth = Arc::new(AuthService::new(
+            users,
+            security,
+            tokens,
+            lifecycles.clone(),
+        ));
+        let library_svc = Arc::new(LibraryService::new(
+            libraries_repo.clone(),
+            events.clone(),
+            lifecycles,
+        ));
+        let comic_services =
+            init_comic_module(db, tmp.path(), libraries_repo, &library_svc, events).unwrap();
+
+        let session = auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "bob".into(),
+                display_name: Some("Bob".into()),
+                password: "secretpassword".into(),
+            })
+            .await
+            .unwrap();
+        let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+
+        let uploaded = comic_services
+            .catalog
+            .upload_archive(
+                &admin,
+                UploadArchiveInput {
+                    filename: "Atelier & Magic - Ch.1.cbz".into(),
+                    bytes: sample_cbz("Atelier & Magic", "1"),
+                    target_series_id: None,
+                    series_title_override: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let state = ComicHttpState::new(auth, library_svc, comic_services);
+        let app = Router::new().nest("/opds/comic", opds_router(state));
+        let basic = BASE64_STANDARD.encode("bob:secretpassword");
+
+        // OPDS v1.2 & v2 & v2.0 root routes
+        for (uri, expected_ct_substr) in [
+            ("/opds/comic/v1.2", "application/atom+xml"),
+            ("/opds/comic/v2", "application/opds+json"),
+            ("/opds/comic/v2.0", "application/opds+json"),
+            ("/opds/comic/v1.2/libraries", "application/atom+xml"),
+            ("/opds/comic/v2.0/libraries", "application/opds+json"),
+            ("/opds/comic/v1.2/tags", "application/atom+xml"),
+            ("/opds/comic/v2.0/tags", "application/opds+json"),
+            ("/opds/comic/v1.2/shelves", "application/atom+xml"),
+            ("/opds/comic/v2.0/shelves", "application/opds+json"),
+            ("/opds/comic/v1.2/favorites", "application/atom+xml"),
+            ("/opds/comic/v2.0/favorites", "application/opds+json"),
+            ("/opds/comic/v1.2/latest", "application/atom+xml"),
+            ("/opds/comic/v2.0/latest", "application/opds+json"),
+            ("/opds/comic/v1.2/continue", "application/atom+xml"),
+            ("/opds/comic/v2.0/continue", "application/opds+json"),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header(header::AUTHORIZATION, format!("Basic {basic}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "failed on {uri}");
+            let ct = res
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(
+                ct.contains(expected_ct_substr),
+                "unexpected content-type {ct} for {uri}"
+            );
+        }
+
+        // Verify query parameter search & XML escaping on v1.2 and JSON on v2.0
+        let v1_search = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/opds/comic/v1.2/series?q=Atelier")
+                    .header(header::AUTHORIZATION, format!("Basic {basic}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v1_search.status(), StatusCode::OK);
+        let v1_xml = String::from_utf8(
+            to_bytes(v1_search.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(v1_xml.contains("Atelier &amp; Magic"));
+
+        let v2_chapters = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/opds/comic/v2.0/series/{}", uploaded.series_id))
+                    .header(header::AUTHORIZATION, format!("Basic {basic}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v2_chapters.status(), StatusCode::OK);
+        let v2_json: serde_json::Value =
+            serde_json::from_slice(&to_bytes(v2_chapters.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(v2_json["metadata"]["title"], "Atelier & Magic");
+        assert_eq!(v2_json["publications"].as_array().unwrap().len(), 1);
     }
 }

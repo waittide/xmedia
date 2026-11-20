@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::extract::FromRef;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
 
@@ -23,5 +24,11 @@ impl MusicHttpState {
             libraries,
             services,
         }
+    }
+}
+
+impl FromRef<MusicHttpState> for Arc<AuthService> {
+    fn from_ref(state: &MusicHttpState) -> Self {
+        state.auth.clone()
     }
 }

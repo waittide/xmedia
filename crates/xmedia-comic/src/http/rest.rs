@@ -7,8 +7,9 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
+use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
-    ApiError, ApiResult, TempUploadFile, into_range_http_response, parse_http_range_spec,
+    ApiError, ApiResult, TempUploadFile, WebAuth, into_range_http_response, parse_http_range_spec,
     stream_multipart_field_to_temp_file,
 };
 
@@ -23,7 +24,6 @@ use crate::domain::chapter::ChapterMetadataPatch;
 use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
 use crate::domain::reading::{ChapterProgress, ComicBookmark, ComicShelf, SeriesReaderPref};
 use crate::domain::series::{Series, SeriesMetadataPatch};
-use crate::http::extractors::ComicWebAuth;
 use crate::http::state::ComicHttpState;
 
 pub fn router() -> Router<ComicHttpState> {
@@ -76,21 +76,21 @@ pub fn router() -> Router<ComicHttpState> {
 
 async fn home_overview(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<HomeOverviewDto>> {
     Ok(Json(state.services.catalog.home_overview(&user).await?))
 }
 
 async fn taxonomy_overview(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(_user): ComicWebAuth,
+    WebAuth(_user): WebAuth,
 ) -> ApiResult<Json<TaxonomyOverviewDto>> {
     Ok(Json(state.services.catalog.taxonomy_overview().await?))
 }
 
 async fn list_series(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Query(filter): Query<SeriesQueryFilter>,
 ) -> ApiResult<Json<Vec<SeriesSummaryDto>>> {
     Ok(Json(
@@ -100,7 +100,7 @@ async fn list_series(
 
 async fn get_series_detail(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<SeriesDetailDto>> {
     Ok(Json(
@@ -114,7 +114,7 @@ async fn get_series_detail(
 
 async fn update_series_metadata(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(patch): Json<SeriesMetadataPatch>,
 ) -> ApiResult<Json<Series>> {
@@ -129,7 +129,7 @@ async fn update_series_metadata(
 
 async fn delete_series(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state
@@ -142,15 +142,11 @@ async fn delete_series(
 
 async fn upload_series_cover(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<Series>> {
-    if !user.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&user)?;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -181,7 +177,7 @@ struct FavoritePayload {
 
 async fn set_favorite(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(payload): Json<FavoritePayload>,
 ) -> ApiResult<StatusCode> {
@@ -200,7 +196,7 @@ struct SeriesShelvesPayload {
 
 async fn set_series_shelves(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(payload): Json<SeriesShelvesPayload>,
 ) -> ApiResult<StatusCode> {
@@ -214,7 +210,7 @@ async fn set_series_shelves(
 
 async fn save_series_reader_pref(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(input): Json<SaveSeriesReaderPrefInput>,
 ) -> ApiResult<Json<SeriesReaderPref>> {
@@ -239,7 +235,7 @@ struct MarkedCountResponse {
 
 async fn mark_series_read(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(payload): Json<CompletedPayload>,
 ) -> ApiResult<Json<MarkedCountResponse>> {
@@ -259,7 +255,7 @@ struct MarkVolumePayload {
 
 async fn mark_volume_read(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(payload): Json<MarkVolumePayload>,
 ) -> ApiResult<Json<MarkedCountResponse>> {
@@ -278,7 +274,7 @@ async fn mark_volume_read(
 
 async fn update_chapter_metadata(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(patch): Json<ChapterMetadataPatch>,
 ) -> ApiResult<Json<ChapterItemDto>> {
@@ -293,7 +289,7 @@ async fn update_chapter_metadata(
 
 async fn delete_chapter(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state
@@ -306,7 +302,7 @@ async fn delete_chapter(
 
 async fn get_reader_context(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<ReaderContextDto>> {
     Ok(Json(
@@ -320,7 +316,7 @@ async fn get_reader_context(
 
 async fn stream_chapter_page(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(_user): ComicWebAuth,
+    WebAuth(_user): WebAuth,
     headers: HeaderMap,
     Path((id, page_num)): Path<(Uuid, u32)>,
 ) -> ApiResult<Response> {
@@ -334,7 +330,7 @@ async fn stream_chapter_page(
 
 async fn download_chapter_archive(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(_user): ComicWebAuth,
+    WebAuth(_user): WebAuth,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
@@ -354,13 +350,23 @@ async fn download_chapter_archive(
     ))
 }
 
+#[derive(Deserialize, Default)]
+struct CoverSizeQuery {
+    size: Option<u32>,
+}
+
 async fn stream_cover(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(_user): ComicWebAuth,
+    WebAuth(_user): WebAuth,
     headers: HeaderMap,
     Path(key): Path<String>,
+    Query(query): Query<CoverSizeQuery>,
 ) -> ApiResult<Response> {
-    let thumb = state.services.catalog.read_cover(&key).await?;
+    let thumb = state
+        .services
+        .catalog
+        .read_cover_sized(&key, query.size)
+        .await?;
     Ok(respond_with_etag(thumb, &headers))
 }
 
@@ -395,7 +401,7 @@ pub fn respond_with_etag(content: PageContent, req_headers: &HeaderMap) -> Respo
 
 async fn update_chapter_progress(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateProgressInput>,
 ) -> ApiResult<Json<ChapterProgress>> {
@@ -410,7 +416,7 @@ async fn update_chapter_progress(
 
 async fn set_chapter_completed(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(payload): Json<CompletedPayload>,
 ) -> ApiResult<StatusCode> {
@@ -424,7 +430,7 @@ async fn set_chapter_completed(
 
 async fn mark_previous_read(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<MarkedCountResponse>> {
     let marked_count = state
@@ -437,7 +443,7 @@ async fn mark_previous_read(
 
 async fn list_shelves(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<ShelfDetailDto>>> {
     Ok(Json(
         state
@@ -450,7 +456,7 @@ async fn list_shelves(
 
 async fn create_shelf(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Json(input): Json<UpsertShelfInput>,
 ) -> ApiResult<(StatusCode, Json<ComicShelf>)> {
     let shelf = state.services.reading.create_shelf(user.id, input).await?;
@@ -459,7 +465,7 @@ async fn create_shelf(
 
 async fn update_shelf(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(input): Json<UpsertShelfInput>,
 ) -> ApiResult<Json<ComicShelf>> {
@@ -474,7 +480,7 @@ async fn update_shelf(
 
 async fn delete_shelf(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state
@@ -487,7 +493,7 @@ async fn delete_shelf(
 
 async fn list_chapter_bookmarks(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<ComicBookmark>>> {
     Ok(Json(
@@ -501,7 +507,7 @@ async fn list_chapter_bookmarks(
 
 async fn list_all_bookmarks(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<ComicBookmarkItemDto>>> {
     Ok(Json(
         state.services.reading.list_all_bookmarks(user.id).await?,
@@ -510,7 +516,7 @@ async fn list_all_bookmarks(
 
 async fn create_bookmark(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(input): Json<CreateComicBookmarkInput>,
 ) -> ApiResult<(StatusCode, Json<ComicBookmark>)> {
@@ -524,7 +530,7 @@ async fn create_bookmark(
 
 async fn delete_bookmark(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state
@@ -544,14 +550,10 @@ const MAX_COMIC_UPLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 async fn upload_comic_archive(
     State(state): State<ComicHttpState>,
-    ComicWebAuth(user): ComicWebAuth,
+    WebAuth(user): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadArchivesResponse>)> {
-    if !user.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&user)?;
     let mut target_series_id: Option<SeriesId> = None;
     let mut series_title_override: Option<String> = None;
     let mut files: Vec<(String, TempUploadFile)> = Vec::new();

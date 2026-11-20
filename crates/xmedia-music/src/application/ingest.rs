@@ -5,11 +5,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use jiff::Timestamp;
+use xmedia_core::application::library::ScanProgressReporter;
 use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{User, UserId};
+use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::catalog::MusicCatalogService;
 use crate::application::dto::{
@@ -71,11 +72,7 @@ impl MusicIngestService {
         actor: &User,
         files: Vec<UploadFileItem>,
     ) -> DomainResult<UploadBatchResultDto> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
+        require_admin(actor)?;
         if files.is_empty() {
             return Err(DomainError::Validation("no files uploaded".into()));
         }
@@ -206,6 +203,9 @@ impl MusicIngestService {
         }
 
         self.catalog_repo.recompute_catalog_aggregates().await?;
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Music,
+        });
         let uploaded_dtos = self
             .catalog_service
             .enrich_tracks(actor.id, created_tracks)
@@ -222,11 +222,7 @@ impl MusicIngestService {
         actor: &User,
         files: Vec<UploadFilePathItem>,
     ) -> DomainResult<UploadBatchResultDto> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
+        require_admin(actor)?;
         if files.is_empty() {
             return Err(DomainError::Validation("no files uploaded".into()));
         }
@@ -358,6 +354,9 @@ impl MusicIngestService {
         }
 
         self.catalog_repo.recompute_catalog_aggregates().await?;
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Music,
+        });
         let uploaded_dtos = self
             .catalog_service
             .enrich_tracks(actor.id, created_tracks)
@@ -370,11 +369,7 @@ impl MusicIngestService {
     }
 
     pub async fn delete_track(&self, actor: &User, track_id: TrackId) -> DomainResult<()> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
+        require_admin(actor)?;
         let track = self
             .catalog_repo
             .find_track_by_id(track_id)
@@ -395,15 +390,15 @@ impl MusicIngestService {
         self.catalog_repo.delete_track(track_id).await?;
         self.catalog_repo.recompute_catalog_aggregates().await?;
 
-        let deleted_album_id = if self
+        let deleted_album_ids: Vec<AlbumId> = if self
             .catalog_repo
             .find_album_by_id(track.album_id)
             .await?
             .is_none()
         {
-            Some(track.album_id)
+            vec![track.album_id]
         } else {
-            None
+            Vec::new()
         };
         let mut deleted_artist_ids = Vec::new();
         for cand_artist in [track.artist_id, track.album_artist_id] {
@@ -418,7 +413,7 @@ impl MusicIngestService {
             }
         }
         self.collections
-            .delete_track_references(track_id, deleted_album_id, &deleted_artist_ids)
+            .delete_tracks_references(&[track_id], &deleted_album_ids, &deleted_artist_ids)
             .await?;
 
         self.events.publish(SystemEvent::MediaChanged {
@@ -652,18 +647,19 @@ impl MediaDomainLifecycle for MusicIngestService {
         MediaKind::Music
     }
 
-    async fn scan_library(&self, mut library: Library) -> DomainResult<()> {
+    async fn scan_library(&self, library: Library) -> DomainResult<()> {
         let LibraryKind::LocalMount { ref root_path } = library.kind else {
             return Err(DomainError::Validation(
                 "managed upload library cannot be scanned".into(),
             ));
         };
         let root_path = root_path.clone();
+        let library_id = library.id;
 
         let entries = self.scanner.scan_audio_entries(&root_path).await?;
         let entry_paths: HashSet<String> =
             entries.iter().map(|e| e.relative_path.clone()).collect();
-        let existing_tracks = self.catalog_repo.list_tracks_by_library(library.id).await?;
+        let existing_tracks = self.catalog_repo.list_tracks_by_library(library_id).await?;
         let mut existing_by_rel: HashMap<String, Track> = HashMap::new();
         for tr in existing_tracks {
             if let TrackSource::LocalPath {
@@ -675,31 +671,20 @@ impl MediaDomainLifecycle for MusicIngestService {
         }
 
         let total = entries.len() as u64;
-        let progress_step = if total <= 100 {
-            1
-        } else if total <= 1000 {
-            5
-        } else {
-            20
-        };
-        library.mark_scanning(0, Some(total));
-        let _ = self.libraries.save(&library).await;
-        self.events.publish(SystemEvent::LibraryScanProgress {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Music,
-            scanned: 0,
-            total: Some(total),
-        });
+        let mut reporter = ScanProgressReporter::new(
+            library,
+            self.libraries.clone(),
+            self.events.clone(),
+            Some(total),
+        );
+        reporter.start().await;
 
         let mut seen_rel: HashSet<String> = HashSet::new();
         let mut dir_cover_cache: HashMap<String, Option<String>> = HashMap::new();
-        let mut scanned_count = 0u64;
         let mut added_count = 0u64;
         let mut updated_count = 0u64;
 
         for entry in entries {
-            scanned_count += 1;
             seen_rel.insert(entry.relative_path.clone());
             let has_sidecar = entry.sidecar_lrc_relative_path.is_some();
 
@@ -720,17 +705,7 @@ impl MediaDomainLifecycle for MusicIngestService {
                     self.catalog_repo.save_track(&prev).await?;
                     updated_count += 1;
                 }
-                if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
-                    library.mark_scanning(scanned_count, Some(total));
-                    let _ = self.libraries.save(&library).await;
-                    self.events.publish(SystemEvent::LibraryScanProgress {
-                        library_id: library.id,
-                        library_name: library.name.clone(),
-                        media_kind: MediaKind::Music,
-                        scanned: scanned_count,
-                        total: Some(total),
-                    });
-                }
+                reporter.advance().await;
                 continue;
             }
 
@@ -762,7 +737,10 @@ impl MediaDomainLifecycle for MusicIngestService {
             .await
             {
                 Ok(Ok(p)) => p,
-                _ => continue,
+                _ => {
+                    reporter.advance().await;
+                    continue;
+                }
             };
 
             let track_id = prev_track.as_ref().map(|t| t.id).unwrap_or_default();
@@ -801,7 +779,7 @@ impl MediaDomainLifecycle for MusicIngestService {
 
             let track = self
                 .upsert_probed_track(
-                    library.id,
+                    library_id,
                     track_id,
                     prev_track.as_ref().map(|t| t.created_at),
                     probed,
@@ -820,17 +798,7 @@ impl MediaDomainLifecycle for MusicIngestService {
                 added_count += 1;
             }
 
-            if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
-                library.mark_scanning(scanned_count, Some(total));
-                let _ = self.libraries.save(&library).await;
-                self.events.publish(SystemEvent::LibraryScanProgress {
-                    library_id: library.id,
-                    library_name: library.name.clone(),
-                    media_kind: MediaKind::Music,
-                    scanned: scanned_count,
-                    total: Some(total),
-                });
-            }
+            reporter.advance().await;
         }
 
         let mut missing_count = 0u64;
@@ -846,23 +814,9 @@ impl MediaDomainLifecycle for MusicIngestService {
         if added_count > 0 || updated_count > 0 || missing_count > 0 {
             self.catalog_repo.recompute_catalog_aggregates().await?;
         }
-        library.mark_scan_completed(scanned_count, added_count, updated_count, missing_count);
-        self.libraries.save(&library).await?;
-
-        self.events.publish(SystemEvent::LibraryScanCompleted {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Music,
-            scanned: scanned_count,
-            added: added_count,
-            updated: updated_count,
-            missing: missing_count,
-        });
-        if added_count > 0 || updated_count > 0 || missing_count > 0 {
-            self.events.publish(SystemEvent::MediaChanged {
-                media_kind: MediaKind::Music,
-            });
-        }
+        reporter
+            .complete(added_count, updated_count, missing_count)
+            .await?;
 
         Ok(())
     }
@@ -873,7 +827,16 @@ impl MediaDomainLifecycle for MusicIngestService {
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
         let tracks = self.catalog_repo.list_tracks_by_library(library_id).await?;
+        let mut track_ids = Vec::with_capacity(tracks.len());
+        let mut candidate_albums = HashSet::new();
+        let mut candidate_artists = HashSet::new();
+
         for tr in &tracks {
+            track_ids.push(tr.id);
+            candidate_albums.insert(tr.album_id);
+            candidate_artists.insert(tr.artist_id);
+            candidate_artists.insert(tr.album_artist_id);
+
             if let TrackSource::Managed {
                 ref storage_key,
                 ref sidecar_lrc_key,
@@ -885,10 +848,48 @@ impl MediaDomainLifecycle for MusicIngestService {
                 }
             }
         }
+
         self.catalog_repo
             .delete_tracks_by_library(library_id)
             .await?;
-        self.catalog_repo.recompute_catalog_aggregates().await
+        self.catalog_repo.recompute_catalog_aggregates().await?;
+
+        let candidate_album_vec: Vec<AlbumId> = candidate_albums.into_iter().collect();
+        let surviving_albums: HashSet<AlbumId> = self
+            .catalog_repo
+            .find_albums_by_ids(&candidate_album_vec)
+            .await?
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        let deleted_album_ids: Vec<AlbumId> = candidate_album_vec
+            .into_iter()
+            .filter(|id| !surviving_albums.contains(id))
+            .collect();
+
+        let candidate_artist_vec: Vec<ArtistId> = candidate_artists.into_iter().collect();
+        let surviving_artists: HashSet<ArtistId> = self
+            .catalog_repo
+            .find_artists_by_ids(&candidate_artist_vec)
+            .await?
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        let deleted_artist_ids: Vec<ArtistId> = candidate_artist_vec
+            .into_iter()
+            .filter(|id| !surviving_artists.contains(id))
+            .collect();
+
+        self.collections
+            .delete_tracks_references(&track_ids, &deleted_album_ids, &deleted_artist_ids)
+            .await?;
+
+        if !track_ids.is_empty() {
+            self.events.publish(SystemEvent::MediaChanged {
+                media_kind: MediaKind::Music,
+            });
+        }
+        Ok(())
     }
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {

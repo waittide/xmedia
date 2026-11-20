@@ -5,7 +5,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::infra::ffmpeg::ProbedAudioStream;
+use xmedia_core::domain::media::ProbedAudioStream;
 
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
 use crate::domain::video::VideoContainer;

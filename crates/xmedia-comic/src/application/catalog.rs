@@ -8,7 +8,7 @@ use xmedia_core::application::ports::{
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{ComicReaderMode, User};
+use xmedia_core::domain::user::{ComicReaderMode, User, require_admin};
 
 use crate::application::dto::{
     AdjacentChapterDto, ChapterItemDto, ComicLibraryStatsDto, ContinueReadingItemDto,
@@ -60,16 +60,6 @@ impl ComicCatalogService {
             thumbnails,
             storage,
             events,
-        }
-    }
-
-    fn ensure_admin(actor: &User) -> DomainResult<()> {
-        if actor.role.is_admin() {
-            Ok(())
-        } else {
-            Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ))
         }
     }
 
@@ -390,7 +380,7 @@ impl ComicCatalogService {
         series_id: SeriesId,
         patch: SeriesMetadataPatch,
     ) -> DomainResult<Series> {
-        Self::ensure_admin(actor)?;
+        require_admin(actor)?;
         let mut series = self
             .series
             .find_by_id(series_id)
@@ -407,7 +397,7 @@ impl ComicCatalogService {
         series_id: SeriesId,
         image_bytes: &[u8],
     ) -> DomainResult<Series> {
-        Self::ensure_admin(actor)?;
+        require_admin(actor)?;
         let mut series = self
             .series
             .find_by_id(series_id)
@@ -426,7 +416,7 @@ impl ComicCatalogService {
     }
 
     pub async fn delete_series(&self, actor: &User, series_id: SeriesId) -> DomainResult<()> {
-        Self::ensure_admin(actor)?;
+        require_admin(actor)?;
         let series = self
             .series
             .find_by_id(series_id)
@@ -450,7 +440,7 @@ impl ComicCatalogService {
     }
 
     pub async fn delete_chapter(&self, actor: &User, chapter_id: ChapterId) -> DomainResult<()> {
-        Self::ensure_admin(actor)?;
+        require_admin(actor)?;
         let chapter = self
             .chapters
             .find_by_id(chapter_id)
@@ -597,7 +587,7 @@ impl ComicCatalogService {
         chapter_id: ChapterId,
         patch: ChapterMetadataPatch,
     ) -> DomainResult<ChapterItemDto> {
-        Self::ensure_admin(actor)?;
+        require_admin(actor)?;
         let mut chapter = self
             .chapters
             .find_by_id(chapter_id)
@@ -605,7 +595,17 @@ impl ComicCatalogService {
             .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
         chapter.apply_patch(patch)?;
         self.chapters.save(&chapter).await?;
-        Ok(ChapterItemDto::from_domain(chapter, 0, false))
+        let (current_page, is_completed) = self
+            .reading
+            .get_chapter_progress(actor.id, chapter.id)
+            .await?
+            .map(|p| (p.current_page, p.is_completed))
+            .unwrap_or((0, false));
+        Ok(ChapterItemDto::from_domain(
+            chapter,
+            current_page,
+            is_completed,
+        ))
     }
 
     pub async fn read_chapter_page(
@@ -678,12 +678,27 @@ impl ComicCatalogService {
         self.thumbnails.read_thumbnail(cover_key).await
     }
 
+    pub async fn read_cover_sized(
+        &self,
+        cover_key: &str,
+        max_size: Option<u32>,
+    ) -> DomainResult<PageContent> {
+        match max_size {
+            Some(size) => {
+                self.thumbnails
+                    .read_thumbnail_sized(cover_key, Some(size))
+                    .await
+            }
+            None => self.thumbnails.read_thumbnail(cover_key).await,
+        }
+    }
+
     pub async fn upload_archive(
         &self,
         actor: &User,
         input: UploadArchiveInput,
     ) -> DomainResult<UploadArchiveResultDto> {
-        Self::ensure_admin(actor)?;
+        require_admin(actor)?;
         let lower_name = input.filename.to_lowercase();
         if !(lower_name.ends_with(".cbz")
             || lower_name.ends_with(".zip")
@@ -834,7 +849,7 @@ impl ComicCatalogService {
         actor: &User,
         input: UploadArchivePathInput,
     ) -> DomainResult<UploadArchiveResultDto> {
-        Self::ensure_admin(actor)?;
+        require_admin(actor)?;
         let lower_name = input.filename.to_lowercase();
         if !(lower_name.ends_with(".cbz")
             || lower_name.ends_with(".zip")

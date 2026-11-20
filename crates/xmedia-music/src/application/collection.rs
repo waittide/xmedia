@@ -41,7 +41,7 @@ impl MusicCollectionService {
     }
 
     pub async fn list_playlists(&self, user_id: UserId) -> DomainResult<Vec<PlaylistSummaryDto>> {
-        let playlists = self.collections.list_owned_playlists(user_id).await?;
+        let playlists = self.collections.list_visible_playlists(user_id).await?;
         let mut all_track_ids = Vec::new();
         for pl in &playlists {
             for &tid in &pl.track_ids {

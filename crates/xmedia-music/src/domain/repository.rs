@@ -54,14 +54,12 @@ pub trait MusicCatalogRepository: Send + Sync {
     ) -> DomainResult<PagedResult<Album>>;
     async fn list_albums_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Album>>;
     async fn save_album(&self, album: &Album) -> DomainResult<()>;
-    async fn delete_album(&self, id: AlbumId) -> DomainResult<()>;
 
     async fn find_artist_by_id(&self, id: ArtistId) -> DomainResult<Option<Artist>>;
     async fn find_artist_by_name(&self, name: &str) -> DomainResult<Option<Artist>>;
     async fn find_artists_by_ids(&self, ids: &[ArtistId]) -> DomainResult<Vec<Artist>>;
     async fn list_artists(&self, query: &ArtistQuery) -> DomainResult<PagedResult<Artist>>;
     async fn save_artist(&self, artist: &Artist) -> DomainResult<()>;
-    async fn delete_artist(&self, id: ArtistId) -> DomainResult<()>;
 
     async fn list_genres(&self) -> DomainResult<Vec<GenreStat>>;
     async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>>;
@@ -88,13 +86,12 @@ pub trait MusicCatalogRepository: Send + Sync {
 pub trait MusicCollectionRepository: Send + Sync {
     async fn find_playlist_by_id(&self, id: PlaylistId) -> DomainResult<Option<Playlist>>;
     async fn list_visible_playlists(&self, user_id: UserId) -> DomainResult<Vec<Playlist>>;
-    async fn list_owned_playlists(&self, owner_id: UserId) -> DomainResult<Vec<Playlist>>;
     async fn save_playlist(&self, playlist: &Playlist) -> DomainResult<()>;
     async fn delete_playlist(&self, id: PlaylistId) -> DomainResult<()>;
-    async fn delete_track_references(
+    async fn delete_tracks_references(
         &self,
-        track_id: TrackId,
-        deleted_album_id: Option<AlbumId>,
+        track_ids: &[TrackId],
+        deleted_album_ids: &[AlbumId],
         deleted_artist_ids: &[ArtistId],
     ) -> DomainResult<()>;
 

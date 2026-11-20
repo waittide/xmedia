@@ -8,9 +8,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
+use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
-    ApiError, ApiResult, TempUploadFile, into_binary_cache_response, parse_http_range_spec,
-    stream_multipart_field_to_temp_file,
+    ApiError, ApiResult, TempUploadFile, WebAuth, into_binary_cache_response,
+    parse_http_range_spec, stream_multipart_field_to_temp_file,
 };
 
 use crate::application::dto::{
@@ -26,7 +27,6 @@ use crate::domain::catalog::{
     TrackQuery, TrackSortField,
 };
 use crate::domain::collection::PlaylistId;
-use crate::http::extractors::MusicWebAuth;
 use crate::http::into_audio_http_response;
 use crate::http::state::MusicHttpState;
 use crate::http::subsonic::envelope::SUBSONIC_API_VERSION;
@@ -85,8 +85,26 @@ struct OkResponse {
 }
 
 #[derive(Serialize)]
+struct MusicFfmpegStatusResponse {
+    available: bool,
+    version: Option<String>,
+    #[serde(flatten)]
+    core: FfmpegStatusDto,
+}
+
+impl From<FfmpegStatusDto> for MusicFfmpegStatusResponse {
+    fn from(core: FfmpegStatusDto) -> Self {
+        Self {
+            available: core.ffmpeg_available,
+            version: core.ffmpeg_version.clone(),
+            core,
+        }
+    }
+}
+
+#[derive(Serialize)]
 struct MusicStatusResponse {
-    ffmpeg: FfmpegStatusDto,
+    ffmpeg: MusicFfmpegStatusResponse,
     scan: GlobalScanStatusDto,
     subsonic_api_version: &'static str,
     open_subsonic: bool,
@@ -218,9 +236,10 @@ struct BookmarkBody {
 
 async fn music_status(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(_user): MusicWebAuth,
+    WebAuth(_user): WebAuth,
 ) -> ApiResult<Json<MusicStatusResponse>> {
-    let ffmpeg = state.services.streaming.get_ffmpeg_status().await;
+    let ffmpeg =
+        MusicFfmpegStatusResponse::from(state.services.streaming.get_ffmpeg_status().await);
     let scan = state.services.ingest.get_scan_status().await?;
     Ok(Json(MusicStatusResponse {
         ffmpeg,
@@ -234,14 +253,10 @@ const MAX_MUSIC_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
 async fn upload_tracks(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadBatchResultDto>)> {
-    if !user.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&user)?;
     let mut temp_guards: Vec<(String, TempUploadFile)> = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -290,7 +305,7 @@ async fn upload_tracks(
 
 async fn home_overview(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<HomeOverviewDto>> {
     Ok(Json(
         state.services.catalog.get_home_overview(user.id).await?,
@@ -299,7 +314,7 @@ async fn home_overview(
 
 async fn query_tracks(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Query(p): Query<TrackListParams>,
 ) -> ApiResult<Json<PagedResult<TrackDto>>> {
     let q = TrackQuery {
@@ -311,7 +326,6 @@ async fn query_tracks(
         year_from: p.year_from,
         year_to: p.year_to,
         search: p.search,
-        only_ids: None,
         sort_by: p.sort_by.unwrap_or(TrackSortField::CreatedAt),
         sort_order: p.sort_order.unwrap_or(SortOrder::Desc),
         page: p.page.unwrap_or(1),
@@ -322,7 +336,7 @@ async fn query_tracks(
 
 async fn recent_tracks(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Query(p): Query<RecentTrackParams>,
 ) -> ApiResult<Json<Vec<TrackDto>>> {
     Ok(Json(
@@ -336,7 +350,7 @@ async fn recent_tracks(
 
 async fn random_tracks(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Query(p): Query<RandomTrackParams>,
 ) -> ApiResult<Json<Vec<TrackDto>>> {
     Ok(Json(
@@ -357,7 +371,7 @@ async fn random_tracks(
 
 async fn get_track(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<TrackDto>> {
     Ok(Json(
@@ -371,7 +385,7 @@ async fn get_track(
 
 async fn delete_track(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state
@@ -384,7 +398,7 @@ async fn delete_track(
 
 async fn get_track_lyrics(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(_user): MusicWebAuth,
+    WebAuth(_user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<StructuredLyrics>> {
     Ok(Json(
@@ -398,7 +412,7 @@ async fn get_track_lyrics(
 
 async fn stream_track(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(_user): MusicWebAuth,
+    WebAuth(_user): WebAuth,
     Path(id): Path<Uuid>,
     Query(p): Query<StreamParams>,
     headers: HeaderMap,
@@ -420,7 +434,7 @@ async fn stream_track(
 
 async fn download_track(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(_user): MusicWebAuth,
+    WebAuth(_user): WebAuth,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
@@ -435,7 +449,7 @@ async fn download_track(
 
 async fn get_cover(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(_user): MusicWebAuth,
+    WebAuth(_user): WebAuth,
     Path(id): Path<String>,
     Query(p): Query<CoverParams>,
 ) -> ApiResult<Response> {
@@ -445,7 +459,7 @@ async fn get_cover(
 
 async fn list_albums(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Query(p): Query<AlbumListParams>,
 ) -> ApiResult<Json<PagedResult<AlbumDto>>> {
     let list_type = match p.list_type.as_deref() {
@@ -467,7 +481,7 @@ async fn list_albums(
 
 async fn get_album(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<AlbumDetailDto>> {
     Ok(Json(
@@ -481,7 +495,7 @@ async fn get_album(
 
 async fn list_artists(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Query(p): Query<ArtistListParams>,
 ) -> ApiResult<Json<PagedResult<ArtistDto>>> {
     let q = ArtistQuery {
@@ -496,7 +510,7 @@ async fn list_artists(
 
 async fn get_artist(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<ArtistDetailDto>> {
     Ok(Json(
@@ -516,21 +530,21 @@ struct SetTrackTagsBody {
 
 async fn list_genres(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(_user): MusicWebAuth,
+    WebAuth(_user): WebAuth,
 ) -> ApiResult<Json<Vec<GenreStat>>> {
     Ok(Json(state.services.catalog.list_genres().await?))
 }
 
 async fn list_tags(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(_user): MusicWebAuth,
+    WebAuth(_user): WebAuth,
 ) -> ApiResult<Json<Vec<MusicTagStat>>> {
     Ok(Json(state.services.catalog.list_tags().await?))
 }
 
 async fn set_track_tags(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(body): Json<SetTrackTagsBody>,
 ) -> ApiResult<Json<TrackDto>> {
@@ -545,7 +559,7 @@ async fn set_track_tags(
 
 async fn search_catalog(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Query(p): Query<SearchParams>,
 ) -> ApiResult<Json<SearchResultDto>> {
     let limit = p.limit.unwrap_or(24).clamp(1, 100);
@@ -564,7 +578,7 @@ async fn search_catalog(
 
 async fn list_playlists(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<PlaylistSummaryDto>>> {
     Ok(Json(
         state.services.collection.list_playlists(user.id).await?,
@@ -573,7 +587,7 @@ async fn list_playlists(
 
 async fn create_playlist(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Json(body): Json<CreatePlaylistBody>,
 ) -> ApiResult<(StatusCode, Json<PlaylistDetailDto>)> {
     let created = state
@@ -592,7 +606,7 @@ async fn create_playlist(
 
 async fn get_playlist(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<PlaylistDetailDto>> {
     Ok(Json(
@@ -606,7 +620,7 @@ async fn get_playlist(
 
 async fn update_playlist(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdatePlaylistInput>,
 ) -> ApiResult<Json<PlaylistDetailDto>> {
@@ -621,7 +635,7 @@ async fn update_playlist(
 
 async fn delete_playlist(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state
@@ -634,7 +648,7 @@ async fn delete_playlist(
 
 async fn get_starred(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<StarredBundleDto>> {
     Ok(Json(
         state.services.collection.get_starred(user.id, None).await?,
@@ -643,7 +657,7 @@ async fn get_starred(
 
 async fn star_items(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Json(body): Json<StarBody>,
 ) -> ApiResult<Json<OkResponse>> {
     state
@@ -656,7 +670,7 @@ async fn star_items(
 
 async fn unstar_items(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Json(body): Json<StarBody>,
 ) -> ApiResult<Json<OkResponse>> {
     state
@@ -669,7 +683,7 @@ async fn unstar_items(
 
 async fn set_rating(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Json(body): Json<RatingBody>,
 ) -> ApiResult<Json<OkResponse>> {
     state
@@ -682,7 +696,7 @@ async fn set_rating(
 
 async fn scrobble_track(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Json(body): Json<ScrobbleBody>,
 ) -> ApiResult<Json<OkResponse>> {
     let ts = body
@@ -703,7 +717,7 @@ async fn scrobble_track(
 
 async fn list_now_playing(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<NowPlayingDto>>> {
     Ok(Json(
         state.services.collection.list_now_playing(user.id).await?,
@@ -712,7 +726,7 @@ async fn list_now_playing(
 
 async fn get_play_queue(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Option<PlayQueueDto>>> {
     Ok(Json(
         state.services.collection.get_play_queue(user.id).await?,
@@ -721,7 +735,7 @@ async fn get_play_queue(
 
 async fn save_play_queue(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Json(body): Json<SaveQueueBody>,
 ) -> ApiResult<Json<OkResponse>> {
     state
@@ -740,7 +754,7 @@ async fn save_play_queue(
 
 async fn list_bookmarks(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<BookmarkDto>>> {
     Ok(Json(
         state.services.collection.list_bookmarks(user.id).await?,
@@ -749,7 +763,7 @@ async fn list_bookmarks(
 
 async fn upsert_bookmark(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(track_id): Path<Uuid>,
     Json(body): Json<BookmarkBody>,
 ) -> ApiResult<Response> {
@@ -763,7 +777,7 @@ async fn upsert_bookmark(
 
 async fn delete_bookmark(
     State(state): State<MusicHttpState>,
-    MusicWebAuth(user): MusicWebAuth,
+    WebAuth(user): WebAuth,
     Path(track_id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state

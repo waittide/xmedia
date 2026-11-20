@@ -55,8 +55,6 @@ pub trait LyricsResolverPort: Send + Sync {
         audio_path: Option<&str>,
         sidecar_lrc_bytes: Option<&[u8]>,
     ) -> DomainResult<StructuredLyrics>;
-
-    fn parse_lrc_bytes(&self, raw_bytes: &[u8]) -> StructuredLyrics;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,11 +98,7 @@ impl TranscodeFormat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FfmpegStatusDto {
-    pub available: bool,
-    pub version: Option<String>,
-}
+pub use xmedia_core::application::dto::FfmpegStatusDto;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscodeRequest {

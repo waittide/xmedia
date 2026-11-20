@@ -1,8 +1,10 @@
+use std::collections::HashSet;
+
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::infra::ffmpeg::{ProbedAudioStream, ProbedSubtitleStream};
+use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 
 use crate::domain::id::{ShowId, VideoId};
 
@@ -166,6 +168,37 @@ impl VideoShow {
     pub fn compute_show_key(library_id: LibraryId, title: &str) -> String {
         format!("{}:{}", library_id.0, title.trim().to_lowercase())
     }
+
+    /// Applies a metadata patch to this show, syncing `show_key` on rename and normalizing
+    /// `genres`/`tags`. Returns `Ok(true)` if the show title changed.
+    pub fn apply_patch(&mut self, patch: ShowMetadataPatch) -> DomainResult<bool> {
+        let mut title_changed = false;
+        if let Some(title) = patch.title {
+            let trimmed = title.trim();
+            if trimmed.is_empty() {
+                return Err(DomainError::Validation("show title cannot be empty".into()));
+            }
+            if self.title != trimmed {
+                self.title = trimmed.to_string();
+                self.show_key = Self::compute_show_key(self.library_id, &self.title);
+                title_changed = true;
+            }
+        }
+        if let Some(summary) = patch.summary {
+            self.summary = summary.trim().to_string();
+        }
+        if let Some(year) = patch.year {
+            self.year = year;
+        }
+        if let Some(genres) = patch.genres {
+            self.genres = normalize_string_list(genres);
+        }
+        if let Some(tags) = patch.tags {
+            self.tags = normalize_string_list(tags);
+        }
+        self.updated_at = Timestamp::now();
+        Ok(title_changed)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +268,52 @@ impl VideoItem {
             format!("{h}p")
         })
     }
+
+    pub fn apply_patch(&mut self, patch: VideoMetadataPatch) -> DomainResult<()> {
+        if let Some(title) = patch.title {
+            let trimmed = title.trim();
+            if trimmed.is_empty() {
+                return Err(DomainError::Validation("title cannot be empty".into()));
+            }
+            self.title = trimmed.to_string();
+        }
+        if let Some(summary) = patch.summary {
+            self.summary = summary.trim().to_string();
+        }
+        if let Some(year) = patch.year {
+            self.year = year;
+        }
+        if let Some(genres) = patch.genres {
+            self.genres = normalize_string_list(genres);
+        }
+        if let Some(tags) = patch.tags {
+            self.tags = normalize_string_list(tags);
+        }
+        if let Some(season) = patch.season_number {
+            self.season_number = season;
+        }
+        if let Some(ep) = patch.episode_number {
+            self.episode_number = ep;
+        }
+        self.updated_at = Timestamp::now();
+        Ok(())
+    }
+}
+
+pub fn normalize_string_list(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for raw in values {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let key = trimmed.to_lowercase();
+        if seen.insert(key) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -298,4 +377,154 @@ pub struct ShowQueryFilter {
     pub genre: Option<String>,
     pub tag: Option<String>,
     pub search: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_show(library_id: LibraryId) -> VideoShow {
+        let now = Timestamp::now();
+        VideoShow {
+            id: ShowId::new(),
+            library_id,
+            show_key: VideoShow::compute_show_key(library_id, "Frieren"),
+            title: "Frieren".into(),
+            summary: String::new(),
+            year: Some(2023),
+            genres: vec!["Anime".into()],
+            tags: vec![],
+            poster_key: None,
+            season_count: 1,
+            episode_count: 12,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn sample_video(library_id: LibraryId) -> VideoItem {
+        let now = Timestamp::now();
+        VideoItem {
+            id: VideoId::new(),
+            library_id,
+            show_id: None,
+            show_title: None,
+            season_number: None,
+            episode_number: None,
+            title: "Interstellar".into(),
+            summary: String::new(),
+            year: Some(2014),
+            genres: vec![],
+            tags: vec![],
+            container: VideoContainer::Mp4,
+            file_size: 1024,
+            file_hash: "abc".into(),
+            duration_secs: 600,
+            bit_rate_kbps: None,
+            width: Some(1920),
+            height: Some(1080),
+            video_codec: Some("h264".into()),
+            audio_streams: vec![],
+            subtitle_streams: vec![],
+            poster_key: None,
+            source: VideoSource::Managed {
+                storage_key: "test.mp4".into(),
+                sidecar_subtitles: vec![],
+            },
+            is_missing: false,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[test]
+    fn show_apply_patch_syncs_show_key_and_normalizes_genres_and_tags() {
+        let lib_id = LibraryId::new();
+        let mut show = sample_show(lib_id);
+
+        let changed = show
+            .apply_patch(ShowMetadataPatch {
+                title: Some("  Frieren: Beyond Journey's End  ".into()),
+                summary: Some("  An elf's journey.  ".into()),
+                year: Some(Some(2024)),
+                genres: Some(vec![
+                    " Fantasy ".into(),
+                    "fantasy".into(),
+                    "".into(),
+                    "   ".into(),
+                    "Adventure".into(),
+                    "ADVENTURE".into(),
+                ]),
+                tags: Some(vec![
+                    " magic ".into(),
+                    "Magic".into(),
+                    "slice of life".into(),
+                    "".into(),
+                ]),
+            })
+            .unwrap();
+
+        assert!(changed);
+        assert_eq!(show.title, "Frieren: Beyond Journey's End");
+        assert_eq!(
+            show.show_key,
+            VideoShow::compute_show_key(lib_id, "Frieren: Beyond Journey's End")
+        );
+        assert_eq!(show.summary, "An elf's journey.");
+        assert_eq!(show.year, Some(2024));
+        assert_eq!(show.genres, vec!["Fantasy", "Adventure"]);
+        assert_eq!(show.tags, vec!["magic", "slice of life"]);
+
+        // Re-applying the same title reports no title change
+        let unchanged = show
+            .apply_patch(ShowMetadataPatch {
+                title: Some("Frieren: Beyond Journey's End".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!unchanged);
+
+        // Blank title is rejected
+        let err = show.apply_patch(ShowMetadataPatch {
+            title: Some("   ".into()),
+            ..Default::default()
+        });
+        assert!(matches!(err, Err(DomainError::Validation(_))));
+    }
+
+    #[test]
+    fn video_apply_patch_normalizes_lists_and_rejects_blank_title() {
+        let lib_id = LibraryId::new();
+        let mut video = sample_video(lib_id);
+
+        video
+            .apply_patch(VideoMetadataPatch {
+                title: Some("  Interstellar (IMAX)  ".into()),
+                summary: Some("  Space epic ".into()),
+                year: Some(Some(2014)),
+                genres: Some(vec![" Sci-Fi ".into(), "sci-fi".into(), "Drama".into()]),
+                tags: Some(vec![
+                    "  space ".into(),
+                    "".into(),
+                    "SPACE".into(),
+                    "4K".into(),
+                ]),
+                season_number: Some(Some(1)),
+                episode_number: Some(Some(2)),
+            })
+            .unwrap();
+
+        assert_eq!(video.title, "Interstellar (IMAX)");
+        assert_eq!(video.summary, "Space epic");
+        assert_eq!(video.genres, vec!["Sci-Fi", "Drama"]);
+        assert_eq!(video.tags, vec!["space", "4K"]);
+        assert_eq!(video.season_number, Some(1));
+        assert_eq!(video.episode_number, Some(2));
+
+        let err = video.apply_patch(VideoMetadataPatch {
+            title: Some(" ".into()),
+            ..Default::default()
+        });
+        assert!(matches!(err, Err(DomainError::Validation(_))));
+    }
 }

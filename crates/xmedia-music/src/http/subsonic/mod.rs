@@ -11,9 +11,8 @@ use axum::routing::any;
 use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::application::dto::SubsonicCredentials;
-use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::{LibraryId, MediaKind};
-use xmedia_core::domain::user::User;
+use xmedia_core::domain::user::{User, require_admin};
 use xmedia_core::http::{into_binary_cache_response, parse_http_range_spec};
 
 use crate::application::catalog::MusicDirectoryNode;
@@ -883,11 +882,7 @@ async fn handle_authenticated_method(
         }
 
         "startScan" => {
-            if !user.role.is_admin() {
-                return Err(
-                    DomainError::Forbidden("administrator privileges required".into()).into(),
-                );
-            }
+            require_admin(user)?;
             let libs = state
                 .libraries
                 .list_libraries(Some(MediaKind::Music))

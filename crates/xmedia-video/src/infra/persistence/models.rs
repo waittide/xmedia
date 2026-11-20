@@ -1,6 +1,6 @@
 use jiff::Timestamp;
 use uuid::Uuid;
-use xmedia_core::infra::ffmpeg::{ProbedAudioStream, ProbedSubtitleStream};
+use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 
 use crate::domain::id::VideoId;
 use crate::domain::video::VideoSource;

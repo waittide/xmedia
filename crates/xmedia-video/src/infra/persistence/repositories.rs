@@ -678,6 +678,72 @@ impl VideoWatchRepository for ToastyVideoWatchRepository {
         Ok(())
     }
 
+    async fn delete_library_references(
+        &self,
+        video_ids: &[VideoId],
+        show_ids: &[ShowId],
+    ) -> DomainResult<()> {
+        if video_ids.is_empty() && show_ids.is_empty() {
+            return Ok(());
+        }
+        let mut db = self.db.clone();
+        let video_id_set: HashSet<VideoId> = video_ids.iter().copied().collect();
+        let video_uuid_set: HashSet<Uuid> = video_ids.iter().map(|id| id.0).collect();
+        let show_uuid_set: HashSet<Uuid> = show_ids.iter().map(|id| id.0).collect();
+
+        if !video_uuid_set.is_empty() {
+            let raw_video_ids: Vec<Uuid> = video_uuid_set.iter().copied().collect();
+            for chunk in raw_video_ids.chunks(200) {
+                for row in VideoProgressModel::filter(
+                    VideoProgressModel::fields()
+                        .video_id()
+                        .in_list(chunk.to_vec()),
+                )
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                {
+                    row.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+            }
+        }
+
+        for row in VideoFavoriteModel::all()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            let match_video = row.kind == "video" && video_uuid_set.contains(&row.target_id);
+            let match_show = row.kind == "show" && show_uuid_set.contains(&row.target_id);
+            if match_video || match_show {
+                row.delete().exec(&mut db).await.map_err(db_err)?;
+            }
+        }
+
+        if !video_id_set.is_empty() {
+            for mut shelf in VideoShelfModel::all().exec(&mut db).await.map_err(db_err)? {
+                if shelf.video_ids.0.iter().any(|id| video_id_set.contains(id)) {
+                    let filtered: Vec<VideoId> = shelf
+                        .video_ids
+                        .0
+                        .iter()
+                        .copied()
+                        .filter(|id| !video_id_set.contains(id))
+                        .collect();
+                    shelf
+                        .update()
+                        .video_ids(toasty::Json(filtered))
+                        .updated_at(Timestamp::now())
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn set_favorite(
         &self,
         user_id: UserId,

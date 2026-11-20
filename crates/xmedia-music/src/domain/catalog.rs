@@ -1,38 +1,10 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
+pub use xmedia_core::domain::media::{PagedResult, SortOrder};
 
-macro_rules! define_entity_id {
-    ($name:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-        #[serde(transparent)]
-        pub struct $name(pub Uuid);
-
-        impl $name {
-            pub fn new() -> Self {
-                Self(Uuid::now_v7())
-            }
-        }
-
-        impl Default for $name {
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                self.0.fmt(f)
-            }
-        }
-    };
-}
-
-define_entity_id!(TrackId);
-define_entity_id!(AlbumId);
-define_entity_id!(ArtistId);
+xmedia_core::define_uuid_id!(TrackId, AlbumId, ArtistId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -268,14 +240,6 @@ impl StructuredLyrics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum SortOrder {
-    #[default]
-    Asc,
-    Desc,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum TrackSortField {
     Title,
     Artist,
@@ -298,7 +262,6 @@ pub struct TrackQuery {
     pub year_from: Option<i32>,
     pub year_to: Option<i32>,
     pub search: Option<String>,
-    pub only_ids: Option<Vec<TrackId>>,
     pub sort_by: TrackSortField,
     pub sort_order: SortOrder,
     pub page: u32,
@@ -316,7 +279,6 @@ impl Default for TrackQuery {
             year_from: None,
             year_to: None,
             search: None,
-            only_ids: None,
             sort_by: TrackSortField::CreatedAt,
             sort_order: SortOrder::Desc,
             page: 1,
@@ -461,12 +423,4 @@ pub struct SearchResult {
     pub artists: Vec<Artist>,
     pub albums: Vec<Album>,
     pub tracks: Vec<Track>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PagedResult<T> {
-    pub items: Vec<T>,
-    pub total: u64,
-    pub page: u32,
-    pub page_size: u32,
 }

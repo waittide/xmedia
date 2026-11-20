@@ -21,11 +21,7 @@ impl FfmpegAudioTranscoder {
 #[async_trait]
 impl AudioTranscoderPort for FfmpegAudioTranscoder {
     async fn check_status(&self) -> FfmpegStatusDto {
-        let st = self.ffmpeg.check_status().await;
-        FfmpegStatusDto {
-            available: st.ffmpeg_available,
-            version: st.ffmpeg_version,
-        }
+        self.ffmpeg.check_status().await
     }
 
     async fn transcode_stream(

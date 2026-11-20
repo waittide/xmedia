@@ -8,12 +8,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::http::{ApiResult, into_range_http_response, parse_http_range_spec};
+use xmedia_core::domain::user::User;
+use xmedia_core::domain::xml::xml_escape;
+use xmedia_core::http::{ApiResult, OpdsAuth, into_range_http_response, parse_http_range_spec};
 
 use crate::application::dto::UpdateProgressInput;
 use crate::application::opds::{OpdsChapterEntry, OpdsFeed, OpdsFeedPayload, OpdsNavItem};
 use crate::domain::id::{ChapterId, ComicShelfId, SeriesId};
-use crate::http::extractors::ComicOpdsAuth;
 use crate::http::rest::respond_with_etag;
 use crate::http::state::ComicHttpState;
 
@@ -22,8 +23,45 @@ struct OpdsSearchQuery {
     q: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpdsVersion {
+    V12,
+    V20,
+}
+
+impl OpdsVersion {
+    fn version_prefix(self, opds_prefix: &str) -> String {
+        match self {
+            Self::V12 => format!("{opds_prefix}/v1.2"),
+            Self::V20 => format!("{opds_prefix}/v2.0"),
+        }
+    }
+
+    fn render(self, opds_prefix: &str, feed: &OpdsFeed) -> Response {
+        match self {
+            Self::V12 => render_atom_feed(opds_prefix, feed),
+            Self::V20 => render_opds2_json(opds_prefix, feed),
+        }
+    }
+}
+
+enum FeedKind {
+    Root,
+    Continue,
+    Latest,
+    AllSeries(Option<String>),
+    SeriesChapters(SeriesId),
+    Libraries,
+    LibrarySeries(LibraryId),
+    Tags,
+    TagSeries { name: String, is_genre: bool },
+    Shelves,
+    ShelfSeries(ComicShelfId),
+    Favorites,
+}
+
 pub fn router() -> Router<ComicHttpState> {
-    Router::new()
+    let base = Router::new()
         .route(
             "/",
             get(|State(state): State<ComicHttpState>| async move {
@@ -31,46 +69,218 @@ pub fn router() -> Router<ComicHttpState> {
             }),
         )
         .route("/covers/{key}", get(opds_cover))
-        // OPDS 1.2 (Atom XML + PSE 1.1)
-        .route("/v1.2", get(v12_root))
+        // OPDS 1.2 specific endpoints (OpenSearch + PSE 1.1 + Archive Download)
         .route("/v1.2/opensearch.xml", get(v12_opensearch))
-        .route("/v1.2/continue", get(v12_continue))
-        .route("/v1.2/latest", get(v12_latest))
-        .route("/v1.2/series", get(v12_all_series))
-        .route("/v1.2/series/{id}", get(v12_series_chapters))
-        .route("/v1.2/libraries", get(v12_libraries))
-        .route("/v1.2/libraries/{id}", get(v12_library_series))
-        .route("/v1.2/tags", get(v12_tags))
-        .route("/v1.2/tags/{tag}", get(v12_tag_series))
-        .route("/v1.2/genres/{genre}", get(v12_genre_series))
-        .route("/v1.2/shelves", get(v12_shelves))
-        .route("/v1.2/shelves/{id}", get(v12_shelf_series))
-        .route("/v1.2/favorites", get(v12_favorites))
         .route("/v1.2/chapters/{id}/download", get(opds_download_chapter))
         .route(
             "/v1.2/chapters/{id}/pse/{page_index}",
             get(opds_pse_stream_page),
         )
-        // OPDS 2.0 (JSON)
-        .route("/v2", get(v20_root))
-        .route("/v2.0", get(v20_root))
-        .route("/v2.0/continue", get(v20_continue))
-        .route("/v2.0/latest", get(v20_latest))
-        .route("/v2.0/series", get(v20_all_series))
-        .route("/v2.0/series/{id}", get(v20_series_chapters))
-        .route("/v2.0/libraries", get(v20_libraries))
-        .route("/v2.0/libraries/{id}", get(v20_library_series))
-        .route("/v2.0/tags", get(v20_tags))
-        .route("/v2.0/tags/{tag}", get(v20_tag_series))
-        .route("/v2.0/genres/{genre}", get(v20_genre_series))
-        .route("/v2.0/shelves", get(v20_shelves))
-        .route("/v2.0/shelves/{id}", get(v20_shelf_series))
-        .route("/v2.0/favorites", get(v20_favorites))
+        // OPDS 2.0 short alias
+        .route(
+            "/v2",
+            get(
+                |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, OpdsVersion::V20, FeedKind::Root).await
+                },
+            ),
+        );
+
+    let with_v12 = mount_versioned_feeds(base, "/v1.2", OpdsVersion::V12);
+    mount_versioned_feeds(with_v12, "/v2.0", OpdsVersion::V20)
+}
+
+fn mount_versioned_feeds(
+    router: Router<ComicHttpState>,
+    base: &str,
+    version: OpdsVersion,
+) -> Router<ComicHttpState> {
+    router
+        .route(
+            base,
+            get(
+                move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, version, FeedKind::Root).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/continue"),
+            get(
+                move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, version, FeedKind::Continue).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/latest"),
+            get(
+                move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, version, FeedKind::Latest).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/series"),
+            get(
+                move |State(state): State<ComicHttpState>,
+                      OpdsAuth(user): OpdsAuth,
+                      Query(q): Query<OpdsSearchQuery>| async move {
+                    serve_feed(state, user, version, FeedKind::AllSeries(q.q)).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/series/{{id}}"),
+            get(
+                move |State(state): State<ComicHttpState>,
+                      OpdsAuth(user): OpdsAuth,
+                      Path(id): Path<Uuid>| async move {
+                    serve_feed(state, user, version, FeedKind::SeriesChapters(SeriesId(id))).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/libraries"),
+            get(
+                move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, version, FeedKind::Libraries).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/libraries/{{id}}"),
+            get(
+                move |State(state): State<ComicHttpState>,
+                      OpdsAuth(user): OpdsAuth,
+                      Path(id): Path<Uuid>| async move {
+                    serve_feed(state, user, version, FeedKind::LibrarySeries(LibraryId(id))).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/tags"),
+            get(
+                move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, version, FeedKind::Tags).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/tags/{{tag}}"),
+            get(
+                move |State(state): State<ComicHttpState>,
+                      OpdsAuth(user): OpdsAuth,
+                      Path(tag): Path<String>| async move {
+                    serve_feed(
+                        state,
+                        user,
+                        version,
+                        FeedKind::TagSeries {
+                            name: tag,
+                            is_genre: false,
+                        },
+                    )
+                    .await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/genres/{{genre}}"),
+            get(
+                move |State(state): State<ComicHttpState>,
+                      OpdsAuth(user): OpdsAuth,
+                      Path(genre): Path<String>| async move {
+                    serve_feed(
+                        state,
+                        user,
+                        version,
+                        FeedKind::TagSeries {
+                            name: genre,
+                            is_genre: true,
+                        },
+                    )
+                    .await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/shelves"),
+            get(
+                move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, version, FeedKind::Shelves).await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/shelves/{{id}}"),
+            get(
+                move |State(state): State<ComicHttpState>,
+                      OpdsAuth(user): OpdsAuth,
+                      Path(id): Path<Uuid>| async move {
+                    serve_feed(
+                        state,
+                        user,
+                        version,
+                        FeedKind::ShelfSeries(ComicShelfId(id)),
+                    )
+                    .await
+                },
+            ),
+        )
+        .route(
+            &format!("{base}/favorites"),
+            get(
+                move |State(state): State<ComicHttpState>, OpdsAuth(user): OpdsAuth| async move {
+                    serve_feed(state, user, version, FeedKind::Favorites).await
+                },
+            ),
+        )
+}
+
+async fn serve_feed(
+    state: ComicHttpState,
+    user: User,
+    version: OpdsVersion,
+    kind: FeedKind,
+) -> ApiResult<Response> {
+    let p = state.opds_prefix.as_ref();
+    let vp = version.version_prefix(p);
+    let opds = &state.services.opds;
+    let catalog = &state.services.catalog;
+
+    let feed = match kind {
+        FeedKind::Root => opds.root_feed(&vp),
+        FeedKind::Continue => opds.continue_reading_feed(&user, catalog, p, &vp).await?,
+        FeedKind::Latest => opds.latest_series_feed(&user, catalog, p, &vp).await?,
+        FeedKind::AllSeries(search) => opds.all_series_feed(&user, catalog, search, p, &vp).await?,
+        FeedKind::SeriesChapters(series_id) => {
+            opds.series_chapters_feed(&user, series_id, p, &vp).await?
+        }
+        FeedKind::Libraries => opds.libraries_feed(&vp).await?,
+        FeedKind::LibrarySeries(lib_id) => {
+            opds.library_series_feed(&user, catalog, lib_id, p, &vp)
+                .await?
+        }
+        FeedKind::Tags => opds.tags_feed(catalog, &vp).await?,
+        FeedKind::TagSeries { name, is_genre } => {
+            opds.tag_series_feed(&user, catalog, &name, is_genre, p, &vp)
+                .await?
+        }
+        FeedKind::Shelves => opds.shelves_feed(&user, &vp).await?,
+        FeedKind::ShelfSeries(shelf_id) => {
+            opds.shelf_series_feed(&user, catalog, shelf_id, p, &vp)
+                .await?
+        }
+        FeedKind::Favorites => opds.favorites_series_feed(&user, catalog, p, &vp).await?,
+    };
+
+    Ok(version.render(p, &feed))
 }
 
 async fn opds_cover(
     State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_user): ComicOpdsAuth,
+    OpdsAuth(_user): OpdsAuth,
     headers: HeaderMap,
     Path(key): Path<String>,
 ) -> ApiResult<Response> {
@@ -80,7 +290,7 @@ async fn opds_cover(
 
 async fn opds_download_chapter(
     State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_user): ComicOpdsAuth,
+    OpdsAuth(_user): OpdsAuth,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
@@ -102,7 +312,7 @@ async fn opds_download_chapter(
 
 async fn opds_pse_stream_page(
     State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
+    OpdsAuth(user): OpdsAuth,
     headers: HeaderMap,
     Path((id, page_index)): Path<(Uuid, u32)>,
 ) -> ApiResult<Response> {
@@ -132,7 +342,7 @@ async fn opds_pse_stream_page(
 
 async fn v12_opensearch(
     State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_user): ComicOpdsAuth,
+    OpdsAuth(_user): OpdsAuth,
 ) -> Response {
     let p = state.opds_prefix.as_ref();
     let xml = format!(
@@ -156,360 +366,6 @@ async fn v12_opensearch(
         .into_response()
 }
 
-// --- OPDS 1.2 Handlers ---
-
-async fn v12_root(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_u): ComicOpdsAuth,
-) -> Response {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    render_atom_feed(p, &state.services.opds.root_feed(&vp))
-}
-
-async fn v12_continue(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .continue_reading_feed(&user, &state.services.catalog, p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_latest(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .latest_series_feed(&user, &state.services.catalog, p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_all_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Query(q): Query<OpdsSearchQuery>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .all_series_feed(&user, &state.services.catalog, q.q, p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_series_chapters(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .series_chapters_feed(&user, SeriesId(id), p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_libraries(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state.services.opds.libraries_feed(&vp).await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_library_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .library_series_feed(&user, &state.services.catalog, LibraryId(id), p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_tags(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_u): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .tags_feed(&state.services.catalog, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_tag_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(tag): Path<String>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .tag_series_feed(&user, &state.services.catalog, &tag, false, p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_genre_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(genre): Path<String>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .tag_series_feed(&user, &state.services.catalog, &genre, true, p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_shelves(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state.services.opds.shelves_feed(&user, &vp).await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_shelf_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .shelf_series_feed(&user, &state.services.catalog, ComicShelfId(id), p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-async fn v12_favorites(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v1.2");
-    let feed = state
-        .services
-        .opds
-        .favorites_series_feed(&user, &state.services.catalog, p, &vp)
-        .await?;
-    Ok(render_atom_feed(p, &feed))
-}
-
-// --- OPDS 2.0 Handlers ---
-
-async fn v20_root(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_u): ComicOpdsAuth,
-) -> Response {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    render_opds2_json(p, &state.services.opds.root_feed(&vp))
-}
-
-async fn v20_continue(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .continue_reading_feed(&user, &state.services.catalog, p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_latest(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .latest_series_feed(&user, &state.services.catalog, p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_all_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Query(q): Query<OpdsSearchQuery>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .all_series_feed(&user, &state.services.catalog, q.q, p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_series_chapters(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .series_chapters_feed(&user, SeriesId(id), p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_libraries(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_u): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state.services.opds.libraries_feed(&vp).await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_library_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .library_series_feed(&user, &state.services.catalog, LibraryId(id), p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_tags(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(_u): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .tags_feed(&state.services.catalog, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_tag_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(tag): Path<String>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .tag_series_feed(&user, &state.services.catalog, &tag, false, p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_genre_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(genre): Path<String>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .tag_series_feed(&user, &state.services.catalog, &genre, true, p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_shelves(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state.services.opds.shelves_feed(&user, &vp).await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_shelf_series(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-    Path(id): Path<Uuid>,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .shelf_series_feed(&user, &state.services.catalog, ComicShelfId(id), p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
-async fn v20_favorites(
-    State(state): State<ComicHttpState>,
-    ComicOpdsAuth(user): ComicOpdsAuth,
-) -> ApiResult<Response> {
-    let p = state.opds_prefix.as_ref();
-    let vp = format!("{p}/v2.0");
-    let feed = state
-        .services
-        .opds
-        .favorites_series_feed(&user, &state.services.catalog, p, &vp)
-        .await?;
-    Ok(render_opds2_json(p, &feed))
-}
-
 // --- Serializers ---
 
 fn render_atom_feed(prefix: &str, feed: &OpdsFeed) -> Response {
@@ -524,13 +380,13 @@ fn render_atom_feed(prefix: &str, feed: &OpdsFeed) -> Response {
     xml.push_str(
         r#"<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opds="http://opds-spec.org/2010/catalog" xmlns:pse="http://vaemendis.net/opds-pse/ns">"#,
     );
-    xml.push_str(&format!("\n  <id>{}</id>", escape_xml(&feed.id)));
-    xml.push_str(&format!("\n  <title>{}</title>", escape_xml(&feed.title)));
+    xml.push_str(&format!("\n  <id>{}</id>", xml_escape(&feed.id)));
+    xml.push_str(&format!("\n  <title>{}</title>", xml_escape(&feed.title)));
     xml.push_str(&format!("\n  <updated>{updated}</updated>"));
     xml.push_str("\n  <author><name>xmedia</name></author>");
     xml.push_str(&format!(
         "\n  <link rel=\"self\" href=\"{}\" type=\"{feed_mime}\"/>",
-        escape_xml(&feed.self_path)
+        xml_escape(&feed.self_path)
     ));
     xml.push_str(&format!(
         "\n  <link rel=\"start\" href=\"{prefix}/v1.2\" type=\"application/atom+xml;profile=opds-catalog;kind=navigation\"/>"
@@ -573,21 +429,21 @@ fn append_nav_entry_xml(xml: &mut String, item: &OpdsNavItem) {
         "navigation"
     };
     xml.push_str("\n  <entry>");
-    xml.push_str(&format!("\n    <id>{}</id>", escape_xml(&item.id)));
-    xml.push_str(&format!("\n    <title>{}</title>", escape_xml(&item.title)));
+    xml.push_str(&format!("\n    <id>{}</id>", xml_escape(&item.id)));
+    xml.push_str(&format!("\n    <title>{}</title>", xml_escape(&item.title)));
     xml.push_str(&format!("\n    <updated>{updated}</updated>"));
     xml.push_str(&format!(
         "\n    <content type=\"text\">{}</content>",
-        escape_xml(&item.summary)
+        xml_escape(&item.summary)
     ));
     xml.push_str(&format!(
         "\n    <link rel=\"subsection\" href=\"{}\" type=\"application/atom+xml;profile=opds-catalog;kind={sub_kind}\"/>",
-        escape_xml(&item.subsection_path)
+        xml_escape(&item.subsection_path)
     ));
     if let Some(cover) = &item.cover_url {
         xml.push_str(&format!(
             "\n    <link rel=\"http://opds-spec.org/image/thumbnail\" href=\"{}\" type=\"image/webp\"/>",
-            escape_xml(cover)
+            xml_escape(cover)
         ));
     }
     xml.push_str("\n  </entry>");
@@ -602,30 +458,30 @@ fn append_acq_entry_xml(xml: &mut String, prefix: &str, entry: &OpdsChapterEntry
     ));
     xml.push_str(&format!(
         "\n    <title>{} - {}</title>",
-        escape_xml(&entry.series_title),
-        escape_xml(&entry.title)
+        xml_escape(&entry.series_title),
+        xml_escape(&entry.title)
     ));
     xml.push_str(&format!("\n    <updated>{updated}</updated>"));
     for author in &entry.authors {
         xml.push_str(&format!(
             "\n    <author><name>{}</name></author>",
-            escape_xml(author)
+            xml_escape(author)
         ));
     }
     if !entry.summary.is_empty() {
         xml.push_str(&format!(
             "\n    <summary>{}</summary>",
-            escape_xml(&entry.summary)
+            xml_escape(&entry.summary)
         ));
     }
     if let Some(cover) = &entry.cover_url {
         xml.push_str(&format!(
             "\n    <link rel=\"http://opds-spec.org/image\" href=\"{}\" type=\"image/webp\"/>",
-            escape_xml(cover)
+            xml_escape(cover)
         ));
         xml.push_str(&format!(
             "\n    <link rel=\"http://opds-spec.org/image/thumbnail\" href=\"{}\" type=\"image/webp\"/>",
-            escape_xml(cover)
+            xml_escape(cover)
         ));
     }
     if entry.can_download_archive {
@@ -761,17 +617,121 @@ fn render_opds2_json(prefix: &str, feed: &OpdsFeed) -> Response {
     res
 }
 
-fn escape_xml(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            other => out.push(other),
-        }
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+    use jiff::Timestamp;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn render_atom_and_opds2_navigation_feed_escapes_xml_and_preserves_schema() {
+        let now = Timestamp::from_second(1_700_000_000).unwrap();
+        let feed = OpdsFeed {
+            id: "urn:xmedia:comic:opds:root".into(),
+            title: "Tom & Jerry <Comics> \"Special\" 'Ed'".into(),
+            self_path: "/opds/comic/v1.2".into(),
+            updated_at: now,
+            payload: OpdsFeedPayload::Navigation(vec![OpdsNavItem {
+                id: "urn:xmedia:comic:series:1".into(),
+                title: "A & B <Vol.1>".into(),
+                summary: "3 chapters & extras".into(),
+                subsection_path: "/opds/comic/v1.2/series/1".into(),
+                cover_url: Some("/opds/comic/covers/abc.png".into()),
+                updated_at: now,
+            }]),
+        };
+
+        let atom_res = OpdsVersion::V12.render("/opds/comic", &feed);
+        assert_eq!(atom_res.status(), StatusCode::OK);
+        assert_eq!(
+            atom_res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/atom+xml;profile=opds-catalog;kind=navigation; charset=utf-8"
+        );
+        let xml = String::from_utf8(
+            to_bytes(atom_res.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(xml.contains("Tom &amp; Jerry &lt;Comics&gt; &quot;Special&quot; &apos;Ed&apos;"));
+        assert!(xml.contains("<title>A &amp; B &lt;Vol.1&gt;</title>"));
+        assert!(xml.contains("kind=acquisition"));
+        assert!(xml.contains("href=\"/opds/comic/covers/abc.png\""));
+
+        let v2_feed = OpdsFeed {
+            self_path: "/opds/comic/v2.0".into(),
+            ..feed
+        };
+        let json_res = OpdsVersion::V20.render("/opds/comic", &v2_feed);
+        assert_eq!(json_res.status(), StatusCode::OK);
+        assert_eq!(
+            json_res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/opds+json; charset=utf-8"
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(json_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(
+            body["metadata"]["title"],
+            "Tom & Jerry <Comics> \"Special\" 'Ed'"
+        );
+        assert_eq!(body["navigation"][0]["title"], "A & B <Vol.1>");
+        assert!(body.get("publications").is_none());
     }
-    out
+
+    #[tokio::test]
+    async fn render_atom_and_opds2_acquisition_feed_includes_pse_and_download_links() {
+        let now = Timestamp::from_second(1_700_000_000).unwrap();
+        let chapter_id = ChapterId::new();
+        let feed = OpdsFeed {
+            id: "urn:xmedia:comic:series:test".into(),
+            title: "Witch Hat".into(),
+            self_path: "/opds/comic/v1.2/series/test".into(),
+            updated_at: now,
+            payload: OpdsFeedPayload::Acquisition(vec![OpdsChapterEntry {
+                id: chapter_id,
+                series_title: "Witch & Hat".into(),
+                title: "#1 - <Start>".into(),
+                summary: "Intro & pilot".into(),
+                authors: vec!["Author <A>".into()],
+                cover_url: Some("/opds/comic/covers/hash.jpg".into()),
+                page_count: 24,
+                last_read_page: Some(7),
+                last_read_at: Some(now),
+                can_download_archive: true,
+                archive_mime: "application/vnd.comicbook+zip",
+                updated_at: now,
+            }]),
+        };
+
+        let atom_res = OpdsVersion::V12.render("/opds/comic", &feed);
+        assert_eq!(
+            atom_res.headers().get(header::CONTENT_TYPE).unwrap(),
+            "application/atom+xml;profile=opds-catalog;kind=acquisition; charset=utf-8"
+        );
+        let xml = String::from_utf8(
+            to_bytes(atom_res.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(xml.contains("Witch &amp; Hat - #1 - &lt;Start&gt;"));
+        assert!(xml.contains("<author><name>Author &lt;A&gt;</name></author>"));
+        assert!(xml.contains("pse:count=\"24\" pse:lastRead=\"7\""));
+        assert!(xml.contains(&format!("/opds/comic/v1.2/chapters/{chapter_id}/download")));
+
+        let json_res = OpdsVersion::V20.render("/opds/comic", &feed);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(json_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert!(body.get("navigation").is_none());
+        let pub0 = &body["publications"][0];
+        assert_eq!(pub0["metadata"]["numberOfPages"], 24);
+        assert_eq!(pub0["links"][0]["properties"]["pse:lastRead"], 7);
+        assert_eq!(pub0["links"][1]["rel"], "http://opds-spec.org/acquisition");
+        assert_eq!(pub0["images"][0]["href"], "/opds/comic/covers/hash.jpg");
+    }
 }

@@ -6,27 +6,7 @@ use xmedia_core::domain::user::UserId;
 
 use crate::domain::catalog::{AlbumId, TrackId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct PlaylistId(pub Uuid);
-
-impl PlaylistId {
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-}
-
-impl Default for PlaylistId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for PlaylistId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+xmedia_core::define_uuid_id!(PlaylistId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {

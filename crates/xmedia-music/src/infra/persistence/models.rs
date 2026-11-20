@@ -36,7 +36,6 @@ pub(crate) struct MusicAlbumModel {
     pub album_key: String,
 
     pub title: String,
-    pub title_lower: String,
 
     #[index]
     pub album_artist_id: Uuid,
@@ -72,7 +71,6 @@ pub(crate) struct MusicTrackModel {
     pub album_artist_id: Uuid,
 
     pub title: String,
-    pub title_lower: String,
     pub artist_name: String,
     pub album_artist_name: String,
     pub album_title: String,

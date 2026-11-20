@@ -1,4 +1,3 @@
-pub mod extractors;
 pub mod rest;
 pub mod state;
 

@@ -5,22 +5,24 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use jiff::Timestamp;
+use xmedia_core::application::library::ScanProgressReporter;
 use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{User, UserId};
+use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::catalog::VideoCatalogService;
 use crate::application::dto::{VideoUploadItem, VideoUploadPathItem, VideoUploadResultDto};
 use crate::application::ports::{
-    ParsedNfoMetadata, VideoMediaEnginePort, VideoScannerPort, VideoStoragePort,
+    ParsedNfoMetadata, ProbedVideoInfo, VideoMediaEnginePort, VideoScannerPort, VideoStoragePort,
 };
 use crate::domain::filename_parser::{parse_sidecar_subtitle_lang_and_label, parse_video_path};
 use crate::domain::id::{ShowId, VideoId};
 use crate::domain::repository::{VideoCatalogRepository, VideoWatchRepository};
 use crate::domain::video::{
-    SidecarSubtitle, VideoContainer, VideoItem, VideoShow, VideoSource, is_subtitle_extension,
+    ShowQueryFilter, SidecarSubtitle, VideoContainer, VideoItem, VideoShow, VideoSource,
+    is_subtitle_extension,
 };
 
 #[derive(Clone)]
@@ -64,11 +66,7 @@ impl VideoDomainLifecycle {
         actor: &User,
         files: Vec<VideoUploadItem>,
     ) -> DomainResult<VideoUploadResultDto> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
+        require_admin(actor)?;
         if files.is_empty() {
             return Err(DomainError::Validation("no files uploaded".into()));
         }
@@ -195,11 +193,7 @@ impl VideoDomainLifecycle {
         actor: &User,
         files: Vec<VideoUploadPathItem>,
     ) -> DomainResult<VideoUploadResultDto> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
+        require_admin(actor)?;
         if files.is_empty() {
             return Err(DomainError::Validation("no files uploaded".into()));
         }
@@ -343,7 +337,7 @@ impl VideoDomainLifecycle {
         container: VideoContainer,
         file_size: u64,
         file_hash: String,
-        probed: xmedia_core::infra::ffmpeg::ProbedMediaInfo,
+        probed: ProbedVideoInfo,
         nfo: Option<ParsedNfoMetadata>,
         poster_key: Option<String>,
         source: VideoSource,
@@ -472,18 +466,19 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
         MediaKind::Video
     }
 
-    async fn scan_library(&self, mut library: Library) -> DomainResult<()> {
+    async fn scan_library(&self, library: Library) -> DomainResult<()> {
         let LibraryKind::LocalMount { ref root_path } = library.kind else {
             return Err(DomainError::Validation(
                 "cannot scan managed library".into(),
             ));
         };
+        let library_id = library.id;
         let root_path = root_path.clone();
 
         let entries = self.scanner.scan_video_entries(&root_path).await?;
         let entry_paths: HashSet<String> =
             entries.iter().map(|e| e.relative_path.clone()).collect();
-        let existing_videos = self.catalog_repo.list_videos_by_library(library.id).await?;
+        let existing_videos = self.catalog_repo.list_videos_by_library(library_id).await?;
         let mut existing_by_rel: HashMap<String, VideoItem> = HashMap::new();
         for v in existing_videos {
             if let VideoSource::LocalPath {
@@ -495,30 +490,19 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
         }
 
         let total = entries.len() as u64;
-        let progress_step = if total <= 100 {
-            1
-        } else if total <= 1000 {
-            5
-        } else {
-            20
-        };
-        library.mark_scanning(0, Some(total));
-        let _ = self.libraries.save(&library).await;
-        self.events.publish(SystemEvent::LibraryScanProgress {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Video,
-            scanned: 0,
-            total: Some(total),
-        });
+        let mut reporter = ScanProgressReporter::new(
+            library,
+            self.libraries.clone(),
+            self.events.clone(),
+            Some(total),
+        );
+        reporter.start().await;
 
         let mut seen_rel: HashSet<String> = HashSet::new();
-        let mut scanned_count = 0u64;
         let mut added_count = 0u64;
         let mut updated_count = 0u64;
 
         for entry in entries {
-            scanned_count += 1;
             seen_rel.insert(entry.relative_path.clone());
 
             let exact_prev = existing_by_rel.remove(&entry.relative_path);
@@ -538,29 +522,15 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                     self.catalog_repo.save_video(&existing).await?;
                     updated_count += 1;
                 }
-                if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
-                    library.mark_scanning(scanned_count, Some(total));
-                    let _ = self.libraries.save(&library).await;
-                    self.events.publish(SystemEvent::LibraryScanProgress {
-                        library_id: library.id,
-                        library_name: library.name.clone(),
-                        media_kind: MediaKind::Video,
-                        scanned: scanned_count,
-                        total: Some(total),
-                    });
-                }
+                reporter.advance().await;
                 continue;
             }
 
-            let fp_path = PathBuf::from(&entry.absolute_path);
-            let file_hash = tokio::task::spawn_blocking(move || {
-                xmedia_core::infra::fingerprint::fast_content_fingerprint(&fp_path)
-            })
-            .await
-            .ok()
-            .and_then(|res| res.ok())
-            .map(|(_, h)| h)
-            .unwrap_or_else(|| format!("{}:{}", entry.file_size, entry.file_mtime));
+            let file_hash = self
+                .scanner
+                .compute_file_fingerprint(Path::new(&entry.absolute_path))
+                .await
+                .unwrap_or_else(|_| format!("{}:{}", entry.file_size, entry.file_mtime));
 
             let exact_was_found = exact_prev.is_some();
             let prev_item = match exact_prev {
@@ -642,7 +612,7 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
 
                 let rel_path_clone = entry.relative_path.clone();
                 self.build_and_upsert_video(
-                    library.id,
+                    library_id,
                     video_id,
                     prev_ref.map(|v| v.created_at),
                     &rel_path_clone,
@@ -668,17 +638,7 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                 added_count += 1;
             }
 
-            if scanned_count.is_multiple_of(progress_step) || scanned_count == total {
-                library.mark_scanning(scanned_count, Some(total));
-                let _ = self.libraries.save(&library).await;
-                self.events.publish(SystemEvent::LibraryScanProgress {
-                    library_id: library.id,
-                    library_name: library.name.clone(),
-                    media_kind: MediaKind::Video,
-                    scanned: scanned_count,
-                    total: Some(total),
-                });
-            }
+            reporter.advance().await;
         }
 
         let mut missing_count = 0u64;
@@ -694,23 +654,9 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
         if added_count > 0 || updated_count > 0 || missing_count > 0 {
             self.catalog_repo.recompute_show_aggregates().await?;
         }
-        library.mark_scan_completed(scanned_count, added_count, updated_count, missing_count);
-        self.libraries.save(&library).await?;
-
-        self.events.publish(SystemEvent::LibraryScanCompleted {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Video,
-            scanned: scanned_count,
-            added: added_count,
-            updated: updated_count,
-            missing: missing_count,
-        });
-        if added_count > 0 || updated_count > 0 || missing_count > 0 {
-            self.events.publish(SystemEvent::MediaChanged {
-                media_kind: MediaKind::Video,
-            });
-        }
+        reporter
+            .complete(added_count, updated_count, missing_count)
+            .await?;
 
         Ok(())
     }
@@ -721,6 +667,16 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
         let videos = self.catalog_repo.list_videos_by_library(library_id).await?;
+        let shows = self
+            .catalog_repo
+            .list_shows(&ShowQueryFilter {
+                library_id: Some(library_id),
+                ..Default::default()
+            })
+            .await?;
+
+        let mut video_ids = Vec::with_capacity(videos.len());
+        let mut show_id_set: HashSet<ShowId> = shows.into_iter().map(|s| s.id).collect();
         for v in &videos {
             if let VideoSource::Managed {
                 ref storage_key,
@@ -732,8 +688,16 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                     let _ = self.storage.delete_managed_file(&sc.path_or_key).await;
                 }
             }
-            let _ = self.watch_repo.delete_progress_by_video(v.id).await;
+            video_ids.push(v.id);
+            if let Some(sid) = v.show_id {
+                show_id_set.insert(sid);
+            }
         }
+        let show_ids: Vec<ShowId> = show_id_set.into_iter().collect();
+
+        self.watch_repo
+            .delete_library_references(&video_ids, &show_ids)
+            .await?;
         self.catalog_repo
             .delete_videos_by_library(library_id)
             .await?;

@@ -145,12 +145,16 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let raw_ids: Vec<Uuid> = ids.iter().map(|i| i.0).collect();
-        let rows = MusicTrackModel::filter(MusicTrackModel::fields().id().in_list(raw_ids))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::track_to_domain).collect())
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let raw_ids: Vec<Uuid> = chunk.iter().map(|i| i.0).collect();
+            let rows = MusicTrackModel::filter(MusicTrackModel::fields().id().in_list(raw_ids))
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            out.extend(rows.into_iter().map(Self::track_to_domain));
+        }
+        Ok(out)
     }
 
     async fn list_tracks_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Track>> {
@@ -193,10 +197,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         }
         let rows = builder.exec(&mut db).await.map_err(db_err)?;
 
-        let only_set: Option<HashSet<TrackId>> = query
-            .only_ids
-            .as_ref()
-            .map(|ids| ids.iter().copied().collect());
         let tag_track_set: Option<HashSet<TrackId>> = if let Some(tag_lower) = query
             .tag
             .as_ref()
@@ -226,11 +226,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .into_iter()
             .map(Self::track_to_domain)
             .filter(|t| {
-                if let Some(ref set) = only_set
-                    && !set.contains(&t.id)
-                {
-                    return false;
-                }
                 if let Some(ref tset) = tag_track_set
                     && !tset.contains(&t.id)
                 {
@@ -456,7 +451,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .await
             .map_err(db_err)?;
 
-        let title_lower = track.title.to_lowercase();
         let track_num = track.track_number.map(i64::from);
         let disc_num = track.disc_number.map(i64::from);
         let year = track.year.map(i64::from);
@@ -474,7 +468,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
                 .artist_id(track.artist_id.0)
                 .album_artist_id(track.album_artist_id.0)
                 .title(track.title.clone())
-                .title_lower(title_lower)
                 .artist_name(track.artist_name.clone())
                 .album_artist_name(track.album_artist_name.clone())
                 .album_title(track.album_title.clone())
@@ -509,7 +502,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
                 artist_id: track.artist_id.0,
                 album_artist_id: track.album_artist_id.0,
                 title: track.title.clone(),
-                title_lower: title_lower,
                 artist_name: track.artist_name.clone(),
                 album_artist_name: track.album_artist_name.clone(),
                 album_title: track.album_title.clone(),
@@ -599,12 +591,16 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let raw_ids: Vec<Uuid> = ids.iter().map(|i| i.0).collect();
-        let rows = MusicAlbumModel::filter(MusicAlbumModel::fields().id().in_list(raw_ids))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::album_to_domain).collect())
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let raw_ids: Vec<Uuid> = chunk.iter().map(|i| i.0).collect();
+            let rows = MusicAlbumModel::filter(MusicAlbumModel::fields().id().in_list(raw_ids))
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            out.extend(rows.into_iter().map(Self::album_to_domain));
+        }
+        Ok(out)
     }
 
     async fn list_albums(
@@ -763,7 +759,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        let title_lower = album.title.to_lowercase();
         let year = album.year.map(i64::from);
 
         if let Some(mut rec) = existing {
@@ -771,7 +766,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
                 .library_id(album.library_id.0)
                 .album_key(album.album_key.clone())
                 .title(album.title.clone())
-                .title_lower(title_lower)
                 .album_artist_id(album.album_artist_id.0)
                 .album_artist_name(album.album_artist_name.clone())
                 .year(year)
@@ -791,7 +785,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
                 library_id: album.library_id.0,
                 album_key: album.album_key.clone(),
                 title: album.title.clone(),
-                title_lower: title_lower,
                 album_artist_id: album.album_artist_id.0,
                 album_artist_name: album.album_artist_name.clone(),
                 year: year,
@@ -808,16 +801,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .await
             .map_err(db_err)?;
         }
-        Ok(())
-    }
-
-    async fn delete_album(&self, id: AlbumId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        MusicAlbumModel::filter_by_id(id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
         Ok(())
     }
 
@@ -847,12 +830,16 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             return Ok(Vec::new());
         }
         let mut db = self.db.clone();
-        let raw_ids: Vec<Uuid> = ids.iter().map(|i| i.0).collect();
-        let rows = MusicArtistModel::filter(MusicArtistModel::fields().id().in_list(raw_ids))
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(rows.into_iter().map(Self::artist_to_domain).collect())
+        let mut out = Vec::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let raw_ids: Vec<Uuid> = chunk.iter().map(|i| i.0).collect();
+            let rows = MusicArtistModel::filter(MusicArtistModel::fields().id().in_list(raw_ids))
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            out.extend(rows.into_iter().map(Self::artist_to_domain));
+        }
+        Ok(out)
     }
 
     async fn list_artists(&self, query: &ArtistQuery) -> DomainResult<PagedResult<Artist>> {
@@ -968,16 +955,6 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         Ok(())
     }
 
-    async fn delete_artist(&self, id: ArtistId) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        MusicArtistModel::filter_by_id(id.0)
-            .delete()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
     async fn list_genres(&self) -> DomainResult<Vec<GenreStat>> {
         let mut db = self.db.clone();
         let rows = MusicTrackModel::filter_by_is_missing(false)
@@ -1077,16 +1054,18 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             return Ok(HashMap::new());
         }
         let mut db = self.db.clone();
-        let raw_ids: Vec<Uuid> = track_ids.iter().map(|i| i.0).collect();
-        let rows =
-            MusicTrackTagModel::filter(MusicTrackTagModel::fields().track_id().in_list(raw_ids))
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
-
         let mut map: HashMap<TrackId, Vec<String>> = HashMap::new();
-        for row in rows {
-            map.entry(TrackId(row.track_id)).or_default().push(row.tag);
+        for chunk in track_ids.chunks(500) {
+            let raw_ids: Vec<Uuid> = chunk.iter().map(|i| i.0).collect();
+            let rows = MusicTrackTagModel::filter(
+                MusicTrackTagModel::fields().track_id().in_list(raw_ids),
+            )
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+            for row in rows {
+                map.entry(TrackId(row.track_id)).or_default().push(row.tag);
+            }
         }
         for list in map.values_mut() {
             list.sort_by_key(|t| t.to_lowercase());
@@ -1407,17 +1386,6 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
         Ok(out)
     }
 
-    async fn list_owned_playlists(&self, owner_id: UserId) -> DomainResult<Vec<Playlist>> {
-        let mut db = self.db.clone();
-        let rows = MusicPlaylistModel::filter_by_owner_id(owner_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        let mut out: Vec<Playlist> = rows.into_iter().map(Self::playlist_to_domain).collect();
-        out.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
-        Ok(out)
-    }
-
     async fn save_playlist(&self, playlist: &Playlist) -> DomainResult<()> {
         let mut db = self.db.clone();
         let existing = MusicPlaylistModel::filter_by_id(playlist.id.0)
@@ -1466,109 +1434,173 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
         Ok(())
     }
 
-    async fn delete_track_references(
+    async fn delete_tracks_references(
         &self,
-        track_id: TrackId,
-        deleted_album_id: Option<AlbumId>,
+        track_ids: &[TrackId],
+        deleted_album_ids: &[AlbumId],
         deleted_artist_ids: &[ArtistId],
     ) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        for mut pl in MusicPlaylistModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            if pl.track_ids.0.contains(&track_id) {
-                let filtered: Vec<TrackId> = pl
-                    .track_ids
-                    .0
-                    .iter()
-                    .copied()
-                    .filter(|&id| id != track_id)
-                    .collect();
-                pl.update()
-                    .track_ids(toasty::Json(filtered))
-                    .updated_at(Timestamp::now())
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
-            }
-        }
-        for mut q in MusicPlayQueueModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            let has_in_list = q.track_ids.0.contains(&track_id);
-            let is_current = q.current_track_id == Some(track_id.0);
-            if has_in_list || is_current {
-                let filtered: Vec<TrackId> = q
-                    .track_ids
-                    .0
-                    .iter()
-                    .copied()
-                    .filter(|&id| id != track_id)
-                    .collect();
-                let next_current = if is_current {
-                    filtered.first().map(|id| id.0)
-                } else {
-                    q.current_track_id
-                };
-                q.update()
-                    .track_ids(toasty::Json(filtered))
-                    .current_track_id(next_current)
-                    .updated_at(Timestamp::now())
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
-            }
-        }
-        for row in MusicBookmarkModel::filter_by_track_id(track_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in MusicPlayStatModel::filter_by_track_id(track_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in MusicScrobbleModel::filter_by_track_id(track_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
+        if track_ids.is_empty() && deleted_album_ids.is_empty() && deleted_artist_ids.is_empty() {
+            return Ok(());
         }
 
-        let mut remove_targets: Vec<(StarTargetKind, Uuid)> =
-            vec![(StarTargetKind::Track, track_id.0)];
-        if let Some(aid) = deleted_album_id {
-            remove_targets.push((StarTargetKind::Album, aid.0));
-        }
-        for arid in deleted_artist_ids {
-            remove_targets.push((StarTargetKind::Artist, arid.0));
-        }
-        for (kind, target_uuid) in remove_targets {
-            for row in MusicStarredModel::filter_by_target_id(target_uuid)
+        let mut db = self.db.clone();
+        let track_id_set: HashSet<TrackId> = track_ids.iter().copied().collect();
+
+        if !track_id_set.is_empty() {
+            for mut pl in MusicPlaylistModel::all()
                 .exec(&mut db)
                 .await
                 .map_err(db_err)?
             {
-                if row.kind == kind.as_str() {
+                if pl.track_ids.0.iter().any(|id| track_id_set.contains(id)) {
+                    let filtered: Vec<TrackId> = pl
+                        .track_ids
+                        .0
+                        .iter()
+                        .copied()
+                        .filter(|id| !track_id_set.contains(id))
+                        .collect();
+                    pl.update()
+                        .track_ids(toasty::Json(filtered))
+                        .updated_at(Timestamp::now())
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                }
+            }
+
+            for mut q in MusicPlayQueueModel::all()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+            {
+                let has_in_list = q.track_ids.0.iter().any(|id| track_id_set.contains(id));
+                let is_current = q
+                    .current_track_id
+                    .is_some_and(|cid| track_id_set.contains(&TrackId(cid)));
+                if has_in_list || is_current {
+                    let filtered: Vec<TrackId> = q
+                        .track_ids
+                        .0
+                        .iter()
+                        .copied()
+                        .filter(|id| !track_id_set.contains(id))
+                        .collect();
+                    let next_current = if is_current {
+                        filtered.first().map(|id| id.0)
+                    } else {
+                        q.current_track_id
+                    };
+                    let next_position = if is_current { 0 } else { q.position_ms };
+                    q.update()
+                        .track_ids(toasty::Json(filtered))
+                        .current_track_id(next_current)
+                        .position_ms(next_position)
+                        .updated_at(Timestamp::now())
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                }
+            }
+
+            for chunk in track_ids.chunks(500) {
+                let raw_ids: Vec<Uuid> = chunk.iter().map(|id| id.0).collect();
+                for row in MusicBookmarkModel::filter(
+                    MusicBookmarkModel::fields()
+                        .track_id()
+                        .in_list(raw_ids.clone()),
+                )
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                {
+                    row.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+                for row in MusicPlayStatModel::filter(
+                    MusicPlayStatModel::fields()
+                        .track_id()
+                        .in_list(raw_ids.clone()),
+                )
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                {
+                    row.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+                for row in MusicScrobbleModel::filter(
+                    MusicScrobbleModel::fields().track_id().in_list(raw_ids),
+                )
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?
+                {
                     row.delete().exec(&mut db).await.map_err(db_err)?;
                 }
             }
-            for row in MusicRatingModel::filter_by_target_id(target_uuid)
+        }
+
+        if !deleted_album_ids.is_empty() {
+            for chunk in deleted_album_ids.chunks(500) {
+                let raw_album_ids: Vec<Uuid> = chunk.iter().map(|id| id.0).collect();
+                for row in MusicPlayStatModel::filter(
+                    MusicPlayStatModel::fields()
+                        .album_id()
+                        .in_list(raw_album_ids),
+                )
                 .exec(&mut db)
                 .await
                 .map_err(db_err)?
+                {
+                    row.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+            }
+        }
+
+        let mut target_keys: HashSet<(&'static str, Uuid)> = HashSet::new();
+        let mut unique_uuids: Vec<Uuid> = Vec::new();
+        let mut seen_uuids: HashSet<Uuid> = HashSet::new();
+        for &tid in track_ids {
+            target_keys.insert((StarTargetKind::Track.as_str(), tid.0));
+            if seen_uuids.insert(tid.0) {
+                unique_uuids.push(tid.0);
+            }
+        }
+        for &aid in deleted_album_ids {
+            target_keys.insert((StarTargetKind::Album.as_str(), aid.0));
+            if seen_uuids.insert(aid.0) {
+                unique_uuids.push(aid.0);
+            }
+        }
+        for &arid in deleted_artist_ids {
+            target_keys.insert((StarTargetKind::Artist.as_str(), arid.0));
+            if seen_uuids.insert(arid.0) {
+                unique_uuids.push(arid.0);
+            }
+        }
+
+        for chunk in unique_uuids.chunks(500) {
+            let chunk_vec = chunk.to_vec();
+            for row in MusicStarredModel::filter(
+                MusicStarredModel::fields()
+                    .target_id()
+                    .in_list(chunk_vec.clone()),
+            )
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
             {
-                if row.kind == kind.as_str() {
+                if target_keys.contains(&(row.kind.as_str(), row.target_id)) {
+                    row.delete().exec(&mut db).await.map_err(db_err)?;
+                }
+            }
+            for row in
+                MusicRatingModel::filter(MusicRatingModel::fields().target_id().in_list(chunk_vec))
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?
+            {
+                if target_keys.contains(&(row.kind.as_str(), row.target_id)) {
                     row.delete().exec(&mut db).await.map_err(db_err)?;
                 }
             }

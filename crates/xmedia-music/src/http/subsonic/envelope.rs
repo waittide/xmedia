@@ -4,6 +4,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Number, Value};
 use xmedia_core::domain::error::DomainError;
+use xmedia_core::domain::xml::xml_escape;
 
 pub const SUBSONIC_API_VERSION: &str = "1.16.1";
 pub const SERVER_TYPE: &str = "xmedia";
@@ -114,7 +115,7 @@ pub enum SsVal {
 impl SsVal {
     fn to_xml_attr(&self) -> String {
         match self {
-            Self::Str(s) => escape_xml(s),
+            Self::Str(s) => xml_escape(s),
             Self::Bool(b) => b.to_string(),
             Self::Int(i) => i.to_string(),
             Self::Uint(u) => u.to_string(),
@@ -248,7 +249,7 @@ impl SsNode {
 
         out.push('>');
         if let Some(ref txt) = self.text {
-            out.push_str(&escape_xml(txt));
+            out.push_str(&xml_escape(txt));
         }
         for (itag, nums) in &self.xml_int_children {
             for n in nums {
@@ -523,22 +524,6 @@ fn json_http_response(fmt: ResponseFormat, callback: &str, root: Map<String, Val
             res
         }
     }
-}
-
-fn escape_xml(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for c in input.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            c if c.is_control() && !matches!(c, '\n' | '\r' | '\t') => {}
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

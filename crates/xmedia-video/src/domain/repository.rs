@@ -44,6 +44,11 @@ pub trait VideoWatchRepository: Send + Sync {
         video_id: VideoId,
         deleted_show_id: Option<ShowId>,
     ) -> DomainResult<()>;
+    async fn delete_library_references(
+        &self,
+        video_ids: &[VideoId],
+        show_ids: &[ShowId],
+    ) -> DomainResult<()>;
 
     async fn set_favorite(
         &self,

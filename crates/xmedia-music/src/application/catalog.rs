@@ -7,7 +7,7 @@ use xmedia_core::application::ports::BinaryPayload;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{LibraryId, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{User, UserId};
+use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::dto::{
     AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BookmarkDto, CatalogStatsDto,
@@ -531,7 +531,11 @@ impl MusicCatalogService {
             })
             .await?
             .total;
-        let playlists_count = self.collections.list_owned_playlists(user_id).await?.len() as u64;
+        let playlists_count = self
+            .collections
+            .list_visible_playlists(user_id)
+            .await?
+            .len() as u64;
         let tags_count = self.catalog.count_active_tags(&active_track_ids).await?;
         let libraries_count = self.libraries.list_by_media(MediaKind::Music).await?.len() as u64;
 
@@ -751,11 +755,7 @@ impl MusicCatalogService {
         track_id: TrackId,
         tags: Vec<String>,
     ) -> DomainResult<TrackDto> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
+        require_admin(actor)?;
         let track = self
             .catalog
             .find_track_by_id(track_id)

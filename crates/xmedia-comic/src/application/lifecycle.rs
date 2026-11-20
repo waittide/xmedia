@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
-use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemEvent};
+use xmedia_core::application::library::ScanProgressReporter;
+use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
@@ -64,7 +65,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         MediaKind::Comic
     }
 
-    async fn scan_library(&self, mut library: Library) -> DomainResult<()> {
+    async fn scan_library(&self, library: Library) -> DomainResult<()> {
         let root_path = match &library.kind {
             LibraryKind::LocalMount { root_path } => root_path.clone(),
             LibraryKind::Managed => {
@@ -74,7 +75,8 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             }
         };
 
-        let existing_chapters = self.chapters.list_by_library(library.id).await?;
+        let library_id = library.id;
+        let existing_chapters = self.chapters.list_by_library(library_id).await?;
         let mut existing_by_path: HashMap<String, Chapter> = HashMap::new();
         let mut known_digests: HashMap<String, ExistingChapterDigest> = HashMap::new();
 
@@ -100,24 +102,15 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             .flat_map(|s| s.chapters.iter().map(|c| c.source_path.clone()))
             .collect();
         let total_chapters: u64 = scanned_series.iter().map(|s| s.chapters.len() as u64).sum();
-        let progress_step = if total_chapters <= 100 {
-            1
-        } else if total_chapters <= 1000 {
-            5
-        } else {
-            20
-        };
-        library.mark_scanning(0, Some(total_chapters));
-        let _ = self.libraries.save(&library).await;
-        self.events.publish(SystemEvent::LibraryScanProgress {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Comic,
-            scanned: 0,
-            total: Some(total_chapters),
-        });
+        let mut reporter = ScanProgressReporter::new(
+            library,
+            self.libraries.clone(),
+            self.events.clone(),
+            Some(total_chapters),
+        );
+        reporter.start().await;
 
-        let existing_series_list = self.series.list_by_library(library.id).await?;
+        let existing_series_list = self.series.list_by_library(library_id).await?;
         let mut series_by_dir: HashMap<String, Series> = existing_series_list
             .into_iter()
             .map(|s| (s.source_dir.clone(), s))
@@ -127,7 +120,6 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         let mut affected_series: HashSet<SeriesId> = HashSet::new();
         let mut added = 0u64;
         let mut updated = 0u64;
-        let mut scanned_chapters = 0u64;
         let now = Timestamp::now();
 
         for entry in scanned_series {
@@ -138,7 +130,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             let (mut series, is_new_series) = match series_by_dir.remove(&entry.source_dir) {
                 Some(s) => (s, false),
                 None => (
-                    Series::new(library.id, entry.title.clone(), entry.source_dir.clone())?,
+                    Series::new(library_id, entry.title.clone(), entry.source_dir.clone())?,
                     true,
                 ),
             };
@@ -162,7 +154,6 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
 
             for sc in entry.chapters {
                 seen_paths.insert(sc.source_path.clone());
-                scanned_chapters += 1;
 
                 let (mut chapter, refresh_cover, mut chapter_dirty) =
                     if let Some(mut existing) = existing_by_path.remove(&sc.source_path) {
@@ -230,7 +221,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                         } else {
                             let mut created = Chapter::new(
                                 series.id,
-                                library.id,
+                                library_id,
                                 sc.kind,
                                 sc.number,
                                 sc.volume_number,
@@ -272,11 +263,10 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                         .thumbnails
                         .generate_from_bytes(&thumb_key, &first_page.bytes)
                         .await
+                        && chapter.cover_path.as_deref() != Some(saved_key.as_str())
                     {
-                        if chapter.cover_path.as_deref() != Some(saved_key.as_str()) {
-                            chapter.cover_path = Some(saved_key);
-                            chapter_dirty = true;
-                        }
+                        chapter.cover_path = Some(saved_key);
+                        chapter_dirty = true;
                     }
                 }
 
@@ -285,20 +275,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                     series_dirty = true;
                 }
                 ordered_chapters.push(chapter);
-
-                if scanned_chapters.is_multiple_of(progress_step)
-                    || scanned_chapters == total_chapters
-                {
-                    library.mark_scanning(scanned_chapters, Some(total_chapters));
-                    let _ = self.libraries.save(&library).await;
-                    self.events.publish(SystemEvent::LibraryScanProgress {
-                        library_id: library.id,
-                        library_name: library.name.clone(),
-                        media_kind: MediaKind::Comic,
-                        scanned: scanned_chapters,
-                        total: Some(total_chapters),
-                    });
-                }
+                reporter.advance().await;
             }
 
             ordered_chapters.sort_by(|a, b| a.cmp_order(b));
@@ -378,23 +355,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             }
         }
 
-        library.mark_scan_completed(scanned_chapters, added, updated, missing_count);
-        self.libraries.save(&library).await?;
-
-        self.events.publish(SystemEvent::LibraryScanCompleted {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Comic,
-            scanned: scanned_chapters,
-            added,
-            updated,
-            missing: missing_count,
-        });
-        if added > 0 || updated > 0 || missing_count > 0 {
-            self.events.publish(SystemEvent::MediaChanged {
-                media_kind: MediaKind::Comic,
-            });
-        }
+        reporter.complete(added, updated, missing_count).await?;
 
         Ok(())
     }

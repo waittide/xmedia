@@ -7,12 +7,12 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
+use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
-    ApiError, ApiResult, TempUploadFile, into_binary_cache_response, parse_http_range_spec,
-    stream_multipart_field_to_temp_file,
+    ApiError, ApiResult, TempUploadFile, WebAuth, into_binary_cache_response,
+    parse_http_range_spec, stream_multipart_field_to_temp_file,
 };
 
-use crate::application::catalog::VideoCatalogService;
 use crate::application::dto::{
     SaveWatchProgressInput, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, UpsertVideoShelfInput,
     VideoDetailDto, VideoFavoritesDto, VideoHomeOverviewDto, VideoShelfDetailDto, VideoShelfDto,
@@ -25,7 +25,6 @@ use crate::domain::video::{
     is_subtitle_extension,
 };
 use crate::domain::watch::{VideoFavoriteKind, WatchProgress};
-use crate::http::extractors::VideoWebAuth;
 use crate::http::into_video_http_response;
 use crate::http::state::VideoHttpState;
 
@@ -107,14 +106,14 @@ struct FavoriteBody {
 
 async fn video_status(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(_user): VideoWebAuth,
+    WebAuth(_user): WebAuth,
 ) -> ApiResult<Json<VideoSystemStatusDto>> {
     Ok(Json(state.services.catalog.system_status().await?))
 }
 
 async fn home_overview(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<VideoHomeOverviewDto>> {
     Ok(Json(state.services.catalog.home_overview(&user).await?))
 }
@@ -123,14 +122,10 @@ const MAX_VIDEO_UPLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 async fn upload_videos(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<VideoUploadResultDto>)> {
-    if !user.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&user)?;
     let mut temp_guards: Vec<(String, TempUploadFile)> = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -179,7 +174,7 @@ async fn upload_videos(
 
 async fn list_videos(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Query(filter): Query<VideoQueryFilter>,
 ) -> ApiResult<Json<Vec<VideoSummaryDto>>> {
     Ok(Json(
@@ -189,7 +184,7 @@ async fn list_videos(
 
 async fn get_video_detail(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<VideoDetailDto>> {
     Ok(Json(
@@ -203,7 +198,7 @@ async fn get_video_detail(
 
 async fn update_video_metadata(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(patch): Json<VideoMetadataPatch>,
 ) -> ApiResult<Json<VideoSummaryDto>> {
@@ -218,7 +213,7 @@ async fn update_video_metadata(
 
 async fn delete_video(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state
@@ -231,15 +226,11 @@ async fn delete_video(
 
 async fn upload_video_poster(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<VideoSummaryDto>> {
-    if !user.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&user)?;
     let bytes = read_first_multipart_bytes(&mut multipart).await?;
     Ok(Json(
         state
@@ -252,7 +243,7 @@ async fn upload_video_poster(
 
 async fn stream_video(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(_user): VideoWebAuth,
+    WebAuth(_user): WebAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<StreamQueryParams>,
     headers: HeaderMap,
@@ -269,7 +260,7 @@ async fn stream_video(
 
 async fn download_video(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(_user): VideoWebAuth,
+    WebAuth(_user): WebAuth,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
@@ -284,32 +275,29 @@ async fn download_video(
 
 async fn list_video_subtitles(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(_user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<SubtitleTrackDto>>> {
-    let detail = state
-        .services
-        .catalog
-        .get_video_detail(&user, VideoId(id))
-        .await?;
-    Ok(Json(detail.subtitles))
+    Ok(Json(
+        state
+            .services
+            .catalog
+            .list_video_subtitles(VideoId(id))
+            .await?,
+    ))
 }
 
 async fn get_subtitle_vtt(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(_user): VideoWebAuth,
+    WebAuth(_user): WebAuth,
     Path((id, sub_id)): Path<(Uuid, String)>,
     Query(q): Query<SubtitleParams>,
 ) -> ApiResult<Response> {
-    let _ = VideoCatalogService::collect_subtitle_dtos;
-    let mut vtt = state
+    let vtt = state
         .services
         .catalog
-        .get_subtitle_webvtt(VideoId(id), &sub_id)
+        .get_subtitle_webvtt_with_offset(VideoId(id), &sub_id, q.offset_secs)
         .await?;
-    if let Some(offset_secs) = q.offset_secs.filter(|&v| v.is_finite() && v > 0.0) {
-        vtt = crate::infra::media_engine::shift_webvtt_timestamps(&vtt, offset_secs);
-    }
     let mut res = (StatusCode::OK, Body::from(vtt)).into_response();
     res.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -320,7 +308,7 @@ async fn get_subtitle_vtt(
 
 async fn save_watch_progress(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(input): Json<SaveWatchProgressInput>,
 ) -> ApiResult<Json<WatchProgress>> {
@@ -335,7 +323,7 @@ async fn save_watch_progress(
 
 async fn set_video_watched(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(body): Json<WatchedBody>,
 ) -> ApiResult<Json<WatchProgress>> {
@@ -350,7 +338,7 @@ async fn set_video_watched(
 
 async fn list_shows(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Query(filter): Query<ShowQueryFilter>,
 ) -> ApiResult<Json<Vec<ShowSummaryDto>>> {
     Ok(Json(
@@ -360,7 +348,7 @@ async fn list_shows(
 
 async fn get_show_detail(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<ShowDetailDto>> {
     Ok(Json(
@@ -374,7 +362,7 @@ async fn get_show_detail(
 
 async fn update_show_metadata(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(patch): Json<ShowMetadataPatch>,
 ) -> ApiResult<Json<ShowSummaryDto>> {
@@ -389,15 +377,11 @@ async fn update_show_metadata(
 
 async fn upload_show_poster(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<ShowSummaryDto>> {
-    if !user.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&user)?;
     let bytes = read_first_multipart_bytes(&mut multipart).await?;
     Ok(Json(
         state
@@ -410,7 +394,7 @@ async fn upload_show_poster(
 
 async fn get_poster(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(_user): VideoWebAuth,
+    WebAuth(_user): WebAuth,
     Path(key): Path<String>,
     Query(p): Query<PosterParams>,
 ) -> ApiResult<Response> {
@@ -420,14 +404,14 @@ async fn get_poster(
 
 async fn list_favorites(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<VideoFavoritesDto>> {
     Ok(Json(state.services.watch.list_favorites(&user).await?))
 }
 
 async fn set_favorite(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path((kind_raw, id)): Path<(String, Uuid)>,
     Json(body): Json<FavoriteBody>,
 ) -> ApiResult<Json<OkResponse>> {
@@ -442,14 +426,14 @@ async fn set_favorite(
 
 async fn list_shelves(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<VideoShelfDto>>> {
     Ok(Json(state.services.watch.list_shelves(&user).await?))
 }
 
 async fn get_shelf(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<VideoShelfDetailDto>> {
     Ok(Json(
@@ -463,7 +447,7 @@ async fn get_shelf(
 
 async fn create_shelf(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Json(input): Json<UpsertVideoShelfInput>,
 ) -> ApiResult<(StatusCode, Json<VideoShelfDetailDto>)> {
     let created = state.services.watch.create_shelf(&user, input).await?;
@@ -472,7 +456,7 @@ async fn create_shelf(
 
 async fn update_shelf(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(input): Json<UpsertVideoShelfInput>,
 ) -> ApiResult<Json<VideoShelfDetailDto>> {
@@ -487,7 +471,7 @@ async fn update_shelf(
 
 async fn delete_shelf(
     State(state): State<VideoHttpState>,
-    VideoWebAuth(user): VideoWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OkResponse>> {
     state

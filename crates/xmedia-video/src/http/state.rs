@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::extract::FromRef;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
 
@@ -23,5 +24,11 @@ impl VideoHttpState {
             libraries,
             services,
         }
+    }
+}
+
+impl FromRef<VideoHttpState> for Arc<AuthService> {
+    fn from_ref(state: &VideoHttpState) -> Self {
+        state.auth.clone()
     }
 }

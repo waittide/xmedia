@@ -240,6 +240,8 @@ impl VideoScannerPort for LocalVideoScanner {
 
             let mut dir_posters: HashMap<PathBuf, Option<String>> = HashMap::new();
             let mut single_video_dirs: HashMap<PathBuf, bool> = HashMap::new();
+            let mut dir_subtitles: HashMap<PathBuf, Vec<CachedSubtitleFile>> = HashMap::new();
+            let mut shared_nfo_cache: HashMap<PathBuf, Option<ParsedNfoMetadata>> = HashMap::new();
             let mut out = Vec::new();
 
             for entry in WalkDir::new(&root)
@@ -277,7 +279,8 @@ impl VideoScannerPort for LocalVideoScanner {
                     .entry(parent_dir.clone())
                     .or_insert_with(|| dir_has_single_video(&parent_dir));
 
-                let sidecar_subtitles = discover_sidecar_subtitles(&root, &parent_dir, video_stem);
+                let sidecar_subtitles =
+                    discover_sidecar_subtitles(&root, &parent_dir, video_stem, &mut dir_subtitles);
                 let directory_poster_path = discover_video_poster(
                     &root,
                     &parent_dir,
@@ -285,7 +288,13 @@ impl VideoScannerPort for LocalVideoScanner {
                     single_video_dir,
                     &mut dir_posters,
                 );
-                let nfo = discover_and_parse_nfo(&root, &parent_dir, video_stem, single_video_dir);
+                let nfo = discover_and_parse_nfo(
+                    &root,
+                    &parent_dir,
+                    video_stem,
+                    single_video_dir,
+                    &mut shared_nfo_cache,
+                );
 
                 let mut tracked_sidecars: Vec<PathBuf> =
                     nfo_candidate_paths(&root, &parent_dir, video_stem, single_video_dir);
@@ -326,6 +335,21 @@ impl VideoScannerPort for LocalVideoScanner {
             .map_err(|e| DomainError::Storage(format!("failed reading poster {path}: {e}")))?;
         Ok(Some(bytes))
     }
+
+    async fn compute_file_fingerprint(&self, path: &Path) -> DomainResult<String> {
+        let fp_path = path.to_path_buf();
+        let (_, hash) = tokio::task::spawn_blocking(move || fast_content_fingerprint(&fp_path))
+            .await
+            .map_err(|e| DomainError::Storage(format!("video fingerprint task failed: {e}")))??;
+        Ok(hash)
+    }
+}
+
+struct CachedSubtitleFile {
+    file_name: String,
+    stem_lower: String,
+    ext_lower: String,
+    rel_slash_path: String,
 }
 
 fn path_to_slash(rel: &Path) -> String {
@@ -335,18 +359,11 @@ fn path_to_slash(rel: &Path) -> String {
         .join("/")
 }
 
-fn discover_sidecar_subtitles(
-    root: &Path,
-    parent_dir: &Path,
-    video_stem: &str,
-) -> Vec<SidecarSubtitle> {
+fn scan_dir_subtitles(root: &Path, parent_dir: &Path) -> Vec<CachedSubtitleFile> {
     let Ok(read_dir) = std::fs::read_dir(parent_dir) else {
         return Vec::new();
     };
-    let stem_lower = video_stem.to_lowercase();
-    let prefix_dot = format!("{stem_lower}.");
-    let mut matches: Vec<(String, String, PathBuf)> = Vec::new();
-
+    let mut files: Vec<CachedSubtitleFile> = Vec::new();
     for item in read_dir.flatten() {
         let p = item.path();
         if !p.is_file() {
@@ -364,26 +381,47 @@ fn discover_sidecar_subtitles(
         let Some(sub_stem) = p.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let sub_lower = sub_stem.to_lowercase();
-        if sub_lower == stem_lower || sub_lower.starts_with(&prefix_dot) {
-            matches.push((fname.to_string(), ext.to_ascii_lowercase(), p));
-        }
+        let Ok(rel) = p.strip_prefix(root) else {
+            continue;
+        };
+        files.push(CachedSubtitleFile {
+            file_name: fname.to_string(),
+            stem_lower: sub_stem.to_lowercase(),
+            ext_lower: ext.to_ascii_lowercase(),
+            rel_slash_path: path_to_slash(rel),
+        });
     }
+    files.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    files
+}
 
-    matches.sort_by(|a, b| a.0.cmp(&b.0));
-    matches
-        .into_iter()
+fn discover_sidecar_subtitles(
+    root: &Path,
+    parent_dir: &Path,
+    video_stem: &str,
+    dir_subtitles_cache: &mut HashMap<PathBuf, Vec<CachedSubtitleFile>>,
+) -> Vec<SidecarSubtitle> {
+    let cached = dir_subtitles_cache
+        .entry(parent_dir.to_path_buf())
+        .or_insert_with(|| scan_dir_subtitles(root, parent_dir));
+
+    let stem_lower = video_stem.to_lowercase();
+    let prefix_dot = format!("{stem_lower}.");
+
+    cached
+        .iter()
+        .filter(|sub| sub.stem_lower == stem_lower || sub.stem_lower.starts_with(&prefix_dot))
         .enumerate()
-        .filter_map(|(idx, (fname, fmt, full_path))| {
-            let rel = full_path.strip_prefix(root).ok()?;
-            let (language, label) = parse_sidecar_subtitle_lang_and_label(video_stem, &fname);
-            Some(SidecarSubtitle {
+        .map(|(idx, sub)| {
+            let (language, label) =
+                parse_sidecar_subtitle_lang_and_label(video_stem, &sub.file_name);
+            SidecarSubtitle {
                 id: format!("s{idx}"),
-                format: fmt,
+                format: sub.ext_lower.clone(),
                 language,
                 label,
-                path_or_key: path_to_slash(rel),
-            })
+                path_or_key: sub.rel_slash_path.clone(),
+            }
         })
         .collect()
 }
@@ -521,50 +559,80 @@ fn nfo_candidate_paths(
     candidates
 }
 
+fn read_and_parse_nfo(path: &Path) -> Option<ParsedNfoMetadata> {
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let (xml, _) = xmedia_core::infra::stream::decode_text_smart(&bytes);
+    parse_nfo_xml(&xml)
+}
+
 fn discover_and_parse_nfo(
     root: &Path,
     parent_dir: &Path,
     video_stem: &str,
     single_video_dir: bool,
+    shared_nfo_cache: &mut HashMap<PathBuf, Option<ParsedNfoMetadata>>,
 ) -> Option<ParsedNfoMetadata> {
     let candidates = nfo_candidate_paths(root, parent_dir, video_stem, single_video_dir);
 
     let mut primary: Option<ParsedNfoMetadata> = None;
-    for p in candidates {
-        if p.is_file()
-            && let Ok(bytes) = std::fs::read(&p)
-        {
-            let (xml, _) = xmedia_core::infra::stream::decode_text_smart(&bytes);
-            if let Some(parsed) = parse_nfo_xml(&xml) {
-                if let Some(ref mut base) = primary {
-                    if base.show_title.is_none() {
-                        base.show_title = parsed.show_title.or(parsed.title);
-                    }
-                    if base.year.is_none() {
-                        base.year = parsed.year;
-                    }
-                    if base.genres.is_empty() {
-                        base.genres = parsed.genres;
-                    }
-                    if base.tags.is_empty() {
-                        base.tags = parsed.tags;
-                    }
-                } else {
-                    primary = Some(parsed);
+    for (idx, p) in candidates.into_iter().enumerate() {
+        // Index 0 is `{video_stem}.nfo` (video-specific); subsequent entries are shared
+        // directory-level NFOs (`movie.nfo`, `season.nfo`, `tvshow.nfo`) cached per path.
+        let parsed = if idx == 0 {
+            read_and_parse_nfo(&p)
+        } else {
+            shared_nfo_cache
+                .entry(p)
+                .or_insert_with_key(|path| read_and_parse_nfo(path))
+                .clone()
+        };
+        if let Some(parsed) = parsed {
+            if let Some(ref mut base) = primary {
+                if base.show_title.is_none() {
+                    base.show_title = parsed.show_title.or(parsed.title);
                 }
+                if base.year.is_none() {
+                    base.year = parsed.year;
+                }
+                if base.genres.is_empty() {
+                    base.genres = parsed.genres;
+                }
+                if base.tags.is_empty() {
+                    base.tags = parsed.tags;
+                }
+            } else {
+                primary = Some(parsed);
             }
         }
     }
     primary
 }
 
+fn append_xml_ref(out: &mut String, r: &quick_xml::events::BytesRef<'_>) {
+    if let Ok(Some(ch)) = r.resolve_char_ref() {
+        out.push(ch);
+        return;
+    }
+    if let Some(resolved) = quick_xml::escape::resolve_xml_entity(r.as_ref()) {
+        out.push_str(resolved);
+    } else {
+        out.push('&');
+        out.push_str(r.as_ref());
+        out.push(';');
+    }
+}
+
 fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
+    reader.config_mut().trim_text(false);
 
     let mut meta = ParsedNfoMetadata::default();
     let mut root_tag: Option<String> = None;
-    let mut current_tag = String::new();
+    let mut tag_stack: Vec<String> = Vec::new();
+    let mut text_acc = String::new();
     let mut any_found = false;
 
     loop {
@@ -574,66 +642,84 @@ fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {
                 if root_tag.is_none() {
                     root_tag = Some(tag.clone());
                 }
-                current_tag = tag;
-            }
-            Ok(Event::End(_)) => {
-                current_tag.clear();
+                tag_stack.push(tag);
+                text_acc.clear();
             }
             Ok(Event::Text(t)) => {
-                let val = t.xml10_content().trim().to_string();
-                if val.is_empty() {
-                    continue;
+                if !tag_stack.is_empty() {
+                    text_acc.push_str(&t.xml10_content());
                 }
-                let is_tvshow = root_tag.as_deref() == Some("tvshow");
-                let is_season = root_tag.as_deref() == Some("season");
-                match current_tag.as_str() {
-                    "title" if is_tvshow => {
-                        if meta.show_title.is_none() {
-                            meta.show_title = Some(val);
-                            any_found = true;
-                        }
-                    }
-                    "title" if is_season => {}
-                    "title" if meta.title.is_none() => {
-                        meta.title = Some(val);
-                        any_found = true;
-                    }
-                    "showtitle" if meta.show_title.is_none() => {
-                        meta.show_title = Some(val);
-                        any_found = true;
-                    }
-                    "plot" | "outline" if meta.summary.is_none() => {
-                        meta.summary = Some(val);
-                        any_found = true;
-                    }
-                    "year" | "premiered" if meta.year.is_none() => {
-                        if let Some(y) = val.get(0..4).and_then(|s| s.parse::<i32>().ok()) {
-                            meta.year = Some(y);
-                            any_found = true;
-                        }
-                    }
-                    "season" if meta.season.is_none() => {
-                        if let Ok(s) = val.parse::<u32>() {
-                            meta.season = Some(s);
-                            any_found = true;
-                        }
-                    }
-                    "episode" if meta.episode.is_none() => {
-                        if let Ok(ep) = val.parse::<u32>() {
-                            meta.episode = Some(ep);
-                            any_found = true;
-                        }
-                    }
-                    "genre" if !meta.genres.contains(&val) => {
-                        meta.genres.push(val);
-                        any_found = true;
-                    }
-                    "tag" if !meta.tags.contains(&val) => {
-                        meta.tags.push(val);
-                        any_found = true;
-                    }
-                    _ => {}
+            }
+            Ok(Event::GeneralRef(r)) => {
+                if !tag_stack.is_empty() {
+                    append_xml_ref(&mut text_acc, &r);
                 }
+            }
+            Ok(Event::CData(c)) => {
+                if !tag_stack.is_empty() {
+                    text_acc.push_str(c.as_ref());
+                }
+            }
+            Ok(Event::End(_)) => {
+                if let Some(tag) = tag_stack.pop() {
+                    let trimmed = text_acc.trim();
+                    if !trimmed.is_empty() && tag_stack.len() == 1 {
+                        let val = trimmed.to_string();
+                        let is_tvshow = root_tag.as_deref() == Some("tvshow");
+                        let is_season = root_tag.as_deref() == Some("season");
+                        match tag.as_str() {
+                            "title" if is_tvshow => {
+                                if meta.show_title.is_none() {
+                                    meta.show_title = Some(val);
+                                    any_found = true;
+                                }
+                            }
+                            "title" if is_season => {}
+                            "title" if meta.title.is_none() => {
+                                meta.title = Some(val);
+                                any_found = true;
+                            }
+                            "showtitle" if meta.show_title.is_none() => {
+                                meta.show_title = Some(val);
+                                any_found = true;
+                            }
+                            "plot" | "outline" if meta.summary.is_none() => {
+                                meta.summary = Some(val);
+                                any_found = true;
+                            }
+                            "year" | "premiered" if meta.year.is_none() => {
+                                if let Some(y) = val.get(0..4).and_then(|s| s.parse::<i32>().ok()) {
+                                    meta.year = Some(y);
+                                    any_found = true;
+                                }
+                            }
+                            "season" if meta.season.is_none() => {
+                                if let Ok(s) = val.parse::<u32>() {
+                                    meta.season = Some(s);
+                                    any_found = true;
+                                }
+                            }
+                            "episode" if meta.episode.is_none() => {
+                                if let Ok(ep) = val.parse::<u32>() {
+                                    meta.episode = Some(ep);
+                                    any_found = true;
+                                }
+                            }
+                            "genre"
+                                if !meta.genres.iter().any(|g| g.eq_ignore_ascii_case(&val)) =>
+                            {
+                                meta.genres.push(val);
+                                any_found = true;
+                            }
+                            "tag" if !meta.tags.iter().any(|t| t.eq_ignore_ascii_case(&val)) => {
+                                meta.tags.push(val);
+                                any_found = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                text_acc.clear();
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
@@ -641,4 +727,104 @@ fn parse_nfo_xml(xml: &str) -> Option<ParsedNfoMetadata> {
     }
 
     if any_found { Some(meta) } else { None }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn parse_nfo_xml_handles_entities_char_refs_and_cdata() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<movie>
+  <title>Tom &amp; Jerry: &quot;Classic&quot; &lt;Remastered&gt; &#x2605;</title>
+  <plot><![CDATA[Hero & <Villain> face off in "Round 1"!]]></plot>
+  <year>2021</year>
+  <genre>Action &amp; Adventure</genre>
+  <genre>action &amp; adventure</genre>
+  <tag>Cat &amp; Mouse</tag>
+  <actor>
+    <name>Nested Actor</name>
+    <title>Should Not Override Title</title>
+  </actor>
+</movie>"#;
+
+        let meta = parse_nfo_xml(xml).expect("should parse movie NFO");
+        assert_eq!(
+            meta.title.as_deref(),
+            Some("Tom & Jerry: \"Classic\" <Remastered> ★")
+        );
+        assert_eq!(
+            meta.summary.as_deref(),
+            Some("Hero & <Villain> face off in \"Round 1\"!")
+        );
+        assert_eq!(meta.year, Some(2021));
+        assert_eq!(meta.genres, vec!["Action & Adventure"]);
+        assert_eq!(meta.tags, vec!["Cat & Mouse"]);
+    }
+
+    #[test]
+    fn parse_nfo_xml_handles_mixed_text_entity_cdata_and_tvshow_title() {
+        let xml = r#"<tvshow>
+  <title>Dungeons &amp; <![CDATA[Dragons: <Honor>]]></title>
+  <plot>Intro &amp; <![CDATA[<details>]]> &apos;end&apos;</plot>
+  <premiered>2023-09-29</premiered>
+  <genre>Fantasy</genre>
+  <tag>RPG &amp; Magic</tag>
+</tvshow>"#;
+
+        let meta = parse_nfo_xml(xml).expect("should parse tvshow NFO");
+        assert_eq!(meta.title, None);
+        assert_eq!(
+            meta.show_title.as_deref(),
+            Some("Dungeons & Dragons: <Honor>")
+        );
+        assert_eq!(meta.summary.as_deref(), Some("Intro & <details> 'end'"));
+        assert_eq!(meta.year, Some(2023));
+        assert_eq!(meta.genres, vec!["Fantasy"]);
+        assert_eq!(meta.tags, vec!["RPG & Magic"]);
+    }
+
+    #[tokio::test]
+    async fn scanner_caches_tvshow_nfo_and_dir_subtitles_across_episodes() {
+        let tmp = TempDir::new().unwrap();
+        let show_dir = tmp.path().join("Spice & Wolf");
+        let season_dir = show_dir.join("Season 01");
+        std::fs::create_dir_all(&season_dir).unwrap();
+
+        std::fs::write(
+            show_dir.join("tvshow.nfo"),
+            "<tvshow><title>Spice &amp; Wolf</title><year>2024</year><genre>Fantasy &amp; Romance</genre></tvshow>",
+        )
+        .unwrap();
+
+        for ep in 1..=3 {
+            std::fs::write(season_dir.join(format!("0{ep} - Ep{ep}.mp4")), b"fake-mp4").unwrap();
+            std::fs::write(
+                season_dir.join(format!("0{ep} - Ep{ep}.zh.srt")),
+                b"1\n00:00:01,000 --> 00:00:02,000\nHi\n",
+            )
+            .unwrap();
+        }
+
+        let scanner = LocalVideoScanner;
+        let entries = scanner
+            .scan_video_entries(tmp.path().to_str().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(entries.len(), 3);
+        for (idx, entry) in entries.iter().enumerate() {
+            let nfo = entry.nfo.as_ref().expect("tvshow.nfo merged");
+            assert_eq!(nfo.show_title.as_deref(), Some("Spice & Wolf"));
+            assert_eq!(nfo.year, Some(2024));
+            assert_eq!(nfo.genres, vec!["Fantasy & Romance"]);
+            assert_eq!(entry.sidecar_subtitles.len(), 1);
+            assert!(entry.sidecar_subtitles[0].path_or_key.ends_with(&format!(
+                "0{} - Ep{}.zh.srt",
+                idx + 1,
+                idx + 1
+            )));
+        }
+    }
 }

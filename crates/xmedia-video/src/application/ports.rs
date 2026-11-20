@@ -8,11 +8,23 @@ use xmedia_core::application::ports::{
 };
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::Library;
+use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 use xmedia_core::domain::user::VideoQualityProfile;
-use xmedia_core::infra::ffmpeg::ProbedMediaInfo;
 
 use crate::domain::id::VideoId;
 use crate::domain::video::{SidecarSubtitle, VideoContainer, VideoItem};
+
+#[derive(Debug, Clone, Default)]
+pub struct ProbedVideoInfo {
+    pub duration_secs: u32,
+    pub bit_rate_kbps: Option<u32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub video_codec: Option<String>,
+    pub container_format: Option<String>,
+    pub audio_streams: Vec<ProbedAudioStream>,
+    pub subtitle_streams: Vec<ProbedSubtitleStream>,
+}
 
 #[derive(Debug, Clone)]
 pub struct StoredManagedVideo {
@@ -140,13 +152,14 @@ pub trait VideoStoragePort: Send + Sync {
 pub trait VideoScannerPort: Send + Sync {
     async fn scan_video_entries(&self, root_path: &str) -> DomainResult<Vec<ScannedVideoEntry>>;
     async fn read_external_image(&self, path: &str) -> DomainResult<Option<Vec<u8>>>;
+    async fn compute_file_fingerprint(&self, path: &Path) -> DomainResult<String>;
 }
 
 #[async_trait]
 pub trait VideoMediaEnginePort: Send + Sync {
     async fn check_status(&self) -> FfmpegStatusDto;
 
-    async fn probe_video(&self, fs_path: &Path) -> ProbedMediaInfo;
+    async fn probe_video(&self, fs_path: &Path) -> ProbedVideoInfo;
 
     async fn generate_poster_bytes(
         &self,
@@ -162,6 +175,8 @@ pub trait VideoMediaEnginePort: Send + Sync {
     ) -> DomainResult<String>;
 
     fn convert_sidecar_subtitle_to_vtt(&self, format: &str, raw_bytes: &[u8]) -> String;
+
+    fn shift_webvtt_timestamps(&self, vtt: &str, offset_secs: f64) -> String;
 
     async fn open_fmp4_transcode_stream(
         &self,

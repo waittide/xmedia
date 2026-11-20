@@ -23,7 +23,7 @@ impl LyricsResolverPort for HybridLyricsResolver {
         sidecar_lrc_bytes: Option<&[u8]>,
     ) -> DomainResult<StructuredLyrics> {
         if let Some(raw_lrc) = sidecar_lrc_bytes {
-            let parsed = self.parse_lrc_bytes(raw_lrc);
+            let parsed = parse_lrc_bytes(raw_lrc);
             if !parsed.is_empty() {
                 return Ok(parsed);
             }
@@ -38,11 +38,11 @@ impl LyricsResolverPort for HybridLyricsResolver {
 
         Ok(StructuredLyrics::empty())
     }
+}
 
-    fn parse_lrc_bytes(&self, raw_bytes: &[u8]) -> StructuredLyrics {
-        let (decoded, _) = decode_text_smart(raw_bytes);
-        parse_lyrics_str(&decoded)
-    }
+fn parse_lrc_bytes(raw_bytes: &[u8]) -> StructuredLyrics {
+    let (decoded, _) = decode_text_smart(raw_bytes);
+    parse_lyrics_str(&decoded)
 }
 
 pub fn parse_lyrics_str(input: &str) -> StructuredLyrics {

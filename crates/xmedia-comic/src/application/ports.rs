@@ -123,6 +123,14 @@ pub trait ArchiveReaderPort: Send + Sync {
 pub trait ThumbnailGeneratorPort: Send + Sync {
     async fn generate_from_bytes(&self, key: &str, image_bytes: &[u8]) -> DomainResult<String>;
     async fn read_thumbnail(&self, cover_key: &str) -> DomainResult<PageContent>;
+    async fn read_thumbnail_sized(
+        &self,
+        cover_key: &str,
+        max_size: Option<u32>,
+    ) -> DomainResult<PageContent> {
+        let _ = max_size;
+        self.read_thumbnail(cover_key).await
+    }
 }
 
 #[async_trait]

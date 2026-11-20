@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use uuid::Uuid;
-use xmedia_core::application::ports::BinaryPayload;
+use xmedia_core::application::ports::{BinaryPayload, RealtimeEventPort, SystemEvent};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{User, UserId};
+use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::dto::{
     SeasonGroupDto, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, VideoDetailDto,
@@ -30,6 +30,7 @@ pub struct VideoCatalogService {
     watch: Arc<dyn VideoWatchRepository>,
     storage: Arc<dyn VideoStoragePort>,
     engine: Arc<dyn VideoMediaEnginePort>,
+    events: Arc<dyn RealtimeEventPort>,
 }
 
 impl VideoCatalogService {
@@ -39,6 +40,7 @@ impl VideoCatalogService {
         watch: Arc<dyn VideoWatchRepository>,
         storage: Arc<dyn VideoStoragePort>,
         engine: Arc<dyn VideoMediaEnginePort>,
+        events: Arc<dyn RealtimeEventPort>,
     ) -> Self {
         Self {
             libraries,
@@ -46,6 +48,7 @@ impl VideoCatalogService {
             watch,
             storage,
             engine,
+            events,
         }
     }
 
@@ -379,6 +382,19 @@ impl VideoCatalogService {
         })
     }
 
+    pub async fn list_video_subtitles(
+        &self,
+        video_id: VideoId,
+    ) -> DomainResult<Vec<SubtitleTrackDto>> {
+        let item = self
+            .catalog
+            .find_video_by_id(video_id)
+            .await?
+            .filter(|v| !v.is_missing)
+            .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
+        Ok(Self::collect_subtitle_dtos(&item))
+    }
+
     pub fn collect_subtitle_dtos(video: &VideoItem) -> Vec<SubtitleTrackDto> {
         let mut out = Vec::new();
         for sc in video.source.sidecar_subtitles() {
@@ -416,6 +432,16 @@ impl VideoCatalogService {
         video_id: VideoId,
         sub_id: &str,
     ) -> DomainResult<String> {
+        self.get_subtitle_webvtt_with_offset(video_id, sub_id, None)
+            .await
+    }
+
+    pub async fn get_subtitle_webvtt_with_offset(
+        &self,
+        video_id: VideoId,
+        sub_id: &str,
+        offset_secs: Option<f64>,
+    ) -> DomainResult<String> {
         let video = self
             .catalog
             .find_video_by_id(video_id)
@@ -429,23 +455,28 @@ impl VideoCatalogService {
             .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
 
         let trimmed = sub_id.trim().trim_end_matches(".vtt");
-        if let Some(raw_idx) = trimmed.strip_prefix("emb-") {
+        let vtt = if let Some(raw_idx) = trimmed.strip_prefix("emb-") {
             let stream_index = raw_idx
                 .parse::<u32>()
                 .map_err(|_| DomainError::Validation("invalid embedded subtitle id".into()))?;
             let fs_path = self.storage.resolve_video_fs_path(&library, &video).await?;
-            return self
-                .engine
+            self.engine
                 .extract_embedded_subtitle_vtt(Path::new(&fs_path), stream_index)
-                .await;
-        }
+                .await?
+        } else {
+            let ext_id = trimmed.strip_prefix("ext-").unwrap_or(trimmed);
+            let (fmt, bytes) = self
+                .storage
+                .read_sidecar_subtitle_bytes(&library, &video, ext_id)
+                .await?;
+            self.engine.convert_sidecar_subtitle_to_vtt(&fmt, &bytes)
+        };
 
-        let ext_id = trimmed.strip_prefix("ext-").unwrap_or(trimmed);
-        let (fmt, bytes) = self
-            .storage
-            .read_sidecar_subtitle_bytes(&library, &video, ext_id)
-            .await?;
-        Ok(self.engine.convert_sidecar_subtitle_to_vtt(&fmt, &bytes))
+        if let Some(offset) = offset_secs.filter(|&v| v.is_finite() && v > 0.0) {
+            Ok(self.engine.shift_webvtt_timestamps(&vtt, offset))
+        } else {
+            Ok(vtt)
+        }
     }
 
     pub async fn update_video_metadata(
@@ -454,39 +485,14 @@ impl VideoCatalogService {
         video_id: VideoId,
         patch: VideoMetadataPatch,
     ) -> DomainResult<VideoSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let mut item = self
             .catalog
             .find_video_by_id(video_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("video not found".into()))?;
 
-        if let Some(title) = patch.title {
-            let trimmed = title.trim();
-            if trimmed.is_empty() {
-                return Err(DomainError::Validation("title cannot be empty".into()));
-            }
-            item.title = trimmed.to_string();
-        }
-        if let Some(summary) = patch.summary {
-            item.summary = summary.trim().to_string();
-        }
-        if let Some(year) = patch.year {
-            item.year = year;
-        }
-        if let Some(genres) = patch.genres {
-            item.genres = genres;
-        }
-        if let Some(tags) = patch.tags {
-            item.tags = tags;
-        }
-        if let Some(season) = patch.season_number {
-            item.season_number = season;
-        }
-        if let Some(ep) = patch.episode_number {
-            item.episode_number = ep;
-        }
-        item.updated_at = Timestamp::now();
+        item.apply_patch(patch)?;
         self.catalog.save_video(&item).await?;
         if item.show_id.is_some() {
             self.catalog.recompute_show_aggregates().await?;
@@ -504,7 +510,7 @@ impl VideoCatalogService {
         video_id: VideoId,
         bytes: &[u8],
     ) -> DomainResult<VideoSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         if bytes.is_empty() {
             return Err(DomainError::Validation(
                 "poster image cannot be empty".into(),
@@ -527,7 +533,7 @@ impl VideoCatalogService {
     }
 
     pub async fn delete_video(&self, actor: &User, video_id: VideoId) -> DomainResult<()> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let item = self
             .catalog
             .find_video_by_id(video_id)
@@ -558,7 +564,11 @@ impl VideoCatalogService {
         };
         self.watch
             .delete_video_references(video_id, deleted_show_id)
-            .await
+            .await?;
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Video,
+        });
+        Ok(())
     }
 
     pub async fn list_shows(
@@ -655,36 +665,23 @@ impl VideoCatalogService {
         show_id: ShowId,
         patch: ShowMetadataPatch,
     ) -> DomainResult<ShowSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let mut show = self
             .catalog
             .find_show_by_id(show_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("show not found".into()))?;
-        let mut title_changed = false;
-        if let Some(title) = patch.title {
-            let trimmed = title.trim();
-            if trimmed.is_empty() {
-                return Err(DomainError::Validation("show title cannot be empty".into()));
-            }
-            if show.title != trimmed {
-                show.title = trimmed.to_string();
-                title_changed = true;
-            }
+        let old_show_key = show.show_key.clone();
+        let title_changed = show.apply_patch(patch)?;
+        if show.show_key != old_show_key
+            && let Some(conflict) = self.catalog.find_show_by_key(&show.show_key).await?
+            && conflict.id != show.id
+        {
+            return Err(DomainError::Conflict(format!(
+                "a show named '{}' already exists in this library",
+                show.title
+            )));
         }
-        if let Some(summary) = patch.summary {
-            show.summary = summary.trim().to_string();
-        }
-        if let Some(year) = patch.year {
-            show.year = year;
-        }
-        if let Some(genres) = patch.genres {
-            show.genres = genres;
-        }
-        if let Some(tags) = patch.tags {
-            show.tags = tags;
-        }
-        show.updated_at = Timestamp::now();
         self.catalog.save_show(&show).await?;
         if title_changed {
             let episodes = self.catalog.list_episodes_by_show(show_id).await?;
@@ -707,7 +704,7 @@ impl VideoCatalogService {
         show_id: ShowId,
         bytes: &[u8],
     ) -> DomainResult<ShowSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         if bytes.is_empty() {
             return Err(DomainError::Validation(
                 "poster image cannot be empty".into(),
@@ -735,14 +732,5 @@ impl VideoCatalogService {
         max_size: Option<u32>,
     ) -> DomainResult<BinaryPayload> {
         self.storage.read_poster(key, max_size).await
-    }
-
-    fn require_admin(actor: &User) -> DomainResult<()> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
-        Ok(())
     }
 }

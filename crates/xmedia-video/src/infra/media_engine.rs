@@ -5,11 +5,11 @@ use tracing::debug;
 use xmedia_core::application::dto::FfmpegStatusDto;
 use xmedia_core::application::ports::ByteChunkStream;
 use xmedia_core::domain::error::DomainResult;
-use xmedia_core::infra::ffmpeg::{FfmpegToolkit, ProbedMediaInfo};
+use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 use xmedia_core::infra::stream::decode_text_smart;
 
 use crate::application::ports::{
-    VideoMediaEnginePort, VideoStreamTranscodeRequest, VideoTranscodeMode,
+    ProbedVideoInfo, VideoMediaEnginePort, VideoStreamTranscodeRequest, VideoTranscodeMode,
 };
 
 #[derive(Clone)]
@@ -29,8 +29,18 @@ impl VideoMediaEnginePort for FfmpegVideoEngine {
         self.ffmpeg.check_status().await
     }
 
-    async fn probe_video(&self, fs_path: &Path) -> ProbedMediaInfo {
-        self.ffmpeg.probe_media(fs_path).await.unwrap_or_default()
+    async fn probe_video(&self, fs_path: &Path) -> ProbedVideoInfo {
+        let probed = self.ffmpeg.probe_media(fs_path).await.unwrap_or_default();
+        ProbedVideoInfo {
+            duration_secs: probed.duration_secs,
+            bit_rate_kbps: probed.bit_rate_kbps,
+            width: probed.width,
+            height: probed.height,
+            video_codec: probed.video_codec,
+            container_format: probed.container_format,
+            audio_streams: probed.audio_streams,
+            subtitle_streams: probed.subtitle_streams,
+        }
     }
 
     async fn generate_poster_bytes(
@@ -85,6 +95,10 @@ impl VideoMediaEnginePort for FfmpegVideoEngine {
             "ass" | "ssa" => convert_ass_to_vtt(text),
             _ => convert_srt_to_vtt(text),
         }
+    }
+
+    fn shift_webvtt_timestamps(&self, vtt: &str, offset_secs: f64) -> String {
+        shift_webvtt_timestamps(vtt, offset_secs)
     }
 
     async fn open_fmp4_transcode_stream(
