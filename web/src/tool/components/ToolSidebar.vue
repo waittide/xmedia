@@ -35,6 +35,8 @@ defineProps<{
   totalItems: number
   domainRoots: ManagedRootDto[]
   activeRootId: string
+  currentRelPath: string
+  viewMode: 'flat' | 'folders'
   snapshot: DirectorySnapshot | null
   completenessFilter: ToolCompletenessFilter
   filterItems: Array<{
@@ -361,6 +363,15 @@ function toggleGroupFold(key: string): void {
         </div>
 
         <div v-if="!collapsedGroups.folders" class="space-y-0.5">
+          <div
+            v-if="currentRelPath"
+            class="flex h-9 items-center gap-2 rounded-full bg-[var(--md-sys-color-secondary-container)] px-3.5 text-xs font-semibold text-[var(--md-sys-color-on-secondary-container)]"
+            :title="currentRelPath"
+          >
+            <LuFolder class="h-3.5 w-3.5 shrink-0" />
+            <span class="flex-1 truncate">{{ currentRelPath.split('/').pop() || currentRelPath }}</span>
+          </div>
+
           <button
             v-if="snapshot.parent_rel_path !== null"
             type="button"
@@ -406,7 +417,9 @@ function toggleGroupFold(key: string): void {
             type="button"
             class="md-state flex h-9 w-full items-center gap-2.5 rounded-full px-3.5 text-xs font-medium"
             :class="
-              activeNav === 'items' && completenessFilter === f.id
+              activeNav === 'items' &&
+              completenessFilter === f.id &&
+              (f.id !== 'all' || viewMode === 'flat')
                 ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
                 : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
             "

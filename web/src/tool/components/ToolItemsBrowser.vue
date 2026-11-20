@@ -165,7 +165,7 @@ function relativeDirBadge(relPath: string): string | null {
                   ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
                   : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
               "
-              @click="emit('enterFolder', bc.relPath)"
+              @click="emit('enterFolder', bc.relPath, viewMode === 'folders')"
             >
               {{ bc.label }}
             </button>
@@ -238,7 +238,7 @@ function relativeDirBadge(relPath: string): string | null {
         class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-warning-container)] px-4 py-2.5 text-xs text-[var(--md-sys-color-on-warning-container)]"
       >
         <span class="font-semibold">
-          正在聚焦精修未命中 / 异常项（{{ filteredFiles.length }} 项）· 点击条目即可在右侧同屏对照在线候选
+          正在聚焦查看任务结果（{{ filteredFiles.length }} 项）· 点击条目即可在右侧精修元信息或对照在线候选
         </span>
         <button
           type="button"

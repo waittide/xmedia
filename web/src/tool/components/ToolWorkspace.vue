@@ -43,7 +43,10 @@ import ToolHomeView from './ToolHomeView.vue'
 import ToolItemsBrowser from './ToolItemsBrowser.vue'
 import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
 import ToolSidebar from './ToolSidebar.vue'
-import ToolTasksView, { type ReviewItemsPayload } from './ToolTasksView.vue'
+import ToolTasksView, {
+  type InspectTaskItemPayload,
+  type ReviewItemsPayload,
+} from './ToolTasksView.vue'
 import ToolTopHeader from './ToolTopHeader.vue'
 
 defineProps<{
@@ -647,13 +650,15 @@ async function selectRoot(rootId: string): Promise<void> {
   await loadDirectory(rootId, '')
 }
 
-async function enterFolder(relPath: string, forceFoldersView = false): Promise<void> {
+async function enterFolder(relPath: string, forceFoldersView = true): Promise<void> {
   if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
     return
   }
   mobileMenuOpen.value = false
+  workbenchFocusPaths.value = null
   if (forceFoldersView) {
     setViewMode('folders')
+    completenessFilter.value = 'all'
   }
   if (activeNav.value !== 'items') {
     await navigatePrimary('items')
@@ -824,11 +829,6 @@ function enqueueScrapeFiles(
 ): void {
   if (files.length === 0) return
   taskStore.enqueueScrapeTask(files, labelHint, options)
-  snackbar.show({
-    message: `已添加 ${files.length} 个自动刮削任务`,
-    actionLabel: '查看任务',
-    onAction: () => navigatePrimary('tasks'),
-  })
 }
 
 function enqueueScrapeForSelection(): void {
@@ -903,26 +903,73 @@ async function handleHistoryRestored(): Promise<void> {
   }
 }
 
+async function ensureTaskItemDirectoryLoaded(
+  domain: MediaKind,
+  rootId: string,
+): Promise<void> {
+  if (activeDomain.value !== domain) {
+    await switchDomain(domain)
+  }
+  if (activeRootId.value !== rootId || currentRelPath.value !== '') {
+    activeRootId.value = rootId
+    currentRelPath.value = ''
+    await loadDirectory(rootId, '')
+  }
+}
+
 async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<void> {
   if (payload.relPaths.length === 0) return
-  if (activeDomain.value !== payload.domain) {
-    await switchDomain(payload.domain)
-  }
-  if (activeRootId.value !== payload.rootId) {
-    activeRootId.value = payload.rootId
-    currentRelPath.value = ''
-    await loadDirectory(payload.rootId, '')
-  } else if (currentRelPath.value !== '') {
-    currentRelPath.value = ''
-    await loadDirectory(payload.rootId, '')
-  }
+  await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  completenessFilter.value = 'all'
   workbenchFocusPaths.value = new Set(payload.relPaths)
   setViewMode('flat')
-  setInspectorCandidatesOpen(true)
+  setInspectorCandidatesOpen(payload.openCandidates ?? true)
   activeNav.value = 'items'
   const firstEntry = (snapshot.value?.files ?? []).find((f) => payload.relPaths.includes(f.rel_path))
   if (firstEntry) {
     void inspectEntry(firstEntry)
+  }
+}
+
+async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<void> {
+  await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  completenessFilter.value = 'all'
+  workbenchFocusPaths.value = new Set([payload.relPath])
+  setViewMode('flat')
+  setInspectorCandidatesOpen(Boolean(payload.openCandidates))
+  activeNav.value = 'items'
+  const target = (snapshot.value?.files ?? []).find((f) => f.rel_path === payload.relPath)
+  if (target) {
+    await inspectEntry(target)
+  } else {
+    try {
+      const detail = await toolApi.inspectFile(payload.rootId, payload.relPath, payload.domain)
+      activeDetail.value = detail
+      inspectingPath.value = detail.entry.rel_path
+    } catch (err) {
+      snackbar.show({
+        message: err instanceof Error ? err.message : String(err),
+        tone: 'error',
+      })
+    }
+  }
+}
+
+async function handleOpenTaskBookEditor(payload: InspectTaskItemPayload): Promise<void> {
+  await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  const target = (snapshot.value?.files ?? []).find((f) => f.rel_path === payload.relPath)
+  if (target) {
+    openBookContentEditor(target)
+    return
+  }
+  try {
+    const detail = await toolApi.inspectFile(payload.rootId, payload.relPath, 'book')
+    openBookContentEditor(detail.entry)
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
 }
 
@@ -1264,6 +1311,8 @@ onBeforeUnmount(() => {
         :total-items="stats.total"
         :domain-roots="domainRoots"
         :active-root-id="activeRootId"
+        :current-rel-path="currentRelPath"
+        :view-mode="viewMode"
         :snapshot="snapshot"
         :completeness-filter="completenessFilter"
         :filter-items="filterItems"
@@ -1274,7 +1323,7 @@ onBeforeUnmount(() => {
         @open-folders-view="setViewMode('folders'); navigatePrimary('items')"
         @select-root="selectRoot"
         @enter-folder="enterFolder"
-        @select-completeness-filter="selectCompletenessFilter"
+        @select-completeness-filter="(f) => { if (f === 'all') setViewMode('flat'); selectCompletenessFilter(f) }"
       />
 
       <!-- Main Rounded Canvas + Supporting Pane (MD3 Tonal Surface without harsh borders) -->
@@ -1298,6 +1347,8 @@ onBeforeUnmount(() => {
           <ToolTasksView
             v-else-if="activeNav === 'tasks'"
             @review-items="handleReviewUnmatchedItems"
+            @inspect-item="handleInspectTaskItem"
+            @open-book-editor="handleOpenTaskBookEditor"
           />
 
           <!-- VIEW 3: DOMAIN HOME OVERVIEW -->
@@ -1311,6 +1362,7 @@ onBeforeUnmount(() => {
             :artwork-version="artworkVersion"
             :stats="stats"
             @open-items="(f) => selectCompletenessFilter(f ?? 'all')"
+            @open-folders-view="setViewMode('folders'); completenessFilter = 'all'; navigatePrimary('items')"
             @enter-folder="(rel) => enterFolder(rel, true)"
             @inspect-file="inspectEntry"
             @scrape-files="enqueueScrapeFiles"

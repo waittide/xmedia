@@ -12,6 +12,13 @@ export interface ScrapeSubItem {
   mediaKind: MediaKind
   status: 'queued' | 'running' | 'matched' | 'unmatched' | 'failed' | 'cancelled'
   confidence?: number
+  matchedTitle?: string
+  matchedSubtitle?: string
+  hasCover?: boolean
+  hasSummary?: boolean
+  hasTags?: boolean
+  startedAt?: number
+  finishedAt?: number
   error?: string
 }
 
@@ -22,6 +29,7 @@ export interface ToolTaskEntry {
   title: string
   strategyLabel?: string
   scrapeOptions?: AutoScrapeOptionsDto
+  concurrency?: number
   status: 'queued' | 'running' | 'completed' | 'failed'
   processed: number
   total: number | null
@@ -237,6 +245,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
       title,
       strategyLabel: formatStrategyLabel(options),
       scrapeOptions: options,
+      concurrency: Math.min(SCRAPE_CONCURRENCY, files.length),
       status: workerRunning ? 'queued' : 'running',
       processed: 0,
       total: files.length,
@@ -285,7 +294,10 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
             if (sub.status !== 'queued') continue
 
             sub.status = 'running'
-            task!.detail = sub.fileName
+            sub.startedAt = Date.now()
+            sub.finishedAt = undefined
+            const activeNames = items.filter((it) => it.status === 'running').map((it) => it.fileName)
+            task!.detail = activeNames.join(' · ') || sub.fileName
             try {
               const res = await toolApi.autoScrapeFile(
                 sub.rootId,
@@ -294,6 +306,14 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
                 task!.scrapeOptions,
               )
               sub.confidence = res.confidence
+              sub.finishedAt = Date.now()
+              if (res.detail?.entry) {
+                sub.matchedTitle = res.detail.entry.display_title || undefined
+                sub.matchedSubtitle = res.detail.entry.display_subtitle || undefined
+                sub.hasCover = res.detail.entry.completeness.has_cover
+                sub.hasSummary = res.detail.entry.completeness.has_summary_or_lyrics
+                sub.hasTags = res.detail.entry.completeness.has_nfo_or_tag_block
+              }
               if (res.matched) {
                 sub.status = 'matched'
                 task!.matchedCount = (task!.matchedCount ?? 0) + 1
@@ -304,6 +324,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
               }
             } catch (err) {
               sub.status = 'failed'
+              sub.finishedAt = Date.now()
               sub.error = err instanceof Error ? err.message : String(err)
               task!.failedCount = (task!.failedCount ?? 0) + 1
             } finally {
@@ -314,6 +335,12 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
                   it.status === 'failed' ||
                   it.status === 'cancelled',
               ).length
+              const stillRunning = items
+                .filter((it) => it.status === 'running')
+                .map((it) => it.fileName)
+              if (stillRunning.length > 0) {
+                task!.detail = stillRunning.join(' · ')
+              }
             }
           }
         }

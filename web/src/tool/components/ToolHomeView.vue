@@ -52,6 +52,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openItems: [filter?: CompletenessFilter]
+  openFoldersView: []
   enterFolder: [relPath: string]
   inspectFile: [file: MediaFileEntry]
   scrapeFiles: [files: MediaFileEntry[], labelHint?: string]
@@ -264,7 +265,7 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
           <button
             type="button"
             class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:opacity-85"
-            @click="emit('openItems', 'all')"
+            @click="emit('openFoldersView')"
           >
             <span>查看全部目录</span>
             <LuArrowRight class="h-3.5 w-3.5" />
