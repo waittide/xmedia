@@ -90,12 +90,6 @@ escapeStack.register(
     playerStore.lyricsOpen = false
   },
 )
-escapeStack.register(
-  () => playerStore.queueOpen,
-  () => {
-    playerStore.queueOpen = false
-  },
-)
 
 const loadedDomains = new Set<MediaKind>()
 

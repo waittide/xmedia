@@ -16,7 +16,6 @@ import {
 } from 'vue-icons-plus/lu'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
-import { useEscapeStack } from '@/composables/useEscapeStack'
 import {
   HOME_CARD_POOLS,
   MAX_LAYOUT_ITEMS,
@@ -48,12 +47,6 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const authStore = useAuthStore()
 const themeStore = useThemeStore()
-const escapeStack = useEscapeStack()
-
-escapeStack.register(
-  () => !props.inline && props.open,
-  () => emit('close'),
-)
 
 const PanelShell = defineComponent({
   name: 'LayoutCustomizerShell',

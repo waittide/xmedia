@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, watch } from 'vue'
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 
 const props = withDefaults(
   defineProps<{
@@ -28,6 +29,7 @@ const emit = defineEmits<{
 }>()
 
 const { t, te, locale } = useI18n()
+const escapeStack = useEscapeStack()
 const closeLabel = computed(() =>
   te('common.close')
     ? t('common.close')
@@ -36,27 +38,10 @@ const closeLabel = computed(() =>
       : 'Close',
 )
 
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === 'Escape' && props.open) {
-    emit('close')
-  }
-}
-
-watch(
+escapeStack.register(
   () => props.open,
-  (isOpen) => {
-    if (isOpen) {
-      window.addEventListener('keydown', onKeydown)
-    } else {
-      window.removeEventListener('keydown', onKeydown)
-    }
-  },
-  { immediate: true },
+  () => emit('close'),
 )
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
-})
 </script>
 
 <template>

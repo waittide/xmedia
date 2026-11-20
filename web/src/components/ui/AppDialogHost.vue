@@ -1,40 +1,30 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useDialogStore } from '@/stores/dialog'
 
 const { t } = useI18n()
 const dialogStore = useDialogStore()
+const escapeStack = useEscapeStack()
 const promptInputRef = ref<HTMLInputElement | null>(null)
 
-function onKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Escape' && dialogStore.active) {
-    ev.preventDefault()
-    ev.stopImmediatePropagation()
-    dialogStore.cancel()
-  }
-}
+escapeStack.register(
+  () => Boolean(dialogStore.active),
+  () => dialogStore.cancel(),
+)
 
 watch(
   () => dialogStore.active,
   async (val) => {
-    if (val) {
-      window.addEventListener('keydown', onKeydown, true)
-      if (val.mode === 'prompt') {
-        await nextTick()
-        promptInputRef.value?.focus()
-        promptInputRef.value?.select()
-      }
-    } else {
-      window.removeEventListener('keydown', onKeydown, true)
+    if (val?.mode === 'prompt') {
+      await nextTick()
+      promptInputRef.value?.focus()
+      promptInputRef.value?.select()
     }
   },
   { immediate: true },
 )
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown, true)
-})
 </script>
 
 <template>
