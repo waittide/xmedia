@@ -20,6 +20,7 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import { usePlayerStore } from '@/domains/music/player'
 import { useThemeStore } from '@/stores/theme'
+import { formatTime } from '@/utils/format'
 import {
   api,
   buildPosterUrl,
@@ -171,15 +172,6 @@ const speedOptions = [
   { value: '1.5', label: '1.5x' },
   { value: '2', label: '2.0x' },
 ]
-
-function formatTime(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return '0:00'
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = Math.floor(secs % 60)
-  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  return `${m}:${String(s).padStart(2, '0')}`
-}
 
 function revealHud(): void {
   hudVisible.value = true

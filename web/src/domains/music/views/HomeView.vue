@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref, watch, type Component } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuArrowRight,
   LuBookmark,
@@ -17,16 +16,15 @@ import {
   LuRadio,
   LuRefreshCw,
   LuShuffle,
-  LuSlidersHorizontal,
   LuTag,
 } from 'vue-icons-plus/lu'
-import { fetchHomeOverview, peekHomeCache } from '@/config/homeCache'
-import { useThemeStore } from '@/stores/theme'
-import { useUploadStore } from '@/stores/uploads'
-import HomeSkeleton from '@/components/HomeSkeleton.vue'
-import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useActionFeedback } from '@/composables/useActionFeedback'
+import { useHomeOverview } from '@/composables/useHomeOverview'
+import { usePreferencesStore } from '@/stores/preferences'
+import { useUploadStore } from '@/stores/uploads'
+import { formatTime } from '@/utils/format'
+import HomeSkeleton from '@/components/HomeSkeleton.vue'
+import HomeStatCards, { type StatCardItem } from '@/components/domain/HomeStatCards.vue'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
@@ -34,67 +32,35 @@ import TrackTable from '../components/TrackTable.vue'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
-import type { HomeOverviewDto, TrackDto } from '../types'
+import type { TrackDto } from '../types'
 
 defineOptions({ name: 'MusicHomeView' })
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
 const router = useRouter()
 const musicStore = useMusicStore()
 const playerStore = usePlayerStore()
-const themeStore = useThemeStore()
+const prefsStore = usePreferencesStore()
 const uploadStore = useUploadStore()
-
-const overview = ref<HomeOverviewDto | null>(peekHomeCache('music'))
-const loading = ref(overview.value === null)
-const customizerOpen = ref(false)
 const randomFeedback = useActionFeedback()
 
-async function loadHome(force = false): Promise<void> {
-  if (!overview.value) loading.value = true
-  try {
-    overview.value = await fetchHomeOverview('music', { force })
-  } finally {
-    loading.value = false
-  }
-}
-
-async function refreshPage(): Promise<void> {
-  await Promise.all([loadHome(true), musicStore.refreshSidebar()])
-}
+const { overview, loading, refreshPage } = useHomeOverview('music', {
+  refreshSidebar: () => musicStore.refreshSidebar(),
+  watchSources: () => [musicStore.catalogVersion, uploadStore.versionCounter],
+})
 
 async function refreshRandomPicks(): Promise<void> {
   if (!overview.value) return
   overview.value.random_tracks = await api.randomTracks(12)
 }
 
-onMounted(() => void loadHome(false))
-onActivated(() => void loadHome(false))
-watch(
-  () => [musicStore.catalogVersion, uploadStore.versionCounter],
-  () => void loadHome(true),
-)
-
-interface StatCardItem {
-  key: string
-  label: string
-  value: number
-  icon: Component
-  tone?: 'accent' | 'rose'
-  onClick: () => void
-}
-
 const statCards = computed<StatCardItem[]>(() => {
   const st = overview.value?.stats
-  const keys = themeStore.workspaceLayout.music.home_cards
-  return keys.map((key) => {
-    const label = globalT(`layoutCustomizer.cards.music.${key}`)
+  return prefsStore.workspaceLayout.music.home_cards.map((key) => {
     switch (key) {
       case 'playlists':
         return {
           key,
-          label,
           value: st?.playlists_count ?? musicStore.playlists.length,
           icon: LuListMusic,
           onClick: () => void router.push('/music/playlists'),
@@ -102,7 +68,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'listening':
         return {
           key,
-          label,
           value: st?.listening_count ?? 0,
           icon: LuClock,
           onClick: () => void router.push('/music/continue'),
@@ -110,7 +75,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'favorites':
         return {
           key,
-          label,
           value: st?.starred_tracks ?? 0,
           icon: LuHeart,
           tone: 'rose',
@@ -119,7 +83,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'bookmarks':
         return {
           key,
-          label,
           value: st?.bookmarks_count ?? 0,
           icon: LuBookmark,
           onClick: () => void router.push('/music/continue'),
@@ -127,7 +90,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'albums':
         return {
           key,
-          label,
           value: st?.total_albums ?? 0,
           icon: LuDisc3,
           onClick: () => void router.push({ path: '/music/songs', query: { tab: 'albums' } }),
@@ -135,7 +97,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'artists':
         return {
           key,
-          label,
           value: st?.total_artists ?? 0,
           icon: LuMic,
           onClick: () => void router.push({ path: '/music/songs', query: { tab: 'artists' } }),
@@ -143,7 +104,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'genres':
         return {
           key,
-          label,
           value: st?.genres_count ?? musicStore.genres.length,
           icon: LuRadio,
           onClick: () => void router.push('/music/genres'),
@@ -151,7 +111,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'tags':
         return {
           key,
-          label,
           value: st?.tags_count ?? musicStore.tags.length,
           icon: LuTag,
           onClick: () => void router.push('/music/tags'),
@@ -159,7 +118,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'libraries':
         return {
           key,
-          label,
           value: st?.libraries_count ?? musicStore.libraries.length,
           icon: LuLibrary,
           onClick: () => void router.push('/music/libraries'),
@@ -168,7 +126,6 @@ const statCards = computed<StatCardItem[]>(() => {
       default:
         return {
           key: 'all',
-          label,
           value: st?.total_tracks ?? 0,
           icon: LuMusic,
           onClick: () => void router.push('/music/songs'),
@@ -176,20 +133,6 @@ const statCards = computed<StatCardItem[]>(() => {
     }
   })
 })
-
-const cardsGridClass = computed(() => {
-  const n = statCards.value.length
-  if (n <= 2) return 'grid-cols-1 sm:grid-cols-2'
-  if (n === 3) return 'grid-cols-1 sm:grid-cols-3'
-  return 'grid-cols-2 lg:grid-cols-4'
-})
-
-function formatClock(secs: number): string {
-  const s = Math.max(0, Math.floor(secs))
-  const m = Math.floor(s / 60)
-  const rem = s % 60
-  return `${m}:${String(rem).padStart(2, '0')}`
-}
 
 interface ContinueListenItem {
   track: TrackDto
@@ -218,7 +161,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
         track: cur,
         resumeSecs,
         percent: Math.max(5, pct),
-        subtitle: `${cur.artist_name} · ${formatClock(resumeSecs)} / ${formatClock(cur.duration_secs)}`,
+        subtitle: `${cur.artist_name} · ${formatTime(resumeSecs)} / ${formatTime(cur.duration_secs)}`,
       })
     }
   }
@@ -236,7 +179,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
       track: bm.track,
       resumeSecs,
       percent: Math.max(5, pct),
-      subtitle: `${bm.track.artist_name} · ${formatClock(resumeSecs)} / ${formatClock(bm.track.duration_secs)}`,
+      subtitle: `${bm.track.artist_name} · ${formatTime(resumeSecs)} / ${formatTime(bm.track.duration_secs)}`,
     })
     if (out.length >= 6) return out
   }
@@ -260,49 +203,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
 
 <template>
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-8 sm:px-8">
-    <!-- Customizable Music Stat Cards (1..=4) -->
-    <section class="space-y-2.5">
-      <div class="flex items-center justify-end gap-1.5">
-        <RefreshButton variant="ghost" :action="refreshPage" />
-        <button
-          type="button"
-          class="md-btn md-btn-text md-btn-sm md-state text-[var(--md-sys-color-on-surface-variant)]"
-          @click="customizerOpen = true"
-        >
-          <LuSlidersHorizontal class="h-3.5 w-3.5" />
-          <span>{{ globalT('layoutCustomizer.customizeCards') }}</span>
-        </button>
-      </div>
-
-      <div class="grid gap-4" :class="cardsGridClass">
-        <button
-          v-for="card in statCards"
-          :key="card.key"
-          type="button"
-          class="md-card-filled md-state flex items-center gap-3.5 border border-[var(--md-sys-color-outline-variant)]/50 p-4 text-left transition hover:border-[var(--md-sys-color-primary)]/50"
-          @click="card.onClick()"
-        >
-          <div
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-            :class="
-              card.tone === 'rose'
-                ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-                : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-            "
-          >
-            <component :is="card.icon" class="h-5 w-5" />
-          </div>
-          <div class="min-w-0">
-            <p class="text-xl font-bold leading-none text-[var(--md-sys-color-on-surface)]">
-              {{ card.value }}
-            </p>
-            <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ card.label }}
-            </p>
-          </div>
-        </button>
-      </div>
-    </section>
+    <HomeStatCards domain="music" :cards="statCards" :on-refresh="refreshPage" />
 
     <!-- Cold-Load Skeleton -->
     <HomeSkeleton v-if="loading && !overview" />
@@ -476,12 +377,5 @@ const continueItems = computed<ContinueListenItem[]>(() => {
         <TrackTable :tracks="overview.random_tracks" />
       </section>
     </template>
-
-    <LayoutCustomizerModal
-      :open="customizerOpen"
-      domain="music"
-      initial-tab="cards"
-      @close="customizerOpen = false"
-    />
   </div>
 </template>

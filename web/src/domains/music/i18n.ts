@@ -1,5 +1,9 @@
 import { createDomainI18n } from '@/i18n'
-import zhCN from './locales/zh-CN'
-import enUS from './locales/en-US'
 
-export const useMusicI18n = createDomainI18n(zhCN, enUS)
+const musicI18n = createDomainI18n({
+  'zh-CN': () => import('./locales/zh-CN'),
+  'en-US': () => import('./locales/en-US'),
+})
+
+export const useMusicI18n = musicI18n.useI18n
+export const ensureMusicLocale = musicI18n.ensureLocale

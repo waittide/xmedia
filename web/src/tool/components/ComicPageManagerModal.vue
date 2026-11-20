@@ -22,6 +22,7 @@ import {
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import { formatBytes } from '@/utils/format'
 import { toolApi } from '../api'
 import type {
   ComicImageReencodeFormat,
@@ -92,12 +93,6 @@ const keptCount = computed(() => pages.value.filter((p) => !p.deleted).length)
 const deletedCount = computed(() => pages.value.filter((p) => p.deleted).length)
 const visiblePages = computed(() => pages.value.slice(0, visibleLimit.value))
 const hasMorePages = computed(() => pages.value.length > visibleLimit.value)
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-}
 
 const dialogSubtitle = computed(() => {
   const parts = [`共 ${pages.value.length} 页`, `保留 ${keptCount.value} 页`]

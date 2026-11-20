@@ -13,6 +13,7 @@ import {
 } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
+import { formatDuration } from '@/utils/format'
 import { api, buildVideoDownloadUrl } from '../api'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
@@ -45,17 +46,6 @@ const dialogStore = useDialogStore()
 const menuOpen = ref(false)
 const menuPos = ref<{ top: string; left: string }>({ top: '0px', left: '0px' })
 const menuRef = ref<HTMLDivElement | null>(null)
-
-function formatDuration(secs: number): string {
-  if (!secs || secs <= 0) return ''
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = Math.floor(secs % 60)
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  }
-  return `${m}:${String(s).padStart(2, '0')}`
-}
 
 const progressPercent = computed(() => {
   const p = props.video.progress

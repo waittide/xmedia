@@ -4,6 +4,7 @@ import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { LuChevronLeft, LuChevronRight } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
 import { useThemeStore } from '@/stores/theme'
+import { resolveFontStack } from '@/utils/format'
 import type { ReadingLocation, TxtChapterContent } from '@/domains/book/types'
 
 const MAX_CACHED_CHAPTERS = 24
@@ -95,12 +96,7 @@ const paragraphs = computed(() => {
     .filter((line) => line.length > 0)
 })
 
-const fontFamilyStyle = computed(() => {
-  const key = themeStore.reader.font_family
-  if (key === 'serif') return '"Noto Serif SC", "Source Han Serif SC", Georgia, serif'
-  if (key === 'mono') return '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace'
-  return '"Inter", "Noto Sans SC", system-ui, sans-serif'
-})
+const fontFamilyStyle = computed(() => resolveFontStack(themeStore.reader.font_family))
 
 async function loadChapter(index: number, restoreScrollRatio = 0): Promise<void> {
   const seq = ++loadSeq

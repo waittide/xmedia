@@ -22,7 +22,7 @@ import {
   SIDEBAR_GROUP_POOLS,
 } from '@/config/workspaceLayout'
 import { useAuthStore } from '@/stores/auth'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 import type { MediaKind } from '@/types/api'
 
 const props = withDefaults(
@@ -46,7 +46,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const authStore = useAuthStore()
-const themeStore = useThemeStore()
+const prefsStore = usePreferencesStore()
 
 const PanelShell = defineComponent({
   name: 'LayoutCustomizerShell',
@@ -108,7 +108,7 @@ const tabOptions = computed<Array<{ value: 'cards' | 'sidebar'; label: string }>
 ])
 
 const selectedItems = computed<string[]>(() => {
-  const cfg = themeStore.workspaceLayout[activeDomain.value]
+  const cfg = prefsStore.workspaceLayout[activeDomain.value]
   return activeTab.value === 'cards' ? cfg.home_cards : cfg.sidebar_groups
 })
 
@@ -135,9 +135,9 @@ function itemLabel(key: string): string {
 
 function commitList(next: string[]): void {
   if (activeTab.value === 'cards') {
-    themeStore.updateDomainLayout(activeDomain.value, { home_cards: next })
+    prefsStore.updateDomainLayout(activeDomain.value, { home_cards: next })
   } else {
-    themeStore.updateDomainLayout(activeDomain.value, { sidebar_groups: next })
+    prefsStore.updateDomainLayout(activeDomain.value, { sidebar_groups: next })
   }
 }
 
@@ -223,7 +223,7 @@ function onDropAt(targetIdx: number): void {
           v-if="inline"
           type="button"
           class="md-btn md-btn-sm md-btn-outlined md-state"
-          @click="themeStore.resetDomainLayout(activeDomain)"
+          @click="prefsStore.resetDomainLayout(activeDomain)"
         >
           <LuRotateCcw class="h-3.5 w-3.5" />
           <span>{{ t('layoutCustomizer.resetDomain') }}</span>
@@ -353,7 +353,7 @@ function onDropAt(targetIdx: number): void {
       <button
         type="button"
         class="md-btn md-btn-sm md-btn-outlined md-state"
-        @click="themeStore.resetDomainLayout(activeDomain)"
+        @click="prefsStore.resetDomainLayout(activeDomain)"
       >
         <LuRotateCcw class="h-3.5 w-3.5" />
         <span>{{ t('layoutCustomizer.resetDomain') }}</span>

@@ -15,6 +15,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
+import { formatTime } from '@/utils/format'
 import { buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
@@ -69,13 +70,6 @@ const qualityOptions = computed(() => [
   { value: 'mp3320', label: t('player.qualityMp3320') },
   { value: 'aac256', label: t('player.qualityAac256') },
 ])
-
-function formatTime(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return '0:00'
-  const m = Math.floor(secs / 60)
-  const s = Math.floor(secs % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
-}
 
 watch(
   () => [playerStore.activeLyricIndex, playerStore.lyricsOpen] as const,

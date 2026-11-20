@@ -5,6 +5,7 @@ import ePub, { type Book, type Rendition } from 'epubjs'
 import { LuChevronLeft, LuChevronRight } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
 import { useThemeStore } from '@/stores/theme'
+import { resolveFontStack } from '@/utils/format'
 import type { ReadingLocation } from '@/domains/book/types'
 
 const LOCATIONS_CACHE_PREFIX = 'xmedia.epub.locations:'
@@ -113,12 +114,6 @@ function writeCachedLocations(key: string, serialized: string): void {
   } catch {
     // ignore storage errors
   }
-}
-
-function resolveFontStack(key: string): string {
-  if (key === 'serif') return '"Noto Serif SC", "Source Han Serif SC", Georgia, serif'
-  if (key === 'mono') return '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace'
-  return '"Inter", "Noto Sans SC", system-ui, sans-serif'
 }
 
 function applyRenditionTheme(): void {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { LuDisc3 } from 'vue-icons-plus/lu'
+import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { buildCoverUrl } from '../api'
 
 const props = withDefaults(
@@ -20,36 +21,13 @@ const props = withDefaults(
   },
 )
 
-const failed = ref(false)
-
-watch(
-  () => props.coverId,
-  () => {
-    failed.value = false
-  },
+const src = computed(() =>
+  props.hasCover && props.coverId ? buildCoverUrl(props.coverId, props.size) : null,
 )
-
-const src = computed(() => {
-  if (!props.hasCover || !props.coverId || failed.value) return null
-  return buildCoverUrl(props.coverId, props.size)
-})
 </script>
 
 <template>
-  <div
-    class="relative flex aspect-square items-center justify-center overflow-hidden bg-gradient-to-br from-[var(--md-sys-color-surface-container-high)] via-[var(--md-sys-color-surface-container)] to-[var(--md-sys-color-primary-container)]/45 select-none"
-    :class="rounded"
-  >
-    <img
-      v-if="src"
-      :src="src"
-      :alt="alt"
-      loading="lazy"
-      decoding="async"
-      class="h-full w-full object-cover"
-      @error="failed = true"
-    />
-    <LuDisc3 v-else class="h-2/5 w-2/5 text-[var(--md-sys-color-on-surface-variant)]/55" />
+  <MediaCoverImage :src="src" :alt="alt" :rounded="rounded" :fallback-icon="LuDisc3">
     <slot />
-  </div>
+  </MediaCoverImage>
 </template>

@@ -22,6 +22,7 @@ import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import ThemePopover from '@/components/ThemePopover.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
+import { resolveFontStack } from '@/utils/format'
 import OnlineDownloadModal, {
   type OnlineDownloadTarget,
 } from '../components/OnlineDownloadModal.vue'
@@ -90,12 +91,7 @@ const lineHeight = computed<number>({
   },
 })
 
-const fontFamilyStyle = computed(() => {
-  const key = themeStore.reader.font_family
-  if (key === 'serif') return '"Noto Serif SC", "Source Han Serif SC", Georgia, serif'
-  if (key === 'mono') return '"JetBrains Mono", ui-monospace, SFMono-Regular, monospace'
-  return '"Inter", "Noto Sans SC", system-ui, sans-serif'
-})
+const fontFamilyStyle = computed(() => resolveFontStack(themeStore.reader.font_family))
 
 const fontOptions: SegmentedOption<string>[] = [
   { value: 'system-ui', label: '无衬线' },

@@ -16,6 +16,7 @@ import {
 } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
+import { formatTime as formatDuration } from '@/utils/format'
 import { api, buildDownloadUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
@@ -52,12 +53,6 @@ const dialogStore = useDialogStore()
 const activeMenuIdx = ref<number | null>(null)
 const menuPos = ref<{ top: string; left: string }>({ top: '0px', left: '0px' })
 const menuRef = ref<HTMLDivElement | null>(null)
-
-function formatDuration(secs: number): string {
-  const m = Math.floor(secs / 60)
-  const s = Math.floor(secs % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
-}
 
 function formatQuality(tr: TrackDto): string {
   const fmt = tr.format.toUpperCase()

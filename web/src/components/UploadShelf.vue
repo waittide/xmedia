@@ -16,6 +16,7 @@ import {
 } from 'vue-icons-plus/lu'
 import { useEventsStore } from '@/stores/events'
 import { useUploadStore } from '@/stores/uploads'
+import { formatBytes as formatSize } from '@/utils/format'
 
 withDefaults(
   defineProps<{
@@ -56,12 +57,6 @@ watch(
     }
   },
 )
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-}
 
 const combinedTasks = computed<ShelfTaskRow[]>(() => {
   const scanItems: ShelfTaskRow[] = eventsStore.scanTaskList.map((sc) => {

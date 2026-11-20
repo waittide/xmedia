@@ -3,7 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuAlertCircle, LuCheck, LuCheckCircle2, LuCopy, LuPlay, LuTrash2 } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
+import { formatTime } from '@/utils/format'
 import { api as musicApi } from '@/domains/music/api'
 import { usePlayerStore } from '@/domains/music/player'
 import type { BookmarkDto } from '@/domains/music/types'
@@ -26,7 +27,7 @@ const { t: bookT } = useBookI18n()
 const { t: comicT } = useComicI18n()
 const authStore = useAuthStore()
 const playerStore = usePlayerStore()
-const themeStore = useThemeStore()
+const prefsStore = usePreferencesStore()
 const { copiedKey, copyText } = useCopyFeedback()
 
 const originUrl = computed(() => window.location.origin)
@@ -107,10 +108,7 @@ onMounted(async () => {
 })
 
 function formatBookmarkPos(ms: number): string {
-  const totalSecs = Math.floor(ms / 1000)
-  const m = Math.floor(totalSecs / 60)
-  const s = totalSecs % 60
-  return `${m}:${String(s).padStart(2, '0')}`
+  return formatTime(ms / 1000)
 }
 
 function playBookmark(bm: BookmarkDto): void {
@@ -175,9 +173,9 @@ async function removeBookmark(trackId: string): Promise<void> {
           {{ bookT('reader.fontFamily') }}
         </label>
         <AppSelect
-          :model-value="themeStore.reader.font_family"
+          :model-value="prefsStore.reader.font_family"
           :options="bookFontOptions"
-          @update:model-value="themeStore.updateReaderPreferences({ font_family: $event })"
+          @update:model-value="prefsStore.updateReaderPreferences({ font_family: $event })"
         />
       </div>
 
@@ -186,9 +184,9 @@ async function removeBookmark(trackId: string): Promise<void> {
           {{ t('settings.bookFlowLabel') }}
         </label>
         <AppSelect
-          :model-value="themeStore.reader.flow"
+          :model-value="prefsStore.reader.flow"
           :options="bookFlowOptions"
-          @update:model-value="themeStore.updateReaderPreferences({ flow: $event as ReadingFlow })"
+          @update:model-value="prefsStore.updateReaderPreferences({ flow: $event as ReadingFlow })"
         />
       </div>
 
@@ -198,17 +196,17 @@ async function removeBookmark(trackId: string): Promise<void> {
             {{ t('settings.bookFontSize') }}
           </span>
           <span class="font-mono font-medium text-[var(--md-sys-color-on-surface)]">
-            {{ themeStore.reader.font_size }} px
+            {{ prefsStore.reader.font_size }} px
           </span>
         </div>
         <AppSlider
-          :model-value="themeStore.reader.font_size"
+          :model-value="prefsStore.reader.font_size"
           :min="13"
           :max="28"
           :step="1"
           :aria-label="t('settings.bookFontSize')"
           always-show-thumb
-          @update:model-value="themeStore.updateReaderPreferences({ font_size: $event })"
+          @update:model-value="prefsStore.updateReaderPreferences({ font_size: $event })"
         />
       </div>
 
@@ -218,17 +216,17 @@ async function removeBookmark(trackId: string): Promise<void> {
             {{ bookT('reader.lineHeight') }}
           </span>
           <span class="font-mono font-medium text-[var(--md-sys-color-on-surface)]">
-            {{ themeStore.reader.line_height }}
+            {{ prefsStore.reader.line_height }}
           </span>
         </div>
         <AppSlider
-          :model-value="themeStore.reader.line_height"
+          :model-value="prefsStore.reader.line_height"
           :min="1.3"
           :max="2.4"
           :step="0.1"
           :aria-label="bookT('reader.lineHeight')"
           always-show-thumb
-          @update:model-value="themeStore.updateReaderPreferences({ line_height: $event })"
+          @update:model-value="prefsStore.updateReaderPreferences({ line_height: $event })"
         />
       </div>
     </div>
@@ -254,10 +252,10 @@ async function removeBookmark(trackId: string): Promise<void> {
           {{ comicT('settings.defaultReaderMode') }}
         </label>
         <AppSelect
-          :model-value="themeStore.comic.default_reader_mode"
+          :model-value="prefsStore.comic.default_reader_mode"
           :options="comicModeOptions"
           @update:model-value="
-            themeStore.updateComicPreferences({ default_reader_mode: $event as ComicReaderMode })
+            prefsStore.updateComicPreferences({ default_reader_mode: $event as ComicReaderMode })
           "
         />
       </div>
@@ -267,10 +265,10 @@ async function removeBookmark(trackId: string): Promise<void> {
           {{ comicT('settings.defaultFitMode') }}
         </label>
         <AppSelect
-          :model-value="themeStore.comic.default_fit_mode"
+          :model-value="prefsStore.comic.default_fit_mode"
           :options="comicFitOptions"
           @update:model-value="
-            themeStore.updateComicPreferences({ default_fit_mode: $event as ComicFitMode })
+            prefsStore.updateComicPreferences({ default_fit_mode: $event as ComicFitMode })
           "
         />
       </div>
@@ -278,14 +276,14 @@ async function removeBookmark(trackId: string): Promise<void> {
 
     <div class="flex flex-wrap gap-6 pt-1">
       <AppCheckbox
-        :model-value="themeStore.comic.offset_cover_page"
+        :model-value="prefsStore.comic.offset_cover_page"
         :label="t('settings.comicOffsetCover')"
-        @update:model-value="themeStore.updateComicPreferences({ offset_cover_page: $event })"
+        @update:model-value="prefsStore.updateComicPreferences({ offset_cover_page: $event })"
       />
       <AppCheckbox
-        :model-value="themeStore.comic.dim_images_in_dark"
+        :model-value="prefsStore.comic.dim_images_in_dark"
         :label="comicT('reader.eyeCareDim')"
-        @update:model-value="themeStore.updateComicPreferences({ dim_images_in_dark: $event })"
+        @update:model-value="prefsStore.updateComicPreferences({ dim_images_in_dark: $event })"
       />
     </div>
   </section>
@@ -306,10 +304,10 @@ async function removeBookmark(trackId: string): Promise<void> {
 
     <div class="max-w-sm">
       <AppSelect
-        :model-value="themeStore.playback.transcode_profile"
+        :model-value="prefsStore.playback.transcode_profile"
         :options="musicQualityOptions"
         @update:model-value="
-          themeStore.updatePlaybackPreferences({ transcode_profile: $event as TranscodeProfile })
+          prefsStore.updatePlaybackPreferences({ transcode_profile: $event as TranscodeProfile })
         "
       />
     </div>
@@ -372,18 +370,18 @@ async function removeBookmark(trackId: string): Promise<void> {
 
     <div class="max-w-md">
       <AppSelect
-        :model-value="themeStore.video.default_quality"
+        :model-value="prefsStore.video.default_quality"
         :options="videoQualityOptions"
         @update:model-value="
-          themeStore.updateVideoPreferences({ default_quality: $event as VideoQualityProfile })
+          prefsStore.updateVideoPreferences({ default_quality: $event as VideoQualityProfile })
         "
       />
     </div>
 
     <AppCheckbox
-      :model-value="themeStore.video.autoplay_next"
+      :model-value="prefsStore.video.autoplay_next"
       :label="t('settings.videoAutoplayNext')"
-      @update:model-value="themeStore.updateVideoPreferences({ autoplay_next: $event })"
+      @update:model-value="prefsStore.updateVideoPreferences({ autoplay_next: $event })"
     />
   </section>
 

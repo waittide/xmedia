@@ -1,5 +1,9 @@
 import { createDomainI18n } from '@/i18n'
-import zhCN from './locales/zh-CN'
-import enUS from './locales/en-US'
 
-export const useVideoI18n = createDomainI18n(zhCN, enUS)
+const videoI18n = createDomainI18n({
+  'zh-CN': () => import('./locales/zh-CN'),
+  'en-US': () => import('./locales/en-US'),
+})
+
+export const useVideoI18n = videoI18n.useI18n
+export const ensureVideoLocale = videoI18n.ensureLocale

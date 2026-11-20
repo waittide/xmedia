@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 import { useThemeStore } from '@/stores/theme'
+import { formatBytes, formatDuration as formatDurationBase } from '@/utils/format'
 import type { MediaKind } from '@/types/api'
 
 interface DomainSpecificLabels {
@@ -345,20 +346,8 @@ export function useToolText() {
   return computed(() => MESSAGES[themeStore.locale] ?? MESSAGES['zh-CN'])
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
-}
+export { formatBytes }
 
 export function formatDuration(secs: number): string {
-  if (!secs || secs <= 0) return '—'
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  const s = secs % 60
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  }
-  return `${m}:${String(s).padStart(2, '0')}`
+  return formatDurationBase(secs, '—')
 }

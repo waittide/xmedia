@@ -10,6 +10,7 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { formatTime } from '@/utils/format'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
 import CoverImage from '../components/CoverImage.vue'
@@ -29,13 +30,6 @@ const savedQueue = ref<PlayQueueDto | null>(null)
 const bookmarks = ref<BookmarkDto[]>([])
 const recentAlbums = ref<AlbumDto[]>([])
 const recentTracks = ref<TrackDto[]>([])
-
-function formatTime(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return '0:00'
-  const m = Math.floor(secs / 60)
-  const s = Math.floor(secs % 60)
-  return `${m}:${String(s).padStart(2, '0')}`
-}
 
 const resumeSession = computed(() => {
   if (playerStore.currentTrack && playerStore.queue.length > 0) {

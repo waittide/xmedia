@@ -1,8 +1,25 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { setUnauthorizedHandler } from '@/api/client'
+import { ensureBookLocale } from '@/domains/book/i18n'
+import { ensureComicLocale } from '@/domains/comic/i18n'
+import { ensureMusicLocale } from '@/domains/music/i18n'
+import { ensureVideoLocale } from '@/domains/video/i18n'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { MediaKind } from '@/types/api'
+
+function ensureDomainLocale(domain: MediaKind): Promise<void> {
+  switch (domain) {
+    case 'book':
+      return ensureBookLocale()
+    case 'comic':
+      return ensureComicLocale()
+    case 'music':
+      return ensureMusicLocale()
+    case 'video':
+      return ensureVideoLocale()
+  }
+}
 
 function resolvePreferredDomain(
   preferred: MediaKind,
@@ -391,5 +408,13 @@ router.beforeEach(async (to) => {
   }
 
   domainStore.syncFromPath(to.fullPath)
+
+  if (routeDomain) {
+    await ensureDomainLocale(routeDomain)
+  } else if (to.name === 'settings') {
+    const domains = new Set<MediaKind>(['book', 'comic', domainStore.activeDomain])
+    await Promise.all([...domains].map((d) => ensureDomainLocale(d)))
+  }
+
   return true
 })

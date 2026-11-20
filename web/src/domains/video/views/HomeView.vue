@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, onMounted, ref, watch, type Component } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuArrowRight,
   LuClapperboard,
@@ -11,104 +10,46 @@ import {
   LuHeart,
   LuLibrary,
   LuPlay,
-  LuSlidersHorizontal,
   LuSparkles,
   LuTag,
   LuTv,
 } from 'vue-icons-plus/lu'
-import { fetchHomeOverview, peekHomeCache } from '@/config/homeCache'
-import { useThemeStore } from '@/stores/theme'
+import { useHomeOverview } from '@/composables/useHomeOverview'
+import { usePreferencesStore } from '@/stores/preferences'
 import { useUploadStore } from '@/stores/uploads'
+import { formatTime } from '@/utils/format'
 import HomeSkeleton from '@/components/HomeSkeleton.vue'
-import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
+import HomeStatCards, { type StatCardItem } from '@/components/domain/HomeStatCards.vue'
 import PosterImage from '../components/PosterImage.vue'
 import ShowCard from '../components/ShowCard.vue'
 import VideoCard from '../components/VideoCard.vue'
 import VideoMetadataModal from '../components/VideoMetadataModal.vue'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
-import type { VideoHomeOverviewDto, VideoSummaryDto } from '../types'
+import type { VideoSummaryDto } from '../types'
 
 defineOptions({ name: 'VideoHomeView' })
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
 const router = useRouter()
-const themeStore = useThemeStore()
+const prefsStore = usePreferencesStore()
 const videoStore = useVideoStore()
 const uploadStore = useUploadStore()
 
-const overview = ref<VideoHomeOverviewDto | null>(peekHomeCache('video'))
-const loading = ref(overview.value === null)
 const editingVideo = ref<VideoSummaryDto | null>(null)
-const customizerOpen = ref(false)
 
-async function loadHome(force = false): Promise<void> {
-  if (!overview.value) loading.value = true
-  try {
-    overview.value = await fetchHomeOverview('video', { force })
-  } finally {
-    loading.value = false
-  }
-}
-
-async function refreshPage(): Promise<void> {
-  await Promise.all([loadHome(true), videoStore.refreshSidebar(true)])
-}
-
-let viewActive = true
-let dirtyWhileInactive = false
-
-onMounted(() => {
-  viewActive = true
-  void loadHome(false)
+const { overview, loading, loadHome, refreshPage } = useHomeOverview('video', {
+  refreshSidebar: () => videoStore.refreshSidebar(true),
+  watchSources: () => [videoStore.catalogVersion, uploadStore.versionCounter],
 })
-
-onActivated(() => {
-  viewActive = true
-  if (dirtyWhileInactive) {
-    dirtyWhileInactive = false
-    void loadHome(true)
-  } else {
-    void loadHome(false)
-  }
-})
-
-onDeactivated(() => {
-  viewActive = false
-})
-
-watch(
-  () => [videoStore.catalogVersion, uploadStore.versionCounter],
-  () => {
-    if (!viewActive) {
-      dirtyWhileInactive = true
-      return
-    }
-    void loadHome(true)
-  },
-)
-
-interface StatCardItem {
-  key: string
-  label: string
-  value: number
-  icon: Component
-  tone?: 'accent' | 'rose'
-  onClick: () => void
-}
 
 const statCards = computed<StatCardItem[]>(() => {
   const ov = overview.value
-  const keys = themeStore.workspaceLayout.video.home_cards
-  return keys.map((key) => {
-    const label = globalT(`layoutCustomizer.cards.video.${key}`)
+  return prefsStore.workspaceLayout.video.home_cards.map((key) => {
     switch (key) {
       case 'movies':
         return {
           key,
-          label,
           value: ov?.movies_count ?? 0,
           icon: LuFilm,
           onClick: () =>
@@ -117,7 +58,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'shows':
         return {
           key,
-          label,
           value: ov?.total_shows ?? 0,
           icon: LuTv,
           onClick: () => void router.push({ path: '/video/catalog', query: { tab: 'shows' } }),
@@ -125,7 +65,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'favorites':
         return {
           key,
-          label,
           value: ov?.favorites_count ?? 0,
           icon: LuHeart,
           tone: 'rose',
@@ -134,7 +73,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'watching':
         return {
           key,
-          label,
           value: ov?.watching_count ?? 0,
           icon: LuClock,
           onClick: () => void router.push('/video/continue'),
@@ -142,7 +80,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'shelves':
         return {
           key,
-          label,
           value: ov?.shelves_count ?? videoStore.shelves.length,
           icon: LuFolderHeart,
           onClick: () => void router.push('/video/shelves'),
@@ -150,7 +87,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'genres':
         return {
           key,
-          label,
           value: ov?.genres_count ?? videoStore.genres.length,
           icon: LuSparkles,
           onClick: () => void router.push('/video/genres'),
@@ -158,7 +94,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'tags':
         return {
           key,
-          label,
           value: ov?.tags_count ?? videoStore.tags.length,
           icon: LuTag,
           onClick: () => void router.push('/video/tags'),
@@ -166,7 +101,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'libraries':
         return {
           key,
-          label,
           value: ov?.libraries_count ?? videoStore.libraries.length,
           icon: LuLibrary,
           onClick: () => void router.push('/video/libraries'),
@@ -175,7 +109,6 @@ const statCards = computed<StatCardItem[]>(() => {
       default:
         return {
           key: 'all',
-          label,
           value: ov?.total_videos ?? 0,
           icon: LuClapperboard,
           onClick: () => void router.push('/video/catalog'),
@@ -183,24 +116,6 @@ const statCards = computed<StatCardItem[]>(() => {
     }
   })
 })
-
-const cardsGridClass = computed(() => {
-  const n = statCards.value.length
-  if (n <= 2) return 'grid-cols-1 sm:grid-cols-2'
-  if (n === 3) return 'grid-cols-1 sm:grid-cols-3'
-  return 'grid-cols-2 lg:grid-cols-4'
-})
-
-function formatClock(secs: number): string {
-  const s = Math.max(0, Math.floor(secs))
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const rem = s % 60
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`
-  }
-  return `${m}:${String(rem).padStart(2, '0')}`
-}
 
 function progressPercent(v: VideoSummaryDto): number {
   const pos = v.progress?.position_secs ?? 0
@@ -216,55 +131,13 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
     v.show_title && v.episode_number != null
       ? `${v.show_title} S${String(v.season_number ?? 1).padStart(2, '0')}E${String(v.episode_number).padStart(2, '0')} · `
       : ''
-  return `${prefix}${formatClock(pos)} / ${formatClock(dur)}`
+  return `${prefix}${formatTime(pos)} / ${formatTime(dur)}`
 }
 </script>
 
 <template>
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-8 sm:px-8">
-    <!-- Customizable Video Stat Cards (1..=4) -->
-    <section class="space-y-2.5">
-      <div class="flex items-center justify-end gap-1.5">
-        <RefreshButton variant="ghost" :action="refreshPage" />
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
-          @click="customizerOpen = true"
-        >
-          <LuSlidersHorizontal class="h-3.5 w-3.5" />
-          <span>{{ globalT('layoutCustomizer.customizeCards') }}</span>
-        </button>
-      </div>
-
-      <div class="grid gap-4" :class="cardsGridClass">
-        <button
-          v-for="card in statCards"
-          :key="card.key"
-          type="button"
-          class="md-card-filled md-state flex items-center gap-3.5 p-4 text-left transition hover:shadow-[var(--md-sys-elevation-1)]"
-          @click="card.onClick()"
-        >
-          <div
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-            :class="
-              card.tone === 'rose'
-                ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-                : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-            "
-          >
-            <component :is="card.icon" class="h-5 w-5" />
-          </div>
-          <div class="min-w-0">
-            <p class="text-xl leading-none font-bold text-[var(--md-sys-color-on-surface)]">
-              {{ card.value }}
-            </p>
-            <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ card.label }}
-            </p>
-          </div>
-        </button>
-      </div>
-    </section>
+    <HomeStatCards domain="video" :cards="statCards" :on-refresh="refreshPage" />
 
     <!-- Cold-Load Skeleton -->
     <HomeSkeleton v-if="loading && !overview" />
@@ -403,13 +276,6 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
       :video="editingVideo"
       @close="editingVideo = null"
       @saved="() => loadHome(true)"
-    />
-
-    <LayoutCustomizerModal
-      :open="customizerOpen"
-      domain="video"
-      initial-tab="cards"
-      @close="customizerOpen = false"
     />
   </div>
 </template>

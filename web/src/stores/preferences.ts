@@ -1,0 +1,218 @@
+import { ref } from 'vue'
+import { defineStore } from 'pinia'
+import { api, getStoredToken } from '@/api/client'
+import {
+  DEFAULT_WORKSPACE_LAYOUT,
+  sanitizeDomainLayout,
+  sanitizeWorkspaceLayout,
+} from '@/config/workspaceLayout'
+import { DARK_PALETTE_PRESETS, LIGHT_PALETTE_PRESETS } from '@/theme/catppuccin'
+import type {
+  ComicReaderPreferences,
+  DomainLayoutConfig,
+  LocaleCode,
+  MediaKind,
+  PlaybackPreferences,
+  ReaderPreferences,
+  UserPreferences,
+  VideoPlaybackPreferences,
+  WorkspaceLayoutPreferences,
+} from '@/types/api'
+
+export const PREFS_STORAGE_KEY = 'xmedia.preferences'
+
+export type VisualPreferencesSnapshot = Pick<
+  UserPreferences,
+  | 'theme_mode'
+  | 'light_preset'
+  | 'dark_preset'
+  | 'dark_flavor'
+  | 'accent_mode'
+  | 'accent'
+  | 'custom_accent'
+  | 'custom_light'
+  | 'custom_dark'
+  | 'locale'
+>
+
+export const DEFAULT_BOOK_PREFS: ReaderPreferences = {
+  font_family: 'system-ui',
+  font_size: 17,
+  line_height: 1.7,
+  margin_px: 36,
+  flow: 'paginated',
+  pdf_scale: 1.25,
+}
+
+export const DEFAULT_COMIC_PREFS: ComicReaderPreferences = {
+  default_reader_mode: 'rtl_double',
+  default_fit_mode: 'fit_height',
+  offset_cover_page: true,
+  dim_images_in_dark: false,
+  preload_pages: 3,
+  webtoon_width: 920,
+}
+
+export const DEFAULT_MUSIC_PREFS: PlaybackPreferences = {
+  transcode_profile: 'raw',
+  volume: 0.85,
+  muted: false,
+  play_mode: 'sequence',
+}
+
+export const DEFAULT_VIDEO_PREFS: VideoPlaybackPreferences = {
+  default_quality: 'auto',
+  preferred_audio_lang: null,
+  preferred_subtitle_lang: null,
+  autoplay_next: true,
+  playback_rate: 1.0,
+}
+
+export function readStoredPreferencesRaw(): Partial<UserPreferences> {
+  try {
+    const raw = localStorage.getItem(PREFS_STORAGE_KEY)
+    if (!raw) return {}
+    return JSON.parse(raw) as Partial<UserPreferences>
+  } catch {
+    return {}
+  }
+}
+
+function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
+  const parsed = readStoredPreferencesRaw()
+  return {
+    theme_mode: parsed.theme_mode ?? 'system',
+    light_preset: parsed.light_preset ?? 'material-you-light',
+    dark_preset: parsed.dark_preset ?? 'material-you-dark',
+    dark_flavor: parsed.dark_flavor ?? 'mocha',
+    accent_mode:
+      parsed.accent_mode === 'preset' ||
+      parsed.accent_mode === 'catppuccin' ||
+      parsed.accent_mode === 'custom'
+        ? parsed.accent_mode
+        : 'preset',
+    accent: parsed.accent ?? 'blue',
+    custom_accent: parsed.custom_accent ?? '#3b82f6',
+    custom_light: parsed.custom_light ?? { ...LIGHT_PALETTE_PRESETS[0]!.tokens },
+    custom_dark: parsed.custom_dark ?? { ...DARK_PALETTE_PRESETS[0]!.tokens },
+    locale: (parsed.locale ?? (localStorage.getItem('xmedia.locale') as LocaleCode | null)) || 'zh-CN',
+  }
+}
+
+export const usePreferencesStore = defineStore('preferences', () => {
+  const stored = readStoredPreferencesRaw()
+
+  const reader = ref<ReaderPreferences>({ ...DEFAULT_BOOK_PREFS, ...(stored.book ?? {}) })
+  const comic = ref<ComicReaderPreferences>({ ...DEFAULT_COMIC_PREFS, ...(stored.comic ?? {}) })
+  const playback = ref<PlaybackPreferences>({ ...DEFAULT_MUSIC_PREFS, ...(stored.music ?? {}) })
+  const video = ref<VideoPlaybackPreferences>({ ...DEFAULT_VIDEO_PREFS, ...(stored.video ?? {}) })
+  const workspaceLayout = ref<WorkspaceLayoutPreferences>(
+    sanitizeWorkspaceLayout(stored.workspace_layout ?? DEFAULT_WORKSPACE_LAYOUT),
+  )
+
+  let visualProvider: (() => VisualPreferencesSnapshot) | null = null
+  let syncTimer: ReturnType<typeof setTimeout> | null = null
+
+  function registerVisualProvider(fn: () => VisualPreferencesSnapshot): void {
+    visualProvider = fn
+  }
+
+  function toUserPreferences(): UserPreferences {
+    const visual = visualProvider ? visualProvider() : fallbackVisualSnapshot()
+    return {
+      ...visual,
+      book: { ...reader.value },
+      comic: { ...comic.value },
+      music: { ...playback.value },
+      video: { ...video.value },
+      workspace_layout: sanitizeWorkspaceLayout(workspaceLayout.value),
+    }
+  }
+
+  function persistLocal(): void {
+    localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(toUserPreferences()))
+  }
+
+  function scheduleServerSync(): void {
+    if (!getStoredToken()) return
+    if (syncTimer) clearTimeout(syncTimer)
+    syncTimer = setTimeout(() => {
+      void api.updatePreferences(toUserPreferences()).catch(() => {})
+    }, 450)
+  }
+
+  function persistAndSync(): void {
+    persistLocal()
+    scheduleServerSync()
+  }
+
+  function hydrateDomainPreferences(prefs: UserPreferences): void {
+    if (prefs.book) reader.value = { ...DEFAULT_BOOK_PREFS, ...prefs.book }
+    if (prefs.comic) comic.value = { ...DEFAULT_COMIC_PREFS, ...prefs.comic }
+    if (prefs.music) playback.value = { ...DEFAULT_MUSIC_PREFS, ...prefs.music }
+    if (prefs.video) video.value = { ...DEFAULT_VIDEO_PREFS, ...prefs.video }
+    workspaceLayout.value = sanitizeWorkspaceLayout(prefs.workspace_layout)
+  }
+
+  function updateReaderPreferences(patch: Partial<ReaderPreferences>): void {
+    reader.value = { ...reader.value, ...patch }
+    persistAndSync()
+  }
+
+  function updateComicPreferences(patch: Partial<ComicReaderPreferences>): void {
+    comic.value = { ...comic.value, ...patch }
+    persistAndSync()
+  }
+
+  function updatePlaybackPreferences(patch: Partial<PlaybackPreferences>): void {
+    playback.value = { ...playback.value, ...patch }
+    persistAndSync()
+  }
+
+  function updateVideoPreferences(patch: Partial<VideoPlaybackPreferences>): void {
+    video.value = { ...video.value, ...patch }
+    persistAndSync()
+  }
+
+  function updateDomainLayout(domain: MediaKind, patch: Partial<DomainLayoutConfig>): void {
+    const current = workspaceLayout.value[domain]
+    const next = sanitizeDomainLayout(domain, {
+      home_cards: patch.home_cards ?? current.home_cards,
+      sidebar_groups:
+        patch.sidebar_groups !== undefined ? patch.sidebar_groups : current.sidebar_groups,
+    })
+    workspaceLayout.value = {
+      ...workspaceLayout.value,
+      [domain]: next,
+    }
+    persistAndSync()
+  }
+
+  function resetDomainLayout(domain: MediaKind): void {
+    workspaceLayout.value = {
+      ...workspaceLayout.value,
+      [domain]: sanitizeDomainLayout(domain, DEFAULT_WORKSPACE_LAYOUT[domain]),
+    }
+    persistAndSync()
+  }
+
+  return {
+    reader,
+    comic,
+    playback,
+    video,
+    workspaceLayout,
+    registerVisualProvider,
+    toUserPreferences,
+    persistLocal,
+    scheduleServerSync,
+    persistAndSync,
+    hydrateDomainPreferences,
+    updateReaderPreferences,
+    updateComicPreferences,
+    updatePlaybackPreferences,
+    updateVideoPreferences,
+    updateDomainLayout,
+    resetDomainLayout,
+  }
+})

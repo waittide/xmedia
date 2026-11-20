@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, onActivated, onMounted, ref, watch, type Component } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
   LuArrowRight,
@@ -14,51 +13,32 @@ import {
   LuLayers,
   LuLibrary,
   LuPlay,
-  LuSlidersHorizontal,
   LuTag,
   LuUpload,
 } from 'vue-icons-plus/lu'
-import { fetchHomeOverview, peekHomeCache } from '@/config/homeCache'
+import { useHomeOverview } from '@/composables/useHomeOverview'
 import { withAuthUrl } from '@/domains/comic/api'
 import { useSidebarStore } from '@/domains/comic/store'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 import { useUploadStore } from '@/stores/uploads'
 import SeriesCard from '@/domains/comic/components/SeriesCard.vue'
 import HomeSkeleton from '@/components/HomeSkeleton.vue'
-import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
-import type { HomeOverviewDto } from '@/domains/comic/types'
+import HomeStatCards, { type StatCardItem } from '@/components/domain/HomeStatCards.vue'
 
 defineOptions({ name: 'ComicHomeView' })
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
 const router = useRouter()
 const sidebarStore = useSidebarStore()
-const themeStore = useThemeStore()
+const prefsStore = usePreferencesStore()
 const upload = useUploadStore()
 
-const overview = ref<HomeOverviewDto | null>(peekHomeCache('comic'))
-const loading = ref(overview.value === null)
-const customizerOpen = ref(false)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
-async function loadHome(force = false): Promise<void> {
-  if (!overview.value) loading.value = true
-  try {
-    overview.value = await fetchHomeOverview('comic', { force })
-  } finally {
-    loading.value = false
-  }
-}
-
-async function refreshPage(): Promise<void> {
-  await Promise.all([loadHome(true), sidebarStore.refresh()])
-}
-
-onMounted(() => void loadHome(false))
-onActivated(() => void loadHome(false))
-watch(() => upload.catalogVersion, () => void loadHome(true))
+const { overview, loading, refreshPage } = useHomeOverview('comic', {
+  refreshSidebar: () => sidebarStore.refresh(),
+  watchSources: () => upload.catalogVersion,
+})
 
 function onPickUpload(ev: Event): void {
   const input = ev.target as HTMLInputElement
@@ -68,25 +48,13 @@ function onPickUpload(ev: Event): void {
   }
 }
 
-interface StatCardItem {
-  key: string
-  label: string
-  value: number
-  icon: Component
-  tone?: 'accent' | 'rose'
-  onClick: () => void
-}
-
 const statCards = computed<StatCardItem[]>(() => {
   const st = overview.value?.stats
-  const keys = themeStore.workspaceLayout.comic.home_cards
-  return keys.map((key) => {
-    const label = globalT(`layoutCustomizer.cards.comic.${key}`)
+  return prefsStore.workspaceLayout.comic.home_cards.map((key) => {
     switch (key) {
       case 'reading':
         return {
           key,
-          label,
           value: st?.in_progress_count ?? 0,
           icon: LuClock,
           onClick: () => void router.push('/comic/continue'),
@@ -94,7 +62,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'bookmarks':
         return {
           key,
-          label,
           value: st?.bookmarks_count ?? 0,
           icon: LuBookmark,
           onClick: () => void router.push('/comic/bookmarks'),
@@ -102,7 +69,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'favorites':
         return {
           key,
-          label,
           value: st?.favorites_count ?? 0,
           icon: LuHeart,
           tone: 'rose',
@@ -111,7 +77,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'chapters':
         return {
           key,
-          label,
           value: st?.chapter_count ?? 0,
           icon: LuBookMarked,
           onClick: () => void router.push('/comic/series'),
@@ -119,7 +84,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'shelves':
         return {
           key,
-          label,
           value: st?.shelves_count ?? sidebarStore.shelves.length,
           icon: LuFolder,
           onClick: () => void router.push('/comic/shelves'),
@@ -127,7 +91,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'tags':
         return {
           key,
-          label,
           value: st?.tags_count ?? sidebarStore.tags.length,
           icon: LuTag,
           onClick: () => void router.push('/comic/tags'),
@@ -135,7 +98,6 @@ const statCards = computed<StatCardItem[]>(() => {
       case 'libraries':
         return {
           key,
-          label,
           value: sidebarStore.libraries.length,
           icon: LuLibrary,
           onClick: () => void router.push('/comic/libraries'),
@@ -144,7 +106,6 @@ const statCards = computed<StatCardItem[]>(() => {
       default:
         return {
           key: 'all',
-          label,
           value: st?.series_count ?? 0,
           icon: LuLayers,
           onClick: () => void router.push('/comic/series'),
@@ -152,60 +113,11 @@ const statCards = computed<StatCardItem[]>(() => {
     }
   })
 })
-
-const cardsGridClass = computed(() => {
-  const n = statCards.value.length
-  if (n <= 2) return 'grid-cols-1 sm:grid-cols-2'
-  if (n === 3) return 'grid-cols-1 sm:grid-cols-3'
-  return 'grid-cols-2 lg:grid-cols-4'
-})
 </script>
 
 <template>
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-8 sm:px-8">
-    <!-- Customizable Comic Stat Cards (1..=4) -->
-    <section class="space-y-2.5">
-      <div class="flex items-center justify-end gap-1.5">
-        <RefreshButton variant="ghost" :action="refreshPage" />
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
-          @click="customizerOpen = true"
-        >
-          <LuSlidersHorizontal class="h-3.5 w-3.5" />
-          <span>{{ globalT('layoutCustomizer.customizeCards') }}</span>
-        </button>
-      </div>
-
-      <div class="grid gap-4" :class="cardsGridClass">
-        <button
-          v-for="card in statCards"
-          :key="card.key"
-          type="button"
-          class="md-card-filled md-state flex items-center gap-3.5 border border-transparent p-4 text-left transition hover:border-[var(--md-sys-color-outline-variant)] hover:shadow-[var(--md-sys-elevation-1)]"
-          @click="card.onClick()"
-        >
-          <div
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
-            :class="
-              card.tone === 'rose'
-                ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-                : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-            "
-          >
-            <component :is="card.icon" class="h-5 w-5" />
-          </div>
-          <div class="min-w-0">
-            <p class="text-xl font-bold leading-none text-[var(--md-sys-color-on-surface)]">
-              {{ card.value }}
-            </p>
-            <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ card.label }}
-            </p>
-          </div>
-        </button>
-      </div>
-    </section>
+    <HomeStatCards domain="comic" :cards="statCards" :on-refresh="refreshPage" />
 
     <!-- Cold-Load Skeleton -->
     <HomeSkeleton v-if="loading && !overview" />
@@ -377,12 +289,5 @@ const cardsGridClass = computed(() => {
         <SeriesCard v-for="s in overview.recently_updated" :key="s.id" :series="s" />
       </div>
     </section>
-
-    <LayoutCustomizerModal
-      :open="customizerOpen"
-      domain="comic"
-      initial-tab="cards"
-      @close="customizerOpen = false"
-    />
   </div>
 </template>

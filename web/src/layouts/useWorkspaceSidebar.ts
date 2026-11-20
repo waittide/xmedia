@@ -29,7 +29,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useDomainStore } from '@/stores/domain'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
+import { usePreferencesStore } from '@/stores/preferences'
 import { useBookI18n } from '@/domains/book/i18n'
 import { useCatalogStore, type NavSection as BookNavSection } from '@/domains/book/store'
 import { api as bookApi } from '@/domains/book/api'
@@ -66,7 +66,7 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
   const dialogStore = useDialogStore()
   const domainStore = useDomainStore()
   const snackbarStore = useSnackbarStore()
-  const themeStore = useThemeStore()
+  const prefsStore = usePreferencesStore()
   const escapeStack = useEscapeStack()
 
   const bookStore = useCatalogStore()
@@ -1062,7 +1062,7 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
 
   const activeSidebarGroups = computed<SidebarGroupDescriptor[]>(() => {
     const dom = domainStore.activeDomain
-    const configuredKeys = themeStore.workspaceLayout[dom].sidebar_groups
+    const configuredKeys = prefsStore.workspaceLayout[dom].sidebar_groups
     return configuredKeys
       .map((key) => buildDomainSidebarGroup(dom, key))
       .filter((g): g is SidebarGroupDescriptor => g !== null)

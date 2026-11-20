@@ -24,6 +24,7 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { formatBytes } from '@/utils/format'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -247,11 +248,6 @@ function toggleSelectAll(): void {
   } else {
     catalogStore.selectedBookIds = new Set(catalogStore.books.map((b) => b.id))
   }
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 async function toggleBookFavorite(book: BookSummaryDto): Promise<void> {

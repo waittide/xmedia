@@ -1,31 +1,22 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useBookI18n as useI18n } from '@/domains/book/i18n'
-import {
-  LuLibrary,
-  LuFolder,
-  LuFolderPlus,
-  LuTag,
-  LuUser,
-  LuSearch,
-  LuRefreshCw,
-  LuSettings,
-  LuPencil,
-  LuTrash2,
-  LuArrowUpRight,
-  LuX,
-} from 'vue-icons-plus/lu'
+import { LuFolder, LuTag, LuUser } from 'vue-icons-plus/lu'
+import DomainCollectionsView, {
+  type CollectionChipItem,
+  type CollectionGroupItem,
+  type CollectionLibraryItem,
+  type CollectionViewMode,
+} from '@/components/domain/DomainCollectionsView.vue'
+import type { SelectOption } from '@/components/ui/AppSelect.vue'
 import { api } from '@/domains/book/api'
-import { useAuthStore } from '@/stores/auth'
+import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { useCatalogStore } from '@/domains/book/store'
+import type { LibraryDto } from '@/domains/book/types'
+import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
-import type { LibraryDto, ShelfDto } from '@/domains/book/types'
-import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
 
 type CollectionKind = 'libraries' | 'shelves' | 'tags' | 'authors'
-type SortKey = 'count_desc' | 'count_asc' | 'name_asc' | 'updated_desc'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -41,15 +32,10 @@ const kind = computed<CollectionKind>(() => {
   return 'tags'
 })
 
-const filterKeyword = ref('')
-const sortKey = ref<SortKey>('count_desc')
-const newShelfName = ref('')
-const creatingShelf = ref(false)
-const scanningId = ref<string | null>(null)
-
-watch(kind, () => {
-  filterKeyword.value = ''
-  sortKey.value = 'count_desc'
+const viewMode = computed<CollectionViewMode>(() => {
+  if (kind.value === 'libraries') return 'libraries'
+  if (kind.value === 'shelves') return 'collections'
+  return 'chips'
 })
 
 const sortOptions = computed<SelectOption[]>(() => {
@@ -93,110 +79,6 @@ const headerMeta = computed(() => {
   }
 })
 
-const filteredLibraries = computed(() => {
-  const q = filterKeyword.value.trim().toLowerCase()
-  const list = catalogStore.libraries.filter((lib) => {
-    if (!q) return true
-    const path = lib.kind.type === 'mounted' ? lib.kind.root_path.toLowerCase() : ''
-    return lib.name.toLowerCase().includes(q) || path.includes(q)
-  })
-  return [...list].sort((a, b) => {
-    if (sortKey.value === 'count_desc') return b.book_count - a.book_count
-    if (sortKey.value === 'count_asc') return a.book_count - b.book_count
-    if (sortKey.value === 'updated_desc') return b.updated_at.localeCompare(a.updated_at)
-    return a.name.localeCompare(b.name)
-  })
-})
-
-const filteredShelves = computed(() => {
-  const q = filterKeyword.value.trim().toLowerCase()
-  const list = catalogStore.shelves.filter((sh) => !q || sh.name.toLowerCase().includes(q))
-  return [...list].sort((a, b) => {
-    if (sortKey.value === 'count_desc') return b.book_count - a.book_count
-    if (sortKey.value === 'count_asc') return a.book_count - b.book_count
-    if (sortKey.value === 'updated_desc') return b.updated_at.localeCompare(a.updated_at)
-    return a.name.localeCompare(b.name)
-  })
-})
-
-const filteredTags = computed(() => {
-  const src = kind.value === 'authors' ? catalogStore.authors : catalogStore.tags
-  const q = filterKeyword.value.trim().toLowerCase()
-  const list = src.filter((tg) => !q || tg.name.toLowerCase().includes(q))
-  return [...list].sort((a, b) => {
-    if (sortKey.value === 'count_desc') return b.count - a.count
-    if (sortKey.value === 'count_asc') return a.count - b.count
-    return a.name.localeCompare(b.name)
-  })
-})
-
-async function openLibrary(id: string): Promise<void> {
-  catalogStore.selectSection('library', id)
-  await router.push('/book/catalog')
-}
-
-async function openShelf(id: string): Promise<void> {
-  catalogStore.selectSection('shelf', id)
-  await router.push('/book/catalog')
-}
-
-async function openTag(name: string): Promise<void> {
-  if (kind.value === 'authors') {
-    catalogStore.selectSection('author', name)
-  } else {
-    catalogStore.selectSection('tag', name)
-  }
-  await router.push('/book/catalog')
-}
-
-async function triggerLibraryScan(lib: LibraryDto): Promise<void> {
-  scanningId.value = lib.id
-  try {
-    const [started] = await Promise.all([
-      api.scanLibrary(lib.id),
-      new Promise((resolve) => setTimeout(resolve, 450)),
-    ])
-    catalogStore.applyLibraryUpdate(started)
-  } finally {
-    scanningId.value = null
-  }
-}
-
-async function createShelfInline(): Promise<void> {
-  const name = newShelfName.value.trim()
-  if (!name) return
-  creatingShelf.value = true
-  try {
-    await api.createShelf(name)
-    newShelfName.value = ''
-    await catalogStore.refreshSidebarData()
-  } finally {
-    creatingShelf.value = false
-  }
-}
-
-async function renameShelfPrompt(shelf: ShelfDto): Promise<void> {
-  const nextName = await dialogStore.prompt({
-    title: t('collections.renameShelf'),
-    message: t('collections.renameShelfPrompt'),
-    defaultValue: shelf.name,
-  })
-  if (!nextName || !nextName.trim() || nextName.trim() === shelf.name) return
-  await api.renameShelf(shelf.id, nextName.trim())
-  await catalogStore.refreshSidebarData()
-}
-
-async function removeShelf(shelf: ShelfDto): Promise<void> {
-  const ok = await dialogStore.confirm({
-    title: shelf.name,
-    message: `${t('common.delete')} "${shelf.name}"?`,
-    danger: true,
-  })
-  if (!ok) return
-  await api.deleteShelf(shelf.id)
-  await catalogStore.refreshSidebarData()
-}
-
 function formatLibraryScanText(lib: LibraryDto): string {
   const s = lib.scan_status
   if (s.state === 'scanning') {
@@ -213,281 +95,126 @@ function formatLibraryScanText(lib: LibraryDto): string {
   }
   return t('admin.scanIdle')
 }
+
+const libraryItems = computed<CollectionLibraryItem[]>(() =>
+  catalogStore.libraries.map((lib) => ({
+    id: lib.id,
+    name: lib.name,
+    kindBadge: lib.kind.type === 'managed' ? t('catalog.managedBadge') : t('catalog.mountedBadge'),
+    countLabel: t('collections.bookCountUnit', { count: lib.book_count }),
+    count: lib.book_count,
+    updatedAt: lib.updated_at,
+    rootPath: lib.kind.type === 'mounted' ? lib.kind.root_path : null,
+    scanText: lib.kind.type === 'mounted' ? formatLibraryScanText(lib) : null,
+    isMounted: lib.kind.type === 'mounted',
+    isScanning: lib.scan_status.state === 'scanning',
+  })),
+)
+
+const shelfItems = computed<CollectionGroupItem[]>(() =>
+  catalogStore.shelves.map((shelf) => ({
+    id: shelf.id,
+    name: shelf.name,
+    countLabel: t('collections.bookCountUnit', { count: shelf.book_count }),
+    count: shelf.book_count,
+    updatedAt: shelf.updated_at,
+    badge: shelf.is_favorite ? t('collections.defaultFavoriteBadge') : null,
+    canEdit: !shelf.is_favorite,
+  })),
+)
+
+const chipItems = computed<CollectionChipItem[]>(() => {
+  const src = kind.value === 'authors' ? catalogStore.authors : catalogStore.tags
+  return src.map((item) => ({
+    key: item.name,
+    name: item.name,
+    count: item.count,
+  }))
+})
+
+async function openLibrary(id: string): Promise<void> {
+  catalogStore.selectSection('library', id)
+  await router.push('/book/catalog')
+}
+
+async function openShelf(id: string): Promise<void> {
+  catalogStore.selectSection('shelf', id)
+  await router.push('/book/catalog')
+}
+
+async function openChip(name: string): Promise<void> {
+  catalogStore.selectSection(kind.value === 'authors' ? 'author' : 'tag', name)
+  await router.push('/book/catalog')
+}
+
+async function triggerLibraryScan(id: string): Promise<void> {
+  const started = await api.scanLibrary(id)
+  catalogStore.applyLibraryUpdate(started)
+}
+
+async function createShelfInline(name: string): Promise<void> {
+  await api.createShelf(name)
+  await catalogStore.refreshSidebarData()
+}
+
+async function renameShelfPrompt(id: string): Promise<void> {
+  const shelf = catalogStore.shelves.find((s) => s.id === id)
+  if (!shelf) return
+  const nextName = await dialogStore.prompt({
+    title: t('collections.renameShelf'),
+    message: t('collections.renameShelfPrompt'),
+    defaultValue: shelf.name,
+  })
+  if (!nextName || !nextName.trim() || nextName.trim() === shelf.name) return
+  await api.renameShelf(shelf.id, nextName.trim())
+  await catalogStore.refreshSidebarData()
+}
+
+async function removeShelf(id: string): Promise<void> {
+  const shelf = catalogStore.shelves.find((s) => s.id === id)
+  if (!shelf) return
+  const ok = await dialogStore.confirm({
+    title: shelf.name,
+    message: `${t('common.delete')} "${shelf.name}"?`,
+    danger: true,
+  })
+  if (!ok) return
+  await api.deleteShelf(shelf.id)
+  await catalogStore.refreshSidebarData()
+}
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-6 px-6 py-8 sm:px-8">
-    <!-- Top Header + Actions -->
-    <div class="flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <div class="flex items-center gap-2.5">
-          <h1 class="text-2xl font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
-            {{ headerMeta.title }}
-          </h1>
-          <span class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-xs font-bold text-[var(--md-sys-color-on-primary-container)]">
-            {{ headerMeta.total }}
-          </span>
-        </div>
-        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          {{ headerMeta.subtitle }}
-        </p>
-      </div>
-
-      <!-- Contextual Quick Action + Refresh -->
-      <div class="flex flex-wrap items-center gap-2">
-        <RefreshButton size="md" :action="() => catalogStore.refreshSidebarData()" />
-
-        <RouterLink
-          v-if="kind === 'libraries' && authStore.isAdmin"
-          to="/settings?tab=libraries"
-          class="md-btn md-btn-sm md-btn-filled md-state !h-9"
-        >
-          <LuSettings class="h-3.5 w-3.5" />
-          <span>{{ t('collections.manageLibraries') }}</span>
-        </RouterLink>
-
-        <form
-          v-else-if="kind === 'shelves'"
-          class="flex items-center gap-2"
-          @submit.prevent="createShelfInline"
-        >
-          <input
-            v-model="newShelfName"
-            type="text"
-            :placeholder="t('nav.shelfNamePlaceholder')"
-            class="md-input h-9 w-52 text-xs"
-          />
-          <button
-            type="submit"
-            :disabled="!newShelfName.trim() || creatingShelf"
-            class="md-btn md-btn-sm md-btn-filled md-state !h-9"
-          >
-            <LuFolderPlus class="h-3.5 w-3.5" />
-            <span>{{ t('nav.newShelf') }}</span>
-          </button>
-        </form>
-      </div>
-    </div>
-
-    <!-- Search + Sort Toolbar -->
-    <div class="md-card-filled flex flex-wrap items-center justify-between gap-3 p-3">
-      <div class="relative min-w-[220px] max-w-md flex-1">
-        <LuSearch class="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]" />
-        <input
-          v-model="filterKeyword"
-          type="text"
-          :placeholder="t('collections.searchPlaceholder')"
-          class="md-input h-9 w-full !pl-9 !pr-8 text-xs"
-        />
-        <button
-          v-if="filterKeyword"
-          type="button"
-          class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-          @click="filterKeyword = ''"
-        >
-          <LuX class="h-3.5 w-3.5" />
-        </button>
-      </div>
-
-      <div class="w-56">
-        <AppSelect
-          :model-value="sortKey"
-          :options="sortOptions"
-          size="sm"
-          @update:model-value="sortKey = $event as SortKey"
-        />
-      </div>
-    </div>
-
-    <!-- 1. Libraries Grid -->
-    <template v-if="kind === 'libraries'">
-      <div
-        v-if="filteredLibraries.length === 0"
-        class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('collections.emptyResult') }}
-      </div>
-
-      <div v-else class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        <div
-          v-for="lib in filteredLibraries"
-          :key="lib.id"
-          class="group md-card-filled flex flex-col justify-between border border-transparent p-5 transition hover:border-[var(--md-sys-color-primary)]/45"
-        >
-          <div>
-            <div class="flex items-start justify-between gap-3">
-              <button
-                type="button"
-                class="flex min-w-0 items-center gap-3 text-left"
-                @click="openLibrary(lib.id)"
-              >
-                <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]">
-                  <LuLibrary class="h-5 w-5" />
-                </div>
-                <div class="min-w-0">
-                  <h3 class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]">
-                    {{ lib.name }}
-                  </h3>
-                  <span class="mt-0.5 inline-block rounded bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-                    {{ lib.kind.type === 'managed' ? t('catalog.managedBadge') : t('catalog.mountedBadge') }}
-                  </span>
-                </div>
-              </button>
-
-              <span class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-1 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-                {{ t('collections.bookCountUnit', { count: lib.book_count }) }}
-              </span>
-            </div>
-
-            <p
-              v-if="lib.kind.type === 'mounted'"
-              class="mt-3 truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-              :title="lib.kind.root_path"
-            >
-              {{ lib.kind.root_path }}
-            </p>
-            <p
-              v-if="lib.kind.type === 'mounted'"
-              class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ formatLibraryScanText(lib) }}
-            </p>
-          </div>
-
-          <div class="mt-4 flex items-center justify-between border-t border-[var(--md-sys-color-outline-variant)]/55 pt-3">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
-              @click="openLibrary(lib.id)"
-            >
-              <span>{{ t('home.seeAll') }}</span>
-              <LuArrowUpRight class="h-3.5 w-3.5" />
-            </button>
-
-            <button
-              v-if="lib.kind.type === 'mounted' && authStore.isAdmin"
-              type="button"
-              :disabled="scanningId === lib.id || lib.scan_status.state === 'scanning'"
-              class="md-btn md-btn-sm md-btn-outlined md-state !h-7 !px-2.5 !text-[11px]"
-              @click="triggerLibraryScan(lib)"
-            >
-              <LuRefreshCw
-                class="h-3 w-3"
-                :class="scanningId === lib.id || lib.scan_status.state === 'scanning' ? 'animate-spin' : ''"
-              />
-              <span>{{ t('admin.rescan') }}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </template>
-
-    <!-- 2. Shelves Grid -->
-    <template v-else-if="kind === 'shelves'">
-      <div
-        v-if="filteredShelves.length === 0"
-        class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('collections.emptyResult') }}
-      </div>
-
-      <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-        <div
-          v-for="shelf in filteredShelves"
-          :key="shelf.id"
-          class="group md-card-filled flex flex-col justify-between border border-transparent p-5 transition hover:border-[var(--md-sys-color-primary)]/45"
-        >
-          <div class="flex items-start justify-between gap-3">
-            <button
-              type="button"
-              class="flex min-w-0 items-center gap-3 text-left"
-              @click="openShelf(shelf.id)"
-            >
-              <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]">
-                <LuFolder class="h-5 w-5" />
-              </div>
-              <div class="min-w-0">
-                <h3 class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]">
-                  {{ shelf.name }}
-                </h3>
-                <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                  {{ t('collections.bookCountUnit', { count: shelf.book_count }) }}
-                </p>
-              </div>
-            </button>
-
-            <span
-              v-if="shelf.is_favorite"
-              class="shrink-0 rounded bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ t('collections.defaultFavoriteBadge') }}
-            </span>
-          </div>
-
-          <div class="mt-4 flex items-center justify-between border-t border-[var(--md-sys-color-outline-variant)]/55 pt-3">
-            <button
-              type="button"
-              class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
-              @click="openShelf(shelf.id)"
-            >
-              <span>{{ t('home.seeAll') }}</span>
-              <LuArrowUpRight class="h-3.5 w-3.5" />
-            </button>
-
-            <div v-if="!shelf.is_favorite" class="flex items-center gap-1">
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
-                :title="t('collections.renameShelf')"
-                @click="renameShelfPrompt(shelf)"
-              >
-                <LuPencil class="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7 hover:bg-[var(--md-sys-color-error-container)]/60 hover:!text-[var(--md-sys-color-error)]"
-                :title="t('common.delete')"
-                @click="removeShelf(shelf)"
-              >
-                <LuTrash2 class="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </template>
-
-    <!-- 3. Tags / Authors Grid -->
-    <template v-else>
-      <div
-        v-if="filteredTags.length === 0"
-        class="md-card-filled py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('collections.emptyResult') }}
-      </div>
-
-      <div v-else class="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        <button
-          v-for="tg in filteredTags"
-          :key="tg.name"
-          type="button"
-          class="group md-card-filled md-state flex items-center justify-between gap-2.5 border border-transparent px-4 py-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--md-sys-color-primary)]/50"
-          @click="openTag(tg.name)"
-        >
-          <span class="flex min-w-0 items-center gap-2.5">
-            <span class="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]">
-              <LuUser v-if="kind === 'authors'" class="h-4 w-4" />
-              <LuTag v-else class="h-4 w-4" />
-            </span>
-            <span class="truncate text-xs font-bold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]">
-              {{ tg.name }}
-            </span>
-          </span>
-          <span class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            {{ tg.count }}
-          </span>
-        </button>
-      </div>
-    </template>
-  </div>
+  <DomainCollectionsView
+    :mode="viewMode"
+    :reset-key="kind"
+    :title="headerMeta.title"
+    :subtitle="headerMeta.subtitle"
+    :total="headerMeta.total"
+    :search-placeholder="t('collections.searchPlaceholder')"
+    :empty-text="t('collections.emptyResult')"
+    :see-all-label="t('home.seeAll')"
+    :sort-options="sortOptions"
+    :on-refresh="() => catalogStore.refreshSidebarData()"
+    :libraries="libraryItems"
+    :show-manage-libraries="authStore.isAdmin"
+    :manage-libraries-label="t('collections.manageLibraries')"
+    :rescan-label="t('admin.rescan')"
+    :show-rescan="authStore.isAdmin"
+    :on-scan-library="triggerLibraryScan"
+    :collections="shelfItems"
+    :collection-icon="LuFolder"
+    :create-placeholder="t('nav.shelfNamePlaceholder')"
+    :create-button-label="t('nav.newShelf')"
+    :rename-title="t('collections.renameShelf')"
+    :delete-title="t('common.delete')"
+    :on-create-collection="createShelfInline"
+    :chips="chipItems"
+    :chip-icon="kind === 'authors' ? LuUser : LuTag"
+    @open-library="openLibrary"
+    @open-collection="openShelf"
+    @rename-collection="renameShelfPrompt"
+    @delete-collection="removeShelf"
+    @open-chip="openChip"
+  />
 </template>

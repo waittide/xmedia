@@ -24,6 +24,7 @@ import type { Bookmark, BookSummaryDto, TocItem } from '@/domains/book/types'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import TocTree from '@/domains/book/components/TocTree.vue'
+import { formatBytes } from '@/utils/format'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -114,12 +115,6 @@ const formattedLanguage = computed(() => {
     return raw
   }
 })
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
-}
 
 function goBack(): void {
   const prev = (window.history.state as { back?: string | null } | null)?.back
