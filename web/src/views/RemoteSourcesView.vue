@@ -838,8 +838,8 @@ onBeforeUnmount(() => {
 
       <template v-else>
         <!-- OPDS Toolbar -->
-        <div class="flex flex-wrap items-center gap-2.5">
-          <div class="w-48 shrink-0 sm:w-56">
+        <div class="flex flex-wrap items-center gap-2.5 lg:flex-nowrap">
+          <div class="w-44 shrink-0 sm:w-52">
             <AppSelect
               :model-value="selectedOpdsId"
               :options="opdsSourceOptions"
@@ -849,7 +849,7 @@ onBeforeUnmount(() => {
             />
           </div>
 
-          <div class="flex items-center gap-1">
+          <div class="flex shrink-0 items-center gap-1">
             <button
               type="button"
               class="md-icon-btn md-icon-btn-sm md-state"
@@ -882,7 +882,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
 
-          <div v-if="opdsFeed" class="flex min-w-0 items-center gap-2">
+          <div v-if="opdsFeed" class="flex min-w-0 flex-1 items-center gap-2">
             <span class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
               {{ opdsFeed.title }}
             </span>
@@ -896,7 +896,7 @@ onBeforeUnmount(() => {
 
           <form
             v-if="opdsFeed?.search_url || opdsActiveQuery"
-            class="relative ml-auto w-full sm:w-64"
+            class="relative ml-auto w-full shrink-0 sm:w-60 lg:w-64"
             @submit.prevent="handleOpdsSearchSubmit"
           >
             <LuSearch

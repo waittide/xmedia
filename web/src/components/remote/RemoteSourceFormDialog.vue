@@ -229,10 +229,14 @@ async function handleSubmit(): Promise<void> {
       </div>
 
       <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
+        <label
+          for="remote-source-url"
+          class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+        >
           {{ t('remote.urlLabel') }}
         </label>
         <input
+          id="remote-source-url"
           v-model="url"
           type="text"
           inputmode="url"
@@ -246,10 +250,14 @@ async function handleSubmit(): Promise<void> {
       </div>
 
       <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
+        <label
+          for="remote-source-name"
+          class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+        >
           {{ t('remote.nameLabel') }}
         </label>
         <input
+          id="remote-source-name"
           v-model="name"
           type="text"
           :disabled="isBusy"
@@ -260,10 +268,14 @@ async function handleSubmit(): Promise<void> {
 
       <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div>
-          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
+          <label
+            for="remote-source-username"
+            class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+          >
             {{ t('remote.usernameLabel') }}
           </label>
           <input
+            id="remote-source-username"
             v-model="username"
             type="text"
             autocomplete="off"
@@ -276,10 +288,14 @@ async function handleSubmit(): Promise<void> {
         </div>
 
         <div>
-          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
+          <label
+            for="remote-source-password"
+            class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
+          >
             {{ t('remote.passwordLabel') }}
           </label>
           <input
+            id="remote-source-password"
             v-model="password"
             type="password"
             autocomplete="new-password"
