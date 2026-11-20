@@ -11,11 +11,16 @@ use xmedia_core::domain::user::UserId;
 use crate::domain::book::{
     Book, BookId, BookQuery, BookSortField, FacetCount, PagedResult, SortOrder, TagMatchMode,
 };
+use crate::domain::online::{BookSourceRecord, OnlineShelfBook};
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
-use crate::domain::repository::{BookReadingRepository, BookRepository};
+use crate::domain::repository::{
+    BookReadingRepository, BookRepository, BookSourceRepository, OnlineShelfRepository,
+};
+use crate::source::model::SourceRuntimeState;
 
 use super::models::{
-    BookBookmarkModel, BookFavoriteModel, BookModel, BookReadingProgressModel, BookShelfModel,
+    BookBookmarkModel, BookFavoriteModel, BookModel, BookOnlineShelfModel,
+    BookReadingProgressModel, BookShelfModel, BookSourceRecordModel,
 };
 
 fn db_err(err: impl std::fmt::Display) -> DomainError {
@@ -813,6 +818,265 @@ impl BookReadingRepository for ToastyBookReadingRepository {
             .await
             .map_err(db_err)?;
         BookShelfModel::filter_by_user_id(user_id.0)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ToastyBookSourceRepository {
+    db: Db,
+}
+
+impl ToastyBookSourceRepository {
+    pub fn new(db: Db) -> Self {
+        Self { db }
+    }
+
+    fn to_domain(m: BookSourceRecordModel) -> BookSourceRecord {
+        BookSourceRecord {
+            id: m.id,
+            name: m.name,
+            source_url: m.source_url,
+            group_name: m.group_name,
+            enabled: m.enabled,
+            weight: m.weight,
+            source_type: m.source_type,
+            raw_json: m.raw_json,
+            runtime_state: m.runtime_state.0,
+            last_test_ok: m.last_test_ok,
+            last_test_msg: m.last_test_msg,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+#[async_trait]
+impl BookSourceRepository for ToastyBookSourceRepository {
+    async fn list_all(&self) -> DomainResult<Vec<BookSourceRecord>> {
+        let mut db = self.db.clone();
+        let rows = BookSourceRecordModel::all()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::to_domain).collect())
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<BookSourceRecord>> {
+        let mut db = self.db.clone();
+        let row = BookSourceRecordModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(row.map(Self::to_domain))
+    }
+
+    async fn save(&self, source: &BookSourceRecord) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let existing = BookSourceRecordModel::filter_by_id(source.id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        if let Some(mut rec) = existing {
+            rec.update()
+                .name(source.name.clone())
+                .source_url(source.source_url.clone())
+                .group_name(source.group_name.clone())
+                .enabled(source.enabled)
+                .weight(source.weight)
+                .source_type(source.source_type)
+                .raw_json(source.raw_json.clone())
+                .runtime_state(toasty::Json(source.runtime_state.clone()))
+                .last_test_ok(source.last_test_ok)
+                .last_test_msg(source.last_test_msg.clone())
+                .updated_at(source.updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        } else {
+            toasty::create!(BookSourceRecordModel {
+                id: source.id,
+                name: source.name.clone(),
+                source_url: source.source_url.clone(),
+                group_name: source.group_name.clone(),
+                enabled: source.enabled,
+                weight: source.weight,
+                source_type: source.source_type,
+                raw_json: source.raw_json.clone(),
+                runtime_state: toasty::Json(source.runtime_state.clone()),
+                last_test_ok: source.last_test_ok,
+                last_test_msg: source.last_test_msg.clone(),
+                created_at: source.created_at,
+                updated_at: source.updated_at,
+            })
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    async fn update_runtime_state(
+        &self,
+        id: Uuid,
+        runtime_state: SourceRuntimeState,
+        updated_at: Timestamp,
+    ) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        if let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        {
+            rec.update()
+                .runtime_state(toasty::Json(runtime_state))
+                .updated_at(updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, id: Uuid) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        BookSourceRecordModel::filter_by_id(id)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ToastyOnlineShelfRepository {
+    db: Db,
+}
+
+impl ToastyOnlineShelfRepository {
+    pub fn new(db: Db) -> Self {
+        Self { db }
+    }
+
+    fn to_domain(m: BookOnlineShelfModel) -> OnlineShelfBook {
+        OnlineShelfBook {
+            id: m.id,
+            user_id: UserId(m.user_id),
+            source_id: m.source_id,
+            name: m.name,
+            author: m.author,
+            book_url: m.book_url,
+            toc_url: m.toc_url,
+            cover_url: m.cover_url,
+            intro: m.intro,
+            kind: m.kind,
+            last_chapter: m.last_chapter,
+            total_chapters: m.total_chapters,
+            current_chapter_index: m.current_chapter_index,
+            current_chapter_title: m.current_chapter_title,
+            scroll_ratio: m.scroll_ratio,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        }
+    }
+}
+
+#[async_trait]
+impl OnlineShelfRepository for ToastyOnlineShelfRepository {
+    async fn list_by_user(&self, user_id: UserId) -> DomainResult<Vec<OnlineShelfBook>> {
+        let mut db = self.db.clone();
+        let mut rows = BookOnlineShelfModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        rows.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
+        Ok(rows.into_iter().map(Self::to_domain).collect())
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<OnlineShelfBook>> {
+        let mut db = self.db.clone();
+        let row = BookOnlineShelfModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(row.map(Self::to_domain))
+    }
+
+    async fn save(&self, item: &OnlineShelfBook) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let existing = BookOnlineShelfModel::filter_by_id(item.id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        if let Some(mut rec) = existing {
+            rec.update()
+                .source_id(item.source_id)
+                .name(item.name.clone())
+                .author(item.author.clone())
+                .book_url(item.book_url.clone())
+                .toc_url(item.toc_url.clone())
+                .cover_url(item.cover_url.clone())
+                .intro(item.intro.clone())
+                .kind(item.kind.clone())
+                .last_chapter(item.last_chapter.clone())
+                .total_chapters(item.total_chapters)
+                .current_chapter_index(item.current_chapter_index)
+                .current_chapter_title(item.current_chapter_title.clone())
+                .scroll_ratio(item.scroll_ratio)
+                .updated_at(item.updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        } else {
+            toasty::create!(BookOnlineShelfModel {
+                id: item.id,
+                user_id: item.user_id.0,
+                source_id: item.source_id,
+                name: item.name.clone(),
+                author: item.author.clone(),
+                book_url: item.book_url.clone(),
+                toc_url: item.toc_url.clone(),
+                cover_url: item.cover_url.clone(),
+                intro: item.intro.clone(),
+                kind: item.kind.clone(),
+                last_chapter: item.last_chapter.clone(),
+                total_chapters: item.total_chapters,
+                current_chapter_index: item.current_chapter_index,
+                current_chapter_title: item.current_chapter_title.clone(),
+                scroll_ratio: item.scroll_ratio,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+            })
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, id: Uuid) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        BookOnlineShelfModel::filter_by_id(id)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        BookOnlineShelfModel::filter_by_user_id(user_id.0)
             .delete()
             .exec(&mut db)
             .await

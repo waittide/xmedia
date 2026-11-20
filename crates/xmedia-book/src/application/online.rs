@@ -8,17 +8,17 @@ use bytes::Bytes;
 use jiff::Timestamp;
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
-use toasty::Db;
 use tokio::sync::{Notify, RwLock, Semaphore, mpsc};
 use uuid::Uuid;
 use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
-use xmedia_core::domain::user::{User, UserId};
+use xmedia_core::domain::user::{User, UserId, require_admin};
 use xmedia_core::infra::stream::open_file_range_stream_spec;
 
 use crate::application::catalog::BookCatalogService;
 use crate::domain::book::BookId;
-use crate::infra::persistence::models::{BookOnlineShelfModel, BookSourceRecordModel};
+use crate::domain::online::{BookSourceRecord, OnlineShelfBook};
+use crate::domain::repository::{BookSourceRepository, OnlineShelfRepository};
 use crate::source::BookSourceEngine;
 use crate::source::http::{get_or_build_async_client, validate_target_url};
 use crate::source::model::{
@@ -35,18 +35,6 @@ const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 4;
 const DEFAULT_DOWNLOAD_MIN_INTERVAL_MS: u64 = 40;
 const DOWNLOAD_STATE_PERSIST_BATCH: usize = 20;
-
-fn db_err(err: impl std::fmt::Display) -> DomainError {
-    DomainError::Persistence(err.to_string())
-}
-
-fn require_admin(actor: &User) -> DomainResult<()> {
-    if actor.role.is_admin() {
-        Ok(())
-    } else {
-        Err(DomainError::Forbidden("需要管理员权限管理书源".into()))
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookSourceSummaryDto {
@@ -406,7 +394,8 @@ struct ChapterProgressEvent {
 }
 
 pub struct BookOnlineService {
-    db: Db,
+    sources: Arc<dyn BookSourceRepository>,
+    shelves: Arc<dyn OnlineShelfRepository>,
     catalog: Arc<BookCatalogService>,
     engine: BookSourceEngine,
     cache_dir: PathBuf,
@@ -416,12 +405,25 @@ pub struct BookOnlineService {
 }
 
 impl BookOnlineService {
-    pub fn new(db: Db, data_dir: &Path, catalog: Arc<BookCatalogService>) -> DomainResult<Self> {
-        Self::with_engine(db, data_dir, catalog, BookSourceEngine::default(), false)
+    pub fn new(
+        sources: Arc<dyn BookSourceRepository>,
+        shelves: Arc<dyn OnlineShelfRepository>,
+        data_dir: &Path,
+        catalog: Arc<BookCatalogService>,
+    ) -> DomainResult<Self> {
+        Self::with_engine(
+            sources,
+            shelves,
+            data_dir,
+            catalog,
+            BookSourceEngine::default(),
+            false,
+        )
     }
 
     pub fn with_engine(
-        db: Db,
+        sources: Arc<dyn BookSourceRepository>,
+        shelves: Arc<dyn OnlineShelfRepository>,
         data_dir: &Path,
         catalog: Arc<BookCatalogService>,
         engine: BookSourceEngine,
@@ -443,7 +445,8 @@ impl BookOnlineService {
         })?;
 
         Ok(Self {
-            db,
+            sources,
+            shelves,
             catalog,
             engine,
             cache_dir,
@@ -453,7 +456,7 @@ impl BookOnlineService {
         })
     }
 
-    fn model_to_summary(m: &BookSourceRecordModel, is_admin: bool) -> BookSourceSummaryDto {
+    fn record_to_summary(m: &BookSourceRecord, is_admin: bool) -> BookSourceSummaryDto {
         let parsed = serde_json::from_str::<LegadoBookSource>(&m.raw_json).ok();
         let login_ui = parsed
             .as_ref()
@@ -468,7 +471,7 @@ impl BookOnlineService {
 
         let (login_info, variable_preview, cookie_hosts) = if is_admin {
             let mut masked = HashMap::new();
-            for (k, v) in &m.runtime_state.0.login_info {
+            for (k, v) in &m.runtime_state.login_info {
                 let is_pwd = k.contains("密码") || k.to_ascii_lowercase().contains("password");
                 masked.insert(
                     k.clone(),
@@ -479,8 +482,8 @@ impl BookOnlineService {
                     },
                 );
             }
-            let preview: String = m.runtime_state.0.variable.chars().take(240).collect();
-            let mut hosts: Vec<String> = m.runtime_state.0.cookies.keys().cloned().collect();
+            let preview: String = m.runtime_state.variable.chars().take(240).collect();
+            let mut hosts: Vec<String> = m.runtime_state.cookies.keys().cloned().collect();
             hosts.sort();
             (masked, preview, hosts)
         } else {
@@ -499,7 +502,7 @@ impl BookOnlineService {
             has_login_url,
             login_ui: if is_admin { login_ui } else { Vec::new() },
             login_info,
-            has_variable: !m.runtime_state.0.variable.trim().is_empty(),
+            has_variable: !m.runtime_state.variable.trim().is_empty(),
             variable_preview,
             cookie_hosts,
             last_test_ok: m.last_test_ok,
@@ -508,13 +511,10 @@ impl BookOnlineService {
         }
     }
 
-    async fn load_source_model(&self, id: Uuid) -> DomainResult<BookSourceRecordModel> {
-        let mut db = self.db.clone();
-        BookSourceRecordModel::filter_by_id(id)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
+    async fn load_source(&self, id: Uuid) -> DomainResult<BookSourceRecord> {
+        self.sources
+            .find_by_id(id)
+            .await?
             .ok_or_else(|| DomainError::NotFound(format!("未找到书源 {id}")))
     }
 
@@ -523,29 +523,13 @@ impl BookOnlineService {
         id: Uuid,
         new_state: SourceRuntimeState,
     ) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        if let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
-            .first()
-            .exec(&mut db)
+        self.sources
+            .update_runtime_state(id, new_state, Timestamp::now())
             .await
-            .map_err(db_err)?
-        {
-            rec.update()
-                .runtime_state(toasty::Json(new_state))
-                .updated_at(Timestamp::now())
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
-        }
-        Ok(())
     }
 
     pub async fn list_sources(&self, actor: &User) -> DomainResult<Vec<BookSourceSummaryDto>> {
-        let mut db = self.db.clone();
-        let mut rows = BookSourceRecordModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+        let mut rows = self.sources.list_all().await?;
         if !actor.role.is_admin() {
             rows.retain(|r| r.enabled);
         }
@@ -557,7 +541,7 @@ impl BookOnlineService {
         });
         Ok(rows
             .iter()
-            .map(|r| Self::model_to_summary(r, actor.role.is_admin()))
+            .map(|r| Self::record_to_summary(r, actor.role.is_admin()))
             .collect())
     }
 
@@ -570,13 +554,8 @@ impl BookOnlineService {
         let parsed_batch =
             LegadoBookSource::parse_json_batch(raw_json).map_err(DomainError::Validation)?;
 
-        let mut db = self.db.clone();
-        let existing_all = BookSourceRecordModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-
-        let mut existing_by_key: HashMap<(String, String), BookSourceRecordModel> = existing_all
+        let existing_all = self.sources.list_all().await?;
+        let mut existing_by_key: HashMap<(String, String), BookSourceRecord> = existing_all
             .into_iter()
             .map(|m| ((m.source_url.clone(), m.name.clone()), m))
             .collect();
@@ -591,30 +570,20 @@ impl BookOnlineService {
             let key = (src.book_source_url.clone(), src.book_source_name.clone());
 
             if let Some(mut rec) = existing_by_key.remove(&key) {
-                rec.update()
-                    .group_name(group_name.clone())
-                    .enabled(src.enabled)
-                    .weight(src.weight)
-                    .source_type(src.book_source_type)
-                    .raw_json(item_raw.clone())
-                    .updated_at(now)
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
                 rec.group_name = group_name;
                 rec.enabled = src.enabled;
                 rec.weight = src.weight;
                 rec.source_type = src.book_source_type;
                 rec.raw_json = item_raw;
                 rec.updated_at = now;
+                self.sources.save(&rec).await?;
                 updated_count += 1;
-                out.push(Self::model_to_summary(&rec, true));
+                out.push(Self::record_to_summary(&rec, true));
             } else {
-                let id = Uuid::now_v7();
                 let mut rt = SourceRuntimeState::default();
                 rt.ensure_android_id(&src.book_source_url);
-                let created = toasty::create!(BookSourceRecordModel {
-                    id,
+                let rec = BookSourceRecord {
+                    id: Uuid::now_v7(),
                     name: src.book_source_name.clone(),
                     source_url: src.book_source_url.clone(),
                     group_name,
@@ -622,17 +591,15 @@ impl BookOnlineService {
                     weight: src.weight,
                     source_type: src.book_source_type,
                     raw_json: item_raw,
-                    runtime_state: toasty::Json(rt),
+                    runtime_state: rt,
                     last_test_ok: None,
                     last_test_msg: None,
                     created_at: now,
                     updated_at: now,
-                })
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
+                };
+                self.sources.save(&rec).await?;
                 imported_count += 1;
-                out.push(Self::model_to_summary(&created, true));
+                out.push(Self::record_to_summary(&rec, true));
             }
         }
 
@@ -650,74 +617,41 @@ impl BookOnlineService {
         input: UpdateBookSourceInput,
     ) -> DomainResult<BookSourceSummaryDto> {
         require_admin(actor)?;
-        let mut rec = self.load_source_model(id).await?;
-        let mut db = self.db.clone();
+        let mut rec = self.load_source(id).await?;
         let now = Timestamp::now();
-
-        let mut next_name = rec.name.clone();
-        let mut next_url = rec.source_url.clone();
-        let mut next_group = rec.group_name.clone();
-        let mut next_enabled = rec.enabled;
-        let mut next_weight = rec.weight;
-        let mut next_type = rec.source_type;
-        let mut next_raw = rec.raw_json.clone();
-        let mut next_state = rec.runtime_state.0.clone();
 
         if let Some(raw) = input.raw_json {
             let mut batch =
                 LegadoBookSource::parse_json_batch(&raw).map_err(DomainError::Validation)?;
             let (parsed, clean_raw) = batch.remove(0);
-            next_name = parsed.book_source_name;
-            next_url = parsed.book_source_url;
-            next_group = parsed.book_source_group.unwrap_or_default();
-            next_type = parsed.book_source_type;
-            next_raw = clean_raw;
+            rec.name = parsed.book_source_name;
+            rec.source_url = parsed.book_source_url;
+            rec.group_name = parsed.book_source_group.unwrap_or_default();
+            rec.source_type = parsed.book_source_type;
+            rec.raw_json = clean_raw;
         }
         if let Some(en) = input.enabled {
-            next_enabled = en;
+            rec.enabled = en;
         }
         if let Some(w) = input.weight {
-            next_weight = w;
+            rec.weight = w;
         }
         if let Some(g) = input.group_name {
-            next_group = g;
+            rec.group_name = g;
         }
         if let Some(v) = input.variable {
-            next_state.variable = v;
+            rec.runtime_state.variable = v;
         }
-
-        rec.update()
-            .name(next_name.clone())
-            .source_url(next_url.clone())
-            .group_name(next_group.clone())
-            .enabled(next_enabled)
-            .weight(next_weight)
-            .source_type(next_type)
-            .raw_json(next_raw.clone())
-            .runtime_state(toasty::Json(next_state.clone()))
-            .updated_at(now)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-
-        rec.name = next_name;
-        rec.source_url = next_url;
-        rec.group_name = next_group;
-        rec.enabled = next_enabled;
-        rec.weight = next_weight;
-        rec.source_type = next_type;
-        rec.raw_json = next_raw;
-        rec.runtime_state = toasty::Json(next_state);
         rec.updated_at = now;
 
-        Ok(Self::model_to_summary(&rec, true))
+        self.sources.save(&rec).await?;
+        Ok(Self::record_to_summary(&rec, true))
     }
 
     pub async fn delete_source(&self, actor: &User, id: Uuid) -> DomainResult<()> {
         require_admin(actor)?;
-        let rec = self.load_source_model(id).await?;
-        let mut db = self.db.clone();
-        rec.delete().exec(&mut db).await.map_err(db_err)?;
+        let _ = self.load_source(id).await?;
+        self.sources.delete(id).await?;
         let src_cache = self.cache_dir.join(id.to_string());
         if src_cache.is_dir() {
             let _ = std::fs::remove_dir_all(src_cache);
@@ -727,7 +661,7 @@ impl BookOnlineService {
 
     pub async fn export_source_json(&self, actor: &User, id: Uuid) -> DomainResult<String> {
         require_admin(actor)?;
-        let rec = self.load_source_model(id).await?;
+        let rec = self.load_source(id).await?;
         Ok(rec.raw_json)
     }
 
@@ -739,21 +673,21 @@ impl BookOnlineService {
         action: Option<String>,
     ) -> DomainResult<LoginActionResponseDto> {
         require_admin(actor)?;
-        let rec = self.load_source_model(id).await?;
+        let rec = self.load_source(id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
         // Preserve existing real password if frontend echoed masked placeholder back
         for (k, v) in login_info.iter_mut() {
             if v == "••••••••"
-                && let Some(orig) = rec.runtime_state.0.login_info.get(k)
+                && let Some(orig) = rec.runtime_state.login_info.get(k)
             {
                 *v = orig.clone();
             }
         }
 
         let engine = self.engine.clone();
-        let prev_state = rec.runtime_state.0.clone();
+        let prev_state = rec.runtime_state.clone();
         let action_clone = action.clone();
 
         let out = tokio::task::spawn_blocking(move || {
@@ -764,12 +698,12 @@ impl BookOnlineService {
         .map_err(DomainError::Validation)?;
 
         self.persist_runtime_state(id, out.state).await?;
-        let refreshed = self.load_source_model(id).await?;
+        let refreshed = self.load_source(id).await?;
 
         Ok(LoginActionResponseDto {
             result: out.data,
             diagnostics: out.diagnostics,
-            source: Self::model_to_summary(&refreshed, true),
+            source: Self::record_to_summary(&refreshed, true),
         })
     }
 
@@ -780,7 +714,7 @@ impl BookOnlineService {
         keyword_override: Option<String>,
     ) -> DomainResult<SourceTestReportDto> {
         require_admin(actor)?;
-        let mut rec = self.load_source_model(id).await?;
+        let mut rec = self.load_source(id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
@@ -798,7 +732,7 @@ impl BookOnlineService {
             .unwrap_or_else(|| "我的".to_string());
 
         let engine = self.engine.clone();
-        let prev_state = rec.runtime_state.0.clone();
+        let prev_state = rec.runtime_state.clone();
         let kw_clone = kw.clone();
         let res = tokio::task::spawn_blocking(move || {
             engine.search_sync(&parsed, prev_state, &kw_clone, 1)
@@ -806,7 +740,6 @@ impl BookOnlineService {
         .await
         .map_err(|e| DomainError::Storage(format!("测试书源线程失败: {e}")))?;
 
-        let mut db = self.db.clone();
         let now = Timestamp::now();
         match res {
             Ok(out) => {
@@ -814,14 +747,11 @@ impl BookOnlineService {
                     out.data.iter().take(5).map(|b| b.name.clone()).collect();
                 let count = out.data.len();
                 let msg = format!("命中 {count} 本（关键词：{kw}）");
-                rec.update()
-                    .runtime_state(toasty::Json(out.state))
-                    .last_test_ok(Some(count > 0))
-                    .last_test_msg(Some(msg))
-                    .updated_at(now)
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
+                rec.runtime_state = out.state;
+                rec.last_test_ok = Some(count > 0);
+                rec.last_test_msg = Some(msg);
+                rec.updated_at = now;
+                self.sources.save(&rec).await?;
                 Ok(SourceTestReportDto {
                     ok: count > 0,
                     keyword: kw,
@@ -836,13 +766,10 @@ impl BookOnlineService {
                 })
             }
             Err(err) => {
-                rec.update()
-                    .last_test_ok(Some(false))
-                    .last_test_msg(Some(err.chars().take(180).collect()))
-                    .updated_at(now)
-                    .exec(&mut db)
-                    .await
-                    .map_err(db_err)?;
+                rec.last_test_ok = Some(false);
+                rec.last_test_msg = Some(err.chars().take(180).collect());
+                rec.updated_at = now;
+                self.sources.save(&rec).await?;
                 Ok(SourceTestReportDto {
                     ok: false,
                     keyword: kw,
@@ -866,11 +793,7 @@ impl BookOnlineService {
             return Err(DomainError::Validation("请输入搜索关键词".into()));
         }
 
-        let mut db = self.db.clone();
-        let mut sources = BookSourceRecordModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+        let mut sources = self.sources.list_all().await?;
 
         if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
             sources.retain(|s| filter_ids.contains(&s.id));
@@ -893,7 +816,7 @@ impl BookOnlineService {
             let parsed_res = serde_json::from_str::<LegadoBookSource>(&rec.raw_json);
             let sid = rec.id;
             let sname = rec.name.clone();
-            let state = rec.runtime_state.0.clone();
+            let state = rec.runtime_state.clone();
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
 
@@ -986,13 +909,13 @@ impl BookOnlineService {
         book_url: &str,
         fallback_hint: Option<BookJsContext>,
     ) -> DomainResult<OnlineBookDetailResponseDto> {
-        let rec = self.load_source_model(source_id).await?;
+        let rec = self.load_source(source_id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
         let engine = self.engine.clone();
         let url_owned = book_url.to_string();
-        let prev_state = rec.runtime_state.0.clone();
+        let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
         let out = tokio::task::spawn_blocking(move || {
@@ -1020,13 +943,13 @@ impl BookOnlineService {
         toc_url: &str,
         book_ctx: BookJsContext,
     ) -> DomainResult<OnlineTocResponseDto> {
-        let rec = self.load_source_model(source_id).await?;
+        let rec = self.load_source(source_id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
         let engine = self.engine.clone();
         let url_owned = toc_url.to_string();
-        let prev_state = rec.runtime_state.0.clone();
+        let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
         let out = tokio::task::spawn_blocking(move || {
@@ -1082,13 +1005,13 @@ impl BookOnlineService {
             });
         }
 
-        let rec = self.load_source_model(source_id).await?;
+        let rec = self.load_source(source_id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
         let engine = self.engine.clone();
         let url_owned = chapter_url.to_string();
-        let prev_state = rec.runtime_state.0.clone();
+        let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let ch_idx = chapter_ctx.index;
 
@@ -1123,43 +1046,41 @@ impl BookOnlineService {
     // Per-User Online Bookshelf
     // -----------------------------------------------------------------------
 
-    pub async fn list_shelf(&self, user_id: UserId) -> DomainResult<Vec<OnlineShelfBookDto>> {
-        let mut db = self.db.clone();
-        let mut rows = BookOnlineShelfModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
-        rows.sort_by_key(|r| std::cmp::Reverse(r.updated_at));
+    fn shelf_to_dto(r: OnlineShelfBook, source_name: String) -> OnlineShelfBookDto {
+        OnlineShelfBookDto {
+            id: r.id,
+            source_id: r.source_id,
+            source_name,
+            name: r.name,
+            author: r.author,
+            book_url: r.book_url,
+            toc_url: r.toc_url,
+            cover_url: r.cover_url,
+            intro: r.intro,
+            kind: r.kind,
+            last_chapter: r.last_chapter,
+            total_chapters: r.total_chapters,
+            current_chapter_index: r.current_chapter_index,
+            current_chapter_title: r.current_chapter_title,
+            scroll_ratio: r.scroll_ratio,
+            updated_at: r.updated_at,
+        }
+    }
 
-        let sources = BookSourceRecordModel::all()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+    pub async fn list_shelf(&self, user_id: UserId) -> DomainResult<Vec<OnlineShelfBookDto>> {
+        let rows = self.shelves.list_by_user(user_id).await?;
+        let sources = self.sources.list_all().await?;
         let src_names: HashMap<Uuid, String> =
             sources.into_iter().map(|s| (s.id, s.name)).collect();
 
         Ok(rows
             .into_iter()
-            .map(|r| OnlineShelfBookDto {
-                id: r.id,
-                source_id: r.source_id,
-                source_name: src_names
+            .map(|r| {
+                let source_name = src_names
                     .get(&r.source_id)
                     .cloned()
-                    .unwrap_or_else(|| "已删除书源".to_string()),
-                name: r.name,
-                author: r.author,
-                book_url: r.book_url,
-                toc_url: r.toc_url,
-                cover_url: r.cover_url,
-                intro: r.intro,
-                kind: r.kind,
-                last_chapter: r.last_chapter,
-                total_chapters: r.total_chapters,
-                current_chapter_index: r.current_chapter_index,
-                current_chapter_title: r.current_chapter_title,
-                scroll_ratio: r.scroll_ratio,
-                updated_at: r.updated_at,
+                    .unwrap_or_else(|| "已删除书源".to_string());
+                Self::shelf_to_dto(r, source_name)
             })
             .collect())
     }
@@ -1169,112 +1090,60 @@ impl BookOnlineService {
         user_id: UserId,
         input: AddOnlineShelfInput,
     ) -> DomainResult<OnlineShelfBookDto> {
-        let src = self.load_source_model(input.source_id).await?;
-        let mut db = self.db.clone();
-        let existing_list = BookOnlineShelfModel::filter_by_user_id(user_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+        let src = self.load_source(input.source_id).await?;
+        let existing_list = self.shelves.list_by_user(user_id).await?;
         let now = Timestamp::now();
 
         if let Some(mut existing) = existing_list
             .into_iter()
             .find(|b| b.source_id == input.source_id && b.book_url == input.book_url)
         {
-            let next_total = input.total_chapters.unwrap_or(existing.total_chapters);
-            let next_toc = if input.toc_url.trim().is_empty() {
-                existing.toc_url.clone()
-            } else {
-                input.toc_url.clone()
-            };
-            let next_cover = input
-                .cover_url
-                .clone()
-                .or_else(|| existing.cover_url.clone());
-            let next_intro = input.intro.clone().or_else(|| existing.intro.clone());
-            let next_kind = input.kind.clone().or_else(|| existing.kind.clone());
-            let next_last = input
-                .last_chapter
-                .clone()
-                .or_else(|| existing.last_chapter.clone());
-            existing
-                .update()
-                .name(input.name.clone())
-                .author(input.author.clone())
-                .toc_url(next_toc.clone())
-                .cover_url(next_cover.clone())
-                .intro(next_intro.clone())
-                .kind(next_kind.clone())
-                .last_chapter(next_last.clone())
-                .total_chapters(next_total)
-                .updated_at(now)
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
-
-            return Ok(OnlineShelfBookDto {
-                id: existing.id,
-                source_id: existing.source_id,
-                source_name: src.name,
-                name: input.name,
-                author: input.author,
-                book_url: existing.book_url,
-                toc_url: next_toc,
-                cover_url: next_cover,
-                intro: next_intro,
-                kind: next_kind,
-                last_chapter: next_last,
-                total_chapters: next_total,
-                current_chapter_index: existing.current_chapter_index,
-                current_chapter_title: existing.current_chapter_title,
-                scroll_ratio: existing.scroll_ratio,
-                updated_at: now,
-            });
+            existing.name = input.name;
+            existing.author = input.author;
+            if !input.toc_url.trim().is_empty() {
+                existing.toc_url = input.toc_url;
+            }
+            if input.cover_url.is_some() {
+                existing.cover_url = input.cover_url;
+            }
+            if input.intro.is_some() {
+                existing.intro = input.intro;
+            }
+            if input.kind.is_some() {
+                existing.kind = input.kind;
+            }
+            if input.last_chapter.is_some() {
+                existing.last_chapter = input.last_chapter;
+            }
+            if let Some(total) = input.total_chapters {
+                existing.total_chapters = total;
+            }
+            existing.updated_at = now;
+            self.shelves.save(&existing).await?;
+            return Ok(Self::shelf_to_dto(existing, src.name));
         }
 
-        let id = Uuid::now_v7();
-        let total = input.total_chapters.unwrap_or(0);
-        let created = toasty::create!(BookOnlineShelfModel {
-            id,
-            user_id: user_id.0,
+        let item = OnlineShelfBook {
+            id: Uuid::now_v7(),
+            user_id,
             source_id: input.source_id,
-            name: input.name.clone(),
-            author: input.author.clone(),
-            book_url: input.book_url.clone(),
-            toc_url: input.toc_url.clone(),
-            cover_url: input.cover_url.clone(),
-            intro: input.intro.clone(),
-            kind: input.kind.clone(),
-            last_chapter: input.last_chapter.clone(),
-            total_chapters: total,
+            name: input.name,
+            author: input.author,
+            book_url: input.book_url,
+            toc_url: input.toc_url,
+            cover_url: input.cover_url,
+            intro: input.intro,
+            kind: input.kind,
+            last_chapter: input.last_chapter,
+            total_chapters: input.total_chapters.unwrap_or(0),
             current_chapter_index: 0,
             current_chapter_title: None,
             scroll_ratio: 0.0,
             created_at: now,
             updated_at: now,
-        })
-        .exec(&mut db)
-        .await
-        .map_err(db_err)?;
-
-        Ok(OnlineShelfBookDto {
-            id: created.id,
-            source_id: created.source_id,
-            source_name: src.name,
-            name: created.name,
-            author: created.author,
-            book_url: created.book_url,
-            toc_url: created.toc_url,
-            cover_url: created.cover_url,
-            intro: created.intro,
-            kind: created.kind,
-            last_chapter: created.last_chapter,
-            total_chapters: created.total_chapters,
-            current_chapter_index: created.current_chapter_index,
-            current_chapter_title: created.current_chapter_title,
-            scroll_ratio: created.scroll_ratio,
-            updated_at: created.updated_at,
-        })
+        };
+        self.shelves.save(&item).await?;
+        Ok(Self::shelf_to_dto(item, src.name))
     }
 
     pub async fn update_shelf_book(
@@ -1283,84 +1152,62 @@ impl BookOnlineService {
         id: Uuid,
         input: UpdateOnlineShelfInput,
     ) -> DomainResult<OnlineShelfBookDto> {
-        let mut db = self.db.clone();
-        let mut rec = BookOnlineShelfModel::filter_by_id(id)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
+        let mut rec = self
+            .shelves
+            .find_by_id(id)
+            .await?
             .ok_or_else(|| DomainError::NotFound("未找到在线书架条目".into()))?;
-        if rec.user_id != user_id.0 {
+        if rec.user_id != user_id {
             return Err(DomainError::Forbidden("无权操作他人在线书架".into()));
         }
 
-        let now = Timestamp::now();
-        let next_source_id = input.source_id.unwrap_or(rec.source_id);
-        let next_book_url = input.book_url.unwrap_or_else(|| rec.book_url.clone());
-        let next_toc_url = input.toc_url.unwrap_or_else(|| rec.toc_url.clone());
-        let next_idx = input
-            .current_chapter_index
-            .unwrap_or(rec.current_chapter_index);
-        let next_title = input
-            .current_chapter_title
-            .or_else(|| rec.current_chapter_title.clone());
-        let next_scroll = input.scroll_ratio.unwrap_or(rec.scroll_ratio);
-        let next_total = input.total_chapters.unwrap_or(rec.total_chapters);
-        let next_last = input.last_chapter.or_else(|| rec.last_chapter.clone());
+        if let Some(source_id) = input.source_id {
+            rec.source_id = source_id;
+        }
+        if let Some(book_url) = input.book_url {
+            rec.book_url = book_url;
+        }
+        if let Some(toc_url) = input.toc_url {
+            rec.toc_url = toc_url;
+        }
+        if let Some(idx) = input.current_chapter_index {
+            rec.current_chapter_index = idx;
+        }
+        if input.current_chapter_title.is_some() {
+            rec.current_chapter_title = input.current_chapter_title;
+        }
+        if let Some(scroll) = input.scroll_ratio {
+            rec.scroll_ratio = scroll;
+        }
+        if let Some(total) = input.total_chapters {
+            rec.total_chapters = total;
+        }
+        if input.last_chapter.is_some() {
+            rec.last_chapter = input.last_chapter;
+        }
+        rec.updated_at = Timestamp::now();
 
-        rec.update()
-            .source_id(next_source_id)
-            .book_url(next_book_url.clone())
-            .toc_url(next_toc_url.clone())
-            .current_chapter_index(next_idx)
-            .current_chapter_title(next_title.clone())
-            .scroll_ratio(next_scroll)
-            .total_chapters(next_total)
-            .last_chapter(next_last.clone())
-            .updated_at(now)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?;
+        self.shelves.save(&rec).await?;
 
         let src_name = self
-            .load_source_model(next_source_id)
+            .load_source(rec.source_id)
             .await
             .map(|s| s.name)
             .unwrap_or_else(|_| "未知书源".to_string());
 
-        Ok(OnlineShelfBookDto {
-            id: rec.id,
-            source_id: next_source_id,
-            source_name: src_name,
-            name: rec.name,
-            author: rec.author,
-            book_url: next_book_url,
-            toc_url: next_toc_url,
-            cover_url: rec.cover_url,
-            intro: rec.intro,
-            kind: rec.kind,
-            last_chapter: next_last,
-            total_chapters: next_total,
-            current_chapter_index: next_idx,
-            current_chapter_title: next_title,
-            scroll_ratio: next_scroll,
-            updated_at: now,
-        })
+        Ok(Self::shelf_to_dto(rec, src_name))
     }
 
     pub async fn remove_from_shelf(&self, user_id: UserId, id: Uuid) -> DomainResult<()> {
-        let mut db = self.db.clone();
-        let rec = BookOnlineShelfModel::filter_by_id(id)
-            .first()
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
+        let rec = self
+            .shelves
+            .find_by_id(id)
+            .await?
             .ok_or_else(|| DomainError::NotFound("未找到在线书架条目".into()))?;
-        if rec.user_id != user_id.0 {
+        if rec.user_id != user_id {
             return Err(DomainError::Forbidden("无权删除他人在线书架".into()));
         }
-        rec.delete().exec(&mut db).await.map_err(db_err)?;
-        Ok(())
+        self.shelves.delete(id).await
     }
 
     // -----------------------------------------------------------------------
@@ -1375,7 +1222,7 @@ impl BookOnlineService {
         if input.import_to_library {
             require_admin(actor)?;
         }
-        let src = self.load_source_model(input.source_id).await?;
+        let src = self.load_source(input.source_id).await?;
         let job_id = Uuid::now_v7();
         let now = Timestamp::now();
 
@@ -1469,7 +1316,7 @@ impl BookOnlineService {
         }
 
         // Load & parse book source ONCE for the entire download job
-        let src_rec = match self.load_source_model(input.source_id).await {
+        let src_rec = match self.load_source(input.source_id).await {
             Ok(r) => r,
             Err(e) => {
                 self.fail_job(job_id, started_at, format!("加载书源失败: {e}"))
@@ -1485,10 +1332,10 @@ impl BookOnlineService {
                 return;
             }
         };
-        let mut last_persisted_state = src_rec.runtime_state.0.clone();
+        let mut last_persisted_state = src_rec.runtime_state.clone();
         let reusable_ctx = match self
             .engine
-            .prepare_reusable_context(Arc::clone(&parsed_source), src_rec.runtime_state.0)
+            .prepare_reusable_context(Arc::clone(&parsed_source), src_rec.runtime_state)
         {
             Ok(c) => c,
             Err(e) => {
@@ -2277,6 +2124,7 @@ mod tests {
     use axum::extract::Path as AxumPath;
     use axum::routing::get;
     use tempfile::TempDir;
+    use toasty::Db;
     use toasty::schema::ModelSet;
     use xmedia_core::application::auth::AuthService;
     use xmedia_core::application::dto::SetupAdminInput;
@@ -2288,6 +2136,9 @@ mod tests {
     use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
     use xmedia_core::{ensure_core_schema, register_core_models};
 
+    use crate::infra::persistence::repositories::{
+        ToastyBookSourceRepository, ToastyOnlineShelfRepository,
+    };
     use crate::source::http::HttpClientConfig;
     use crate::{ensure_book_schema, init_book_module, register_book_models};
 
@@ -2335,9 +2186,12 @@ mod tests {
         ));
         let book_services =
             init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
+        let sources_repo = Arc::new(ToastyBookSourceRepository::new(db.clone()));
+        let shelves_repo = Arc::new(ToastyOnlineShelfRepository::new(db.clone()));
         let online_svc = Arc::new(
             BookOnlineService::with_engine(
-                db,
+                sources_repo,
+                shelves_repo,
                 tmp.path(),
                 book_services.catalog.clone(),
                 BookSourceEngine::new(

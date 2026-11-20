@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
+use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{
-    ApiError, ApiResult, into_range_http_response, parse_http_range_spec,
+    ApiError, ApiResult, WebAuth, into_range_http_response, parse_http_range_spec,
     sanitize_download_filename, stream_multipart_field_to_temp_file,
 };
 
@@ -25,7 +26,6 @@ use crate::domain::book::{
     BookFormat, BookId, BookSortField, FacetCount, PagedResult, SortOrder, TagMatchMode,
 };
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, ShelfId};
-use crate::http::extractors::BookWebAuth;
 use crate::http::state::BookHttpState;
 
 pub fn router() -> Router<BookHttpState> {
@@ -114,7 +114,7 @@ fn split_multi_param(raw: Option<String>) -> Vec<String> {
 
 async fn search_books(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Query(q): Query<SearchBooksQuery>,
 ) -> ApiResult<Json<PagedResult<BookSummaryDto>>> {
     let parsed_formats: Vec<BookFormat> = split_multi_param(q.formats)
@@ -163,14 +163,10 @@ const MAX_BOOK_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
 
 async fn upload_books(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadBooksResponse>)> {
-    if !actor.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&actor)?;
     let mut uploaded = Vec::new();
     let mut total_bytes: u64 = 0;
 
@@ -228,7 +224,7 @@ struct BatchBooksResponse {
 
 async fn batch_books_action(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Json(req): Json<BatchBooksRequest>,
 ) -> ApiResult<Json<BatchBooksResponse>> {
     let mut affected = 0usize;
@@ -255,7 +251,7 @@ async fn batch_books_action(
 
 async fn get_book(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<BookSummaryDto>> {
     Ok(Json(
@@ -269,7 +265,7 @@ async fn get_book(
 
 async fn update_book(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
     Json(patch): Json<UpdateMetadataPatch>,
 ) -> ApiResult<Json<BookSummaryDto>> {
@@ -284,7 +280,7 @@ async fn update_book(
 
 async fn delete_book(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state
@@ -297,7 +293,7 @@ async fn delete_book(
 
 async fn get_book_cover(
     State(state): State<BookHttpState>,
-    BookWebAuth(_actor): BookWebAuth,
+    WebAuth(_actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
     let cover = state.services.catalog.get_cover(BookId(id)).await?;
@@ -314,15 +310,11 @@ async fn get_book_cover(
 
 async fn replace_book_cover(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<BookSummaryDto>> {
-    if !actor.role.is_admin() {
-        return Err(ApiError(DomainError::Forbidden(
-            "administrator privileges required".into(),
-        )));
-    }
+    require_admin(&actor)?;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -377,7 +369,7 @@ pub(crate) async fn serve_book_file_http(
 
 async fn stream_book_file(
     State(state): State<BookHttpState>,
-    BookWebAuth(_actor): BookWebAuth,
+    WebAuth(_actor): WebAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<DownloadQuery>,
     headers: HeaderMap,
@@ -387,7 +379,7 @@ async fn stream_book_file(
 
 async fn get_book_toc(
     State(state): State<BookHttpState>,
-    BookWebAuth(_actor): BookWebAuth,
+    WebAuth(_actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<TocItem>>> {
     Ok(Json(state.services.catalog.get_toc(BookId(id)).await?))
@@ -395,7 +387,7 @@ async fn get_book_toc(
 
 async fn get_txt_chapter(
     State(state): State<BookHttpState>,
-    BookWebAuth(_actor): BookWebAuth,
+    WebAuth(_actor): WebAuth,
     Path((id, index)): Path<(Uuid, u32)>,
 ) -> ApiResult<Json<TxtChapterContent>> {
     Ok(Json(
@@ -409,7 +401,7 @@ async fn get_txt_chapter(
 
 async fn get_epub_resource(
     State(state): State<BookHttpState>,
-    BookWebAuth(_actor): BookWebAuth,
+    WebAuth(_actor): WebAuth,
     Path((id, path)): Path<(Uuid, String)>,
 ) -> ApiResult<Response> {
     let asset = state
@@ -430,14 +422,14 @@ async fn get_epub_resource(
 
 async fn list_authors(
     State(state): State<BookHttpState>,
-    BookWebAuth(_actor): BookWebAuth,
+    WebAuth(_actor): WebAuth,
 ) -> ApiResult<Json<Vec<FacetCount>>> {
     Ok(Json(state.services.catalog.list_authors().await?))
 }
 
 async fn list_tags(
     State(state): State<BookHttpState>,
-    BookWebAuth(_actor): BookWebAuth,
+    WebAuth(_actor): WebAuth,
 ) -> ApiResult<Json<Vec<FacetCount>>> {
     Ok(Json(state.services.catalog.list_tags().await?))
 }
@@ -449,7 +441,7 @@ struct LimitQuery {
 
 async fn list_recent_books(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Query(q): Query<LimitQuery>,
 ) -> ApiResult<Json<Vec<BookSummaryDto>>> {
     let items = state
@@ -462,7 +454,7 @@ async fn list_recent_books(
 
 async fn get_progress(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Option<ReadingProgress>>> {
     Ok(Json(
@@ -476,7 +468,7 @@ async fn get_progress(
 
 async fn save_progress(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
     Json(cmd): Json<SaveProgressCommand>,
 ) -> ApiResult<Json<ReadingProgress>> {
@@ -496,7 +488,7 @@ struct SetFavoriteRequest {
 
 async fn set_favorite(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
     Json(req): Json<SetFavoriteRequest>,
 ) -> ApiResult<StatusCode> {
@@ -510,7 +502,7 @@ async fn set_favorite(
 
 async fn list_bookmarks(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<Bookmark>>> {
     Ok(Json(
@@ -524,7 +516,7 @@ async fn list_bookmarks(
 
 async fn home_overview(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
 ) -> ApiResult<Json<BookHomeOverviewDto>> {
     Ok(Json(
         state
@@ -537,7 +529,7 @@ async fn home_overview(
 
 async fn list_all_bookmarks(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
 ) -> ApiResult<Json<Vec<BookBookmarkItemDto>>> {
     Ok(Json(
         state.services.reading.list_all_bookmarks(&actor).await?,
@@ -546,7 +538,7 @@ async fn list_all_bookmarks(
 
 async fn create_bookmark(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
     Json(cmd): Json<CreateBookmarkCommand>,
 ) -> ApiResult<(StatusCode, Json<Bookmark>)> {
@@ -560,7 +552,7 @@ async fn create_bookmark(
 
 async fn delete_bookmark(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(bookmark_id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state
@@ -573,7 +565,7 @@ async fn delete_bookmark(
 
 async fn list_shelves(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
 ) -> ApiResult<Json<Vec<ShelfDto>>> {
     Ok(Json(state.services.reading.list_shelves(&actor).await?))
 }
@@ -585,7 +577,7 @@ struct ShelfNameRequest {
 
 async fn create_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Json(req): Json<ShelfNameRequest>,
 ) -> ApiResult<(StatusCode, Json<ShelfDto>)> {
     let shelf = state
@@ -598,7 +590,7 @@ async fn create_shelf(
 
 async fn rename_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(shelf_id): Path<Uuid>,
     Json(req): Json<ShelfNameRequest>,
 ) -> ApiResult<Json<ShelfDto>> {
@@ -613,7 +605,7 @@ async fn rename_shelf(
 
 async fn delete_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path(shelf_id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state
@@ -626,7 +618,7 @@ async fn delete_shelf(
 
 async fn add_book_to_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path((shelf_id, book_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<ShelfDto>> {
     Ok(Json(
@@ -640,7 +632,7 @@ async fn add_book_to_shelf(
 
 async fn remove_book_from_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(actor): BookWebAuth,
+    WebAuth(actor): WebAuth,
     Path((shelf_id, book_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<ShelfDto>> {
     Ok(Json(

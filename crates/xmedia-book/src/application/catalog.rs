@@ -7,7 +7,7 @@ use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::User;
+use xmedia_core::domain::user::{User, require_admin};
 
 use crate::application::dto::{
     BookHomeOverviewDto, BookLibraryStatsDto, BookSummaryDto, CatalogSearchFilter,
@@ -48,23 +48,13 @@ impl BookCatalogService {
         }
     }
 
-    fn require_admin(actor: &User) -> DomainResult<()> {
-        if actor.role.is_admin() {
-            Ok(())
-        } else {
-            Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ))
-        }
-    }
-
     pub async fn upload_book(
         &self,
         actor: &User,
         file_name: &str,
         bytes: Bytes,
     ) -> DomainResult<BookSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         if bytes.is_empty() {
             return Err(DomainError::Validation("uploaded file is empty".into()));
         }
@@ -144,7 +134,7 @@ impl BookCatalogService {
         file_name: &str,
         temp_path: &Path,
     ) -> DomainResult<BookSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let data = tokio::fs::read(temp_path)
             .await
             .map_err(|e| DomainError::Storage(format!("failed reading temp uploaded book: {e}")))?;
@@ -286,7 +276,7 @@ impl BookCatalogService {
         book_id: BookId,
         patch: UpdateMetadataPatch,
     ) -> DomainResult<BookSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let mut book = self.find_book(book_id).await?;
         let mut meta = book.metadata.clone();
 
@@ -327,7 +317,7 @@ impl BookCatalogService {
         add_tags: Vec<String>,
         remove_tags: Vec<String>,
     ) -> DomainResult<usize> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let remove_lower: HashSet<String> = remove_tags
             .into_iter()
             .map(|t| t.trim().to_lowercase())
@@ -358,25 +348,28 @@ impl BookCatalogService {
         bytes: Bytes,
         mime_type: String,
     ) -> DomainResult<BookSummaryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         if bytes.is_empty() {
             return Err(DomainError::Validation("cover file cannot be empty".into()));
         }
         let mut book = self.find_book(book_id).await?;
-        if let Some(old_key) = &book.cover_key {
-            let _ = self.storage.delete_cover(old_key).await;
-        }
-        let key = self
+        let old_key = book.cover_key.clone();
+        let new_key = self
             .storage
             .save_cover(book.id, &CoverPayload { bytes, mime_type })
             .await?;
-        book.set_cover(Some(key));
+        book.set_cover(Some(new_key.clone()));
         self.books.save(&book).await?;
+        if let Some(old_key) = old_key
+            && old_key != new_key
+        {
+            let _ = self.storage.delete_cover(&old_key).await;
+        }
         self.get_book(Some(actor), book_id).await
     }
 
     pub async fn delete_book(&self, actor: &User, book_id: BookId) -> DomainResult<()> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let book = self.find_book(book_id).await?;
         if let BookSource::ManagedUpload { storage_key } = &book.source {
             let _ = self.storage.delete_managed_book(storage_key).await;

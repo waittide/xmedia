@@ -1,21 +1,7 @@
 use bytes::Bytes;
+use xmedia_core::domain::xml::xml_escape;
 
 use crate::application::ports::CoverPayload;
-
-fn escape_xml(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
 
 pub fn generate_placeholder_svg_cover(
     title: &str,
@@ -40,7 +26,7 @@ pub fn generate_placeholder_svg_cover(
         .collect::<Vec<_>>()
         .chunks(14)
         .take(3)
-        .map(|chunk| escape_xml(&chunk.iter().collect::<String>()))
+        .map(|chunk| xml_escape(&chunk.iter().collect::<String>()))
         .collect();
     let line1 = clean_title
         .first()
@@ -48,8 +34,8 @@ pub fn generate_placeholder_svg_cover(
         .unwrap_or("Untitled");
     let line2 = clean_title.get(1).map(String::as_str).unwrap_or("");
     let line3 = clean_title.get(2).map(String::as_str).unwrap_or("");
-    let author_text = escape_xml(author.unwrap_or("xmedia library"));
-    let badge_text = escape_xml(badge);
+    let author_text = xml_escape(author.unwrap_or("xmedia library"));
+    let badge_text = xml_escape(badge);
 
     let svg = format!(
         r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 500" width="360" height="500">

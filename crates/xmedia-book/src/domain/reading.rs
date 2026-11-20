@@ -1,10 +1,11 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::book::BookId;
+
+xmedia_core::define_uuid_id!(BookmarkId, ShelfId);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReadingLocation {
@@ -69,28 +70,6 @@ impl ReadingProgress {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BookmarkId(pub Uuid);
-
-impl BookmarkId {
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-}
-
-impl Default for BookmarkId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for BookmarkId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Bookmark {
     pub id: BookmarkId,
@@ -129,28 +108,6 @@ impl Bookmark {
             location,
             created_at: Timestamp::now(),
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ShelfId(pub Uuid);
-
-impl ShelfId {
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-}
-
-impl Default for ShelfId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for ShelfId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
     }
 }
 

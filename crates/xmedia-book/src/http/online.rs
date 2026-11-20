@@ -11,7 +11,7 @@ use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use uuid::Uuid;
-use xmedia_core::http::{ApiError, ApiResult, sanitize_download_filename};
+use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename};
 
 use crate::application::online::{
     AddOnlineShelfInput, AggregatedSearchResponseDto, BookSourceSummaryDto,
@@ -19,7 +19,6 @@ use crate::application::online::{
     OnlineContentResponseDto, OnlineDownloadJobDto, OnlineShelfBookDto, OnlineTocResponseDto,
     SourceTestReportDto, StartDownloadInput, UpdateBookSourceInput, UpdateOnlineShelfInput,
 };
-use crate::http::extractors::BookWebAuth;
 use crate::http::state::BookHttpState;
 use crate::source::model::{BookJsContext, ChapterJsContext};
 
@@ -123,7 +122,7 @@ struct CoverProxyQuery {
 
 async fn list_sources(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<BookSourceSummaryDto>>> {
     let list = state.services.online.list_sources(&user).await?;
     Ok(Json(list))
@@ -131,7 +130,7 @@ async fn list_sources(
 
 async fn import_sources(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Json(req): Json<ImportSourcesRequest>,
 ) -> ApiResult<Json<ImportBookSourcesReportDto>> {
     let report = state
@@ -144,7 +143,7 @@ async fn import_sources(
 
 async fn update_source(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateBookSourceInput>,
 ) -> ApiResult<Json<BookSourceSummaryDto>> {
@@ -154,7 +153,7 @@ async fn update_source(
 
 async fn delete_source(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state.services.online.delete_source(&user, id).await?;
@@ -163,7 +162,7 @@ async fn delete_source(
 
 async fn export_source(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
     let raw = state.services.online.export_source_json(&user, id).await?;
@@ -177,7 +176,7 @@ async fn export_source(
 
 async fn run_login_action(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(req): Json<LoginActionRequest>,
 ) -> ApiResult<Json<LoginActionResponseDto>> {
@@ -191,7 +190,7 @@ async fn run_login_action(
 
 async fn test_source(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(req): Json<TestSourceRequest>,
 ) -> ApiResult<Json<SourceTestReportDto>> {
@@ -205,7 +204,7 @@ async fn test_source(
 
 async fn online_search(
     State(state): State<BookHttpState>,
-    BookWebAuth(_user): BookWebAuth,
+    WebAuth(_user): WebAuth,
     Json(req): Json<OnlineSearchRequest>,
 ) -> ApiResult<Json<AggregatedSearchResponseDto>> {
     let out = state
@@ -218,7 +217,7 @@ async fn online_search(
 
 async fn online_book_info(
     State(state): State<BookHttpState>,
-    BookWebAuth(_user): BookWebAuth,
+    WebAuth(_user): WebAuth,
     Json(req): Json<OnlineBookInfoRequest>,
 ) -> ApiResult<Json<OnlineBookDetailResponseDto>> {
     let out = state
@@ -231,7 +230,7 @@ async fn online_book_info(
 
 async fn online_toc(
     State(state): State<BookHttpState>,
-    BookWebAuth(_user): BookWebAuth,
+    WebAuth(_user): WebAuth,
     Json(req): Json<OnlineTocRequest>,
 ) -> ApiResult<Json<OnlineTocResponseDto>> {
     let out = state
@@ -244,7 +243,7 @@ async fn online_toc(
 
 async fn online_content(
     State(state): State<BookHttpState>,
-    BookWebAuth(_user): BookWebAuth,
+    WebAuth(_user): WebAuth,
     Json(req): Json<OnlineContentRequest>,
 ) -> ApiResult<Json<OnlineContentResponseDto>> {
     let out = state
@@ -263,7 +262,7 @@ async fn online_content(
 
 async fn online_cover_proxy(
     State(state): State<BookHttpState>,
-    BookWebAuth(_user): BookWebAuth,
+    WebAuth(_user): WebAuth,
     Query(q): Query<CoverProxyQuery>,
 ) -> Result<Response, ApiError> {
     let (bytes, mime) = state.services.online.fetch_cover_proxy(&q.url).await?;
@@ -282,7 +281,7 @@ async fn online_cover_proxy(
 
 async fn list_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<OnlineShelfBookDto>>> {
     let list = state.services.online.list_shelf(user.id).await?;
     Ok(Json(list))
@@ -290,7 +289,7 @@ async fn list_shelf(
 
 async fn add_to_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Json(req): Json<AddOnlineShelfInput>,
 ) -> ApiResult<Json<OnlineShelfBookDto>> {
     let item = state.services.online.add_to_shelf(user.id, req).await?;
@@ -299,7 +298,7 @@ async fn add_to_shelf(
 
 async fn update_shelf_book(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateOnlineShelfInput>,
 ) -> ApiResult<Json<OnlineShelfBookDto>> {
@@ -313,7 +312,7 @@ async fn update_shelf_book(
 
 async fn remove_from_shelf(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state.services.online.remove_from_shelf(user.id, id).await?;
@@ -322,14 +321,14 @@ async fn remove_from_shelf(
 
 async fn list_downloads(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
 ) -> ApiResult<Json<Vec<OnlineDownloadJobDto>>> {
     Ok(Json(state.services.online.list_downloads(user.id).await))
 }
 
 async fn start_download(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Json(req): Json<StartDownloadInput>,
 ) -> ApiResult<Json<OnlineDownloadJobDto>> {
     let job = state.services.online.start_download(&user, req).await?;
@@ -338,7 +337,7 @@ async fn start_download(
 
 async fn get_download(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OnlineDownloadJobDto>> {
     let job = state.services.online.get_download(user.id, id).await?;
@@ -347,7 +346,7 @@ async fn get_download(
 
 async fn cancel_download(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<OnlineDownloadJobDto>> {
     let job = state.services.online.cancel_download(user.id, id).await?;
@@ -356,7 +355,7 @@ async fn cancel_download(
 
 async fn delete_download(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
     state.services.online.delete_download(user.id, id).await?;
@@ -365,7 +364,7 @@ async fn delete_download(
 
 async fn download_packaged_file(
     State(state): State<BookHttpState>,
-    BookWebAuth(user): BookWebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
 ) -> Result<Response, ApiError> {
     let (file_name, mime, range_stream) = state

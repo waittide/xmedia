@@ -18,19 +18,18 @@ pub struct PackBookMetadata {
 }
 
 fn xml_escape(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            c if c.is_control() && c != '\n' && c != '\r' && c != '\t' => {}
-            c => out.push(c),
-        }
+    if raw
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\r' && c != '\t')
+    {
+        let clean: String = raw
+            .chars()
+            .filter(|&c| !c.is_control() || matches!(c, '\n' | '\r' | '\t'))
+            .collect();
+        xmedia_core::domain::xml::xml_escape(&clean)
+    } else {
+        xmedia_core::domain::xml::xml_escape(raw)
     }
-    out
 }
 
 /// Packages online chapters into a clean UTF-8 TXT document.

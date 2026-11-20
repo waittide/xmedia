@@ -1,5 +1,5 @@
-pub mod extractors;
 pub mod online;
+pub(crate) mod opds_common;
 pub mod opds_v1;
 pub mod opds_v2;
 pub mod rest;

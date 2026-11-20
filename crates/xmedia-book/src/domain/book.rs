@@ -2,32 +2,12 @@ use std::collections::BTreeSet;
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::LibraryId;
+pub use xmedia_core::domain::media::{PagedResult, SortOrder};
 use xmedia_core::domain::user::UserId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BookId(pub Uuid);
-
-impl BookId {
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-}
-
-impl Default for BookId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for BookId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+xmedia_core::define_uuid_id!(BookId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -248,14 +228,6 @@ impl Book {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SortOrder {
-    Asc,
-    #[default]
-    Desc,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum BookSortField {
     #[default]
     CreatedAt,
@@ -306,24 +278,6 @@ impl Default for BookQuery {
             page: 1,
             page_size: 24,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PagedResult<T> {
-    pub items: Vec<T>,
-    pub total: u64,
-    pub page: u32,
-    pub page_size: u32,
-}
-
-impl<T> PagedResult<T> {
-    pub fn has_next(&self) -> bool {
-        u64::from(self.page) * u64::from(self.page_size) < self.total
-    }
-
-    pub fn has_prev(&self) -> bool {
-        self.page > 1
     }
 }
 

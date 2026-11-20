@@ -1,10 +1,14 @@
 use async_trait::async_trait;
+use jiff::Timestamp;
+use uuid::Uuid;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::book::{Book, BookId, BookQuery, FacetCount, PagedResult};
+use crate::domain::online::{BookSourceRecord, OnlineShelfBook};
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
+use crate::source::model::SourceRuntimeState;
 
 #[async_trait]
 pub trait BookRepository: Send + Sync {
@@ -66,5 +70,28 @@ pub trait BookReadingRepository: Send + Sync {
         }
         Ok(())
     }
+    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
+}
+
+#[async_trait]
+pub trait BookSourceRepository: Send + Sync {
+    async fn list_all(&self) -> DomainResult<Vec<BookSourceRecord>>;
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<BookSourceRecord>>;
+    async fn save(&self, source: &BookSourceRecord) -> DomainResult<()>;
+    async fn update_runtime_state(
+        &self,
+        id: Uuid,
+        runtime_state: SourceRuntimeState,
+        updated_at: Timestamp,
+    ) -> DomainResult<()>;
+    async fn delete(&self, id: Uuid) -> DomainResult<()>;
+}
+
+#[async_trait]
+pub trait OnlineShelfRepository: Send + Sync {
+    async fn list_by_user(&self, user_id: UserId) -> DomainResult<Vec<OnlineShelfBook>>;
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<OnlineShelfBook>>;
+    async fn save(&self, item: &OnlineShelfBook) -> DomainResult<()>;
+    async fn delete(&self, id: Uuid) -> DomainResult<()>;
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
 }

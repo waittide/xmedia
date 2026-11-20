@@ -9,7 +9,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryKind};
 use xmedia_core::infra::fingerprint::{fast_bytes_fingerprint, max_mtime_secs};
 use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join, sha256_hex};
-use xmedia_core::infra::thumbnail::sniff_image_mime;
+use xmedia_core::infra::thumbnail::{ThumbnailStore, sniff_image_mime};
 
 use crate::application::ports::{
     BookScannerPort, BookStoragePort, CoverPayload, LoadedMountedBook, ScannedBookEntry,
@@ -21,6 +21,7 @@ use crate::domain::book::{Book, BookFormat, BookId, BookSource};
 pub struct LocalBookStorage {
     uploads_dir: PathBuf,
     covers_dir: PathBuf,
+    thumbnails: ThumbnailStore,
 }
 
 impl LocalBookStorage {
@@ -34,15 +35,11 @@ impl LocalBookStorage {
                 uploads_dir.display()
             ))
         })?;
-        std::fs::create_dir_all(&covers_dir).map_err(|e| {
-            DomainError::Storage(format!(
-                "failed to create book covers directory {}: {e}",
-                covers_dir.display()
-            ))
-        })?;
+        let thumbnails = ThumbnailStore::new(&base)?;
         Ok(Self {
             uploads_dir,
             covers_dir,
+            thumbnails,
         })
     }
 
@@ -58,21 +55,6 @@ impl LocalBookStorage {
             _ => Err(DomainError::Validation(
                 "mismatched library kind and book source".into(),
             )),
-        }
-    }
-
-    fn cover_extension_for_mime(mime: &str) -> &'static str {
-        let lower = mime.to_ascii_lowercase();
-        if lower.contains("png") {
-            "png"
-        } else if lower.contains("webp") {
-            "webp"
-        } else if lower.contains("gif") {
-            "gif"
-        } else if lower.contains("svg") {
-            "svg"
-        } else {
-            "jpg"
         }
     }
 
@@ -126,34 +108,46 @@ impl BookStoragePort for LocalBookStorage {
         Ok(())
     }
 
-    async fn save_cover(&self, book_id: BookId, cover: &CoverPayload) -> DomainResult<String> {
-        let ext = Self::cover_extension_for_mime(&cover.mime_type);
-        let key = format!("{}.{ext}", book_id.0);
-        let path = self.covers_dir.join(&key);
-        tokio::fs::write(&path, &cover.bytes)
+    async fn save_cover(&self, _book_id: BookId, cover: &CoverPayload) -> DomainResult<String> {
+        self.thumbnails
+            .store_cover_bytes_async(cover.bytes.to_vec())
             .await
-            .map_err(|e| DomainError::Storage(format!("failed to write book cover: {e}")))?;
-        Ok(key)
     }
 
     async fn read_cover(&self, cover_key: &str) -> DomainResult<CoverPayload> {
-        let path = sanitize_join(&self.covers_dir, cover_key)?;
-        if !path.exists() {
-            return Err(DomainError::NotFound("book cover not found".into()));
-        }
-        let data = tokio::fs::read(&path)
+        match self
+            .thumbnails
+            .load_cover_async(cover_key.to_string(), None)
             .await
-            .map_err(|e| DomainError::Storage(format!("failed to read book cover: {e}")))?;
-        Ok(CoverPayload {
-            bytes: Bytes::from(data),
-            mime_type: Self::cover_mime_for_key(cover_key).to_string(),
-        })
+        {
+            Ok(payload) => Ok(CoverPayload {
+                bytes: Bytes::from(payload.bytes),
+                mime_type: payload.mime_type,
+            }),
+            Err(DomainError::NotFound(_)) => {
+                // Backwards-compatible fallback for pre-existing per-book covers directly under `book/covers/`
+                let path = sanitize_join(&self.covers_dir, cover_key)?;
+                if !path.is_file() {
+                    return Err(DomainError::NotFound("book cover not found".into()));
+                }
+                let data = tokio::fs::read(&path)
+                    .await
+                    .map_err(|e| DomainError::Storage(format!("failed to read book cover: {e}")))?;
+                Ok(CoverPayload {
+                    bytes: Bytes::from(data),
+                    mime_type: Self::cover_mime_for_key(cover_key).to_string(),
+                })
+            }
+            Err(err) => Err(err),
+        }
     }
 
     async fn delete_cover(&self, cover_key: &str) -> DomainResult<()> {
-        let path = sanitize_join(&self.covers_dir, cover_key)?;
-        if path.exists() {
-            tokio::fs::remove_file(&path)
+        // Content-addressed covers in ThumbnailStore may be shared across books; only remove
+        // legacy per-book files stored directly under `book/covers/`.
+        let legacy_path = sanitize_join(&self.covers_dir, cover_key)?;
+        if legacy_path.is_file() {
+            tokio::fs::remove_file(&legacy_path)
                 .await
                 .map_err(|e| DomainError::Storage(format!("failed to remove book cover: {e}")))?;
         }

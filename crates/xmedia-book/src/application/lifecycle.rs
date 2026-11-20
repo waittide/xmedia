@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemEvent};
+use xmedia_core::application::library::ScanProgressReporter;
+use xmedia_core::application::ports::{MediaDomainLifecycle, RealtimeEventPort};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
@@ -10,12 +11,13 @@ use xmedia_core::domain::user::UserId;
 
 use crate::application::ports::{BookParserPort, BookScannerPort, BookStoragePort};
 use crate::domain::book::{Book, BookSource};
-use crate::domain::repository::{BookReadingRepository, BookRepository};
+use crate::domain::repository::{BookReadingRepository, BookRepository, OnlineShelfRepository};
 
 pub struct BookDomainLifecycle {
     libraries: Arc<dyn LibraryRepository>,
     books: Arc<dyn BookRepository>,
     readings: Arc<dyn BookReadingRepository>,
+    online_shelves: Arc<dyn OnlineShelfRepository>,
     scanner: Arc<dyn BookScannerPort>,
     parser: Arc<dyn BookParserPort>,
     storage: Arc<dyn BookStoragePort>,
@@ -23,10 +25,12 @@ pub struct BookDomainLifecycle {
 }
 
 impl BookDomainLifecycle {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         libraries: Arc<dyn LibraryRepository>,
         books: Arc<dyn BookRepository>,
         readings: Arc<dyn BookReadingRepository>,
+        online_shelves: Arc<dyn OnlineShelfRepository>,
         scanner: Arc<dyn BookScannerPort>,
         parser: Arc<dyn BookParserPort>,
         storage: Arc<dyn BookStoragePort>,
@@ -36,6 +40,7 @@ impl BookDomainLifecycle {
             libraries,
             books,
             readings,
+            online_shelves,
             scanner,
             parser,
             storage,
@@ -50,7 +55,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
         MediaKind::Book
     }
 
-    async fn scan_library(&self, mut library: Library) -> DomainResult<()> {
+    async fn scan_library(&self, library: Library) -> DomainResult<()> {
         let root_path = match &library.kind {
             LibraryKind::LocalMount { root_path } => root_path.clone(),
             LibraryKind::Managed => {
@@ -72,30 +77,22 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
             }
         }
 
+        let library_id = library.id;
         let total = entries.len() as u64;
-        let progress_step = if total <= 100 {
-            1
-        } else if total <= 1000 {
-            5
-        } else {
-            20
-        };
-        library.mark_scanning(0, Some(total));
-        let _ = self.libraries.save(&library).await;
-        self.events.publish(SystemEvent::LibraryScanProgress {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Book,
-            scanned: 0,
-            total: Some(total),
-        });
+        let mut reporter = ScanProgressReporter::new(
+            library,
+            self.libraries.clone(),
+            self.events.clone(),
+            Some(total),
+        );
+        reporter.start().await;
 
         let mut seen_paths = HashSet::with_capacity(entries.len());
         let mut added = 0u64;
         let mut updated = 0u64;
         let mut missing = 0u64;
 
-        for (idx, entry) in entries.into_iter().enumerate() {
+        for entry in entries {
             seen_paths.insert(entry.relative_path.clone());
 
             if let Some(mut existing) = existing_by_path.remove(&entry.relative_path) {
@@ -215,7 +212,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                         updated += 1;
                     } else {
                         let mut book = Book::new(
-                            library.id,
+                            library_id,
                             entry.format,
                             BookSource::MountedFile {
                                 relative_path: entry.relative_path,
@@ -239,18 +236,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                 }
             }
 
-            let scanned = (idx + 1) as u64;
-            if scanned.is_multiple_of(progress_step) || scanned == total {
-                library.mark_scanning(scanned, Some(total));
-                let _ = self.libraries.save(&library).await;
-                self.events.publish(SystemEvent::LibraryScanProgress {
-                    library_id: library.id,
-                    library_name: library.name.clone(),
-                    media_kind: MediaKind::Book,
-                    scanned,
-                    total: Some(total),
-                });
-            }
+            reporter.advance().await;
         }
 
         for (_, mut stale_book) in existing_by_path {
@@ -266,23 +252,9 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
         }
 
         let total_scanned = seen_paths.len() as u64;
-        library.mark_scan_completed(total_scanned, added, updated, missing);
-        self.libraries.save(&library).await?;
-
-        self.events.publish(SystemEvent::LibraryScanCompleted {
-            library_id: library.id,
-            library_name: library.name.clone(),
-            media_kind: MediaKind::Book,
-            scanned: total_scanned,
-            added,
-            updated,
-            missing,
-        });
-        if added > 0 || updated > 0 || missing > 0 {
-            self.events.publish(SystemEvent::MediaChanged {
-                media_kind: MediaKind::Book,
-            });
-        }
+        reporter
+            .complete_with_scanned(total_scanned, added, updated, missing)
+            .await?;
 
         Ok(())
     }
@@ -308,6 +280,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
     }
 
     async fn on_user_deleted(&self, user_id: UserId) -> DomainResult<()> {
-        self.readings.delete_by_user(user_id).await
+        self.readings.delete_by_user(user_id).await?;
+        self.online_shelves.delete_by_user(user_id).await
     }
 }

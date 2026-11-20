@@ -19,7 +19,10 @@ use application::lifecycle::BookDomainLifecycle;
 use application::online::BookOnlineService;
 use application::reading::BookReadingService;
 use infra::parser::CompositeBookParser;
-use infra::persistence::repositories::{ToastyBookReadingRepository, ToastyBookRepository};
+use infra::persistence::repositories::{
+    ToastyBookReadingRepository, ToastyBookRepository, ToastyBookSourceRepository,
+    ToastyOnlineShelfRepository,
+};
 use infra::storage::{LocalBookScanner, LocalBookStorage};
 
 pub use infra::persistence::{ensure_book_schema, register_book_models};
@@ -33,6 +36,8 @@ pub fn init_book_module(
 ) -> DomainResult<BookServices> {
     let books = Arc::new(ToastyBookRepository::new(db.clone()));
     let readings = Arc::new(ToastyBookReadingRepository::new(db.clone()));
+    let sources = Arc::new(ToastyBookSourceRepository::new(db.clone()));
+    let online_shelves = Arc::new(ToastyOnlineShelfRepository::new(db));
     let parser = Arc::new(CompositeBookParser);
     let storage = Arc::new(LocalBookStorage::new(data_dir)?);
     let scanner = Arc::new(LocalBookScanner);
@@ -41,6 +46,7 @@ pub fn init_book_module(
         libraries_repo.clone(),
         books.clone(),
         readings.clone(),
+        online_shelves.clone(),
         scanner,
         parser.clone(),
         storage.clone(),
@@ -56,7 +62,12 @@ pub fn init_book_module(
         storage,
     ));
     let reading = Arc::new(BookReadingService::new(readings, books));
-    let online = Arc::new(BookOnlineService::new(db, data_dir, catalog.clone())?);
+    let online = Arc::new(BookOnlineService::new(
+        sources,
+        online_shelves,
+        data_dir,
+        catalog.clone(),
+    )?);
 
     Ok(BookServices::new(catalog, reading, online))
 }
@@ -585,9 +596,15 @@ mod tests {
         let book_services =
             init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
 
+        let sources_repo = Arc::new(
+            crate::infra::persistence::repositories::ToastyBookSourceRepository::new(db.clone()),
+        );
+        let shelves_repo =
+            Arc::new(crate::infra::persistence::repositories::ToastyOnlineShelfRepository::new(db));
         let online_svc = Arc::new(
             BookOnlineService::with_engine(
-                db,
+                sources_repo,
+                shelves_repo,
                 tmp.path(),
                 book_services.catalog.clone(),
                 BookSourceEngine::new(
@@ -773,5 +790,319 @@ mod tests {
         assert!(epub_bytes.starts_with(b"PK"));
 
         server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn local_book_storage_deduplicates_covers_and_reads_legacy_files() {
+        use crate::application::ports::{BookStoragePort, CoverPayload};
+        use crate::domain::book::BookId;
+        use crate::infra::storage::LocalBookStorage;
+
+        let tmp = TempDir::new().unwrap();
+        let storage = LocalBookStorage::new(tmp.path()).unwrap();
+
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89,
+        ];
+        let payload = CoverPayload {
+            bytes: bytes::Bytes::from_static(png),
+            mime_type: "image/png".to_string(),
+        };
+
+        let k1 = storage.save_cover(BookId::new(), &payload).await.unwrap();
+        let k2 = storage.save_cover(BookId::new(), &payload).await.unwrap();
+        assert_eq!(
+            k1, k2,
+            "identical cover bytes should deduplicate via ThumbnailStore"
+        );
+        assert!(k1.ends_with(".png"));
+
+        let loaded = storage.read_cover(&k1).await.unwrap();
+        assert_eq!(loaded.bytes.as_ref(), png);
+        assert_eq!(loaded.mime_type, "image/png");
+
+        // Legacy per-book cover directly under `book/covers/` must still be readable & deletable
+        let legacy_key = format!("{}.png", BookId::new());
+        let legacy_path = tmp.path().join("book").join("covers").join(&legacy_key);
+        std::fs::write(&legacy_path, png).unwrap();
+        let legacy_loaded = storage.read_cover(&legacy_key).await.unwrap();
+        assert_eq!(legacy_loaded.bytes.as_ref(), png);
+        storage.delete_cover(&legacy_key).await.unwrap();
+        assert!(!legacy_path.exists());
+    }
+
+    #[tokio::test]
+    async fn replace_cover_saves_new_before_deleting_old_and_preserves_old_on_failure() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use async_trait::async_trait;
+        use bytes::Bytes;
+        use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
+        use xmedia_core::domain::error::{DomainError, DomainResult};
+        use xmedia_core::domain::library::Library;
+
+        use crate::application::catalog::BookCatalogService;
+        use crate::application::ports::{BookStoragePort, CoverPayload, StoredManagedBook};
+        use crate::domain::book::{Book, BookFormat, BookId};
+        use crate::infra::parser::CompositeBookParser;
+        use crate::infra::persistence::repositories::{
+            ToastyBookReadingRepository, ToastyBookRepository,
+        };
+        use crate::infra::storage::LocalBookStorage;
+
+        struct RecordingStorage {
+            inner: LocalBookStorage,
+            fail_save: AtomicBool,
+            ops: Mutex<Vec<String>>,
+        }
+
+        #[async_trait]
+        impl BookStoragePort for RecordingStorage {
+            async fn save_managed_book(
+                &self,
+                book_id: BookId,
+                format: BookFormat,
+                data: Bytes,
+            ) -> DomainResult<StoredManagedBook> {
+                self.inner.save_managed_book(book_id, format, data).await
+            }
+            async fn delete_managed_book(&self, storage_key: &str) -> DomainResult<()> {
+                self.inner.delete_managed_book(storage_key).await
+            }
+            async fn save_cover(
+                &self,
+                book_id: BookId,
+                cover: &CoverPayload,
+            ) -> DomainResult<String> {
+                self.ops.lock().unwrap().push("save".into());
+                if self.fail_save.load(Ordering::SeqCst) {
+                    return Err(DomainError::Storage("simulated disk full".into()));
+                }
+                self.inner.save_cover(book_id, cover).await
+            }
+            async fn read_cover(&self, cover_key: &str) -> DomainResult<CoverPayload> {
+                self.inner.read_cover(cover_key).await
+            }
+            async fn delete_cover(&self, cover_key: &str) -> DomainResult<()> {
+                self.ops.lock().unwrap().push(format!("delete:{cover_key}"));
+                self.inner.delete_cover(cover_key).await
+            }
+            async fn read_book_bytes(&self, library: &Library, book: &Book) -> DomainResult<Bytes> {
+                self.inner.read_book_bytes(library, book).await
+            }
+            async fn open_book_stream(
+                &self,
+                library: &Library,
+                book: &Book,
+                spec: ByteRangeSpec,
+            ) -> DomainResult<ByteRangeStream> {
+                self.inner.open_book_stream(library, book, spec).await
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("replace_cover_test.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut models = ModelSet::new();
+        register_core_models(&mut models);
+        register_book_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+        let users = Arc::new(ToastyUserRepository::new(db.clone()));
+        let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+        let security = Arc::new(SecurityManager::new("cover-secret"));
+        let tokens = Arc::new(JwtTokenService::new("cover-secret", 3600));
+        let auth = Arc::new(AuthService::new(users, security, tokens, lifecycles));
+        let session = auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: None,
+                password: "password123".into(),
+            })
+            .await
+            .unwrap();
+        let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+
+        let storage = Arc::new(RecordingStorage {
+            inner: LocalBookStorage::new(tmp.path()).unwrap(),
+            fail_save: AtomicBool::new(false),
+            ops: Mutex::new(Vec::new()),
+        });
+        let catalog = BookCatalogService::new(
+            Arc::new(ToastyBookRepository::new(db.clone())),
+            libs_repo,
+            Arc::new(ToastyBookReadingRepository::new(db)),
+            Arc::new(CompositeBookParser),
+            storage.clone(),
+        );
+
+        let uploaded = catalog
+            .upload_book(
+                &admin,
+                "cover_test.txt",
+                Bytes::from_static(b"Hello\nChapter 1\nBody"),
+            )
+            .await
+            .unwrap();
+        let initial_cover = catalog.get_cover(uploaded.id).await.unwrap();
+
+        // 1. Failing save must NOT delete old cover
+        storage.ops.lock().unwrap().clear();
+        storage.fail_save.store(true, Ordering::SeqCst);
+        let err = catalog
+            .replace_cover(
+                &admin,
+                uploaded.id,
+                Bytes::from_static(&[0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3]),
+                "image/jpeg".into(),
+            )
+            .await;
+        assert!(err.is_err());
+        assert_eq!(*storage.ops.lock().unwrap(), vec!["save".to_string()]);
+        assert_eq!(
+            catalog.get_cover(uploaded.id).await.unwrap().bytes,
+            initial_cover.bytes
+        );
+
+        // 2. Successful replace must save new cover BEFORE deleting old cover
+        storage.ops.lock().unwrap().clear();
+        storage.fail_save.store(false, Ordering::SeqCst);
+        let new_jpg: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
+        catalog
+            .replace_cover(
+                &admin,
+                uploaded.id,
+                Bytes::from_static(new_jpg),
+                "image/jpeg".into(),
+            )
+            .await
+            .unwrap();
+        let ops = storage.ops.lock().unwrap().clone();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0], "save");
+        assert!(ops[1].starts_with("delete:"));
+        assert_eq!(
+            catalog.get_cover(uploaded.id).await.unwrap().bytes.as_ref(),
+            new_jpg
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_user_cleans_up_online_shelf_entries() {
+        use xmedia_core::application::dto::CreateUserInput;
+        use xmedia_core::domain::user::UserRole;
+
+        use crate::application::online::AddOnlineShelfInput;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("user_cascade_test.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut models = ModelSet::new();
+        register_core_models(&mut models);
+        register_book_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+        let users = Arc::new(ToastyUserRepository::new(db.clone()));
+        let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+        let security = Arc::new(SecurityManager::new("cascade-secret"));
+        let tokens = Arc::new(JwtTokenService::new("cascade-secret", 3600));
+        let events = Arc::new(BroadcastEventHub::default());
+        let auth = Arc::new(AuthService::new(
+            users,
+            security,
+            tokens,
+            lifecycles.clone(),
+        ));
+        let lib_svc = Arc::new(LibraryService::new(
+            libs_repo.clone(),
+            events.clone(),
+            lifecycles,
+        ));
+        let book_services = init_book_module(db, tmp.path(), libs_repo, &lib_svc, events).unwrap();
+
+        let session = auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: None,
+                password: "password123".into(),
+            })
+            .await
+            .unwrap();
+        let admin = auth.authenticate_jwt(&session.token).await.unwrap();
+        let member = auth
+            .create_user(
+                &admin,
+                CreateUserInput {
+                    username: "member_book".into(),
+                    display_name: None,
+                    password: "password123".into(),
+                    role: UserRole::Member,
+                },
+            )
+            .await
+            .unwrap();
+
+        let raw_source = serde_json::json!({
+            "bookSourceName": "级联测试书源",
+            "bookSourceUrl": "https://example.com"
+        })
+        .to_string();
+        let imported = book_services
+            .online
+            .import_sources(&admin, &raw_source)
+            .await
+            .unwrap();
+        let source_id = imported.sources[0].id;
+
+        book_services
+            .online
+            .add_to_shelf(
+                member.id,
+                AddOnlineShelfInput {
+                    source_id,
+                    name: "测试书".into(),
+                    author: "作者".into(),
+                    book_url: "https://example.com/b/1".into(),
+                    toc_url: "https://example.com/b/1/toc".into(),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    last_chapter: None,
+                    total_chapters: Some(10),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            book_services
+                .online
+                .list_shelf(member.id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        auth.delete_user(&admin, member.id).await.unwrap();
+        assert!(
+            book_services
+                .online
+                .list_shelf(member.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "deleting a user must cascade-delete their online bookshelf entries"
+        );
     }
 }
