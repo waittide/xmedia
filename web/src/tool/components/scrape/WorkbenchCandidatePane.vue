@@ -16,6 +16,7 @@ import {
 import { resolveScraperCoverUrl, toolApi } from '../../api'
 import type {
   AggregateScrapeResponse,
+  FieldSourceBadge,
   MediaFileDetail,
   ProviderStatusDto,
   ScrapeCandidate,
@@ -28,18 +29,21 @@ import {
   type ApplyFillMode,
   type ScrapedFieldKey,
 } from '../inspector/useMetadataForm'
+import type { CandidatePreviewState } from './CandidateDetailPreviewPane.vue'
 
 const props = defineProps<{
   detail: MediaFileDetail | null
   autoSearchTrigger: number
   externalKeyword?: string
   externalArtist?: string
+  selectedPreviewKey?: string | null
 }>()
 
 const emit = defineEmits<{
   fillAll: [meta: ScrapedMetadata, mode: ApplyFillMode]
   fillField: [field: ScrapedFieldKey, meta: ScrapedMetadata]
   directApply: [meta: ScrapedMetadata, mode: ApplyFillMode]
+  selectPreview: [preview: CandidatePreviewState | null]
   openSettings: []
 }>()
 
@@ -57,10 +61,169 @@ const searching = ref(false)
 const searchError = ref<string | null>(null)
 const candidates = ref<ScrapeCandidate[]>([])
 const mergedMeta = ref<ScrapedMetadata | null>(null)
+const mergedFieldSources = ref<Record<string, FieldSourceBadge>>({})
+const mergedExpanded = ref(false)
 const expandedKey = ref<string | null>(null)
+const selectedKey = ref<string | null>(null)
 const loadingDetailKey = ref<string | null>(null)
 const detailCache = ref<Map<string, ScrapedMetadata>>(new Map())
+const brokenCoverUrls = ref<Set<string>>(new Set())
 const recentFlash = ref<string | null>(null)
+
+function isCoverUsable(url: string | null | undefined): boolean {
+  const trimmed = url?.trim()
+  return Boolean(trimmed && !brokenCoverUrls.value.has(trimmed))
+}
+
+function markCoverBroken(url: string | null | undefined): void {
+  const trimmed = url?.trim()
+  if (!trimmed || brokenCoverUrls.value.has(trimmed)) return
+  const next = new Set(brokenCoverUrls.value)
+  next.add(trimmed)
+  brokenCoverUrls.value = next
+}
+
+function mergedSourceLabelFor(fieldKey: ScrapedFieldKey): string | null {
+  const map = mergedFieldSources.value
+  const lookupKeys: Record<ScrapedFieldKey, string[]> = {
+    cover: ['cover_url'],
+    title: ['title'],
+    original_title: ['original_title'],
+    creators: ['creators'],
+    directors: ['illustrators_or_directors'],
+    cast: ['cast'],
+    series_or_album: ['series_or_album'],
+    publisher_or_studio: ['publisher_or_studio'],
+    year: ['published_date', 'year'],
+    isbn: ['isbn'],
+    rating: ['rating'],
+    language: ['language'],
+    track_or_episode: ['track_or_episode_number'],
+    disc_or_season: ['disc_or_season_number'],
+    genres: ['genres'],
+    tags: ['tags', 'genres'],
+    summary: ['summary'],
+    lyrics: ['synced_lyrics', 'plain_lyrics'],
+  }
+  for (const k of lookupKeys[fieldKey] ?? []) {
+    const badge = map[k]
+    if (badge?.provider_name) return badge.provider_name
+  }
+  return null
+}
+
+function buildLightMetadata(c: ScrapeCandidate): ScrapedMetadata {
+  return {
+    provider_id: c.provider_id,
+    external_id: c.external_id,
+    target: c.target,
+    title: c.title,
+    original_title: null,
+    series_or_album: null,
+    creators: c.subtitle ? [c.subtitle] : [],
+    illustrators_or_directors: [],
+    cast: [],
+    publisher_or_studio: null,
+    year: c.year,
+    published_date: null,
+    language: null,
+    isbn: null,
+    rating: null,
+    track_or_episode_number: null,
+    disc_or_season_number: null,
+    summary: c.summary,
+    genres: [],
+    tags: [],
+    cover_url: c.cover_url,
+    backdrop_url: null,
+    synced_lyrics: c.synced_lyrics,
+    plain_lyrics: c.plain_lyrics,
+  }
+}
+
+function selectMergedPreview(): void {
+  if (!mergedMeta.value) return
+  selectedKey.value = '__merged__'
+  emit('selectPreview', {
+    key: '__merged__',
+    isMerged: true,
+    sourceLabel: '多源瀑布聚合结果',
+    meta: mergedMeta.value,
+    loading: false,
+    fieldSources: mergedFieldSources.value,
+    fillMode: fillMode.value,
+  })
+}
+
+async function selectCandidatePreview(c: ScrapeCandidate): Promise<void> {
+  const key = candKey(c)
+  selectedKey.value = key
+  const cached = detailCache.value.get(key)
+  if (cached) {
+    emit('selectPreview', {
+      key,
+      isMerged: false,
+      sourceLabel: c.provider_name,
+      meta: cached,
+      loading: false,
+      fieldSources: null,
+      fillMode: fillMode.value,
+    })
+    return
+  }
+
+  emit('selectPreview', {
+    key,
+    isMerged: false,
+    sourceLabel: c.provider_name,
+    meta: buildLightMetadata(c),
+    loading: true,
+    fieldSources: null,
+    fillMode: fillMode.value,
+  })
+
+  const full = await resolveCandidateDetail(c)
+  if (selectedKey.value !== key) return
+  emit('selectPreview', {
+    key,
+    isMerged: false,
+    sourceLabel: c.provider_name,
+    meta: full ?? buildLightMetadata(c),
+    loading: false,
+    fieldSources: null,
+    fillMode: fillMode.value,
+  })
+}
+
+watch(
+  () => props.selectedPreviewKey,
+  (val) => {
+    if (val === null) {
+      selectedKey.value = null
+    }
+  },
+)
+
+watch(fillMode, () => {
+  if (!selectedKey.value) return
+  if (selectedKey.value === '__merged__' && mergedMeta.value) {
+    selectMergedPreview()
+    return
+  }
+  const hit = candidates.value.find((c) => candKey(c) === selectedKey.value)
+  if (hit) {
+    const cached = detailCache.value.get(candKey(hit))
+    emit('selectPreview', {
+      key: candKey(hit),
+      isMerged: false,
+      sourceLabel: hit.provider_name,
+      meta: cached ?? buildLightMetadata(hit),
+      loading: loadingDetailKey.value === candKey(hit),
+      fieldSources: null,
+      fillMode: fillMode.value,
+    })
+  }
+})
 
 function flashFeedback(label: string): void {
   recentFlash.value = label
@@ -131,8 +294,12 @@ async function runSearch(): Promise<void> {
   searchError.value = null
   candidates.value = []
   mergedMeta.value = null
+  mergedFieldSources.value = {}
+  mergedExpanded.value = false
   expandedKey.value = null
+  selectedKey.value = null
   activeSourceFilter.value = 'all'
+  emit('selectPreview', null)
 
   try {
     const parsedYear = yearInput.value.trim() ? Number.parseInt(yearInput.value.trim(), 10) : undefined
@@ -147,6 +314,7 @@ async function runSearch(): Promise<void> {
     const resp: AggregateScrapeResponse = await toolApi.aggregateScrapers(q)
     candidates.value = resp.candidates
     mergedMeta.value = resp.merged?.metadata ?? null
+    mergedFieldSources.value = resp.merged?.field_sources ?? {}
     const nextCache = new Map(detailCache.value)
     for (const [pid, detail] of Object.entries(resp.details_by_provider ?? {})) {
       if (detail) {
@@ -154,6 +322,12 @@ async function runSearch(): Promise<void> {
       }
     }
     detailCache.value = nextCache
+
+    if (mergedMeta.value) {
+      selectMergedPreview()
+    } else if (candidates.value.length > 0) {
+      void selectCandidatePreview(candidates.value[0]!)
+    }
   } catch (err) {
     searchError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -189,7 +363,7 @@ async function handleToggleExpand(c: ScrapeCandidate): Promise<void> {
     return
   }
   expandedKey.value = key
-  await resolveCandidateDetail(c)
+  await selectCandidatePreview(c)
 }
 
 async function handleFillCandidateAll(c: ScrapeCandidate): Promise<void> {
@@ -212,34 +386,7 @@ function handleQuickFillFromCandidate(c: ScrapeCandidate, field: ScrapedFieldKey
     flashFeedback('已填入字段')
     return
   }
-  // Lightweight inline metadata for instant single-field fill without waiting for detail fetch
-  const light: ScrapedMetadata = {
-    provider_id: c.provider_id,
-    external_id: c.external_id,
-    target: c.target,
-    title: c.title,
-    original_title: null,
-    series_or_album: null,
-    creators: c.subtitle ? [c.subtitle] : [],
-    illustrators_or_directors: [],
-    cast: [],
-    publisher_or_studio: null,
-    year: c.year,
-    published_date: null,
-    language: null,
-    isbn: null,
-    rating: null,
-    track_or_episode_number: null,
-    disc_or_season_number: null,
-    summary: c.summary,
-    genres: [],
-    tags: [],
-    cover_url: c.cover_url,
-    backdrop_url: null,
-    synced_lyrics: c.synced_lyrics,
-    plain_lyrics: c.plain_lyrics,
-  }
-  emit('fillField', field, light)
+  emit('fillField', field, buildLightMetadata(c))
   flashFeedback('已填入字段')
 }
 
@@ -261,6 +408,10 @@ watch(
     if (!d) {
       candidates.value = []
       mergedMeta.value = null
+      mergedFieldSources.value = {}
+      mergedExpanded.value = false
+      selectedKey.value = null
+      emit('selectPreview', null)
       return
     }
     const q = buildDefaultQueryFromDetail(d)
@@ -269,8 +420,12 @@ watch(
     yearInput.value = q.year ? String(q.year) : ''
     candidates.value = []
     mergedMeta.value = null
+    mergedFieldSources.value = {}
+    mergedExpanded.value = false
     expandedKey.value = null
+    selectedKey.value = null
     searchError.value = null
+    emit('selectPreview', null)
     await loadProvidersForDetail(d)
   },
   { immediate: true },
@@ -531,71 +686,163 @@ defineExpose({
         <!-- Multi-source Merged Quick Card -->
         <div
           v-if="mergedMeta"
-          class="rounded-2xl border border-[var(--ctp-accent)]/40 bg-[var(--ctp-accent-soft)]/35 p-2.5"
+          class="cursor-pointer rounded-2xl border p-2.5 transition"
+          :class="
+            selectedKey === '__merged__'
+              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/50 ring-1 ring-[var(--ctp-accent)]/50'
+              : 'border-[var(--ctp-accent)]/40 bg-[var(--ctp-accent-soft)]/30 hover:border-[var(--ctp-accent)]/75'
+          "
+          @click="selectMergedPreview"
         >
           <div class="flex items-center justify-between gap-2">
             <div class="flex items-center gap-1.5 text-[11px] font-bold text-[var(--ctp-accent)]">
               <LuLayers class="h-3.5 w-3.5" />
               <span>多源瀑布聚合结果</span>
-            </div>
-            <div class="flex items-center gap-1">
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95"
-                title="把多源聚合结果填入中栏表单（暂不落盘）"
-                @click="handleFillMergedAll"
+              <span
+                class="rounded-full bg-[var(--ctp-canvas)]/80 px-1.5 py-0.5 text-[9px] font-medium text-[var(--ctp-subtext1)]"
               >
-                <LuArrowLeft class="h-3 w-3" />
-                <span>填入表单</span>
-              </button>
-              <button
-                type="button"
-                class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/50 bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
-                title="直接将聚合结果写入文件并保存"
-                @click="emit('directApply', mergedMeta, fillMode)"
-              >
-                <LuZap class="h-3 w-3" />
-                <span>直写</span>
-              </button>
+                {{ extractClickableFields(mergedMeta).length }} 项字段
+              </span>
             </div>
+            <span
+              v-if="selectedKey === '__merged__'"
+              class="rounded-full bg-[var(--ctp-accent)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--ctp-on-accent)]"
+            >
+              预览中
+            </span>
           </div>
 
-          <div class="mt-2 flex gap-2">
+          <div class="mt-2 flex items-start gap-2.5">
+            <!-- Merged Cover Thumbnail (with broken-image fallback) -->
             <button
-              v-if="mergedMeta.cover_url"
               type="button"
               class="group relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]"
-              title="点击仅填入这张封面"
-              @click="handleFillDetailField('cover', mergedMeta, '封面')"
+              :title="isCoverUsable(mergedMeta.cover_url) ? '点击仅填入这张封面' : '无可用封面'"
+              :disabled="!isCoverUsable(mergedMeta.cover_url)"
+              @click.stop="handleFillDetailField('cover', mergedMeta, '封面')"
             >
               <img
+                v-if="isCoverUsable(mergedMeta.cover_url)"
                 :src="resolveScraperCoverUrl(mergedMeta.cover_url)"
                 alt=""
+                referrerpolicy="no-referrer"
                 class="h-full w-full object-cover"
+                @error="markCoverBroken(mergedMeta.cover_url)"
               />
+              <div
+                v-else
+                class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--ctp-subtext0)]/55"
+              >
+                <LuImage class="h-3.5 w-3.5" />
+                <span class="text-[8px]">无图</span>
+              </div>
               <span
-                class="absolute inset-0 flex items-center justify-center bg-black/50 text-[9px] font-bold text-white opacity-0 transition group-hover:opacity-100"
+                v-if="isCoverUsable(mergedMeta.cover_url)"
+                class="absolute inset-0 flex items-center justify-center bg-black/55 text-[9px] font-bold text-white opacity-0 transition group-hover:opacity-100"
               >
                 用图
               </span>
             </button>
-            <div class="min-w-0 flex-1 space-y-1">
-              <div class="truncate text-xs font-bold text-[var(--ctp-text)]">
+
+            <div class="min-w-0 flex-1">
+              <div class="line-clamp-2 text-xs font-bold text-[var(--ctp-text)]">
                 {{ mergedMeta.title || '—' }}
               </div>
-              <div class="flex flex-wrap gap-1">
+              <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--ctp-subtext0)]">
+                <span v-if="mergedMeta.creators.length > 0" class="truncate">
+                  {{ mergedMeta.creators.join(' / ') }}
+                </span>
+                <span v-if="mergedMeta.publisher_or_studio" class="truncate opacity-80">
+                  {{ mergedMeta.publisher_or_studio }}
+                </span>
+                <span v-if="mergedMeta.published_date || mergedMeta.year" class="font-mono">
+                  {{ mergedMeta.published_date || mergedMeta.year }}
+                </span>
+              </div>
+
+              <!-- Unified Action Bar (Matches Candidate Cards) -->
+              <div class="mt-2 flex flex-wrap items-center gap-1.5">
                 <button
-                  v-for="item in extractClickableFields(mergedMeta).slice(0, 6)"
-                  :key="item.key"
                   type="button"
-                  class="max-w-full truncate rounded-md border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/90 px-1.5 py-0.5 text-[10px] text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
-                  :title="`点击填入「${item.label}」: ${item.value}`"
-                  @click="handleFillDetailField(item.key, mergedMeta!, item.label)"
+                  class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95"
+                  title="把多源聚合结果填入左侧表单（暂不落盘）"
+                  @click.stop="handleFillMergedAll"
                 >
-                  <span class="font-semibold text-[var(--ctp-subtext0)]">{{ item.label }}:</span>
-                  {{ item.value.slice(0, 26) }}
+                  <LuArrowLeft class="h-3 w-3" />
+                  <span>整条填入</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
+                  @click.stop="mergedExpanded = !mergedExpanded; selectMergedPreview()"
+                >
+                  <LuChevronUp v-if="mergedExpanded" class="h-3 w-3" />
+                  <LuChevronDown v-else class="h-3 w-3" />
+                  <span>{{ mergedExpanded ? '收起字段' : '逐项挑选' }}</span>
+                </button>
+
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/50 bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
+                  title="直接将聚合结果写入文件并保存"
+                  @click.stop="emit('directApply', mergedMeta, fillMode)"
+                >
+                  <LuZap class="h-3 w-3" />
+                  <span>直写</span>
                 </button>
               </div>
+            </div>
+          </div>
+
+          <!-- Collapsible Field-by-Field Drawer for Aggregated Result -->
+          <div
+            v-if="mergedExpanded"
+            class="mt-2.5 border-t border-[var(--ctp-accent)]/25 pt-2"
+            @click.stop
+          >
+            <div class="mb-1.5 text-[10px] font-medium text-[var(--ctp-subtext0)]">
+              点击任意字段即可单独填入左侧表单：
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+              <button
+                v-if="isCoverUsable(mergedMeta.cover_url)"
+                type="button"
+                class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/40 bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
+                @click="handleFillDetailField('cover', mergedMeta, '封面')"
+              >
+                <LuImage class="h-3 w-3" />
+                <span>填入高清封面</span>
+                <span v-if="mergedSourceLabelFor('cover')" class="opacity-75">
+                  · {{ mergedSourceLabelFor('cover') }}
+                </span>
+              </button>
+              <button
+                v-for="field in extractClickableFields(mergedMeta)"
+                :key="field.key"
+                type="button"
+                class="rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/90 px-2 py-1 text-left text-[10px] text-[var(--ctp-text)] transition hover:border-[var(--ctp-accent)] hover:bg-[var(--ctp-accent-soft)]/40"
+                :class="field.multiline ? 'w-full' : 'max-w-full'"
+                :title="`点击填入「${field.label}」`"
+                @click="handleFillDetailField(field.key, mergedMeta!, field.label)"
+              >
+                <span class="mr-1 font-bold text-[var(--ctp-accent)]">← {{ field.label }}</span>
+                <span
+                  v-if="mergedSourceLabelFor(field.key)"
+                  class="mr-1 rounded bg-[var(--ctp-surface0)]/80 px-1 py-0.2 text-[9px] font-medium text-[var(--ctp-subtext0)]"
+                >
+                  {{ mergedSourceLabelFor(field.key) }}
+                </span>
+                <span
+                  :class="
+                    field.multiline
+                      ? 'mt-0.5 block line-clamp-3 text-[var(--ctp-subtext1)]'
+                      : 'text-[var(--ctp-subtext1)]'
+                  "
+                >
+                  {{ field.value }}
+                </span>
+              </button>
             </div>
           </div>
         </div>
@@ -634,28 +881,37 @@ defineExpose({
         <div
           v-for="c in visibleCandidates"
           :key="candKey(c)"
-          class="rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2.5 transition hover:border-[var(--ctp-accent)]/50"
+          class="cursor-pointer rounded-xl border p-2.5 transition"
+          :class="
+            selectedKey === candKey(c)
+              ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/25 ring-1 ring-[var(--ctp-accent)]/45'
+              : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] hover:border-[var(--ctp-accent)]/50'
+          "
+          @click="selectCandidatePreview(c)"
         >
           <div class="flex items-start gap-2.5">
             <!-- Clickable Cover Thumbnail -->
             <button
               type="button"
               class="group relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]"
-              :title="c.cover_url ? '点击直接填入这张封面' : '无封面'"
-              :disabled="!c.cover_url"
-              @click="handleQuickFillFromCandidate(c, 'cover')"
+              :title="isCoverUsable(c.cover_url) ? '点击直接填入这张封面' : '无可用封面'"
+              :disabled="!isCoverUsable(c.cover_url)"
+              @click.stop="handleQuickFillFromCandidate(c, 'cover')"
             >
               <img
-                v-if="c.cover_url"
+                v-if="isCoverUsable(c.cover_url)"
                 :src="resolveScraperCoverUrl(c.cover_url)"
                 alt=""
+                referrerpolicy="no-referrer"
                 class="h-full w-full object-cover"
+                @error="markCoverBroken(c.cover_url)"
               />
-              <div v-else class="flex h-full w-full items-center justify-center text-[var(--ctp-subtext0)]/50">
-                <LuImage class="h-4 w-4" />
+              <div v-else class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--ctp-subtext0)]/50">
+                <LuImage class="h-3.5 w-3.5" />
+                <span class="text-[8px]">无图</span>
               </div>
               <span
-                v-if="c.cover_url"
+                v-if="isCoverUsable(c.cover_url)"
                 class="absolute inset-0 flex items-center justify-center bg-black/55 text-[9px] font-bold text-white opacity-0 transition group-hover:opacity-100"
               >
                 用图
@@ -668,13 +924,18 @@ defineExpose({
                 <button
                   type="button"
                   class="line-clamp-2 text-left text-xs font-bold text-[var(--ctp-text)] transition hover:text-[var(--ctp-accent)]"
-                  title="点击单独填入标题"
-                  @click="handleQuickFillFromCandidate(c, 'title')"
+                  title="点击在右侧预览此条目详情"
+                  @click.stop="selectCandidatePreview(c)"
                 >
                   {{ c.title }}
                 </button>
                 <span
-                  class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/80 px-1.5 py-0.5 text-[9px] font-semibold text-[var(--ctp-subtext1)]"
+                  class="shrink-0 rounded-md px-1.5 py-0.5 text-[9px] font-semibold"
+                  :class="
+                    selectedKey === candKey(c)
+                      ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+                      : 'bg-[var(--ctp-surface0)]/80 text-[var(--ctp-subtext1)]'
+                  "
                 >
                   {{ c.provider_name }}
                 </span>
@@ -686,7 +947,7 @@ defineExpose({
                   type="button"
                   class="truncate hover:text-[var(--ctp-accent)] hover:underline"
                   title="点击单独填入作者/副标题"
-                  @click="handleQuickFillFromCandidate(c, 'creators')"
+                  @click.stop="handleQuickFillFromCandidate(c, 'creators')"
                 >
                   {{ c.subtitle }}
                 </button>
@@ -695,7 +956,7 @@ defineExpose({
                   type="button"
                   class="font-mono hover:text-[var(--ctp-accent)] hover:underline"
                   title="点击单独填入年份"
-                  @click="handleQuickFillFromCandidate(c, 'year')"
+                  @click.stop="handleQuickFillFromCandidate(c, 'year')"
                 >
                   {{ c.year }}
                 </button>
@@ -707,8 +968,8 @@ defineExpose({
                   type="button"
                   :disabled="loadingDetailKey === candKey(c)"
                   class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent-soft)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)] disabled:opacity-50"
-                  title="拉取完整详情并整条回填到中栏表单"
-                  @click="handleFillCandidateAll(c)"
+                  title="拉取完整详情并整条回填到左侧表单"
+                  @click.stop="handleFillCandidateAll(c)"
                 >
                   <LuLoader2 v-if="loadingDetailKey === candKey(c)" class="h-3 w-3 animate-spin" />
                   <LuArrowLeft v-else class="h-3 w-3" />
@@ -718,7 +979,7 @@ defineExpose({
                 <button
                   type="button"
                   class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-                  @click="handleToggleExpand(c)"
+                  @click.stop="handleToggleExpand(c)"
                 >
                   <LuChevronUp v-if="expandedKey === candKey(c)" class="h-3 w-3" />
                   <LuChevronDown v-else class="h-3 w-3" />
@@ -730,7 +991,7 @@ defineExpose({
                   :disabled="loadingDetailKey === candKey(c)"
                   class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-emerald-500/60 hover:text-emerald-500 disabled:opacity-50"
                   title="直接写入磁盘（含封面），无需再点保存"
-                  @click="handleDirectApplyCandidate(c)"
+                  @click.stop="handleDirectApplyCandidate(c)"
                 >
                   <LuZap class="h-3 w-3" />
                   <span>直写</span>
@@ -743,6 +1004,7 @@ defineExpose({
           <div
             v-if="expandedKey === candKey(c)"
             class="mt-2.5 border-t border-[var(--ctp-surface0)]/70 pt-2"
+            @click.stop
           >
             <div
               v-if="loadingDetailKey === candKey(c)"
@@ -753,11 +1015,11 @@ defineExpose({
             </div>
             <div v-else-if="detailCache.get(candKey(c))" class="space-y-1.5">
               <div class="text-[10px] font-medium text-[var(--ctp-subtext0)]">
-                点击任意字段即可单独填入中栏表单：
+                点击任意字段即可单独填入左侧表单：
               </div>
               <div class="flex flex-wrap gap-1.5">
                 <button
-                  v-if="detailCache.get(candKey(c))?.cover_url"
+                  v-if="isCoverUsable(detailCache.get(candKey(c))?.cover_url)"
                   type="button"
                   class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/40 bg-[var(--ctp-accent-soft)]/50 px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)]"
                   @click="handleFillDetailField('cover', detailCache.get(candKey(c))!, '封面')"

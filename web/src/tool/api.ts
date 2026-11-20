@@ -272,6 +272,8 @@ export function resolveScraperCoverUrl(rawUrl: string | null | undefined): strin
   if (!rawUrl) return ''
   if (
     rawUrl.includes('.doubanio.com/') ||
+    rawUrl.includes('.xinhuashudian.com/') ||
+    rawUrl.includes('://xinhuashudian.com/') ||
     rawUrl.includes('.nhentai.net/') ||
     rawUrl.includes('://nhentai.net/') ||
     rawUrl.includes('hanime1.me/') ||

@@ -1511,6 +1511,8 @@ impl ScrapingOrchestratorService {
         }
         let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
         let allowed_domain = host.ends_with(".doubanio.com")
+            || host == "xinhuashudian.com"
+            || host.ends_with(".xinhuashudian.com")
             || host == "nhentai.net"
             || host.ends_with(".nhentai.net")
             || host == "hanime1.me"
@@ -1666,6 +1668,8 @@ async fn download_image_bytes(
     let mut req = client.get(url);
     if url.contains(".doubanio.com/") {
         req = req.header(reqwest::header::REFERER, "https://book.douban.com/");
+    } else if url.contains(".xinhuashudian.com/") || url.contains("://xinhuashudian.com/") {
+        req = req.header(reqwest::header::REFERER, "https://www.xhsd.com/");
     } else if url.contains(".nhentai.net/") || url.contains("://nhentai.net/") {
         req = req.header(reqwest::header::REFERER, "https://nhentai.net/");
     } else if url.contains("hanime1.me/")

@@ -36,6 +36,9 @@ import {
   type ApplyFillMode,
   type ScrapedFieldKey,
 } from './inspector/useMetadataForm'
+import CandidateDetailPreviewPane, {
+  type CandidatePreviewState,
+} from './scrape/CandidateDetailPreviewPane.vue'
 import WorkbenchCandidatePane from './scrape/WorkbenchCandidatePane.vue'
 
 const props = withDefaults(
@@ -102,6 +105,14 @@ const skipNextHydrate = ref(false)
 
 const autoSearchOnSwitch = ref(true)
 const autoSearchTrigger = ref(0)
+const candidatePreview = ref<CandidatePreviewState | null>(null)
+
+function handlePreviewFillField(field: ScrapedFieldKey, meta: ScrapedMetadata, label: string): void {
+  const changed = applyScrapedField(props.detail.entry.media_kind, field, meta, 'overwrite')
+  if (changed) {
+    snackbar.show(`已将「${label}」填入左侧表单，按 ⌘S 保存落盘`)
+  }
+}
 
 watch(
   () => props.detail,
@@ -112,6 +123,7 @@ watch(
       return
     }
     errorMsg.value = null
+    candidatePreview.value = null
     hydrateForm(d)
     if (props.showCandidates && autoSearchOnSwitch.value) {
       autoSearchTrigger.value += 1
@@ -123,7 +135,11 @@ watch(
 watch(
   () => props.showCandidates,
   (open) => {
-    if (open && props.detail) {
+    if (!open) {
+      candidatePreview.value = null
+      return
+    }
+    if (props.detail) {
       autoSearchTrigger.value += 1
     }
   },
@@ -376,9 +392,11 @@ defineExpose({
   <aside
     class="flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] transition-[width] duration-300 ease-[var(--md-sys-motion-easing-standard)] lg:rounded-l-[24px]"
     :class="
-      showCandidates
-        ? 'lg:w-[760px] xl:w-[860px]'
-        : 'lg:w-[440px] xl:w-[470px]'
+      showCandidates && candidatePreview
+        ? 'max-w-[94vw] lg:w-[960px] xl:w-[1140px] 2xl:w-[1260px]'
+        : showCandidates
+          ? 'lg:w-[760px] xl:w-[860px]'
+          : 'lg:w-[440px] xl:w-[470px]'
     "
   >
     <input
@@ -474,13 +492,15 @@ defineExpose({
       </div>
     </div>
 
-    <!-- Main Body: Single Edit Pane OR Dual Side-by-Side (Edit + Online Candidates) -->
+    <!-- Main Body: Single Edit Pane OR Dual/Tri Side-by-Side (Edit + Online Candidates + Selected Preview) -->
     <div
       class="grid min-h-0 flex-1"
       :class="
-        showCandidates
-          ? 'grid-cols-1 lg:grid-cols-[minmax(0,1fr)_350px] xl:grid-cols-[minmax(0,1fr)_390px]'
-          : 'grid-cols-1'
+        showCandidates && candidatePreview
+          ? 'grid-cols-1 lg:grid-cols-[minmax(300px,1fr)_320px_minmax(280px,340px)] xl:grid-cols-[minmax(340px,1fr)_350px_minmax(320px,390px)]'
+          : showCandidates
+            ? 'grid-cols-1 lg:grid-cols-[minmax(0,1fr)_350px] xl:grid-cols-[minmax(0,1fr)_390px]'
+            : 'grid-cols-1'
       "
     >
       <!-- Left Column: Metadata Form + Artwork -->
@@ -837,14 +857,14 @@ defineExpose({
         </div>
       </div>
 
-      <!-- Optional Expanded Right Column: Live Online Candidates & Single-Field Fill -->
+      <!-- Optional Expanded Middle Column: Live Online Candidates & Single-Field Fill -->
       <div
         v-if="showCandidates"
         class="hidden min-h-0 flex-col border-l border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/40 lg:flex"
       >
         <div class="flex shrink-0 items-center justify-between px-3.5 pt-2.5 pb-1">
           <span class="text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            在线候选对照 · 单字段回填
+            在线候选对照 · 点击选中右侧预览
           </span>
           <label class="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
             <input
@@ -859,12 +879,29 @@ defineExpose({
           <WorkbenchCandidatePane
             :detail="detail"
             :auto-search-trigger="autoSearchTrigger"
+            :selected-preview-key="candidatePreview?.key ?? null"
             @fill-all="handleFillAll"
             @fill-field="handleFillField"
             @direct-apply="handleDirectApply"
+            @select-preview="candidatePreview = $event"
             @open-settings="emit('openSettingsScrapers')"
           />
         </div>
+      </div>
+
+      <!-- Optional Expanded Right Column: Mirror Structured Preview of Selected Candidate -->
+      <div
+        v-if="showCandidates && candidatePreview"
+        class="hidden min-h-0 flex-col border-l border-[var(--md-sys-color-outline-variant)]/45 lg:flex"
+      >
+        <CandidateDetailPreviewPane
+          :media-kind="detail.entry.media_kind"
+          :preview="candidatePreview"
+          @fill-all="handleFillAll"
+          @fill-field="handlePreviewFillField"
+          @direct-apply="handleDirectApply"
+          @close="candidatePreview = null"
+        />
       </div>
     </div>
   </aside>

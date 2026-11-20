@@ -151,6 +151,12 @@ pub(crate) fn map_clc_code_to_genres(code: &str) -> Vec<String> {
     out
 }
 
+fn normalize_xinhua_cover_url(raw: &str) -> Option<String> {
+    let decoded = decode_html_entities(raw);
+    let clean = decoded.split('?').next().unwrap_or(&decoded);
+    normalize_cover_url(clean)
+}
+
 pub(crate) fn parse_xinhua_detail_html(item_id: &str, html: &str) -> Option<ScrapedMetadata> {
     let mut title: Option<String> = None;
     let mut cover_url: Option<String> = None;
@@ -167,7 +173,7 @@ pub(crate) fn parse_xinhua_detail_html(item_id: &str, html: &str) -> Option<Scra
             if !t.is_empty() {
                 title = Some(t);
             }
-            cover_url = normalize_cover_url(&data.main_image);
+            cover_url = normalize_xinhua_cover_url(&data.main_image);
             for grp in data.other_attributes.into_iter().chain(data.other_attrs) {
                 for kv in grp.other_attributes {
                     let k = kv.attr_key.trim();
@@ -226,7 +232,7 @@ pub(crate) fn parse_xinhua_detail_html(item_id: &str, html: &str) -> Option<Scra
     if cover_url.is_none() {
         cover_url = RE_XINHUA_IMG
             .captures(html)
-            .and_then(|c| normalize_cover_url(&c[1]));
+            .and_then(|c| normalize_xinhua_cover_url(&c[1]));
     }
 
     let final_title = title?;
@@ -401,7 +407,7 @@ impl ScraperProviderPort for XinhuaBookProvider {
                 .filter(|s| !s.is_empty());
             let cover_url = RE_XINHUA_IMG
                 .captures(block)
-                .and_then(|c| normalize_cover_url(&c[1]));
+                .and_then(|c| normalize_xinhua_cover_url(&c[1]));
 
             let mut score = score_candidate_relevance(score_kw, query.year, &title, None, None, 0);
             if isbn_clean.is_some() && idx == 0 {
