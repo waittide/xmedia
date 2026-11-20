@@ -608,10 +608,18 @@ function toggleLevel(idx: number): void {
   triggerRef(chapters)
 }
 
+const VOLUME_TITLE_RE =
+  /^\s*(?:第\s*[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+\s*[卷部集册篇](?:[\s：:、—\-].*)?|卷\s*[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+.*|(?:volume|vol\.?|book|part)\s+[0-9ivxlcdm]+.*)$/i
+
+function isVolumeRecord(list: ChapterRecord[], idx: number): boolean {
+  const rec = list[idx]
+  if (!rec || rec.level !== 0 || rec.title === '书籍简介') return false
+  const next = list[idx + 1]
+  return Boolean(next && next.level > 0) || VOLUME_TITLE_RE.test(rec.title.trim())
+}
+
 function autoDetectTocHierarchy(): void {
   flushActiveSurfaceToRecord()
-  const volRe =
-    /^\s*(?:第[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+[卷部集册篇](?:[\s：:、—\-].*)?|卷[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+.*|(?:volume|vol\.?|book|part)\s+[0-9ivxlcdm]+.*)$/i
   let seenVol = false
   let volCount = 0
   for (const ch of chapters.value) {
@@ -619,7 +627,7 @@ function autoDetectTocHierarchy(): void {
       ch.level = 0
       continue
     }
-    if (volRe.test(ch.title.trim())) {
+    if (VOLUME_TITLE_RE.test(ch.title.trim())) {
       ch.level = 0
       seenVol = true
       volCount += 1
@@ -847,9 +855,59 @@ async function handlePolishInEditor(): Promise<void> {
   }
 }
 
+async function insertVolumeBelow(idx: number): Promise<void> {
+  flushActiveSurfaceToRecord()
+  const currentList = chapters.value
+  let existingVolCount = 0
+  for (let i = 0; i < currentList.length; i += 1) {
+    if (isVolumeRecord(currentList, i)) existingVolCount += 1
+  }
+  const title = `第${existingVolCount + 1}卷`
+  const newRec: ChapterRecord = {
+    key: `vol_new_${keySeq++}`,
+    title,
+    level: 0,
+    xhtmlBody: `  <h1>${escapeXml(title)}</h1>\n  <p><br/></p>`,
+    plainCache: '',
+    charCount: 0,
+    hasRichMedia: false,
+    sourceHref: null,
+  }
+  const nextList = [...currentList]
+  const insertAt =
+    nextList.length === 0 ? 0 : Math.min(nextList.length, Math.max(0, idx + 1))
+  nextList.splice(insertAt, 0, newRec)
+
+  // Automatically nest subsequent flat chapters until the next volume header
+  let adoptedCount = 0
+  for (let i = insertAt + 1; i < nextList.length; i += 1) {
+    const ch = nextList[i]!
+    if (ch.title === '书籍简介' || isVolumeRecord(nextList, i)) break
+    if (ch.level === 0) {
+      ch.level = 1
+      adoptedCount += 1
+    }
+  }
+
+  chapters.value = nextList
+  activeIndex.value = insertAt
+  hasUnsavedEdits.value = true
+  await mountActiveChapterIntoSurface()
+  showToast(
+    adoptedCount > 0
+      ? `已插入「${title}」，并将后续 ${adoptedCount} 章归入该卷`
+      : `已插入「${title}」（可在目录双击重命名或拖拽排序）`,
+  )
+}
+
 async function insertChapterBelow(idx: number): Promise<void> {
   flushActiveSurfaceToRecord()
-  const refLevel = chapters.value[idx]?.level ?? 0
+  const cur = chapters.value[idx]
+  const refLevel = cur
+    ? isVolumeRecord(chapters.value, idx)
+      ? 1
+      : cur.level
+    : 0
   const title = `新章节 ${chapters.value.length + 1}`
   const newRec: ChapterRecord = {
     key: `ch_new_${keySeq++}`,
@@ -862,9 +920,11 @@ async function insertChapterBelow(idx: number): Promise<void> {
     sourceHref: null,
   }
   const nextList = [...chapters.value]
-  nextList.splice(idx + 1, 0, newRec)
+  const insertAt =
+    nextList.length === 0 ? 0 : Math.min(nextList.length, Math.max(0, idx + 1))
+  nextList.splice(insertAt, 0, newRec)
   chapters.value = nextList
-  activeIndex.value = idx + 1
+  activeIndex.value = insertAt
   hasUnsavedEdits.value = true
   await mountActiveChapterIntoSurface()
 }
@@ -1402,6 +1462,7 @@ onBeforeUnmount(() => {
           :reset-key="tocResetKey"
           @select="selectChapter"
           @insert-below="insertChapterBelow"
+          @insert-volume-below="insertVolumeBelow"
           @toggle-level="toggleLevel"
           @rename="handleRenameChapter"
           @merge-prev="mergeWithPrevious"

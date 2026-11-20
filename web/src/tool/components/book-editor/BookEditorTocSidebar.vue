@@ -4,6 +4,7 @@ import {
   LuAlertTriangle,
   LuChevronDown,
   LuChevronRight,
+  LuFolderPlus,
   LuGripVertical,
   LuListTree,
   LuMerge,
@@ -35,6 +36,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [idx: number]
   insertBelow: [idx: number]
+  insertVolumeBelow: [idx: number]
   toggleLevel: [idx: number]
   rename: [idx: number, newTitle: string]
   mergePrev: [idx: number]
@@ -85,10 +87,21 @@ watch(
   },
 )
 
+const VOLUME_TITLE_RE =
+  /^\s*(?:第\s*[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+\s*[卷部集册篇](?:[\s：:、—\-].*)?|卷\s*[零一二三四五六七八九十百千万两〇廿卅卌壹贰叁肆伍陆柒捌玖拾佰仟0-9０-９]+.*|(?:volume|vol\.?|book|part)\s+[0-9ivxlcdm]+.*)$/i
+
+function isVolumeEntry(ch: TocChapterSummary, idx: number): boolean {
+  if (ch.level !== 0 || ch.title === '书籍简介') return false
+  const next = props.chapters[idx + 1]
+  return Boolean(next && next.level > 0) || VOLUME_TITLE_RE.test(ch.title.trim())
+}
+
 function getChapterAnomaly(ch: TocChapterSummary, idx: number): 'short' | 'long' | null {
   const count = idx === props.activeIndex ? props.activeCharCount : ch.charCount
   if (count > 20000) return 'long'
-  if (count < 80 && !ch.hasRichMedia && ch.title !== '书籍简介') return 'short'
+  if (count < 80 && !ch.hasRichMedia && ch.title !== '书籍简介' && !isVolumeEntry(ch, idx)) {
+    return 'short'
+  }
   return null
 }
 
@@ -197,16 +210,28 @@ function onTocDrop(targetIdx: number): void {
           <span>分章规则</span>
         </button>
 
-        <button
-          type="button"
-          class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent-soft)] px-2 py-1 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
-          title="在当前章节下方插入新章"
-          @click="emit('insertBelow', activeIndex)"
-        >
-          <LuPlus class="h-3 w-3" />
-          <span>新建章</span>
-        </button>
       </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-1.5">
+      <button
+        type="button"
+        class="inline-flex items-center justify-center gap-1 rounded-lg border border-[var(--ctp-accent)]/35 bg-[var(--ctp-accent-soft)]/70 px-2 py-1 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)]"
+        title="在当前项下方插入顶层分卷 (L0)，并自动将其后同级章节归入该卷"
+        @click="emit('insertVolumeBelow', activeIndex)"
+      >
+        <LuFolderPlus class="h-3 w-3" />
+        <span>新建卷</span>
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center justify-center gap-1 rounded-lg bg-[var(--ctp-accent-soft)] px-2 py-1 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
+        title="在当前项下方插入新章节"
+        @click="emit('insertBelow', activeIndex)"
+      >
+        <LuPlus class="h-3 w-3" />
+        <span>新建章</span>
+      </button>
     </div>
 
     <div class="flex items-center gap-1.5">
@@ -352,14 +377,16 @@ function onTocDrop(targetIdx: number): void {
         type="button"
         class="shrink-0 rounded px-1 py-0.2 font-mono text-[9px] font-bold transition hover:bg-[var(--ctp-canvas)]"
         :class="
-          ch.level === 0
-            ? 'bg-[var(--ctp-surface0)]/75 text-[var(--ctp-text)]'
-            : 'bg-[var(--ctp-mantle)] text-[var(--ctp-subtext0)]'
+          ch.level > 0
+            ? 'bg-[var(--ctp-mantle)] text-[var(--ctp-subtext0)]'
+            : isVolumeEntry(ch, idx)
+              ? 'bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]'
+              : 'bg-[var(--ctp-surface0)]/75 text-[var(--ctp-text)]'
         "
         title="点击切换顶层卷/章 (L0) 与子章 (L1)"
         @click.stop="emit('toggleLevel', idx)"
       >
-        {{ ch.level === 0 ? '卷/章' : '子章' }}
+        {{ ch.level > 0 ? '子章' : isVolumeEntry(ch, idx) ? '卷' : '卷/章' }}
       </button>
 
       <!-- Inline Rename Input vs Title Label -->
