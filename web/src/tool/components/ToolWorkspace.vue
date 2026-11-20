@@ -1547,8 +1547,6 @@ onBeforeUnmount(() => {
             @open-book-normalize-epub="openBookNormalizeModal"
             @open-comic-page-manager="openComicPageManager"
             @enqueue-scrape-files="enqueueScrapeFiles"
-            @open-tasks-drawer="tasksDrawerOpen = true"
-            @review-task-items="handleReviewUnmatchedItems"
             @load-more="visibleLimit += PAGE_CHUNK_SIZE"
             @show-all="visibleLimit = filteredFiles.length"
           />

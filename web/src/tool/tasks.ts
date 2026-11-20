@@ -51,7 +51,6 @@ const SCRAPE_CONCURRENCY = 2
 
 export const useToolTaskStore = defineStore('tool-tasks', () => {
   const entries = ref<ToolTaskEntry[]>([])
-  const dismissedBannerTaskIds = ref<Set<string>>(new Set())
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const fileListeners = new Set<FileScrapedListener>()
 
@@ -410,11 +409,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     found.processed = found.subItems.filter((it) => it.status === 'matched').length
     found.status = workerRunning ? 'queued' : 'running'
     found.detail = '正在重试未完成项…'
-    if (dismissedBannerTaskIds.value.has(found.id)) {
-      const nextDismissed = new Set(dismissedBannerTaskIds.value)
-      nextDismissed.delete(found.id)
-      dismissedBannerTaskIds.value = nextDismissed
-    }
     pendingScrapeBatchIds.push(found.id)
     void pumpScrapeWorker()
   }
@@ -442,12 +436,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
       if (item.status !== 'running' && item.status !== 'queued') clearTaskTimer(item.id)
     }
     entries.value = entries.value.filter((e) => e.status === 'running' || e.status === 'queued')
-  }
-
-  function dismissBannerTask(id: string): void {
-    const next = new Set(dismissedBannerTaskIds.value)
-    next.add(id)
-    dismissedBannerTaskIds.value = next
   }
 
   const persistentTasks = computed(() => entries.value.filter((e) => !e.ephemeral))
@@ -482,25 +470,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     return count
   })
 
-  const latestBannerTask = computed<ToolTaskEntry | null>(() => {
-    const running =
-      persistentTasks.value.find((e) => e.status === 'running') ??
-      persistentTasks.value.find((e) => e.status === 'queued')
-    if (running) return running
-    for (const task of persistentTasks.value) {
-      if (dismissedBannerTaskIds.value.has(task.id)) continue
-      const hasNeedsAttention = Boolean(
-        task.status === 'failed' ||
-          task.subItems?.some(
-            (it) =>
-              it.status === 'unmatched' || it.status === 'failed' || it.status === 'cancelled',
-          ),
-      )
-      if (hasNeedsAttention) return task
-    }
-    return null
-  })
-
   const fileStatusMap = computed<Map<string, ScrapeSubItem['status']>>(() => {
     const m = new Map<string, ScrapeSubItem['status']>()
     for (const task of persistentTasks.value) {
@@ -521,7 +490,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     activeCount,
     activeTask,
     unresolvedCount,
-    latestBannerTask,
     fileStatusMap,
     onFileScraped,
     startTask,
@@ -534,6 +502,5 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     removeTask,
     clearCompleted,
     dismissAll,
-    dismissBannerTask,
   }
 })

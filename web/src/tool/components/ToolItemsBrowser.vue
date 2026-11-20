@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { computed, type Component } from 'vue'
 import {
-  LuAlertCircle,
   LuArrowDown,
   LuArrowUp,
-  LuBan,
   LuBookOpen,
   LuCheck,
   LuChevronRight,
@@ -40,7 +38,6 @@ import { formatBytes, useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem } from '../tasks'
 import type { DirectorySnapshot, ManagedRootDto, MediaFileEntry } from '../types'
 import type { ToolCompletenessFilter } from './ToolSidebar.vue'
-import type { ReviewItemsPayload } from './ToolTasksDrawer.vue'
 
 export type ToolSortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
 
@@ -111,47 +108,12 @@ const emit = defineEmits<{
   openBookNormalizeEpub: [entries: MediaFileEntry[]]
   openComicPageManager: [entry: MediaFileEntry]
   enqueueScrapeFiles: [entries: MediaFileEntry[]]
-  openTasksDrawer: []
-  reviewTaskItems: [payload: ReviewItemsPayload]
   loadMore: []
   showAll: []
 }>()
 
 const txt = useToolText()
 const taskStore = useToolTaskStore()
-
-const bannerTask = computed(() => taskStore.latestBannerTask)
-const bannerIsRunning = computed(
-  () => bannerTask.value?.status === 'running' || bannerTask.value?.status === 'queued',
-)
-const bannerProgressPct = computed<number | null>(() => {
-  const t = bannerTask.value
-  if (!t) return null
-  if (t.status === 'completed') return 100
-  if (t.total !== null && t.total > 0) {
-    return Math.min(100, Math.round((t.processed / t.total) * 100))
-  }
-  return null
-})
-const bannerUnmatchedSubItems = computed<ScrapeSubItem[]>(() =>
-  (bannerTask.value?.subItems ?? []).filter(
-    (it) => it.status === 'unmatched' || it.status === 'failed' || it.status === 'cancelled',
-  ),
-)
-
-function handleBannerManualScrape(): void {
-  const t = bannerTask.value
-  const targets = bannerUnmatchedSubItems.value
-  if (!t || targets.length === 0) return
-  const first = targets[0]!
-  taskStore.dismissBannerTask(t.id)
-  emit('reviewTaskItems', {
-    domain: t.domain ?? first.mediaKind,
-    rootId: first.rootId,
-    relPaths: targets.filter((x) => x.rootId === first.rootId).map((x) => x.relPath),
-    openCandidates: true,
-  })
-}
 
 function fileTaskStatus(file: MediaFileEntry): ScrapeSubItem['status'] | undefined {
   return taskStore.fileStatusMap.get(`${file.root_id}::${file.rel_path}`)
@@ -401,101 +363,6 @@ function relativeDirBadge(relPath: string): string | null {
             <LuSparkles class="h-3.5 w-3.5" />
             <span>自动刮削全部 ({{ filteredFiles.length }})</span>
           </button>
-        </div>
-      </div>
-
-      <!-- Inline Live Task Progress / Post-Scrape Action Banner -->
-      <div
-        v-if="bannerTask"
-        class="mb-4 overflow-hidden rounded-2xl border transition"
-        :class="
-          bannerIsRunning
-            ? 'border-[var(--md-sys-color-primary)]/30 bg-[var(--md-sys-color-primary-container)]/45 text-[var(--md-sys-color-on-surface)]'
-            : 'border-amber-500/35 bg-amber-500/10 text-[var(--md-sys-color-on-surface)]'
-        "
-      >
-        <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-2.5">
-          <div class="flex min-w-0 flex-1 items-center gap-2.5">
-            <LuLoader2
-              v-if="bannerIsRunning"
-              class="h-4 w-4 shrink-0 animate-spin text-[var(--md-sys-color-primary)]"
-            />
-            <LuAlertCircle v-else class="h-4 w-4 shrink-0 text-amber-500" />
-
-            <div class="min-w-0 flex-1">
-              <div class="flex flex-wrap items-center gap-2 text-xs font-semibold">
-                <span class="truncate">{{ bannerTask.title }}</span>
-                <span
-                  v-if="bannerIsRunning && bannerTask.total !== null && bannerTask.total > 0"
-                  class="rounded-full bg-[var(--md-sys-color-surface)]/80 px-2 py-0.5 font-mono text-[10px] font-bold text-[var(--md-sys-color-primary)]"
-                >
-                  {{ bannerTask.processed }} / {{ bannerTask.total }}
-                </span>
-                <span
-                  v-else-if="!bannerIsRunning"
-                  class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  已补齐 {{ bannerTask.matchedCount ?? 0 }} · 待处理 {{ bannerUnmatchedSubItems.length }}
-                </span>
-              </div>
-              <p
-                v-if="bannerTask.detail"
-                class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ bannerTask.detail }}
-              </p>
-            </div>
-          </div>
-
-          <div class="flex shrink-0 items-center gap-1.5">
-            <button
-              v-if="!bannerIsRunning && bannerUnmatchedSubItems.length > 0"
-              type="button"
-              class="md-btn md-btn-sm md-btn-filled md-state"
-              @click="handleBannerManualScrape"
-            >
-              <LuColumns3 class="h-3.5 w-3.5" />
-              <span>手动刮削 ({{ bannerUnmatchedSubItems.length }})</span>
-            </button>
-
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-outlined md-state"
-              @click="emit('openTasksDrawer')"
-            >
-              <span>详情</span>
-            </button>
-
-            <button
-              v-if="bannerIsRunning && bannerTask.cancellable"
-              type="button"
-              class="md-btn md-btn-sm md-btn-text md-state text-amber-500"
-              @click="taskStore.cancelTask(bannerTask.id)"
-            >
-              <LuBan class="h-3.5 w-3.5" />
-              <span>取消</span>
-            </button>
-
-            <button
-              v-else-if="!bannerIsRunning"
-              type="button"
-              class="md-icon-btn md-icon-btn-sm md-state"
-              title="关闭提示条"
-              @click="taskStore.dismissBannerTask(bannerTask.id)"
-            >
-              <LuX class="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-
-        <div
-          v-if="bannerIsRunning && bannerProgressPct !== null"
-          class="h-1 w-full overflow-hidden bg-[var(--md-sys-color-surface-container-highest)]"
-        >
-          <div
-            class="h-full bg-[var(--md-sys-color-primary)] transition-all duration-200"
-            :style="{ width: `${bannerProgressPct}%` }"
-          />
         </div>
       </div>
 
