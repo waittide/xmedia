@@ -1452,11 +1452,6 @@ onBeforeUnmount(() => {
           @updated="handleDetailUpdated"
           @open-settings-scrapers="openSettingsTab('scrapers')"
           @settings-updated="handleSettingsUpdated"
-          @open-content-editor="openBookContentEditor"
-          @open-normalize-epub="(e) => openBookNormalizeModal([e])"
-          @open-comic-pages="openComicPageManager"
-          @open-music-tools="(e) => openMusicToolbox([e])"
-          @open-video-tools="(e) => openVideoToolbox([e])"
           @open-history="historyModalOpen = true"
         />
 

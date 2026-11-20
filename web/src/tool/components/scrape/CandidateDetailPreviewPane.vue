@@ -10,6 +10,7 @@ import {
   LuLayers,
   LuLoader2,
   LuRotateCcw,
+  LuSave,
   LuSkipForward,
   LuX,
   LuZap,
@@ -33,6 +34,11 @@ export interface CandidatePreviewState {
   fillMode: ApplyFillMode
 }
 
+export interface CandidateApplyOptions {
+  organizeAfterSave?: boolean
+  writeAlbumCover?: boolean
+}
+
 const props = withDefaults(
   defineProps<{
     mediaKind: MediaKind
@@ -40,23 +46,27 @@ const props = withDefaults(
     hasNext?: boolean
     closable?: boolean
     saving?: boolean
+    allowFillLeft?: boolean
   }>(),
   {
     hasNext: false,
     closable: true,
     saving: false,
+    allowFillLeft: true,
   },
 )
 
 const emit = defineEmits<{
   fillAll: [meta: ScrapedMetadata, mode: ApplyFillMode]
   fillField: [field: ScrapedFieldKey, meta: ScrapedMetadata, label: string]
-  directApply: [meta: ScrapedMetadata, mode: ApplyFillMode]
-  directApplyNext: [meta: ScrapedMetadata, mode: ApplyFillMode]
+  directApply: [meta: ScrapedMetadata, mode: ApplyFillMode, opts?: CandidateApplyOptions]
+  directApplyNext: [meta: ScrapedMetadata, mode: ApplyFillMode, opts?: CandidateApplyOptions]
   close: []
 }>()
 
 const brokenCoverUrls = ref<Set<string>>(new Set())
+const organizeAfterSave = ref(false)
+const writeAlbumCover = ref(false)
 
 interface DraftFields {
   title: string
@@ -630,12 +640,21 @@ function emitFillAll(): void {
 function emitDirectApply(advanceNext = false): void {
   const edited = buildEditedMetadata()
   if (!edited) return
+  const opts: CandidateApplyOptions = {
+    organizeAfterSave: organizeAfterSave.value,
+    writeAlbumCover: writeAlbumCover.value,
+  }
   if (advanceNext) {
-    emit('directApplyNext', edited, props.preview.fillMode)
+    emit('directApplyNext', edited, props.preview.fillMode, opts)
   } else {
-    emit('directApply', edited, props.preview.fillMode)
+    emit('directApply', edited, props.preview.fillMode, opts)
   }
 }
+
+defineExpose({
+  triggerSave: emitDirectApply,
+  isEdited: isDraftEdited,
+})
 </script>
 
 <template>
@@ -656,7 +675,7 @@ function emitDirectApply(advanceNext = false): void {
           {{ preview.sourceLabel }}
         </span>
         <span class="truncate text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-          刮削结果（可编辑）
+          {{ allowFillLeft ? '刮削结果（可编辑）' : '待写入结果（可编辑）' }}
         </span>
         <span
           v-if="isDraftEdited"
@@ -768,7 +787,7 @@ function emitDirectApply(advanceNext = false): void {
 
             <div class="flex flex-wrap gap-1.5">
               <button
-                v-if="draft.useCover && isCoverUsable(preview.meta.cover_url)"
+                v-if="allowFillLeft && draft.useCover && isCoverUsable(preview.meta.cover_url)"
                 type="button"
                 class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
                 @click="emitEditedCover"
@@ -814,7 +833,7 @@ function emitDirectApply(advanceNext = false): void {
               </div>
 
               <button
-                v-if="draft[spec.draftKey].trim()"
+                v-if="allowFillLeft && draft[spec.draftKey].trim()"
                 type="button"
                 class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)]/75 px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary-container)] transition hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
                 :title="`将「${spec.label}」填入左侧表单`"
@@ -847,11 +866,44 @@ function emitDirectApply(advanceNext = false): void {
       <div
         class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/75 px-3.5 py-2.5"
       >
-        <span class="text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-          写入模式：{{ preview.fillMode === 'overwrite' ? '覆盖' : '仅补空' }}
-        </span>
+        <div class="flex flex-wrap items-center gap-3 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+          <span>
+            写入模式：{{ preview.fillMode === 'overwrite' ? '覆盖' : '仅补空' }}
+          </span>
+          <label
+            v-if="!allowFillLeft"
+            class="inline-flex cursor-pointer items-center gap-1 text-[11px]"
+            title="写入元数据后按设置页的默认命名模板重命名并归档目录"
+          >
+            <input
+              v-model="organizeAfterSave"
+              type="checkbox"
+              class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
+            />
+            <span>保存并归档</span>
+          </label>
+          <label
+            v-if="
+              !allowFillLeft &&
+              mediaKind === 'music' &&
+              draft.useCover &&
+              isCoverUsable(preview.meta.cover_url)
+            "
+            class="inline-flex cursor-pointer items-center gap-1 text-[11px]"
+            title="写入内嵌封面时同步在专辑目录保存 cover 图片"
+          >
+            <input
+              v-model="writeAlbumCover"
+              type="checkbox"
+              class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
+            />
+            <span>同步专辑 cover</span>
+          </label>
+        </div>
+
         <div class="flex flex-wrap items-center gap-1.5">
           <button
+            v-if="allowFillLeft"
             type="button"
             :disabled="saving"
             class="md-btn md-btn-sm md-btn-text md-state"
@@ -864,24 +916,26 @@ function emitDirectApply(advanceNext = false): void {
           <button
             type="button"
             :disabled="saving"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            title="直接以右侧微调后的结果保存并写入文件"
+            class="md-btn md-btn-sm md-state"
+            :class="hasNext ? 'md-btn-tonal' : 'md-btn-filled'"
+            :title="allowFillLeft ? '直接以右侧微调后的结果保存并写入文件' : '将右侧结果写入当前原文件 (⌘S)'"
             @click="emitDirectApply(false)"
           >
             <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-            <LuZap v-else class="h-3.5 w-3.5" />
-            <span>采用右侧保存</span>
+            <LuZap v-else-if="allowFillLeft" class="h-3.5 w-3.5" />
+            <LuSave v-else class="h-3.5 w-3.5" />
+            <span>{{ allowFillLeft ? '采用右侧保存' : '保存' }}</span>
           </button>
           <button
             v-if="hasNext"
             type="button"
             :disabled="saving"
             class="md-btn md-btn-sm md-btn-filled md-state"
-            title="采用右侧结果写入文件，并自动切换下一项"
+            :title="allowFillLeft ? '采用右侧结果写入文件，并自动切换下一项' : '写入当前原文件并切换下一项 (⌘↵)'"
             @click="emitDirectApply(true)"
           >
             <LuSkipForward class="h-3.5 w-3.5" />
-            <span>采用并下一项</span>
+            <span>{{ allowFillLeft ? '采用并下一项' : '保存并下一项' }}</span>
           </button>
         </div>
       </div>

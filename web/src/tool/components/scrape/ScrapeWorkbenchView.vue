@@ -9,43 +9,30 @@ import {
   LuChevronDown,
   LuClapperboard,
   LuDisc3,
-  LuFileSignature,
-  LuFileText,
-  LuFilm,
   LuImage,
   LuLayers,
-  LuLock,
-  LuMusic,
-  LuPackageCheck,
   LuPanelLeft,
-  LuRefreshCw,
-  LuSave,
+  LuPencil,
   LuSearch,
-  LuUnlock,
-  LuUpload,
-  LuWand2,
   LuX,
 } from 'vue-icons-plus/lu'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { buildArtworkUrl, resolveScraperCoverUrl, toolApi } from '../../api'
-import { formatBytes, formatDuration, useToolText } from '../../i18n'
+import { buildArtworkUrl, toolApi } from '../../api'
+import { formatBytes, formatDuration } from '../../i18n'
 import type {
   MediaFileDetail,
   MediaFileEntry,
   PublicSettingsDto,
   ScrapedMetadata,
 } from '../../types'
-import InspectorBookForm from '../inspector/InspectorBookForm.vue'
-import InspectorComicForm from '../inspector/InspectorComicForm.vue'
-import InspectorMusicForm from '../inspector/InspectorMusicForm.vue'
-import InspectorVideoForm from '../inspector/InspectorVideoForm.vue'
 import {
+  inferTargetKindFromDetail,
   useMetadataForm,
   type ApplyFillMode,
-  type ScrapedFieldKey,
 } from '../inspector/useMetadataForm'
 import CandidateDetailPreviewPane, {
+  type CandidateApplyOptions,
   type CandidatePreviewState,
 } from './CandidateDetailPreviewPane.vue'
 import WorkbenchCandidatePane from './WorkbenchCandidatePane.vue'
@@ -73,49 +60,30 @@ const emit = defineEmits<{
   updated: [detail: MediaFileDetail, bumpArtwork: boolean]
   openSettingsScrapers: []
   settingsUpdated: [settings: PublicSettingsDto]
-  openContentEditor: [entry: MediaFileEntry]
-  openNormalizeEpub: [entry: MediaFileEntry]
-  openComicPages: [entry: MediaFileEntry]
-  openMusicTools: [entry: MediaFileEntry]
-  openVideoTools: [entry: MediaFileEntry]
   openHistory: []
 }>()
 
-const txt = useToolText()
 const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 
+// Internal patch builder used solely when committing right-column edits or direct-apply to disk
 const {
-  bookForm,
-  comicForm,
-  musicForm,
-  videoForm,
   pendingCoverUrl,
   pendingBackdropUrl,
-  videoArtworkSlot,
-  isDirty,
-  isBookFieldLocked,
-  toggleBookFieldLock,
-  isVideoFieldLocked,
-  toggleVideoFieldLock,
   hydrateForm,
   buildPatchEnvelope,
-  applyScrapedField,
   applyScrapedMetadata,
 } = useMetadataForm()
 
 const saving = ref(false)
-const polishingBook = ref(false)
-const uploadingArtwork = ref(false)
-const writeAlbumCover = ref(false)
 const errorMsg = ref<string | null>(null)
-const coverInputRef = ref<HTMLInputElement | null>(null)
-const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
-const skipNextHydrate = ref(false)
+const videoArtworkSlot = ref<'poster' | 'fanart' | 'thumb'>('poster')
+const previewPaneRef = ref<InstanceType<typeof CandidateDetailPreviewPane> | null>(null)
 
 const autoSearchOnSwitch = ref(true)
 const autoSearchTrigger = ref(0)
 const candidatePreview = ref<CandidatePreviewState | null>(null)
+let lastEntryKey = ''
 
 // Plan B: Top dropdown queue picker state
 const queueDropdownOpen = ref(false)
@@ -154,16 +122,19 @@ const savedSessionCount = computed(() => {
 })
 
 watch(
-  () => props.detail,
-  (d) => {
-    if (!d) return
-    if (skipNextHydrate.value) {
-      skipNextHydrate.value = false
+  () => (props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''),
+  (key) => {
+    if (!key) {
+      lastEntryKey = ''
+      candidatePreview.value = null
+      errorMsg.value = null
       return
     }
+    if (key === lastEntryKey) return
+    lastEntryKey = key
     errorMsg.value = null
     candidatePreview.value = null
-    hydrateForm(d)
+    videoArtworkSlot.value = 'poster'
     if (autoSearchOnSwitch.value) {
       autoSearchTrigger.value += 1
     }
@@ -171,7 +142,7 @@ watch(
   { immediate: true },
 )
 
-const isCurrentDirty = computed(() => Boolean(props.detail) && isDirty.value)
+const isCurrentDirty = computed(() => Boolean(previewPaneRef.value?.isEdited))
 
 const canSaveMetadata = computed(() => {
   if (!props.detail) return false
@@ -181,15 +152,10 @@ const canSaveMetadata = computed(() => {
   return true
 })
 
+// Strictly reflects persisted on-disk artwork — only updates when the item itself changes
 const artworkSrc = computed(() => {
   if (!props.detail) return ''
   const kind = props.detail.entry.media_kind
-  if (pendingCoverUrl.value && (kind !== 'video' || videoArtworkSlot.value === 'poster')) {
-    return resolveScraperCoverUrl(pendingCoverUrl.value)
-  }
-  if (pendingBackdropUrl.value && kind === 'video' && videoArtworkSlot.value === 'fanart') {
-    return resolveScraperCoverUrl(pendingBackdropUrl.value)
-  }
   if (props.detail.metadata.kind === 'video') {
     const slot = videoArtworkSlot.value
     const has =
@@ -217,11 +183,256 @@ const artworkSrc = computed(() => {
   )
 })
 
+interface ReadOnlyFieldItem {
+  id: string
+  label: string
+  value: string
+  half?: boolean
+  multiline?: boolean
+}
+
+const localReadOnlyFields = computed<ReadOnlyFieldItem[]>(() => {
+  const d = props.detail
+  if (!d) return []
+  const m = d.metadata
+  if (m.kind === 'book') {
+    const b = m.data
+    const seriesVal = [b.series, b.series_index ? `#${b.series_index}` : '']
+      .filter(Boolean)
+      .join(' ')
+    return [
+      { id: 'title', label: '书名 (dc:title)', value: b.title },
+      { id: 'authors', label: '作者 (dc:creator)', value: b.authors.join(' / ') },
+      { id: 'series', label: '系列 / 丛书 (Series)', value: seriesVal },
+      { id: 'isbn', label: 'ISBN', value: b.isbn ?? '', half: true },
+      { id: 'publisher', label: '出版社 (dc:publisher)', value: b.publisher ?? '', half: true },
+      { id: 'published_at', label: '出版日期 (dc:date)', value: b.published_at ?? '', half: true },
+      { id: 'language', label: '语言 (dc:language)', value: b.language ?? '', half: true },
+      { id: 'tags', label: '标签 / 主题 (dc:subject)', value: b.tags.join(' / ') },
+      {
+        id: 'description',
+        label: '内容简介 (dc:description)',
+        value: b.description ?? '',
+        multiline: true,
+      },
+    ]
+  }
+  if (m.kind === 'comic') {
+    const c = m.data
+    const seriesVal = [
+      c.series,
+      c.volume !== null ? `Vol.${c.volume}` : '',
+      c.number ? `#${c.number}` : '',
+    ]
+      .filter(Boolean)
+      .join(' ')
+    return [
+      { id: 'title', label: '标题', value: c.title ?? '' },
+      { id: 'series', label: '系列 / 丛书', value: seriesVal },
+      { id: 'writers', label: '作者 / 编剧', value: c.writers.join(' / '), half: true },
+      { id: 'pencillers', label: '画师 / 作画', value: c.pencillers.join(' / '), half: true },
+      { id: 'publisher', label: '出版社', value: c.publisher ?? '', half: true },
+      { id: 'year', label: '年份', value: c.year ? String(c.year) : '', half: true },
+      { id: 'language', label: '语言', value: c.language_iso ?? '', half: true },
+      { id: 'genres', label: '流派', value: c.genres.join(' / '), half: true },
+      { id: 'tags', label: '标签', value: c.tags.join(' / ') },
+      { id: 'summary', label: '简介', value: c.summary ?? '', multiline: true },
+    ]
+  }
+  if (m.kind === 'music') {
+    const mu = m.data
+    return [
+      { id: 'title', label: '曲目标题', value: mu.title },
+      { id: 'artist', label: '歌手 / 艺人', value: mu.artist, half: true },
+      { id: 'album_artist', label: '专辑艺术家', value: mu.album_artist ?? '', half: true },
+      { id: 'album', label: '专辑名称', value: mu.album },
+      {
+        id: 'disc',
+        label: '碟号',
+        value: mu.disc_number ? String(mu.disc_number) : '',
+        half: true,
+      },
+      {
+        id: 'track',
+        label: '音轨号',
+        value: mu.track_number ? String(mu.track_number) : '',
+        half: true,
+      },
+      { id: 'year', label: '年份', value: mu.year ? String(mu.year) : '', half: true },
+      { id: 'genre', label: '流派', value: mu.genre ?? '', half: true },
+      {
+        id: 'lyrics',
+        label: mu.sidecar_lrc ? `歌词（含 ${mu.sidecar_lrc_filename}）` : '内嵌歌词',
+        value: mu.embedded_lyrics || mu.sidecar_lrc || '',
+        multiline: true,
+      },
+    ]
+  }
+  const v = m.data
+  return [
+    { id: 'title', label: '标题', value: v.title },
+    { id: 'original_title', label: '原作名', value: v.original_title ?? '' },
+    { id: 'show_title', label: '所属剧集 / 系列', value: v.show_title ?? '' },
+    {
+      id: 'season',
+      label: '季号',
+      value: v.season_number !== null ? String(v.season_number) : '',
+      half: true,
+    },
+    {
+      id: 'episode',
+      label: '集号',
+      value: v.episode_number !== null ? String(v.episode_number) : '',
+      half: true,
+    },
+    { id: 'year', label: '首播 / 年份', value: v.year ? String(v.year) : '', half: true },
+    { id: 'rating', label: '评分', value: v.rating ? String(v.rating) : '', half: true },
+    { id: 'studio', label: '制片 / 发行商', value: v.studio ?? '' },
+    { id: 'directors', label: '导演', value: v.directors.join(' / ') },
+    { id: 'actors', label: '主演', value: v.actors.join(' / ') },
+    { id: 'genres', label: '流派', value: v.genres.join(' / ') },
+    { id: 'tags', label: '标签', value: v.tags.join(' / ') },
+    { id: 'summary', label: '剧情简介', value: v.summary ?? '', multiline: true },
+  ]
+})
+
+function buildLocalScrapedDraft(d: MediaFileDetail): ScrapedMetadata {
+  const target = inferTargetKindFromDetail(d)
+  const m = d.metadata
+  if (m.kind === 'book') {
+    const b = m.data
+    return {
+      provider_id: 'local',
+      external_id: d.entry.rel_path,
+      target,
+      title: b.title || null,
+      original_title: null,
+      series_or_album: b.series,
+      creators: [...b.authors],
+      illustrators_or_directors: [],
+      cast: [],
+      publisher_or_studio: b.publisher,
+      year: null,
+      published_date: b.published_at,
+      language: b.language,
+      isbn: b.isbn,
+      rating: null,
+      track_or_episode_number: null,
+      disc_or_season_number: null,
+      summary: b.description,
+      genres: [],
+      tags: [...b.tags],
+      cover_url: null,
+      backdrop_url: null,
+      synced_lyrics: null,
+      plain_lyrics: null,
+    }
+  }
+  if (m.kind === 'comic') {
+    const c = m.data
+    return {
+      provider_id: 'local',
+      external_id: d.entry.rel_path,
+      target,
+      title: c.title,
+      original_title: null,
+      series_or_album: c.series,
+      creators: [...c.writers],
+      illustrators_or_directors: [...c.pencillers],
+      cast: [],
+      publisher_or_studio: c.publisher,
+      year: c.year,
+      published_date: null,
+      language: c.language_iso,
+      isbn: null,
+      rating: null,
+      track_or_episode_number: null,
+      disc_or_season_number: c.volume,
+      summary: c.summary,
+      genres: [...c.genres],
+      tags: [...c.tags],
+      cover_url: null,
+      backdrop_url: null,
+      synced_lyrics: null,
+      plain_lyrics: null,
+    }
+  }
+  if (m.kind === 'music') {
+    const mu = m.data
+    return {
+      provider_id: 'local',
+      external_id: d.entry.rel_path,
+      target,
+      title: mu.title || null,
+      original_title: null,
+      series_or_album: mu.album || null,
+      creators: mu.artist ? [mu.artist] : [],
+      illustrators_or_directors: [],
+      cast: [],
+      publisher_or_studio: null,
+      year: mu.year,
+      published_date: null,
+      language: null,
+      isbn: null,
+      rating: null,
+      track_or_episode_number: mu.track_number,
+      disc_or_season_number: mu.disc_number,
+      summary: mu.comment,
+      genres: mu.genre ? [mu.genre] : [],
+      tags: [],
+      cover_url: null,
+      backdrop_url: null,
+      synced_lyrics: mu.sidecar_lrc,
+      plain_lyrics: mu.embedded_lyrics,
+    }
+  }
+  const v = m.data
+  return {
+    provider_id: 'local',
+    external_id: d.entry.rel_path,
+    target,
+    title: v.title || null,
+    original_title: v.original_title,
+    series_or_album: v.show_title,
+    creators: [],
+    illustrators_or_directors: [...v.directors],
+    cast: [...v.actors],
+    publisher_or_studio: v.studio,
+    year: v.year,
+    published_date: null,
+    language: null,
+    isbn: null,
+    rating: v.rating,
+    track_or_episode_number: v.episode_number,
+    disc_or_season_number: v.season_number,
+    summary: v.summary,
+    genres: [...v.genres],
+    tags: [...v.tags],
+    cover_url: null,
+    backdrop_url: null,
+    synced_lyrics: null,
+    plain_lyrics: null,
+  }
+}
+
+function openLocalDraftInRightPane(): void {
+  if (!props.detail) return
+  candidatePreview.value = {
+    key: `__local__::${props.detail.entry.rel_path}`,
+    isMerged: false,
+    sourceLabel: '手动编辑',
+    meta: buildLocalScrapedDraft(props.detail),
+    loading: false,
+    fieldSources: null,
+    fillMode: 'overwrite',
+  }
+}
+
 async function confirmDiscardIfDirty(): Promise<boolean> {
   if (!isCurrentDirty.value) return true
   return dialogStore.confirm({
-    title: '放弃左侧未保存的更改？',
-    message: '当前条目的左侧元数据表单已修改但尚未保存，切换后这些修改将丢失。',
+    title: '放弃右侧未保存的修改？',
+    message: '当前右侧编辑区有尚未写入原文件的微调，切换后这些修改将丢失。',
     confirmText: '放弃并继续',
     cancelText: '留下编辑',
     danger: true,
@@ -249,67 +460,19 @@ async function requestExit(): Promise<void> {
   emit('exit')
 }
 
-function triggerArtworkUpload(
-  slot: 'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb',
-): void {
-  pendingSlot.value = slot
-  coverInputRef.value?.click()
-}
-
-async function handleArtworkPicked(ev: Event): Promise<void> {
-  if (!props.detail) return
-  const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
-  uploadingArtwork.value = true
-  errorMsg.value = null
-  try {
-    const updated = await toolApi.uploadArtwork(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
-      file,
-      pendingSlot.value,
-      props.detail.entry.media_kind,
-    )
-    skipNextHydrate.value = true
-    emit('updated', updated, true)
-    snackbar.show('封面已更新并写入磁盘')
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    uploadingArtwork.value = false
-  }
-}
-
-async function handlePolishBook(): Promise<void> {
-  if (!props.detail || polishingBook.value) return
-  polishingBook.value = true
-  errorMsg.value = null
-  try {
-    const report = await toolApi.polishBook(
-      props.detail.entry.root_id,
-      props.detail.entry.rel_path,
-    )
-    emit('updated', report.detail, true)
-    snackbar.show(
-      `书籍抛光完成 · ${report.jacket_updated ? '简介页已更新' : '目录已同步'}，清理 ${report.removed_orphan_files} 个冗余资源`,
-    )
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    polishingBook.value = false
-  }
-}
-
-async function saveMetadata(
-  organizeAfterSave = false,
+async function handleApplyAndSave(
+  meta: ScrapedMetadata,
+  mode: ApplyFillMode,
   advanceNext = false,
+  opts?: CandidateApplyOptions,
 ): Promise<void> {
   if (!props.detail || !canSaveMetadata.value || saving.value) return
   saving.value = true
   errorMsg.value = null
   try {
+    hydrateForm(props.detail)
+    applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
+
     const envelope = buildPatchEnvelope(props.detail.entry.media_kind)
     let updated = await toolApi.writeMetadata(
       props.detail.entry.root_id,
@@ -330,7 +493,7 @@ async function saveMetadata(
           updated.entry.media_kind,
         )
         bumpedArt = true
-        if (updated.entry.media_kind === 'music' && writeAlbumCover.value) {
+        if (updated.entry.media_kind === 'music' && opts?.writeAlbumCover) {
           try {
             updated = await toolApi.uploadArtworkFromUrl(
               updated.entry.root_id,
@@ -364,6 +527,7 @@ async function saveMetadata(
       pendingBackdropUrl.value = null
     }
 
+    const organizeAfterSave = Boolean(opts?.organizeAfterSave)
     if (organizeAfterSave) {
       const plan = await toolApi.previewRename(
         updated.entry.root_id,
@@ -382,10 +546,11 @@ async function saveMetadata(
       }
     }
 
-    hydrateForm(updated)
+    // Keep current search & right pane open when staying on the same item after in-place save
+    lastEntryKey = `${updated.entry.root_id}::${updated.entry.rel_path}`
     emit('updated', updated, bumpedArt)
     snackbar.show({
-      message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已保存元数据更改',
+      message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已写入原文件并更新左侧信息',
       actionLabel: '变更历史',
       onAction: () => emit('openHistory'),
     })
@@ -400,42 +565,6 @@ async function saveMetadata(
   }
 }
 
-function handleFillAll(meta: ScrapedMetadata, mode: ApplyFillMode): void {
-  if (!props.detail) return
-  const count = applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
-  snackbar.show(`已将 ${count} 个字段填入左侧表单（尚未保存）`)
-}
-
-function handleFillField(field: ScrapedFieldKey, meta: ScrapedMetadata): void {
-  if (!props.detail) return
-  const ok = applyScrapedField(props.detail.entry.media_kind, field, meta, 'overwrite')
-  if (ok) {
-    snackbar.show('已填入左侧表单，按 ⌘S 保存落盘')
-  }
-}
-
-function handlePreviewFillField(
-  field: ScrapedFieldKey,
-  meta: ScrapedMetadata,
-  label: string,
-): void {
-  if (!props.detail) return
-  const ok = applyScrapedField(props.detail.entry.media_kind, field, meta, 'overwrite')
-  if (ok) {
-    snackbar.show(`已将「${label}」填入左侧表单，按 ⌘S 保存落盘`)
-  }
-}
-
-async function handleDirectApply(
-  meta: ScrapedMetadata,
-  mode: ApplyFillMode,
-  advanceNext = false,
-): Promise<void> {
-  if (!props.detail) return
-  applyScrapedMetadata(props.detail.entry.media_kind, meta, mode)
-  await saveMetadata(false, advanceNext)
-}
-
 function handleKeydown(ev: KeyboardEvent): void {
   if (ev.key === 'Escape' && queueDropdownOpen.value) {
     ev.preventDefault()
@@ -444,12 +573,12 @@ function handleKeydown(ev: KeyboardEvent): void {
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
     ev.preventDefault()
-    void saveMetadata(false, false)
+    previewPaneRef.value?.triggerSave(false)
     return
   }
   if ((ev.ctrlKey || ev.metaKey) && ev.key === 'Enter') {
     ev.preventDefault()
-    void saveMetadata(false, true)
+    previewPaneRef.value?.triggerSave(true)
     return
   }
   if (ev.altKey && ev.key === 'ArrowUp') {
@@ -474,13 +603,6 @@ defineExpose({
 
 <template>
   <div class="relative flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface)]">
-    <input
-      ref="coverInputRef"
-      type="file"
-      accept="image/jpeg,image/png,image/webp"
-      class="hidden"
-      @change="handleArtworkPicked"
-    />
 
     <!-- Plan B: Compact Top Queue Switcher Bar (Always Accessible Even When Sidebar Collapsed) -->
     <div
@@ -722,12 +844,12 @@ defineExpose({
       </button>
     </div>
 
-    <!-- MAIN 3-COLUMN WORKBENCH: [Left: Current Item] | [Middle: Scraper Sources] | [Right: Editable Scraped Result] -->
+    <!-- MAIN 3-COLUMN WORKBENCH: [Left: Read-Only Current Item] | [Middle: Scraper Sources] | [Right: Editable Result & Save] -->
     <div
       v-else
       class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_330px_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.05fr)_370px_minmax(0,1.05fr)]"
     >
-      <!-- COLUMN 1 (LEFT): Current Local Entry Metadata (Editable) -->
+      <!-- COLUMN 1 (LEFT): Strictly Read-Only Current Persisted Entry Info -->
       <div class="flex min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)]">
         <div
           class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/45 px-4 py-2.5"
@@ -736,16 +858,16 @@ defineExpose({
             <span
               class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-surface)]"
             >
-              当前本地条目
+              当前条目信息（只读）
             </span>
             <span class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               {{ formatBytes(detail.entry.file_size) }}
             </span>
             <span
-              v-if="isCurrentDirty"
-              class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
+              v-if="savedPaths.has(detail.entry.rel_path)"
+              class="shrink-0 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
             >
-              未保存
+              已更新
             </span>
           </div>
           <span class="shrink-0 font-mono text-[10px] uppercase text-[var(--md-sys-color-on-surface-variant)]">
@@ -753,8 +875,8 @@ defineExpose({
           </span>
         </div>
 
-        <div class="flex-1 space-y-4 overflow-y-auto px-4 pt-3 pb-4">
-          <!-- Local Cover & Quick Specs Card -->
+        <div class="flex-1 space-y-3.5 overflow-y-auto px-4 pt-3 pb-5">
+          <!-- Local Persisted Cover & Read-Only File Summary Card -->
           <div class="flex gap-3.5 rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
             <div class="flex shrink-0 flex-col items-center gap-1.5">
               <div
@@ -782,12 +904,6 @@ defineExpose({
                   <LuClapperboard v-else class="h-6 w-6 opacity-55" />
                   <span class="text-[10px]">无封面</span>
                 </div>
-                <span
-                  v-if="pendingCoverUrl"
-                  class="absolute inset-x-0 bottom-0 bg-[var(--md-sys-color-primary)]/90 py-0.5 text-center text-[9px] font-semibold text-[var(--md-sys-color-on-primary)]"
-                >
-                  待保存封面
-                </span>
               </div>
 
               <div
@@ -816,158 +932,105 @@ defineExpose({
               </div>
             </div>
 
-            <div class="flex min-w-0 flex-1 flex-col justify-between gap-2.5">
-              <div>
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-primary-container)]">
-                    {{ detail.entry.extension }}
-                  </span>
-
-                  <template v-if="detail.metadata.kind === 'music'">
-                    <span
-                      v-if="detail.metadata.data.duration_secs"
-                      class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-                    >
-                      {{ formatDuration(detail.metadata.data.duration_secs) }}
-                    </span>
-                    <span
-                      v-if="detail.metadata.data.bit_rate_kbps"
-                      class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-                    >
-                      {{ detail.metadata.data.bit_rate_kbps }} kbps
-                    </span>
-                  </template>
-
-                  <template v-else-if="detail.metadata.kind === 'comic'">
-                    <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{ detail.metadata.data.page_count }} 页
-                    </span>
-                  </template>
-
-                  <template v-else-if="detail.metadata.kind === 'video'">
-                    <span
-                      v-if="detail.metadata.data.width && detail.metadata.data.height"
-                      class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-                    >
-                      {{ detail.metadata.data.width }}×{{ detail.metadata.data.height }}
-                    </span>
-                  </template>
-
-                  <template v-else-if="detail.metadata.kind === 'book'">
-                    <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{
-                        detail.metadata.data.format === 'epub'
-                          ? 'EPUB 内封'
-                          : `${detail.metadata.data.format.toUpperCase()} 旁路 .opf`
-                      }}
-                    </span>
-                  </template>
+            <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
+              <div class="space-y-1">
+                <div class="line-clamp-2 text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
+                  {{ detail.entry.display_title || detail.entry.file_name }}
+                </div>
+                <div
+                  class="truncate font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+                  :title="detail.entry.rel_path"
+                >
+                  {{ detail.entry.rel_path }}
                 </div>
               </div>
 
-              <div class="flex flex-wrap gap-1.5">
-                <template v-if="detail.entry.media_kind !== 'video'">
-                  <button
-                    type="button"
-                    :disabled="uploadingArtwork"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="triggerArtworkUpload('cover')"
-                  >
-                    <LuUpload class="h-3 w-3" />
-                    <span>{{ detail.entry.media_kind === 'comic' ? '单话封面' : txt.actions.uploadCover }}</span>
-                  </button>
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-primary-container)]">
+                  {{ detail.entry.extension }}
+                </span>
 
-                  <button
-                    v-if="detail.metadata.kind === 'book' && detail.metadata.data.writable"
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    :class="isBookFieldLocked('cover') ? 'md-chip-selected' : ''"
-                    @click="toggleBookFieldLock('cover')"
+                <template v-if="detail.metadata.kind === 'music'">
+                  <span
+                    v-if="detail.metadata.data.duration_secs"
+                    class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
                   >
-                    <LuLock v-if="isBookFieldLocked('cover')" class="h-3 w-3" />
-                    <LuUnlock v-else class="h-3 w-3" />
-                    <span>{{ isBookFieldLocked('cover') ? '封面已锁' : '锁封面' }}</span>
-                  </button>
-
-                  <button
-                    v-if="
-                      detail.entry.media_kind === 'book' &&
-                      (detail.entry.extension === 'txt' || detail.entry.extension === 'epub')
-                    "
-                    type="button"
-                    class="md-chip md-chip-selected md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openContentEditor', detail.entry)"
+                    {{ formatDuration(detail.metadata.data.duration_secs) }}
+                  </span>
+                  <span
+                    v-if="detail.metadata.data.bit_rate_kbps"
+                    class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
                   >
-                    <LuFileText class="h-3 w-3" />
-                    <span>{{ detail.entry.extension === 'txt' ? '正文与转 EPUB' : '编辑正文' }}</span>
-                  </button>
-
-                  <button
-                    v-if="
-                      detail.entry.media_kind === 'book' &&
-                      (detail.entry.extension === 'txt' ||
-                        detail.entry.extension === 'epub' ||
-                        detail.entry.extension === 'pdf')
-                    "
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    title="转为规范化压缩 EPUB 3.0（默认保留源文件）"
-                    @click="emit('openNormalizeEpub', detail.entry)"
-                  >
-                    <LuPackageCheck class="h-3 w-3" />
-                    <span>转规范化 EPUB</span>
-                  </button>
-
-                  <button
-                    v-if="detail.entry.media_kind === 'comic'"
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openComicPages', detail.entry)"
-                  >
-                    <LuWand2 class="h-3 w-3" />
-                    <span>页面瘦身</span>
-                  </button>
-
-                  <button
-                    v-if="detail.entry.media_kind === 'music'"
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openMusicTools', detail.entry)"
-                  >
-                    <LuMusic class="h-3 w-3" />
-                    <span>音频工具</span>
-                  </button>
+                    {{ detail.metadata.data.bit_rate_kbps }} kbps
+                  </span>
                 </template>
 
-                <template v-else>
-                  <button
-                    type="button"
-                    :disabled="uploadingArtwork"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="triggerArtworkUpload(videoArtworkSlot)"
-                  >
-                    <LuUpload class="h-3 w-3" />
-                    <span>上传{{ videoArtworkSlot === 'poster' ? '海报' : videoArtworkSlot === 'fanart' ? '背景' : '剧照' }}</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    :class="isVideoFieldLocked(videoArtworkSlot) ? 'md-chip-selected' : ''"
-                    @click="toggleVideoFieldLock(videoArtworkSlot)"
-                  >
-                    <LuLock v-if="isVideoFieldLocked(videoArtworkSlot)" class="h-3 w-3" />
-                    <LuUnlock v-else class="h-3 w-3" />
-                    <span>锁图</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    @click="emit('openVideoTools', detail.entry)"
-                  >
-                    <LuFilm class="h-3 w-3" />
-                    <span>字幕/剧集</span>
-                  </button>
+                <template v-else-if="detail.metadata.kind === 'comic'">
+                  <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+                    {{ detail.metadata.data.page_count }} 页
+                  </span>
                 </template>
+
+                <template v-else-if="detail.metadata.kind === 'video'">
+                  <span
+                    v-if="detail.metadata.data.width && detail.metadata.data.height"
+                    class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+                  >
+                    {{ detail.metadata.data.width }}×{{ detail.metadata.data.height }}
+                  </span>
+                </template>
+
+                <template v-else-if="detail.metadata.kind === 'book'">
+                  <span class="rounded-full bg-[var(--md-sys-color-surface-container)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+                    {{
+                      detail.metadata.data.format === 'epub'
+                        ? 'EPUB 内封'
+                        : `${detail.metadata.data.format.toUpperCase()} 旁路 .opf`
+                    }}
+                  </span>
+                </template>
+              </div>
+
+              <!-- Read-Only Completeness Badges -->
+              <div class="flex flex-wrap items-center gap-1">
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                  :class="
+                    detail.entry.completeness.has_cover
+                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                      : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+                  "
+                >
+                  {{ detail.entry.completeness.has_cover ? '有封面' : '缺封面' }}
+                </span>
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                  :class="
+                    detail.entry.completeness.has_summary_or_lyrics
+                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
+                  "
+                >
+                  {{
+                    detail.entry.media_kind === 'music'
+                      ? detail.entry.completeness.has_summary_or_lyrics
+                        ? '有歌词'
+                        : '缺歌词'
+                      : detail.entry.completeness.has_summary_or_lyrics
+                        ? '有简介'
+                        : '缺简介'
+                  }}
+                </span>
+                <span
+                  class="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                  :class="
+                    detail.entry.completeness.has_nfo_or_tag_block
+                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
+                  "
+                >
+                  {{ detail.entry.completeness.has_nfo_or_tag_block ? '有标签' : '缺标签' }}
+                </span>
               </div>
             </div>
           </div>
@@ -979,90 +1042,40 @@ defineExpose({
             {{ errorMsg }}
           </div>
 
-          <!-- Left Editable Domain Metadata Form -->
-          <InspectorMusicForm
-            v-if="detail.metadata.kind === 'music'"
-            :form="musicForm"
-            :sidecar-lrc-filename="detail.metadata.data.sidecar_lrc_filename"
-            :file-key="`${detail.entry.root_id}:${detail.entry.rel_path}`"
-          />
-
-          <InspectorVideoForm
-            v-else-if="detail.metadata.kind === 'video'"
-            :form="videoForm"
-          />
-
-          <InspectorComicForm
-            v-else-if="detail.metadata.kind === 'comic'"
-            :form="comicForm"
-          />
-
-          <InspectorBookForm
-            v-else-if="detail.metadata.kind === 'book'"
-            :form="bookForm"
-            :book-format="detail.metadata.data.format"
-            :writable="detail.metadata.data.writable"
-            :is-epub="detail.entry.extension === 'epub'"
-            :has-cover="detail.metadata.data.has_cover"
-            :polishing-book="polishingBook"
-            @polish="handlePolishBook"
-          />
-        </div>
-
-        <!-- Left Bottom Action Bar -->
-        <div
-          class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/75 px-4 py-2.5"
-        >
-          <div class="flex items-center gap-3">
-            <span class="hidden text-[10px] text-[var(--md-sys-color-on-surface-variant)] xl:inline">
-              ⌘S 保存 · ⌘↵ 下一项
-            </span>
-            <label
-              v-if="detail.metadata.kind === 'music' && pendingCoverUrl"
-              class="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-              title="保存内嵌封面时同步在专辑目录写入 cover 图片"
+          <!-- Read-Only Structured Local Metadata Grid (1-to-1 Mirror of Right Column) -->
+          <div class="grid grid-cols-2 gap-2.5">
+            <div
+              v-for="field in localReadOnlyFields"
+              :key="field.id"
+              :class="field.half ? 'col-span-1' : 'col-span-2'"
+              class="space-y-1"
             >
-              <input
-                v-model="writeAlbumCover"
-                type="checkbox"
-                class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
-              />
-              <span>同步专辑 cover</span>
-            </label>
-          </div>
-
-          <div class="ml-auto flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              :disabled="!canSaveMetadata || saving"
-              class="md-btn md-btn-sm md-btn-text md-state"
-              title="保存左侧元数据并按默认模板重命名归档"
-              @click="saveMetadata(true, false)"
-            >
-              <LuFileSignature class="h-3.5 w-3.5" />
-              <span>保存并归档</span>
-            </button>
-
-            <button
-              v-if="hasNext"
-              type="button"
-              :disabled="!canSaveMetadata || saving"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
-              @click="saveMetadata(false, true)"
-            >
-              <span>保存并下一项</span>
-            </button>
-
-            <button
-              type="button"
-              :disabled="!canSaveMetadata || saving"
-              class="md-btn md-btn-sm md-btn-filled md-state"
-              @click="saveMetadata(false, false)"
-            >
-              <LuRefreshCw v-if="saving" class="h-3.5 w-3.5 animate-spin" />
-              <LuSave v-else class="h-3.5 w-3.5" />
-              <span>{{ saving ? txt.actions.saving : '保存左侧' }}</span>
-            </button>
+              <div class="text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
+                {{ field.label }}
+              </div>
+              <div
+                v-if="field.multiline"
+                class="min-h-[84px] max-h-56 overflow-y-auto rounded-xl border border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface)]/80 px-2.5 py-2 text-xs leading-relaxed whitespace-pre-wrap select-text"
+                :class="
+                  field.value
+                    ? 'text-[var(--md-sys-color-on-surface)]'
+                    : 'text-[var(--md-sys-color-on-surface-variant)]/55'
+                "
+              >
+                {{ field.value || '—' }}
+              </div>
+              <div
+                v-else
+                class="flex min-h-9 items-center rounded-xl border border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface)]/80 px-2.5 py-1.5 text-xs break-words select-text"
+                :class="
+                  field.value
+                    ? 'text-[var(--md-sys-color-on-surface)]'
+                    : 'text-[var(--md-sys-color-on-surface-variant)]/55'
+                "
+              >
+                {{ field.value || '—' }}
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1077,9 +1090,8 @@ defineExpose({
             :settings="settings"
             :auto-search-trigger="autoSearchTrigger"
             :selected-preview-key="candidatePreview?.key ?? null"
-            @fill-all="handleFillAll"
-            @fill-field="handleFillField"
-            @direct-apply="(m, mode) => handleDirectApply(m, mode, false)"
+            :allow-fill-left="false"
+            @direct-apply="(m, mode) => handleApplyAndSave(m, mode, false)"
             @select-preview="candidatePreview = $event"
             @open-settings="emit('openSettingsScrapers')"
             @settings-updated="emit('settingsUpdated', $event)"
@@ -1087,23 +1099,23 @@ defineExpose({
         </div>
       </div>
 
-      <!-- COLUMN 3 (RIGHT): Editable Selected Scraped Result -->
+      <!-- COLUMN 3 (RIGHT): Editable Pending Result & Save Area -->
       <div class="flex min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)]">
         <CandidateDetailPreviewPane
           v-if="candidatePreview"
+          ref="previewPaneRef"
           :media-kind="detail.entry.media_kind"
           :preview="candidatePreview"
           :has-next="hasNext"
           :closable="false"
           :saving="saving"
-          @fill-all="handleFillAll"
-          @fill-field="handlePreviewFillField"
-          @direct-apply="(m, mode) => handleDirectApply(m, mode, false)"
-          @direct-apply-next="(m, mode) => handleDirectApply(m, mode, true)"
+          :allow-fill-left="false"
+          @direct-apply="(m, mode, opts) => handleApplyAndSave(m, mode, false, opts)"
+          @direct-apply-next="(m, mode, opts) => handleApplyAndSave(m, mode, true, opts)"
         />
         <div
           v-else
-          class="flex flex-1 flex-col items-center justify-center gap-2.5 px-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
         >
           <div
             class="flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--md-sys-color-surface-container-high)]"
@@ -1113,9 +1125,18 @@ defineExpose({
           <p class="font-semibold text-[var(--md-sys-color-on-surface)]">
             等待选择刮削源结果
           </p>
-          <p class="max-w-[240px] text-[11px] leading-relaxed opacity-80">
-            在中间搜索并点击「多源瀑布聚合结果」或任意候选源条目，此处会以与左侧一致的结构展示并允许你直接编辑后保存。
+          <p class="max-w-[260px] text-[11px] leading-relaxed opacity-80">
+            在中间搜索并点击「多源瀑布聚合结果」或任意候选源条目，即可在此处编辑并写入原文件；落盘后左侧会自动刷新为最新条目信息。
           </p>
+          <button
+            v-if="canSaveMetadata"
+            type="button"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
+            @click="openLocalDraftInRightPane"
+          >
+            <LuPencil class="h-3.5 w-3.5" />
+            <span>基于当前条目手动编辑</span>
+          </button>
         </div>
       </div>
     </div>

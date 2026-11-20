@@ -39,14 +39,20 @@ import {
 } from '../inspector/useMetadataForm'
 import type { CandidatePreviewState } from './CandidateDetailPreviewPane.vue'
 
-const props = defineProps<{
-  detail: MediaFileDetail | null
-  autoSearchTrigger: number
-  settings?: PublicSettingsDto | null
-  externalKeyword?: string
-  externalArtist?: string
-  selectedPreviewKey?: string | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    detail: MediaFileDetail | null
+    autoSearchTrigger: number
+    settings?: PublicSettingsDto | null
+    externalKeyword?: string
+    externalArtist?: string
+    selectedPreviewKey?: string | null
+    allowFillLeft?: boolean
+  }>(),
+  {
+    allowFillLeft: true,
+  },
+)
 
 const emit = defineEmits<{
   fillAll: [meta: ScrapedMetadata, mode: ApplyFillMode]
@@ -1025,7 +1031,11 @@ defineExpose({
         <LuSearch class="h-6 w-6 opacity-35" />
         <p>点击上方「搜索」拉取在线候选</p>
         <p class="max-w-[220px] text-[11px] opacity-75">
-          点候选的「← 整条填入」或点任意字段胶囊即可回填至中栏，确认后再保存
+          {{
+            allowFillLeft
+              ? '点候选的「← 整条填入」或点任意字段胶囊即可回填至中栏，确认后再保存'
+              : '点击「多源瀑布聚合结果」或任意候选卡片，在右侧预览编辑并保存'
+          }}
         </p>
         <button
           v-if="configuredProviders.length > 0 && canSearch"
@@ -1088,9 +1098,19 @@ defineExpose({
             <button
               type="button"
               class="group relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]"
-              :title="isCoverUsable(mergedMeta.cover_url) ? '点击仅填入这张封面' : '无可用封面'"
-              :disabled="!isCoverUsable(mergedMeta.cover_url)"
-              @click.stop="handleFillDetailField('cover', mergedMeta, '封面')"
+              :title="
+                allowFillLeft
+                  ? isCoverUsable(mergedMeta.cover_url)
+                    ? '点击仅填入这张封面'
+                    : '无可用封面'
+                  : '在右侧预览多源聚合结果'
+              "
+              :disabled="allowFillLeft && !isCoverUsable(mergedMeta.cover_url)"
+              @click.stop="
+                allowFillLeft
+                  ? handleFillDetailField('cover', mergedMeta, '封面')
+                  : selectMergedPreview()
+              "
             >
               <img
                 v-if="isCoverUsable(mergedMeta.cover_url)"
@@ -1108,7 +1128,7 @@ defineExpose({
                 <span class="text-[8px]">无图</span>
               </div>
               <span
-                v-if="isCoverUsable(mergedMeta.cover_url)"
+                v-if="allowFillLeft && isCoverUsable(mergedMeta.cover_url)"
                 class="absolute inset-0 flex items-center justify-center bg-black/55 text-[9px] font-bold text-white opacity-0 transition group-hover:opacity-100"
               >
                 用图
@@ -1134,6 +1154,7 @@ defineExpose({
               <!-- Unified Action Bar (Matches Candidate Cards) -->
               <div class="mt-2 flex flex-wrap items-center gap-1.5">
                 <button
+                  v-if="allowFillLeft"
                   type="button"
                   class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-on-accent)] transition hover:opacity-95"
                   title="把多源聚合结果填入左侧表单（暂不落盘）"
@@ -1161,6 +1182,7 @@ defineExpose({
                 </button>
 
                 <button
+                  v-if="allowFillLeft"
                   type="button"
                   class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
                   @click.stop="mergedExpanded = !mergedExpanded; if (mergedExpanded) waterfallExpanded = false; selectMergedPreview()"
@@ -1377,9 +1399,19 @@ defineExpose({
             <button
               type="button"
               class="group relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]"
-              :title="isCoverUsable(c.cover_url) ? '点击直接填入这张封面' : '无可用封面'"
-              :disabled="!isCoverUsable(c.cover_url)"
-              @click.stop="handleQuickFillFromCandidate(c, 'cover')"
+              :title="
+                allowFillLeft
+                  ? isCoverUsable(c.cover_url)
+                    ? '点击直接填入这张封面'
+                    : '无可用封面'
+                  : '点击在右侧预览此候选详情'
+              "
+              :disabled="allowFillLeft && !isCoverUsable(c.cover_url)"
+              @click.stop="
+                allowFillLeft
+                  ? handleQuickFillFromCandidate(c, 'cover')
+                  : selectCandidatePreview(c)
+              "
             >
               <img
                 v-if="isCoverUsable(c.cover_url)"
@@ -1394,7 +1426,7 @@ defineExpose({
                 <span class="text-[8px]">无图</span>
               </div>
               <span
-                v-if="isCoverUsable(c.cover_url)"
+                v-if="allowFillLeft && isCoverUsable(c.cover_url)"
                 class="absolute inset-0 flex items-center justify-center bg-black/55 text-[9px] font-bold text-white opacity-0 transition group-hover:opacity-100"
               >
                 用图
@@ -1425,29 +1457,36 @@ defineExpose({
               </div>
 
               <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--ctp-subtext0)]">
-                <button
-                  v-if="c.subtitle"
-                  type="button"
-                  class="truncate hover:text-[var(--ctp-accent)] hover:underline"
-                  title="点击单独填入作者/副标题"
-                  @click.stop="handleQuickFillFromCandidate(c, 'creators')"
-                >
-                  {{ c.subtitle }}
-                </button>
-                <button
-                  v-if="c.year"
-                  type="button"
-                  class="font-mono hover:text-[var(--ctp-accent)] hover:underline"
-                  title="点击单独填入年份"
-                  @click.stop="handleQuickFillFromCandidate(c, 'year')"
-                >
-                  {{ c.year }}
-                </button>
+                <template v-if="allowFillLeft">
+                  <button
+                    v-if="c.subtitle"
+                    type="button"
+                    class="truncate hover:text-[var(--ctp-accent)] hover:underline"
+                    title="点击单独填入作者/副标题"
+                    @click.stop="handleQuickFillFromCandidate(c, 'creators')"
+                  >
+                    {{ c.subtitle }}
+                  </button>
+                  <button
+                    v-if="c.year"
+                    type="button"
+                    class="font-mono hover:text-[var(--ctp-accent)] hover:underline"
+                    title="点击单独填入年份"
+                    @click.stop="handleQuickFillFromCandidate(c, 'year')"
+                  >
+                    {{ c.year }}
+                  </button>
+                </template>
+                <template v-else>
+                  <span v-if="c.subtitle" class="truncate">{{ c.subtitle }}</span>
+                  <span v-if="c.year" class="font-mono">{{ c.year }}</span>
+                </template>
               </div>
 
               <!-- Quick Action Buttons -->
               <div class="mt-2 flex flex-wrap items-center gap-1.5">
                 <button
+                  v-if="allowFillLeft"
                   type="button"
                   :disabled="loadingDetailKey === candKey(c)"
                   class="inline-flex items-center gap-1 rounded-lg bg-[var(--ctp-accent-soft)] px-2 py-1 text-[10px] font-semibold text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent)] hover:text-[var(--ctp-on-accent)] disabled:opacity-50"
@@ -1460,6 +1499,7 @@ defineExpose({
                 </button>
 
                 <button
+                  v-if="allowFillLeft"
                   type="button"
                   class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
                   @click.stop="handleToggleExpand(c)"
