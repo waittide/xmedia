@@ -11,6 +11,8 @@ pub struct CompletenessFlags {
     pub has_cover: bool,
     pub has_summary_or_lyrics: bool,
     pub has_nfo_or_tag_block: bool,
+    #[serde(default)]
+    pub is_normalized: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +67,8 @@ pub struct BookFileMeta {
     pub tags: Vec<String>,
     #[serde(default)]
     pub locked_fields: Vec<String>,
+    #[serde(default)]
+    pub is_normalized: bool,
     pub has_cover: bool,
     pub writable: bool,
 }

@@ -1368,6 +1368,7 @@ impl MediaWorkbenchService {
 
         let mut items = Vec::with_capacity(rel_paths.len());
         let mut succeeded = 0usize;
+        let mut skipped = 0usize;
         let mut failed = 0usize;
         let mut total_before_bytes = 0u64;
         let mut total_after_bytes = 0u64;
@@ -1395,6 +1396,8 @@ impl MediaWorkbenchService {
                         compressed_images: 0,
                         removed_orphans: 0,
                         deleted_source: false,
+                        skipped: false,
+                        skip_reason: None,
                         error: Some(err.to_string()),
                     });
                     continue;
@@ -1412,9 +1415,13 @@ impl MediaWorkbenchService {
 
             match result {
                 Ok(out) => {
-                    succeeded += 1;
-                    total_before_bytes = total_before_bytes.saturating_add(out.before_bytes);
-                    total_after_bytes = total_after_bytes.saturating_add(out.after_bytes);
+                    if out.skipped {
+                        skipped += 1;
+                    } else {
+                        succeeded += 1;
+                        total_before_bytes = total_before_bytes.saturating_add(out.before_bytes);
+                        total_after_bytes = total_after_bytes.saturating_add(out.after_bytes);
+                    }
                     let output_rel = out
                         .output_path
                         .strip_prefix(&root_path)
@@ -1436,6 +1443,8 @@ impl MediaWorkbenchService {
                         compressed_images: out.compressed_images,
                         removed_orphans: out.removed_orphans,
                         deleted_source: out.deleted_source,
+                        skipped: out.skipped,
+                        skip_reason: out.skip_reason,
                         error: None,
                     });
                 }
@@ -1456,6 +1465,8 @@ impl MediaWorkbenchService {
                         compressed_images: 0,
                         removed_orphans: 0,
                         deleted_source: false,
+                        skipped: false,
+                        skip_reason: None,
                         error: Some(err.to_string()),
                     });
                 }
@@ -1465,6 +1476,7 @@ impl MediaWorkbenchService {
         Ok(NormalizeBooksBatchReportDto {
             total: rel_paths.len(),
             succeeded,
+            skipped,
             failed,
             total_before_bytes,
             total_after_bytes,

@@ -390,6 +390,7 @@ impl MediaInspectorPort for LoftyMusicInspector {
                         has_summary_or_lyrics: m.sidecar_lrc.is_some()
                             || m.embedded_lyrics.is_some(),
                         has_nfo_or_tag_block: !m.album.trim().is_empty(),
+                        is_normalized: false,
                     },
                 }
             }

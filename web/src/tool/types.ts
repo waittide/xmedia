@@ -261,6 +261,7 @@ export interface NormalizeBookToEpubOptionsDto {
   generate_jacket: boolean
   remove_orphans: boolean
   pdf_scanned_fallback: boolean
+  skip_normalized: boolean
 }
 
 export interface NormalizeBookItemReportDto {
@@ -274,12 +275,15 @@ export interface NormalizeBookItemReportDto {
   compressed_images: number
   removed_orphans: number
   deleted_source: boolean
+  skipped: boolean
+  skip_reason: string | null
   error: string | null
 }
 
 export interface NormalizeBooksBatchReportDto {
   total: number
   succeeded: number
+  skipped: number
   failed: number
   total_before_bytes: number
   total_after_bytes: number
@@ -292,6 +296,7 @@ export interface CompletenessFlags {
   has_cover: boolean
   has_summary_or_lyrics: boolean
   has_nfo_or_tag_block: boolean
+  is_normalized?: boolean
 }
 
 export interface FolderEntryDto {
@@ -338,6 +343,7 @@ export interface BookFileMeta {
   isbn: string | null
   tags: string[]
   locked_fields: string[]
+  is_normalized?: boolean
   has_cover: boolean
   writable: boolean
 }

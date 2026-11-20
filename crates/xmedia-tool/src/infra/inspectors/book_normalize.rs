@@ -79,6 +79,9 @@ pub struct NormalizeBookToEpubOptions {
     /// For scanned/image-only PDFs without extractable text, convert page images into image-page EPUB.
     #[serde(default = "default_true")]
     pub pdf_scanned_fallback: bool,
+    /// Skip EPUBs already tagged with `xmedia:normalized` and `.orig.epub` backup files (default: true).
+    #[serde(default = "default_true")]
+    pub skip_normalized: bool,
 }
 
 impl Default for NormalizeBookToEpubOptions {
@@ -92,6 +95,7 @@ impl Default for NormalizeBookToEpubOptions {
             generate_jacket: true,
             remove_orphans: true,
             pdf_scanned_fallback: true,
+            skip_normalized: true,
         }
     }
 }
@@ -107,6 +111,8 @@ pub struct NormalizeBookOutcome {
     pub compressed_images: usize,
     pub removed_orphans: usize,
     pub deleted_source: bool,
+    pub skipped: bool,
+    pub skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +127,8 @@ pub struct NormalizeBookItemReportDto {
     pub compressed_images: usize,
     pub removed_orphans: usize,
     pub deleted_source: bool,
+    pub skipped: bool,
+    pub skip_reason: Option<String>,
     pub error: Option<String>,
 }
 
@@ -128,6 +136,7 @@ pub struct NormalizeBookItemReportDto {
 pub struct NormalizeBooksBatchReportDto {
     pub total: usize,
     pub succeeded: usize,
+    pub skipped: usize,
     pub failed: usize,
     pub total_before_bytes: u64,
     pub total_after_bytes: u64,
@@ -385,6 +394,25 @@ fn is_os_junk_entry(path: &str) -> bool {
         || lower == "thumbs.db"
         || lower.ends_with("/desktop.ini")
         || lower == "desktop.ini"
+}
+
+/// Returns true if the filename matches an original EPUB backup produced by normalization
+/// (e.g. `book.orig.epub` or `book.orig.2.epub`).
+pub fn is_orig_epub_backup_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    let Some(stem) = lower.strip_suffix(".epub") else {
+        return false;
+    };
+    if stem.ends_with(".orig") {
+        return true;
+    }
+    if let Some((prefix, suffix)) = stem.rsplit_once(".orig.") {
+        return !prefix.is_empty() && !suffix.is_empty();
+    }
+    false
 }
 
 fn unique_orig_epub_backup_path(epub_path: &Path) -> PathBuf {
@@ -698,14 +726,17 @@ fn write_fresh_normalized_epub(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\" unique-identifier=\"bookid\">\n  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n    <dc:identifier id=\"bookid\">{}</dc:identifier>\n  </metadata>\n  <manifest></manifest>\n  <spine toc=\"ncx\"></spine>\n</package>\n",
             escape(&book_uuid)
         );
-        let with_meta = replace_opf_metadata_block(&base_opf, meta, cover_item_id, "bookid", "3.0");
+        let mut normalized_meta = meta.clone();
+        normalized_meta.is_normalized = true;
+        let with_meta =
+            replace_opf_metadata_block(&base_opf, &normalized_meta, cover_item_id, "bookid", "3.0");
         let final_opf = rebuild_opf_manifest_and_spine(
             &with_meta,
             &manifest_nodes,
             &spine_ids,
             "ncx",
             None,
-            meta,
+            &normalized_meta,
             "bookid",
             "3.0",
         );
@@ -724,10 +755,12 @@ fn write_fresh_normalized_epub(
     })
 }
 
+type EncodedCoverAsset = (Vec<u8>, &'static str, &'static str);
+
 fn load_and_compress_sidecar_cover(
     source_path: &Path,
     opts: &NormalizeBookToEpubOptions,
-) -> (Option<(Vec<u8>, &'static str, &'static str)>, usize) {
+) -> (Option<EncodedCoverAsset>, usize) {
     let Some(cov_path) = find_sidecar_cover(source_path) else {
         return (None, 0);
     };
@@ -803,6 +836,8 @@ fn normalize_txt_to_epub(
         compressed_images,
         removed_orphans: 0,
         deleted_source,
+        skipped: false,
+        skip_reason: None,
     })
 }
 
@@ -852,7 +887,40 @@ fn normalize_existing_epub(
     opts: &NormalizeBookToEpubOptions,
 ) -> DomainResult<NormalizeBookOutcome> {
     let before_bytes = std::fs::metadata(epub_path).map(|m| m.len()).unwrap_or(0);
-    let meta = read_book_meta_any(epub_path)?;
+
+    if opts.skip_normalized && is_orig_epub_backup_path(epub_path) {
+        return Ok(NormalizeBookOutcome {
+            output_path: epub_path.to_path_buf(),
+            backup_path: None,
+            source_format: "epub".to_string(),
+            before_bytes,
+            after_bytes: before_bytes,
+            chapter_count: 0,
+            compressed_images: 0,
+            removed_orphans: 0,
+            deleted_source: false,
+            skipped: true,
+            skip_reason: Some("原件备份文件 (.orig.epub)".to_string()),
+        });
+    }
+
+    let mut meta = read_book_meta_any(epub_path)?;
+    if opts.skip_normalized && meta.is_normalized {
+        return Ok(NormalizeBookOutcome {
+            output_path: epub_path.to_path_buf(),
+            backup_path: None,
+            source_format: "epub".to_string(),
+            before_bytes,
+            after_bytes: before_bytes,
+            chapter_count: 0,
+            compressed_images: 0,
+            removed_orphans: 0,
+            deleted_source: false,
+            skipped: true,
+            skip_reason: Some("已是规范化 EPUB 3.0".to_string()),
+        });
+    }
+    meta.is_normalized = true;
     let lang = meta.language.as_deref().unwrap_or("zh-CN");
 
     let f =
@@ -1356,6 +1424,8 @@ fn normalize_existing_epub(
         compressed_images,
         removed_orphans,
         deleted_source: false,
+        skipped: false,
+        skip_reason: None,
     })
 }
 
@@ -1831,6 +1901,8 @@ fn normalize_pdf_to_epub(
         compressed_images,
         removed_orphans: 0,
         deleted_source,
+        skipped: false,
+        skip_reason: None,
     })
 }
 
@@ -1950,6 +2022,7 @@ mod tests {
             generate_jacket: true,
             remove_orphans: true,
             pdf_scanned_fallback: true,
+            skip_normalized: true,
         };
 
         let res = normalize_book_to_epub(&epub_path, &opts).unwrap();
@@ -1977,6 +2050,28 @@ mod tests {
             .read_to_string(&mut ch1)
             .unwrap();
         assert!(ch1.contains("pic1.webp"));
+
+        // Verify xmedia:normalized marker was persisted and read back
+        let reread = read_book_meta_any(&epub_path).unwrap();
+        assert!(reread.is_normalized);
+
+        // Re-running with skip_normalized=true should skip both the normalized EPUB and its .orig.epub backup
+        let skipped_main = normalize_book_to_epub(&epub_path, &opts).unwrap();
+        assert!(skipped_main.skipped);
+        assert!(skipped_main.backup_path.is_none());
+        assert!(!tmp.path().join("novel.orig.2.epub").exists());
+
+        let orig_backup = tmp.path().join("novel.orig.epub");
+        let skipped_backup = normalize_book_to_epub(&orig_backup, &opts).unwrap();
+        assert!(skipped_backup.skipped);
+
+        // Force re-run with skip_normalized=false should process normally
+        let mut force_opts = opts.clone();
+        force_opts.skip_normalized = false;
+        force_opts.keep_source = false;
+        let forced = normalize_book_to_epub(&epub_path, &force_opts).unwrap();
+        assert!(!forced.skipped);
+        assert!(read_book_meta_any(&epub_path).unwrap().is_normalized);
     }
 
     #[test]

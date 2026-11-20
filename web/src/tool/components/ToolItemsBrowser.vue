@@ -189,6 +189,10 @@ function formatModifiedDate(unixSecs: number): string {
   return `${y}-${m}-${day}`
 }
 
+function isOrigBackupFile(fileName: string): boolean {
+  return /\.orig(?:\.[^./]+)?\.epub$/i.test(fileName)
+}
+
 function relativeDirBadge(relPath: string): string | null {
   const idx = relPath.lastIndexOf('/')
   const parent = idx === -1 ? '' : relPath.slice(0, idx)
@@ -811,6 +815,20 @@ function relativeDirBadge(relPath: string): string | null {
                 >
                   {{ file.completeness.has_nfo_or_tag_block ? '标签' : '缺标' }}
                 </span>
+                <span
+                  v-if="file.media_kind === 'book' && file.extension === 'epub' && isOrigBackupFile(file.file_name)"
+                  class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+                  title="规范化保留的原始 EPUB 备份"
+                >
+                  备份
+                </span>
+                <span
+                  v-else-if="file.media_kind === 'book' && file.completeness.is_normalized"
+                  class="rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+                  title="已完成 EPUB 3.0 规范化"
+                >
+                  已规范
+                </span>
               </div>
 
               <!-- Quick Row Actions -->
@@ -831,11 +849,17 @@ function relativeDirBadge(relPath: string): string | null {
                 <button
                   v-if="
                     file.media_kind === 'book' &&
-                    (file.extension === 'txt' || file.extension === 'epub' || file.extension === 'pdf')
+                    (file.extension === 'txt' || file.extension === 'epub' || file.extension === 'pdf') &&
+                    !isOrigBackupFile(file.file_name)
                   "
                   type="button"
                   class="md-icon-btn md-icon-btn-sm md-state"
-                  title="转为规范化压缩 EPUB 3.0"
+                  :class="file.completeness.is_normalized ? 'text-emerald-500' : ''"
+                  :title="
+                    file.completeness.is_normalized
+                      ? '已规范化 EPUB 3.0（点击可按新参数重新规范化）'
+                      : '转为规范化压缩 EPUB 3.0'
+                  "
                   @click.stop="emit('openBookNormalizeEpub', [file])"
                 >
                   <LuPackageCheck class="h-4 w-4" />
@@ -1086,6 +1110,20 @@ function relativeDirBadge(relPath: string): string | null {
               >
                 {{ file.completeness.has_nfo_or_tag_block ? '有标签' : '缺标签' }}
               </span>
+              <span
+                v-if="file.media_kind === 'book' && file.extension === 'epub' && isOrigBackupFile(file.file_name)"
+                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+                title="规范化保留的原始 EPUB 备份"
+              >
+                原件备份
+              </span>
+              <span
+                v-else-if="file.media_kind === 'book' && file.completeness.is_normalized"
+                class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+                title="已完成 EPUB 3.0 规范化"
+              >
+                已规范化
+              </span>
             </div>
 
             <!-- Row Quick Icon Actions (Subtle until hovered) -->
@@ -1106,11 +1144,17 @@ function relativeDirBadge(relPath: string): string | null {
               <button
                 v-if="
                   file.media_kind === 'book' &&
-                  (file.extension === 'txt' || file.extension === 'epub' || file.extension === 'pdf')
+                  (file.extension === 'txt' || file.extension === 'epub' || file.extension === 'pdf') &&
+                  !isOrigBackupFile(file.file_name)
                 "
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
-                title="转为规范化压缩 EPUB 3.0"
+                :class="file.completeness.is_normalized ? 'text-emerald-500' : ''"
+                :title="
+                  file.completeness.is_normalized
+                    ? '已规范化 EPUB 3.0（点击可按新参数重新规范化）'
+                    : '转为规范化压缩 EPUB 3.0'
+                "
                 @click.stop="emit('openBookNormalizeEpub', [file])"
               >
                 <LuPackageCheck class="h-4 w-4" />

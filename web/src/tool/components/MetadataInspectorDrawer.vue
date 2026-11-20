@@ -705,11 +705,20 @@ defineExpose({
                     "
                     type="button"
                     class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                    title="转为规范化压缩 EPUB 3.0（默认保留源文件）"
+                    :class="
+                      detail.entry.completeness.is_normalized
+                        ? '!border-emerald-500/35 !bg-emerald-500/10 !text-emerald-500'
+                        : ''
+                    "
+                    :title="
+                      detail.entry.completeness.is_normalized
+                        ? '已是规范化 EPUB 3.0（点击可按新参数重新规范化）'
+                        : '转为规范化压缩 EPUB 3.0（默认保留源文件）'
+                    "
                     @click="emit('openNormalizeEpub', detail.entry)"
                   >
                     <LuPackageCheck class="h-3 w-3" />
-                    <span>转规范化 EPUB</span>
+                    <span>{{ detail.entry.completeness.is_normalized ? '已规范化 EPUB' : '转规范化 EPUB' }}</span>
                   </button>
 
                   <button

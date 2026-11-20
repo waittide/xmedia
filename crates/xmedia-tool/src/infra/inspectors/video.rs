@@ -1061,6 +1061,7 @@ impl MediaInspectorPort for VideoNfoInspector {
                         .as_ref()
                         .is_some_and(|s| !s.trim().is_empty()),
                     has_nfo_or_tag_block: meta.has_nfo,
+                    is_normalized: false,
                 },
             }
         })

@@ -746,6 +746,7 @@ impl MediaInspectorPort for CbzComicInspector {
                             .as_ref()
                             .is_some_and(|s| !s.trim().is_empty()),
                         has_nfo_or_tag_block: m.has_comic_info_xml,
+                        is_normalized: false,
                     },
                 }
             }

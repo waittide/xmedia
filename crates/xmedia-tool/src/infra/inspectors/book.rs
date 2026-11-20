@@ -149,6 +149,13 @@ fn parse_opf_bytes(opf_bytes: &[u8], format: &str, fallback_title: &str) -> Pars
                         }
                     }
                 }
+                "xmedia:normalized" => {
+                    if let Some(c) = content {
+                        let v = c.to_ascii_lowercase();
+                        meta.is_normalized =
+                            matches!(v.as_str(), "1" | "true" | "yes") || v.starts_with("epub3");
+                    }
+                }
                 _ => {}
             }
         }
@@ -536,6 +543,7 @@ pub(crate) fn replace_opf_metadata_block(
                             | "calibre:series_index"
                             | "calibre:subseries_index"
                             | "xmedia:locked_fields"
+                            | "xmedia:normalized"
                     )
                 }) {
                     if let Some(elem_id_val) = id {
@@ -833,6 +841,10 @@ pub(crate) fn replace_opf_metadata_block(
             "    <meta name=\"xmedia:locked_fields\" content=\"{}\"/>\n",
             escape(clean_locked.join(","))
         ));
+    }
+
+    if meta.is_normalized {
+        block.push_str("    <meta name=\"xmedia:normalized\" content=\"epub3\"/>\n");
     }
 
     if let Some(cid) = cover_id_hint {
@@ -1190,6 +1202,7 @@ pub(crate) fn read_book_meta_any(path: &Path) -> DomainResult<BookFileMeta> {
         meta = parse_opf_bytes(&bytes, &ext, &meta.title).meta;
     }
 
+    meta.is_normalized = false;
     meta.has_cover = find_sidecar_cover(path).is_some();
     Ok(meta)
 }
@@ -1231,6 +1244,7 @@ impl MediaInspectorPort for EpubBookInspector {
                             || m.publisher
                                 .as_ref()
                                 .is_some_and(|pub_name| !pub_name.trim().is_empty()),
+                        is_normalized: m.is_normalized,
                     },
                 }
             }

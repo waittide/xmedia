@@ -38,6 +38,7 @@ const form = reactive<{
   generate_jacket: boolean
   remove_orphans: boolean
   pdf_scanned_fallback: boolean
+  skip_normalized: boolean
 }>({
   keep_source: true,
   compress_images: true,
@@ -47,21 +48,16 @@ const form = reactive<{
   generate_jacket: true,
   remove_orphans: true,
   pdf_scanned_fallback: true,
+  skip_normalized: true,
 })
 
 const running = ref(false)
 const errorMsg = ref<string | null>(null)
 const report = ref<NormalizeBooksBatchReportDto | null>(null)
 
-watch(
-  () => props.open,
-  (isOpen) => {
-    if (isOpen) {
-      errorMsg.value = null
-      report.value = null
-    }
-  },
-)
+function isOrigBackupFile(fileName: string): boolean {
+  return /\.orig(?:\.[^./]+)?\.epub$/i.test(fileName)
+}
 
 const bookEntries = computed(() =>
   props.entries.filter(
@@ -69,6 +65,43 @@ const bookEntries = computed(() =>
       e.media_kind === 'book' &&
       (e.extension === 'txt' || e.extension === 'epub' || e.extension === 'pdf'),
   ),
+)
+
+const origBackupCount = computed(
+  () => bookEntries.value.filter((e) => e.extension === 'epub' && isOrigBackupFile(e.file_name)).length,
+)
+
+const alreadyNormalizedCount = computed(
+  () =>
+    bookEntries.value.filter(
+      (e) =>
+        e.extension === 'epub' &&
+        !isOrigBackupFile(e.file_name) &&
+        Boolean(e.completeness.is_normalized),
+    ).length,
+)
+
+const willSkipCount = computed(() =>
+  form.skip_normalized ? alreadyNormalizedCount.value + origBackupCount.value : 0,
+)
+
+const runnableCount = computed(() => Math.max(0, bookEntries.value.length - willSkipCount.value))
+
+const isSingleAlreadyNormalized = computed(
+  () => bookEntries.value.length === 1 && alreadyNormalizedCount.value === 1,
+)
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) {
+      errorMsg.value = null
+      report.value = null
+      // Batch mode defaults to skipping already-normalized EPUBs & .orig.epub backups;
+      // single-book intentional re-run defaults to force reprocessing unless it's an .orig.epub backup.
+      form.skip_normalized = bookEntries.value.length > 1 || origBackupCount.value > 0
+    }
+  },
 )
 
 const formatBreakdown = computed(() => {
@@ -108,6 +141,7 @@ async function handleRun(): Promise<void> {
       generate_jacket: form.generate_jacket,
       remove_orphans: form.remove_orphans,
       pdf_scanned_fallback: form.pdf_scanned_fallback,
+      skip_normalized: form.skip_normalized,
     }
     const res = await toolApi.normalizeBooksToEpub(
       props.rootId,
@@ -171,6 +205,17 @@ async function handleRun(): Promise<void> {
 
         <!-- Body -->
         <div class="flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          <!-- Single Already-Normalized Notice -->
+          <div
+            v-if="isSingleAlreadyNormalized"
+            class="flex items-start gap-2 rounded-2xl bg-[var(--md-sys-color-primary-container)]/55 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-primary-container)]"
+          >
+            <LuCheckCircle2 class="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              该书籍已标记为规范化 EPUB 3.0。继续执行将按下方新参数重新处理；若无需保留二次备份，可取消勾选「保留源文件」。
+            </span>
+          </div>
+
           <!-- Source Retention Option (Highlighted, Default: Keep) -->
           <div class="rounded-2xl bg-[var(--md-sys-color-surface)] p-3.5">
             <label class="flex cursor-pointer items-start gap-2.5">
@@ -311,6 +356,33 @@ async function handleRun(): Promise<void> {
               />
               <span>扫描版 PDF（无文字层）自动提取页面图片并压缩打包为图页 EPUB</span>
             </label>
+
+            <label class="flex cursor-pointer items-center justify-between gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
+              <span class="flex items-center gap-2">
+                <input
+                  v-model="form.skip_normalized"
+                  type="checkbox"
+                  :disabled="running"
+                  class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
+                />
+                <span>跳过已规范化 EPUB 与 .orig.epub 原件备份</span>
+              </span>
+              <span
+                v-if="alreadyNormalizedCount + origBackupCount > 0"
+                class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+                :class="
+                  form.skip_normalized
+                    ? 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
+                    : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+                "
+              >
+                {{
+                  form.skip_normalized
+                    ? `将跳过 ${willSkipCount} 项`
+                    : `强制重跑 ${alreadyNormalizedCount + origBackupCount} 项`
+                }}
+              </span>
+            </label>
           </div>
 
           <!-- Error Alert -->
@@ -329,6 +401,7 @@ async function handleRun(): Promise<void> {
                 <LuCheckCircle2 class="h-4 w-4 text-emerald-500" />
                 <span>
                   处理完成：成功 {{ report.succeeded }} 本
+                  <template v-if="report.skipped > 0">，跳过 {{ report.skipped }} 本</template>
                   <template v-if="report.failed > 0">，失败 {{ report.failed }} 本</template>
                 </span>
               </div>
@@ -364,6 +437,15 @@ async function handleRun(): Promise<void> {
                     {{ item.error }}
                   </div>
                   <div
+                    v-else-if="item.skipped"
+                    class="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+                  >
+                    <span class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium">
+                      已跳过
+                    </span>
+                    <span>{{ item.skip_reason || '已是规范化 EPUB' }}</span>
+                  </div>
+                  <div
                     v-else
                     class="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
                   >
@@ -379,7 +461,7 @@ async function handleRun(): Promise<void> {
                 </div>
 
                 <div
-                  v-if="!item.error"
+                  v-if="!item.error && !item.skipped"
                   class="shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   <div>{{ formatBytes(item.before_bytes) }} → {{ formatBytes(item.after_bytes) }}</div>
@@ -407,13 +489,21 @@ async function handleRun(): Promise<void> {
             </button>
             <button
               type="button"
-              :disabled="running || bookEntries.length === 0"
+              :disabled="running || runnableCount === 0"
               class="md-btn md-btn-sm md-btn-filled md-state"
               @click="handleRun"
             >
               <LuLoader2 v-if="running" class="h-3.5 w-3.5 animate-spin" />
               <LuPackageCheck v-else class="h-3.5 w-3.5" />
-              <span>{{ running ? '正在转换与压缩…' : `开始转换 (${bookEntries.length} 本)` }}</span>
+              <span>
+                {{
+                  running
+                    ? '正在转换与压缩…'
+                    : runnableCount === 0
+                      ? '所选均已跳过（可取消勾选以重跑）'
+                      : `开始转换 (${runnableCount} 本)`
+                }}
+              </span>
             </button>
           </div>
         </div>
