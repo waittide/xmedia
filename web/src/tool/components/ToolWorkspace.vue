@@ -7,6 +7,7 @@ import {
   LuClapperboard,
   LuDisc3,
   LuFileText,
+  LuFolder,
   LuImage,
   LuLayers,
   LuLoader2,
@@ -469,8 +470,41 @@ const breadcrumbs = computed<Array<{ label: string; relPath: string }>>(() => {
   return items
 })
 
+const isFolderManagerMode = computed<boolean>(
+  () =>
+    viewMode.value === 'folders' &&
+    !hasActiveSearchOrFilter.value &&
+    !(workbenchFocusPaths.value && workbenchFocusPaths.value.size > 0),
+)
+
+const currentFolderMap = computed(() => {
+  const m = new Map<string, { name: string; media_file_count: number; child_dir_count: number }>()
+  for (const f of snapshot.value?.folders ?? []) {
+    m.set(f.rel_path, {
+      name: f.name,
+      media_file_count: f.media_file_count,
+      child_dir_count: f.child_dir_count,
+    })
+  }
+  return m
+})
+
 const checkedFiles = computed<MediaFileEntry[]>(() => {
   if (selectedPaths.value.size === 0) return []
+  if (isFolderManagerMode.value) {
+    const folderPrefixes: string[] = []
+    for (const p of selectedPaths.value) {
+      if (currentFolderMap.value.has(p)) {
+        folderPrefixes.push(`${p}/`)
+      }
+    }
+    const allFiles = snapshot.value?.files ?? []
+    return allFiles.filter(
+      (f) =>
+        selectedPaths.value.has(f.rel_path) ||
+        folderPrefixes.some((prefix) => f.rel_path.startsWith(prefix)),
+    )
+  }
   return filteredFiles.value.filter((f) => selectedPaths.value.has(f.rel_path))
 })
 
@@ -639,6 +673,7 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
       const surviving = new Set<string>([
         ...snap.files.map((f) => f.rel_path),
         ...(snap.raw_files ?? []).map((f) => f.rel_path),
+        ...(snap.folders ?? []).map((d) => d.rel_path),
       ])
       const pruned = new Set<string>()
       for (const p of selectedPaths.value) {
@@ -733,16 +768,18 @@ async function inspectEntry(entry: MediaFileEntry): Promise<void> {
   }
 }
 
-function toggleSelectFile(relPath: string, shiftKey = false): void {
+function toggleSelectFile(relPath: string, shiftKey = false, orderedPaths?: string[]): void {
   const next = new Set(selectedPaths.value)
   if (shiftKey && lastSelectedRelPath.value) {
-    const isFolderRawMode =
-      viewMode.value === 'folders' &&
-      !hasActiveSearchOrFilter.value &&
-      !(workbenchFocusPaths.value && workbenchFocusPaths.value.size > 0)
-    const listPaths: string[] = isFolderRawMode
-      ? (snapshot.value?.raw_files ?? []).map((f) => f.rel_path)
-      : filteredFiles.value.map((f) => f.rel_path)
+    const listPaths: string[] =
+      orderedPaths && orderedPaths.length > 0
+        ? orderedPaths
+        : isFolderManagerMode.value
+          ? [
+              ...(snapshot.value?.folders ?? []).map((d) => d.rel_path),
+              ...(snapshot.value?.raw_files ?? []).map((f) => f.rel_path),
+            ]
+          : filteredFiles.value.map((f) => f.rel_path)
     const fromIdx = listPaths.indexOf(lastSelectedRelPath.value)
     const toIdx = listPaths.indexOf(relPath)
     if (fromIdx !== -1 && toIdx !== -1) {
@@ -806,6 +843,30 @@ function requestDeleteFiles(paths: string[], deleteCompanions: boolean): void {
   deleteDialogOpen.value = true
 }
 
+const deleteDialogFolderCount = computed<number>(
+  () => deleteDialogPaths.value.filter((p) => currentFolderMap.value.has(p)).length,
+)
+
+const deleteDialogTitle = computed<string>(() => {
+  if (deleteDialogCompanions.value) return '确认删除媒体条目与同名外挂？'
+  if (deleteDialogFolderCount.value > 0) {
+    return deleteDialogFolderCount.value === deleteDialogPaths.value.length
+      ? '确认递归删除所选文件夹？'
+      : '确认删除所选文件夹与文件？'
+  }
+  return '确认删除原始文件？'
+})
+
+const deleteDialogSubtitle = computed<string>(() => {
+  if (deleteDialogCompanions.value) {
+    return '主视图删除模式：同步删除主文件及其专属同名外挂（.opf / .nfo / .lrc / .srt / .ass / 同名封面）'
+  }
+  if (deleteDialogFolderCount.value > 0) {
+    return `文件夹视图删除模式：包含 ${deleteDialogFolderCount.value} 个文件夹，将递归删除目录及其内部全部文件；单个文件仅删除本身`
+  }
+  return '文件视图删除模式：仅删除所选原始文件本身，不会牵连删除其他外挂文件'
+})
+
 async function confirmDeleteFiles(): Promise<void> {
   if (!activeRootId.value || deleteDialogPaths.value.length === 0 || deletingFiles.value) return
   deletingFiles.value = true
@@ -817,14 +878,20 @@ async function confirmDeleteFiles(): Promise<void> {
       deleteDialogCompanions.value,
     )
     const deletedSet = new Set([...report.deleted_paths, ...report.deleted_companions])
+    const deletedPrefixes = report.deleted_paths
+      .filter((p) => currentFolderMap.value.has(p))
+      .map((p) => `${p}/`)
+    const isPathRemoved = (p: string): boolean =>
+      deletedSet.has(p) || deletedPrefixes.some((prefix) => p.startsWith(prefix))
+
     if (selectedPaths.value.size > 0) {
       const nextSel = new Set<string>()
       for (const p of selectedPaths.value) {
-        if (!deletedSet.has(p)) nextSel.add(p)
+        if (!isPathRemoved(p)) nextSel.add(p)
       }
       selectedPaths.value = nextSel
     }
-    if (activeDetail.value && deletedSet.has(activeDetail.value.entry.rel_path)) {
+    if (activeDetail.value && isPathRemoved(activeDetail.value.entry.rel_path)) {
       activeDetail.value = null
       inspectingPath.value = null
     }
@@ -839,7 +906,8 @@ async function confirmDeleteFiles(): Promise<void> {
         ? `（同步清理 ${report.deleted_companions.length} 个同名外挂）`
         : ''
     const failHint = report.failed.length > 0 ? `，${report.failed.length} 项失败` : ''
-    snackbar.show(`已删除 ${report.deleted_count} 个文件${compHint}${failHint}`)
+    const unit = deletedPrefixes.length > 0 ? '项' : '个文件'
+    snackbar.show(`已删除 ${report.deleted_count} ${unit}${compHint}${failHint}`)
   } catch (err) {
     deleteDialogError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -1862,12 +1930,8 @@ onBeforeUnmount(() => {
     <!-- Safe File Deletion Confirmation Dialog -->
     <MdDialog
       :open="deleteDialogOpen"
-      :title="deleteDialogCompanions ? '确认删除媒体条目与同名外挂？' : '确认删除原始文件？'"
-      :subtitle="
-        deleteDialogCompanions
-          ? '主视图删除模式：同步删除主文件及其专属同名外挂（.opf / .nfo / .lrc / .srt / .ass / 同名封面）'
-          : '文件视图删除模式：仅删除所选原始文件本身，不会牵连删除其他外挂文件'
-      "
+      :title="deleteDialogTitle"
+      :subtitle="deleteDialogSubtitle"
       max-width="max-w-lg"
       @close="!deletingFiles && (deleteDialogOpen = false)"
     >
@@ -1886,25 +1950,35 @@ onBeforeUnmount(() => {
         <p class="text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
           即将从磁盘<strong class="text-red-400">永久删除</strong>以下
           <strong class="font-mono text-[var(--md-sys-color-on-surface)]">{{ deleteDialogPaths.length }}</strong>
-          个文件，此操作不可撤销：
+          {{ deleteDialogFolderCount > 0 ? '项（含文件夹及其内部全部文件）' : '个文件' }}，此操作不可撤销：
         </p>
 
         <div
-          class="max-h-48 space-y-1 overflow-y-auto rounded-2xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container)]/60 p-2.5 font-mono text-[11px] text-[var(--md-sys-color-on-surface)]"
+          class="max-h-48 space-y-1.5 overflow-y-auto rounded-2xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container)]/60 p-2.5 font-mono text-[11px] text-[var(--md-sys-color-on-surface)]"
         >
           <div
             v-for="p in deleteDialogPaths.slice(0, 12)"
             :key="p"
-            class="truncate"
+            class="flex items-center gap-2"
             :title="p"
           >
-            {{ p }}
+            <LuFolder
+              v-if="currentFolderMap.has(p)"
+              class="h-3.5 w-3.5 shrink-0 text-amber-400"
+            />
+            <span class="min-w-0 flex-1 truncate">{{ p }}</span>
+            <span
+              v-if="currentFolderMap.has(p)"
+              class="shrink-0 rounded-full bg-red-500/15 px-1.5 py-0.5 font-sans text-[10px] font-medium text-red-400"
+            >
+              文件夹 · {{ currentFolderMap.get(p)!.media_file_count }} 项
+            </span>
           </div>
           <div
             v-if="deleteDialogPaths.length > 12"
             class="pt-1 text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
           >
-            ……以及其他 {{ deleteDialogPaths.length - 12 }} 个文件
+            ……以及其他 {{ deleteDialogPaths.length - 12 }} 项
           </div>
         </div>
       </div>

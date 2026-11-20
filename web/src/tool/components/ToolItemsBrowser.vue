@@ -112,7 +112,7 @@ const emit = defineEmits<{
   triggerRescan: []
   refreshDir: []
   inspectFile: [entry: MediaFileEntry]
-  toggleSelectFile: [relPath: string, shiftKey?: boolean]
+  toggleSelectFile: [relPath: string, shiftKey?: boolean, orderedPaths?: string[]]
   openBookContentEditor: [entry: MediaFileEntry]
   openBookNormalizeEpub: [entries: MediaFileEntry[]]
   openComicPageManager: [entry: MediaFileEntry]
@@ -214,13 +214,44 @@ const sortedRawFiles = computed<RawFileEntryDto[]>(() => {
   })
 })
 
-const allRawFilesSelected = computed(
+const folderModeSelectablePaths = computed<string[]>(() => [
+  ...sortedFolders.value.map((f) => f.rel_path),
+  ...sortedRawFiles.value.map((f) => f.rel_path),
+])
+
+const allFolderItemsSelected = computed(
   () =>
-    sortedRawFiles.value.length > 0 &&
-    sortedRawFiles.value.every((f) => props.selectedPaths.has(f.rel_path)),
+    folderModeSelectablePaths.value.length > 0 &&
+    folderModeSelectablePaths.value.every((p) => props.selectedPaths.has(p)),
 )
 
 const selectedRawPaths = computed<string[]>(() => Array.from(props.selectedPaths))
+
+const folderRelSet = computed<Set<string>>(
+  () => new Set(sortedFolders.value.map((f) => f.rel_path)),
+)
+
+const selectedFolderCount = computed<number>(() => {
+  let n = 0
+  for (const p of props.selectedPaths) {
+    if (folderRelSet.value.has(p)) n += 1
+  }
+  return n
+})
+
+const folderSelectionSummary = computed<string>(() => {
+  const dirs = selectedFolderCount.value
+  const files = Math.max(0, props.selectedPaths.size - dirs)
+  const parts: string[] = []
+  if (dirs > 0) parts.push(`${dirs} 文件夹`)
+  if (files > 0) parts.push(`${files} 文件`)
+  if (parts.length === 0) return `已选 ${props.selectedPaths.size} 项`
+  const base = `已选 ${parts.join(' · ')}`
+  if (dirs > 0 && props.checkedFiles.length > 0) {
+    return `${base}（含 ${props.checkedFiles.length} 媒体）`
+  }
+  return base
+})
 
 function rawFileCategory(
   raw: RawFileEntryDto,
@@ -504,7 +535,7 @@ function relativeDirBadge(relPath: string): string | null {
         <div
           v-if="
             sortedFolders.length === 0 &&
-            filteredFiles.length === 0 &&
+            sortedRawFiles.length === 0 &&
             (!snapshot || snapshot.parent_rel_path === null)
           "
           class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-16 text-center"
@@ -527,9 +558,9 @@ function relativeDirBadge(relPath: string): string | null {
           >
             <div class="flex w-5 shrink-0 items-center justify-center">
               <AppCheckbox
-                v-if="sortedRawFiles.length > 0"
-                :model-value="allRawFilesSelected"
-                @change="emit('toggleSelectAllRaw', sortedRawFiles.map((f) => f.rel_path))"
+                v-if="folderModeSelectablePaths.length > 0"
+                :model-value="allFolderItemsSelected"
+                @change="emit('toggleSelectAllRaw', folderModeSelectablePaths)"
               />
             </div>
             <div class="w-10 shrink-0" />
@@ -577,14 +608,25 @@ function relativeDirBadge(relPath: string): string | null {
             </button>
 
             <!-- Subfolder Rows -->
-            <button
+            <div
               v-for="folder in sortedFolders"
               :key="`fm-dir-${folder.rel_path}`"
-              type="button"
-              class="md-state group flex w-full items-center gap-3.5 px-4 py-2.5 text-left"
+              class="md-state group flex w-full cursor-pointer items-center gap-3.5 px-4 py-2.5 text-left"
+              :class="
+                selectedPaths.has(folder.rel_path)
+                  ? 'bg-[var(--md-sys-color-primary-container)]/35'
+                  : ''
+              "
               @click="emit('enterFolder', folder.rel_path, true)"
             >
-              <div class="w-5 shrink-0" />
+              <div
+                class="flex w-5 shrink-0 items-center justify-center"
+                @click.stop="
+                  emit('toggleSelectFile', folder.rel_path, $event.shiftKey, folderModeSelectablePaths)
+                "
+              >
+                <AppCheckbox :model-value="selectedPaths.has(folder.rel_path)" />
+              </div>
               <div
                 class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)]/85 text-[var(--md-sys-color-on-primary-container)]"
               >
@@ -628,10 +670,18 @@ function relativeDirBadge(relPath: string): string | null {
                   文件夹
                 </span>
               </div>
-              <div class="flex w-24 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="flex w-24 shrink-0 items-center justify-end gap-0.5 text-[var(--md-sys-color-on-surface-variant)]">
+                <button
+                  type="button"
+                  class="md-icon-btn md-icon-btn-sm md-state text-red-400 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/10"
+                  title="删除整个文件夹及其内部所有文件"
+                  @click.stop="emit('requestDeleteFiles', [folder.rel_path], false)"
+                >
+                  <LuTrash2 class="h-4 w-4" />
+                </button>
                 <LuChevronRight class="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
               </div>
-            </button>
+            </div>
 
             <!-- Empty Subfolder Inline Notice (keeps '..' row clickable) -->
             <div
@@ -658,7 +708,9 @@ function relativeDirBadge(relPath: string): string | null {
             >
               <div
                 class="flex w-5 shrink-0 items-center justify-center"
-                @click.stop="emit('toggleSelectFile', raw.rel_path, $event.shiftKey)"
+                @click.stop="
+                  emit('toggleSelectFile', raw.rel_path, $event.shiftKey, folderModeSelectablePaths)
+                "
               >
                 <AppCheckbox :model-value="selectedPaths.has(raw.rel_path)" />
               </div>
@@ -1076,41 +1128,113 @@ function relativeDirBadge(relPath: string): string | null {
           </button>
 
           <span class="pr-1 text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            已选 {{ selectedPaths.size }} 项
+            {{ isFolderManagerMode ? folderSelectionSummary : `已选 ${selectedPaths.size} 项` }}
           </span>
 
           <div class="mx-1 h-5 w-px bg-[var(--md-sys-color-outline-variant)]" />
 
           <template v-if="isFolderManagerMode">
-            <button
-              v-if="checkedFiles.length > 0"
-              type="button"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
-              title="按命名模板整理归档所选媒体文件"
-              @click="emit('openRename', checkedFiles)"
-            >
-              <LuFileSignature class="h-3.5 w-3.5" />
-              <span>整理归档 ({{ checkedFiles.length }})</span>
-            </button>
+            <template v-if="checkedFiles.length > 0">
+              <button
+                type="button"
+                class="md-btn md-btn-sm md-btn-filled md-state"
+                title="对所选文件及所选文件夹内的媒体条目执行批量自动刮削"
+                @click="emit('enqueueScrapeSelection')"
+              >
+                <LuSparkles class="h-3.5 w-3.5" />
+                <span>自动刮削 ({{ checkedFiles.length }})</span>
+              </button>
 
-            <button
-              v-if="checkedFiles.length > 0"
-              type="button"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
-              @click="emit('enqueueScrapeSelection')"
-            >
-              <LuSparkles class="h-3.5 w-3.5" />
-              <span>自动刮削 ({{ checkedFiles.length }})</span>
-            </button>
+              <button
+                type="button"
+                class="md-btn md-btn-sm md-btn-tonal md-state"
+                title="在三栏刮削工作台中逐项对照与编辑所选媒体条目"
+                @click="emit('openScrapeWorkbench', checkedFiles)"
+              >
+                <LuColumns3 class="h-3.5 w-3.5" />
+                <span>刮削工作台</span>
+              </button>
+
+              <button
+                type="button"
+                class="md-btn md-btn-sm md-btn-tonal md-state"
+                title="批量修改所选媒体条目的元信息"
+                @click="emit('openBatchMetadata')"
+              >
+                <LuPencil class="h-3.5 w-3.5" />
+                <span>批量编辑</span>
+              </button>
+
+              <button
+                type="button"
+                class="md-btn md-btn-sm md-btn-outlined md-state"
+                title="按命名模板整理归档所选媒体条目"
+                @click="emit('openRename', checkedFiles)"
+              >
+                <LuFileSignature class="h-3.5 w-3.5" />
+                <span>整理归档</span>
+              </button>
+
+              <button
+                v-if="selectedBookEntries.length > 0"
+                type="button"
+                class="md-btn md-btn-sm md-btn-text md-state"
+                title="将所选 TXT / EPUB / PDF 批量转为规范化压缩 EPUB 3.0"
+                @click="emit('openBookNormalizeEpub', selectedBookEntries)"
+              >
+                <LuPackageCheck class="h-3.5 w-3.5" />
+                <span>转规范化 EPUB</span>
+              </button>
+
+              <button
+                v-if="selectedComicEntries.length > 0"
+                type="button"
+                class="md-btn md-btn-sm md-btn-text md-state"
+                @click="emit('openComicSeriesTools')"
+              >
+                <LuLayers class="h-3.5 w-3.5" />
+                <span>漫画工具</span>
+              </button>
+
+              <button
+                v-if="selectedMusicEntries.length > 0"
+                type="button"
+                class="md-btn md-btn-sm md-btn-text md-state"
+                @click="emit('openMusicToolbox', selectedMusicEntries)"
+              >
+                <LuMusic class="h-3.5 w-3.5" />
+                <span>音频工具</span>
+              </button>
+
+              <button
+                v-if="selectedVideoEntries.length > 0"
+                type="button"
+                class="md-btn md-btn-sm md-btn-text md-state"
+                @click="emit('openVideoToolbox', selectedVideoEntries)"
+              >
+                <LuFilm class="h-3.5 w-3.5" />
+                <span>视频工具</span>
+              </button>
+            </template>
 
             <button
               type="button"
               class="md-btn md-btn-sm md-btn-outlined md-state !border-red-500/45 !text-red-400 hover:!bg-red-500/10"
-              title="仅删除所选原始文件本身（不删除同名外挂）"
+              :title="
+                selectedFolderCount > 0
+                  ? '永久删除所选文件夹（含内部全部文件）及所选原始文件'
+                  : '仅删除所选原始文件本身（不删除同名外挂）'
+              "
               @click="emit('requestDeleteFiles', selectedRawPaths, false)"
             >
               <LuTrash2 class="h-3.5 w-3.5" />
-              <span>删除文件 ({{ selectedRawPaths.length }})</span>
+              <span>
+                {{
+                  selectedFolderCount > 0
+                    ? `删除所选 (${selectedRawPaths.length})`
+                    : `删除文件 (${selectedRawPaths.length})`
+                }}
+              </span>
             </button>
           </template>
 

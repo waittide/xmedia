@@ -2151,6 +2151,43 @@ The Dark Forest.
         assert!(!sub.join("novel.opf").exists());
         assert!(!sub.join("novel.jpg").exists());
         assert!(!sub.exists());
+
+        // 4. Folder deletion: rejected in companion (main) mode, rejected for root, allowed recursively in folder mode
+        let folder_a = root.join("Author A");
+        let folder_b = root.join("Author B");
+        std::fs::create_dir_all(folder_a.join("nested")).unwrap();
+        std::fs::create_dir_all(&folder_b).unwrap();
+        std::fs::write(folder_a.join("book1.txt"), "b1").unwrap();
+        std::fs::write(folder_a.join("nested/book2.txt"), "b2").unwrap();
+        std::fs::write(folder_b.join("keep.txt"), "keep").unwrap();
+
+        let rep_main_dir = app
+            .workbench
+            .delete_files(root_id, &["Author A".into()], true)
+            .await
+            .unwrap();
+        assert_eq!(rep_main_dir.deleted_count, 0);
+        assert_eq!(rep_main_dir.failed.len(), 1);
+        assert!(folder_a.exists());
+
+        let rep_root_dir = app
+            .workbench
+            .delete_files(root_id, &[".".into()], false)
+            .await
+            .unwrap();
+        assert_eq!(rep_root_dir.deleted_count, 0);
+        assert_eq!(rep_root_dir.failed.len(), 1);
+        assert!(root.exists());
+
+        let rep_folder = app
+            .workbench
+            .delete_files(root_id, &["Author A".into()], false)
+            .await
+            .unwrap();
+        assert_eq!(rep_folder.deleted_count, 1);
+        assert!(rep_folder.failed.is_empty());
+        assert!(!folder_a.exists());
+        assert!(folder_b.join("keep.txt").exists());
     }
 
     #[tokio::test]

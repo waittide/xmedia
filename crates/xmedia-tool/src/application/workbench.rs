@@ -1335,10 +1335,17 @@ impl MediaWorkbenchService {
         let mut deleted_companions = Vec::new();
         let mut failed = Vec::new();
         let mut removed_set = std::collections::HashSet::new();
+        let mut removed_dirs: Vec<String> = Vec::new();
 
         for rel in rel_paths {
-            let trimmed = rel.trim();
+            let trimmed = rel.trim().trim_matches('/');
             if trimmed.is_empty() {
+                continue;
+            }
+            let normalized_input = trimmed.replace('\\', "/");
+            if removed_dirs.iter().any(|dir| {
+                normalized_input == *dir || normalized_input.starts_with(&format!("{dir}/"))
+            }) {
                 continue;
             }
             let sandbox = match root.resolve_existing(trimmed) {
@@ -1351,10 +1358,38 @@ impl MediaWorkbenchService {
                     continue;
                 }
             };
+            if sandbox.abs_path.is_dir() {
+                let rel_slash = sandbox.rel_slash_string();
+                if rel_slash.is_empty() || sandbox.abs_path == root.path {
+                    failed.push(DeleteFileErrorDto {
+                        rel_path: rel.clone(),
+                        error: "不允许删除媒体库根目录".to_string(),
+                    });
+                    continue;
+                }
+                if delete_companions {
+                    failed.push(DeleteFileErrorDto {
+                        rel_path: rel.clone(),
+                        error: "主视图模式不支持直接删除目录，请在文件夹视图中操作".to_string(),
+                    });
+                    continue;
+                }
+                if let Err(err) = std::fs::remove_dir_all(&sandbox.abs_path) {
+                    failed.push(DeleteFileErrorDto {
+                        rel_path: rel.clone(),
+                        error: format!("删除文件夹失败: {err}"),
+                    });
+                    continue;
+                }
+                removed_set.insert(sandbox.abs_path.clone());
+                removed_dirs.push(rel_slash.clone());
+                deleted_paths.push(rel_slash);
+                continue;
+            }
             if !sandbox.abs_path.is_file() {
                 failed.push(DeleteFileErrorDto {
                     rel_path: rel.clone(),
-                    error: "仅支持删除文件，不支持直接删除目录".to_string(),
+                    error: "不支持删除此路径类型".to_string(),
                 });
                 continue;
             }
