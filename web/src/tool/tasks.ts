@@ -444,11 +444,12 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     entries.value = entries.value.filter((e) => e.status === 'running' || e.status === 'queued')
   }
 
-  const activeCount = computed(
-    () => entries.value.filter((e) => e.status === 'running' || e.status === 'queued').length,
-  )
+  const persistentTasks = computed(() => entries.value.filter((e) => !e.ephemeral))
 
-  const persistentTasks = computed(() => entries.value.filter((e) => !e.ephemeral || e.visible))
+  const activeCount = computed(
+    () =>
+      persistentTasks.value.filter((e) => e.status === 'running' || e.status === 'queued').length,
+  )
 
   const shelfItems = computed<FloatingTaskItem[]>(() =>
     entries.value
