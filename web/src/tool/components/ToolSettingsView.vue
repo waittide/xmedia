@@ -101,7 +101,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
       </button>
     </div>
 
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_1fr]">
+    <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_minmax(0,1fr)]">
       <!-- Left Settings Category Rail (MD3 Full-Pill Active Indicator) -->
       <nav class="flex gap-1 overflow-x-auto lg:flex-col">
         <button
@@ -165,7 +165,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
       </nav>
 
       <!-- Right Content Area -->
-      <div class="space-y-6">
+      <div class="min-w-0 space-y-6">
         <div
           v-if="errorMsg"
           class="flex items-center gap-2 rounded-xl border border-[var(--ctp-red)]/40 bg-[var(--ctp-red)]/10 px-4 py-3 text-xs text-[var(--ctp-red)]"

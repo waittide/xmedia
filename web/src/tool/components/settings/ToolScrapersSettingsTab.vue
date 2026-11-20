@@ -325,7 +325,7 @@ async function handleSaveGlobalSettings(): Promise<void> {
         class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3 transition"
         :class="!prov.enabled ? 'opacity-65' : ''"
       >
-        <div class="flex min-w-0 items-center gap-3">
+        <div class="flex min-w-0 flex-1 items-center gap-3">
           <span
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--md-sys-color-secondary-container)] font-mono text-xs font-semibold text-[var(--md-sys-color-on-secondary-container)]"
           >
@@ -343,7 +343,10 @@ async function handleSaveGlobalSettings(): Promise<void> {
                 {{ providerStatusBadge(prov).label }}
               </span>
             </div>
-            <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+            <p
+              class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+              :title="prov.description"
+            >
               {{ prov.description }}
             </p>
           </div>
