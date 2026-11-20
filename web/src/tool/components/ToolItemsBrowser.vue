@@ -143,12 +143,35 @@ const isFolderManagerMode = computed(
     !(props.focusPaths && props.focusPaths.size > 0),
 )
 
+const effectiveSortOptions = computed(() => {
+  if (!isFolderManagerMode.value) return props.sortOptions
+  return props.sortOptions.filter(
+    (opt) => opt.value === 'name' || opt.value === 'size' || opt.value === 'modified',
+  )
+})
+
+const effectiveSortField = computed<ToolSortField>(() => {
+  if (
+    isFolderManagerMode.value &&
+    props.sortField !== 'name' &&
+    props.sortField !== 'size' &&
+    props.sortField !== 'modified'
+  ) {
+    return 'name'
+  }
+  return props.sortField
+})
+
 const sortedFolders = computed(() => {
   const folders = props.snapshot?.folders ?? []
-  const dir = props.sortField === 'name' && props.sortDir === 'desc' ? -1 : 1
-  return [...folders].sort(
-    (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }) * dir,
-  )
+  const dir = props.sortDir === 'desc' ? -1 : 1
+  return [...folders].sort((a, b) => {
+    if (effectiveSortField.value === 'size') {
+      const diff = a.media_file_count - b.media_file_count
+      if (diff !== 0) return diff * dir
+    }
+    return a.name.localeCompare(b.name, undefined, { numeric: true }) * dir
+  })
 })
 
 const mediaEntryMap = computed<Map<string, MediaFileEntry>>(() => {
@@ -341,11 +364,11 @@ function relativeDirBadge(relPath: string): string | null {
             @update:model-value="emit('setViewMode', $event)"
           />
 
-          <div v-if="filteredFiles.length > 1" class="flex items-center gap-1">
+          <div v-if="snapshot" class="flex items-center gap-1">
             <div class="w-28">
               <AppSelect
-                :model-value="sortField"
-                :options="sortOptions"
+                :model-value="effectiveSortField"
+                :options="effectiveSortOptions"
                 size="sm"
                 @update:model-value="emit('setSortField', $event as ToolSortField)"
               />
