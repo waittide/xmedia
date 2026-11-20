@@ -8,7 +8,9 @@ use xmedia_core::application::ports::{BinaryPayload, ByteRangeSpec, ByteRangeStr
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryKind};
 use xmedia_core::infra::fingerprint::{fast_content_fingerprint, max_mtime_secs};
-use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join, sha256_hex};
+use xmedia_core::infra::stream::{
+    move_or_copy_file, open_file_range_stream_spec, sanitize_join, sha256_file_hex, sha256_hex,
+};
 use xmedia_core::infra::thumbnail::{ThumbnailStore, sniff_image_mime};
 
 use crate::application::ports::{
@@ -67,12 +69,33 @@ impl MusicStoragePort for LocalMusicStorage {
     ) -> DomainResult<StoredManagedAudio> {
         let file_name = format!("{}.{}", track_id.0, format.extension());
         let dest = self.uploads_dir.join(&file_name);
-        let file_hash = sha256_hex(&data);
         let file_size = data.len() as u64;
+        let data_for_hash = data.clone();
+        let file_hash = tokio::task::spawn_blocking(move || sha256_hex(&data_for_hash))
+            .await
+            .map_err(|e| DomainError::Storage(format!("audio hash task failed: {e}")))?;
 
         tokio::fs::write(&dest, &data)
             .await
             .map_err(|e| DomainError::Storage(format!("failed saving managed audio: {e}")))?;
+
+        Ok(StoredManagedAudio {
+            storage_key: file_name,
+            file_hash,
+            file_size,
+        })
+    }
+
+    async fn save_managed_audio_from_path(
+        &self,
+        track_id: TrackId,
+        format: AudioFormat,
+        src_path: &Path,
+    ) -> DomainResult<StoredManagedAudio> {
+        let file_name = format!("{}.{}", track_id.0, format.extension());
+        let dest = self.uploads_dir.join(&file_name);
+        let _ = move_or_copy_file(src_path, &dest).await?;
+        let (file_size, file_hash) = sha256_file_hex(dest).await?;
 
         Ok(StoredManagedAudio {
             storage_key: file_name,
@@ -94,6 +117,19 @@ impl MusicStoragePort for LocalMusicStorage {
         Ok(file_name)
     }
 
+    async fn save_managed_sidecar_lrc_from_path(
+        &self,
+        track_id: TrackId,
+        src_path: &Path,
+    ) -> DomainResult<String> {
+        let file_name = format!("{}.lrc", track_id.0);
+        let dest = self.lyrics_dir.join(&file_name);
+        tokio::fs::copy(src_path, &dest)
+            .await
+            .map_err(|e| DomainError::Storage(format!("failed saving sidecar lrc: {e}")))?;
+        Ok(file_name)
+    }
+
     async fn delete_managed_file(&self, storage_key: &str) -> DomainResult<()> {
         for base in [&self.uploads_dir, &self.lyrics_dir] {
             if let Ok(p) = sanitize_join(base, storage_key)
@@ -106,11 +142,9 @@ impl MusicStoragePort for LocalMusicStorage {
     }
 
     async fn save_cover(&self, _cover_id: &str, cover: &BinaryPayload) -> DomainResult<String> {
-        let thumbs = self.thumbnails.clone();
-        let bytes = cover.bytes.clone();
-        tokio::task::spawn_blocking(move || thumbs.store_cover_bytes(&bytes))
+        self.thumbnails
+            .store_cover_bytes_async(cover.bytes.clone())
             .await
-            .map_err(|e| DomainError::Storage(format!("save_cover task failed: {e}")))?
     }
 
     async fn read_cover(
@@ -118,11 +152,9 @@ impl MusicStoragePort for LocalMusicStorage {
         cover_key: &str,
         max_size: Option<u32>,
     ) -> DomainResult<BinaryPayload> {
-        let thumbs = self.thumbnails.clone();
-        let key = cover_key.to_string();
-        tokio::task::spawn_blocking(move || thumbs.load_cover(&key, max_size))
+        self.thumbnails
+            .load_cover_async(cover_key.to_string(), max_size)
             .await
-            .map_err(|e| DomainError::Storage(format!("read_cover task failed: {e}")))?
     }
 
     async fn resolve_audio_fs_path(
@@ -327,7 +359,10 @@ impl MusicScannerPort for LocalMusicScanner {
     }
 
     async fn compute_file_fingerprint(&self, absolute_path: &str) -> DomainResult<String> {
-        let (_, hash) = fast_content_fingerprint(Path::new(absolute_path))?;
+        let path = PathBuf::from(absolute_path);
+        let (_, hash) = tokio::task::spawn_blocking(move || fast_content_fingerprint(&path))
+            .await
+            .map_err(|e| DomainError::Storage(format!("fingerprint task failed: {e}")))??;
         Ok(hash)
     }
 }

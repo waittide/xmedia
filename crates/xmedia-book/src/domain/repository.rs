@@ -60,5 +60,11 @@ pub trait BookReadingRepository: Send + Sync {
     async fn delete_shelf(&self, user_id: UserId, shelf_id: ShelfId) -> DomainResult<()>;
 
     async fn delete_by_book(&self, book_id: BookId) -> DomainResult<()>;
+    async fn delete_by_books(&self, book_ids: &[BookId]) -> DomainResult<()> {
+        for &book_id in book_ids {
+            self.delete_by_book(book_id).await?;
+        }
+        Ok(())
+    }
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
 }

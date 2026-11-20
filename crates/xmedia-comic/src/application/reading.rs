@@ -245,15 +245,24 @@ impl ComicReadingService {
         catalog: &ComicCatalogService,
     ) -> DomainResult<Vec<ShelfDetailDto>> {
         let mut shelves = self.reading.list_shelves(user.id).await?;
+        if shelves.is_empty() {
+            return Ok(Vec::new());
+        }
         shelves.sort_by_key(|s| s.created_at);
-        let mut out = Vec::with_capacity(shelves.len());
 
+        let all_summaries = catalog
+            .list_series(user, SeriesQueryFilter::default())
+            .await?;
+        let by_id: HashMap<SeriesId, _> = all_summaries.into_iter().map(|s| (s.id, s)).collect();
+
+        let mut out = Vec::with_capacity(shelves.len());
         for shelf in shelves {
-            let filter = SeriesQueryFilter {
-                shelf_id: Some(shelf.id),
-                ..Default::default()
-            };
-            let series = catalog.list_series(user, filter).await?;
+            let mut series: Vec<_> = shelf
+                .series_ids
+                .iter()
+                .filter_map(|sid| by_id.get(sid).cloned())
+                .collect();
+            series.sort_by_key(|s| std::cmp::Reverse(s.updated_at));
             out.push(ShelfDetailDto { shelf, series });
         }
         Ok(out)
@@ -362,21 +371,23 @@ impl ComicReadingService {
         let series_map: HashMap<SeriesId, Series> =
             all_series.into_iter().map(|s| (s.id, s)).collect();
 
-        let mut chapter_cache: HashMap<ChapterId, Option<Chapter>> = HashMap::new();
+        let mut chapter_ids: Vec<ChapterId> = Vec::new();
+        for bm in &bookmarks {
+            if !chapter_ids.contains(&bm.chapter_id) {
+                chapter_ids.push(bm.chapter_id);
+            }
+        }
+        let fetched_chapters = self.chapters.find_by_ids(&chapter_ids).await?;
+        let chapter_map: HashMap<ChapterId, Chapter> =
+            fetched_chapters.into_iter().map(|c| (c.id, c)).collect();
+
         let mut out = Vec::with_capacity(bookmarks.len());
 
         for bm in bookmarks {
             let Some(series) = series_map.get(&bm.series_id) else {
                 continue;
             };
-            let chapter_opt = if let Some(cached) = chapter_cache.get(&bm.chapter_id) {
-                cached.clone()
-            } else {
-                let found = self.chapters.find_by_id(bm.chapter_id).await?;
-                chapter_cache.insert(bm.chapter_id, found.clone());
-                found
-            };
-            let Some(ch) = chapter_opt else {
+            let Some(ch) = chapter_map.get(&bm.chapter_id) else {
                 continue;
             };
 
@@ -392,7 +403,7 @@ impl ComicReadingService {
                 series_title: series.title.clone(),
                 series_cover_url: cover_url,
                 chapter_number_label: format_chapter_number(ch.number),
-                chapter_title: ch.title,
+                chapter_title: ch.title.clone(),
                 total_pages: ch.page_count.max(1),
             });
         }

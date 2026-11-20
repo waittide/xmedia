@@ -65,6 +65,12 @@ pub trait MusicCatalogRepository: Send + Sync {
 
     async fn list_genres(&self) -> DomainResult<Vec<GenreStat>>;
     async fn list_tags(&self) -> DomainResult<Vec<MusicTagStat>>;
+    async fn count_active_tags(
+        &self,
+        _active_track_ids: &std::collections::HashSet<TrackId>,
+    ) -> DomainResult<u64> {
+        Ok(self.list_tags().await?.len() as u64)
+    }
     async fn get_tags_for_tracks(
         &self,
         track_ids: &[TrackId],

@@ -264,8 +264,60 @@ mod tests {
             .unwrap();
         assert_eq!(p1_304.status(), StatusCode::NOT_MODIFIED);
 
+        // 2b. Verify Range 206 archive download on REST and OPDS with RFC 5987 Content-Disposition
+        let rest_dl = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/v1/comic/chapters/{}/download?token={}",
+                        up1.chapter_id, session.token
+                    ))
+                    .header(header::RANGE, "bytes=0-15")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rest_dl.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            rest_dl.headers().get(header::ACCEPT_RANGES).unwrap(),
+            "bytes"
+        );
+        assert!(
+            rest_dl
+                .headers()
+                .get(header::CONTENT_DISPOSITION)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("filename*=UTF-8''")
+        );
+        let dl_chunk = to_bytes(rest_dl.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(dl_chunk.len(), 16);
+        assert_eq!(&dl_chunk[0..2], b"PK");
+
         // 3. Verify OPDS 1.2 + PSE 1.1 page streaming & progress sync
         let basic = BASE64_STANDARD.encode("alice:secretpassword");
+        let opds_dl = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/opds/comic/v1.2/chapters/{}/download",
+                        up1.chapter_id
+                    ))
+                    .header(header::AUTHORIZATION, format!("Basic {basic}"))
+                    .header(header::RANGE, "bytes=0-7")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(opds_dl.status(), StatusCode::PARTIAL_CONTENT);
+        let opds_chunk = to_bytes(opds_dl.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(opds_chunk.len(), 8);
+        assert_eq!(&opds_chunk[0..2], b"PK");
         let ch_feed_res = app
             .clone()
             .oneshot(

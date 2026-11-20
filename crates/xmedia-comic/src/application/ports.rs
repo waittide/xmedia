@@ -1,8 +1,10 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::DomainResult;
 
 use crate::domain::chapter::{ChapterKind, ChapterSourceKind};
@@ -109,6 +111,12 @@ pub trait ArchiveReaderPort: Send + Sync {
     ) -> DomainResult<PageContent>;
 
     async fn read_raw_archive(&self, source_path: &str) -> DomainResult<(Vec<u8>, String, String)>;
+
+    async fn open_raw_archive_stream(
+        &self,
+        source_path: &str,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<(ByteRangeStream, String, String)>;
 }
 
 #[async_trait]
@@ -135,5 +143,19 @@ pub trait ComicFileStoragePort: Send + Sync {
         filename: &str,
         bytes: &[u8],
     ) -> DomainResult<StoredUploadFile>;
+    async fn store_uploaded_archive_from_path(
+        &self,
+        series_folder: &str,
+        filename: &str,
+        src_path: &Path,
+    ) -> DomainResult<StoredUploadFile> {
+        let bytes = tokio::fs::read(src_path).await.map_err(|e| {
+            xmedia_core::domain::error::DomainError::Storage(format!(
+                "failed reading temp comic archive: {e}"
+            ))
+        })?;
+        self.store_uploaded_archive(series_folder, filename, &bytes)
+            .await
+    }
     async fn delete_managed_file(&self, path: &str) -> DomainResult<()>;
 }

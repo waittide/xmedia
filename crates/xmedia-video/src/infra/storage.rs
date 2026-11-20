@@ -9,8 +9,10 @@ use walkdir::WalkDir;
 use xmedia_core::application::ports::{BinaryPayload, ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, LibraryKind};
-use xmedia_core::infra::fingerprint::{fast_bytes_fingerprint, max_mtime_secs};
-use xmedia_core::infra::stream::{open_file_range_stream_spec, sanitize_join};
+use xmedia_core::infra::fingerprint::{
+    fast_bytes_fingerprint, fast_content_fingerprint, max_mtime_secs,
+};
+use xmedia_core::infra::stream::{move_or_copy_file, open_file_range_stream_spec, sanitize_join};
 use xmedia_core::infra::thumbnail::ThumbnailStore;
 
 use crate::application::ports::{
@@ -88,6 +90,31 @@ impl VideoStoragePort for LocalVideoStorage {
         })
     }
 
+    async fn save_managed_video_from_path(
+        &self,
+        video_id: VideoId,
+        container: VideoContainer,
+        src_path: &Path,
+    ) -> DomainResult<StoredManagedVideo> {
+        let storage_key = format!("{}.{}", video_id.0, container.extension());
+        let dest = self.uploads_dir.join(&storage_key);
+        let file_size = move_or_copy_file(src_path, &dest).await?;
+        let dest_for_hash = dest.clone();
+        let (_, file_hash) =
+            tokio::task::spawn_blocking(move || fast_content_fingerprint(&dest_for_hash))
+                .await
+                .map_err(|e| {
+                    DomainError::Storage(format!("video fingerprint task failed: {e}"))
+                })??;
+
+        Ok(StoredManagedVideo {
+            storage_key,
+            absolute_path: dest.to_string_lossy().into_owned(),
+            file_size,
+            file_hash,
+        })
+    }
+
     async fn save_managed_subtitle(
         &self,
         video_id: VideoId,
@@ -104,6 +131,24 @@ impl VideoStoragePort for LocalVideoStorage {
         Ok(key)
     }
 
+    async fn save_managed_subtitle_from_path(
+        &self,
+        video_id: VideoId,
+        sub_id: &str,
+        ext: &str,
+        src_path: &Path,
+    ) -> DomainResult<String> {
+        let clean_ext = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+        let key = format!("{}_{sub_id}.{clean_ext}", video_id.0);
+        let dest = self.subtitles_dir.join(&key);
+        tokio::fs::copy(src_path, &dest).await.map_err(|e| {
+            DomainError::Storage(format!(
+                "failed saving managed subtitle from temp file: {e}"
+            ))
+        })?;
+        Ok(key)
+    }
+
     async fn delete_managed_file(&self, key: &str) -> DomainResult<()> {
         for base in [&self.uploads_dir, &self.subtitles_dir] {
             if let Ok(path) = sanitize_join(base, key)
@@ -116,11 +161,13 @@ impl VideoStoragePort for LocalVideoStorage {
     }
 
     async fn save_poster_bytes(&self, bytes: &[u8]) -> DomainResult<String> {
-        self.posters.store_cover_bytes(bytes)
+        self.posters.store_cover_bytes_async(bytes.to_vec()).await
     }
 
     async fn read_poster(&self, key: &str, max_size: Option<u32>) -> DomainResult<BinaryPayload> {
-        self.posters.load_cover(key, max_size)
+        self.posters
+            .load_cover_async(key.to_string(), max_size)
+            .await
     }
 
     async fn resolve_video_fs_path(

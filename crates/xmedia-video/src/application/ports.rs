@@ -70,6 +70,21 @@ pub trait VideoStoragePort: Send + Sync {
         bytes: Bytes,
     ) -> DomainResult<StoredManagedVideo>;
 
+    async fn save_managed_video_from_path(
+        &self,
+        video_id: VideoId,
+        container: VideoContainer,
+        src_path: &Path,
+    ) -> DomainResult<StoredManagedVideo> {
+        let data = tokio::fs::read(src_path).await.map_err(|e| {
+            xmedia_core::domain::error::DomainError::Storage(format!(
+                "failed reading temp uploaded video: {e}"
+            ))
+        })?;
+        self.save_managed_video(video_id, container, Bytes::from(data))
+            .await
+    }
+
     async fn save_managed_subtitle(
         &self,
         video_id: VideoId,
@@ -77,6 +92,22 @@ pub trait VideoStoragePort: Send + Sync {
         ext: &str,
         bytes: Bytes,
     ) -> DomainResult<String>;
+
+    async fn save_managed_subtitle_from_path(
+        &self,
+        video_id: VideoId,
+        sub_id: &str,
+        ext: &str,
+        src_path: &Path,
+    ) -> DomainResult<String> {
+        let data = tokio::fs::read(src_path).await.map_err(|e| {
+            xmedia_core::domain::error::DomainError::Storage(format!(
+                "failed reading temp uploaded subtitle: {e}"
+            ))
+        })?;
+        self.save_managed_subtitle(video_id, sub_id, ext, Bytes::from(data))
+            .await
+    }
 
     async fn delete_managed_file(&self, key: &str) -> DomainResult<()>;
 

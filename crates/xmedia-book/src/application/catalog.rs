@@ -81,7 +81,14 @@ impl BookCatalogService {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or("Untitled Book");
 
-        let parsed = self.parser.parse_book(format, &bytes, fallback_title)?;
+        let parser = self.parser.clone();
+        let bytes_for_parse = bytes.clone();
+        let fallback_owned = fallback_title.to_string();
+        let parsed = tokio::task::spawn_blocking(move || {
+            parser.parse_book(format, &bytes_for_parse, &fallback_owned)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("book parse task failed: {e}")))??;
 
         let managed_lib = match self
             .libraries
@@ -131,10 +138,42 @@ impl BookCatalogService {
         ))
     }
 
+    pub async fn upload_book_from_path(
+        &self,
+        actor: &User,
+        file_name: &str,
+        temp_path: &Path,
+    ) -> DomainResult<BookSummaryDto> {
+        Self::require_admin(actor)?;
+        let data = tokio::fs::read(temp_path)
+            .await
+            .map_err(|e| DomainError::Storage(format!("failed reading temp uploaded book: {e}")))?;
+        self.upload_book(actor, file_name, Bytes::from(data)).await
+    }
+
     pub async fn search_books(
         &self,
         actor: Option<&User>,
         filter: CatalogSearchFilter,
+    ) -> DomainResult<PagedResult<BookSummaryDto>> {
+        self.search_books_inner(actor, filter, true).await
+    }
+
+    /// Search variant for OPDS feeds that still enforces `favorites_only`/`shelf_id` filtering
+    /// via `actor` but skips per-user favorites and progress enrichment queries.
+    pub async fn search_books_for_opds(
+        &self,
+        actor: Option<&User>,
+        filter: CatalogSearchFilter,
+    ) -> DomainResult<PagedResult<BookSummaryDto>> {
+        self.search_books_inner(actor, filter, false).await
+    }
+
+    async fn search_books_inner(
+        &self,
+        actor: Option<&User>,
+        filter: CatalogSearchFilter,
+        include_user_state: bool,
     ) -> DomainResult<PagedResult<BookSummaryDto>> {
         let mut shelf_book_ids = None;
         if let Some(shelf_id) = filter.shelf_id {
@@ -218,7 +257,8 @@ impl BookCatalogService {
         };
 
         let page = self.books.search(&query).await?;
-        let items = self.enrich_books(actor, &page.items).await?;
+        let enrich_actor = if include_user_state { actor } else { None };
+        let items = self.enrich_books(enrich_actor, &page.items).await?;
 
         Ok(PagedResult {
             items,
@@ -367,7 +407,11 @@ impl BookCatalogService {
     pub async fn get_toc(&self, book_id: BookId) -> DomainResult<Vec<TocItem>> {
         let (library, book) = self.find_book_with_library(book_id).await?;
         let bytes = self.storage.read_book_bytes(&library, &book).await?;
-        self.parser.list_toc(book.format, &bytes)
+        let parser = self.parser.clone();
+        let format = book.format;
+        tokio::task::spawn_blocking(move || parser.list_toc(format, &bytes))
+            .await
+            .map_err(|e| DomainError::Storage(format!("list_toc task failed: {e}")))?
     }
 
     pub async fn get_txt_chapter(
@@ -382,7 +426,10 @@ impl BookCatalogService {
             ));
         }
         let bytes = self.storage.read_book_bytes(&library, &book).await?;
-        self.parser.read_txt_chapter(&bytes, chapter_index)
+        let parser = self.parser.clone();
+        tokio::task::spawn_blocking(move || parser.read_txt_chapter(&bytes, chapter_index))
+            .await
+            .map_err(|e| DomainError::Storage(format!("read_txt_chapter task failed: {e}")))?
     }
 
     pub async fn get_epub_resource(
@@ -397,7 +444,11 @@ impl BookCatalogService {
             ));
         }
         let bytes = self.storage.read_book_bytes(&library, &book).await?;
-        self.parser.read_epub_resource(&bytes, resource_path)
+        let parser = self.parser.clone();
+        let res_path = resource_path.to_string();
+        tokio::task::spawn_blocking(move || parser.read_epub_resource(&bytes, &res_path))
+            .await
+            .map_err(|e| DomainError::Storage(format!("read_epub_resource task failed: {e}")))?
     }
 
     pub async fn open_book_file_stream(
@@ -408,6 +459,25 @@ impl BookCatalogService {
         let (library, book) = self.find_book_with_library(book_id).await?;
         let stream = self.storage.open_book_stream(&library, &book, spec).await?;
         Ok((book, stream))
+    }
+
+    fn enrich_books_with_maps(
+        books: &[Book],
+        lib_names: &HashMap<xmedia_core::domain::library::LibraryId, String>,
+        fav_set: &HashSet<BookId>,
+        progress_map: &HashMap<BookId, ReadingProgress>,
+    ) -> Vec<BookSummaryDto> {
+        books
+            .iter()
+            .map(|b| {
+                BookSummaryDto::from_domain(
+                    b,
+                    lib_names.get(&b.library_id).cloned(),
+                    fav_set.contains(&b.id),
+                    progress_map.get(&b.id),
+                )
+            })
+            .collect()
     }
 
     pub async fn enrich_books(
@@ -426,28 +496,23 @@ impl BookCatalogService {
             let fav_ids = self.readings.list_favorite_book_ids(actor.id).await?;
             let favs: HashSet<BookId> = fav_ids.into_iter().collect();
 
-            let mut progresses: HashMap<BookId, ReadingProgress> = HashMap::new();
-            for b in books {
-                if let Some(p) = self.readings.get_progress(actor.id, b.id).await? {
-                    progresses.insert(b.id, p);
-                }
-            }
+            let all_progress = self
+                .readings
+                .list_recent_progress(actor.id, u32::MAX)
+                .await?;
+            let progresses: HashMap<BookId, ReadingProgress> =
+                all_progress.into_iter().map(|p| (p.book_id, p)).collect();
             (favs, progresses)
         } else {
             (HashSet::new(), HashMap::new())
         };
 
-        Ok(books
-            .iter()
-            .map(|b| {
-                BookSummaryDto::from_domain(
-                    b,
-                    lib_names.get(&b.library_id).cloned(),
-                    fav_set.contains(&b.id),
-                    progress_map.get(&b.id),
-                )
-            })
-            .collect())
+        Ok(Self::enrich_books_with_maps(
+            books,
+            &lib_names,
+            &fav_set,
+            &progress_map,
+        ))
     }
 
     pub async fn home_overview(
@@ -457,13 +522,40 @@ impl BookCatalogService {
     ) -> DomainResult<BookHomeOverviewDto> {
         let (latest_raw, total_books, authors_count, tags_count) =
             self.books.home_catalog_snapshot(12).await?;
-        let recently_added = self.enrich_books(Some(actor), &latest_raw).await?;
-        let continue_reading = reading_service.list_recent_books(actor, 6, self).await?;
-        let reading_count = reading_service.count_user_progress(actor).await?;
-        let bookmarks_count = reading_service.count_user_bookmarks(actor).await?;
-        let favorites_count = reading_service.count_user_favorites(actor).await?;
-        let shelves = reading_service.list_shelves(actor).await?;
         let libs = self.libraries.list_by_media(MediaKind::Book).await?;
+        let libraries_count = libs.len() as u64;
+        let lib_names: HashMap<_, _> = libs.into_iter().map(|l| (l.id, l.name)).collect();
+
+        let fav_ids = self.readings.list_favorite_book_ids(actor.id).await?;
+        let favorites_count = fav_ids.len() as u64;
+        let fav_set: HashSet<BookId> = fav_ids.into_iter().collect();
+
+        let all_progress = self
+            .readings
+            .list_recent_progress(actor.id, u32::MAX)
+            .await?;
+        let reading_count = all_progress.len() as u64;
+        let recent_ids: Vec<BookId> = all_progress.iter().take(6).map(|r| r.book_id).collect();
+        let progress_map: HashMap<BookId, ReadingProgress> =
+            all_progress.into_iter().map(|p| (p.book_id, p)).collect();
+
+        let recently_added =
+            Self::enrich_books_with_maps(&latest_raw, &lib_names, &fav_set, &progress_map);
+
+        let continue_reading = if recent_ids.is_empty() {
+            Vec::new()
+        } else {
+            let found = self.books.find_by_ids(&recent_ids).await?;
+            let by_id: HashMap<BookId, Book> = found.into_iter().map(|b| (b.id, b)).collect();
+            let ordered: Vec<Book> = recent_ids
+                .into_iter()
+                .filter_map(|id| by_id.get(&id).cloned())
+                .collect();
+            Self::enrich_books_with_maps(&ordered, &lib_names, &fav_set, &progress_map)
+        };
+
+        let bookmarks_count = reading_service.count_user_bookmarks(actor).await?;
+        let shelves = reading_service.list_shelves(actor).await?;
 
         Ok(BookHomeOverviewDto {
             stats: BookLibraryStatsDto {
@@ -474,7 +566,7 @@ impl BookCatalogService {
                 shelves_count: shelves.len() as u64,
                 tags_count,
                 authors_count,
-                libraries_count: libs.len() as u64,
+                libraries_count,
             },
             continue_reading,
             recently_added,

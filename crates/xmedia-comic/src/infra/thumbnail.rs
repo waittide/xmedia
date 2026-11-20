@@ -1,6 +1,9 @@
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COMIC_THUMB_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use async_trait::async_trait;
 use image::ImageFormat;
@@ -43,12 +46,21 @@ impl ThumbnailGeneratorPort for WebpThumbnailGenerator {
             resized
                 .write_to(&mut out, ImageFormat::WebP)
                 .map_err(|e| DomainError::Storage(format!("failed to encode WebP cover: {e}")))?;
-            fs::write(&target_path, out.into_inner()).map_err(|e| {
+            let seq = COMIC_THUMB_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp_path = target_path.with_extension(format!("{}.{seq}.tmp", std::process::id()));
+            fs::write(&tmp_path, out.into_inner()).map_err(|e| {
                 DomainError::Storage(format!(
                     "failed to write thumbnail '{}': {e}",
-                    target_path.display()
+                    tmp_path.display()
                 ))
             })?;
+            if let Err(e) = fs::rename(&tmp_path, &target_path) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(DomainError::Storage(format!(
+                    "failed to commit thumbnail '{}': {e}",
+                    target_path.display()
+                )));
+            }
             Ok(filename)
         })
         .await

@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use jiff::Timestamp;
-use xmedia_core::application::ports::{RealtimeEventPort, SystemEvent};
+use xmedia_core::application::ports::{
+    ByteRangeSpec, ByteRangeStream, RealtimeEventPort, SystemEvent,
+};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::{Library, MediaKind};
 use xmedia_core::domain::repository::LibraryRepository;
@@ -12,7 +14,7 @@ use crate::application::dto::{
     AdjacentChapterDto, ChapterItemDto, ComicLibraryStatsDto, ContinueReadingItemDto,
     EffectiveReaderPrefDto, HomeOverviewDto, ReaderContextDto, SeriesDetailDto, SeriesQueryFilter,
     SeriesSummaryDto, TaxonomyCountDto, TaxonomyOverviewDto, UploadArchiveInput,
-    UploadArchiveResultDto,
+    UploadArchivePathInput, UploadArchiveResultDto,
 };
 use crate::application::filename_parser::parse_chapter_filename;
 use crate::application::lifecycle::{apply_comic_info_to_chapter, apply_comic_info_to_series};
@@ -86,6 +88,15 @@ impl ComicCatalogService {
             progress_by_series.entry(p.series_id).or_default().push(p);
         }
 
+        let series_ids_with_progress: Vec<SeriesId> = all_series
+            .iter()
+            .filter(|s| progress_by_series.contains_key(&s.id))
+            .map(|s| s.id)
+            .collect();
+        let chapters_by_series = self
+            .load_sorted_chapters_map(&series_ids_with_progress)
+            .await?;
+
         let mut total_chapters = 0_u32;
         let mut distinct_tags: HashSet<String> = HashSet::new();
         let mut distinct_writers: HashSet<String> = HashSet::new();
@@ -105,7 +116,11 @@ impl ComicCatalogService {
                 .get(&s.id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let summary = self.build_series_summary(s, s_prog, is_fav).await?;
+            let s_chapters = chapters_by_series
+                .get(&s.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let summary = Self::build_series_summary_with_chapters(s, s_prog, s_chapters, is_fav);
             if let Some(pointer) = summary.continue_reading.clone() {
                 continue_items.push(ContinueReadingItemDto {
                     series: summary.clone(),
@@ -188,7 +203,7 @@ impl ComicCatalogService {
             .map(|s| s.trim().to_lowercase())
             .filter(|s| !s.is_empty());
 
-        let mut results = Vec::new();
+        let mut matched_series = Vec::new();
         for s in base_list {
             if let Some(allowed) = &shelf_filter
                 && !allowed.contains(&s.id)
@@ -244,13 +259,28 @@ impl ComicCatalogService {
                     continue;
                 }
             }
+            matched_series.push(s);
+        }
 
+        let ids_with_progress: Vec<SeriesId> = matched_series
+            .iter()
+            .filter(|s| progress_by_series.contains_key(&s.id))
+            .map(|s| s.id)
+            .collect();
+        let chapters_by_series = self.load_sorted_chapters_map(&ids_with_progress).await?;
+
+        let mut results = Vec::with_capacity(matched_series.len());
+        for s in matched_series {
             let is_fav = fav_set.contains(&s.id);
             let s_prog = progress_by_series
                 .get(&s.id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let summary = self.build_series_summary(s, s_prog, is_fav).await?;
+            let s_chapters = chapters_by_series
+                .get(&s.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let summary = Self::build_series_summary_with_chapters(s, s_prog, s_chapters, is_fav);
 
             if let Some(rs) = &filter.read_status {
                 let keep = match rs.as_str() {
@@ -624,6 +654,26 @@ impl ComicCatalogService {
         self.archives.read_raw_archive(&chapter.source_path).await
     }
 
+    pub async fn open_chapter_archive_stream(
+        &self,
+        chapter_id: ChapterId,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<(ByteRangeStream, String, String)> {
+        let chapter = self
+            .chapters
+            .find_by_id(chapter_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("chapter not found".into()))?;
+        if chapter.is_missing || chapter.source_kind != ChapterSourceKind::ArchiveFile {
+            return Err(DomainError::Validation(
+                "direct download is only available for archive-backed chapters".into(),
+            ));
+        }
+        self.archives
+            .open_raw_archive_stream(&chapter.source_path, spec)
+            .await
+    }
+
     pub async fn read_cover(&self, cover_key: &str) -> DomainResult<PageContent> {
         self.thumbnails.read_thumbnail(cover_key).await
     }
@@ -779,6 +829,158 @@ impl ComicCatalogService {
         })
     }
 
+    pub async fn upload_archive_from_path(
+        &self,
+        actor: &User,
+        input: UploadArchivePathInput,
+    ) -> DomainResult<UploadArchiveResultDto> {
+        Self::ensure_admin(actor)?;
+        let lower_name = input.filename.to_lowercase();
+        if !(lower_name.ends_with(".cbz")
+            || lower_name.ends_with(".zip")
+            || lower_name.ends_with(".epub"))
+        {
+            return Err(DomainError::UnsupportedFormat(
+                "only .cbz, .zip, and .epub comic archives are supported".into(),
+            ));
+        }
+
+        let temp_path_str = input.temp_path.to_string_lossy().into_owned();
+        let inspection = self
+            .archives
+            .inspect_source(ChapterSourceKind::ArchiveFile, &temp_path_str)
+            .await?;
+        if inspection.page_count == 0 {
+            return Err(DomainError::Validation(
+                "uploaded archive contains no readable comic images".into(),
+            ));
+        }
+
+        let managed_lib = self.get_or_create_managed_library().await?;
+        let parsed = parse_chapter_filename(&input.filename, 1);
+
+        let mut series = if let Some(target_id) = input.target_series_id {
+            let existing = self
+                .series
+                .find_by_id(target_id)
+                .await?
+                .ok_or_else(|| DomainError::NotFound("target series not found".into()))?;
+            if existing.library_id != managed_lib.id {
+                return Err(DomainError::Validation(
+                    "target series belongs to a read-only local library".into(),
+                ));
+            }
+            existing
+        } else {
+            let desired_title = input
+                .series_title_override
+                .as_ref()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    inspection
+                        .comic_info
+                        .as_ref()
+                        .and_then(|ci| ci.series.clone())
+                        .filter(|s| !s.trim().is_empty())
+                })
+                .or_else(|| parsed.inferred_series.clone())
+                .unwrap_or_else(|| parsed.clean_title.clone());
+
+            let all_series = self.series.list_by_library(managed_lib.id).await?;
+            if let Some(existing) = all_series
+                .into_iter()
+                .find(|s| s.title.eq_ignore_ascii_case(desired_title.trim()))
+            {
+                existing
+            } else {
+                let folder_slug = sanitize_folder_name(&desired_title);
+                let root = self.storage.ensure_managed_root().await?;
+                let source_dir = format!("{root}/{folder_slug}");
+                Series::new(managed_lib.id, desired_title, source_dir)?
+            }
+        };
+
+        let folder_slug = sanitize_folder_name(&series.title);
+        let stored = self
+            .storage
+            .store_uploaded_archive_from_path(&folder_slug, &input.filename, &input.temp_path)
+            .await?;
+
+        let existing_chapters = self.chapters.list_by_series(series.id).await?;
+        let fallback_num = (existing_chapters.len() + 1) as u32;
+        let parsed_with_index = parse_chapter_filename(&input.filename, fallback_num);
+
+        let mut chapter = Chapter::new(
+            series.id,
+            managed_lib.id,
+            parsed_with_index.kind,
+            parsed_with_index.number,
+            parsed_with_index.volume_number,
+            parsed_with_index.clean_title,
+            inspection.page_count,
+            ChapterSourceKind::ArchiveFile,
+            stored.source_path,
+            stored.file_size,
+            stored.file_hash,
+        )?;
+
+        if let Some(ci) = &inspection.comic_info {
+            apply_comic_info_to_chapter(&mut chapter, ci);
+            if !series.metadata_locked {
+                apply_comic_info_to_series(&mut series, ci);
+            }
+        }
+
+        if let Ok(first_page) = self
+            .archives
+            .read_page(
+                chapter.source_kind,
+                &chapter.source_path,
+                1,
+                &chapter.file_hash,
+            )
+            .await
+        {
+            let thumb_key = format!("ch_{}", chapter.id);
+            if let Ok(saved_key) = self
+                .thumbnails
+                .generate_from_bytes(&thumb_key, &first_page.bytes)
+                .await
+            {
+                if series.cover_path.is_none() {
+                    series.cover_path = Some(saved_key.clone());
+                }
+                chapter.cover_path = Some(saved_key);
+            }
+        }
+
+        self.chapters.save(&chapter).await?;
+
+        let active_count = self
+            .chapters
+            .list_by_series(series.id)
+            .await?
+            .into_iter()
+            .filter(|c| !c.is_missing)
+            .count() as u32;
+        series.chapter_count = active_count;
+        series.updated_at = Timestamp::now();
+        self.series.save(&series).await?;
+
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Comic,
+        });
+
+        Ok(UploadArchiveResultDto {
+            series_id: series.id,
+            series_title: series.title,
+            chapter_id: chapter.id,
+            chapter_title: chapter.title,
+            page_count: chapter.page_count,
+        })
+    }
+
     pub async fn taxonomy_overview(&self) -> DomainResult<TaxonomyOverviewDto> {
         let all = self.series.list_all().await?;
         let mut tags: HashMap<String, u32> = HashMap::new();
@@ -809,18 +1011,34 @@ impl ComicCatalogService {
         })
     }
 
-    pub async fn build_series_summary(
+    async fn load_sorted_chapters_map(
         &self,
+        series_ids: &[SeriesId],
+    ) -> DomainResult<HashMap<SeriesId, Vec<Chapter>>> {
+        if series_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let chapters = self.chapters.list_by_series_ids(series_ids).await?;
+        let mut map: HashMap<SeriesId, Vec<Chapter>> = HashMap::new();
+        for ch in chapters {
+            map.entry(ch.series_id).or_default().push(ch);
+        }
+        for list in map.values_mut() {
+            list.sort_by(|a, b| a.cmp_order(b));
+        }
+        Ok(map)
+    }
+
+    pub fn build_series_summary_with_chapters(
         series: Series,
         progress_list: &[ChapterProgress],
+        sorted_chapters: &[Chapter],
         is_favorite: bool,
-    ) -> DomainResult<SeriesSummaryDto> {
+    ) -> SeriesSummaryDto {
         let (completed_chapters, continue_reading) = if progress_list.is_empty() {
             (0, None)
         } else {
-            let mut chapters = self.chapters.list_by_series(series.id).await?;
-            chapters.sort_by(|a, b| a.cmp_order(b));
-            let active_ids: HashSet<ChapterId> = chapters
+            let active_ids: HashSet<ChapterId> = sorted_chapters
                 .iter()
                 .filter(|c| !c.is_missing)
                 .map(|c| c.id)
@@ -829,7 +1047,7 @@ impl ComicCatalogService {
                 .iter()
                 .filter(|p| p.is_completed && active_ids.contains(&p.chapter_id))
                 .count() as u32;
-            let ptr = compute_continue_reading(series.id, &chapters, progress_list);
+            let ptr = compute_continue_reading(series.id, sorted_chapters, progress_list);
             (done, ptr)
         };
 
@@ -838,7 +1056,7 @@ impl ComicCatalogService {
             .as_ref()
             .map(|key| format!("/api/v1/comic/covers/{key}"));
 
-        Ok(SeriesSummaryDto {
+        SeriesSummaryDto {
             id: series.id,
             library_id: series.library_id,
             title: series.title,
@@ -856,7 +1074,28 @@ impl ComicCatalogService {
             continue_reading,
             created_at: series.created_at,
             updated_at: series.updated_at,
-        })
+        }
+    }
+
+    pub async fn build_series_summary(
+        &self,
+        series: Series,
+        progress_list: &[ChapterProgress],
+        is_favorite: bool,
+    ) -> DomainResult<SeriesSummaryDto> {
+        let sorted_chapters = if progress_list.is_empty() {
+            Vec::new()
+        } else {
+            let mut chapters = self.chapters.list_by_series(series.id).await?;
+            chapters.sort_by(|a, b| a.cmp_order(b));
+            chapters
+        };
+        Ok(Self::build_series_summary_with_chapters(
+            series,
+            progress_list,
+            &sorted_chapters,
+            is_favorite,
+        ))
     }
 
     async fn get_or_create_managed_library(&self) -> DomainResult<Library> {

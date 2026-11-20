@@ -61,25 +61,12 @@ impl VideoCatalogService {
         })
     }
 
-    pub async fn enrich_videos(
-        &self,
-        user_id: UserId,
+    fn enrich_videos_with_maps(
         videos: Vec<VideoItem>,
-    ) -> DomainResult<Vec<VideoSummaryDto>> {
-        if videos.is_empty() {
-            return Ok(Vec::new());
-        }
-        let progress_list = self.watch.list_user_progress(user_id).await?;
-        let favs = self
-            .watch
-            .list_favorites(user_id, Some(VideoFavoriteKind::Video))
-            .await?;
-
-        let prog_map: HashMap<VideoId, WatchProgress> =
-            progress_list.into_iter().map(|p| (p.video_id, p)).collect();
-        let fav_set: HashSet<Uuid> = favs.into_iter().map(|f| f.target_id).collect();
-
-        Ok(videos
+        prog_map: &HashMap<VideoId, WatchProgress>,
+        fav_set: &HashSet<Uuid>,
+    ) -> Vec<VideoSummaryDto> {
+        videos
             .into_iter()
             .map(|v| {
                 let resolution = v.resolution_label();
@@ -111,7 +98,53 @@ impl VideoCatalogService {
                     created_at: v.created_at,
                 }
             })
-            .collect())
+            .collect()
+    }
+
+    fn enrich_shows_with_maps(
+        shows: Vec<VideoShow>,
+        fav_set: &HashSet<Uuid>,
+        watched_by_show: &HashMap<ShowId, u32>,
+    ) -> Vec<ShowSummaryDto> {
+        shows
+            .into_iter()
+            .map(|s| ShowSummaryDto {
+                id: s.id,
+                library_id: s.library_id,
+                title: s.title,
+                summary: s.summary,
+                year: s.year,
+                genres: s.genres,
+                tags: s.tags,
+                poster_key: s.poster_key,
+                season_count: s.season_count,
+                episode_count: s.episode_count,
+                watched_episode_count: watched_by_show.get(&s.id).copied().unwrap_or(0),
+                is_favorite: fav_set.contains(&s.id.0),
+                created_at: s.created_at,
+            })
+            .collect()
+    }
+
+    pub async fn enrich_videos(
+        &self,
+        user_id: UserId,
+        videos: Vec<VideoItem>,
+    ) -> DomainResult<Vec<VideoSummaryDto>> {
+        if videos.is_empty() {
+            return Ok(Vec::new());
+        }
+        let progress_list = self.watch.list_user_progress(user_id).await?;
+        let favs = self
+            .watch
+            .list_favorites(user_id, Some(VideoFavoriteKind::Video))
+            .await?;
+
+        let prog_map: HashMap<VideoId, WatchProgress> =
+            progress_list.into_iter().map(|p| (p.video_id, p)).collect();
+        let fav_set: HashSet<Uuid> = favs.into_iter().map(|f| f.target_id).collect();
+
+        Ok(Self::enrich_videos_with_maps(videos, &prog_map, &fav_set))
     }
 
     pub async fn enrich_shows(
@@ -135,60 +168,72 @@ impl VideoCatalogService {
             .map(|p| p.video_id)
             .collect();
 
-        let all_episodes = self
-            .catalog
-            .list_videos(&VideoQueryFilter {
-                kind: crate::domain::video::VideoKindFilter::Episodes,
-                ..Default::default()
-            })
-            .await?;
         let mut watched_by_show: HashMap<ShowId, u32> = HashMap::new();
-        for ep in all_episodes {
-            if let Some(sid) = ep.show_id
-                && completed_video_ids.contains(&ep.id)
-            {
-                *watched_by_show.entry(sid).or_default() += 1;
+        if !completed_video_ids.is_empty() {
+            if shows.len() == 1 {
+                let show_id = shows[0].id;
+                let episodes = self.catalog.list_episodes_by_show(show_id).await?;
+                let watched = episodes
+                    .iter()
+                    .filter(|ep| completed_video_ids.contains(&ep.id))
+                    .count() as u32;
+                watched_by_show.insert(show_id, watched);
+            } else {
+                let all_episodes = self
+                    .catalog
+                    .list_videos(&VideoQueryFilter {
+                        kind: crate::domain::video::VideoKindFilter::Episodes,
+                        ..Default::default()
+                    })
+                    .await?;
+                for ep in all_episodes {
+                    if let Some(sid) = ep.show_id
+                        && completed_video_ids.contains(&ep.id)
+                    {
+                        *watched_by_show.entry(sid).or_default() += 1;
+                    }
+                }
             }
         }
 
-        Ok(shows
-            .into_iter()
-            .map(|s| ShowSummaryDto {
-                id: s.id,
-                library_id: s.library_id,
-                title: s.title,
-                summary: s.summary,
-                year: s.year,
-                genres: s.genres,
-                tags: s.tags,
-                poster_key: s.poster_key,
-                season_count: s.season_count,
-                episode_count: s.episode_count,
-                watched_episode_count: watched_by_show.get(&s.id).copied().unwrap_or(0),
-                is_favorite: fav_set.contains(&s.id.0),
-                created_at: s.created_at,
-            })
-            .collect())
+        Ok(Self::enrich_shows_with_maps(
+            shows,
+            &fav_set,
+            &watched_by_show,
+        ))
     }
 
     pub async fn home_overview(&self, user: &User) -> DomainResult<VideoHomeOverviewDto> {
-        let mut all_prog = self.watch.list_user_progress(user.id).await?;
-        all_prog.retain(|p| !p.completed && p.position_secs > 1.0);
-        all_prog.sort_by_key(|p| std::cmp::Reverse(p.updated_at));
-        let all_prog_ids: Vec<VideoId> = all_prog.iter().map(|p| p.video_id).collect();
-        let fetched_all_cw = self.catalog.find_videos_by_ids(&all_prog_ids).await?;
-        let cw_lookup: HashMap<VideoId, VideoItem> = fetched_all_cw
-            .into_iter()
-            .filter(|v| !v.is_missing)
-            .map(|v| (v.id, v))
-            .collect();
-        let mut active_cw: Vec<VideoItem> = all_prog_ids
-            .iter()
-            .filter_map(|id| cw_lookup.get(id).cloned())
-            .collect();
-        let watching_count = active_cw.len() as u64;
-        active_cw.truncate(12);
-        let continue_watching = self.enrich_videos(user.id, active_cw).await?;
+        let all_progress_list = self.watch.list_user_progress(user.id).await?;
+        let all_favorites = self.watch.list_favorites(user.id, None).await?;
+        let favorites_count = all_favorites.len() as u64;
+
+        let mut video_fav_set: HashSet<Uuid> = HashSet::new();
+        let mut show_fav_set: HashSet<Uuid> = HashSet::new();
+        for fav in all_favorites {
+            match fav.kind {
+                VideoFavoriteKind::Video => {
+                    video_fav_set.insert(fav.target_id);
+                }
+                VideoFavoriteKind::Show => {
+                    show_fav_set.insert(fav.target_id);
+                }
+            }
+        }
+
+        let mut prog_map: HashMap<VideoId, WatchProgress> =
+            HashMap::with_capacity(all_progress_list.len());
+        let mut completed_video_ids: HashSet<VideoId> = HashSet::new();
+        let mut active_prog: Vec<(VideoId, Timestamp)> = Vec::new();
+        for p in all_progress_list {
+            if p.completed {
+                completed_video_ids.insert(p.video_id);
+            } else if p.position_secs > 1.0 {
+                active_prog.push((p.video_id, p.updated_at));
+            }
+            prog_map.insert(p.video_id, p);
+        }
+        active_prog.sort_by_key(|(_, ts)| std::cmp::Reverse(*ts));
 
         let mut all_videos = self
             .catalog
@@ -198,11 +243,21 @@ impl VideoCatalogService {
             })
             .await?;
         let total_videos = all_videos.len() as u64;
-        let movies_count = all_videos.iter().filter(|v| v.show_id.is_none()).count() as u64;
-
+        let mut movies_count = 0u64;
         let mut genre_set = HashSet::new();
         let mut tag_set = HashSet::new();
-        for v in &all_videos {
+        let mut watched_by_show: HashMap<ShowId, u32> = HashMap::new();
+        let mut video_index: HashMap<VideoId, usize> = HashMap::with_capacity(all_videos.len());
+
+        for (idx, v) in all_videos.iter().enumerate() {
+            video_index.insert(v.id, idx);
+            if let Some(sid) = v.show_id {
+                if completed_video_ids.contains(&v.id) {
+                    *watched_by_show.entry(sid).or_default() += 1;
+                }
+            } else {
+                movies_count += 1;
+            }
             for g in &v.genres {
                 let clean = g.trim().to_lowercase();
                 if !clean.is_empty() {
@@ -217,8 +272,16 @@ impl VideoCatalogService {
             }
         }
 
+        let mut active_cw: Vec<VideoItem> = active_prog
+            .iter()
+            .filter_map(|(id, _)| video_index.get(id).map(|&idx| all_videos[idx].clone()))
+            .collect();
+        let watching_count = active_cw.len() as u64;
+        active_cw.truncate(12);
+        let continue_watching = Self::enrich_videos_with_maps(active_cw, &prog_map, &video_fav_set);
+
         all_videos.truncate(16);
-        let recent_videos = self.enrich_videos(user.id, all_videos).await?;
+        let recent_videos = Self::enrich_videos_with_maps(all_videos, &prog_map, &video_fav_set);
 
         let mut all_shows = self.catalog.list_shows(&ShowQueryFilter::default()).await?;
         let total_shows = all_shows.len() as u64;
@@ -238,9 +301,8 @@ impl VideoCatalogService {
         }
         all_shows.sort_by_key(|s| std::cmp::Reverse(s.created_at));
         all_shows.truncate(12);
-        let recent_shows = self.enrich_shows(user.id, all_shows).await?;
+        let recent_shows = Self::enrich_shows_with_maps(all_shows, &show_fav_set, &watched_by_show);
 
-        let favorites_count = self.watch.list_favorites(user.id, None).await?.len() as u64;
         let shelves_count = self.watch.list_shelves(user.id).await?.len() as u64;
         let libraries_count = self.libraries.list_by_media(MediaKind::Video).await?.len() as u64;
 
@@ -518,15 +580,37 @@ impl VideoCatalogService {
             .find_show_by_id(show_id)
             .await?
             .ok_or_else(|| DomainError::NotFound("show not found".into()))?;
-        let show_dto = self
-            .enrich_shows(user.id, vec![show])
-            .await?
+        let episodes = self.catalog.list_episodes_by_show(show_id).await?;
+        let progress_list = self.watch.list_user_progress(user.id).await?;
+        let all_favs = self.watch.list_favorites(user.id, None).await?;
+
+        let prog_map: HashMap<VideoId, WatchProgress> =
+            progress_list.into_iter().map(|p| (p.video_id, p)).collect();
+        let mut video_fav_set: HashSet<Uuid> = HashSet::new();
+        let mut show_fav_set: HashSet<Uuid> = HashSet::new();
+        for fav in all_favs {
+            match fav.kind {
+                VideoFavoriteKind::Video => {
+                    video_fav_set.insert(fav.target_id);
+                }
+                VideoFavoriteKind::Show => {
+                    show_fav_set.insert(fav.target_id);
+                }
+            }
+        }
+
+        let watched_count = episodes
+            .iter()
+            .filter(|ep| prog_map.get(&ep.id).is_some_and(|p| p.completed))
+            .count() as u32;
+        let mut watched_by_show = HashMap::with_capacity(1);
+        watched_by_show.insert(show.id, watched_count);
+
+        let show_dto = Self::enrich_shows_with_maps(vec![show], &show_fav_set, &watched_by_show)
             .into_iter()
             .next()
             .ok_or_else(|| DomainError::NotFound("show not found".into()))?;
-
-        let episodes = self.catalog.list_episodes_by_show(show_id).await?;
-        let ep_dtos = self.enrich_videos(user.id, episodes).await?;
+        let ep_dtos = Self::enrich_videos_with_maps(episodes, &prog_map, &video_fav_set);
 
         let continue_episode = ep_dtos
             .iter()

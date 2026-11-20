@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -12,7 +12,7 @@ use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::domain::user::{User, UserId};
 
 use crate::application::catalog::VideoCatalogService;
-use crate::application::dto::{VideoUploadItem, VideoUploadResultDto};
+use crate::application::dto::{VideoUploadItem, VideoUploadPathItem, VideoUploadResultDto};
 use crate::application::ports::{
     ParsedNfoMetadata, VideoMediaEnginePort, VideoScannerPort, VideoStoragePort,
 };
@@ -93,24 +93,25 @@ impl VideoDomainLifecycle {
 
         let mut created_videos = Vec::new();
         let mut attached_subtitles_count = 0usize;
+        let video_count = video_items.len();
 
-        for (idx, (filename, container, bytes)) in video_items.iter().enumerate() {
+        for (idx, (filename, container, bytes)) in video_items.into_iter().enumerate() {
             let video_id = VideoId::new();
             let stored = self
                 .storage
-                .save_managed_video(video_id, *container, bytes.clone())
+                .save_managed_video(video_id, container, bytes)
                 .await?;
-            let (video_stem, _) = split_filename_stem_and_ext(filename);
+            let (video_stem, _) = split_filename_stem_and_ext(&filename);
 
             let mut sidecar_subtitles = Vec::new();
             for (s_idx, (sub_name, sub_ext, sub_bytes)) in sub_items.iter().enumerate() {
                 let (sub_stem, _) = split_filename_stem_and_ext(sub_name);
-                let matches_this_video = video_items.len() == 1
+                let matches_this_video = video_count == 1
                     || sub_stem.eq_ignore_ascii_case(&video_stem)
                     || sub_stem
                         .to_lowercase()
                         .starts_with(&format!("{}.", video_stem.to_lowercase()))
-                    || (idx == 0 && s_idx == 0 && video_items.is_empty());
+                    || (idx == 0 && s_idx == 0 && video_count == 0);
 
                 if matches_this_video {
                     let sub_id = format!("s{s_idx}");
@@ -135,7 +136,7 @@ impl VideoDomainLifecycle {
                 .engine
                 .probe_video(Path::new(&stored.absolute_path))
                 .await;
-            let parsed = parse_video_path(filename);
+            let parsed = parse_video_path(&filename);
             let poster_bytes = self
                 .engine
                 .generate_poster_bytes(
@@ -155,8 +156,138 @@ impl VideoDomainLifecycle {
                     managed_lib.id,
                     video_id,
                     None,
-                    filename,
-                    *container,
+                    &filename,
+                    container,
+                    stored.file_size,
+                    stored.file_hash,
+                    probed,
+                    None,
+                    poster_key,
+                    VideoSource::Managed {
+                        storage_key: stored.storage_key,
+                        sidecar_subtitles,
+                    },
+                )
+                .await?;
+
+            self.catalog_repo.save_video(&item).await?;
+            created_videos.push(item);
+        }
+
+        self.catalog_repo.recompute_show_aggregates().await?;
+        self.events.publish(SystemEvent::MediaChanged {
+            media_kind: MediaKind::Video,
+        });
+
+        let uploaded_videos = self
+            .catalog_service
+            .enrich_videos(actor.id, created_videos)
+            .await?;
+
+        Ok(VideoUploadResultDto {
+            uploaded_videos,
+            attached_subtitles_count,
+        })
+    }
+
+    pub async fn upload_files_from_paths(
+        &self,
+        actor: &User,
+        files: Vec<VideoUploadPathItem>,
+    ) -> DomainResult<VideoUploadResultDto> {
+        if !actor.role.is_admin() {
+            return Err(DomainError::Forbidden(
+                "administrator privileges required".into(),
+            ));
+        }
+        if files.is_empty() {
+            return Err(DomainError::Validation("no files uploaded".into()));
+        }
+
+        let managed_lib = self.ensure_managed_library().await?;
+
+        let mut video_items: Vec<(String, VideoContainer, PathBuf)> = Vec::new();
+        let mut sub_items: Vec<(String, String, PathBuf)> = Vec::new();
+
+        for f in files {
+            let (stem, ext) = split_filename_stem_and_ext(&f.filename);
+            if let Some(container) = VideoContainer::from_extension(&ext) {
+                video_items.push((f.filename, container, f.temp_path));
+            } else if is_subtitle_extension(&ext) {
+                sub_items.push((f.filename, ext.to_ascii_lowercase(), f.temp_path));
+            } else {
+                return Err(DomainError::UnsupportedFormat(format!(
+                    "unsupported file extension '.{ext}' (stem '{stem}')"
+                )));
+            }
+        }
+
+        let mut created_videos = Vec::new();
+        let mut attached_subtitles_count = 0usize;
+        let video_count = video_items.len();
+
+        for (filename, container, temp_path) in video_items {
+            let video_id = VideoId::new();
+            let stored = self
+                .storage
+                .save_managed_video_from_path(video_id, container, &temp_path)
+                .await?;
+            let (video_stem, _) = split_filename_stem_and_ext(&filename);
+
+            let mut sidecar_subtitles = Vec::new();
+            for (s_idx, (sub_name, sub_ext, sub_path)) in sub_items.iter().enumerate() {
+                let (sub_stem, _) = split_filename_stem_and_ext(sub_name);
+                let matches_this_video = video_count == 1
+                    || sub_stem.eq_ignore_ascii_case(&video_stem)
+                    || sub_stem
+                        .to_lowercase()
+                        .starts_with(&format!("{}.", video_stem.to_lowercase()));
+
+                if matches_this_video {
+                    let sub_id = format!("s{s_idx}");
+                    let key = self
+                        .storage
+                        .save_managed_subtitle_from_path(video_id, &sub_id, sub_ext, sub_path)
+                        .await?;
+                    let (lang, label) =
+                        parse_sidecar_subtitle_lang_and_label(&video_stem, sub_name);
+                    sidecar_subtitles.push(SidecarSubtitle {
+                        id: sub_id,
+                        format: sub_ext.clone(),
+                        language: lang,
+                        label,
+                        path_or_key: key,
+                    });
+                    attached_subtitles_count += 1;
+                }
+            }
+
+            let probed = self
+                .engine
+                .probe_video(Path::new(&stored.absolute_path))
+                .await;
+            let parsed = parse_video_path(&filename);
+            let poster_bytes = self
+                .engine
+                .generate_poster_bytes(
+                    Path::new(&stored.absolute_path),
+                    probed.duration_secs,
+                    &parsed.title,
+                )
+                .await
+                .ok();
+            let poster_key = match poster_bytes {
+                Some(ref b) => self.storage.save_poster_bytes(b).await.ok(),
+                None => None,
+            };
+
+            let item = self
+                .build_and_upsert_video(
+                    managed_lib.id,
+                    video_id,
+                    None,
+                    &filename,
+                    container,
                     stored.file_size,
                     stored.file_hash,
                     probed,
@@ -421,11 +552,15 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                 continue;
             }
 
-            let file_hash = xmedia_core::infra::fingerprint::fast_content_fingerprint(Path::new(
-                &entry.absolute_path,
-            ))
+            let fp_path = PathBuf::from(&entry.absolute_path);
+            let file_hash = tokio::task::spawn_blocking(move || {
+                xmedia_core::infra::fingerprint::fast_content_fingerprint(&fp_path)
+            })
+            .await
+            .ok()
+            .and_then(|res| res.ok())
             .map(|(_, h)| h)
-            .unwrap_or_else(|_| format!("{}:{}", entry.file_size, entry.file_mtime));
+            .unwrap_or_else(|| format!("{}:{}", entry.file_size, entry.file_mtime));
 
             let exact_was_found = exact_prev.is_some();
             let prev_item = match exact_prev {
@@ -556,7 +691,9 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
             }
         }
 
-        self.catalog_repo.recompute_show_aggregates().await?;
+        if added_count > 0 || updated_count > 0 || missing_count > 0 {
+            self.catalog_repo.recompute_show_aggregates().await?;
+        }
         library.mark_scan_completed(scanned_count, added_count, updated_count, missing_count);
         self.libraries.save(&library).await?;
 

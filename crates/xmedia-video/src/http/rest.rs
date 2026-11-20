@@ -7,18 +7,22 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
-use xmedia_core::http::{ApiError, ApiResult, into_binary_cache_response, parse_http_range_spec};
+use xmedia_core::http::{
+    ApiError, ApiResult, TempUploadFile, into_binary_cache_response, parse_http_range_spec,
+    stream_multipart_field_to_temp_file,
+};
 
 use crate::application::catalog::VideoCatalogService;
 use crate::application::dto::{
     SaveWatchProgressInput, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, UpsertVideoShelfInput,
     VideoDetailDto, VideoFavoritesDto, VideoHomeOverviewDto, VideoShelfDetailDto, VideoShelfDto,
-    VideoSummaryDto, VideoSystemStatusDto, VideoUploadItem, VideoUploadResultDto,
+    VideoSummaryDto, VideoSystemStatusDto, VideoUploadPathItem, VideoUploadResultDto,
 };
 use crate::application::ports::parse_quality_param;
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
 use crate::domain::video::{
-    ShowMetadataPatch, ShowQueryFilter, VideoMetadataPatch, VideoQueryFilter,
+    ShowMetadataPatch, ShowQueryFilter, VideoContainer, VideoMetadataPatch, VideoQueryFilter,
+    is_subtitle_extension,
 };
 use crate::domain::watch::{VideoFavoriteKind, WatchProgress};
 use crate::http::extractors::VideoWebAuth;
@@ -115,13 +119,22 @@ async fn home_overview(
     Ok(Json(state.services.catalog.home_overview(&user).await?))
 }
 
+const MAX_VIDEO_UPLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
 async fn upload_videos(
     State(state): State<VideoHttpState>,
     VideoWebAuth(user): VideoWebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<VideoUploadResultDto>)> {
-    let mut files = Vec::new();
-    while let Some(field) = multipart
+    if !user.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
+    let mut temp_guards: Vec<(String, TempUploadFile)> = Vec::new();
+    let mut total_bytes: u64 = 0;
+
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| ApiError(DomainError::Validation(format!("multipart error: {e}"))))?
@@ -129,15 +142,38 @@ async fn upload_videos(
         let Some(filename) = field.file_name().map(str::to_string) else {
             continue;
         };
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| ApiError(DomainError::Validation(format!("upload read error: {e}"))))?;
-        if !bytes.is_empty() {
-            files.push(VideoUploadItem { filename, bytes });
+        let ext = std::path::Path::new(&filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .trim();
+        if VideoContainer::from_extension(ext).is_none() && !is_subtitle_extension(ext) {
+            return Err(ApiError(DomainError::UnsupportedFormat(format!(
+                "unsupported file extension '.{ext}'"
+            ))));
+        }
+        let remaining_cap = MAX_VIDEO_UPLOAD_BYTES.saturating_sub(total_bytes);
+        let temp =
+            stream_multipart_field_to_temp_file(&mut field, remaining_cap, Some(ext)).await?;
+        if !temp.is_empty() {
+            total_bytes = total_bytes.saturating_add(temp.size());
+            temp_guards.push((filename, temp));
         }
     }
-    let res = state.services.ingest.upload_files(&user, files).await?;
+
+    let items: Vec<VideoUploadPathItem> = temp_guards
+        .iter()
+        .map(|(filename, guard)| VideoUploadPathItem {
+            filename: filename.clone(),
+            temp_path: guard.path().to_path_buf(),
+        })
+        .collect();
+
+    let res = state
+        .services
+        .ingest
+        .upload_files_from_paths(&user, items)
+        .await?;
     Ok((StatusCode::CREATED, Json(res)))
 }
 
@@ -199,6 +235,11 @@ async fn upload_video_poster(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<VideoSummaryDto>> {
+    if !user.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
     let bytes = read_first_multipart_bytes(&mut multipart).await?;
     Ok(Json(
         state
@@ -352,6 +393,11 @@ async fn upload_show_poster(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<ShowSummaryDto>> {
+    if !user.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
     let bytes = read_first_multipart_bytes(&mut multipart).await?;
     Ok(Json(
         state

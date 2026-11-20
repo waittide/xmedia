@@ -27,6 +27,172 @@ impl SmartComicScanner {
     }
 }
 
+struct DiscoveredChapterCandidate {
+    source_kind: ChapterSourceKind,
+    path: PathBuf,
+    display_name: String,
+    fallback_index: u32,
+    unchanged_hit: Option<ScannedChapterEntry>,
+}
+
+struct DiscoveredSeriesDir {
+    title: String,
+    source_dir: String,
+    series_cover_bytes: Option<Vec<u8>>,
+    candidates: Vec<DiscoveredChapterCandidate>,
+}
+
+struct DiscoveredLayout {
+    series_dirs: Vec<DiscoveredSeriesDir>,
+    standalone_archives: Vec<DiscoveredChapterCandidate>,
+}
+
+fn check_archive_unchanged(
+    path: &Path,
+    display_name: &str,
+    fallback_index: u32,
+    known_chapters: &HashMap<String, ExistingChapterDigest>,
+) -> Option<ScannedChapterEntry> {
+    let source_path = path.to_string_lossy().into_owned();
+    let prev = known_chapters.get(&source_path)?;
+    if prev.page_count == 0 {
+        return None;
+    }
+    let (size, hash) = fast_file_fingerprint(path).ok()?;
+    if size != prev.file_size || hash != prev.file_hash {
+        return None;
+    }
+    if xmedia_core::infra::fingerprint::file_mtime_secs(path)
+        .is_some_and(|m| m > prev.updated_at.as_second())
+    {
+        return None;
+    }
+    let parsed = parse_chapter_filename(display_name, fallback_index);
+    Some(ScannedChapterEntry {
+        kind: parsed.kind,
+        number: parsed.number,
+        volume_number: parsed.volume_number,
+        title: parsed.clean_title,
+        page_count: prev.page_count,
+        source_kind: ChapterSourceKind::ArchiveFile,
+        source_path,
+        file_size: size,
+        file_hash: hash,
+        comic_info: None,
+        unchanged: true,
+    })
+}
+
+fn discover_comic_layout_blocking(
+    root: &Path,
+    known_chapters: &HashMap<String, ExistingChapterDigest>,
+) -> DomainResult<DiscoveredLayout> {
+    if !root.exists() {
+        return Err(DomainError::Validation(format!(
+            "library root directory '{}' does not exist",
+            root.display()
+        )));
+    }
+
+    let top_entries = read_sorted_dir(root)?;
+    let mut series_dirs = Vec::new();
+    let mut standalone_paths: Vec<PathBuf> = Vec::new();
+
+    for entry in top_entries {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+
+        if ft.is_dir() {
+            let mut archive_candidates: Vec<PathBuf> = Vec::new();
+            let mut image_dir_candidates: Vec<PathBuf> = Vec::new();
+            walk_series_tree(&path, 0, &mut archive_candidates, &mut image_dir_candidates)?;
+            archive_candidates
+                .sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
+            image_dir_candidates
+                .sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
+
+            if archive_candidates.is_empty() && image_dir_candidates.is_empty() {
+                continue;
+            }
+
+            let mut candidates =
+                Vec::with_capacity(archive_candidates.len() + image_dir_candidates.len());
+            let mut index = 1_u32;
+
+            for archive_path in archive_candidates {
+                let label = relative_display_name(&path, &archive_path);
+                let unchanged_hit =
+                    check_archive_unchanged(&archive_path, &label, index, known_chapters);
+                candidates.push(DiscoveredChapterCandidate {
+                    source_kind: ChapterSourceKind::ArchiveFile,
+                    path: archive_path,
+                    display_name: label,
+                    fallback_index: index,
+                    unchanged_hit,
+                });
+                index += 1;
+            }
+
+            for img_dir in image_dir_candidates {
+                let label = if img_dir == path {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Chapter 1".into())
+                } else {
+                    relative_display_name(&path, &img_dir)
+                };
+                candidates.push(DiscoveredChapterCandidate {
+                    source_kind: ChapterSourceKind::ImageDirectory,
+                    path: img_dir,
+                    display_name: label,
+                    fallback_index: index,
+                    unchanged_hit: None,
+                });
+                index += 1;
+            }
+
+            let series_cover_bytes = find_series_cover_bytes(&path);
+            series_dirs.push(DiscoveredSeriesDir {
+                title: name,
+                source_dir: path.to_string_lossy().into_owned(),
+                series_cover_bytes,
+                candidates,
+            });
+        } else if ft.is_file() && is_supported_archive_path(&path) {
+            standalone_paths.push(path);
+        }
+    }
+
+    let mut standalone_archives = Vec::with_capacity(standalone_paths.len());
+    for (idx, archive_path) in standalone_paths.into_iter().enumerate() {
+        let filename = archive_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let fallback_index = (idx + 1) as u32;
+        let unchanged_hit =
+            check_archive_unchanged(&archive_path, &filename, fallback_index, known_chapters);
+        standalone_archives.push(DiscoveredChapterCandidate {
+            source_kind: ChapterSourceKind::ArchiveFile,
+            path: archive_path,
+            display_name: filename,
+            fallback_index,
+            unchanged_hit,
+        });
+    }
+
+    Ok(DiscoveredLayout {
+        series_dirs,
+        standalone_archives,
+    })
+}
+
 #[async_trait]
 impl ComicScannerPort for SmartComicScanner {
     async fn scan_directory(
@@ -35,63 +201,41 @@ impl ComicScannerPort for SmartComicScanner {
         known_chapters: &HashMap<String, ExistingChapterDigest>,
     ) -> DomainResult<Vec<ScannedSeriesEntry>> {
         let root = PathBuf::from(root_path);
-        if !root.exists() {
-            return Err(DomainError::Validation(format!(
-                "library root directory '{}' does not exist",
-                root.display()
-            )));
-        }
+        let root_for_task = root.clone();
+        let known_owned = known_chapters.clone();
+        let layout = tokio::task::spawn_blocking(move || {
+            discover_comic_layout_blocking(&root_for_task, &known_owned)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("comic directory scan panicked: {e}")))??;
 
-        let top_entries = read_sorted_dir(&root)?;
         let mut series_map: HashMap<String, ScannedSeriesEntry> = HashMap::new();
-        let mut standalone_archives: Vec<PathBuf> = Vec::new();
 
-        for entry in top_entries {
-            let Ok(ft) = entry.file_type() else {
-                continue;
-            };
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-
-            if ft.is_dir() {
-                let series_dir_str = path.to_string_lossy().into_owned();
-                let chapters = self.collect_series_chapters(&path, known_chapters).await?;
-                if !chapters.is_empty() {
-                    let series_cover_bytes = find_series_cover_bytes(&path);
-                    series_map.insert(
-                        series_dir_str.clone(),
-                        ScannedSeriesEntry {
-                            title: name,
-                            source_dir: series_dir_str,
-                            chapters,
-                            series_cover_bytes,
-                        },
-                    );
+        for dir in layout.series_dirs {
+            let mut chapters = Vec::with_capacity(dir.candidates.len());
+            for cand in dir.candidates {
+                if let Some(ch) = self.resolve_candidate(cand, known_chapters).await {
+                    chapters.push(ch);
                 }
-            } else if ft.is_file() && is_supported_archive_path(&path) {
-                standalone_archives.push(path);
+            }
+            if !chapters.is_empty() {
+                series_map.insert(
+                    dir.source_dir.clone(),
+                    ScannedSeriesEntry {
+                        title: dir.title,
+                        source_dir: dir.source_dir,
+                        chapters,
+                        series_cover_bytes: dir.series_cover_bytes,
+                    },
+                );
             }
         }
 
-        for (idx, archive_path) in standalone_archives.into_iter().enumerate() {
-            let filename = archive_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if let Some(ch) = self
-                .inspect_chapter_candidate(
-                    ChapterSourceKind::ArchiveFile,
-                    &archive_path,
-                    &filename,
-                    (idx + 1) as u32,
-                    known_chapters,
-                )
-                .await
-            {
-                let parsed = parse_chapter_filename(&filename, (idx + 1) as u32);
+        for cand in layout.standalone_archives {
+            let filename = cand.display_name.clone();
+            let fallback_index = cand.fallback_index;
+            if let Some(ch) = self.resolve_candidate(cand, known_chapters).await {
+                let parsed = parse_chapter_filename(&filename, fallback_index);
                 let series_title = ch
                     .comic_info
                     .as_ref()
@@ -125,122 +269,43 @@ impl ComicScannerPort for SmartComicScanner {
 }
 
 impl SmartComicScanner {
-    async fn collect_series_chapters(
+    async fn resolve_candidate(
         &self,
-        series_dir: &Path,
-        known_chapters: &HashMap<String, ExistingChapterDigest>,
-    ) -> DomainResult<Vec<ScannedChapterEntry>> {
-        let mut archive_candidates: Vec<PathBuf> = Vec::new();
-        let mut image_dir_candidates: Vec<PathBuf> = Vec::new();
-        walk_series_tree(
-            series_dir,
-            0,
-            &mut archive_candidates,
-            &mut image_dir_candidates,
-        )?;
-
-        archive_candidates.sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
-        image_dir_candidates
-            .sort_by(|a, b| natural_cmp(&a.to_string_lossy(), &b.to_string_lossy()));
-
-        let mut chapters = Vec::new();
-        let mut index = 1_u32;
-
-        for archive_path in archive_candidates {
-            let label = relative_display_name(series_dir, &archive_path);
-            if let Some(ch) = self
-                .inspect_chapter_candidate(
-                    ChapterSourceKind::ArchiveFile,
-                    &archive_path,
-                    &label,
-                    index,
-                    known_chapters,
-                )
-                .await
-            {
-                chapters.push(ch);
-                index += 1;
-            }
-        }
-
-        for img_dir in image_dir_candidates {
-            let label = if img_dir == series_dir {
-                series_dir
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Chapter 1".into())
-            } else {
-                relative_display_name(series_dir, &img_dir)
-            };
-            if let Some(ch) = self
-                .inspect_chapter_candidate(
-                    ChapterSourceKind::ImageDirectory,
-                    &img_dir,
-                    &label,
-                    index,
-                    known_chapters,
-                )
-                .await
-            {
-                chapters.push(ch);
-                index += 1;
-            }
-        }
-
-        Ok(chapters)
-    }
-
-    async fn inspect_chapter_candidate(
-        &self,
-        source_kind: ChapterSourceKind,
-        path: &Path,
-        display_name: &str,
-        fallback_index: u32,
+        cand: DiscoveredChapterCandidate,
         known_chapters: &HashMap<String, ExistingChapterDigest>,
     ) -> Option<ScannedChapterEntry> {
-        let source_path = path.to_string_lossy().into_owned();
-        let parsed = parse_chapter_filename(display_name, fallback_index);
-
-        if source_kind == ChapterSourceKind::ArchiveFile
-            && let Some(prev) = known_chapters.get(&source_path)
-            && let Ok((size, hash)) = fast_file_fingerprint(path)
-            && size == prev.file_size
-            && hash == prev.file_hash
-            && prev.page_count > 0
-            && xmedia_core::infra::fingerprint::file_mtime_secs(path)
-                .is_none_or(|m| m <= prev.updated_at.as_second())
-        {
-            return Some(ScannedChapterEntry {
-                kind: parsed.kind,
-                number: parsed.number,
-                volume_number: parsed.volume_number,
-                title: parsed.clean_title,
-                page_count: prev.page_count,
-                source_kind,
-                source_path,
-                file_size: size,
-                file_hash: hash,
-                comic_info: None,
-                unchanged: true,
-            });
+        if let Some(hit) = cand.unchanged_hit {
+            return Some(hit);
         }
+
+        let source_path = cand.path.to_string_lossy().into_owned();
+        let parsed = parse_chapter_filename(&cand.display_name, cand.fallback_index);
 
         let inspection = self
             .archives
-            .inspect_source(source_kind, &source_path)
+            .inspect_source(cand.source_kind, &source_path)
             .await
             .ok()?;
         if inspection.page_count == 0 {
             return None;
         }
 
-        let unchanged = known_chapters.get(&source_path).is_some_and(|prev| {
-            prev.file_size == inspection.file_size
-                && prev.file_hash == inspection.file_hash
-                && prev.page_count == inspection.page_count
-                && xmedia_core::infra::fingerprint::file_mtime_secs(path)
-                    .is_none_or(|m| m <= prev.updated_at.as_second())
-        });
+        let unchanged = if let Some(prev) = known_chapters.get(&source_path)
+            && prev.file_size == inspection.file_size
+            && prev.file_hash == inspection.file_hash
+            && prev.page_count == inspection.page_count
+        {
+            let p_owned = cand.path.clone();
+            let updated_sec = prev.updated_at.as_second();
+            tokio::task::spawn_blocking(move || {
+                xmedia_core::infra::fingerprint::file_mtime_secs(&p_owned)
+                    .is_none_or(|m| m <= updated_sec)
+            })
+            .await
+            .unwrap_or(false)
+        } else {
+            false
+        };
 
         Some(ScannedChapterEntry {
             kind: parsed.kind,
@@ -248,7 +313,7 @@ impl SmartComicScanner {
             volume_number: parsed.volume_number,
             title: parsed.clean_title,
             page_count: inspection.page_count,
-            source_kind,
+            source_kind: cand.source_kind,
             source_path,
             file_size: inspection.file_size,
             file_hash: inspection.file_hash,

@@ -123,13 +123,25 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                     .read_entry(&root_path, &entry.relative_path)
                     .await
                 {
-                    if let Ok(parsed) = self.parser.parse_book_with_sidecars(
-                        entry.format,
-                        &loaded.bytes,
-                        &entry.fallback_title,
-                        loaded.sidecar_opf.as_deref(),
-                        loaded.sidecar_cover,
-                    ) {
+                    let parser = self.parser.clone();
+                    let fmt = entry.format;
+                    let bytes_for_parse = loaded.bytes.clone();
+                    let fallback_title = entry.fallback_title.clone();
+                    let sidecar_opf = loaded.sidecar_opf;
+                    let sidecar_cover = loaded.sidecar_cover;
+                    let parsed_res = tokio::task::spawn_blocking(move || {
+                        parser.parse_book_with_sidecars(
+                            fmt,
+                            &bytes_for_parse,
+                            &fallback_title,
+                            sidecar_opf.as_deref(),
+                            sidecar_cover,
+                        )
+                    })
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok());
+                    if let Some(parsed) = parsed_res {
                         if let Some(cover) = &parsed.cover
                             && let Ok(cover_key) = self.storage.save_cover(existing.id, cover).await
                         {
@@ -150,67 +162,80 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                 .scanner
                 .read_entry(&root_path, &entry.relative_path)
                 .await
-                && let Ok(parsed) = self.parser.parse_book_with_sidecars(
-                    entry.format,
-                    &loaded.bytes,
-                    &entry.fallback_title,
-                    loaded.sidecar_opf.as_deref(),
-                    loaded.sidecar_cover,
-                )
             {
-                // Check whether this is a moved/renamed existing book in the same library
-                let matched_old_key = existing_by_path
-                    .iter()
-                    .find(|(old_rel, old_book)| {
-                        !entry_paths.contains(*old_rel)
-                            && old_book.format == entry.format
-                            && (old_book.file_hash == loaded.file_hash
-                                || old_book.file_hash == loaded.legacy_sha256)
-                    })
-                    .map(|(k, _)| k.clone());
-
-                if let Some(old_rel) = matched_old_key
-                    && let Some(mut migrated) = existing_by_path.remove(&old_rel)
+                let parser = self.parser.clone();
+                let fmt = entry.format;
+                let bytes_for_parse = loaded.bytes.clone();
+                let fallback_title = entry.fallback_title.clone();
+                let sidecar_opf = loaded.sidecar_opf;
+                let sidecar_cover = loaded.sidecar_cover;
+                if let Some(parsed) = tokio::task::spawn_blocking(move || {
+                    parser.parse_book_with_sidecars(
+                        fmt,
+                        &bytes_for_parse,
+                        &fallback_title,
+                        sidecar_opf.as_deref(),
+                        sidecar_cover,
+                    )
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
                 {
-                    migrated.source = BookSource::MountedFile {
-                        relative_path: entry.relative_path,
-                        file_mtime: entry.file_mtime,
-                    };
-                    if let Some(cover) = &parsed.cover
-                        && let Ok(cover_key) = self.storage.save_cover(migrated.id, cover).await
+                    // Check whether this is a moved/renamed existing book in the same library
+                    let matched_old_key = existing_by_path
+                        .iter()
+                        .find(|(old_rel, old_book)| {
+                            !entry_paths.contains(*old_rel)
+                                && old_book.format == entry.format
+                                && (old_book.file_hash == loaded.file_hash
+                                    || old_book.file_hash == loaded.legacy_sha256)
+                        })
+                        .map(|(k, _)| k.clone());
+
+                    if let Some(old_rel) = matched_old_key
+                        && let Some(mut migrated) = existing_by_path.remove(&old_rel)
                     {
-                        migrated.set_cover(Some(cover_key));
-                    }
-                    let _ = migrated.update_metadata(parsed.metadata);
-                    migrated.mark_present(
-                        entry.file_size,
-                        loaded.file_hash,
-                        Some(entry.file_mtime),
-                    );
-                    self.books.save(&migrated).await?;
-                    updated += 1;
-                } else {
-                    let mut book = Book::new(
-                        library.id,
-                        entry.format,
-                        BookSource::MountedFile {
+                        migrated.source = BookSource::MountedFile {
                             relative_path: entry.relative_path,
                             file_mtime: entry.file_mtime,
-                        },
-                        entry.file_size,
-                        loaded.file_hash,
-                        None,
-                        parsed.metadata,
-                    )?;
+                        };
+                        if let Some(cover) = &parsed.cover
+                            && let Ok(cover_key) = self.storage.save_cover(migrated.id, cover).await
+                        {
+                            migrated.set_cover(Some(cover_key));
+                        }
+                        let _ = migrated.update_metadata(parsed.metadata);
+                        migrated.mark_present(
+                            entry.file_size,
+                            loaded.file_hash,
+                            Some(entry.file_mtime),
+                        );
+                        self.books.save(&migrated).await?;
+                        updated += 1;
+                    } else {
+                        let mut book = Book::new(
+                            library.id,
+                            entry.format,
+                            BookSource::MountedFile {
+                                relative_path: entry.relative_path,
+                                file_mtime: entry.file_mtime,
+                            },
+                            entry.file_size,
+                            loaded.file_hash,
+                            None,
+                            parsed.metadata,
+                        )?;
 
-                    if let Some(cover) = &parsed.cover
-                        && let Ok(cover_key) = self.storage.save_cover(book.id, cover).await
-                    {
-                        book.set_cover(Some(cover_key));
+                        if let Some(cover) = &parsed.cover
+                            && let Ok(cover_key) = self.storage.save_cover(book.id, cover).await
+                        {
+                            book.set_cover(Some(cover_key));
+                        }
+
+                        self.books.save(&book).await?;
+                        added += 1;
                     }
-
-                    self.books.save(&book).await?;
-                    added += 1;
                 }
             }
 
@@ -268,6 +293,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
 
     async fn on_library_deleted(&self, library_id: LibraryId) -> DomainResult<()> {
         let books = self.books.list_by_library(library_id).await?;
+        let mut book_ids = Vec::with_capacity(books.len());
         for book in &books {
             if let BookSource::ManagedUpload { storage_key } = &book.source {
                 let _ = self.storage.delete_managed_book(storage_key).await;
@@ -275,8 +301,9 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
             if let Some(cover_key) = &book.cover_key {
                 let _ = self.storage.delete_cover(cover_key).await;
             }
-            self.readings.delete_by_book(book.id).await?;
+            book_ids.push(book.id);
         }
+        self.readings.delete_by_books(&book_ids).await?;
         self.books.delete_by_library(library_id).await
     }
 

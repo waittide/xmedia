@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -146,11 +148,36 @@ pub trait MusicStoragePort: Send + Sync {
         data: Bytes,
     ) -> DomainResult<StoredManagedAudio>;
 
+    async fn save_managed_audio_from_path(
+        &self,
+        track_id: TrackId,
+        format: AudioFormat,
+        src_path: &Path,
+    ) -> DomainResult<StoredManagedAudio> {
+        let data = tokio::fs::read(src_path).await.map_err(|e| {
+            DomainError::Storage(format!("failed reading temp uploaded audio: {e}"))
+        })?;
+        self.save_managed_audio(track_id, format, Bytes::from(data))
+            .await
+    }
+
     async fn save_managed_sidecar_lrc(
         &self,
         track_id: TrackId,
         data: Bytes,
     ) -> DomainResult<String>;
+
+    async fn save_managed_sidecar_lrc_from_path(
+        &self,
+        track_id: TrackId,
+        src_path: &Path,
+    ) -> DomainResult<String> {
+        let data = tokio::fs::read(src_path)
+            .await
+            .map_err(|e| DomainError::Storage(format!("failed reading temp uploaded lrc: {e}")))?;
+        self.save_managed_sidecar_lrc(track_id, Bytes::from(data))
+            .await
+    }
 
     async fn delete_managed_file(&self, storage_key: &str) -> DomainResult<()>;
 

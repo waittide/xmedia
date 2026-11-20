@@ -399,13 +399,11 @@ impl BookRepository for ToastyBookRepository {
 
     async fn delete_by_library(&self, library_id: LibraryId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        let rows = BookModel::filter_by_library_id(library_id.0)
+        BookModel::filter_by_library_id(library_id.0)
+            .delete()
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        for row in rows {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
         Ok(())
     }
 }
@@ -718,36 +716,72 @@ impl BookReadingRepository for ToastyBookReadingRepository {
     }
 
     async fn delete_by_book(&self, book_id: BookId) -> DomainResult<()> {
+        self.delete_by_books(&[book_id]).await
+    }
+
+    async fn delete_by_books(&self, book_ids: &[BookId]) -> DomainResult<()> {
+        if book_ids.is_empty() {
+            return Ok(());
+        }
         let mut db = self.db.clone();
-        for row in BookReadingProgressModel::filter_by_book_id(book_id.0)
+        let raw_ids: Vec<Uuid> = book_ids.iter().map(|b| b.0).collect();
+        let remove_set: HashSet<Uuid> = raw_ids.iter().copied().collect();
+
+        if raw_ids.len() == 1 {
+            let bid = raw_ids[0];
+            BookReadingProgressModel::filter_by_book_id(bid)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            BookBookmarkModel::filter_by_book_id(bid)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+            BookFavoriteModel::filter_by_book_id(bid)
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        } else {
+            BookReadingProgressModel::filter(
+                BookReadingProgressModel::fields()
+                    .book_id()
+                    .in_list(raw_ids.clone()),
+            )
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in BookBookmarkModel::filter_by_book_id(book_id.0)
+            .map_err(db_err)?;
+            BookBookmarkModel::filter(
+                BookBookmarkModel::fields()
+                    .book_id()
+                    .in_list(raw_ids.clone()),
+            )
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
+            .map_err(db_err)?;
+            BookFavoriteModel::filter(BookFavoriteModel::fields().book_id().in_list(raw_ids))
+                .delete()
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
         }
-        for row in BookFavoriteModel::filter_by_book_id(book_id.0)
-            .exec(&mut db)
-            .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+
+        // Single pass over shelves for the entire batch of removed books.
         for mut shelf in BookShelfModel::all().exec(&mut db).await.map_err(db_err)? {
-            if shelf.book_ids.0.contains(&book_id.0) {
+            if shelf.book_ids.0.is_empty() {
+                continue;
+            }
+            if shelf.book_ids.0.iter().any(|id| remove_set.contains(id)) {
                 let filtered: Vec<Uuid> = shelf
                     .book_ids
                     .0
                     .iter()
                     .copied()
-                    .filter(|&id| id != book_id.0)
+                    .filter(|id| !remove_set.contains(id))
                     .collect();
                 shelf
                     .update()
@@ -763,34 +797,26 @@ impl BookReadingRepository for ToastyBookReadingRepository {
 
     async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
         let mut db = self.db.clone();
-        for row in BookReadingProgressModel::filter_by_user_id(user_id.0)
+        BookReadingProgressModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in BookBookmarkModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        BookBookmarkModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in BookFavoriteModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        BookFavoriteModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
-        for row in BookShelfModel::filter_by_user_id(user_id.0)
+            .map_err(db_err)?;
+        BookShelfModel::filter_by_user_id(user_id.0)
+            .delete()
             .exec(&mut db)
             .await
-            .map_err(db_err)?
-        {
-            row.delete().exec(&mut db).await.map_err(db_err)?;
-        }
+            .map_err(db_err)?;
         Ok(())
     }
 }

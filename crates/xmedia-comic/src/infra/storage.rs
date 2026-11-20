@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::infra::stream::move_or_copy_file;
 
 use crate::application::ports::{ComicFileStoragePort, StoredUploadFile};
 use crate::infra::archive::fast_file_fingerprint;
@@ -60,6 +61,39 @@ impl ComicFileStoragePort for LocalComicFileStorage {
                 dest.display()
             ))
         })?;
+
+        let dest_clone = dest.clone();
+        let (file_size, file_hash) =
+            tokio::task::spawn_blocking(move || fast_file_fingerprint(&dest_clone))
+                .await
+                .map_err(|e| DomainError::Storage(format!("fingerprint join failed: {e}")))??;
+
+        Ok(StoredUploadFile {
+            source_dir: series_dir.to_string_lossy().into_owned(),
+            source_path: dest.to_string_lossy().into_owned(),
+            file_size,
+            file_hash,
+        })
+    }
+
+    async fn store_uploaded_archive_from_path(
+        &self,
+        series_folder: &str,
+        filename: &str,
+        src_path: &Path,
+    ) -> DomainResult<StoredUploadFile> {
+        let safe_series = sanitize_component(series_folder);
+        let safe_file = sanitize_component(filename);
+        let series_dir = self.uploads_root.join(safe_series);
+        tokio::fs::create_dir_all(&series_dir).await.map_err(|e| {
+            DomainError::Storage(format!(
+                "failed to create series upload dir '{}': {e}",
+                series_dir.display()
+            ))
+        })?;
+
+        let dest = unique_destination(&series_dir, &safe_file);
+        let _ = move_or_copy_file(src_path, &dest).await?;
 
         let dest_clone = dest.clone();
         let (file_size, file_hash) =

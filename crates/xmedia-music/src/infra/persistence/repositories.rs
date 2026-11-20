@@ -345,15 +345,23 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
 
     async fn list_tracks_by_artist(&self, artist_id: ArtistId) -> DomainResult<Vec<Track>> {
         let mut db = self.db.clone();
-        let rows = MusicTrackModel::filter_by_is_missing(false)
+        let by_artist = MusicTrackModel::filter_by_artist_id(artist_id.0)
+            .filter(MusicTrackModel::fields().is_missing().eq(false))
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        let mut tracks: Vec<Track> = rows
-            .into_iter()
-            .map(Self::track_to_domain)
-            .filter(|t| t.artist_id == artist_id || t.album_artist_id == artist_id)
-            .collect();
+        let by_album_artist = MusicTrackModel::filter_by_album_artist_id(artist_id.0)
+            .filter(MusicTrackModel::fields().is_missing().eq(false))
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        let mut dedup: HashMap<TrackId, Track> =
+            HashMap::with_capacity(by_artist.len() + by_album_artist.len());
+        for row in by_artist.into_iter().chain(by_album_artist) {
+            let tr = Self::track_to_domain(row);
+            dedup.entry(tr.id).or_insert(tr);
+        }
+        let mut tracks: Vec<Track> = dedup.into_values().collect();
         tracks.sort_by_key(|a| a.title.to_lowercase());
         Ok(tracks)
     }
@@ -1043,6 +1051,24 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         Ok(out)
     }
 
+    async fn count_active_tags(&self, active_track_ids: &HashSet<TrackId>) -> DomainResult<u64> {
+        if active_track_ids.is_empty() {
+            return Ok(0);
+        }
+        let mut db = self.db.clone();
+        let rows = MusicTrackTagModel::all()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        let mut distinct = HashSet::new();
+        for row in rows {
+            if active_track_ids.contains(&TrackId(row.track_id)) {
+                distinct.insert(row.tag_lower);
+            }
+        }
+        Ok(distinct.len() as u64)
+    }
+
     async fn get_tags_for_tracks(
         &self,
         track_ids: &[TrackId],
@@ -1224,26 +1250,37 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
         let all_albums = MusicAlbumModel::all().exec(&mut db).await.map_err(db_err)?;
         let mut active_albums_by_artist: HashMap<ArtistId, u32> = HashMap::new();
 
-        for rec in all_albums {
+        for mut rec in all_albums {
             let album_id = AlbumId(rec.id);
             if let Some(acc) = album_acc.get(&album_id) {
-                let mut dom = Self::album_to_domain(rec);
-                dom.track_count = acc.track_count;
-                dom.duration_secs = acc.duration_secs;
-                dom.disc_count = acc.max_disc.max(1);
-                if dom.year.is_none() {
-                    dom.year = acc.year;
-                }
-                if dom.genre.is_none() {
-                    dom.genre = acc.genre.clone();
-                }
-                if dom.cover_key.is_none() {
-                    dom.cover_key = acc.cover_key.clone();
-                }
+                let new_track_count = i64::from(acc.track_count);
+                let new_duration_secs = i64::from(acc.duration_secs);
+                let new_disc_count = i64::from(acc.max_disc.max(1));
+                let new_year = rec.year.or_else(|| acc.year.map(i64::from));
+                let new_genre = rec.genre.clone().or_else(|| acc.genre.clone());
+                let new_cover_key = rec.cover_key.clone().or_else(|| acc.cover_key.clone());
                 *active_albums_by_artist
-                    .entry(dom.album_artist_id)
+                    .entry(ArtistId(rec.album_artist_id))
                     .or_default() += 1;
-                self.save_album(&dom).await?;
+
+                let changed = rec.track_count != new_track_count
+                    || rec.duration_secs != new_duration_secs
+                    || rec.disc_count != new_disc_count
+                    || rec.year != new_year
+                    || rec.genre != new_genre
+                    || rec.cover_key != new_cover_key;
+                if changed {
+                    rec.update()
+                        .track_count(new_track_count)
+                        .duration_secs(new_duration_secs)
+                        .disc_count(new_disc_count)
+                        .year(new_year)
+                        .genre(new_genre)
+                        .cover_key(new_cover_key)
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
+                }
             } else {
                 rec.delete().exec(&mut db).await.map_err(db_err)?;
             }
@@ -1283,19 +1320,32 @@ impl MusicCatalogRepository for ToastyMusicCatalogRepository {
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        for rec in all_artists {
+        for mut rec in all_artists {
             let ar_id = ArtistId(rec.id);
             let album_cnt = active_albums_by_artist.get(&ar_id).copied().unwrap_or(0);
             if let Some(acc) = artist_acc.get(&ar_id) {
-                let mut dom = Self::artist_to_domain(rec);
-                dom.album_count = album_cnt;
-                dom.track_count = acc.track_count;
-                dom.is_album_artist = acc.is_album_artist || album_cnt > 0;
-                dom.is_track_artist = acc.is_track_artist;
-                if dom.cover_key.is_none() {
-                    dom.cover_key = acc.cover_key.clone();
+                let new_album_count = i64::from(album_cnt);
+                let new_track_count = i64::from(acc.track_count);
+                let new_is_album_artist = acc.is_album_artist || album_cnt > 0;
+                let new_is_track_artist = acc.is_track_artist;
+                let new_cover_key = rec.cover_key.clone().or_else(|| acc.cover_key.clone());
+
+                let changed = rec.album_count != new_album_count
+                    || rec.track_count != new_track_count
+                    || rec.is_album_artist != new_is_album_artist
+                    || rec.is_track_artist != new_is_track_artist
+                    || rec.cover_key != new_cover_key;
+                if changed {
+                    rec.update()
+                        .album_count(new_album_count)
+                        .track_count(new_track_count)
+                        .is_album_artist(new_is_album_artist)
+                        .is_track_artist(new_is_track_artist)
+                        .cover_key(new_cover_key)
+                        .exec(&mut db)
+                        .await
+                        .map_err(db_err)?;
                 }
-                self.save_artist(&dom).await?;
             } else {
                 rec.delete().exec(&mut db).await.map_err(db_err)?;
             }

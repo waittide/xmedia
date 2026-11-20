@@ -12,7 +12,7 @@ use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
 use xmedia_core::http::{
     ApiError, ApiResult, into_range_http_response, parse_http_range_spec,
-    sanitize_download_filename,
+    sanitize_download_filename, stream_multipart_field_to_temp_file,
 };
 
 use crate::application::dto::{
@@ -159,13 +159,22 @@ struct UploadBooksResponse {
     uploaded: Vec<BookSummaryDto>,
 }
 
+const MAX_BOOK_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
+
 async fn upload_books(
     State(state): State<BookHttpState>,
     BookWebAuth(actor): BookWebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadBooksResponse>)> {
+    if !actor.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
     let mut uploaded = Vec::new();
-    while let Some(field) = multipart
+    let mut total_bytes: u64 = 0;
+
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| ApiError(DomainError::Validation(format!("multipart error: {e}"))))?
@@ -173,17 +182,22 @@ async fn upload_books(
         let Some(file_name) = field.file_name().map(ToString::to_string) else {
             continue;
         };
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| ApiError(DomainError::Validation(format!("upload read error: {e}"))))?;
-        if bytes.is_empty() {
+        let ext = std::path::Path::new(&file_name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| ApiError(DomainError::Validation("missing file extension".into())))?;
+        let _ = BookFormat::parse(ext)?;
+        let remaining_cap = MAX_BOOK_UPLOAD_BYTES.saturating_sub(total_bytes);
+        let temp =
+            stream_multipart_field_to_temp_file(&mut field, remaining_cap, Some(ext)).await?;
+        if temp.is_empty() {
             continue;
         }
+        total_bytes = total_bytes.saturating_add(temp.size());
         let book = state
             .services
             .catalog
-            .upload_book(&actor, &file_name, bytes)
+            .upload_book_from_path(&actor, &file_name, temp.path())
             .await?;
         uploaded.push(book);
     }
@@ -304,6 +318,11 @@ async fn replace_book_cover(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<BookSummaryDto>> {
+    if !actor.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
     while let Some(field) = multipart
         .next_field()
         .await

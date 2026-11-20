@@ -517,13 +517,18 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
                 .poster_key
                 .clone()
                 .or_else(|| fallback_poster.get(&show.id).cloned());
-            show.update()
-                .episode_count(ep_count)
-                .season_count(season_count)
-                .poster_key(poster)
-                .exec(&mut db)
-                .await
-                .map_err(db_err)?;
+            let changed = show.episode_count != ep_count
+                || show.season_count != season_count
+                || show.poster_key != poster;
+            if changed {
+                show.update()
+                    .episode_count(ep_count)
+                    .season_count(season_count)
+                    .poster_key(poster)
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+            }
         }
         Ok(())
     }

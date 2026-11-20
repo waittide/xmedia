@@ -8,19 +8,22 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::http::{ApiError, ApiResult, into_binary_cache_response, parse_http_range_spec};
+use xmedia_core::http::{
+    ApiError, ApiResult, TempUploadFile, into_binary_cache_response, parse_http_range_spec,
+    stream_multipart_field_to_temp_file,
+};
 
 use crate::application::dto::{
     AlbumDetailDto, AlbumDto, ArtistDetailDto, ArtistDto, BookmarkDto, GlobalScanStatusDto,
     HomeOverviewDto, NowPlayingDto, PlayQueueDto, PlaylistDetailDto, PlaylistSummaryDto,
     SearchResultDto, StarredBundleDto, TrackDto, UpdatePlaylistInput, UploadBatchResultDto,
-    UploadFileItem,
+    UploadFilePathItem,
 };
 use crate::application::ports::FfmpegStatusDto;
 use crate::domain::catalog::{
-    AlbumId, AlbumListQuery, AlbumListType, ArtistId, ArtistQuery, ArtistRoleFilter, GenreStat,
-    MusicTagStat, PagedResult, SearchQuery, SortOrder, StructuredLyrics, TrackId, TrackQuery,
-    TrackSortField,
+    AlbumId, AlbumListQuery, AlbumListType, ArtistId, ArtistQuery, ArtistRoleFilter, AudioFormat,
+    GenreStat, MusicTagStat, PagedResult, SearchQuery, SortOrder, StructuredLyrics, TrackId,
+    TrackQuery, TrackSortField,
 };
 use crate::domain::collection::PlaylistId;
 use crate::http::extractors::MusicWebAuth;
@@ -227,13 +230,22 @@ async fn music_status(
     }))
 }
 
+const MAX_MUSIC_UPLOAD_BYTES: u64 = 512 * 1024 * 1024;
+
 async fn upload_tracks(
     State(state): State<MusicHttpState>,
     MusicWebAuth(user): MusicWebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadBatchResultDto>)> {
-    let mut files = Vec::new();
-    while let Some(field) = multipart
+    if !user.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
+    let mut temp_guards: Vec<(String, TempUploadFile)> = Vec::new();
+    let mut total_bytes: u64 = 0;
+
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| ApiError(DomainError::Validation(format!("multipart error: {e}"))))?
@@ -241,15 +253,38 @@ async fn upload_tracks(
         let Some(filename) = field.file_name().map(str::to_string) else {
             continue;
         };
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| ApiError(DomainError::Validation(format!("upload read error: {e}"))))?;
-        if !bytes.is_empty() {
-            files.push(UploadFileItem { filename, bytes });
+        let ext = std::path::Path::new(&filename)
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .trim();
+        if !ext.eq_ignore_ascii_case("lrc") && AudioFormat::from_extension(ext).is_none() {
+            return Err(ApiError(DomainError::UnsupportedFormat(format!(
+                "unsupported file extension '.{ext}' for '{filename}'"
+            ))));
+        }
+        let remaining_cap = MAX_MUSIC_UPLOAD_BYTES.saturating_sub(total_bytes);
+        let temp =
+            stream_multipart_field_to_temp_file(&mut field, remaining_cap, Some(ext)).await?;
+        if !temp.is_empty() {
+            total_bytes = total_bytes.saturating_add(temp.size());
+            temp_guards.push((filename, temp));
         }
     }
-    let result = state.services.ingest.upload_files(&user, files).await?;
+
+    let items: Vec<UploadFilePathItem> = temp_guards
+        .iter()
+        .map(|(filename, guard)| UploadFilePathItem {
+            filename: filename.clone(),
+            temp_path: guard.path().to_path_buf(),
+        })
+        .collect();
+
+    let result = state
+        .services
+        .ingest
+        .upload_files_from_paths(&user, items)
+        .await?;
     Ok((StatusCode::CREATED, Json(result)))
 }
 

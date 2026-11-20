@@ -290,7 +290,7 @@ async fn feed_new(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 sort_by: Some(BookSortField::CreatedAt),
@@ -320,7 +320,7 @@ async fn feed_all(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 sort_by: Some(BookSortField::Title),
@@ -377,7 +377,7 @@ async fn feed_favorites(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 favorites_only: true,
@@ -408,7 +408,7 @@ async fn feed_search(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 keyword: Some(kw.clone()),
@@ -470,7 +470,7 @@ async fn feed_by_library(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 library_id: Some(LibraryId(id)),
@@ -525,7 +525,7 @@ async fn feed_by_author(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 author: Some(name.clone()),
@@ -584,7 +584,7 @@ async fn feed_by_tag(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 tag: Some(name.clone()),
@@ -642,7 +642,7 @@ async fn feed_by_shelf(
     let page = state
         .services
         .catalog
-        .search_books(
+        .search_books_for_opds(
             Some(&actor),
             CatalogSearchFilter {
                 shelf_id: Some(ShelfId(id)),

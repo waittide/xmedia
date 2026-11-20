@@ -117,6 +117,12 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             total: Some(total_chapters),
         });
 
+        let existing_series_list = self.series.list_by_library(library.id).await?;
+        let mut series_by_dir: HashMap<String, Series> = existing_series_list
+            .into_iter()
+            .map(|s| (s.source_dir.clone(), s))
+            .collect();
+
         let mut seen_paths: HashSet<String> = HashSet::new();
         let mut affected_series: HashSet<SeriesId> = HashSet::new();
         let mut added = 0u64;
@@ -129,14 +135,28 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                 continue;
             }
 
-            let mut series = match self
-                .series
-                .find_by_library_and_dir(library.id, &entry.source_dir)
-                .await?
-            {
-                Some(s) => s,
-                None => Series::new(library.id, entry.title.clone(), entry.source_dir.clone())?,
+            let (mut series, is_new_series) = match series_by_dir.remove(&entry.source_dir) {
+                Some(s) => (s, false),
+                None => (
+                    Series::new(library.id, entry.title.clone(), entry.source_dir.clone())?,
+                    true,
+                ),
             };
+            let mut series_dirty = is_new_series;
+            let orig_series_meta = (
+                series.title.clone(),
+                series.alt_titles.clone(),
+                series.summary.clone(),
+                series.writers.clone(),
+                series.pencillers.clone(),
+                series.publisher.clone(),
+                series.genres.clone(),
+                series.tags.clone(),
+                series.age_rating.clone(),
+                series.language.clone(),
+                series.year,
+                series.reading_direction,
+            );
 
             let mut ordered_chapters: Vec<Chapter> = Vec::with_capacity(entry.chapters.len());
 
@@ -144,11 +164,12 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                 seen_paths.insert(sc.source_path.clone());
                 scanned_chapters += 1;
 
-                let (mut chapter, refresh_cover) =
+                let (mut chapter, refresh_cover, mut chapter_dirty) =
                     if let Some(mut existing) = existing_by_path.remove(&sc.source_path) {
                         let was_missing = existing.is_missing;
-                        existing.is_missing = false;
+                        let mut dirty = false;
                         if !sc.unchanged {
+                            existing.is_missing = false;
                             existing.page_count = sc.page_count;
                             existing.file_size = sc.file_size;
                             existing.file_hash = sc.file_hash.clone();
@@ -161,12 +182,21 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                             }
                             existing.updated_at = now;
                             updated += 1;
+                            dirty = true;
                         } else if was_missing {
+                            existing.is_missing = false;
                             existing.updated_at = now;
                             updated += 1;
+                            dirty = true;
+                        }
+                        if existing.series_id != series.id {
+                            affected_series.insert(existing.series_id);
+                            existing.series_id = series.id;
+                            existing.updated_at = now;
+                            dirty = true;
                         }
                         let need_cov = existing.cover_path.is_none() || !sc.unchanged;
-                        (existing, need_cov)
+                        (existing, need_cov, dirty)
                     } else {
                         let matched_old_path = existing_by_path
                             .iter()
@@ -196,7 +226,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                             migrated.updated_at = now;
                             updated += 1;
                             let need_cov = migrated.cover_path.is_none();
-                            (migrated, need_cov)
+                            (migrated, need_cov, true)
                         } else {
                             let mut created = Chapter::new(
                                 series.id,
@@ -215,7 +245,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                                 apply_comic_info_to_chapter(&mut created, ci);
                             }
                             added += 1;
-                            (created, true)
+                            (created, true, true)
                         }
                     };
 
@@ -243,11 +273,17 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                         .generate_from_bytes(&thumb_key, &first_page.bytes)
                         .await
                     {
-                        chapter.cover_path = Some(saved_key);
+                        if chapter.cover_path.as_deref() != Some(saved_key.as_str()) {
+                            chapter.cover_path = Some(saved_key);
+                            chapter_dirty = true;
+                        }
                     }
                 }
 
-                self.chapters.save(&chapter).await?;
+                if chapter_dirty {
+                    self.chapters.save(&chapter).await?;
+                    series_dirty = true;
+                }
                 ordered_chapters.push(chapter);
 
                 if scanned_chapters.is_multiple_of(progress_step)
@@ -266,22 +302,53 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
             }
 
             ordered_chapters.sort_by(|a, b| a.cmp_order(b));
-            series.chapter_count = ordered_chapters.len() as u32;
-            if let Some(ref cov_bytes) = entry.series_cover_bytes {
+            let new_chapter_count = ordered_chapters.len() as u32;
+            if series.chapter_count != new_chapter_count {
+                series.chapter_count = new_chapter_count;
+                series_dirty = true;
+            }
+            if let Some(ref cov_bytes) = entry.series_cover_bytes
+                && (series.cover_path.is_none() || series_dirty)
+            {
                 let thumb_key = format!("series_{}", series.id);
                 if let Ok(saved_key) = self
                     .thumbnails
                     .generate_from_bytes(&thumb_key, cov_bytes)
                     .await
+                    && series.cover_path.as_deref() != Some(saved_key.as_str())
                 {
                     series.cover_path = Some(saved_key);
+                    series_dirty = true;
                 }
             }
-            if series.cover_path.is_none() {
-                series.cover_path = ordered_chapters.iter().find_map(|c| c.cover_path.clone());
+            if series.cover_path.is_none()
+                && let Some(fallback_cover) =
+                    ordered_chapters.iter().find_map(|c| c.cover_path.clone())
+            {
+                series.cover_path = Some(fallback_cover);
+                series_dirty = true;
             }
-            series.updated_at = now;
-            self.series.save(&series).await?;
+            let current_series_meta = (
+                series.title.clone(),
+                series.alt_titles.clone(),
+                series.summary.clone(),
+                series.writers.clone(),
+                series.pencillers.clone(),
+                series.publisher.clone(),
+                series.genres.clone(),
+                series.tags.clone(),
+                series.age_rating.clone(),
+                series.language.clone(),
+                series.year,
+                series.reading_direction,
+            );
+            if current_series_meta != orig_series_meta {
+                series_dirty = true;
+            }
+            if series_dirty {
+                series.updated_at = now;
+                self.series.save(&series).await?;
+            }
         }
 
         let mut missing_count = 0u64;

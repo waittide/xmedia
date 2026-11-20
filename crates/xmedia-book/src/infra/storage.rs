@@ -301,53 +301,36 @@ impl BookScannerPort for LocalBookScanner {
         relative_path: &str,
     ) -> DomainResult<LoadedMountedBook> {
         let full = sanitize_join(Path::new(root_path), relative_path)?;
-        let data = tokio::fs::read(&full).await.map_err(|e| {
-            DomainError::Storage(format!("failed to read file {}: {e}", full.display()))
-        })?;
-        let file_hash = fast_bytes_fingerprint(&data);
-        let legacy_sha256 = sha256_hex(&data);
-
         let root_buf = PathBuf::from(root_path);
-        let parent_dir = full.parent().map(Path::to_path_buf);
-        let single_book_dir = parent_dir
-            .as_deref()
-            .is_some_and(|p| p != root_buf && dir_has_single_book(p));
+        tokio::task::spawn_blocking(move || -> DomainResult<LoadedMountedBook> {
+            let data = std::fs::read(&full).map_err(|e| {
+                DomainError::Storage(format!("failed to read file {}: {e}", full.display()))
+            })?;
+            let file_hash = fast_bytes_fingerprint(&data);
+            let legacy_sha256 = sha256_hex(&data);
 
-        let opf_path = full.with_extension("opf");
-        let sidecar_opf = if opf_path.is_file() {
-            tokio::fs::read(&opf_path).await.ok()
-        } else if single_book_dir
-            && let Some(ref p) = parent_dir
-            && p.join("metadata.opf").is_file()
-        {
-            tokio::fs::read(p.join("metadata.opf")).await.ok()
-        } else {
-            None
-        };
+            let parent_dir = full.parent().map(Path::to_path_buf);
+            let single_book_dir = parent_dir
+                .as_deref()
+                .is_some_and(|p| p != root_buf && dir_has_single_book(p));
 
-        let mut sidecar_cover = None;
-        for ext in ["jpg", "jpeg", "png", "webp"] {
-            let cp = full.with_extension(ext);
-            if cp.is_file()
-                && let Ok(img_bytes) = tokio::fs::read(&cp).await
-                && !img_bytes.is_empty()
+            let opf_path = full.with_extension("opf");
+            let sidecar_opf = if opf_path.is_file() {
+                std::fs::read(&opf_path).ok()
+            } else if single_book_dir
+                && let Some(ref p) = parent_dir
+                && p.join("metadata.opf").is_file()
             {
-                let mime_type = sniff_image_mime(&img_bytes).to_string();
-                sidecar_cover = Some(CoverPayload {
-                    bytes: Bytes::from(img_bytes),
-                    mime_type,
-                });
-                break;
-            }
-        }
-        if sidecar_cover.is_none()
-            && single_book_dir
-            && let Some(ref p) = parent_dir
-        {
+                std::fs::read(p.join("metadata.opf")).ok()
+            } else {
+                None
+            };
+
+            let mut sidecar_cover = None;
             for ext in ["jpg", "jpeg", "png", "webp"] {
-                let cp = p.join(format!("cover.{ext}"));
+                let cp = full.with_extension(ext);
                 if cp.is_file()
-                    && let Ok(img_bytes) = tokio::fs::read(&cp).await
+                    && let Ok(img_bytes) = std::fs::read(&cp)
                     && !img_bytes.is_empty()
                 {
                     let mime_type = sniff_image_mime(&img_bytes).to_string();
@@ -358,14 +341,35 @@ impl BookScannerPort for LocalBookScanner {
                     break;
                 }
             }
-        }
+            if sidecar_cover.is_none()
+                && single_book_dir
+                && let Some(ref p) = parent_dir
+            {
+                for ext in ["jpg", "jpeg", "png", "webp"] {
+                    let cp = p.join(format!("cover.{ext}"));
+                    if cp.is_file()
+                        && let Ok(img_bytes) = std::fs::read(&cp)
+                        && !img_bytes.is_empty()
+                    {
+                        let mime_type = sniff_image_mime(&img_bytes).to_string();
+                        sidecar_cover = Some(CoverPayload {
+                            bytes: Bytes::from(img_bytes),
+                            mime_type,
+                        });
+                        break;
+                    }
+                }
+            }
 
-        Ok(LoadedMountedBook {
-            bytes: Bytes::from(data),
-            file_hash,
-            legacy_sha256,
-            sidecar_opf,
-            sidecar_cover,
+            Ok(LoadedMountedBook {
+                bytes: Bytes::from(data),
+                file_hash,
+                legacy_sha256,
+                sidecar_opf,
+                sidecar_cover,
+            })
         })
+        .await
+        .map_err(|e| DomainError::Storage(format!("read_entry task panicked: {e}")))?
     }
 }

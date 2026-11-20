@@ -8,7 +8,9 @@ use std::time::UNIX_EPOCH;
 use async_trait::async_trait;
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
 use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::infra::stream::open_file_range_stream_spec;
 use zip::ZipArchive;
 
 use crate::application::ports::{
@@ -219,6 +221,25 @@ impl ArchiveReaderPort for PureRustArchiveReader {
         })
         .await
         .map_err(|e| DomainError::Storage(format!("read_raw_archive join error: {e}")))?
+    }
+
+    async fn open_raw_archive_stream(
+        &self,
+        source_path: &str,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<(ByteRangeStream, String, String)> {
+        let path = Path::new(source_path);
+        let stream = open_file_range_stream_spec(path, spec).await?;
+        let filename = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "chapter.cbz".into());
+        let mime = if filename.to_ascii_lowercase().ends_with(".epub") {
+            "application/epub+zip".to_owned()
+        } else {
+            "application/vnd.comicbook+zip".to_owned()
+        };
+        Ok((stream, filename, mime))
     }
 }
 

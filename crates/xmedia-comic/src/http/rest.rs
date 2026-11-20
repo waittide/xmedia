@@ -7,13 +7,16 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use xmedia_core::domain::error::DomainError;
-use xmedia_core::http::{ApiError, ApiResult};
+use xmedia_core::http::{
+    ApiError, ApiResult, TempUploadFile, into_range_http_response, parse_http_range_spec,
+    stream_multipart_field_to_temp_file,
+};
 
 use crate::application::dto::{
     ChapterItemDto, ComicBookmarkItemDto, CreateComicBookmarkInput, HomeOverviewDto,
     ReaderContextDto, SaveSeriesReaderPrefInput, SeriesDetailDto, SeriesQueryFilter,
-    SeriesSummaryDto, ShelfDetailDto, TaxonomyOverviewDto, UpdateProgressInput, UploadArchiveInput,
-    UploadArchiveResultDto, UpsertShelfInput,
+    SeriesSummaryDto, ShelfDetailDto, TaxonomyOverviewDto, UpdateProgressInput,
+    UploadArchivePathInput, UploadArchiveResultDto, UpsertShelfInput,
 };
 use crate::application::ports::PageContent;
 use crate::domain::chapter::ChapterMetadataPatch;
@@ -143,6 +146,11 @@ async fn upload_series_cover(
     Path(id): Path<Uuid>,
     mut multipart: Multipart,
 ) -> ApiResult<Json<Series>> {
+    if !user.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
     while let Some(field) = multipart
         .next_field()
         .await
@@ -327,22 +335,23 @@ async fn stream_chapter_page(
 async fn download_chapter_archive(
     State(state): State<ComicHttpState>,
     ComicWebAuth(_user): ComicWebAuth,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
-    let (bytes, filename, mime) = state
+    let spec = parse_http_range_spec(&headers);
+    let (stream, filename, mime) = state
         .services
         .catalog
-        .download_chapter_archive(ChapterId(id))
+        .open_chapter_archive_stream(ChapterId(id), spec)
         .await?;
-    let mut res = Response::new(Body::from(bytes));
-    *res.status_mut() = StatusCode::OK;
-    if let Ok(ct) = HeaderValue::from_str(&mime) {
-        res.headers_mut().insert(header::CONTENT_TYPE, ct);
-    }
-    if let Ok(cd) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
-        res.headers_mut().insert(header::CONTENT_DISPOSITION, cd);
-    }
-    Ok(res)
+    Ok(into_range_http_response(
+        stream,
+        spec.is_partial(),
+        &mime,
+        Some(&filename),
+        true,
+        None,
+    ))
 }
 
 async fn stream_cover(
@@ -531,29 +540,44 @@ struct UploadArchivesResponse {
     uploaded: Vec<UploadArchiveResultDto>,
 }
 
+const MAX_COMIC_UPLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 async fn upload_comic_archive(
     State(state): State<ComicHttpState>,
     ComicWebAuth(user): ComicWebAuth,
     mut multipart: Multipart,
 ) -> ApiResult<(StatusCode, Json<UploadArchivesResponse>)> {
+    if !user.role.is_admin() {
+        return Err(ApiError(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        )));
+    }
     let mut target_series_id: Option<SeriesId> = None;
     let mut series_title_override: Option<String> = None;
-    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut files: Vec<(String, TempUploadFile)> = Vec::new();
+    let mut total_bytes: u64 = 0;
 
-    while let Some(field) = multipart
+    while let Some(mut field) = multipart
         .next_field()
         .await
         .map_err(|e| ApiError(DomainError::Validation(format!("multipart error: {e}"))))?
     {
         let field_name = field.name().unwrap_or("").to_owned();
         if let Some(filename) = field.file_name().map(ToString::to_string) {
-            let bytes = field
-                .bytes()
-                .await
-                .map_err(|e| ApiError(DomainError::Validation(format!("read upload error: {e}"))))?
-                .to_vec();
-            if !bytes.is_empty() {
-                files.push((filename, bytes));
+            let lower = filename.to_ascii_lowercase();
+            if !(lower.ends_with(".cbz") || lower.ends_with(".zip") || lower.ends_with(".epub")) {
+                return Err(ApiError(DomainError::UnsupportedFormat(
+                    "only .cbz, .zip, and .epub comic archives are supported".into(),
+                )));
+            }
+            let ext = std::path::Path::new(&filename)
+                .extension()
+                .and_then(|s| s.to_str());
+            let remaining_cap = MAX_COMIC_UPLOAD_BYTES.saturating_sub(total_bytes);
+            let temp = stream_multipart_field_to_temp_file(&mut field, remaining_cap, ext).await?;
+            if !temp.is_empty() {
+                total_bytes = total_bytes.saturating_add(temp.size());
+                files.push((filename, temp));
             }
         } else {
             let text = field.text().await.unwrap_or_default();
@@ -576,15 +600,15 @@ async fn upload_comic_archive(
     }
 
     let mut uploaded = Vec::with_capacity(files.len());
-    for (filename, bytes) in files {
+    for (filename, temp_guard) in files {
         let res = state
             .services
             .catalog
-            .upload_archive(
+            .upload_archive_from_path(
                 &user,
-                UploadArchiveInput {
+                UploadArchivePathInput {
                     filename,
-                    bytes,
+                    temp_path: temp_guard.path().to_path_buf(),
                     target_series_id,
                     series_title_override: series_title_override.clone(),
                 },

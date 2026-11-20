@@ -28,7 +28,9 @@ pub trait SeriesRepository: Send + Sync {
 #[async_trait]
 pub trait ChapterRepository: Send + Sync {
     async fn find_by_id(&self, id: ChapterId) -> DomainResult<Option<Chapter>>;
+    async fn find_by_ids(&self, ids: &[ChapterId]) -> DomainResult<Vec<Chapter>>;
     async fn list_by_series(&self, series_id: SeriesId) -> DomainResult<Vec<Chapter>>;
+    async fn list_by_series_ids(&self, series_ids: &[SeriesId]) -> DomainResult<Vec<Chapter>>;
     async fn list_by_library(&self, library_id: LibraryId) -> DomainResult<Vec<Chapter>>;
     async fn save(&self, chapter: &Chapter) -> DomainResult<()>;
     async fn delete(&self, id: ChapterId) -> DomainResult<()>;

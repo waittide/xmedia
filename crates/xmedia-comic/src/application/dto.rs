@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use xmedia_core::domain::library::LibraryId;
@@ -179,6 +181,14 @@ pub struct ReaderContextDto {
 pub struct UploadArchiveInput {
     pub filename: String,
     pub bytes: Vec<u8>,
+    pub target_series_id: Option<SeriesId>,
+    pub series_title_override: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UploadArchivePathInput {
+    pub filename: String,
+    pub temp_path: PathBuf,
     pub target_series_id: Option<SeriesId>,
     pub series_title_override: Option<String>,
 }

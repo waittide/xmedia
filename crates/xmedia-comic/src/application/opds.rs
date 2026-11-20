@@ -147,10 +147,22 @@ impl ComicOpdsService {
         ver_prefix: &str,
     ) -> DomainResult<OpdsFeed> {
         let overview = catalog.home_overview(user).await?;
+        let chapter_ids: Vec<ChapterId> = overview
+            .continue_reading
+            .iter()
+            .map(|item| item.pointer.chapter_id)
+            .collect();
+        let mut chapter_map: HashMap<ChapterId, Chapter> = self
+            .chapters
+            .find_by_ids(&chapter_ids)
+            .await?
+            .into_iter()
+            .map(|c| (c.id, c))
+            .collect();
         let mut entries = Vec::with_capacity(overview.continue_reading.len());
 
         for item in overview.continue_reading {
-            if let Some(ch) = self.chapters.find_by_id(item.pointer.chapter_id).await? {
+            if let Some(ch) = chapter_map.remove(&item.pointer.chapter_id) {
                 entries.push(to_opds_chapter(
                     opds_root,
                     &item.series.title,

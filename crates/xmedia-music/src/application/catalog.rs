@@ -59,38 +59,14 @@ impl MusicCatalogService {
         }
     }
 
-    pub async fn enrich_tracks(
-        &self,
-        user_id: UserId,
+    fn enrich_tracks_with_maps(
         tracks: Vec<Track>,
-    ) -> DomainResult<Vec<TrackDto>> {
-        if tracks.is_empty() {
-            return Ok(Vec::new());
-        }
-        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
-        let mut tag_map = self.catalog.get_tags_for_tracks(&track_ids).await?;
-        let stars = self
-            .collections
-            .list_starred(user_id, Some(StarTargetKind::Track))
-            .await?;
-        let ratings = self.collections.list_user_ratings(user_id).await?;
-        let stats = self.collections.list_user_play_stats(user_id).await?;
-
-        let star_map: HashMap<Uuid, Timestamp> = stars
-            .into_iter()
-            .map(|s| (s.target_id, s.starred_at))
-            .collect();
-        let rating_map: HashMap<Uuid, u8> = ratings
-            .into_iter()
-            .filter(|r| r.kind == StarTargetKind::Track)
-            .map(|r| (r.target_id, r.rating))
-            .collect();
-        let stat_map: HashMap<TrackId, (u64, Timestamp)> = stats
-            .into_iter()
-            .map(|st| (st.track_id, (st.play_count, st.last_played_at)))
-            .collect();
-
-        Ok(tracks
+        tag_map: &mut HashMap<TrackId, Vec<String>>,
+        star_map: &HashMap<Uuid, Timestamp>,
+        rating_map: &HashMap<Uuid, u8>,
+        stat_map: &HashMap<TrackId, (u64, Timestamp)>,
+    ) -> Vec<TrackDto> {
+        tracks
             .into_iter()
             .map(|t| {
                 let (play_count, last_played_at) = stat_map
@@ -135,7 +111,76 @@ impl MusicCatalogService {
                     created_at: t.created_at,
                 }
             })
-            .collect())
+            .collect()
+    }
+
+    fn enrich_albums_with_maps(
+        albums: Vec<Album>,
+        star_map: &HashMap<Uuid, Timestamp>,
+        rating_map: &HashMap<Uuid, u8>,
+        album_play_counts: &HashMap<AlbumId, u64>,
+    ) -> Vec<AlbumDto> {
+        albums
+            .into_iter()
+            .map(|a| AlbumDto {
+                id: a.id,
+                library_id: a.library_id,
+                title: a.title,
+                album_artist_id: a.album_artist_id,
+                album_artist_name: a.album_artist_name,
+                year: a.year,
+                genre: a.genre,
+                disc_count: a.disc_count,
+                track_count: a.track_count,
+                duration_secs: a.duration_secs,
+                is_compilation: a.is_compilation,
+                cover_key: a.cover_key,
+                starred_at: star_map.get(&a.id.0).copied(),
+                user_rating: rating_map.get(&a.id.0).copied(),
+                play_count: album_play_counts.get(&a.id).copied().unwrap_or(0),
+                created_at: a.created_at,
+            })
+            .collect()
+    }
+
+    pub async fn enrich_tracks(
+        &self,
+        user_id: UserId,
+        tracks: Vec<Track>,
+    ) -> DomainResult<Vec<TrackDto>> {
+        if tracks.is_empty() {
+            return Ok(Vec::new());
+        }
+        let track_ids: Vec<TrackId> = tracks.iter().map(|t| t.id).collect();
+        let mut tag_map = self.catalog.get_tags_for_tracks(&track_ids).await?;
+        let stars = self
+            .collections
+            .list_starred(user_id, Some(StarTargetKind::Track))
+            .await?;
+        let ratings = self.collections.list_user_ratings(user_id).await?;
+        let stats = self.collections.list_user_play_stats(user_id).await?;
+
+        let star_map: HashMap<Uuid, Timestamp> = stars
+            .into_iter()
+            .map(|s| (s.target_id, s.starred_at))
+            .collect();
+        let rating_map: HashMap<Uuid, u8> = ratings
+            .into_iter()
+            .filter(|r| r.kind == StarTargetKind::Track)
+            .map(|r| (r.target_id, r.rating))
+            .collect();
+        let stat_map: HashMap<TrackId, (u64, Timestamp)> = stats
+            .into_iter()
+            .map(|st| (st.track_id, (st.play_count, st.last_played_at)))
+            .collect();
+
+        Ok(Self::enrich_tracks_with_maps(
+            tracks,
+            &mut tag_map,
+            &star_map,
+            &rating_map,
+            &stat_map,
+        ))
     }
 
     pub async fn enrich_albums(
@@ -167,27 +212,12 @@ impl MusicCatalogService {
             *album_play_counts.entry(st.album_id).or_default() += st.play_count;
         }
 
-        Ok(albums
-            .into_iter()
-            .map(|a| AlbumDto {
-                id: a.id,
-                library_id: a.library_id,
-                title: a.title,
-                album_artist_id: a.album_artist_id,
-                album_artist_name: a.album_artist_name,
-                year: a.year,
-                genre: a.genre,
-                disc_count: a.disc_count,
-                track_count: a.track_count,
-                duration_secs: a.duration_secs,
-                is_compilation: a.is_compilation,
-                cover_key: a.cover_key,
-                starred_at: star_map.get(&a.id.0).copied(),
-                user_rating: rating_map.get(&a.id.0).copied(),
-                play_count: album_play_counts.get(&a.id).copied().unwrap_or(0),
-                created_at: a.created_at,
-            })
-            .collect())
+        Ok(Self::enrich_albums_with_maps(
+            albums,
+            &star_map,
+            &rating_map,
+            &album_play_counts,
+        ))
     }
 
     pub async fn enrich_artists(
@@ -265,33 +295,92 @@ impl MusicCatalogService {
     }
 
     pub async fn get_home_overview(&self, user_id: UserId) -> DomainResult<HomeOverviewDto> {
-        let recent_added_page = self
+        // Fetch shared user engagement datasets ONCE and reuse across albums, tracks, and stats.
+        let all_stars = self.collections.list_starred(user_id, None).await?;
+        let mut track_star_map: HashMap<Uuid, Timestamp> = HashMap::new();
+        let mut album_star_map: HashMap<Uuid, Timestamp> = HashMap::new();
+        for s in all_stars {
+            match s.kind {
+                StarTargetKind::Track => {
+                    track_star_map.insert(s.target_id, s.starred_at);
+                }
+                StarTargetKind::Album => {
+                    album_star_map.insert(s.target_id, s.starred_at);
+                }
+                StarTargetKind::Artist => {}
+            }
+        }
+        let starred_tracks = track_star_map.len() as u64;
+
+        let all_ratings = self.collections.list_user_ratings(user_id).await?;
+        let mut track_rating_map: HashMap<Uuid, u8> = HashMap::new();
+        let mut album_rating_map: HashMap<Uuid, u8> = HashMap::new();
+        for r in all_ratings {
+            match r.kind {
+                StarTargetKind::Track => {
+                    track_rating_map.insert(r.target_id, r.rating);
+                }
+                StarTargetKind::Album => {
+                    album_rating_map.insert(r.target_id, r.rating);
+                }
+                StarTargetKind::Artist => {}
+            }
+        }
+
+        let all_stats = self.collections.list_user_play_stats(user_id).await?;
+        let mut track_stat_map: HashMap<TrackId, (u64, Timestamp)> =
+            HashMap::with_capacity(all_stats.len());
+        let mut album_play_counts: HashMap<AlbumId, u64> = HashMap::new();
+        for st in all_stats {
+            *album_play_counts.entry(st.album_id).or_default() += st.play_count;
+            track_stat_map.insert(st.track_id, (st.play_count, st.last_played_at));
+        }
+
+        // Fetch all active albums ONCE (already sorted newest-first).
+        let all_albums_page = self
+            .catalog
             .list_albums(
-                user_id,
-                AlbumListQuery {
+                &AlbumListQuery {
                     list_type: AlbumListType::Newest,
-                    size: 12,
+                    size: u32::MAX,
                     ..Default::default()
                 },
+                None,
+                None,
             )
             .await?;
-        let total_albums = recent_added_page.total;
-        let recent_added = recent_added_page.items;
+        let total_albums = all_albums_page.total;
+        let recent_added_raw: Vec<Album> = all_albums_page.items.iter().take(12).cloned().collect();
+        let album_by_id: HashMap<AlbumId, Album> = all_albums_page
+            .items
+            .into_iter()
+            .map(|a| (a.id, a))
+            .collect();
 
-        let frequent = self
-            .list_albums(
-                user_id,
-                AlbumListQuery {
-                    list_type: AlbumListType::Frequent,
-                    size: 12,
-                    ..Default::default()
-                },
-            )
-            .await?
-            .items;
+        let mut freq_pairs: Vec<(AlbumId, u64)> = album_play_counts
+            .iter()
+            .map(|(&id, &cnt)| (id, cnt))
+            .collect();
+        freq_pairs.sort_by_key(|a| std::cmp::Reverse(a.1));
+        let frequent_raw: Vec<Album> = freq_pairs
+            .into_iter()
+            .filter_map(|(id, _)| album_by_id.get(&id).cloned())
+            .take(12)
+            .collect();
 
-        // Collect recent scrobble track IDs, random tracks, bookmarks, and active queue track
-        // so we can enrich all unique tracks in ONE batch instead of 4 separate passes.
+        let recent_added = Self::enrich_albums_with_maps(
+            recent_added_raw,
+            &album_star_map,
+            &album_rating_map,
+            &album_play_counts,
+        );
+        let frequent = Self::enrich_albums_with_maps(
+            frequent_raw,
+            &album_star_map,
+            &album_rating_map,
+            &album_play_counts,
+        );
+
         let scrobbles = self.collections.list_recent_scrobbles(user_id, 30).await?;
         let mut recent_ids: Vec<TrackId> = Vec::new();
         for sc in scrobbles {
@@ -302,44 +391,97 @@ impl MusicCatalogService {
                 break;
             }
         }
-
-        let raw_random = self
-            .catalog
-            .list_random_tracks(12, None, None, None, None)
-            .await?;
         let raw_bookmarks = self.collections.list_bookmarks(user_id).await?;
         let bookmarks_count = raw_bookmarks.len() as u64;
         let raw_queue = self.collections.get_play_queue(user_id).await?;
 
-        let mut fetch_ids: Vec<TrackId> = recent_ids.clone();
+        // Fetch all active tracks ONCE for total_tracks, genres_count, random selection,
+        // and O(1) lookup for scrobbles / bookmarks / play queue.
+        let mut all_active_tracks = self
+            .catalog
+            .query_tracks(&TrackQuery {
+                page: 1,
+                page_size: u32::MAX,
+                ..Default::default()
+            })
+            .await?
+            .items;
+        let total_tracks = all_active_tracks.len() as u64;
+
+        let mut active_track_ids: HashSet<TrackId> =
+            HashSet::with_capacity(all_active_tracks.len());
+        let mut genre_set: HashSet<String> = HashSet::new();
+        let mut track_idx: HashMap<TrackId, usize> =
+            HashMap::with_capacity(all_active_tracks.len());
+        for (idx, tr) in all_active_tracks.iter().enumerate() {
+            active_track_ids.insert(tr.id);
+            track_idx.insert(tr.id, idx);
+            if let Some(ref g) = tr.genre {
+                let clean = g.trim().to_lowercase();
+                if !clean.is_empty() {
+                    genre_set.insert(clean);
+                }
+            }
+        }
+        let genres_count = genre_set.len() as u64;
+
+        let mut track_pool: HashMap<TrackId, Track> = HashMap::new();
+        for id in &recent_ids {
+            if let Some(&idx) = track_idx.get(id) {
+                track_pool
+                    .entry(*id)
+                    .or_insert_with(|| all_active_tracks[idx].clone());
+            }
+        }
         for bm in &raw_bookmarks {
-            if !fetch_ids.contains(&bm.track_id) {
-                fetch_ids.push(bm.track_id);
+            if let Some(&idx) = track_idx.get(&bm.track_id) {
+                track_pool
+                    .entry(bm.track_id)
+                    .or_insert_with(|| all_active_tracks[idx].clone());
             }
         }
         if let Some(ref q) = raw_queue
             && let Some(cid) = q.current_track_id
-            && !fetch_ids.contains(&cid)
+            && let Some(&idx) = track_idx.get(&cid)
         {
-            fetch_ids.push(cid);
+            track_pool
+                .entry(cid)
+                .or_insert_with(|| all_active_tracks[idx].clone());
         }
 
-        let mut track_pool: HashMap<TrackId, Track> = self
-            .catalog
-            .find_tracks_by_ids(&fetch_ids)
-            .await?
-            .into_iter()
-            .filter(|t| !t.is_missing)
-            .map(|t| (t.id, t))
+        // Sample up to 12 random tracks directly in memory without another DB scan.
+        let sample_count = all_active_tracks.len().min(12);
+        let mut rng_state = (Uuid::now_v7().as_u128() as u64)
+            ^ (Timestamp::now().as_nanosecond() as u64)
+            ^ 0x9E37_79B9_7F4A_7C15;
+        let n = all_active_tracks.len();
+        for i in 0..sample_count {
+            rng_state = rng_state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = rng_state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z = z ^ (z >> 31);
+            let j = i + ((z as usize) % (n - i));
+            all_active_tracks.swap(i, j);
+        }
+        let random_ids: Vec<TrackId> = all_active_tracks
+            .iter()
+            .take(sample_count)
+            .map(|t| t.id)
             .collect();
-        let random_ids: Vec<TrackId> = raw_random.iter().map(|t| t.id).collect();
-        for tr in raw_random {
+        for tr in all_active_tracks.into_iter().take(sample_count) {
             track_pool.entry(tr.id).or_insert(tr);
         }
 
-        let all_dtos = self
-            .enrich_tracks(user_id, track_pool.into_values().collect())
-            .await?;
+        let needed_ids: Vec<TrackId> = track_pool.keys().copied().collect();
+        let mut tag_map = self.catalog.get_tags_for_tracks(&needed_ids).await?;
+        let all_dtos = Self::enrich_tracks_with_maps(
+            track_pool.into_values().collect(),
+            &mut tag_map,
+            &track_star_map,
+            &track_rating_map,
+            &track_stat_map,
+        );
         let dto_lookup: HashMap<TrackId, TrackDto> =
             all_dtos.into_iter().map(|t| (t.id, t)).collect();
 
@@ -381,7 +523,6 @@ impl MusicCatalogService {
             }
         });
 
-        let total_tracks = self.catalog.count_all_active_tracks().await?;
         let total_artists = self
             .catalog
             .list_artists(&ArtistQuery {
@@ -390,14 +531,8 @@ impl MusicCatalogService {
             })
             .await?
             .total;
-        let starred_tracks = self
-            .collections
-            .list_starred(user_id, Some(StarTargetKind::Track))
-            .await?
-            .len() as u64;
         let playlists_count = self.collections.list_owned_playlists(user_id).await?.len() as u64;
-        let genres_count = self.catalog.list_genres().await?.len() as u64;
-        let tags_count = self.catalog.list_tags().await?.len() as u64;
+        let tags_count = self.catalog.count_active_tags(&active_track_ids).await?;
         let libraries_count = self.libraries.list_by_media(MediaKind::Music).await?.len() as u64;
 
         let mut listening_ids: HashSet<TrackId> = bookmarks.iter().map(|b| b.track.id).collect();
@@ -775,9 +910,12 @@ impl MusicCatalogService {
             .await
             .ok();
 
-        let mut resolved = self
-            .lyrics
-            .resolve_lyrics(audio_path.as_deref(), sidecar.as_deref())?;
+        let lyrics_resolver = self.lyrics.clone();
+        let mut resolved = tokio::task::spawn_blocking(move || {
+            lyrics_resolver.resolve_lyrics(audio_path.as_deref(), sidecar.as_deref())
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("lyrics resolve task failed: {e}")))??;
         if resolved.display_artist.is_none() {
             resolved.display_artist = Some(track.artist_name);
         }

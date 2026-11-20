@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 use xmedia_core::domain::library::LibraryId;
-use xmedia_core::http::ApiResult;
+use xmedia_core::http::{ApiResult, into_range_http_response, parse_http_range_spec};
 
 use crate::application::dto::UpdateProgressInput;
 use crate::application::opds::{OpdsChapterEntry, OpdsFeed, OpdsFeedPayload, OpdsNavItem};
@@ -81,22 +81,23 @@ async fn opds_cover(
 async fn opds_download_chapter(
     State(state): State<ComicHttpState>,
     ComicOpdsAuth(_user): ComicOpdsAuth,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
-    let (bytes, filename, mime) = state
+    let spec = parse_http_range_spec(&headers);
+    let (stream, filename, mime) = state
         .services
         .catalog
-        .download_chapter_archive(ChapterId(id))
+        .open_chapter_archive_stream(ChapterId(id), spec)
         .await?;
-    let mut res = Response::new(Body::from(bytes));
-    *res.status_mut() = StatusCode::OK;
-    if let Ok(ct) = HeaderValue::from_str(&mime) {
-        res.headers_mut().insert(header::CONTENT_TYPE, ct);
-    }
-    if let Ok(cd) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
-        res.headers_mut().insert(header::CONTENT_DISPOSITION, cd);
-    }
-    Ok(res)
+    Ok(into_range_http_response(
+        stream,
+        spec.is_partial(),
+        &mime,
+        Some(&filename),
+        true,
+        None,
+    ))
 }
 
 async fn opds_pse_stream_page(

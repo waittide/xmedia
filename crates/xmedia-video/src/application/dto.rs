@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use bytes::Bytes;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,12 @@ use crate::domain::watch::WatchProgress;
 pub struct VideoUploadItem {
     pub filename: String,
     pub bytes: Bytes,
+}
+
+#[derive(Debug, Clone)]
+pub struct VideoUploadPathItem {
+    pub filename: String,
+    pub temp_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]

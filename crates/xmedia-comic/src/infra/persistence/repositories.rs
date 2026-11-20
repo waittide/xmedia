@@ -79,14 +79,17 @@ impl SeriesRepository for ToastySeriesRepository {
         source_dir: &str,
     ) -> DomainResult<Option<Series>> {
         let mut db = self.db.clone();
-        let rows = ComicSeriesModel::filter_by_library_id(library_id.0)
+        let row = ComicSeriesModel::filter_by_library_id(library_id.0)
+            .filter(
+                ComicSeriesModel::fields()
+                    .source_dir()
+                    .eq(source_dir.to_string()),
+            )
+            .first()
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-        Ok(rows
-            .into_iter()
-            .find(|r| r.source_dir == source_dir)
-            .map(Self::to_domain))
+        Ok(row.map(Self::to_domain))
     }
 
     async fn list_all(&self) -> DomainResult<Vec<Series>> {
@@ -244,12 +247,39 @@ impl ChapterRepository for ToastyChapterRepository {
         Ok(row.map(Self::to_domain))
     }
 
+    async fn find_by_ids(&self, ids: &[ChapterId]) -> DomainResult<Vec<Chapter>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let raw_ids: Vec<Uuid> = ids.iter().map(|i| i.0).collect();
+        let rows = ComicChapterModel::filter(ComicChapterModel::fields().id().in_list(raw_ids))
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::to_domain).collect())
+    }
+
     async fn list_by_series(&self, series_id: SeriesId) -> DomainResult<Vec<Chapter>> {
         let mut db = self.db.clone();
         let rows = ComicChapterModel::filter_by_series_id(series_id.0)
             .exec(&mut db)
             .await
             .map_err(db_err)?;
+        Ok(rows.into_iter().map(Self::to_domain).collect())
+    }
+
+    async fn list_by_series_ids(&self, series_ids: &[SeriesId]) -> DomainResult<Vec<Chapter>> {
+        if series_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut db = self.db.clone();
+        let raw_ids: Vec<Uuid> = series_ids.iter().map(|s| s.0).collect();
+        let rows =
+            ComicChapterModel::filter(ComicChapterModel::fields().series_id().in_list(raw_ids))
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
         Ok(rows.into_iter().map(Self::to_domain).collect())
     }
 
