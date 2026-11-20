@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use quick_xml::Reader;
@@ -240,14 +241,34 @@ fn list_sidecar_subtitles(video_path: &Path) -> Vec<String> {
     subs
 }
 
-fn strip_release_noise(raw: &str) -> String {
-    let tag_re = Regex::new(
+static RE_RELEASE_NOISE_TAG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r"(?i)(?:[\(\[]\s*(?:19\d{2}|20\d{2})\s*[\)\]]|\b(?:2160p|1080p|720p|480p|4k|uhd|bluray|bdrip|web-dl|webrip|hdtv|remux|x264|x265|h\.?264|h\.?265|hevc|av1|10bit|8bit|aac|ac3|dts|flac|hdr10|dv)\b.*$)",
     )
-    .expect("valid release noise regex");
-    let leading_group_re = Regex::new(r"^(?:\[[^\]]+\]\s*)+").expect("valid group regex");
-    let without_group = leading_group_re.replace(raw.trim(), "");
-    let without_noise = tag_re.replace(&without_group, "");
+    .expect("valid release noise regex")
+});
+static RE_LEADING_GROUP: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:\[[^\]]+\]\s*)+").expect("valid group regex"));
+static RE_SE_EPISODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)S(\d{1,2})E(\d{1,4})").expect("valid regex"));
+static RE_ZH_EPISODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"第\s*0*(\d{1,4})\s*[话話集回]").expect("valid zh ep regex"));
+static RE_EP_WORD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[\s._\-\[\(])(?:EP?|Episode)\s*0*(\d{1,4})(?:$|[\s._\-\]\)])")
+        .expect("valid ep word regex")
+});
+static RE_DASH_EPISODE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\s+-\s+0*(\d{1,4})(?:v\d)?(?:$|[\s.\[\(])").expect("valid dash ep regex")
+});
+static RE_BRACKET_EPISODE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[0*(\d{1,3})(?:v\d)?\]").expect("valid bracket ep regex"));
+static RE_YEAR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|[\s\.\(\[_-])(19\d{2}|20\d{2})(?:$|[\s\.\)\]_-])").expect("valid year regex")
+});
+
+fn strip_release_noise(raw: &str) -> String {
+    let without_group = RE_LEADING_GROUP.replace(raw.trim(), "");
+    let without_noise = RE_RELEASE_NOISE_TAG.replace(&without_group, "");
     without_noise
         .replace(['.', '_'], " ")
         .split_whitespace()
@@ -284,25 +305,15 @@ fn guess_episode_and_year(
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("Untitled");
-    let se_re = Regex::new(r"(?i)S(\d{1,2})E(\d{1,4})").expect("valid regex");
-    let zh_ep_re = Regex::new(r"第\s*0*(\d{1,4})\s*[话話集回]").expect("valid zh ep regex");
-    let ep_word_re =
-        Regex::new(r"(?i)(?:^|[\s._\-\[\(])(?:EP?|Episode)\s*0*(\d{1,4})(?:$|[\s._\-\]\)])")
-            .expect("valid ep word regex");
-    let dash_ep_re =
-        Regex::new(r"\s+-\s+0*(\d{1,4})(?:v\d)?(?:$|[\s.\[\(])").expect("valid dash ep regex");
-    let bracket_ep_re = Regex::new(r"\[0*(\d{1,3})(?:v\d)?\]").expect("valid bracket ep regex");
-    let year_re = Regex::new(r"(?:^|[\s\.\(\[_-])(19\d{2}|20\d{2})(?:$|[\s\.\)\]_-])")
-        .expect("valid year regex");
 
-    let mut year = year_re
+    let mut year = RE_YEAR
         .captures(stem)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<i32>().ok());
     if year.is_none()
         && let Some(parent_str) = video_path.parent().and_then(|p| p.to_str())
     {
-        year = year_re
+        year = RE_YEAR
             .captures(parent_str)
             .and_then(|c| c.get(1))
             .and_then(|m| m.as_str().parse::<i32>().ok());
@@ -310,7 +321,7 @@ fn guess_episode_and_year(
 
     let season_from_dir = video_path.parent().and_then(parse_season_dir_number);
 
-    if let Some(caps) = se_re.captures(stem) {
+    if let Some(caps) = RE_SE_EPISODE.captures(stem) {
         let full_match = caps.get(0).unwrap();
         let season = caps.get(1).and_then(|m| m.as_str().parse::<u32>().ok());
         let ep = caps.get(2).and_then(|m| m.as_str().parse::<u32>().ok());
@@ -331,7 +342,7 @@ fn guess_episode_and_year(
     }
 
     // Check anime/Chinese episode naming: `第02话`, `EP02`, ` - 02 `, `[02]`, or bare `02` inside a Season folder
-    let extra_ep_match: Option<(usize, usize, u32)> = zh_ep_re
+    let extra_ep_match: Option<(usize, usize, u32)> = RE_ZH_EPISODE
         .captures(stem)
         .and_then(|c| {
             let full = c.get(0)?;
@@ -339,21 +350,21 @@ fn guess_episode_and_year(
             Some((full.start(), full.end(), ep))
         })
         .or_else(|| {
-            ep_word_re.captures(stem).and_then(|c| {
+            RE_EP_WORD.captures(stem).and_then(|c| {
                 let full = c.get(0)?;
                 let ep = c.get(1)?.as_str().parse::<u32>().ok()?;
                 Some((full.start(), full.end(), ep))
             })
         })
         .or_else(|| {
-            dash_ep_re.captures(stem).and_then(|c| {
+            RE_DASH_EPISODE.captures(stem).and_then(|c| {
                 let full = c.get(0)?;
                 let ep = c.get(1)?.as_str().parse::<u32>().ok()?;
                 (!is_unlikely_episode_num(ep)).then_some((full.start(), full.end(), ep))
             })
         })
         .or_else(|| {
-            bracket_ep_re.captures(stem).and_then(|c| {
+            RE_BRACKET_EPISODE.captures(stem).and_then(|c| {
                 let full = c.get(0)?;
                 let ep = c.get(1)?.as_str().parse::<u32>().ok()?;
                 (!is_unlikely_episode_num(ep)).then_some((full.start(), full.end(), ep))

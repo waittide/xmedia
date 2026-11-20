@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use quick_xml::Reader;
@@ -464,6 +465,19 @@ fn find_series_cover_path(comic_path: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+static RE_COMIC_LEADING_BRACKET: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:\[[^\]]*\]|\([^)]*\)|\s)+").expect("valid bracket regex"));
+static RE_COMIC_VOL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:第\s*0*(\d+)\s*[卷册]|(?:^|[\s_\-\.\[\(])(?:vol\.?|v)\s*0*(\d+))")
+        .expect("valid vol regex")
+});
+static RE_COMIC_CH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:第\s*0*(\d+(?:\.\d+)?)\s*[话話回章集]|(?:(?:^|[\s_\-\.\[\(])(?:ch(?:apter)?\.?|c)|#)\s*0*(\d+(?:\.\d+)?))",
+    )
+    .expect("valid ch regex")
+});
+
 /// Infers `(series, number, volume, optional_chapter_title)` from a comic filename stem and non-generic parent folder.
 pub(crate) fn guess_comic_details(
     comic_path: &Path,
@@ -475,23 +489,17 @@ pub(crate) fn guess_comic_details(
         .trim();
 
     // Strip leading bracket tags such as `[Author]` or `(C103)`
-    let bracket_re = Regex::new(r"^(?:\[[^\]]*\]|\([^)]*\)|\s)+").expect("valid bracket regex");
-    let cleaned_stem = bracket_re.replace(raw_stem, "").trim().to_string();
-
-    let vol_re =
-        Regex::new(r"(?i)(?:第\s*0*(\d+)\s*[卷册]|(?:^|[\s_\-\.\[\(])(?:vol\.?|v)\s*0*(\d+))")
-            .expect("valid vol regex");
-    let ch_re = Regex::new(
-        r"(?i)(?:第\s*0*(\d+(?:\.\d+)?)\s*[话話回章集]|(?:(?:^|[\s_\-\.\[\(])(?:ch(?:apter)?\.?|c)|#)\s*0*(\d+(?:\.\d+)?))",
-    )
-    .expect("valid ch regex");
+    let cleaned_stem = RE_COMIC_LEADING_BRACKET
+        .replace(raw_stem, "")
+        .trim()
+        .to_string();
 
     let mut cut_idx = cleaned_stem.len();
     let mut matched_end = 0usize;
     let mut volume: Option<i32> = None;
     let mut number: Option<String> = None;
 
-    if let Some(m) = vol_re.captures(&cleaned_stem) {
+    if let Some(m) = RE_COMIC_VOL.captures(&cleaned_stem) {
         let full = m.get(0).expect("full match");
         cut_idx = cut_idx.min(full.start());
         matched_end = matched_end.max(full.end());
@@ -500,7 +508,7 @@ pub(crate) fn guess_comic_details(
             .or_else(|| m.get(2))
             .and_then(|g| g.as_str().parse::<i32>().ok());
     }
-    if let Some(m) = ch_re.captures(&cleaned_stem) {
+    if let Some(m) = RE_COMIC_CH.captures(&cleaned_stem) {
         let full = m.get(0).expect("full match");
         cut_idx = cut_idx.min(full.start());
         matched_end = matched_end.max(full.end());

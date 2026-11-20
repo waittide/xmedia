@@ -1,11 +1,13 @@
 use std::path::Path;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::config::XmediaWebhookConfig;
+use crate::infra::scrapers::http_client::{
+    DEFAULT_TOOL_USER_AGENT, SsrfRedirectGuard, get_or_build_http_client,
+};
 
 #[derive(Debug, Deserialize)]
 struct RemoteLibraryItem {
@@ -30,10 +32,7 @@ pub struct WebhookTestReportDto {
 }
 
 fn build_webhook_client() -> DomainResult<reqwest::Client> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| DomainError::Storage(format!("build webhook http client failed: {e}")))
+    get_or_build_http_client(None, DEFAULT_TOOL_USER_AGENT, 10, SsrfRedirectGuard::None)
 }
 
 fn paths_overlap_str(a: &Path, b: &Path) -> bool {

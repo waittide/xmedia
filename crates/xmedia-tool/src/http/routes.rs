@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::pin::Pin;
+use std::sync::{LazyLock, Mutex};
 use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
@@ -169,13 +172,52 @@ struct ToolStatusResponse {
     ffmpeg: FfmpegStatusDto,
 }
 
+const FFMPEG_STATUS_CACHE_TTL: Duration = Duration::from_secs(60);
+
+struct CachedFfmpegStatus {
+    checked_at: Instant,
+    status: FfmpegStatusDto,
+}
+
+static FFMPEG_STATUS_CACHE: LazyLock<Mutex<HashMap<(String, String), CachedFfmpegStatus>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+async fn get_cached_ffmpeg_status(
+    ffmpeg: &xmedia_core::infra::ffmpeg::FfmpegToolkit,
+) -> FfmpegStatusDto {
+    let key = (
+        ffmpeg.ffmpeg_bin().to_string(),
+        ffmpeg.ffprobe_bin().to_string(),
+    );
+    if let Ok(guard) = FFMPEG_STATUS_CACHE.lock()
+        && let Some(entry) = guard.get(&key)
+        && entry.checked_at.elapsed() < FFMPEG_STATUS_CACHE_TTL
+    {
+        return entry.status.clone();
+    }
+    let status = ffmpeg.check_status().await;
+    if let Ok(mut guard) = FFMPEG_STATUS_CACHE.lock() {
+        if guard.len() >= 16 && !guard.contains_key(&key) {
+            guard.clear();
+        }
+        guard.insert(
+            key,
+            CachedFfmpegStatus {
+                checked_at: Instant::now(),
+                status: status.clone(),
+            },
+        );
+    }
+    status
+}
+
 async fn get_tool_status(
     State(state): State<ToolHttpState>,
     parts: Parts,
 ) -> Json<ToolStatusResponse> {
     let provided = extract_tool_token(&parts);
     let authenticated = state.auth.verify_token(provided.as_deref()).is_ok();
-    let ffmpeg = state.ffmpeg.check_status().await;
+    let ffmpeg = get_cached_ffmpeg_status(&state.ffmpeg).await;
     Json(ToolStatusResponse {
         version: env!("CARGO_PKG_VERSION"),
         requires_password: state.auth.requires_password(),

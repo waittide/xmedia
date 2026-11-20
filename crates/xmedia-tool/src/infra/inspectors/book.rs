@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::LazyLock;
 
 use async_trait::async_trait;
 use jiff::Timestamp;
@@ -460,6 +461,13 @@ fn looks_like_isbn(text: &str, scheme_attr: Option<&str>) -> bool {
     !lower.starts_with("urn:uuid:") && (digits.len() == 10 || digits.len() == 13)
 }
 
+static RE_OPF_METADATA_BLOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)<(?P<prefix>\w+:)?metadata\b(?P<attrs>[^>]*)>(?P<inner>.*?)</(?:\w+:)?metadata>",
+    )
+    .expect("valid opf metadata regex")
+});
+
 pub(crate) fn replace_opf_metadata_block(
     original_opf: &str,
     meta: &BookFileMeta,
@@ -467,12 +475,7 @@ pub(crate) fn replace_opf_metadata_block(
     unique_id_hint: &str,
     package_version_hint: &str,
 ) -> String {
-    let re = Regex::new(
-        r"(?is)<(?P<prefix>\w+:)?metadata\b(?P<attrs>[^>]*)>(?P<inner>.*?)</(?:\w+:)?metadata>",
-    )
-    .expect("valid opf metadata regex");
-
-    let Some(caps) = re.captures(original_opf) else {
+    let Some(caps) = RE_OPF_METADATA_BLOCK.captures(original_opf) else {
         return original_opf.to_string();
     };
     let prefix = caps.name("prefix").map(|m| m.as_str()).unwrap_or("");
@@ -873,7 +876,9 @@ pub(crate) fn replace_opf_metadata_block(
     }
 
     block.push_str(&format!("  </{prefix}metadata>"));
-    re.replace(original_opf, block.as_str()).into_owned()
+    RE_OPF_METADATA_BLOCK
+        .replace(original_opf, block.as_str())
+        .into_owned()
 }
 
 pub(crate) fn rewrite_epub_entries(
@@ -1641,6 +1646,21 @@ fn swap_href_extension(href: &str, new_ext: &str) -> String {
     }
 }
 
+static RE_MANIFEST_ITEM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<item\b[^>]*?/?>").expect("valid item regex"));
+static RE_MANIFEST_HREF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\bhref\s*=\s*(?:"[^"]*"|'[^']*')"#).expect("valid href regex")
+});
+static RE_MANIFEST_MIME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\bmedia-type\s*=\s*(?:"[^"]*"|'[^']*')"#).expect("valid mime regex")
+});
+static RE_MANIFEST_ID: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\bid\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid id regex")
+});
+static RE_MANIFEST_HREF_VAL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid href val regex")
+});
+
 fn update_manifest_cover_item(
     opf_str: &str,
     cover_item_id: Option<&str>,
@@ -1648,24 +1668,16 @@ fn update_manifest_cover_item(
     new_href: &str,
     new_mime: &str,
 ) -> String {
-    let item_re = Regex::new(r"(?is)<item\b[^>]*?/?>").expect("valid item regex");
-    let href_re = Regex::new(r#"(?i)\bhref\s*=\s*(?:"[^"]*"|'[^']*')"#).expect("valid href regex");
-    let mime_re =
-        Regex::new(r#"(?i)\bmedia-type\s*=\s*(?:"[^"]*"|'[^']*')"#).expect("valid mime regex");
-    let id_re = Regex::new(r#"(?i)\bid\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid id regex");
-    let href_val_re =
-        Regex::new(r#"(?i)\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid href val regex");
-
-    item_re
+    RE_MANIFEST_ITEM
         .replace_all(opf_str, |caps: &regex::Captures<'_>| {
             let tag = &caps[0];
             let matched_by_id = cover_item_id.is_some_and(|cid| {
-                id_re
+                RE_MANIFEST_ID
                     .captures(tag)
                     .and_then(|c| c.get(1).or_else(|| c.get(2)))
                     .is_some_and(|m| m.as_str() == cid)
             });
-            let matched_by_href = href_val_re
+            let matched_by_href = RE_MANIFEST_HREF_VAL
                 .captures(tag)
                 .and_then(|c| c.get(1).or_else(|| c.get(2)))
                 .is_some_and(|m| m.as_str() == old_href);
@@ -1673,9 +1685,10 @@ fn update_manifest_cover_item(
                 return tag.to_string();
             }
 
-            let updated = href_re.replace(tag, format!("href=\"{}\"", escape(new_href)).as_str());
-            if mime_re.is_match(&updated) {
-                mime_re
+            let updated =
+                RE_MANIFEST_HREF.replace(tag, format!("href=\"{}\"", escape(new_href)).as_str());
+            if RE_MANIFEST_MIME.is_match(&updated) {
+                RE_MANIFEST_MIME
                     .replace(
                         &updated,
                         format!("media-type=\"{}\"", escape(new_mime)).as_str(),

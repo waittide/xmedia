@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,6 +10,10 @@ use sha2::{Digest, Sha256};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::scraper::{ScrapeCandidate, ScrapeQuery, ScrapeTargetKind, ScrapedMetadata};
+
+const DEFAULT_MAX_MEMORY_ENTRIES: usize = 2048;
+
+static TMP_FILE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScrapeCacheStatsDto {
@@ -40,16 +45,38 @@ fn hash_cache_key(raw_key: &str) -> String {
 pub struct ScrapeMetadataCache {
     cache_dir: Option<PathBuf>,
     memory: Arc<RwLock<HashMap<String, (u64, serde_json::Value)>>>,
+    max_memory_entries: usize,
 }
 
 impl ScrapeMetadataCache {
     pub fn new(cache_dir: Option<PathBuf>) -> Self {
+        Self::with_capacity(cache_dir, DEFAULT_MAX_MEMORY_ENTRIES)
+    }
+
+    pub fn with_capacity(cache_dir: Option<PathBuf>, max_memory_entries: usize) -> Self {
         if let Some(ref dir) = cache_dir {
             let _ = std::fs::create_dir_all(dir);
         }
         Self {
             cache_dir,
             memory: Arc::new(RwLock::new(HashMap::new())),
+            max_memory_entries: max_memory_entries.max(1),
+        }
+    }
+
+    fn insert_memory(&self, digest: String, ts_ms: u64, val: serde_json::Value) {
+        if let Ok(mut guard) = self.memory.write() {
+            if !guard.contains_key(&digest) && guard.len() >= self.max_memory_entries {
+                // Evict oldest entry by timestamp to keep memory bounded
+                let oldest_key = guard
+                    .iter()
+                    .min_by_key(|(_, (ts, _))| *ts)
+                    .map(|(k, _)| k.clone());
+                if let Some(k) = oldest_key {
+                    guard.remove(&k);
+                }
+            }
+            guard.insert(digest, (ts_ms, val));
         }
     }
 
@@ -175,9 +202,7 @@ impl ScrapeMetadataCache {
         }
 
         let parsed = serde_json::from_value::<T>(env.value.clone()).ok()?;
-        if let Ok(mut guard) = self.memory.write() {
-            guard.insert(digest, (env.created_at_ms, env.value));
-        }
+        self.insert_memory(digest, env.created_at_ms, env.value);
         Some(parsed)
     }
 
@@ -191,9 +216,7 @@ impl ScrapeMetadataCache {
         let digest = hash_cache_key(raw_key);
         let now = current_epoch_ms();
 
-        if let Ok(mut guard) = self.memory.write() {
-            guard.insert(digest.clone(), (now, json_val.clone()));
-        }
+        self.insert_memory(digest.clone(), now, json_val.clone());
 
         if let Some(ref dir) = self.cache_dir {
             let _ = std::fs::create_dir_all(dir);
@@ -202,10 +225,16 @@ impl ScrapeMetadataCache {
                 value: json_val,
             };
             if let Ok(bytes) = serde_json::to_vec(&env) {
-                let tmp_path = dir.join(format!("{digest}.tmp"));
+                let seq = TMP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
+                let pid = std::process::id();
+                let tmp_path = dir.join(format!("{digest}.{pid}.{seq}.tmp"));
                 let final_path = dir.join(format!("{digest}.json"));
                 if std::fs::write(&tmp_path, &bytes).is_ok() {
-                    let _ = std::fs::rename(&tmp_path, &final_path);
+                    if std::fs::rename(&tmp_path, &final_path).is_err() {
+                        let _ = std::fs::remove_file(&tmp_path);
+                    }
+                } else {
+                    let _ = std::fs::remove_file(&tmp_path);
                 }
             }
         }
@@ -253,9 +282,11 @@ impl ScrapeMetadataCache {
             total_entries += 1;
             total_bytes += meta.len();
             if ttl_ms > 0
-                && let Ok(bytes) = std::fs::read(&p)
-                && let Ok(env) = serde_json::from_slice::<CachedEnvelope<serde_json::Value>>(&bytes)
-                && now.saturating_sub(env.created_at_ms) < ttl_ms
+                && let Ok(modified) = meta.modified()
+                && let Ok(mod_ms) = modified
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                && now.saturating_sub(mod_ms) < ttl_ms
             {
                 valid_entries += 1;
             }
@@ -355,5 +386,62 @@ mod tests {
         let removed = cache.clear().unwrap();
         assert_eq!(removed, 1);
         assert_eq!(cache.stats(60_000).total_entries, 0);
+    }
+
+    #[test]
+    fn scrape_cache_evicts_oldest_memory_entry_when_capacity_exceeded() {
+        let cache = ScrapeMetadataCache::with_capacity(None, 2);
+        let make_meta = |id: &str| ScrapedMetadata {
+            provider_id: "tmdb".into(),
+            external_id: id.into(),
+            target: Some(ScrapeTargetKind::Movie),
+            title: Some(format!("Title {id}")),
+            ..Default::default()
+        };
+
+        cache.put_detail(
+            "tmdb",
+            ScrapeTargetKind::Movie,
+            "old",
+            "zh-CN",
+            60_000,
+            &make_meta("old"),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        cache.put_detail(
+            "tmdb",
+            ScrapeTargetKind::Movie,
+            "mid",
+            "zh-CN",
+            60_000,
+            &make_meta("mid"),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        cache.put_detail(
+            "tmdb",
+            ScrapeTargetKind::Movie,
+            "new",
+            "zh-CN",
+            60_000,
+            &make_meta("new"),
+        );
+
+        assert_eq!(cache.stats(60_000).total_entries, 2);
+        assert!(
+            cache
+                .get_detail("tmdb", ScrapeTargetKind::Movie, "old", "zh-CN", 60_000)
+                .is_none(),
+            "oldest entry should be evicted"
+        );
+        assert!(
+            cache
+                .get_detail("tmdb", ScrapeTargetKind::Movie, "mid", "zh-CN", 60_000)
+                .is_some()
+        );
+        assert!(
+            cache
+                .get_detail("tmdb", ScrapeTargetKind::Movie, "new", "zh-CN", 60_000)
+                .is_some()
+        );
     }
 }

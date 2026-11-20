@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::LazyLock;
-use std::time::Duration;
 
 use encoding_rs::{Encoding, GB18030, UTF_8};
 use flate2::read::GzDecoder;
@@ -11,6 +10,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::config::ProviderCredentials;
 use crate::domain::scraper::{ScrapeQuery, score_candidate_relevance};
+use crate::infra::scrapers::http_client::{SsrfRedirectGuard, get_or_build_http_client};
 
 pub const DESKTOP_BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
@@ -45,28 +45,14 @@ pub fn build_browser_http_client(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(default_ua);
+    let timeout_secs = creds.timeout_secs.map(|s| s.clamp(5, 120)).unwrap_or(15);
 
-    let mut builder = Client::builder()
-        .user_agent(ua)
-        .http1_ignore_invalid_headers_in_responses(true)
-        .timeout(Duration::from_secs(15))
-        .connect_timeout(Duration::from_secs(8));
-
-    if let Some(proxy_url) = creds
-        .http_proxy
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| {
-            DomainError::Validation(format!("invalid proxy URL '{proxy_url}': {e}"))
-        })?;
-        builder = builder.proxy(proxy);
-    }
-
-    builder
-        .build()
-        .map_err(|e| DomainError::Storage(format!("failed building HTTP client: {e}")))
+    get_or_build_http_client(
+        creds.http_proxy.as_deref(),
+        ua,
+        timeout_secs,
+        SsrfRedirectGuard::None,
+    )
 }
 
 pub async fn read_response_text(
