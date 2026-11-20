@@ -22,9 +22,13 @@ use xmedia_core::infra::persistence::repositories::{
     ToastyLibraryRepository, ToastyUserRepository,
 };
 use xmedia_core::infra::security::{JwtTokenService, SecurityManager};
-use xmedia_core::{ensure_core_schema, ensure_sqlite_parent_dir, register_core_models};
+use xmedia_core::{
+    ensure_core_schema, ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
+};
 
 use gateway::{FfmpegStatusCache, GatewayState, core_api_router};
+
+pub const DEFAULT_DEV_SECRET: &str = "xmedia-change-this-secret-in-production";
 
 #[derive(Debug, Clone)]
 pub struct XMediaConfig {
@@ -46,6 +50,12 @@ pub struct XMediaApp {
 
 impl XMediaApp {
     pub async fn connect_and_init(cfg: XMediaConfig) -> anyhow::Result<Self> {
+        if cfg.secret == DEFAULT_DEV_SECRET || cfg.secret.trim().is_empty() {
+            tracing::warn!(
+                "XMEDIA_SECRET is set to the default development value; please configure a strong unique XMEDIA_SECRET in production"
+            );
+        }
+
         std::fs::create_dir_all(&cfg.data_dir).with_context(|| {
             format!("failed to create data directory {}", cfg.data_dir.display())
         })?;
@@ -68,25 +78,34 @@ impl XMediaApp {
             .await
             .map_err(|e| anyhow::anyhow!("database connection failed: {e}"))?;
 
-        ensure_core_schema(&mut db, &cfg.database_url)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        #[cfg(feature = "book")]
-        xmedia_book::ensure_book_schema(&mut db, &cfg.database_url)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        #[cfg(feature = "comic")]
-        xmedia_comic::ensure_comic_schema(&mut db, &cfg.database_url)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        #[cfg(feature = "music")]
-        xmedia_music::ensure_music_schema(&mut db, &cfg.database_url)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        #[cfg(feature = "video")]
-        xmedia_video::ensure_video_schema(&mut db, &cfg.database_url)
-            .await
-            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        if !is_core_schema_initialized(&mut db).await {
+            tracing::info!(
+                "cold start detected: pushing unified database schema for core and all enabled modules"
+            );
+            db.push_schema()
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to push unified database schema: {e}"))?;
+        } else {
+            ensure_core_schema(&mut db, &cfg.database_url)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            #[cfg(feature = "book")]
+            xmedia_book::ensure_book_schema(&mut db, &cfg.database_url)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            #[cfg(feature = "comic")]
+            xmedia_comic::ensure_comic_schema(&mut db, &cfg.database_url)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            #[cfg(feature = "music")]
+            xmedia_music::ensure_music_schema(&mut db, &cfg.database_url)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            #[cfg(feature = "video")]
+            xmedia_video::ensure_video_schema(&mut db, &cfg.database_url)
+                .await
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        }
 
         let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
         let libraries_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));

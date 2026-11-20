@@ -1,7 +1,11 @@
+#[cfg(feature = "server")]
 pub mod events;
 pub mod ffmpeg;
+#[cfg(feature = "server")]
 pub mod fingerprint;
+#[cfg(feature = "server")]
 pub mod persistence;
+#[cfg(feature = "server")]
 pub mod security;
 pub mod stream;
 pub mod thumbnail;

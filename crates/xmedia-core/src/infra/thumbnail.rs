@@ -1,22 +1,35 @@
+#[cfg(feature = "server")]
 use std::io::Cursor;
+#[cfg(feature = "server")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "server")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "server")]
 use image::ImageFormat;
+#[cfg(feature = "server")]
 use image::codecs::jpeg::JpegEncoder;
+#[cfg(feature = "server")]
 use image::imageops::FilterType;
 
+#[cfg(feature = "server")]
 use crate::application::ports::BinaryPayload;
+#[cfg(feature = "server")]
 use crate::domain::error::{DomainError, DomainResult};
+#[cfg(feature = "server")]
 use crate::infra::stream::sha256_hex;
 
+#[cfg(feature = "server")]
 pub const THUMB_SIZE_BUCKETS: [u32; 3] = [240, 480, 960];
+#[cfg(feature = "server")]
 const THUMB_JPEG_QUALITY: u8 = 82;
 
+#[cfg(feature = "server")]
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Normalizes any requested thumbnail max dimension into fixed discrete buckets `[240, 480, 960]`
 /// to prevent arbitrary `?size=` parameters from flooding the disk cache.
+#[cfg(feature = "server")]
 pub fn normalize_thumb_size(max_size: u32) -> u32 {
     if max_size <= THUMB_SIZE_BUCKETS[0] {
         THUMB_SIZE_BUCKETS[0]
@@ -27,6 +40,7 @@ pub fn normalize_thumb_size(max_size: u32) -> u32 {
     }
 }
 
+#[cfg(feature = "server")]
 fn atomic_write_file(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = dest.parent().unwrap_or_else(|| Path::new("."));
     let file_name = dest.file_name().and_then(|s| s.to_str()).unwrap_or("thumb");
@@ -40,6 +54,7 @@ fn atomic_write_file(dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "server")]
 fn image_has_transparency(img: &image::DynamicImage) -> bool {
     if !img.color().has_alpha() {
         return false;
@@ -63,12 +78,14 @@ pub fn sniff_image_mime(bytes: &[u8]) -> &'static str {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Clone)]
 pub struct ThumbnailStore {
     orig_dir: PathBuf,
     thumb_dir: PathBuf,
 }
 
+#[cfg(feature = "server")]
 impl ThumbnailStore {
     pub fn new(data_dir: impl AsRef<Path>) -> DomainResult<Self> {
         let root = data_dir.as_ref();
@@ -222,7 +239,7 @@ impl ThumbnailStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use super::*;
     use image::{ImageBuffer, Rgba};

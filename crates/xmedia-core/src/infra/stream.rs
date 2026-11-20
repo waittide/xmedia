@@ -7,6 +7,7 @@ use bytes::{Bytes, BytesMut};
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::{GB18030, UTF_8, UTF_16BE, UTF_16LE};
 use futures_core::Stream;
+#[cfg(feature = "server")]
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::mpsc;
@@ -58,6 +59,7 @@ pub fn sanitize_join(base: &Path, rel: &str) -> DomainResult<PathBuf> {
     Ok(out)
 }
 
+#[cfg(feature = "server")]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -195,6 +197,7 @@ pub async fn move_or_copy_file(src: &Path, dest: &Path) -> DomainResult<u64> {
 }
 
 /// Computes SHA-256 hex digest of a file on disk using a streaming buffer inside `spawn_blocking`.
+#[cfg(feature = "server")]
 pub async fn sha256_file_hex(path: PathBuf) -> DomainResult<(u64, String)> {
     tokio::task::spawn_blocking(move || {
         use std::io::Read;

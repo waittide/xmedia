@@ -1,30 +1,11 @@
+#[cfg(feature = "server")]
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::domain::error::{DomainError, DomainResult};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LibraryId(pub Uuid);
-
-impl LibraryId {
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
-    }
-}
-
-impl Default for LibraryId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for LibraryId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
+#[cfg(feature = "server")]
+crate::define_uuid_id!(LibraryId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -67,6 +48,7 @@ impl MediaKind {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum LibraryKind {
@@ -74,6 +56,7 @@ pub enum LibraryKind {
     LocalMount { root_path: String },
 }
 
+#[cfg(feature = "server")]
 impl LibraryKind {
     pub fn is_managed(&self) -> bool {
         matches!(self, Self::Managed)
@@ -87,6 +70,7 @@ impl LibraryKind {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ScanStatus {
@@ -108,12 +92,14 @@ pub enum ScanStatus {
     },
 }
 
+#[cfg(feature = "server")]
 impl ScanStatus {
     pub fn is_scanning(&self) -> bool {
         matches!(self, Self::Scanning { .. })
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Library {
     pub id: LibraryId,
@@ -126,6 +112,7 @@ pub struct Library {
     pub updated_at: Timestamp,
 }
 
+#[cfg(feature = "server")]
 impl Library {
     pub fn new_managed(media_kind: MediaKind, name: impl Into<String>) -> DomainResult<Self> {
         let name = Self::validate_name(name.into())?;

@@ -1,29 +1,18 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::domain::error::{DomainError, DomainResult};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct UserId(pub Uuid);
+crate::define_uuid_id!(UserId);
 
-impl UserId {
-    pub fn new() -> Self {
-        Self(Uuid::now_v7())
+/// Verifies that the acting user holds administrator privileges.
+pub fn require_admin(actor: &User) -> DomainResult<()> {
+    if !actor.role.is_admin() {
+        return Err(DomainError::Forbidden(
+            "administrator privileges required".into(),
+        ));
     }
-}
-
-impl Default for UserId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Display for UserId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -124,20 +113,73 @@ pub enum ReadingFlow {
     Scrolled,
 }
 
+const DEFAULT_FONT_FAMILY: &str = "system-ui";
+const DEFAULT_FONT_SIZE: u16 = 17;
+const MIN_FONT_SIZE: u16 = 10;
+const MAX_FONT_SIZE: u16 = 48;
+const DEFAULT_LINE_HEIGHT: f32 = 1.7;
+const MIN_LINE_HEIGHT: f32 = 1.0;
+const MAX_LINE_HEIGHT: f32 = 3.0;
+const DEFAULT_MARGIN_PX: u16 = 36;
+const MAX_MARGIN_PX: u16 = 240;
+const DEFAULT_PDF_SCALE: f32 = 1.25;
+const MIN_PDF_SCALE: f32 = 0.25;
+const MAX_PDF_SCALE: f32 = 4.0;
+const DEFAULT_PRELOAD_PAGES: u8 = 3;
+const MAX_PRELOAD_PAGES: u8 = 20;
+const DEFAULT_WEBTOON_WIDTH: u16 = 920;
+const MIN_WEBTOON_WIDTH: u16 = 320;
+const MAX_WEBTOON_WIDTH: u16 = 2400;
+const DEFAULT_VOLUME: f32 = 0.85;
+const DEFAULT_PLAYBACK_RATE: f32 = 1.0;
+const MIN_PLAYBACK_RATE: f32 = 0.25;
+const MAX_PLAYBACK_RATE: f32 = 4.0;
+const DEFAULT_LIGHT_PRESET: &str = "catppuccin-latte";
+const DEFAULT_DARK_PRESET: &str = "catppuccin-mocha";
+const DEFAULT_ACCENT_MODE: &str = "catppuccin";
+
+fn clamp_finite(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
+    }
+}
+
+fn normalize_non_empty(value: &mut String, fallback: &str, max_chars: usize) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        *value = fallback.to_string();
+    } else {
+        *value = trimmed.chars().take(max_chars).collect();
+    }
+}
+
+fn normalize_opt_string(opt: &mut Option<String>, max_chars: usize) {
+    if let Some(raw) = opt.as_deref() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            *opt = None;
+        } else {
+            *opt = Some(trimmed.chars().take(max_chars).collect());
+        }
+    }
+}
+
 fn default_font_family() -> String {
-    "system-ui".to_string()
+    DEFAULT_FONT_FAMILY.to_string()
 }
 fn default_font_size() -> u16 {
-    17
+    DEFAULT_FONT_SIZE
 }
 fn default_line_height() -> f32 {
-    1.7
+    DEFAULT_LINE_HEIGHT
 }
 fn default_margin_px() -> u16 {
-    36
+    DEFAULT_MARGIN_PX
 }
 fn default_pdf_scale() -> f32 {
-    1.25
+    DEFAULT_PDF_SCALE
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -156,15 +198,35 @@ pub struct BookReaderPreferences {
     pub pdf_scale: f32,
 }
 
+impl BookReaderPreferences {
+    pub fn normalize(&mut self) {
+        normalize_non_empty(&mut self.font_family, DEFAULT_FONT_FAMILY, 128);
+        self.font_size = self.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        self.line_height = clamp_finite(
+            self.line_height,
+            MIN_LINE_HEIGHT,
+            MAX_LINE_HEIGHT,
+            DEFAULT_LINE_HEIGHT,
+        );
+        self.margin_px = self.margin_px.min(MAX_MARGIN_PX);
+        self.pdf_scale = clamp_finite(
+            self.pdf_scale,
+            MIN_PDF_SCALE,
+            MAX_PDF_SCALE,
+            DEFAULT_PDF_SCALE,
+        );
+    }
+}
+
 impl Default for BookReaderPreferences {
     fn default() -> Self {
         Self {
             font_family: default_font_family(),
-            font_size: default_font_size(),
-            line_height: default_line_height(),
-            margin_px: default_margin_px(),
+            font_size: DEFAULT_FONT_SIZE,
+            line_height: DEFAULT_LINE_HEIGHT,
+            margin_px: DEFAULT_MARGIN_PX,
             flow: ReadingFlow::default(),
-            pdf_scale: default_pdf_scale(),
+            pdf_scale: DEFAULT_PDF_SCALE,
         }
     }
 }
@@ -194,10 +256,10 @@ fn default_true() -> bool {
     true
 }
 fn default_preload_pages() -> u8 {
-    3
+    DEFAULT_PRELOAD_PAGES
 }
 fn default_webtoon_width() -> u16 {
-    920
+    DEFAULT_WEBTOON_WIDTH
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,6 +278,15 @@ pub struct ComicReaderPreferences {
     pub webtoon_width: u16,
 }
 
+impl ComicReaderPreferences {
+    pub fn normalize(&mut self) {
+        self.preload_pages = self.preload_pages.min(MAX_PRELOAD_PAGES);
+        self.webtoon_width = self
+            .webtoon_width
+            .clamp(MIN_WEBTOON_WIDTH, MAX_WEBTOON_WIDTH);
+    }
+}
+
 impl Default for ComicReaderPreferences {
     fn default() -> Self {
         Self {
@@ -223,8 +294,8 @@ impl Default for ComicReaderPreferences {
             default_fit_mode: ComicFitMode::default(),
             offset_cover_page: true,
             dim_images_in_dark: false,
-            preload_pages: default_preload_pages(),
-            webtoon_width: default_webtoon_width(),
+            preload_pages: DEFAULT_PRELOAD_PAGES,
+            webtoon_width: DEFAULT_WEBTOON_WIDTH,
         }
     }
 }
@@ -264,7 +335,7 @@ pub enum MusicPlayMode {
 }
 
 fn default_volume() -> f32 {
-    0.85
+    DEFAULT_VOLUME
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -279,11 +350,17 @@ pub struct MusicPlaybackPreferences {
     pub play_mode: MusicPlayMode,
 }
 
+impl MusicPlaybackPreferences {
+    pub fn normalize(&mut self) {
+        self.volume = clamp_finite(self.volume, 0.0, 1.0, DEFAULT_VOLUME);
+    }
+}
+
 impl Default for MusicPlaybackPreferences {
     fn default() -> Self {
         Self {
             transcode_profile: AudioTranscodeProfile::Raw,
-            volume: default_volume(),
+            volume: DEFAULT_VOLUME,
             muted: false,
             play_mode: MusicPlayMode::Sequence,
         }
@@ -304,7 +381,7 @@ pub enum VideoQualityProfile {
 }
 
 fn default_playback_rate() -> f32 {
-    1.0
+    DEFAULT_PLAYBACK_RATE
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -321,6 +398,19 @@ pub struct VideoPlaybackPreferences {
     pub playback_rate: f32,
 }
 
+impl VideoPlaybackPreferences {
+    pub fn normalize(&mut self) {
+        normalize_opt_string(&mut self.preferred_audio_lang, 32);
+        normalize_opt_string(&mut self.preferred_subtitle_lang, 32);
+        self.playback_rate = clamp_finite(
+            self.playback_rate,
+            MIN_PLAYBACK_RATE,
+            MAX_PLAYBACK_RATE,
+            DEFAULT_PLAYBACK_RATE,
+        );
+    }
+}
+
 impl Default for VideoPlaybackPreferences {
     fn default() -> Self {
         Self {
@@ -328,26 +418,101 @@ impl Default for VideoPlaybackPreferences {
             preferred_audio_lang: None,
             preferred_subtitle_lang: None,
             autoplay_next: true,
-            playback_rate: default_playback_rate(),
+            playback_rate: DEFAULT_PLAYBACK_RATE,
         }
     }
 }
 
 fn default_light_preset() -> String {
-    "catppuccin-latte".to_string()
+    DEFAULT_LIGHT_PRESET.to_string()
 }
 
 fn default_dark_preset() -> String {
-    "catppuccin-mocha".to_string()
+    DEFAULT_DARK_PRESET.to_string()
 }
 
 fn default_accent_mode() -> String {
-    "catppuccin".to_string()
+    DEFAULT_ACCENT_MODE.to_string()
 }
 
 // --- Customizable Workspace Layout Preferences (<= 4 items per slot) ---
 
 pub const MAX_LAYOUT_ITEMS: usize = 4;
+
+const BOOK_DEFAULT_HOME_CARDS: &[&str] = &["all", "reading", "bookmarks", "favorites"];
+const BOOK_ALLOWED_HOME_CARDS: &[&str] = &[
+    "all",
+    "reading",
+    "bookmarks",
+    "favorites",
+    "shelves",
+    "tags",
+    "authors",
+    "libraries",
+];
+const BOOK_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["authors", "tags", "shelves", "libraries"];
+const BOOK_ALLOWED_SIDEBAR_GROUPS: &[&str] =
+    &["authors", "tags", "shelves", "libraries", "bookmarks"];
+
+const COMIC_DEFAULT_HOME_CARDS: &[&str] = &["all", "reading", "bookmarks", "favorites"];
+const COMIC_ALLOWED_HOME_CARDS: &[&str] = &[
+    "all",
+    "reading",
+    "bookmarks",
+    "favorites",
+    "chapters",
+    "shelves",
+    "tags",
+    "libraries",
+];
+const COMIC_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["writers", "tags", "shelves", "libraries"];
+const COMIC_ALLOWED_SIDEBAR_GROUPS: &[&str] = &[
+    "writers",
+    "pencillers",
+    "genres",
+    "tags",
+    "shelves",
+    "libraries",
+    "bookmarks",
+];
+
+const MUSIC_DEFAULT_HOME_CARDS: &[&str] = &["all", "playlists", "listening", "favorites"];
+const MUSIC_ALLOWED_HOME_CARDS: &[&str] = &[
+    "all",
+    "playlists",
+    "listening",
+    "favorites",
+    "bookmarks",
+    "albums",
+    "artists",
+    "genres",
+    "tags",
+    "libraries",
+];
+const MUSIC_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["artists", "tags", "albums", "genres"];
+const MUSIC_ALLOWED_SIDEBAR_GROUPS: &[&str] = &[
+    "artists",
+    "tags",
+    "albums",
+    "genres",
+    "playlists",
+    "libraries",
+];
+
+const VIDEO_DEFAULT_HOME_CARDS: &[&str] = &["all", "movies", "shows", "favorites"];
+const VIDEO_ALLOWED_HOME_CARDS: &[&str] = &[
+    "all",
+    "movies",
+    "shows",
+    "favorites",
+    "watching",
+    "shelves",
+    "genres",
+    "tags",
+    "libraries",
+];
+const VIDEO_DEFAULT_SIDEBAR_GROUPS: &[&str] = &["shows", "genres", "tags", "shelves"];
+const VIDEO_ALLOWED_SIDEBAR_GROUPS: &[&str] = &["shows", "genres", "tags", "shelves", "libraries"];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainLayoutConfig {
@@ -355,6 +520,10 @@ pub struct DomainLayoutConfig {
     pub home_cards: Vec<String>,
     #[serde(default)]
     pub sidebar_groups: Vec<String>,
+}
+
+fn to_owned_slot(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| (*s).to_string()).collect()
 }
 
 fn sanitize_slot(
@@ -386,69 +555,29 @@ fn sanitize_slot(
 
 fn default_book_layout() -> DomainLayoutConfig {
     DomainLayoutConfig {
-        home_cards: vec![
-            "all".into(),
-            "reading".into(),
-            "bookmarks".into(),
-            "favorites".into(),
-        ],
-        sidebar_groups: vec![
-            "authors".into(),
-            "tags".into(),
-            "shelves".into(),
-            "libraries".into(),
-        ],
+        home_cards: to_owned_slot(BOOK_DEFAULT_HOME_CARDS),
+        sidebar_groups: to_owned_slot(BOOK_DEFAULT_SIDEBAR_GROUPS),
     }
 }
 
 fn default_comic_layout() -> DomainLayoutConfig {
     DomainLayoutConfig {
-        home_cards: vec![
-            "all".into(),
-            "reading".into(),
-            "bookmarks".into(),
-            "favorites".into(),
-        ],
-        sidebar_groups: vec![
-            "writers".into(),
-            "tags".into(),
-            "shelves".into(),
-            "libraries".into(),
-        ],
+        home_cards: to_owned_slot(COMIC_DEFAULT_HOME_CARDS),
+        sidebar_groups: to_owned_slot(COMIC_DEFAULT_SIDEBAR_GROUPS),
     }
 }
 
 fn default_music_layout() -> DomainLayoutConfig {
     DomainLayoutConfig {
-        home_cards: vec![
-            "all".into(),
-            "playlists".into(),
-            "listening".into(),
-            "favorites".into(),
-        ],
-        sidebar_groups: vec![
-            "artists".into(),
-            "tags".into(),
-            "albums".into(),
-            "genres".into(),
-        ],
+        home_cards: to_owned_slot(MUSIC_DEFAULT_HOME_CARDS),
+        sidebar_groups: to_owned_slot(MUSIC_DEFAULT_SIDEBAR_GROUPS),
     }
 }
 
 fn default_video_layout() -> DomainLayoutConfig {
     DomainLayoutConfig {
-        home_cards: vec![
-            "all".into(),
-            "movies".into(),
-            "shows".into(),
-            "favorites".into(),
-        ],
-        sidebar_groups: vec![
-            "shows".into(),
-            "genres".into(),
-            "tags".into(),
-            "shelves".into(),
-        ],
+        home_cards: to_owned_slot(VIDEO_DEFAULT_HOME_CARDS),
+        sidebar_groups: to_owned_slot(VIDEO_DEFAULT_SIDEBAR_GROUPS),
     }
 }
 
@@ -476,119 +605,60 @@ impl Default for WorkspaceLayoutPreferences {
 }
 
 impl WorkspaceLayoutPreferences {
-    pub fn sanitized(self) -> Self {
-        Self {
-            book: DomainLayoutConfig {
-                home_cards: sanitize_slot(
-                    &self.book.home_cards,
-                    &[
-                        "all",
-                        "reading",
-                        "bookmarks",
-                        "favorites",
-                        "shelves",
-                        "tags",
-                        "authors",
-                        "libraries",
-                    ],
-                    &["all", "reading", "bookmarks", "favorites"],
-                    false,
-                ),
-                sidebar_groups: sanitize_slot(
-                    &self.book.sidebar_groups,
-                    &["authors", "tags", "shelves", "libraries", "bookmarks"],
-                    &["authors", "tags", "shelves", "libraries"],
-                    true,
-                ),
-            },
-            comic: DomainLayoutConfig {
-                home_cards: sanitize_slot(
-                    &self.comic.home_cards,
-                    &[
-                        "all",
-                        "reading",
-                        "bookmarks",
-                        "favorites",
-                        "chapters",
-                        "shelves",
-                        "tags",
-                        "libraries",
-                    ],
-                    &["all", "reading", "bookmarks", "favorites"],
-                    false,
-                ),
-                sidebar_groups: sanitize_slot(
-                    &self.comic.sidebar_groups,
-                    &[
-                        "writers",
-                        "pencillers",
-                        "genres",
-                        "tags",
-                        "shelves",
-                        "libraries",
-                        "bookmarks",
-                    ],
-                    &["writers", "tags", "shelves", "libraries"],
-                    true,
-                ),
-            },
-            music: DomainLayoutConfig {
-                home_cards: sanitize_slot(
-                    &self.music.home_cards,
-                    &[
-                        "all",
-                        "playlists",
-                        "listening",
-                        "favorites",
-                        "bookmarks",
-                        "albums",
-                        "artists",
-                        "genres",
-                        "tags",
-                        "libraries",
-                    ],
-                    &["all", "playlists", "listening", "favorites"],
-                    false,
-                ),
-                sidebar_groups: sanitize_slot(
-                    &self.music.sidebar_groups,
-                    &[
-                        "artists",
-                        "tags",
-                        "albums",
-                        "genres",
-                        "playlists",
-                        "libraries",
-                    ],
-                    &["artists", "tags", "albums", "genres"],
-                    true,
-                ),
-            },
-            video: DomainLayoutConfig {
-                home_cards: sanitize_slot(
-                    &self.video.home_cards,
-                    &[
-                        "all",
-                        "movies",
-                        "shows",
-                        "favorites",
-                        "watching",
-                        "shelves",
-                        "genres",
-                        "tags",
-                        "libraries",
-                    ],
-                    &["all", "movies", "shows", "favorites"],
-                    false,
-                ),
-                sidebar_groups: sanitize_slot(
-                    &self.video.sidebar_groups,
-                    &["shows", "genres", "tags", "shelves", "libraries"],
-                    &["shows", "genres", "tags", "shelves"],
-                    true,
-                ),
-            },
-        }
+    pub fn sanitize(&mut self) {
+        self.book.home_cards = sanitize_slot(
+            &self.book.home_cards,
+            BOOK_ALLOWED_HOME_CARDS,
+            BOOK_DEFAULT_HOME_CARDS,
+            false,
+        );
+        self.book.sidebar_groups = sanitize_slot(
+            &self.book.sidebar_groups,
+            BOOK_ALLOWED_SIDEBAR_GROUPS,
+            BOOK_DEFAULT_SIDEBAR_GROUPS,
+            true,
+        );
+        self.comic.home_cards = sanitize_slot(
+            &self.comic.home_cards,
+            COMIC_ALLOWED_HOME_CARDS,
+            COMIC_DEFAULT_HOME_CARDS,
+            false,
+        );
+        self.comic.sidebar_groups = sanitize_slot(
+            &self.comic.sidebar_groups,
+            COMIC_ALLOWED_SIDEBAR_GROUPS,
+            COMIC_DEFAULT_SIDEBAR_GROUPS,
+            true,
+        );
+        self.music.home_cards = sanitize_slot(
+            &self.music.home_cards,
+            MUSIC_ALLOWED_HOME_CARDS,
+            MUSIC_DEFAULT_HOME_CARDS,
+            false,
+        );
+        self.music.sidebar_groups = sanitize_slot(
+            &self.music.sidebar_groups,
+            MUSIC_ALLOWED_SIDEBAR_GROUPS,
+            MUSIC_DEFAULT_SIDEBAR_GROUPS,
+            true,
+        );
+        self.video.home_cards = sanitize_slot(
+            &self.video.home_cards,
+            VIDEO_ALLOWED_HOME_CARDS,
+            VIDEO_DEFAULT_HOME_CARDS,
+            false,
+        );
+        self.video.sidebar_groups = sanitize_slot(
+            &self.video.sidebar_groups,
+            VIDEO_ALLOWED_SIDEBAR_GROUPS,
+            VIDEO_DEFAULT_SIDEBAR_GROUPS,
+            true,
+        );
+    }
+
+    pub fn sanitized(mut self) -> Self {
+        self.sanitize();
+        self
     }
 }
 
@@ -624,6 +694,26 @@ pub struct UserPreferences {
     pub video: VideoPlaybackPreferences,
     #[serde(default)]
     pub workspace_layout: WorkspaceLayoutPreferences,
+}
+
+impl UserPreferences {
+    /// Clamps and sanitizes all preference values into safe bounds while preserving JSON schema compatibility.
+    pub fn normalize(&mut self) {
+        normalize_non_empty(&mut self.light_preset, DEFAULT_LIGHT_PRESET, 64);
+        normalize_non_empty(&mut self.dark_preset, DEFAULT_DARK_PRESET, 64);
+        normalize_non_empty(&mut self.accent_mode, DEFAULT_ACCENT_MODE, 32);
+        normalize_opt_string(&mut self.custom_accent, 32);
+        self.book.normalize();
+        self.comic.normalize();
+        self.music.normalize();
+        self.video.normalize();
+        self.workspace_layout.sanitize();
+    }
+
+    pub fn normalized(mut self) -> Self {
+        self.normalize();
+        self
+    }
 }
 
 impl Default for UserPreferences {
@@ -778,7 +868,7 @@ impl User {
     }
 
     pub fn update_preferences(&mut self, mut preferences: UserPreferences) {
-        preferences.workspace_layout = preferences.workspace_layout.sanitized();
+        preferences.normalize();
         self.preferences = preferences;
         self.updated_at = Timestamp::now();
     }
@@ -807,5 +897,42 @@ mod tests {
             vec!["shelves", "tags", "all", "reading"]
         );
         assert!(clean.book.sidebar_groups.is_empty());
+    }
+
+    #[test]
+    fn user_preferences_normalize_clamps_numeric_and_layout_bounds() {
+        let mut prefs = UserPreferences::default();
+        prefs.light_preset = "   ".into();
+        prefs.book.font_family = " ".into();
+        prefs.book.font_size = 200;
+        prefs.book.line_height = f32::NAN;
+        prefs.book.margin_px = 999;
+        prefs.book.pdf_scale = 0.01;
+        prefs.comic.preload_pages = 99;
+        prefs.comic.webtoon_width = 10;
+        prefs.music.volume = 3.5;
+        prefs.video.playback_rate = 10.0;
+        prefs.video.preferred_audio_lang = Some("  ja  ".into());
+        prefs.video.preferred_subtitle_lang = Some("   ".into());
+        prefs.workspace_layout.music.home_cards = vec!["invalid".into()];
+
+        prefs.normalize();
+
+        assert_eq!(prefs.light_preset, DEFAULT_LIGHT_PRESET);
+        assert_eq!(prefs.book.font_family, DEFAULT_FONT_FAMILY);
+        assert_eq!(prefs.book.font_size, MAX_FONT_SIZE);
+        assert_eq!(prefs.book.line_height, DEFAULT_LINE_HEIGHT);
+        assert_eq!(prefs.book.margin_px, MAX_MARGIN_PX);
+        assert_eq!(prefs.book.pdf_scale, MIN_PDF_SCALE);
+        assert_eq!(prefs.comic.preload_pages, MAX_PRELOAD_PAGES);
+        assert_eq!(prefs.comic.webtoon_width, MIN_WEBTOON_WIDTH);
+        assert_eq!(prefs.music.volume, 1.0);
+        assert_eq!(prefs.video.playback_rate, MAX_PLAYBACK_RATE);
+        assert_eq!(prefs.video.preferred_audio_lang.as_deref(), Some("ja"));
+        assert_eq!(prefs.video.preferred_subtitle_lang, None);
+        assert_eq!(
+            prefs.workspace_layout.music.home_cards,
+            vec!["all", "playlists", "listening", "favorites"]
+        );
     }
 }

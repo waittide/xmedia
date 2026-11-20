@@ -12,27 +12,8 @@ use tracing::debug;
 use crate::application::dto::FfmpegStatusDto;
 use crate::application::ports::ByteChunkStream;
 use crate::domain::error::{DomainError, DomainResult};
+pub use crate::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 use crate::infra::stream::MpscByteStream;
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProbedAudioStream {
-    pub stream_index: u32,
-    pub codec: String,
-    pub channels: u8,
-    pub language: Option<String>,
-    pub title: Option<String>,
-    pub is_default: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ProbedSubtitleStream {
-    pub stream_index: u32,
-    pub codec: String,
-    pub language: Option<String>,
-    pub title: Option<String>,
-    pub is_text_based: bool,
-    pub is_default: bool,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProbedMediaInfo {

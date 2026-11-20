@@ -1,9 +1,13 @@
+#[cfg(feature = "server")]
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "server")]
 use crate::domain::library::{Library, LibraryId, LibraryKind, MediaKind, ScanStatus};
+#[cfg(feature = "server")]
 use crate::domain::user::{User, UserId, UserPreferences, UserRole};
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetupStatusDto {
     pub needs_setup: bool,
@@ -16,6 +20,7 @@ pub struct FfmpegStatusDto {
     pub ffprobe_available: bool,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemCapabilitiesDto {
     pub version: String,
@@ -23,6 +28,7 @@ pub struct SystemCapabilitiesDto {
     pub ffmpeg: FfmpegStatusDto,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct SetupAdminInput {
     pub username: String,
@@ -31,12 +37,14 @@ pub struct SetupAdminInput {
     pub password: String,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginInput {
     pub username: String,
     pub password: String,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Serialize)]
 pub struct UserDto {
     pub id: UserId,
@@ -50,6 +58,18 @@ pub struct UserDto {
     pub updated_at: Timestamp,
 }
 
+#[cfg(feature = "server")]
+impl UserDto {
+    /// Builds a `UserDto` with `api_key` redacted (empty string) for administrative user listings
+    /// so user secrets are never leaked in bulk responses.
+    pub fn from_redacted(u: User) -> Self {
+        let mut dto = Self::from(u);
+        dto.api_key.clear();
+        dto
+    }
+}
+
+#[cfg(feature = "server")]
 impl From<User> for UserDto {
     fn from(u: User) -> Self {
         Self {
@@ -66,12 +86,14 @@ impl From<User> for UserDto {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Serialize)]
 pub struct AuthSessionDto {
     pub token: String,
     pub user: UserDto,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateUserInput {
     pub username: String,
@@ -82,6 +104,7 @@ pub struct CreateUserInput {
     pub role: UserRole,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateUserInput {
     pub display_name: Option<String>,
@@ -90,12 +113,14 @@ pub struct UpdateUserInput {
     pub password: Option<String>,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChangePasswordInput {
     pub current_password: String,
     pub new_password: String,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone)]
 pub enum SubsonicCredentials {
     ApiKey(String),
@@ -110,6 +135,7 @@ pub enum SubsonicCredentials {
     },
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Serialize)]
 pub struct LibraryDto {
     pub id: LibraryId,
@@ -123,6 +149,7 @@ pub struct LibraryDto {
     pub updated_at: Timestamp,
 }
 
+#[cfg(feature = "server")]
 impl LibraryDto {
     pub fn from_domain(lib: Library, item_count: u64) -> Self {
         Self {
@@ -139,6 +166,7 @@ impl LibraryDto {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateLibraryInput {
     pub name: String,
@@ -146,6 +174,7 @@ pub struct CreateLibraryInput {
     pub root_path: String,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Deserialize)]
 pub struct RenameLibraryInput {
     pub name: String,

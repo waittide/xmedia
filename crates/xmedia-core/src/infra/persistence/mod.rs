@@ -15,8 +15,13 @@ pub fn register_core_models(set: &mut ModelSet) {
     <LibraryModel as Model>::register(set);
 }
 
+/// Returns `true` if the core schema (`users` table) is already present in the database.
+pub async fn is_core_schema_initialized(db: &mut Db) -> bool {
+    UserModel::all().limit(1).exec(db).await.is_ok()
+}
+
 pub async fn ensure_core_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
-    if UserModel::all().limit(1).exec(db).await.is_err() {
+    if !is_core_schema_initialized(db).await {
         info!("initializing core database schema via toasty");
         let mut set = ModelSet::new();
         register_core_models(&mut set);

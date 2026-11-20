@@ -1,26 +1,37 @@
 use std::path::{Path, PathBuf};
+#[cfg(feature = "server")]
+use std::sync::Arc;
 
 use axum::Json;
 use axum::body::Body;
 use axum::extract::multipart::Field;
+#[cfg(feature = "server")]
+use axum::extract::{FromRef, FromRequestParts};
 use axum::http::header::{
-    ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH,
-    CONTENT_RANGE, CONTENT_TYPE, COOKIE, SET_COOKIE, WWW_AUTHENTICATE,
+    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
 };
+#[cfg(feature = "server")]
+use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE, WWW_AUTHENTICATE};
+#[cfg(feature = "server")]
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
+#[cfg(feature = "server")]
 use base64::Engine;
+#[cfg(feature = "server")]
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+#[cfg(feature = "server")]
 use crate::application::auth::AuthService;
 use crate::application::ports::{BinaryPayload, ByteChunkStream, ByteRangeSpec, ByteRangeStream};
 use crate::domain::error::DomainError;
+#[cfg(feature = "server")]
 use crate::domain::user::User;
 
+#[cfg(feature = "server")]
 pub const AUTH_COOKIE_NAME: &str = "xmedia_token";
 
 #[derive(Debug)]
@@ -114,6 +125,7 @@ impl IntoResponse for ApiError {
 
 pub type ApiResult<T> = Result<T, ApiError>;
 
+#[cfg(feature = "server")]
 fn is_https_request(headers: &HeaderMap) -> bool {
     headers
         .get("x-forwarded-proto")
@@ -127,6 +139,7 @@ fn is_https_request(headers: &HeaderMap) -> bool {
         })
 }
 
+#[cfg(feature = "server")]
 pub fn build_session_cookie(
     token: &str,
     max_age_secs: u64,
@@ -143,6 +156,7 @@ pub fn build_session_cookie(
     HeaderValue::from_str(&raw).unwrap_or_else(|_| HeaderValue::from_static(""))
 }
 
+#[cfg(feature = "server")]
 pub fn build_clear_cookie(req_headers: &HeaderMap) -> HeaderValue {
     if is_https_request(req_headers) {
         HeaderValue::from_static("xmedia_token=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure")
@@ -151,11 +165,13 @@ pub fn build_clear_cookie(req_headers: &HeaderMap) -> HeaderValue {
     }
 }
 
+#[cfg(feature = "server")]
 pub fn attach_cookie(mut res: Response, cookie: HeaderValue) -> Response {
     res.headers_mut().insert(SET_COOKIE, cookie);
     res
 }
 
+#[cfg(feature = "server")]
 pub fn extract_request_token(parts: &Parts) -> Option<String> {
     if let Some(raw_auth) = parts
         .headers
@@ -195,6 +211,7 @@ pub fn extract_request_token(parts: &Parts) -> Option<String> {
     None
 }
 
+#[cfg(feature = "server")]
 pub async fn authenticate_web_parts(parts: &Parts, auth: &AuthService) -> ApiResult<User> {
     if let Some(token) = extract_request_token(parts) {
         return Ok(auth.authenticate_jwt(&token).await?);
@@ -207,8 +224,10 @@ pub async fn authenticate_web_parts(parts: &Parts, auth: &AuthService) -> ApiRes
     )))
 }
 
+#[cfg(feature = "server")]
 pub struct OpdsAuthChallenge;
 
+#[cfg(feature = "server")]
 impl IntoResponse for OpdsAuthChallenge {
     fn into_response(self) -> Response {
         let mut res = (StatusCode::UNAUTHORIZED, "OPDS authentication required").into_response();
@@ -220,6 +239,7 @@ impl IntoResponse for OpdsAuthChallenge {
     }
 }
 
+#[cfg(feature = "server")]
 pub async fn authenticate_opds_parts(
     parts: &Parts,
     auth: &AuthService,
@@ -266,13 +286,46 @@ pub async fn authenticate_opds_parts(
     Err(OpdsAuthChallenge)
 }
 
-pub fn parse_http_range(headers: &HeaderMap) -> Option<(u64, Option<u64>)> {
-    match parse_http_range_spec(headers) {
-        ByteRangeSpec::FromTo {
-            start,
-            end_inclusive,
-        } => Some((start, end_inclusive)),
-        _ => None,
+/// Generic Axum Web authentication extractor usable by any domain state implementing
+/// `FromRef<S> for Arc<AuthService>`.
+#[cfg(feature = "server")]
+pub struct WebAuth(pub User);
+
+#[cfg(feature = "server")]
+pub use self::WebAuth as CoreWebAuth;
+
+#[cfg(feature = "server")]
+impl<S> FromRequestParts<S> for WebAuth
+where
+    S: Send + Sync,
+    Arc<AuthService>: FromRef<S>,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let auth = Arc::<AuthService>::from_ref(state);
+        let user = authenticate_web_parts(parts, &auth).await?;
+        Ok(Self(user))
+    }
+}
+
+/// Generic Axum OPDS authentication extractor usable by any domain state implementing
+/// `FromRef<S> for Arc<AuthService>`.
+#[cfg(feature = "server")]
+pub struct OpdsAuth(pub User);
+
+#[cfg(feature = "server")]
+impl<S> FromRequestParts<S> for OpdsAuth
+where
+    S: Send + Sync,
+    Arc<AuthService>: FromRef<S>,
+{
+    type Rejection = OpdsAuthChallenge;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let auth = Arc::<AuthService>::from_ref(state);
+        let user = authenticate_opds_parts(parts, &auth).await?;
+        Ok(Self(user))
     }
 }
 

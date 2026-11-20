@@ -1,11 +1,74 @@
+#[doc(hidden)]
+pub mod __private {
+    pub use uuid::{Error as UuidError, Uuid};
+}
+
+/// Defines one or more strongly-typed UUID v7 newtype identifiers with transparent serde
+/// serialization, `Default`, `Display`, `FromStr`, and `From<Uuid>` conversions.
+#[macro_export]
+macro_rules! define_uuid_id {
+    ($($(#[$meta:meta])* $name:ident),+ $(,)?) => {
+        $(
+            $(#[$meta])*
+            #[derive(
+                Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
+                ::serde::Serialize, ::serde::Deserialize
+            )]
+            #[serde(transparent)]
+            pub struct $name(pub $crate::__private::Uuid);
+
+            impl $name {
+                pub fn new() -> Self {
+                    Self($crate::__private::Uuid::now_v7())
+                }
+            }
+
+            impl Default for $name {
+                fn default() -> Self {
+                    Self::new()
+                }
+            }
+
+            impl ::std::fmt::Display for $name {
+                fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                    self.0.fmt(f)
+                }
+            }
+
+            impl ::std::str::FromStr for $name {
+                type Err = $crate::__private::UuidError;
+
+                fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+                    $crate::__private::Uuid::parse_str(s).map(Self)
+                }
+            }
+
+            impl ::std::convert::From<$crate::__private::Uuid> for $name {
+                fn from(value: $crate::__private::Uuid) -> Self {
+                    Self(value)
+                }
+            }
+
+            impl ::std::convert::From<$name> for $crate::__private::Uuid {
+                fn from(value: $name) -> Self {
+                    value.0
+                }
+            }
+        )+
+    };
+}
+
 pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
 
-pub use infra::persistence::{ensure_core_schema, ensure_sqlite_parent_dir, register_core_models};
+#[cfg(feature = "server")]
+pub use infra::persistence::{
+    ensure_core_schema, ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
+};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, RwLock};
@@ -177,7 +240,8 @@ mod tests {
         let admin_session = r1.or(r2).unwrap();
         let admin = auth.authenticate_jwt(&admin_session.token).await.unwrap();
 
-        // Create member, change password reissues token, and disabling yields Unauthorized
+        // Create member, verify list_users redacts api_key while get_me returns own api_key,
+        // change password reissues token, and disabling yields Forbidden across ALL auth entry points
         let member = auth
             .create_user(
                 &admin,
@@ -190,6 +254,12 @@ mod tests {
             )
             .await
             .unwrap();
+        let listed_users = auth.list_users(&admin).await.unwrap();
+        assert_eq!(listed_users.len(), 2);
+        assert!(listed_users.iter().all(|u| u.api_key.is_empty()));
+        let admin_me = auth.get_me(&admin).await.unwrap();
+        assert!(!admin_me.api_key.is_empty());
+
         let member_session = auth.login("member1", "password123").await.unwrap();
         let member_actor = auth.authenticate_jwt(&member_session.token).await.unwrap();
         let rotated_session = auth
@@ -204,21 +274,52 @@ mod tests {
             .unwrap();
         assert!(auth.authenticate_jwt(&rotated_session.token).await.is_ok());
 
-        auth.update_user(
-            &admin,
-            member.id,
-            UpdateUserInput {
-                display_name: None,
-                role: None,
-                is_active: Some(false),
-                password: None,
-            },
-        )
-        .await
-        .unwrap();
+        let updated_member = auth
+            .update_user(
+                &admin,
+                member.id,
+                UpdateUserInput {
+                    display_name: None,
+                    role: None,
+                    is_active: Some(false),
+                    password: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(updated_member.api_key.is_empty());
+
+        // Disabled account must consistently return 403 Forbidden across all 5 auth entry points
+        assert!(matches!(
+            auth.login("member1", "newpassword123").await,
+            Err(DomainError::Forbidden(_))
+        ));
         assert!(matches!(
             auth.authenticate_jwt(&rotated_session.token).await,
-            Err(DomainError::Unauthorized(_))
+            Err(DomainError::Forbidden(_))
+        ));
+        assert!(matches!(
+            auth.authenticate_api_key(&member.api_key).await,
+            Err(DomainError::Forbidden(_))
+        ));
+        assert!(matches!(
+            auth.verify_basic_credentials("member1", "newpassword123")
+                .await,
+            Err(DomainError::Forbidden(_))
+        ));
+        let salt = "salt42";
+        let mut md5 = Md5::new();
+        md5.update(b"newpassword123");
+        md5.update(salt.as_bytes());
+        let sub_token = hex::encode(md5.finalize());
+        assert!(matches!(
+            auth.authenticate_subsonic(SubsonicCredentials::TokenSalt {
+                username: "member1".into(),
+                token: sub_token,
+                salt: salt.into(),
+            })
+            .await,
+            Err(DomainError::Forbidden(_))
         ));
 
         // Mount path validation against data_dir and nested mounts
@@ -281,5 +382,92 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!recovered.scan_status.is_scanning());
+
+        // Test injected allowed_mount_prefixes without mutating process env
+        let allowed_root = dir.path().join("allowed_only");
+        let allowed_sub = allowed_root.join("sub");
+        let denied_dir = dir.path().join("denied_dir");
+        std::fs::create_dir_all(&allowed_sub).unwrap();
+        std::fs::create_dir_all(&denied_dir).unwrap();
+        let restricted_lib_svc = lib_svc.with_allowed_mount_prefixes([allowed_root]);
+        assert!(matches!(
+            restricted_lib_svc
+                .create_local_mount(
+                    &admin,
+                    CreateLibraryInput {
+                        name: "Denied".into(),
+                        media_kind: MediaKind::Book,
+                        root_path: denied_dir.to_string_lossy().into_owned(),
+                    }
+                )
+                .await,
+            Err(DomainError::Forbidden(_))
+        ));
+        let allowed_lib = restricted_lib_svc
+            .create_local_mount(
+                &admin,
+                CreateLibraryInput {
+                    name: "Allowed".into(),
+                    media_kind: MediaKind::Book,
+                    root_path: allowed_sub.to_string_lossy().into_owned(),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Test ScanProgressReporter throttled updates + completion + MediaChanged broadcast
+        let events_hub = Arc::new(BroadcastEventHub::default());
+        let mut rx = events_hub.subscribe();
+        let lib_entity = libraries_repo
+            .find_by_id(allowed_lib.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut reporter = crate::application::library::ScanProgressReporter::new(
+            lib_entity,
+            libraries_repo.clone(),
+            events_hub,
+            Some(3),
+        )
+        .with_step(2);
+        reporter.start().await;
+        reporter.advance().await;
+        reporter.advance().await;
+        reporter.advance().await;
+        let finished = reporter.complete(2, 1, 0).await.unwrap();
+        assert!(matches!(
+            finished.scan_status,
+            crate::domain::library::ScanStatus::Completed {
+                scanned: 3,
+                added: 2,
+                updated: 1,
+                missing: 0,
+            }
+        ));
+        let mut seen = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            seen.push(ev);
+        }
+        // start(0) + step(2) + total(3) + completed + media_changed = 5 events
+        assert_eq!(seen.len(), 5);
+    }
+}
+
+#[cfg(test)]
+mod lite_tests {
+    use std::str::FromStr;
+
+    crate::define_uuid_id!(SampleMediaId);
+
+    #[test]
+    fn define_uuid_id_macro_supports_roundtrip_and_serde() {
+        let id = SampleMediaId::new();
+        let text = id.to_string();
+        let parsed = SampleMediaId::from_str(&text).unwrap();
+        assert_eq!(id, parsed);
+
+        let json = serde_json::to_string(&id).unwrap();
+        let decoded: SampleMediaId = serde_json::from_str(&json).unwrap();
+        assert_eq!(id, decoded);
     }
 }

@@ -1,12 +1,16 @@
 use std::pin::Pin;
 
+#[cfg(feature = "server")]
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures_core::Stream;
+#[cfg(feature = "server")]
 use serde::{Deserialize, Serialize};
 
 use crate::domain::error::DomainResult;
+#[cfg(feature = "server")]
 use crate::domain::library::{Library, LibraryId, MediaKind};
+#[cfg(feature = "server")]
 use crate::domain::user::{UserId, UserRole};
 
 pub type ByteChunkStream = Pin<Box<dyn Stream<Item = DomainResult<Bytes>> + Send + 'static>>;
@@ -43,6 +47,7 @@ pub struct BinaryPayload {
     pub mime_type: String,
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthClaims {
     pub user_id: UserId,
@@ -50,6 +55,7 @@ pub struct AuthClaims {
     pub role: UserRole,
 }
 
+#[cfg(feature = "server")]
 pub trait PasswordHasherPort: Send + Sync {
     fn hash_password(&self, plain: &str) -> DomainResult<String>;
     fn verify_password(&self, plain: &str, hash: &str) -> DomainResult<bool>;
@@ -64,12 +70,14 @@ pub trait PasswordHasherPort: Send + Sync {
     fn generate_api_key(&self) -> String;
 }
 
+#[cfg(feature = "server")]
 pub trait TokenServicePort: Send + Sync {
     fn issue_token(&self, claims: &AuthClaims) -> DomainResult<String>;
     fn verify_token(&self, token: &str) -> DomainResult<AuthClaims>;
     fn ttl_seconds(&self) -> u64;
 }
 
+#[cfg(feature = "server")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum SystemEvent {
@@ -110,10 +118,12 @@ pub enum SystemEvent {
     },
 }
 
+#[cfg(feature = "server")]
 pub trait RealtimeEventPort: Send + Sync {
     fn publish(&self, event: SystemEvent);
 }
 
+#[cfg(feature = "server")]
 #[async_trait]
 pub trait MediaDomainLifecycle: Send + Sync {
     fn media_kind(&self) -> MediaKind;

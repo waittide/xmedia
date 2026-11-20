@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use axum::extract::{FromRequestParts, Path, Query, State};
-use axum::http::request::Parts;
+use axum::extract::{FromRef, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -27,11 +26,8 @@ use xmedia_core::application::library::LibraryService;
 use xmedia_core::application::ports::SystemEvent;
 use xmedia_core::domain::library::{LibraryId, MediaKind, ScanStatus};
 use xmedia_core::domain::repository::LibraryRepository;
-use xmedia_core::domain::user::{User, UserId, UserPreferences};
-use xmedia_core::http::{
-    ApiError, ApiResult, attach_cookie, authenticate_web_parts, build_clear_cookie,
-    build_session_cookie,
-};
+use xmedia_core::domain::user::{UserId, UserPreferences};
+use xmedia_core::http::{ApiResult, attach_cookie, build_clear_cookie, build_session_cookie};
 use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 
@@ -98,19 +94,13 @@ pub struct GatewayState {
     pub external_web_dir: Option<PathBuf>,
 }
 
-pub struct CoreWebAuth(pub User);
-
-impl FromRequestParts<GatewayState> for CoreWebAuth {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &GatewayState,
-    ) -> Result<Self, Self::Rejection> {
-        let user = authenticate_web_parts(parts, &state.auth).await?;
-        Ok(Self(user))
+impl FromRef<GatewayState> for Arc<AuthService> {
+    fn from_ref(state: &GatewayState) -> Self {
+        state.auth.clone()
     }
 }
+
+pub use xmedia_core::http::WebAuth as CoreWebAuth;
 
 pub fn core_api_router() -> Router<GatewayState> {
     Router::new()

@@ -6,7 +6,7 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use xmedia::{XMediaApp, XMediaConfig};
+use xmedia::{DEFAULT_DEV_SECRET, XMediaApp, XMediaConfig};
 use xmedia_core::domain::library::MediaKind;
 
 #[derive(Debug, Parser)]
@@ -33,7 +33,7 @@ struct Cli {
     #[arg(
         long,
         env = "XMEDIA_SECRET",
-        default_value = "xmedia-change-this-secret-in-production"
+        default_value = DEFAULT_DEV_SECRET
     )]
     secret: String,
 

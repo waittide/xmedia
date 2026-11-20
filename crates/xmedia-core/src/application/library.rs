@@ -10,7 +10,141 @@ use crate::application::ports::{MediaDomainLifecycle, RealtimeEventPort, SystemE
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::{Library, LibraryId, LibraryKind, MediaKind};
 use crate::domain::repository::LibraryRepository;
-use crate::domain::user::User;
+use crate::domain::user::{User, require_admin};
+
+/// Reusable throttled scan progress reporter shared across media domain lifecycle scanners.
+/// Handles persisting `ScanStatus` updates and broadcasting `SystemEvent` notifications.
+pub struct ScanProgressReporter {
+    library: Library,
+    libraries: Arc<dyn LibraryRepository>,
+    events: Arc<dyn RealtimeEventPort>,
+    total: Option<u64>,
+    progress_step: u64,
+    scanned: u64,
+}
+
+impl ScanProgressReporter {
+    pub fn new(
+        library: Library,
+        libraries: Arc<dyn LibraryRepository>,
+        events: Arc<dyn RealtimeEventPort>,
+        total: Option<u64>,
+    ) -> Self {
+        let progress_step = match total {
+            Some(t) if t <= 100 => 1,
+            Some(t) if t <= 1000 => 5,
+            Some(_) => 20,
+            None => 10,
+        };
+        Self {
+            library,
+            libraries,
+            events,
+            total,
+            progress_step,
+            scanned: 0,
+        }
+    }
+
+    pub fn with_step(mut self, step: u64) -> Self {
+        self.progress_step = step.max(1);
+        self
+    }
+
+    pub fn library(&self) -> &Library {
+        &self.library
+    }
+
+    pub fn scanned(&self) -> u64 {
+        self.scanned
+    }
+
+    /// Marks the library as scanning at 0 items and broadcasts the initial progress event.
+    pub async fn start(&mut self) {
+        self.scanned = 0;
+        self.library.mark_scanning(0, self.total);
+        let _ = self.libraries.save(&self.library).await;
+        self.events.publish(SystemEvent::LibraryScanProgress {
+            library_id: self.library.id,
+            library_name: self.library.name.clone(),
+            media_kind: self.library.media_kind,
+            scanned: 0,
+            total: self.total,
+        });
+    }
+
+    /// Increments the scanned item counter by 1 and emits a throttled progress update.
+    pub async fn advance(&mut self) {
+        self.scanned = self.scanned.saturating_add(1);
+        self.report(self.scanned).await;
+    }
+
+    /// Records the current scanned count and persists/broadcasts when hitting the throttle step or total.
+    pub async fn report(&mut self, scanned: u64) {
+        self.scanned = scanned;
+        let reached_total = self.total.is_some_and(|t| scanned >= t);
+        if scanned.is_multiple_of(self.progress_step) || reached_total {
+            self.library.mark_scanning(scanned, self.total);
+            let _ = self.libraries.save(&self.library).await;
+            self.events.publish(SystemEvent::LibraryScanProgress {
+                library_id: self.library.id,
+                library_name: self.library.name.clone(),
+                media_kind: self.library.media_kind,
+                scanned,
+                total: self.total,
+            });
+        }
+    }
+
+    /// Finalizes the scan using the internally tracked `scanned` count, persists completion,
+    /// broadcasts `LibraryScanCompleted`, and emits `MediaChanged` if any items changed.
+    pub async fn complete(self, added: u64, updated: u64, missing: u64) -> DomainResult<Library> {
+        let scanned = self.scanned;
+        self.complete_with_scanned(scanned, added, updated, missing)
+            .await
+    }
+
+    /// Finalizes the scan with an explicit `scanned` count.
+    pub async fn complete_with_scanned(
+        mut self,
+        scanned: u64,
+        added: u64,
+        updated: u64,
+        missing: u64,
+    ) -> DomainResult<Library> {
+        self.library
+            .mark_scan_completed(scanned, added, updated, missing);
+        self.libraries.save(&self.library).await?;
+        self.events.publish(SystemEvent::LibraryScanCompleted {
+            library_id: self.library.id,
+            library_name: self.library.name.clone(),
+            media_kind: self.library.media_kind,
+            scanned,
+            added,
+            updated,
+            missing,
+        });
+        if added > 0 || updated > 0 || missing > 0 {
+            self.events.publish(SystemEvent::MediaChanged {
+                media_kind: self.library.media_kind,
+            });
+        }
+        Ok(self.library)
+    }
+
+    /// Marks the scan as failed, persists best-effort, and broadcasts `LibraryScanFailed`.
+    pub async fn fail(mut self, message: impl Into<String>) {
+        let msg = message.into();
+        self.library.mark_scan_failed(msg.clone());
+        let _ = self.libraries.save(&self.library).await;
+        self.events.publish(SystemEvent::LibraryScanFailed {
+            library_id: self.library.id,
+            library_name: self.library.name.clone(),
+            media_kind: self.library.media_kind,
+            message: msg,
+        });
+    }
+}
 
 struct ActiveScanEntry {
     scan_seq: u64,
@@ -66,6 +200,7 @@ pub struct LibraryService {
     events: Arc<dyn RealtimeEventPort>,
     lifecycles: Arc<RwLock<HashMap<MediaKind, Arc<dyn MediaDomainLifecycle>>>>,
     data_dir: Option<PathBuf>,
+    allowed_mount_prefixes: Vec<PathBuf>,
     active_scans: Arc<Mutex<HashMap<LibraryId, ActiveScanEntry>>>,
     next_scan_seq: Arc<AtomicU64>,
 }
@@ -85,14 +220,35 @@ impl LibraryService {
         lifecycles: Arc<RwLock<HashMap<MediaKind, Arc<dyn MediaDomainLifecycle>>>>,
         data_dir: Option<PathBuf>,
     ) -> Self {
+        let allowed_mount_prefixes = std::env::var("XMEDIA_ALLOWED_MOUNT_PREFIXES")
+            .ok()
+            .map(|raw| parse_allowed_mount_prefixes(&raw))
+            .unwrap_or_default();
         Self {
             libraries,
             events,
             lifecycles,
             data_dir,
+            allowed_mount_prefixes,
             active_scans: Arc::new(Mutex::new(HashMap::new())),
             next_scan_seq: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    /// Overrides the allowed local-mount prefix allowlist instead of reading
+    /// `XMEDIA_ALLOWED_MOUNT_PREFIXES` from the process environment.
+    pub fn with_allowed_mount_prefixes<I, P>(mut self, prefixes: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: Into<PathBuf>,
+    {
+        self.allowed_mount_prefixes = prefixes
+            .into_iter()
+            .map(Into::into)
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|pb| pb.canonicalize().unwrap_or(pb))
+            .collect();
+        self
     }
 
     pub async fn recover_interrupted_scans(&self) -> DomainResult<()> {
@@ -154,7 +310,7 @@ impl LibraryService {
         actor: &User,
         input: CreateLibraryInput,
     ) -> DomainResult<LibraryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         self.ensure_media_enabled(input.media_kind)?;
 
         let path = Path::new(input.root_path.trim());
@@ -169,9 +325,7 @@ impl LibraryService {
             .canonicalize()
             .map_err(|e| DomainError::Storage(format!("failed to canonicalize path: {e}")))?;
 
-        if let Ok(raw_allowlist) = std::env::var("XMEDIA_ALLOWED_MOUNT_PREFIXES") {
-            verify_mount_allowlist(&canonical_path, &raw_allowlist)?;
-        }
+        verify_mount_prefixes(&canonical_path, &self.allowed_mount_prefixes)?;
 
         if let Some(ref data_dir) = self.data_dir {
             let data_canonical = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
@@ -211,7 +365,7 @@ impl LibraryService {
         id: LibraryId,
         input: RenameLibraryInput,
     ) -> DomainResult<LibraryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let mut lib = self
             .libraries
             .find_by_id(id)
@@ -224,7 +378,7 @@ impl LibraryService {
     }
 
     pub async fn trigger_scan(&self, actor: &User, id: LibraryId) -> DomainResult<LibraryDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let mut lib = self
             .libraries
             .find_by_id(id)
@@ -363,7 +517,7 @@ impl LibraryService {
     }
 
     pub async fn delete_library(&self, actor: &User, id: LibraryId) -> DomainResult<()> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let lib = self
             .libraries
             .find_by_id(id)
@@ -443,25 +597,15 @@ impl LibraryService {
         }
         Ok(())
     }
-
-    fn require_admin(actor: &User) -> DomainResult<()> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 fn paths_overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }
 
-/// Validates that `canonical_path` falls under at least one allowed prefix when
-/// `XMEDIA_ALLOWED_MOUNT_PREFIXES` is configured (colon or comma separated).
-fn verify_mount_allowlist(canonical_path: &Path, raw_allowlist: &str) -> DomainResult<()> {
-    let prefixes: Vec<PathBuf> = raw_allowlist
+/// Parses a colon- or comma-separated mount allowlist string into canonicalized prefixes.
+pub fn parse_allowed_mount_prefixes(raw_allowlist: &str) -> Vec<PathBuf> {
+    raw_allowlist
         .split([':', ','])
         .map(str::trim)
         .filter(|s| !s.is_empty())
@@ -469,7 +613,11 @@ fn verify_mount_allowlist(canonical_path: &Path, raw_allowlist: &str) -> DomainR
             let pb = PathBuf::from(p);
             pb.canonicalize().unwrap_or(pb)
         })
-        .collect();
+        .collect()
+}
+
+/// Validates that `canonical_path` falls under at least one allowed prefix when non-empty.
+fn verify_mount_prefixes(canonical_path: &Path, prefixes: &[PathBuf]) -> DomainResult<()> {
     if prefixes.is_empty() {
         return Ok(());
     }
@@ -480,6 +628,12 @@ fn verify_mount_allowlist(canonical_path: &Path, raw_allowlist: &str) -> DomainR
         "mount path '{}' is outside XMEDIA_ALLOWED_MOUNT_PREFIXES",
         canonical_path.display()
     )))
+}
+
+#[cfg(test)]
+fn verify_mount_allowlist(canonical_path: &Path, raw_allowlist: &str) -> DomainResult<()> {
+    let prefixes = parse_allowed_mount_prefixes(raw_allowlist);
+    verify_mount_prefixes(canonical_path, &prefixes)
 }
 
 /// Unmount / offline-NAS protection: aborts scan before mutating index if the mount

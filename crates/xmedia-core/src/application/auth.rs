@@ -13,7 +13,20 @@ use crate::application::ports::{
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
 use crate::domain::repository::UserRepository;
-use crate::domain::user::{User, UserId, UserPreferences, UserRole};
+use crate::domain::user::{User, UserId, UserPreferences, UserRole, require_admin};
+
+/// Constant-time byte-slice comparison using XOR accumulation to avoid timing side-channels
+/// when comparing API keys or secrets.
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (&x, &y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    std::hint::black_box(diff) == 0
+}
 
 #[derive(Clone)]
 pub struct AuthService {
@@ -103,9 +116,7 @@ impl AuthService {
             .await?
             .ok_or_else(|| DomainError::Unauthorized("user no longer exists".into()))?;
         if !user.is_active {
-            return Err(DomainError::Unauthorized(
-                "account has been disabled".into(),
-            ));
+            return Err(DomainError::Forbidden("account has been disabled".into()));
         }
         Ok(user)
     }
@@ -120,10 +131,11 @@ impl AuthService {
             .find_by_api_key(trimmed)
             .await?
             .ok_or_else(|| DomainError::Unauthorized("invalid api key".into()))?;
+        if !constant_time_eq(trimmed.as_bytes(), user.api_key.as_bytes()) {
+            return Err(DomainError::Unauthorized("invalid api key".into()));
+        }
         if !user.is_active {
-            return Err(DomainError::Unauthorized(
-                "account has been disabled".into(),
-            ));
+            return Err(DomainError::Forbidden("account has been disabled".into()));
         }
         Ok(user)
     }
@@ -139,11 +151,9 @@ impl AuthService {
             .await?
             .ok_or_else(|| DomainError::Unauthorized("invalid credentials".into()))?;
         if !user.is_active {
-            return Err(DomainError::Unauthorized(
-                "account has been disabled".into(),
-            ));
+            return Err(DomainError::Forbidden("account has been disabled".into()));
         }
-        let ok = password == user.api_key
+        let ok = constant_time_eq(password.as_bytes(), user.api_key.as_bytes())
             || self.hasher.verify_password(password, &user.password_hash)?;
         if !ok {
             return Err(DomainError::Unauthorized("invalid credentials".into()));
@@ -171,9 +181,7 @@ impl AuthService {
                         DomainError::Unauthorized("wrong username or password".into())
                     })?;
                 if !user.is_active {
-                    return Err(DomainError::Unauthorized(
-                        "account has been disabled".into(),
-                    ));
+                    return Err(DomainError::Forbidden("account has been disabled".into()));
                 }
                 let ok = self.hasher.verify_subsonic_token(
                     &user.subsonic_secret_enc,
@@ -254,13 +262,13 @@ impl AuthService {
     }
 
     pub async fn list_users(&self, actor: &User) -> DomainResult<Vec<UserDto>> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let all = self.users.list_all().await?;
-        Ok(all.into_iter().map(UserDto::from).collect())
+        Ok(all.into_iter().map(UserDto::from_redacted).collect())
     }
 
     pub async fn create_user(&self, actor: &User, input: CreateUserInput) -> DomainResult<UserDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         Self::validate_password(&input.password)?;
         if self
             .users
@@ -291,7 +299,7 @@ impl AuthService {
         target_id: UserId,
         input: UpdateUserInput,
     ) -> DomainResult<UserDto> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         let mut target = self
             .users
             .find_by_id(target_id)
@@ -323,11 +331,15 @@ impl AuthService {
             target.update_credentials(hash, enc)?;
         }
         self.users.save(&target).await?;
-        Ok(UserDto::from(target))
+        if target.id == actor.id {
+            Ok(UserDto::from(target))
+        } else {
+            Ok(UserDto::from_redacted(target))
+        }
     }
 
     pub async fn delete_user(&self, actor: &User, target_id: UserId) -> DomainResult<()> {
-        Self::require_admin(actor)?;
+        require_admin(actor)?;
         if actor.id == target_id {
             return Err(DomainError::Validation(
                 "cannot delete your own account".into(),
@@ -349,15 +361,6 @@ impl AuthService {
         }
 
         self.users.delete(target_id).await
-    }
-
-    fn require_admin(actor: &User) -> DomainResult<()> {
-        if !actor.role.is_admin() {
-            return Err(DomainError::Forbidden(
-                "administrator privileges required".into(),
-            ));
-        }
-        Ok(())
     }
 
     fn validate_password(password: &str) -> DomainResult<()> {
@@ -390,5 +393,18 @@ fn decode_subsonic_password(raw: &str) -> DomainResult<String> {
             .map_err(|_| DomainError::Unauthorized("invalid UTF-8 password".into()))
     } else {
         Ok(raw.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_time_eq_compares_bytes_accurately() {
+        assert!(constant_time_eq(b"xmk_secret_123", b"xmk_secret_123"));
+        assert!(!constant_time_eq(b"xmk_secret_123", b"xmk_secret_124"));
+        assert!(!constant_time_eq(b"short", b"longer"));
+        assert!(constant_time_eq(b"", b""));
     }
 }
