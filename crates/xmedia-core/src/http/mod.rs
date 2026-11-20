@@ -38,6 +38,16 @@ struct ErrorBody<'a> {
     message: &'a str,
 }
 
+fn error_json_response(status: StatusCode, code: &'static str, message: &str) -> Response {
+    (
+        status,
+        Json(ErrorEnvelope {
+            error: ErrorBody { code, message },
+        }),
+    )
+        .into_response()
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self.0 {
@@ -49,33 +59,49 @@ impl IntoResponse for ApiError {
                 }
                 res
             }
-            other => {
-                let (status, code) = match &other {
-                    DomainError::Validation(_) => (StatusCode::BAD_REQUEST, "validation_error"),
-                    DomainError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
-                    DomainError::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
-                    DomainError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
-                    DomainError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
-                    DomainError::UnsupportedFormat(_) => {
-                        (StatusCode::UNSUPPORTED_MEDIA_TYPE, "unsupported_format")
-                    }
-                    DomainError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
-                    DomainError::Persistence(_) => {
-                        (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error")
-                    }
-                    DomainError::RangeNotSatisfiable { .. } => unreachable!(),
-                };
-                let msg = other.to_string();
-                (
-                    status,
-                    Json(ErrorEnvelope {
-                        error: ErrorBody {
-                            code,
-                            message: &msg,
-                        },
-                    }),
+            DomainError::Validation(msg) => {
+                error_json_response(StatusCode::BAD_REQUEST, "validation_error", &msg)
+            }
+            DomainError::Unauthorized(msg) => {
+                error_json_response(StatusCode::UNAUTHORIZED, "unauthorized", &msg)
+            }
+            DomainError::Forbidden(msg) => {
+                error_json_response(StatusCode::FORBIDDEN, "forbidden", &msg)
+            }
+            DomainError::NotFound(msg) => {
+                error_json_response(StatusCode::NOT_FOUND, "not_found", &msg)
+            }
+            DomainError::Conflict(msg) => {
+                error_json_response(StatusCode::CONFLICT, "conflict", &msg)
+            }
+            DomainError::UnsupportedFormat(msg) => error_json_response(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "unsupported_format",
+                &msg,
+            ),
+            DomainError::Storage(detail) => {
+                tracing::error!(
+                    error_code = "storage_error",
+                    detail = %detail,
+                    "internal storage error"
+                );
+                error_json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "storage_error",
+                    "Internal storage error",
                 )
-                    .into_response()
+            }
+            DomainError::Persistence(detail) => {
+                tracing::error!(
+                    error_code = "persistence_error",
+                    detail = %detail,
+                    "internal persistence error"
+                );
+                error_json_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "persistence_error",
+                    "Internal database error",
+                )
             }
         }
     }
@@ -433,4 +459,58 @@ pub fn into_binary_cache_response(payload: BinaryPayload) -> Response {
         HeaderValue::from_static("public, max-age=604800"),
     );
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::to_bytes;
+
+    async fn decode_error_response(err: DomainError) -> (StatusCode, serde_json::Value) {
+        let resp = ApiError(err).into_response();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1024 * 64).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn api_error_returns_concise_inner_message_without_redundant_prefix() {
+        let (status, body) =
+            decode_error_response(DomainError::Validation("用户名不能为空".into())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "validation_error");
+        assert_eq!(body["error"]["message"], "用户名不能为空");
+
+        let (status, body) =
+            decode_error_response(DomainError::NotFound("书籍不存在".into())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "not_found");
+        assert_eq!(body["error"]["message"], "书籍不存在");
+    }
+
+    #[tokio::test]
+    async fn api_error_sanitizes_internal_storage_and_persistence_details() {
+        let (status, body) = decode_error_response(DomainError::Storage(
+            "failed opening /var/lib/xmedia/secret.db: Permission denied".into(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"]["code"], "storage_error");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(!msg.contains("/var/lib"));
+        assert!(!msg.contains("secret.db"));
+        assert_eq!(msg, "Internal storage error");
+
+        let (status, body) = decode_error_response(DomainError::Persistence(
+            "sqlite error: near \"SELECT * FROM users\": syntax error".into(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body["error"]["code"], "persistence_error");
+        let msg = body["error"]["message"].as_str().unwrap();
+        assert!(!msg.contains("sqlite"));
+        assert!(!msg.contains("SELECT"));
+        assert_eq!(msg, "Internal database error");
+    }
 }
