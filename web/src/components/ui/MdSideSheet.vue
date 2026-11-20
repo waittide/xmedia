@@ -48,7 +48,7 @@ onBeforeUnmount(() => {
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-50 flex justify-end bg-black/38 backdrop-blur-[1px]"
+        class="fixed inset-0 z-[var(--z-sheet)] flex justify-end bg-black/38 backdrop-blur-[1px]"
         @click.self="emit('close')"
       >
         <Transition name="md-sheet-right" appear>

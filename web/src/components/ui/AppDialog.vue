@@ -27,7 +27,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[9980] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
         @mousedown.self="emit('close')"
       >
         <Transition name="md-dialog" appear>

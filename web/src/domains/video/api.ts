@@ -141,8 +141,9 @@ export const api = {
       body: JSON.stringify({ watched }),
     }),
 
-  listShows: (params: { library_id?: string; genre?: string; search?: string } = {}) =>
-    requestJson<ShowSummaryDto[]>(`/video/shows${toQuery(params)}`),
+  listShows: (
+    params: { library_id?: string; genre?: string; tag?: string; search?: string } = {},
+  ) => requestJson<ShowSummaryDto[]>(`/video/shows${toQuery(params)}`),
   getShow: (id: string) => requestJson<ShowDetailDto>(`/video/shows/${id}`),
   updateShow: (id: string, patch: ShowMetadataPatch) =>
     requestJson<ShowSummaryDto>(`/video/shows/${id}`, {

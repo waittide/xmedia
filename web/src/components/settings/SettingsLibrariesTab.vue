@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuRefreshCw, LuTrash2 } from 'vue-icons-plus/lu'
+import { LuLibrary, LuRefreshCw, LuTrash2 } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'

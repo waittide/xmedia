@@ -29,7 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   start: [entries: MediaFileEntry[], options: AutoScrapeOptionsDto]
-  openDryRun: [entries: MediaFileEntry[]]
+  openDryRun: [entries: MediaFileEntry[], options: AutoScrapeOptionsDto]
   openSettings: []
 }>()
 
@@ -151,9 +151,7 @@ const hasAnyFieldSelected = computed(
     (props.domain === 'music' && fieldLyrics.value),
 )
 
-function handleStart(): void {
-  if (props.entries.length === 0 || !hasAnyFieldSelected.value) return
-  savePrefs()
+function buildOptions(): AutoScrapeOptionsDto {
   const groups: string[] = []
   if (fieldBasic.value) groups.push('basic')
   if (fieldSummary.value) groups.push('summary')
@@ -166,7 +164,7 @@ function handleStart(): void {
       ? [...selectedProviderIds.value]
       : []
 
-  const options: AutoScrapeOptionsDto = {
+  return {
     match_mode: matchMode.value,
     only_fill_missing: onlyFillMissing.value,
     apply_cover: applyCover.value,
@@ -175,7 +173,18 @@ function handleStart(): void {
     providers: customProviders,
     field_groups: groups.length === (props.domain === 'music' ? 4 : 3) ? [] : groups,
   }
-  emit('start', props.entries, options)
+}
+
+function handleStart(): void {
+  if (props.entries.length === 0 || !hasAnyFieldSelected.value) return
+  savePrefs()
+  emit('start', props.entries, buildOptions())
+}
+
+function handleOpenDryRun(): void {
+  if (props.entries.length === 0 || !hasAnyFieldSelected.value) return
+  savePrefs()
+  emit('openDryRun', props.entries, buildOptions())
 }
 </script>
 
@@ -340,8 +349,9 @@ function handleStart(): void {
     <template #footer>
       <button
         type="button"
+        :disabled="entries.length === 0 || !hasAnyFieldSelected"
         class="md-btn md-btn-sm md-btn-outlined md-state"
-        @click="emit('openDryRun', entries)"
+        @click="handleOpenDryRun"
       >
         <LuSearchCheck class="h-3.5 w-3.5" />
         <span>先预演置信度</span>

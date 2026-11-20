@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuCheck, LuCopy, LuPlay, LuTrash2 } from 'vue-icons-plus/lu'
+import { LuAlertCircle, LuCheck, LuCheckCircle2, LuCopy, LuPlay, LuTrash2 } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { api as musicApi } from '@/domains/music/api'
@@ -16,6 +16,7 @@ import type {
   TranscodeProfile,
   VideoQualityProfile,
 } from '@/types/api'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 
 const { t } = useI18n()
@@ -62,6 +63,7 @@ const musicQualityOptions = computed(() => [
 ])
 
 const videoQualityOptions = computed(() => [
+  { value: 'auto', label: t('settings.videoQualityAuto') },
   { value: 'direct', label: t('settings.videoQualityDirect') },
   { value: 'p1080', label: t('settings.videoQuality1080p') },
   { value: 'p720', label: t('settings.videoQuality720p') },

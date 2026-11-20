@@ -8,7 +8,7 @@ const snackbar = useSnackbarStore()
 <template>
   <Teleport to="body">
     <div
-      class="pointer-events-none fixed inset-x-0 bottom-5 z-[70] flex justify-center px-4 sm:justify-start sm:pl-6"
+      class="pointer-events-none fixed inset-x-0 bottom-5 z-[var(--z-snackbar)] flex justify-center px-4 sm:justify-start sm:pl-6"
     >
       <Transition name="md-snackbar" mode="out-in">
         <div

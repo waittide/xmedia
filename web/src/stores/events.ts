@@ -99,14 +99,19 @@ export const useEventsStore = defineStore('events', () => {
   }
 
   function connect(): void {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
     const token = getStoredToken()
     if (!token || ws) return
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    ws = new WebSocket(
+    const socket = new WebSocket(
       `${proto}//${window.location.host}/api/v1/events/ws?token=${encodeURIComponent(token)}`,
     )
+    ws = socket
 
-    ws.onmessage = (ev) => {
+    socket.onmessage = (ev) => {
       try {
         const msg = JSON.parse(String(ev.data)) as WsEventFrame
         if (msg.event === 'library_scan_started' && msg.library_id) {
@@ -171,10 +176,14 @@ export const useEventsStore = defineStore('events', () => {
       }
     }
 
-    ws.onclose = () => {
+    socket.onclose = () => {
+      if (ws !== socket) return
       ws = null
       if (getStoredToken()) {
-        reconnectTimer = setTimeout(connect, 3000)
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null
+          connect()
+        }, 3000)
       }
     }
   }
@@ -185,8 +194,12 @@ export const useEventsStore = defineStore('events', () => {
       reconnectTimer = null
     }
     if (ws) {
-      ws.close()
+      const socket = ws
       ws = null
+      socket.onclose = null
+      socket.onmessage = null
+      socket.onerror = null
+      socket.close()
     }
     scanTasks.value = {}
   }

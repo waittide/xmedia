@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { LuSearch, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
@@ -17,7 +16,6 @@ import type { ShowSummaryDto, VideoKindFilter, VideoSortBy, VideoSummaryDto } fr
 type CatalogTab = 'videos' | 'shows'
 
 const { t } = useI18n()
-const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const videoStore = useVideoStore()
@@ -86,7 +84,7 @@ const genreOptions = computed(() => [
 ])
 
 const tagOptions = computed(() => [
-  { value: '', label: globalT('musicTags.allTagsFilter') },
+  { value: '', label: t('collections.tagsTitle') },
   ...videoStore.tags.map((tg) => ({
     value: tg.name,
     label: `#${tg.name}`,
@@ -158,7 +156,8 @@ async function fetchShows(): Promise<void> {
   try {
     shows.value = await api.listShows({
       library_id: selectedLibrary.value || undefined,
-      genre: selectedGenre.value || selectedTag.value || undefined,
+      genre: selectedGenre.value || undefined,
+      tag: selectedTag.value || undefined,
       search: search.value.trim() || undefined,
     })
   } finally {

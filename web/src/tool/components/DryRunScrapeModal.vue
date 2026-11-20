@@ -12,17 +12,18 @@ import {
 
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import { toolApi } from '../api'
-import type { DryRunScrapeItemDto, MediaFileEntry } from '../types'
+import type { AutoScrapeOptionsDto, DryRunScrapeItemDto, MediaFileEntry } from '../types'
 
 const props = defineProps<{
   open: boolean
   rootId: string | null
   entries: MediaFileEntry[]
+  options?: AutoScrapeOptionsDto | null
 }>()
 
 const emit = defineEmits<{
   close: []
-  confirm: [selectedEntries: MediaFileEntry[]]
+  confirm: [selectedEntries: MediaFileEntry[], options?: AutoScrapeOptionsDto]
   manualScrape: [entries: MediaFileEntry[]]
 }>()
 
@@ -39,12 +40,22 @@ const entryMap = computed(() => {
   return m
 })
 
+function isItemLowConfidence(item: DryRunScrapeItemDto): boolean {
+  const mode = props.options?.match_mode
+  if (mode === 'strict') return !item.matched || item.confidence < 70
+  if (mode === 'standard') return !item.matched || item.confidence < 45
+  if (mode === 'loose') return !item.matched
+  return item.low_confidence
+}
+
 const selectedCount = computed(() => checkedPaths.value.size)
-const lowConfidenceCount = computed(() => items.value.filter((i) => i.low_confidence).length)
+const lowConfidenceCount = computed(
+  () => items.value.filter((i) => isItemLowConfidence(i)).length,
+)
 const unmatchedEntries = computed<MediaFileEntry[]>(() => {
   const out: MediaFileEntry[] = []
   for (const item of items.value) {
-    if (!item.matched || item.low_confidence) {
+    if (!item.matched || isItemLowConfidence(item)) {
       const entry = entryMap.value.get(item.rel_path)
       if (entry) out.push(entry)
     }
@@ -62,12 +73,14 @@ async function runDryCheck(): Promise<void> {
     const res = await toolApi.dryRunScrape(
       props.rootId,
       props.entries.map((e) => e.rel_path),
+      undefined,
+      props.options ?? undefined,
     )
     items.value = res
     // Auto-select high-confidence matched items; leave low-confidence unchecked for manual review
     const initial = new Set<string>()
     for (const item of res) {
-      if (item.matched && !item.low_confidence) {
+      if (item.matched && !isItemLowConfidence(item)) {
         initial.add(item.rel_path)
       }
     }
@@ -126,7 +139,7 @@ function handleConfirm(): void {
     if (entry) selected.push(entry)
   }
   if (selected.length === 0) return
-  emit('confirm', selected)
+  emit('confirm', selected, props.options ?? undefined)
   emit('close')
 }
 
@@ -141,7 +154,7 @@ function handleManualScrape(): void {
   <Teleport to="body">
     <div
       v-if="open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
+      class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/55 p-4 backdrop-blur-xs"
       @click.self="emit('close')"
     >
       <div
@@ -200,7 +213,7 @@ function handleManualScrape(): void {
               :key="item.rel_path"
               class="flex cursor-pointer items-start justify-between gap-3 rounded-xl border p-3 transition"
               :class="
-                item.low_confidence
+                isItemLowConfidence(item)
                   ? 'border-amber-500/40 bg-amber-500/5'
                   : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/70'
               "
@@ -229,8 +242,8 @@ function handleManualScrape(): void {
                 </div>
               </div>
 
-              <div class="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold" :class="item.low_confidence ? 'bg-amber-500/15 text-amber-500' : 'bg-emerald-500/15 text-emerald-500'">
-                <LuAlertTriangle v-if="item.low_confidence" class="h-3.5 w-3.5" />
+              <div class="flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold" :class="isItemLowConfidence(item) ? 'bg-amber-500/15 text-amber-500' : 'bg-emerald-500/15 text-emerald-500'">
+                <LuAlertTriangle v-if="isItemLowConfidence(item)" class="h-3.5 w-3.5" />
                 <LuCheckCircle2 v-else class="h-3.5 w-3.5" />
                 <span>{{ item.confidence }}%</span>
               </div>

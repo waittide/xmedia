@@ -40,6 +40,15 @@
   --md-sys-elevation-3:
     0 4px 8px 3px rgb(0 0 0 / 0.09),
     0 1px 3px rgb(0 0 0 / 0.14);
+
+  /* Unified Overlay & Layering Z-Index Scale */
+  --z-base-overlay: 40;
+  --z-sheet: 60;
+  --z-modal: 80;
+  --z-fullscreen: 100;
+  --z-popover: 120;
+  --z-confirm: 140;
+  --z-snackbar: 160;
 }
 
 :root[data-theme="dark"] {

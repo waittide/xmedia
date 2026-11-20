@@ -235,6 +235,8 @@ const musicToolsEntries = ref<MediaFileEntry[]>([])
 const videoToolsOpen = ref(false)
 const videoToolsEntries = ref<MediaFileEntry[]>([])
 const dryRunModalOpen = ref(false)
+const dryRunTargetEntries = ref<MediaFileEntry[] | null>(null)
+const dryRunScrapeOptions = ref<AutoScrapeOptionsDto | undefined>(undefined)
 const autoScrapeModalOpen = ref(false)
 const autoScrapeTargetEntries = ref<MediaFileEntry[]>([])
 const workbenchFocusPaths = ref<Set<string> | null>(null)
@@ -542,6 +544,15 @@ const effectiveVideoRootId = computed<string>(
 const effectiveComicRootId = computed<string>(
   () =>
     resolveModalRootId(selectedComicEntries.value) ||
+    activeRootId.value ||
+    snapshot.value?.root_id ||
+    domainRoots.value[0]?.id ||
+    '',
+)
+
+const effectiveDryRunRootId = computed<string>(
+  () =>
+    resolveModalRootId(dryRunTargetEntries.value ?? selectedEntriesForRename.value) ||
     activeRootId.value ||
     snapshot.value?.root_id ||
     domainRoots.value[0]?.id ||
@@ -1125,6 +1136,8 @@ function openDryRunModal(): void {
     })
     return
   }
+  dryRunTargetEntries.value = null
+  dryRunScrapeOptions.value = undefined
   dryRunModalOpen.value = true
 }
 
@@ -1354,7 +1367,10 @@ function handleAutoScrapeConfirmed(
   enqueueScrapeFiles(entries, undefined, options)
 }
 
-function handleAutoScrapeToDryRun(entries: MediaFileEntry[]): void {
+function handleAutoScrapeToDryRun(
+  entries: MediaFileEntry[],
+  options: AutoScrapeOptionsDto,
+): void {
   autoScrapeModalOpen.value = false
   if (entries.length > 0 && !resolveModalRootId(entries)) {
     snackbar.show({
@@ -1364,6 +1380,8 @@ function handleAutoScrapeToDryRun(entries: MediaFileEntry[]): void {
     return
   }
   selectedPaths.value = new Set(entries.map((e) => entrySelectionKey(e)))
+  dryRunTargetEntries.value = entries
+  dryRunScrapeOptions.value = options
   dryRunModalOpen.value = true
 }
 
@@ -2305,10 +2323,11 @@ onBeforeUnmount(() => {
 
     <DryRunScrapeModal
       :open="dryRunModalOpen"
-      :root-id="effectiveModalRootId"
-      :entries="selectedEntriesForRename"
-      @close="dryRunModalOpen = false"
-      @confirm="(entries) => enqueueScrapeFiles(entries)"
+      :root-id="effectiveDryRunRootId"
+      :entries="dryRunTargetEntries ?? selectedEntriesForRename"
+      :options="dryRunScrapeOptions"
+      @close="dryRunModalOpen = false; dryRunTargetEntries = null; dryRunScrapeOptions = undefined"
+      @confirm="(entries, options) => enqueueScrapeFiles(entries, undefined, options)"
       @manual-scrape="handleDryRunManualScrape"
     />
 

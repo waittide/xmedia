@@ -52,7 +52,7 @@ onBeforeUnmount(() => {
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
         @click.self="closeOnBackdrop && emit('close')"
       >
         <Transition name="md-dialog" appear>

@@ -105,12 +105,15 @@ function markLoaded(entryName: string): void {
   loadedEntries.value = next
 }
 
-async function loadPages(): Promise<void> {
+async function loadPages(options?: { preserveReport?: boolean }): Promise<void> {
   if (!props.entry) return
+  const preserveReport = options?.preserveReport === true
   loading.value = true
   errorMsg.value = ''
-  statusMsg.value = ''
-  lastReport.value = null
+  if (!preserveReport) {
+    statusMsg.value = ''
+    lastReport.value = null
+  }
   visibleLimit.value = PAGE_BATCH_SIZE
   loadedEntries.value = new Set()
   lightboxIdx.value = null
@@ -276,7 +279,7 @@ async function handleSave(): Promise<void> {
         : 0
     statusMsg.value = `已保存 ${res.report.page_count} 页（${formatBytes(res.report.before_bytes)} → ${formatBytes(res.report.after_bytes)}，${savedRatio >= 0 ? `减少 ${savedRatio}%` : `增加 ${Math.abs(savedRatio)}%`}）`
     emit('saved', res.detail)
-    await loadPages()
+    await loadPages({ preserveReport: true })
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -289,7 +292,7 @@ async function handleSave(): Promise<void> {
   <Teleport to="body">
     <div
       v-if="open && entry"
-      class="fixed inset-0 z-50 flex flex-col overflow-hidden bg-[var(--ctp-canvas)] text-[var(--ctp-text)]"
+      class="fixed inset-0 z-[var(--z-modal)] flex flex-col overflow-hidden bg-[var(--ctp-canvas)] text-[var(--ctp-text)]"
     >
       <!-- Top Header -->
       <header
@@ -557,7 +560,7 @@ async function handleSave(): Promise<void> {
       <!-- High-res Lightbox Preview -->
       <div
         v-if="lightboxIdx !== null && lightboxPage"
-        class="fixed inset-0 z-[60] flex flex-col bg-black/88 text-white backdrop-blur-xs"
+        class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-black/88 text-white backdrop-blur-xs"
         @click.self="lightboxIdx = null"
       >
         <div class="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">

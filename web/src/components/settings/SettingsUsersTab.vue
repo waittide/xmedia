@@ -7,6 +7,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import type { UserDto, UserRole } from '@/types/api'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import AppSwitch from '@/components/ui/AppSwitch.vue'
+import RefreshButton from '@/components/ui/RefreshButton.vue'
 
 const emit = defineEmits<{
   error: [message: string]

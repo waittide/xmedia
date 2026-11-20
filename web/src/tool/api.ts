@@ -1011,6 +1011,7 @@ export const toolApi = {
     rootId: string,
     paths: string[],
     locale?: string,
+    options?: AutoScrapeOptionsDto,
   ): Promise<DryRunScrapeItemDto[]> {
     return toolRequest<DryRunScrapeItemDto[]>('/scrapers/dry-run', {
       method: 'POST',
@@ -1018,6 +1019,7 @@ export const toolApi = {
         root_id: rootId,
         paths,
         locale: locale || undefined,
+        ...(options ?? {}),
       }),
     })
   },

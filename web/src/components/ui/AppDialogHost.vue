@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useDialogStore } from '@/stores/dialog'
 
@@ -7,16 +7,34 @@ const { t } = useI18n()
 const dialogStore = useDialogStore()
 const promptInputRef = ref<HTMLInputElement | null>(null)
 
+function onKeydown(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape' && dialogStore.active) {
+    ev.preventDefault()
+    ev.stopImmediatePropagation()
+    dialogStore.cancel()
+  }
+}
+
 watch(
   () => dialogStore.active,
   async (val) => {
-    if (val?.mode === 'prompt') {
-      await nextTick()
-      promptInputRef.value?.focus()
-      promptInputRef.value?.select()
+    if (val) {
+      window.addEventListener('keydown', onKeydown, true)
+      if (val.mode === 'prompt') {
+        await nextTick()
+        promptInputRef.value?.focus()
+        promptInputRef.value?.select()
+      }
+    } else {
+      window.removeEventListener('keydown', onKeydown, true)
     }
   },
+  { immediate: true },
 )
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown, true)
+})
 </script>
 
 <template>
@@ -24,7 +42,7 @@ watch(
     <Transition name="md-fade">
       <div
         v-if="dialogStore.active"
-        class="fixed inset-0 z-[10000] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+        class="fixed inset-0 z-[var(--z-confirm)] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
         @mousedown.self="dialogStore.cancel()"
       >
         <Transition name="md-dialog" appear>
@@ -63,7 +81,7 @@ watch(
                 class="md-btn md-btn-sm md-state"
                 :class="
                   dialogStore.active.danger
-                    ? 'bg-[var(--md-sys-color-error)] text-[var(--md-sys-color-on-primary)]'
+                    ? 'bg-[var(--md-sys-color-error)] text-[var(--md-sys-color-on-error)]'
                     : 'md-btn-filled'
                 "
               >

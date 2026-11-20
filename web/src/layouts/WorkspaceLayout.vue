@@ -408,6 +408,7 @@ async function handleSignOut(): Promise<void> {
   playerStore.pause()
   eventsStore.disconnect()
   await authStore.logout()
+  eventsStore.disconnect()
   await router.replace('/login')
 }
 
@@ -689,7 +690,7 @@ onBeforeUnmount(() => {
             comicSearchQuery.trim().length > 0
           "
           ref="comicSearchDropdownRef"
-          class="fixed z-[9985] max-h-96 overflow-y-auto rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 shadow-2xl"
+          class="fixed z-[var(--z-popover)] max-h-96 overflow-y-auto rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 shadow-2xl"
           :style="{
             top: searchRect.top + 'px',
             left: searchRect.left + 'px',

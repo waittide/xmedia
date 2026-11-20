@@ -39,13 +39,8 @@ onBeforeUnmount(() => {
   eventsStore.disconnect()
 })
 
-const isFullscreenRoute = computed(
-  () =>
-    route.name === 'login' ||
-    route.name === 'setup' ||
-    route.name === 'video-player' ||
-    route.name === 'book-reader' ||
-    route.name === 'comic-reader',
+const isFullscreenRoute = computed(() =>
+  route.matched.some((record) => Boolean(record.meta.fullscreen)),
 )
 
 const showMusicBar = computed(

@@ -218,7 +218,7 @@ onBeforeUnmount(() => {
       ref="menuRef"
       role="listbox"
       :style="menuStyle"
-      class="z-[110] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 text-[var(--ctp-text)] shadow-2xl"
+      class="z-[var(--z-popover)] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-1.5 text-[var(--ctp-text)] shadow-2xl"
       @keydown="onMenuKeydown"
     >
       <div v-if="showSearchBox" class="relative mb-1.5 px-1 pt-0.5">

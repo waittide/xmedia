@@ -153,9 +153,12 @@ function selectTab(tab: SettingsTab): void {
           <AppearanceSettingsPanel />
 
           <section class="md-card-filled p-6">
-            <h2 class="text-sm font-bold">{{ t('layout.settingsSectionTitle') }}</h2>
-            <p class="mt-1 mb-4 text-xs text-[var(--ctp-subtext0)]">
-              {{ t('layout.settingsSectionDesc') }}
+            <h2 class="text-sm font-bold">{{ t('layoutCustomizer.title') }}</h2>
+            <p
+              v-if="t('layoutCustomizer.subtitle')"
+              class="mt-1 mb-4 text-xs text-[var(--ctp-subtext0)]"
+            >
+              {{ t('layoutCustomizer.subtitle') }}
             </p>
             <LayoutCustomizerModal :domain="domainStore.activeDomain" inline />
           </section>

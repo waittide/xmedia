@@ -471,6 +471,7 @@ export function applyResolvedPaletteToDom(
     ? mixHex(tertiarySeed, '#ffffff', 0.25)
     : mixHex(tertiarySeed, '#0e1a12', 0.45)
 
+  const onError = chooseContrastText(resolved.red)
   const errorContainer = isDark
     ? mixHex(resolved.red, surface, 0.28)
     : mixHex(resolved.red, '#ffffff', 0.14)
@@ -530,6 +531,7 @@ export function applyResolvedPaletteToDom(
   root.style.setProperty('--md-sys-color-on-tertiary-container', onTertiaryContainer)
 
   root.style.setProperty('--md-sys-color-error', resolved.red)
+  root.style.setProperty('--md-sys-color-on-error', onError)
   root.style.setProperty('--md-sys-color-error-container', errorContainer)
   root.style.setProperty('--md-sys-color-on-error-container', onErrorContainer)
   root.style.setProperty('--md-sys-color-success', resolved.green)

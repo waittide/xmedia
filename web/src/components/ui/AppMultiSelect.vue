@@ -18,10 +18,18 @@ const props = withDefaults(
     label: string
     allPlaceholder: string
     searchPlaceholder?: string
+    noMatchText?: string
+    clearText?: string
+    selectedCountText?: (label: string, count: number) => string
+    showingTopText?: (shown: number, total: number) => string
     disabled?: boolean
   }>(),
   {
     searchPlaceholder: '',
+    noMatchText: '',
+    clearText: '',
+    selectedCountText: undefined,
+    showingTopText: undefined,
     disabled: false,
   },
 )
@@ -31,7 +39,30 @@ const emit = defineEmits<{
   change: [value: string[]]
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const isZh = computed(() => String(locale.value).toLowerCase().startsWith('zh'))
+
+const resolvedSearchPlaceholder = computed(
+  () => props.searchPlaceholder || t('common.filterPlaceholder'),
+)
+const resolvedNoMatchText = computed(() => props.noMatchText || t('common.noResults'))
+const resolvedClearText = computed(() => props.clearText || (isZh.value ? '清空' : 'Clear'))
+
+function formatSelectedCount(count: number): string {
+  if (props.selectedCountText) {
+    return props.selectedCountText(props.label, count)
+  }
+  return isZh.value ? `${props.label} · 已选 ${count}` : `${props.label} · ${count} selected`
+}
+
+function formatShowingTop(shown: number, total: number): string {
+  if (props.showingTopText) {
+    return props.showingTopText(shown, total)
+  }
+  return isZh.value
+    ? `显示前 ${shown} / ${total} 项，输入关键字可精确检索`
+    : `Showing top ${shown} of ${total} — type to refine`
+}
 
 const open = ref(false)
 const query = ref('')
@@ -48,10 +79,7 @@ const triggerText = computed(() => {
     const first = props.modelValue[0]!
     return props.options.find((o) => o.value === first)?.label ?? first
   }
-  return t('search.selectedCountBadge', {
-    label: props.label,
-    count: props.modelValue.length,
-  })
+  return formatSelectedCount(props.modelValue.length)
 })
 
 const showSearchBox = computed(() => props.options.length > 5)
@@ -216,7 +244,7 @@ onBeforeUnmount(() => {
       v-if="open"
       ref="menuRef"
       :style="menuStyle"
-      class="z-[90] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 text-[var(--ctp-text)] shadow-2xl"
+      class="z-[var(--z-popover)] overflow-hidden rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-2 text-[var(--ctp-text)] shadow-2xl"
     >
       <!-- Optional Header Controls Slot (e.g. Tag Match Any / Match All toggle) -->
       <div v-if="$slots.header" class="mb-2 border-b border-[var(--ctp-surface0)]/65 pb-2">
@@ -230,7 +258,7 @@ onBeforeUnmount(() => {
           ref="searchInputRef"
           v-model="query"
           type="text"
-          :placeholder="searchPlaceholder || t('search.filterOptionsPlaceholder')"
+          :placeholder="resolvedSearchPlaceholder"
           class="h-8 w-full rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)] pl-8 pr-7 text-xs text-[var(--ctp-text)] placeholder-[var(--ctp-subtext0)] outline-none focus:border-[var(--ctp-accent)]"
         />
         <button
@@ -249,7 +277,7 @@ onBeforeUnmount(() => {
           v-if="renderedOptions.length === 0"
           class="py-6 text-center text-xs text-[var(--ctp-subtext0)]"
         >
-          {{ t('search.noMatchOption') }}
+          {{ resolvedNoMatchText }}
         </div>
 
         <button
@@ -290,7 +318,7 @@ onBeforeUnmount(() => {
           v-if="matchedOptions.length > MAX_RENDERED_ITEMS"
           class="px-2 py-1.5 text-center text-[10px] text-[var(--ctp-subtext0)]"
         >
-          {{ t('search.showingTopHint', { shown: MAX_RENDERED_ITEMS, total: matchedOptions.length }) }}
+          {{ formatShowingTop(MAX_RENDERED_ITEMS, matchedOptions.length) }}
         </p>
       </div>
 
@@ -300,14 +328,14 @@ onBeforeUnmount(() => {
         class="mt-1.5 flex items-center justify-between border-t border-[var(--ctp-surface0)]/65 pt-1.5 px-1"
       >
         <span class="text-[11px] text-[var(--ctp-subtext0)]">
-          {{ t('search.selectedCountBadge', { label, count: modelValue.length }) }}
+          {{ formatSelectedCount(modelValue.length) }}
         </span>
         <button
           type="button"
           class="text-[11px] font-semibold text-[var(--ctp-accent)] hover:underline"
           @click="clearAll"
         >
-          {{ t('search.clearDimension') }}
+          {{ resolvedClearText }}
         </button>
       </div>
     </div>

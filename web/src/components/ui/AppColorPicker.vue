@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
       v-if="open"
       ref="panelRef"
       :style="panelStyle"
-      class="z-[120] rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3 text-[var(--ctp-text)] shadow-2xl"
+      class="z-[var(--z-popover)] rounded-2xl border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] p-3 text-[var(--ctp-text)] shadow-2xl"
     >
       <!-- 2D Saturation / Value Canvas -->
       <div

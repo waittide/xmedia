@@ -19,38 +19,38 @@ export const router = createRouter({
       path: '/setup',
       name: 'setup',
       component: () => import('@/views/SetupView.vue'),
-      meta: { public: true },
+      meta: { public: true, fullscreen: true },
     },
     {
       path: '/login',
       name: 'login',
       component: () => import('@/views/LoginView.vue'),
-      meta: { public: true },
+      meta: { public: true, fullscreen: true },
     },
     // Standalone Fullscreen Readers & Cinema Player
     {
       path: '/book/read/:id',
       name: 'book-reader',
       component: () => import('@/domains/book/views/ReaderView.vue'),
-      meta: { domain: 'book' as MediaKind },
+      meta: { domain: 'book' as MediaKind, fullscreen: true },
     },
     {
       path: '/book/online/read',
       name: 'book-online-reader',
       component: () => import('@/domains/book/views/OnlineReaderView.vue'),
-      meta: { domain: 'book' as MediaKind },
+      meta: { domain: 'book' as MediaKind, fullscreen: true },
     },
     {
       path: '/comic/read/:chapterId',
       name: 'comic-reader',
       component: () => import('@/domains/comic/views/ReaderView.vue'),
-      meta: { domain: 'comic' as MediaKind },
+      meta: { domain: 'comic' as MediaKind, fullscreen: true },
     },
     {
       path: '/video/watch/:id',
       name: 'video-player',
       component: () => import('@/domains/video/views/VideoPlayerView.vue'),
-      meta: { domain: 'video' as MediaKind },
+      meta: { domain: 'video' as MediaKind, fullscreen: true },
     },
     // Unified Workspace Shell
     {
