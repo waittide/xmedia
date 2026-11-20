@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, type Component } from 'vue'
 import {
-  LuArrowUp,
   LuCheckCircle2,
   LuChevronDown,
   LuChevronRight,
@@ -15,7 +14,7 @@ import {
 import type { MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
 import { useToolTaskStore } from '../tasks'
-import type { DirectorySnapshot, ManagedRootDto } from '../types'
+import type { ManagedRootDto } from '../types'
 
 export type ToolCompletenessFilter =
   | 'all'
@@ -35,9 +34,7 @@ defineProps<{
   totalItems: number
   domainRoots: ManagedRootDto[]
   activeRootId: string
-  currentRelPath: string
   viewMode: 'flat' | 'folders'
-  snapshot: DirectorySnapshot | null
   completenessFilter: ToolCompletenessFilter
   filterItems: Array<{
     id: ToolCompletenessFilter
@@ -54,7 +51,6 @@ const emit = defineEmits<{
   openSettingsRoots: []
   openFoldersView: []
   selectRoot: [rootId: string]
-  enterFolder: [relPath: string]
   selectCompletenessFilter: [filter: ToolCompletenessFilter]
 }>()
 
@@ -63,7 +59,6 @@ const taskStore = useToolTaskStore()
 
 const collapsedGroups = ref<Record<string, boolean>>({
   roots: false,
-  folders: false,
   filters: false,
 })
 
@@ -215,7 +210,7 @@ function toggleGroupFold(key: string): void {
       <button
         type="button"
         class="md-icon-btn md-state"
-        :title="txt.roots.foldersTitle"
+        title="文件夹视图"
         @click="emit('openFoldersView')"
       >
         <LuFolder class="h-[18px] w-[18px]" />
@@ -342,61 +337,7 @@ function toggleGroupFold(key: string): void {
         </div>
       </div>
 
-      <!-- Group 2: Subfolders -->
-      <div
-        v-if="snapshot && (snapshot.parent_rel_path !== null || snapshot.folders.length > 0)"
-        class="pt-3"
-      >
-        <div class="mb-1 flex items-center justify-between px-3">
-          <button
-            type="button"
-            class="flex min-w-0 flex-1 items-center gap-1 py-1 text-left text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase transition hover:text-[var(--md-sys-color-on-surface)]"
-            @click="toggleGroupFold('folders')"
-          >
-            <LuChevronRight v-if="collapsedGroups.folders" class="h-3.5 w-3.5 shrink-0" />
-            <LuChevronDown v-else class="h-3.5 w-3.5 shrink-0" />
-            <span class="truncate">{{ txt.roots.foldersTitle }}</span>
-          </button>
-          <span class="font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ snapshot.folders.length }}
-          </span>
-        </div>
-
-        <div v-if="!collapsedGroups.folders" class="space-y-0.5">
-          <div
-            v-if="currentRelPath"
-            class="flex h-9 items-center gap-2 rounded-full bg-[var(--md-sys-color-secondary-container)] px-3.5 text-xs font-semibold text-[var(--md-sys-color-on-secondary-container)]"
-            :title="currentRelPath"
-          >
-            <LuFolder class="h-3.5 w-3.5 shrink-0" />
-            <span class="flex-1 truncate">{{ currentRelPath.split('/').pop() || currentRelPath }}</span>
-          </div>
-
-          <button
-            v-if="snapshot.parent_rel_path !== null"
-            type="button"
-            class="md-state flex h-9 w-full items-center gap-2.5 rounded-full px-3.5 text-xs text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-            @click="emit('enterFolder', snapshot.parent_rel_path)"
-          >
-            <LuArrowUp class="h-3.5 w-3.5 shrink-0" />
-            <span class="truncate">{{ txt.roots.parentDir }}</span>
-          </button>
-
-          <button
-            v-for="folder in snapshot.folders"
-            :key="folder.rel_path"
-            type="button"
-            class="md-state flex h-9 w-full items-center gap-2.5 rounded-full px-3.5 text-xs text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-            @click="emit('enterFolder', folder.rel_path)"
-          >
-            <LuFolder class="h-3.5 w-3.5 shrink-0 text-[var(--md-sys-color-primary)]" />
-            <span class="flex-1 truncate text-left">{{ folder.name }}</span>
-            <span class="font-mono text-[10px] opacity-70">{{ folder.media_file_count }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Group 3: Completeness Filters -->
+      <!-- Group 2: Completeness Filters -->
       <div class="pt-3">
         <div class="mb-1 flex items-center justify-between px-3">
           <button

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { Component } from 'vue'
+import { computed, type Component } from 'vue'
 import {
   LuArrowDown,
   LuArrowUp,
@@ -7,12 +7,12 @@ import {
   LuCheck,
   LuChevronRight,
   LuClapperboard,
+  LuCornerLeftUp,
   LuDisc3,
   LuFileSignature,
   LuFileText,
   LuFilm,
   LuFolder,
-  LuFolderOpen,
   LuFolderPlus,
   LuImage,
   LuLayers,
@@ -108,6 +108,30 @@ const emit = defineEmits<{
 
 const txt = useToolText()
 
+const isFolderManagerMode = computed(
+  () =>
+    props.viewMode === 'folders' &&
+    !props.hasActiveSearchOrFilter &&
+    !(props.focusPaths && props.focusPaths.size > 0),
+)
+
+const sortedFolders = computed(() => {
+  const folders = props.snapshot?.folders ?? []
+  const dir = props.sortField === 'name' && props.sortDir === 'desc' ? -1 : 1
+  return [...folders].sort(
+    (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }) * dir,
+  )
+})
+
+function formatModifiedDate(unixSecs: number): string {
+  if (!unixSecs) return '—'
+  const d = new Date(unixSecs * 1000)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 function relativeDirBadge(relPath: string): string | null {
   const idx = relPath.lastIndexOf('/')
   const parent = idx === -1 ? '' : relPath.slice(0, idx)
@@ -152,6 +176,16 @@ function relativeDirBadge(relPath: string): string | null {
       <!-- Clean Calm Header: Breadcrumbs + View Segmented Button + Utility Icons -->
       <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div class="flex min-w-0 flex-wrap items-center gap-0.5 text-sm">
+          <button
+            v-if="snapshot && snapshot.parent_rel_path !== null"
+            type="button"
+            class="md-icon-btn md-icon-btn-sm md-state mr-1"
+            title="返回上级目录"
+            @click="emit('enterFolder', snapshot.parent_rel_path, viewMode === 'folders')"
+          >
+            <LuCornerLeftUp class="h-4 w-4" />
+          </button>
+
           <template v-for="(bc, idx) in breadcrumbs" :key="bc.relPath || '__root__'">
             <LuChevronRight
               v-if="idx > 0"
@@ -170,6 +204,13 @@ function relativeDirBadge(relPath: string): string | null {
               {{ bc.label }}
             </button>
           </template>
+
+          <span
+            v-if="isFolderManagerMode && snapshot"
+            class="ml-2 hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] sm:inline-flex"
+          >
+            {{ sortedFolders.length }} 文件夹 · {{ filteredFiles.length }} 文件
+          </span>
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
@@ -298,42 +339,6 @@ function relativeDirBadge(relPath: string): string | null {
         {{ dirError }}
       </div>
 
-      <!-- Subfolder Tonal Cards (Folder View) -->
-      <div
-        v-if="
-          viewMode === 'folders' &&
-          !hasActiveSearchOrFilter &&
-          snapshot &&
-          snapshot.folders.length > 0
-        "
-        class="mb-4 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4"
-      >
-        <button
-          v-for="folder in snapshot.folders"
-          :key="`grid-${folder.rel_path}`"
-          type="button"
-          class="md-card-filled md-state flex items-center gap-3 p-3.5 text-left"
-          @click="emit('enterFolder', folder.rel_path, true)"
-        >
-          <div
-            class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
-          >
-            <LuFolderOpen class="h-4 w-4" />
-          </div>
-          <div class="min-w-0 flex-1">
-            <div class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-              {{ folder.name }}
-            </div>
-            <div class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              {{ folder.media_file_count }} 项
-              <template v-if="folder.child_dir_count > 0">
-                · {{ folder.child_dir_count }} 目录
-              </template>
-            </div>
-          </div>
-        </button>
-      </div>
-
       <!-- Loading Skeleton -->
       <div v-if="loadingDir && !snapshot" class="space-y-2">
         <div
@@ -343,7 +348,378 @@ function relativeDirBadge(relPath: string): string | null {
         />
       </div>
 
-      <!-- Empty File List -->
+      <!-- Unified File Manager View (Folders Mode without active search/filter) -->
+      <div v-else-if="isFolderManagerMode" class="space-y-3">
+        <div
+          v-if="
+            sortedFolders.length === 0 &&
+            filteredFiles.length === 0 &&
+            (!snapshot || snapshot.parent_rel_path === null)
+          "
+          class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-16 text-center"
+        >
+          <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+            当前文件夹暂无内容
+          </p>
+          <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+            请从左侧切换其他媒体目录，或先往该目录添加媒体文件
+          </p>
+        </div>
+
+        <div
+          v-else
+          class="overflow-hidden rounded-[20px] bg-[var(--md-sys-color-surface-container-low)]"
+        >
+          <!-- File Manager Table Header -->
+          <div
+            class="flex items-center gap-3.5 border-b border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/60 px-4 py-2 text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
+          >
+            <div class="flex w-5 shrink-0 items-center justify-center">
+              <AppCheckbox
+                v-if="filteredFiles.length > 0"
+                :model-value="allFilteredSelected"
+                @change="emit('toggleSelectAll')"
+              />
+            </div>
+            <div class="w-10 shrink-0" />
+            <div class="min-w-0 flex-1">名称</div>
+            <div class="hidden w-28 shrink-0 text-right md:block">大小 / 项数</div>
+            <div class="hidden w-24 shrink-0 text-right xl:block">修改日期</div>
+            <div class="hidden w-40 shrink-0 text-right sm:block">状态</div>
+            <div class="w-20 shrink-0 text-right">操作</div>
+          </div>
+
+          <div class="divide-y divide-[var(--md-sys-color-outline-variant)]/35">
+            <!-- Parent Directory Row (..) -->
+            <button
+              v-if="snapshot && snapshot.parent_rel_path !== null"
+              type="button"
+              class="md-state flex w-full items-center gap-3.5 px-4 py-2.5 text-left"
+              @click="emit('enterFolder', snapshot.parent_rel_path, true)"
+            >
+              <div class="w-5 shrink-0" />
+              <div
+                class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]"
+              >
+                <LuCornerLeftUp class="h-4 w-4" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="font-mono text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
+                    ..
+                  </span>
+                  <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                    返回上级目录
+                  </span>
+                </div>
+              </div>
+              <div class="hidden w-28 shrink-0 text-right text-xs text-[var(--md-sys-color-on-surface-variant)] md:block">
+                —
+              </div>
+              <div class="hidden w-24 shrink-0 text-right text-xs text-[var(--md-sys-color-on-surface-variant)] xl:block">
+                —
+              </div>
+              <div class="hidden w-40 shrink-0 sm:block" />
+              <div class="flex w-20 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
+                <LuChevronRight class="h-4 w-4 opacity-50" />
+              </div>
+            </button>
+
+            <!-- Subfolder Rows -->
+            <button
+              v-for="folder in sortedFolders"
+              :key="`fm-dir-${folder.rel_path}`"
+              type="button"
+              class="md-state group flex w-full items-center gap-3.5 px-4 py-2.5 text-left"
+              @click="emit('enterFolder', folder.rel_path, true)"
+            >
+              <div class="w-5 shrink-0" />
+              <div
+                class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)]/85 text-[var(--md-sys-color-on-primary-container)]"
+              >
+                <LuFolder class="h-4 w-4" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="truncate text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
+                    {{ folder.name }}
+                  </span>
+                  <span
+                    class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+                  >
+                    文件夹
+                  </span>
+                </div>
+                <div class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)] md:hidden">
+                  <template v-if="folder.media_file_count > 0 || folder.child_dir_count > 0">
+                    {{ folder.media_file_count }} 项
+                    <template v-if="folder.child_dir_count > 0">
+                      · {{ folder.child_dir_count }} 子目录
+                    </template>
+                  </template>
+                  <template v-else>空目录</template>
+                </div>
+              </div>
+              <div class="hidden w-28 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] md:block">
+                <template v-if="folder.media_file_count > 0 || folder.child_dir_count > 0">
+                  <span>{{ folder.media_file_count }} 项</span>
+                  <span v-if="folder.child_dir_count > 0" class="opacity-75">
+                    / {{ folder.child_dir_count }} 目录
+                  </span>
+                </template>
+                <span v-else class="opacity-60">空目录</span>
+              </div>
+              <div class="hidden w-24 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] opacity-60 xl:block">
+                —
+              </div>
+              <div class="hidden w-40 shrink-0 justify-end sm:flex">
+                <span class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+                  进入目录
+                </span>
+              </div>
+              <div class="flex w-20 shrink-0 justify-end text-[var(--md-sys-color-on-surface-variant)]">
+                <LuChevronRight class="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
+              </div>
+            </button>
+
+            <!-- Empty Subfolder Inline Notice (keeps '..' row clickable) -->
+            <div
+              v-if="sortedFolders.length === 0 && filteredFiles.length === 0"
+              class="py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            >
+              此文件夹暂无子目录或支持的媒体文件
+            </div>
+
+            <!-- File Rows in Current Folder -->
+            <div
+              v-for="file in visibleFiles"
+              :key="`fm-file-${file.rel_path}`"
+              class="md-state group flex cursor-pointer items-center gap-3.5 px-4 py-2.5"
+              :class="
+                inspectingPath === file.rel_path
+                  ? 'bg-[var(--md-sys-color-secondary-container)]/75'
+                  : selectedPaths.has(file.rel_path)
+                    ? 'bg-[var(--md-sys-color-primary-container)]/35'
+                    : ''
+              "
+              @click="emit('inspectFile', file)"
+            >
+              <div
+                class="flex w-5 shrink-0 items-center justify-center"
+                @click.stop="emit('toggleSelectFile', file.rel_path, $event.shiftKey)"
+              >
+                <AppCheckbox :model-value="selectedPaths.has(file.rel_path)" />
+              </div>
+
+              <!-- Compact File Thumbnail -->
+              <div
+                class="relative shrink-0 overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)]"
+                :class="file.media_kind === 'music' ? 'h-10 w-10' : 'h-12 w-10'"
+              >
+                <img
+                  v-if="file.completeness.has_cover"
+                  :src="
+                    buildArtworkUrl(
+                      file.root_id,
+                      file.rel_path,
+                      file.media_kind,
+                      artworkVersion,
+                      file.media_kind === 'video' ? 'poster' : 'cover',
+                    )
+                  "
+                  alt=""
+                  loading="lazy"
+                  class="h-full w-full object-cover"
+                />
+                <div
+                  v-else
+                  class="flex h-full w-full items-center justify-center text-[var(--md-sys-color-on-surface-variant)]"
+                >
+                  <LuBookOpen v-if="file.media_kind === 'book'" class="h-4 w-4 opacity-55" />
+                  <LuLayers v-else-if="file.media_kind === 'comic'" class="h-4 w-4 opacity-55" />
+                  <LuDisc3 v-else-if="file.media_kind === 'music'" class="h-4 w-4 opacity-55" />
+                  <LuClapperboard v-else class="h-4 w-4 opacity-55" />
+                </div>
+              </div>
+
+              <!-- Filename & Metadata Subtitle -->
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="truncate text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
+                    {{ file.file_name }}
+                  </span>
+                  <span
+                    class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-surface-variant)]"
+                  >
+                    {{ file.extension }}
+                  </span>
+                </div>
+                <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                  <span
+                    v-if="file.display_title && file.display_title !== file.file_name.replace(/\.[^.]+$/, '')"
+                    class="truncate"
+                  >
+                    {{ file.display_title }}
+                  </span>
+                  <span v-if="file.display_subtitle" class="truncate opacity-80">
+                    {{ file.display_subtitle }}
+                  </span>
+                  <span v-if="file.year" class="shrink-0 font-mono opacity-75">
+                    {{ file.year }}
+                  </span>
+                  <span class="shrink-0 font-mono opacity-70 md:hidden">
+                    {{ formatBytes(file.file_size) }}
+                  </span>
+                </div>
+              </div>
+
+              <!-- Size Column -->
+              <div class="hidden w-28 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] md:block">
+                {{ formatBytes(file.file_size) }}
+              </div>
+
+              <!-- Modified Date Column -->
+              <div class="hidden w-24 shrink-0 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] opacity-80 xl:block">
+                {{ formatModifiedDate(file.modified_unix_secs) }}
+              </div>
+
+              <!-- Completeness Status Pills -->
+              <div class="hidden w-40 shrink-0 items-center justify-end gap-1 sm:flex">
+                <span
+                  class="rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                  :class="
+                    file.completeness.has_cover
+                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                      : 'bg-[var(--md-sys-color-warning-container)] text-[var(--md-sys-color-on-warning-container)]'
+                  "
+                >
+                  {{ file.completeness.has_cover ? '封面' : '缺封' }}
+                </span>
+                <span
+                  class="rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                  :class="
+                    file.completeness.has_summary_or_lyrics
+                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
+                  "
+                >
+                  {{
+                    file.media_kind === 'music'
+                      ? file.completeness.has_summary_or_lyrics
+                        ? '歌词'
+                        : '缺词'
+                      : file.completeness.has_summary_or_lyrics
+                        ? '简介'
+                        : '缺介'
+                  }}
+                </span>
+                <span
+                  class="rounded-full px-1.5 py-0.5 text-[10px] font-medium"
+                  :class="
+                    file.completeness.has_nfo_or_tag_block
+                      ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
+                  "
+                >
+                  {{ file.completeness.has_nfo_or_tag_block ? '标签' : '缺标' }}
+                </span>
+              </div>
+
+              <!-- Quick Row Actions -->
+              <div class="flex w-20 shrink-0 items-center justify-end gap-0.5 opacity-65 transition group-hover:opacity-100">
+                <button
+                  v-if="
+                    file.media_kind === 'book' &&
+                    (file.extension === 'txt' || file.extension === 'epub')
+                  "
+                  type="button"
+                  class="md-icon-btn md-icon-btn-sm md-state"
+                  :title="file.extension === 'txt' ? '正文编辑与转 EPUB' : '编辑目录与正文'"
+                  @click.stop="emit('openBookContentEditor', file)"
+                >
+                  <LuFileText class="h-4 w-4" />
+                </button>
+
+                <button
+                  v-if="file.media_kind === 'comic'"
+                  type="button"
+                  class="md-icon-btn md-icon-btn-sm md-state"
+                  title="漫画页面管理与瘦身"
+                  @click.stop="emit('openComicPageManager', file)"
+                >
+                  <LuImage class="h-4 w-4" />
+                </button>
+
+                <button
+                  v-if="file.media_kind === 'music'"
+                  type="button"
+                  class="md-icon-btn md-icon-btn-sm md-state"
+                  title="音频工具箱"
+                  @click.stop="emit('openMusicToolbox', [file])"
+                >
+                  <LuMusic class="h-4 w-4" />
+                </button>
+
+                <button
+                  v-if="file.media_kind === 'video'"
+                  type="button"
+                  class="md-icon-btn md-icon-btn-sm md-state"
+                  title="视频字幕与剧集工具箱"
+                  @click.stop="emit('openVideoToolbox', [file])"
+                >
+                  <LuFilm class="h-4 w-4" />
+                </button>
+
+                <button
+                  type="button"
+                  class="md-icon-btn md-icon-btn-sm md-state"
+                  title="快速自动刮削此条目"
+                  @click.stop="emit('enqueueScrapeFiles', [file])"
+                >
+                  <LuSparkles class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Load More Bar (Folder Mode) -->
+        <div
+          v-if="filteredFiles.length > visibleFiles.length"
+          class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-2.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+        >
+          <span>
+            {{
+              txt.batch.showingOf
+                .replace('{shown}', String(visibleFiles.length))
+                .replace('{total}', String(filteredFiles.length))
+            }}
+          </span>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-tonal md-state"
+              @click="emit('loadMore')"
+            >
+              {{
+                txt.batch.loadMore.replace(
+                  '{remaining}',
+                  String(filteredFiles.length - visibleFiles.length),
+                )
+              }}
+            </button>
+            <button
+              type="button"
+              class="md-btn md-btn-sm md-btn-text md-state"
+              @click="emit('showAll')"
+            >
+              {{ txt.batch.showAll }}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Empty File List (Flat / Filtered Mode) -->
       <div
         v-else-if="filteredFiles.length === 0"
         class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-16 text-center"
@@ -352,7 +728,7 @@ function relativeDirBadge(relPath: string): string | null {
           {{ hasActiveSearchOrFilter ? '当前筛选条件下没有匹配文件' : '当前目录暂无支持的媒体文件' }}
         </p>
         <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          {{ hasActiveSearchOrFilter ? '尝试切换筛选标签或清空搜索关键词' : '点击上方子文件夹或左侧切换其他目录' }}
+          {{ hasActiveSearchOrFilter ? '尝试切换筛选标签或清空搜索关键词' : '切换至文件夹视图浏览目录，或从左侧切换其他媒体目录' }}
         </p>
       </div>
 

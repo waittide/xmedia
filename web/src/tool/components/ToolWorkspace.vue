@@ -1311,9 +1311,7 @@ onBeforeUnmount(() => {
         :total-items="stats.total"
         :domain-roots="domainRoots"
         :active-root-id="activeRootId"
-        :current-rel-path="currentRelPath"
         :view-mode="viewMode"
-        :snapshot="snapshot"
         :completeness-filter="completenessFilter"
         :filter-items="filterItems"
         @close-mobile="mobileMenuOpen = false"
@@ -1322,7 +1320,6 @@ onBeforeUnmount(() => {
         @open-settings-roots="openSettingsTab('roots')"
         @open-folders-view="setViewMode('folders'); navigatePrimary('items')"
         @select-root="selectRoot"
-        @enter-folder="enterFolder"
         @select-completeness-filter="(f) => { if (f === 'all') setViewMode('flat'); selectCompletenessFilter(f) }"
       />
 
