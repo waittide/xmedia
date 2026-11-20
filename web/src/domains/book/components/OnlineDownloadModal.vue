@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   LuBan,
@@ -11,6 +11,11 @@ import {
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { useAuthStore } from '@/stores/auth'
+import {
+  formatDownloadSpeed,
+  isOnlineDownloadJobActive,
+  useOnlineDownloadsStore,
+} from '@/stores/onlineDownloads'
 import {
   buildOnlineDownloadFileUrl,
   onlineBookApi,
@@ -43,6 +48,7 @@ const emit = defineEmits<{
 }>()
 
 const authStore = useAuthStore()
+const onlineDownloadsStore = useOnlineDownloadsStore()
 const router = useRouter()
 
 const format = ref<OnlineDownloadFormat>('epub')
@@ -54,59 +60,25 @@ const starting = ref(false)
 const cancelling = ref(false)
 const errorMsg = ref<string | null>(null)
 const localJob = ref<OnlineDownloadJobDto | null>(null)
-let pollTimer: ReturnType<typeof setTimeout> | null = null
-let pollSeq = 0
 
 const activeJob = computed<OnlineDownloadJobDto | null>(() => {
-  if (props.externalJob && localJob.value && props.externalJob.id === localJob.value.id) {
+  if (!localJob.value) return null
+  if (props.externalJob && props.externalJob.id === localJob.value.id) {
     return props.externalJob
   }
-  return localJob.value
+  return (
+    onlineDownloadsStore.jobs.find((job) => job.id === localJob.value?.id) ??
+    localJob.value
+  )
 })
 
 function isJobActive(status: OnlineDownloadJobDto['status']): boolean {
-  return status === 'pending' || status === 'running'
-}
-
-function stopPolling(): void {
-  pollSeq += 1
-  if (pollTimer) {
-    clearTimeout(pollTimer)
-    pollTimer = null
-  }
-}
-
-function scheduleStandalonePoll(jobId: string): void {
-  if (props.disablePolling || !props.open) return
-  stopPolling()
-  const seq = pollSeq
-  const tick = async (): Promise<void> => {
-    if (seq !== pollSeq || !props.open || props.disablePolling) return
-    try {
-      const next = await onlineBookApi.getDownload(jobId)
-      if (seq !== pollSeq || !props.open) return
-      localJob.value = next
-      emit('jobUpdated', next)
-      if (!isJobActive(next.status)) {
-        stopPolling()
-        return
-      }
-      pollTimer = setTimeout(() => {
-        void tick()
-      }, 1200)
-    } catch {
-      stopPolling()
-    }
-  }
-  pollTimer = setTimeout(() => {
-    void tick()
-  }, 1200)
+  return isOnlineDownloadJobActive(status)
 }
 
 watch(
   () => [props.open, props.target] as const,
   ([isOpen, t]) => {
-    stopPolling()
     if (!isOpen || !t) return
     errorMsg.value = null
     localJob.value = null
@@ -120,19 +92,13 @@ watch(
   { immediate: true },
 )
 
-onBeforeUnmount(stopPolling)
-
 const progressPct = computed(() => {
   const j = activeJob.value
   if (!j || j.total_chapters <= 0) return 0
   return Math.min(100, Math.round((j.processed_chapters / j.total_chapters) * 100))
 })
 
-const speedLabel = computed(() => {
-  const cps = activeJob.value?.chapters_per_sec
-  if (typeof cps !== 'number' || !Number.isFinite(cps) || cps <= 0) return ''
-  return `${cps.toFixed(1)} 章/秒`
-})
+const speedLabel = computed(() => formatDownloadSpeed(activeJob.value?.chapters_per_sec))
 
 async function handleStart(): Promise<void> {
   if (!props.target || starting.value) return
@@ -153,11 +119,8 @@ async function handleStart(): Promise<void> {
       import_to_library: authStore.isAdmin && importToLibrary.value,
     })
     localJob.value = job
+    onlineDownloadsStore.trackJob(job)
     emit('jobUpdated', job)
-
-    if (!props.disablePolling && isJobActive(job.status)) {
-      scheduleStandalonePoll(job.id)
-    }
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -173,10 +136,8 @@ async function handleCancelJob(): Promise<void> {
   try {
     const updated = await onlineBookApi.cancelDownload(j.id)
     localJob.value = updated
+    onlineDownloadsStore.trackJob(updated)
     emit('jobUpdated', updated)
-    if (!isJobActive(updated.status)) {
-      stopPolling()
-    }
   } catch (err) {
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
