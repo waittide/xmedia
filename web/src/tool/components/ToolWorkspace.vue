@@ -187,6 +187,7 @@ const domainNavMemory = ref<Record<MediaKind, { rootId: string; relPath: string 
 const activeRootId = ref<string>('')
 const currentRelPath = ref<string>('')
 const snapshot = ref<DirectorySnapshot | null>(null)
+const rootFileCounts = ref<Record<string, number>>({})
 const loadingDir = ref(false)
 const dirError = ref<string | null>(null)
 
@@ -259,7 +260,7 @@ function syncHashFromState(replace = false): void {
   }
 }
 
-async function navigatePrimary(nav: 'home' | 'items'): Promise<void> {
+async function navigatePrimary(nav: 'home' | 'items', keepFilter = false): Promise<void> {
   if (
     (activeNav.value !== nav || scrapeWorkbenchActive.value) &&
     (nav === 'home' || activeNav.value === 'settings') &&
@@ -271,10 +272,28 @@ async function navigatePrimary(nav: 'home' | 'items'): Promise<void> {
     scrapeWorkbenchActive.value = false
     scrapeWorkbenchPaths.value = null
   }
+  const wasScopedToSingleRoot = Boolean(activeRootId.value) || Boolean(currentRelPath.value)
   activeNav.value = nav
   previousWorkspaceNav.value = nav
   localStorage.setItem('xmedia_tool.active_nav', nav)
   mobileMenuOpen.value = false
+  if (!keepFilter && nav === 'items') {
+    completenessFilter.value = 'all'
+    workbenchFocusPaths.value = null
+  }
+  if (activeRootId.value || currentRelPath.value || !snapshot.value) {
+    activeRootId.value = ''
+    currentRelPath.value = ''
+    selectedPaths.value = new Set()
+    lastSelectedRelPath.value = null
+    if (wasScopedToSingleRoot || !snapshot.value) {
+      activeDetail.value = null
+      inspectingPath.value = null
+      syncHashFromState()
+      await loadAllDomainRoots()
+      return
+    }
+  }
   syncHashFromState()
 }
 
@@ -335,7 +354,10 @@ const filterItems = computed(() => [
 
 function selectCompletenessFilter(filter: CompletenessFilter): void {
   completenessFilter.value = filter
-  navigatePrimary('items')
+  if (filter !== 'all') {
+    setViewMode('flat')
+  }
+  void navigatePrimary('items', true)
 }
 
 function parentRelOf(relPath: string): string {
@@ -455,6 +477,85 @@ watch([searchQuery, completenessFilter, viewMode, sortField, sortDir, activeRoot
   visibleLimit.value = PAGE_CHUNK_SIZE
 })
 
+const isMultiRootSummary = computed<boolean>(
+  () => !activeRootId.value && domainRoots.value.length > 1,
+)
+
+function entrySelectionKey(entry: Pick<MediaFileEntry, 'root_id' | 'rel_path'>): string {
+  return isMultiRootSummary.value ? `${entry.root_id}::${entry.rel_path}` : entry.rel_path
+}
+
+function parseSelectionKey(key: string): { rootId: string; relPath: string } {
+  const sep = key.indexOf('::')
+  if (sep !== -1) {
+    return { rootId: key.slice(0, sep), relPath: key.slice(sep + 2) }
+  }
+  const fallbackRootId =
+    activeRootId.value || snapshot.value?.root_id || domainRoots.value[0]?.id || ''
+  return { rootId: fallbackRootId, relPath: key }
+}
+
+function resolveModalRootId(entries: MediaFileEntry[]): string | null {
+  const uniqueRoots = new Set(entries.map((e) => e.root_id).filter(Boolean))
+  if (uniqueRoots.size > 1) return null
+  if (uniqueRoots.size === 1) return Array.from(uniqueRoots)[0]!
+  return activeRootId.value || snapshot.value?.root_id || domainRoots.value[0]?.id || ''
+}
+
+const effectiveModalRootId = computed<string>(
+  () =>
+    resolveModalRootId(renameTargetEntries.value ?? selectedEntriesForRename.value) ||
+    activeRootId.value ||
+    snapshot.value?.root_id ||
+    domainRoots.value[0]?.id ||
+    '',
+)
+
+const effectiveBookNormalizeRootId = computed<string>(
+  () =>
+    resolveModalRootId(bookNormalizeEntries.value) ||
+    activeRootId.value ||
+    snapshot.value?.root_id ||
+    domainRoots.value[0]?.id ||
+    '',
+)
+
+const effectiveMusicRootId = computed<string>(
+  () =>
+    resolveModalRootId(musicToolsEntries.value) ||
+    activeRootId.value ||
+    snapshot.value?.root_id ||
+    domainRoots.value[0]?.id ||
+    '',
+)
+
+const effectiveVideoRootId = computed<string>(
+  () =>
+    resolveModalRootId(videoToolsEntries.value) ||
+    activeRootId.value ||
+    snapshot.value?.root_id ||
+    domainRoots.value[0]?.id ||
+    '',
+)
+
+const effectiveComicRootId = computed<string>(
+  () =>
+    resolveModalRootId(selectedComicEntries.value) ||
+    activeRootId.value ||
+    snapshot.value?.root_id ||
+    domainRoots.value[0]?.id ||
+    '',
+)
+
+const effectiveHistoryRootId = computed<string>(
+  () =>
+    activeRootId.value ||
+    activeDetail.value?.entry.root_id ||
+    snapshot.value?.root_id ||
+    domainRoots.value[0]?.id ||
+    '',
+)
+
 const breadcrumbs = computed<Array<{ label: string; relPath: string }>>(() => {
   if (!snapshot.value) return []
   const items: Array<{ label: string; relPath: string }> = [
@@ -491,7 +592,7 @@ const currentFolderMap = computed(() => {
 
 const checkedFiles = computed<MediaFileEntry[]>(() => {
   if (selectedPaths.value.size === 0) return []
-  if (isFolderManagerMode.value) {
+  if (isFolderManagerMode.value && !isMultiRootSummary.value) {
     const folderPrefixes: string[] = []
     for (const p of selectedPaths.value) {
       if (currentFolderMap.value.has(p)) {
@@ -505,7 +606,7 @@ const checkedFiles = computed<MediaFileEntry[]>(() => {
         folderPrefixes.some((prefix) => f.rel_path.startsWith(prefix)),
     )
   }
-  return filteredFiles.value.filter((f) => selectedPaths.value.has(f.rel_path))
+  return filteredFiles.value.filter((f) => selectedPaths.value.has(entrySelectionKey(f)))
 })
 
 const selectedEntriesForRename = computed<MediaFileEntry[]>(() => {
@@ -514,7 +615,9 @@ const selectedEntriesForRename = computed<MediaFileEntry[]>(() => {
   }
   if (activeDetail.value) {
     const match = filteredFiles.value.find(
-      (f) => f.rel_path === activeDetail.value?.entry.rel_path,
+      (f) =>
+        f.root_id === activeDetail.value?.entry.root_id &&
+        f.rel_path === activeDetail.value?.entry.rel_path,
     )
     if (match) return [match]
   }
@@ -524,7 +627,7 @@ const selectedEntriesForRename = computed<MediaFileEntry[]>(() => {
 const allFilteredSelected = computed(
   () =>
     filteredFiles.value.length > 0 &&
-    filteredFiles.value.every((f) => selectedPaths.value.has(f.rel_path)),
+    filteredFiles.value.every((f) => selectedPaths.value.has(entrySelectionKey(f))),
 )
 
 function toggleSidebar(): void {
@@ -556,15 +659,21 @@ async function activateDomainWorkspace(dom: MediaKind): Promise<void> {
     activeRootId.value = ''
     currentRelPath.value = ''
     snapshot.value = null
+    rootFileCounts.value = {}
     return
   }
 
   const mem = domainNavMemory.value[dom]
-  const matchedRoot = roots.find((r) => r.id === mem.rootId) ?? roots[0]!
-  const targetRel = matchedRoot.id === mem.rootId ? mem.relPath : ''
-  activeRootId.value = matchedRoot.id
-  currentRelPath.value = targetRel
-  await loadDirectory(matchedRoot.id, targetRel)
+  if (mem.rootId && roots.some((r) => r.id === mem.rootId)) {
+    activeRootId.value = mem.rootId
+    currentRelPath.value = mem.relPath
+    await loadDirectory(mem.rootId, mem.relPath)
+    return
+  }
+
+  activeRootId.value = ''
+  currentRelPath.value = ''
+  await loadAllDomainRoots()
 }
 
 async function switchDomain(next: MediaKind): Promise<void> {
@@ -612,6 +721,124 @@ async function loadInitial(): Promise<void> {
   }
   await activateDomainWorkspace(activeDomain.value)
   syncHashFromState(true)
+}
+
+async function loadAllDomainRoots(): Promise<void> {
+  const reqDomain = activeDomain.value
+  const roots = (settings.value?.roots ?? []).filter((r) => r.default_kind === reqDomain)
+  if (roots.length === 0) {
+    snapshot.value = null
+    rootFileCounts.value = {}
+    return
+  }
+  const seq = ++dirLoadSeq
+  const preserveSelection = activeRootId.value === '' && currentRelPath.value === ''
+  loadingDir.value = true
+  dirError.value = null
+  if (!preserveSelection) {
+    selectedPaths.value = new Set()
+    lastSelectedRelPath.value = null
+  }
+
+  const taskId = `browse:${reqDomain}`
+  taskStore.startTask({
+    id: taskId,
+    kind: 'browse',
+    domain: reqDomain,
+    title: roots.length > 1 ? `汇总 ${roots.length} 个挂载目录` : `读取目录 · ${roots[0]!.name}`,
+    detail: roots.map((r) => r.name).join(' / '),
+    ephemeral: true,
+  })
+
+  try {
+    if (roots.length === 1) {
+      const only = roots[0]!
+      const snap = await toolApi.browse(only.id, '', reqDomain, true, (prog) => {
+        taskStore.updateTask(taskId, prog)
+      })
+      taskStore.completeTask(taskId, `已加载 ${snap.files.length.toLocaleString()} 个媒体文件`)
+      if (seq !== dirLoadSeq || activeDomain.value !== reqDomain) return
+      snapshot.value = snap
+      rootFileCounts.value = { [only.id]: snap.files.length }
+      currentRelPath.value = ''
+      syncDomainStateToMemory(reqDomain, '', '')
+      syncHashFromState(true)
+      if (preserveSelection && selectedPaths.value.size > 0) {
+        const surviving = new Set<string>([
+          ...snap.files.map((f) => f.rel_path),
+          ...(snap.raw_files ?? []).map((f) => f.rel_path),
+          ...(snap.folders ?? []).map((d) => d.rel_path),
+        ])
+        selectedPaths.value = new Set([...selectedPaths.value].filter((p) => surviving.has(p)))
+      }
+      if (
+        inspectingPath.value &&
+        !snap.files.some((f) => f.rel_path === inspectingPath.value)
+      ) {
+        inspectingPath.value = null
+        activeDetail.value = null
+      }
+      return
+    }
+
+    const snaps = await Promise.all(
+      roots.map((r) => toolApi.browse(r.id, '', reqDomain, true)),
+    )
+    const counts: Record<string, number> = {}
+    const mergedFiles: MediaFileEntry[] = []
+    for (let i = 0; i < roots.length; i += 1) {
+      const r = roots[i]!
+      const s = snaps[i]!
+      counts[r.id] = s.files.length
+      mergedFiles.push(...s.files)
+    }
+    taskStore.completeTask(taskId, `已汇总 ${mergedFiles.length.toLocaleString()} 个媒体文件`)
+    if (seq !== dirLoadSeq || activeDomain.value !== reqDomain) return
+
+    snapshot.value = {
+      root_id: '',
+      root_name: `全部挂载目录 (${roots.length})`,
+      current_rel_path: '',
+      parent_rel_path: null,
+      folders: [],
+      files: mergedFiles,
+      raw_files: [],
+    }
+    rootFileCounts.value = counts
+    currentRelPath.value = ''
+    syncDomainStateToMemory(reqDomain, '', '')
+    syncHashFromState(true)
+
+    if (preserveSelection && selectedPaths.value.size > 0) {
+      const surviving = new Set<string>(mergedFiles.map((f) => `${f.root_id}::${f.rel_path}`))
+      selectedPaths.value = new Set([...selectedPaths.value].filter((p) => surviving.has(p)))
+    }
+    if (
+      inspectingPath.value &&
+      !mergedFiles.some((f) => `${f.root_id}::${f.rel_path}` === inspectingPath.value)
+    ) {
+      inspectingPath.value = null
+      activeDetail.value = null
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    taskStore.failTask(taskId, msg)
+    if (seq === dirLoadSeq && activeDomain.value === reqDomain) {
+      dirError.value = msg
+    }
+  } finally {
+    if (seq === dirLoadSeq && activeDomain.value === reqDomain) {
+      loadingDir.value = false
+    }
+  }
+}
+
+async function reloadCurrentScope(): Promise<void> {
+  if (activeRootId.value) {
+    await loadDirectory(activeRootId.value, currentRelPath.value)
+  } else {
+    await loadAllDomainRoots()
+  }
 }
 
 async function loadDirectory(rootId: string, relPath: string): Promise<void> {
@@ -702,19 +929,37 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
   }
 }
 
-async function selectRoot(rootId: string): Promise<void> {
+async function selectRoot(
+  rootId: string,
+  preferredViewMode?: BrowseViewMode,
+): Promise<void> {
   if (!(await confirmActiveEditorClean())) {
     return
   }
   scrapeWorkbenchActive.value = false
   scrapeWorkbenchPaths.value = null
   mobileMenuOpen.value = false
-  if (activeNav.value === 'settings') {
-    await navigatePrimary('items')
+  completenessFilter.value = 'all'
+  workbenchFocusPaths.value = null
+  if (preferredViewMode) {
+    setViewMode(preferredViewMode)
   }
-  if (activeRootId.value === rootId && currentRelPath.value === '') return
+  activeNav.value = 'items'
+  previousWorkspaceNav.value = 'items'
+  localStorage.setItem('xmedia_tool.active_nav', 'items')
+
+  const alreadyLoaded =
+    activeRootId.value === rootId &&
+    currentRelPath.value === '' &&
+    snapshot.value?.root_id === rootId
   activeRootId.value = rootId
   currentRelPath.value = ''
+  selectedPaths.value = new Set()
+  lastSelectedRelPath.value = null
+  if (alreadyLoaded) {
+    syncHashFromState()
+    return
+  }
   activeDetail.value = null
   inspectingPath.value = null
   syncHashFromState()
@@ -733,21 +978,34 @@ async function enterFolder(relPath: string, forceFoldersView = true): Promise<vo
     setViewMode('folders')
     completenessFilter.value = 'all'
   }
-  if (activeNav.value !== 'items') {
-    await navigatePrimary('items')
+  activeNav.value = 'items'
+  previousWorkspaceNav.value = 'items'
+  localStorage.setItem('xmedia_tool.active_nav', 'items')
+
+  const targetRootId =
+    activeRootId.value || snapshot.value?.root_id || domainRoots.value[0]?.id || ''
+  if (!targetRootId) return
+  if (!activeRootId.value) {
+    activeRootId.value = targetRootId
   }
   currentRelPath.value = relPath
   syncHashFromState()
-  await loadDirectory(activeRootId.value, relPath)
+  await loadDirectory(targetRootId, relPath)
 }
 
 async function inspectEntry(entry: MediaFileEntry): Promise<void> {
-  if (activeDetail.value?.entry.rel_path === entry.rel_path) return
+  const key = entrySelectionKey(entry)
+  if (
+    activeDetail.value?.entry.root_id === entry.root_id &&
+    activeDetail.value?.entry.rel_path === entry.rel_path
+  ) {
+    return
+  }
   if (!(await confirmActiveEditorClean())) {
     return
   }
   const seq = ++inspectSeq
-  inspectingPath.value = entry.rel_path
+  inspectingPath.value = key
   loadingInspector.value = true
   try {
     const detail = await toolApi.inspectFile(
@@ -779,7 +1037,7 @@ function toggleSelectFile(relPath: string, shiftKey = false, orderedPaths?: stri
               ...(snapshot.value?.folders ?? []).map((d) => d.rel_path),
               ...(snapshot.value?.raw_files ?? []).map((f) => f.rel_path),
             ]
-          : filteredFiles.value.map((f) => f.rel_path)
+          : filteredFiles.value.map((f) => entrySelectionKey(f))
     const fromIdx = listPaths.indexOf(lastSelectedRelPath.value)
     const toIdx = listPaths.indexOf(relPath)
     if (fromIdx !== -1 && toIdx !== -1) {
@@ -812,7 +1070,7 @@ function toggleSelectAllFiltered(): void {
   if (allFilteredSelected.value) {
     selectedPaths.value = new Set()
   } else {
-    selectedPaths.value = new Set(filteredFiles.value.map((f) => f.rel_path))
+    selectedPaths.value = new Set(filteredFiles.value.map((f) => entrySelectionKey(f)))
   }
 }
 
@@ -826,12 +1084,53 @@ function toggleSelectAllRaw(paths: string[]): void {
 }
 
 function openRenameModal(entries?: MediaFileEntry[]): void {
+  const targets = entries && entries.length > 0 ? entries : selectedEntriesForRename.value
+  if (targets.length > 0 && !resolveModalRootId(targets)) {
+    snackbar.show({
+      message: '所选条目跨越多个挂载目录，请先从左侧选择单个挂载目录再整理归档',
+      tone: 'error',
+    })
+    return
+  }
   if (entries && entries.length > 0) {
     renameTargetEntries.value = entries
   } else {
     renameTargetEntries.value = null
   }
   renameModalOpen.value = true
+}
+
+function openBatchMetadataModal(): void {
+  if (selectedEntriesForRename.value.length > 0 && !resolveModalRootId(selectedEntriesForRename.value)) {
+    snackbar.show({
+      message: '所选条目跨越多个挂载目录，请先从左侧选择单个挂载目录再批量编辑',
+      tone: 'error',
+    })
+    return
+  }
+  batchMetadataModalOpen.value = true
+}
+
+function openDryRunModal(): void {
+  if (selectedEntriesForRename.value.length > 0 && !resolveModalRootId(selectedEntriesForRename.value)) {
+    snackbar.show({
+      message: '所选条目跨越多个挂载目录，请先从左侧选择单个挂载目录再进行置信度预演',
+      tone: 'error',
+    })
+    return
+  }
+  dryRunModalOpen.value = true
+}
+
+function openComicSeriesToolsModal(): void {
+  if (selectedComicEntries.value.length > 0 && !resolveModalRootId(selectedComicEntries.value)) {
+    snackbar.show({
+      message: '所选漫画跨越多个挂载目录，请先从左侧选择单个挂载目录再使用漫画工具',
+      tone: 'error',
+    })
+    return
+  }
+  comicSeriesToolsOpen.value = true
 }
 
 function requestDeleteFiles(paths: string[], deleteCompanions: boolean): void {
@@ -868,46 +1167,72 @@ const deleteDialogSubtitle = computed<string>(() => {
 })
 
 async function confirmDeleteFiles(): Promise<void> {
-  if (!activeRootId.value || deleteDialogPaths.value.length === 0 || deletingFiles.value) return
+  if (deleteDialogPaths.value.length === 0 || deletingFiles.value) return
   deletingFiles.value = true
   deleteDialogError.value = null
   try {
-    const report = await toolApi.deleteFiles(
-      activeRootId.value,
-      deleteDialogPaths.value,
-      deleteDialogCompanions.value,
-    )
-    const deletedSet = new Set([...report.deleted_paths, ...report.deleted_companions])
-    const deletedPrefixes = report.deleted_paths
-      .filter((p) => currentFolderMap.value.has(p))
-      .map((p) => `${p}/`)
-    const isPathRemoved = (p: string): boolean =>
-      deletedSet.has(p) || deletedPrefixes.some((prefix) => p.startsWith(prefix))
+    const grouped = new Map<string, string[]>()
+    for (const rawKey of deleteDialogPaths.value) {
+      const { rootId, relPath } = parseSelectionKey(rawKey)
+      if (!rootId || !relPath) continue
+      const list = grouped.get(rootId) ?? []
+      list.push(relPath)
+      grouped.set(rootId, list)
+    }
+
+    let totalDeleted = 0
+    let totalCompanions = 0
+    const allFailed: Array<{ rel_path: string; error: string }> = []
+    const removedKeys = new Set<string>()
+    const removedDirKeys: Array<{ rootId: string; prefix: string }> = []
+
+    for (const [rid, paths] of grouped.entries()) {
+      const report = await toolApi.deleteFiles(rid, paths, deleteDialogCompanions.value)
+      totalDeleted += report.deleted_count
+      totalCompanions += report.deleted_companions.length
+      allFailed.push(...report.failed)
+      for (const p of [...report.deleted_paths, ...report.deleted_companions]) {
+        removedKeys.add(p)
+        removedKeys.add(`${rid}::${p}`)
+      }
+      for (const p of report.deleted_paths) {
+        if (currentFolderMap.value.has(p)) {
+          removedDirKeys.push({ rootId: rid, prefix: `${p}/` })
+        }
+      }
+    }
+
+    const isKeyRemoved = (k: string): boolean => {
+      if (removedKeys.has(k)) return true
+      const { rootId, relPath } = parseSelectionKey(k)
+      return removedDirKeys.some((d) => d.rootId === rootId && relPath.startsWith(d.prefix))
+    }
 
     if (selectedPaths.value.size > 0) {
       const nextSel = new Set<string>()
       for (const p of selectedPaths.value) {
-        if (!isPathRemoved(p)) nextSel.add(p)
+        if (!isKeyRemoved(p)) nextSel.add(p)
       }
       selectedPaths.value = nextSel
     }
-    if (activeDetail.value && isPathRemoved(activeDetail.value.entry.rel_path)) {
+    if (
+      activeDetail.value &&
+      isKeyRemoved(entrySelectionKey(activeDetail.value.entry))
+    ) {
       activeDetail.value = null
       inspectingPath.value = null
     }
-    if (report.failed.length > 0 && report.deleted_count === 0) {
-      deleteDialogError.value = report.failed.map((f) => `${f.rel_path}: ${f.error}`).join('；')
+    if (allFailed.length > 0 && totalDeleted === 0) {
+      deleteDialogError.value = allFailed.map((f) => `${f.rel_path}: ${f.error}`).join('；')
       return
     }
     deleteDialogOpen.value = false
-    await loadDirectory(activeRootId.value, currentRelPath.value)
+    await reloadCurrentScope()
     const compHint =
-      report.deleted_companions.length > 0
-        ? `（同步清理 ${report.deleted_companions.length} 个同名外挂）`
-        : ''
-    const failHint = report.failed.length > 0 ? `，${report.failed.length} 项失败` : ''
-    const unit = deletedPrefixes.length > 0 ? '项' : '个文件'
-    snackbar.show(`已删除 ${report.deleted_count} ${unit}${compHint}${failHint}`)
+      totalCompanions > 0 ? `（同步清理 ${totalCompanions} 个同名外挂）` : ''
+    const failHint = allFailed.length > 0 ? `，${allFailed.length} 项失败` : ''
+    const unit = removedDirKeys.length > 0 ? '项' : '个文件'
+    snackbar.show(`已删除 ${totalDeleted} ${unit}${compHint}${failHint}`)
   } catch (err) {
     deleteDialogError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -921,7 +1246,7 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
     artworkVersion.value += 1
   }
   activeDetail.value = updated
-  inspectingPath.value = updated.entry.rel_path
+  inspectingPath.value = entrySelectionKey(updated.entry)
 
   if (scrapeWorkbenchActive.value) {
     const nextSaved = new Set(scrapeWorkbenchSavedPaths.value)
@@ -934,13 +1259,15 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
     }
   }
 
-  if (prevRel && prevRel !== updated.entry.rel_path && activeRootId.value) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
+  if (prevRel && prevRel !== updated.entry.rel_path) {
+    await reloadCurrentScope()
   } else if (snapshot.value) {
     snapshot.value = {
       ...snapshot.value,
       files: snapshot.value.files.map((f) =>
-        f.rel_path === updated.entry.rel_path ? updated.entry : f,
+        f.root_id === updated.entry.root_id && f.rel_path === updated.entry.rel_path
+          ? updated.entry
+          : f,
       ),
     }
   }
@@ -952,21 +1279,23 @@ async function handleRenamed(
 ): Promise<void> {
   const prevActive = activeDetail.value
   const mappedRel = prevActive ? movedMap[prevActive.entry.rel_path] : undefined
-  if (mappedRel && activeRootId.value) {
-    inspectingPath.value = mappedRel
+  const activeEntryRootId = prevActive?.entry.root_id || effectiveModalRootId.value
+  if (mappedRel && prevActive) {
+    inspectingPath.value = entrySelectionKey({ root_id: activeEntryRootId, rel_path: mappedRel })
   }
   if (movedCount > 0 && selectedPaths.value.size > 0) {
     const nextSel = new Set<string>()
     for (const p of selectedPaths.value) {
-      if (!(p in movedMap)) {
+      const { relPath } = parseSelectionKey(p)
+      if (!(relPath in movedMap)) {
         nextSel.add(p)
       }
     }
     selectedPaths.value = nextSel
   }
   renameTargetEntries.value = null
-  if (activeRootId.value && movedCount > 0) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
+  if (movedCount > 0) {
+    await reloadCurrentScope()
     snackbar.show({
       message: `已完成 ${movedCount} 个文件的整理与归档`,
       actionLabel: '撤销历史',
@@ -975,14 +1304,15 @@ async function handleRenamed(
       },
     })
   }
-  if (mappedRel && activeRootId.value) {
+  if (mappedRel && activeEntryRootId) {
     try {
-      activeDetail.value = await toolApi.inspectFile(
-        activeRootId.value,
+      const refreshed = await toolApi.inspectFile(
+        activeEntryRootId,
         mappedRel,
         activeDomain.value,
       )
-      inspectingPath.value = mappedRel
+      activeDetail.value = refreshed
+      inspectingPath.value = entrySelectionKey(refreshed.entry)
     } catch {
       // Fall back safely if renamed file lives outside filtered branch
     }
@@ -1019,7 +1349,14 @@ function handleAutoScrapeConfirmed(
 
 function handleAutoScrapeToDryRun(entries: MediaFileEntry[]): void {
   autoScrapeModalOpen.value = false
-  selectedPaths.value = new Set(entries.map((e) => e.rel_path))
+  if (entries.length > 0 && !resolveModalRootId(entries)) {
+    snackbar.show({
+      message: '所选条目跨越多个挂载目录，请先从左侧选择单个挂载目录再进行置信度预演',
+      tone: 'error',
+    })
+    return
+  }
+  selectedPaths.value = new Set(entries.map((e) => entrySelectionKey(e)))
   dryRunModalOpen.value = true
 }
 
@@ -1033,12 +1370,12 @@ async function handleBatchMetadataCompleted(
   report: BatchMetadataEditReportDto,
 ): Promise<void> {
   artworkVersion.value += 1
-  if (activeRootId.value) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
-  }
+  await reloadCurrentScope()
   if (activeDetail.value) {
     const stillHere = (snapshot.value?.files ?? []).find(
-      (f) => f.rel_path === activeDetail.value?.entry.rel_path,
+      (f) =>
+        f.root_id === activeDetail.value?.entry.root_id &&
+        f.rel_path === activeDetail.value?.entry.rel_path,
     )
     if (stillHere) {
       void inspectEntry(stillHere)
@@ -1064,12 +1401,12 @@ async function handleBatchMetadataCompleted(
 
 async function handleHistoryRestored(): Promise<void> {
   artworkVersion.value += 1
-  if (activeRootId.value) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
-  }
+  await reloadCurrentScope()
   if (activeDetail.value) {
     const stillHere = (snapshot.value?.files ?? []).find(
-      (f) => f.rel_path === activeDetail.value?.entry.rel_path,
+      (f) =>
+        f.root_id === activeDetail.value?.entry.root_id &&
+        f.rel_path === activeDetail.value?.entry.rel_path,
     )
     if (stillHere) {
       void inspectEntry(stillHere)
@@ -1208,7 +1545,7 @@ async function exitScrapeWorkbench(): Promise<void> {
 
 const inspectingIndex = computed(() => {
   if (!inspectingPath.value) return -1
-  return activeQueueList.value.findIndex((f) => f.rel_path === inspectingPath.value)
+  return activeQueueList.value.findIndex((f) => entrySelectionKey(f) === inspectingPath.value)
 })
 
 const hasPrevInspect = computed(() => inspectingIndex.value > 0)
@@ -1259,6 +1596,13 @@ const selectedMusicEntries = computed(() =>
 )
 
 function openMusicToolbox(entries: MediaFileEntry[]): void {
+  if (entries.length > 0 && !resolveModalRootId(entries)) {
+    snackbar.show({
+      message: '所选音频跨越多个挂载目录，请先从左侧选择单个挂载目录再使用音频工具',
+      tone: 'error',
+    })
+    return
+  }
   musicToolsEntries.value = entries
   musicToolsOpen.value = true
 }
@@ -1268,6 +1612,13 @@ const selectedVideoEntries = computed(() =>
 )
 
 function openVideoToolbox(entries: MediaFileEntry[]): void {
+  if (entries.length > 0 && !resolveModalRootId(entries)) {
+    snackbar.show({
+      message: '所选视频跨越多个挂载目录，请先从左侧选择单个挂载目录再使用视频工具',
+      tone: 'error',
+    })
+    return
+  }
   videoToolsEntries.value = entries
   videoToolsOpen.value = true
 }
@@ -1282,11 +1633,9 @@ async function handleTxtConvertedToEpub(
   deletedSourceTxt: boolean,
 ): Promise<void> {
   artworkVersion.value += 1
-  if (activeRootId.value) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
-  }
+  await reloadCurrentScope()
   activeDetail.value = epubDetail
-  inspectingPath.value = epubDetail.entry.rel_path
+  inspectingPath.value = entrySelectionKey(epubDetail.entry)
   bookEditorEntry.value = epubDetail.entry
   snackbar.show(
     deletedSourceTxt
@@ -1296,16 +1645,21 @@ async function handleTxtConvertedToEpub(
 }
 
 watch(
-  () => domainRoots.value,
-  (roots) => {
+  () => domainRoots.value.map((r) => r.id).join(','),
+  () => {
+    const roots = domainRoots.value
     if (roots.length === 0) {
       activeRootId.value = ''
       snapshot.value = null
+      rootFileCounts.value = {}
       activeDetail.value = null
       inspectingPath.value = null
-    } else if (!activeRootId.value || !roots.some((r) => r.id === activeRootId.value)) {
-      activeRootId.value = roots[0]!.id
-      void loadDirectory(activeRootId.value, '')
+    } else if (activeRootId.value && !roots.some((r) => r.id === activeRootId.value)) {
+      activeRootId.value = ''
+      currentRelPath.value = ''
+      void loadAllDomainRoots()
+    } else if (!activeRootId.value) {
+      void loadAllDomainRoots()
     }
   },
 )
@@ -1344,21 +1698,28 @@ function openBookNormalizeModal(entries: MediaFileEntry[]): void {
       (e.extension === 'txt' || e.extension === 'epub' || e.extension === 'pdf'),
   )
   if (valid.length === 0) return
+  if (!resolveModalRootId(valid)) {
+    snackbar.show({
+      message: '所选图书跨越多个挂载目录，请先从左侧选择单个挂载目录再转为规范化 EPUB',
+      tone: 'error',
+    })
+    return
+  }
   bookNormalizeEntries.value = valid
   bookNormalizeOpen.value = true
 }
 
 async function handleBookNormalizeCompleted(report: NormalizeBooksBatchReportDto): Promise<void> {
   artworkVersion.value += 1
-  if (activeRootId.value) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
-  }
+  await reloadCurrentScope()
   if (activeDetail.value) {
     const matchedItem = report.items.find(
       (it) => !it.error && it.source_rel_path === activeDetail.value?.entry.rel_path,
     )
     const targetRel = matchedItem?.output_rel_path ?? activeDetail.value.entry.rel_path
-    const refreshed = (snapshot.value?.files ?? []).find((f) => f.rel_path === targetRel)
+    const refreshed = (snapshot.value?.files ?? []).find(
+      (f) => f.root_id === activeDetail.value?.entry.root_id && f.rel_path === targetRel,
+    )
     if (refreshed) {
       activeDetail.value = null
       await inspectEntry(refreshed)
@@ -1429,7 +1790,7 @@ function handleKeydown(ev: KeyboardEvent): void {
     if (list.length === 0) return
     ev.preventDefault()
     const curIdx = inspectingPath.value
-      ? list.findIndex((f) => f.rel_path === inspectingPath.value)
+      ? list.findIndex((f) => entrySelectionKey(f) === inspectingPath.value)
       : -1
     const nextIdx =
       ev.key === 'ArrowDown'
@@ -1491,11 +1852,12 @@ async function handleHashChange(): Promise<void> {
       }
       await activateDomainWorkspace(activeDomain.value)
     } else if (
-      parsed.rootId &&
-      (parsed.rootId !== activeRootId.value || (parsed.relPath ?? '') !== currentRelPath.value)
+      (parsed.rootId ?? '') !== activeRootId.value ||
+      (parsed.relPath ?? '') !== currentRelPath.value
     ) {
-      activeRootId.value = parsed.rootId
-      await loadDirectory(parsed.rootId, parsed.relPath ?? '')
+      activeRootId.value = parsed.rootId ?? ''
+      currentRelPath.value = parsed.relPath ?? ''
+      await reloadCurrentScope()
     }
   } finally {
     suppressHashSync = false
@@ -1507,12 +1869,12 @@ let offBatchSettled: (() => void) | null = null
 let scrapeRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleScrapeDirectoryRefresh(delayMs = 350): void {
-  if (!activeRootId.value) return
+  if (domainRoots.value.length === 0) return
   if (scrapeRefreshTimer) clearTimeout(scrapeRefreshTimer)
   scrapeRefreshTimer = setTimeout(() => {
     scrapeRefreshTimer = null
-    if (activeRootId.value) {
-      void loadDirectory(activeRootId.value, currentRelPath.value)
+    if (domainRoots.value.length > 0) {
+      void reloadCurrentScope()
     }
   }, delayMs)
 }
@@ -1524,26 +1886,36 @@ onMounted(() => {
   offFileScraped = taskStore.onFileScraped((updated, prevRelPath) => {
     artworkVersion.value += 1
     const moved = Boolean(prevRelPath && prevRelPath !== updated.entry.rel_path)
+    const prevKey = entrySelectionKey({
+      root_id: updated.entry.root_id,
+      rel_path: prevRelPath ?? updated.entry.rel_path,
+    })
+    const nextKey = entrySelectionKey(updated.entry)
 
     if (moved) {
-      if (selectedPaths.value.has(prevRelPath)) {
+      if (selectedPaths.value.has(prevKey)) {
         const nextSel = new Set(selectedPaths.value)
-        nextSel.delete(prevRelPath)
-        nextSel.add(updated.entry.rel_path)
+        nextSel.delete(prevKey)
+        nextSel.add(nextKey)
         selectedPaths.value = nextSel
       }
-      if (scrapeWorkbenchPaths.value?.includes(prevRelPath)) {
+      if (scrapeWorkbenchPaths.value?.includes(prevRelPath!)) {
         scrapeWorkbenchPaths.value = scrapeWorkbenchPaths.value.map((p) =>
           p === prevRelPath ? updated.entry.rel_path : p,
         )
       }
     }
 
-    if (snapshot.value && snapshot.value.root_id === updated.entry.root_id) {
+    const matchesCurrentScope =
+      Boolean(snapshot.value) &&
+      (snapshot.value!.root_id === updated.entry.root_id ||
+        (!activeRootId.value && domainRoots.value.some((r) => r.id === updated.entry.root_id)))
+    if (matchesCurrentScope && snapshot.value) {
       snapshot.value = {
         ...snapshot.value,
         files: snapshot.value.files.map((f) =>
-          f.rel_path === prevRelPath || f.rel_path === updated.entry.rel_path
+          f.root_id === updated.entry.root_id &&
+          (f.rel_path === prevRelPath || f.rel_path === updated.entry.rel_path)
             ? updated.entry
             : f,
         ),
@@ -1554,27 +1926,31 @@ onMounted(() => {
     }
 
     if (
-      activeDetail.value?.entry.rel_path === prevRelPath ||
-      activeDetail.value?.entry.rel_path === updated.entry.rel_path
+      activeDetail.value?.entry.root_id === updated.entry.root_id &&
+      (activeDetail.value.entry.rel_path === prevRelPath ||
+        activeDetail.value.entry.rel_path === updated.entry.rel_path)
     ) {
       activeDetail.value = updated
-      inspectingPath.value = updated.entry.rel_path
+      inspectingPath.value = nextKey
     }
   })
 
   offBatchSettled = taskStore.onBatchSettled((task) => {
-    if (!activeRootId.value) return
-    const touchesCurrentRoot = Boolean(
-      task.subItems?.some((it) => it.rootId === activeRootId.value),
+    if (domainRoots.value.length === 0) return
+    const scopeRootIds = activeRootId.value
+      ? new Set([activeRootId.value])
+      : new Set(domainRoots.value.map((r) => r.id))
+    const touchesCurrentScope = Boolean(
+      task.subItems?.some((it) => scopeRootIds.has(it.rootId)),
     )
-    if (!touchesCurrentRoot) return
+    if (!touchesCurrentScope) return
     if ((task.matchedCount ?? 0) > 0 || task.scrapeOptions?.organize_by_template) {
       if (scrapeRefreshTimer) {
         clearTimeout(scrapeRefreshTimer)
         scrapeRefreshTimer = null
       }
       artworkVersion.value += 1
-      void loadDirectory(activeRootId.value, currentRelPath.value)
+      void reloadCurrentScope()
     }
   })
   void loadInitial()
@@ -1622,7 +1998,7 @@ onBeforeUnmount(() => {
         :collapsed="collapsed"
         :is-compact="isCompact"
         :entries="workbenchQueueEntries"
-        :active-path="inspectingPath"
+        :active-path="activeDetail?.entry.rel_path ?? null"
         :saved-paths="scrapeWorkbenchSavedPaths"
         :artwork-version="artworkVersion"
         :has-prev="hasPrevInspect"
@@ -1645,16 +2021,12 @@ onBeforeUnmount(() => {
         :total-items="stats.total"
         :domain-roots="domainRoots"
         :active-root-id="activeRootId"
-        :view-mode="viewMode"
-        :completeness-filter="completenessFilter"
-        :filter-items="filterItems"
         @close-mobile="mobileMenuOpen = false"
         @switch-domain="switchDomain"
-        @navigate-primary="navigatePrimary"
+        @navigate-primary="(nav) => navigatePrimary(nav)"
         @open-settings-roots="openSettingsTab('roots')"
         @open-folders-view="setViewMode('folders'); navigatePrimary('items')"
-        @select-root="selectRoot"
-        @select-completeness-filter="(f) => { if (f === 'all') setViewMode('flat'); selectCompletenessFilter(f) }"
+        @select-root="(rid) => selectRoot(rid)"
       />
 
       <!-- Main Rounded Canvas + Supporting Pane (MD3 Tonal Surface without harsh borders) -->
@@ -1710,21 +2082,21 @@ onBeforeUnmount(() => {
             :artwork-version="artworkVersion"
             :stats="stats"
             @open-items="(f) => selectCompletenessFilter(f ?? 'all')"
-            @open-folders-view="setViewMode('folders'); completenessFilter = 'all'; navigatePrimary('items')"
-            @enter-folder="(rel) => enterFolder(rel, true)"
             @inspect-file="inspectEntry"
             @scrape-files="enqueueScrapeFiles"
-            @open-rename-all="renameModalOpen = true"
+            @open-rename-all="openRenameModal(snapshot?.files ?? [])"
             @open-settings="openSettingsTab"
-            @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
+            @refresh-dir="reloadCurrentScope"
           />
 
           <!-- VIEW 4: UNIFIED ITEMS BROWSER -->
           <ToolItemsBrowser
             v-else
             :active-domain="activeDomain"
+            :active-root-id="activeRootId"
             :current-rel-path="currentRelPath"
             :domain-roots="domainRoots"
+            :root-file-counts="rootFileCounts"
             :domain-labels="domainLabels"
             :breadcrumbs="breadcrumbs"
             :view-mode="viewMode"
@@ -1752,6 +2124,7 @@ onBeforeUnmount(() => {
             :inspecting-path="inspectingPath"
             :artwork-version="artworkVersion"
             @open-settings-roots="openSettingsTab('roots')"
+            @select-root="selectRoot"
             @enter-folder="enterFolder"
             @set-view-mode="setViewMode"
             @select-completeness-filter="selectCompletenessFilter"
@@ -1763,16 +2136,16 @@ onBeforeUnmount(() => {
             @toggle-sort-dir="toggleSortDir"
             @enqueue-scrape-selection="enqueueScrapeForSelection"
             @open-scrape-workbench="(scoped) => openScrapeWorkbench(undefined, scoped)"
-            @open-comic-series-tools="comicSeriesToolsOpen = true"
+            @open-comic-series-tools="openComicSeriesToolsModal"
             @open-music-toolbox="openMusicToolbox"
             @open-video-toolbox="openVideoToolbox"
-            @open-dry-run="dryRunModalOpen = true"
-            @open-batch-metadata="batchMetadataModalOpen = true"
+            @open-dry-run="openDryRunModal"
+            @open-batch-metadata="openBatchMetadataModal"
             @open-history="historyModalOpen = true"
             @open-rename="openRenameModal"
             @request-delete-files="requestDeleteFiles"
             @trigger-rescan="triggerManualRescan"
-            @refresh-dir="loadDirectory(activeRootId, currentRelPath)"
+            @refresh-dir="reloadCurrentScope"
             @inspect-file="inspectEntry"
             @toggle-select-file="toggleSelectFile"
             @open-book-content-editor="openBookContentEditor"
@@ -1821,7 +2194,7 @@ onBeforeUnmount(() => {
               @open-music-tools="(e) => openMusicToolbox([e])"
               @open-video-tools="(e) => openVideoToolbox([e])"
               @open-rename="(e) => openRenameModal([e])"
-              @request-delete="(e) => requestDeleteFiles([e.rel_path], true)"
+              @request-delete="(e) => requestDeleteFiles([entrySelectionKey(e)], true)"
               @open-history="historyModalOpen = true"
             />
           </div>
@@ -1831,9 +2204,9 @@ onBeforeUnmount(() => {
     </div>
 
     <BatchMetadataModal
-      v-if="activeRootId"
+      v-if="effectiveModalRootId"
       :open="batchMetadataModalOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveModalRootId"
       :domain="activeDomain"
       :entries="selectedEntriesForRename"
       @close="batchMetadataModalOpen = false"
@@ -1843,15 +2216,15 @@ onBeforeUnmount(() => {
 
     <MetadataHistoryModal
       :open="historyModalOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveHistoryRootId"
       @close="historyModalOpen = false"
       @restored="handleHistoryRestored"
     />
 
     <BatchRenameModal
-      v-if="settings && activeRootId"
+      v-if="settings && effectiveModalRootId"
       :open="renameModalOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveModalRootId"
       :entries="renameTargetEntries ?? selectedEntriesForRename"
       :templates="settings.rename_templates"
       @close="renameModalOpen = false; renameTargetEntries = null"
@@ -1867,9 +2240,9 @@ onBeforeUnmount(() => {
     />
 
     <BookNormalizeEpubModal
-      v-if="activeRootId"
+      v-if="effectiveBookNormalizeRootId"
       :open="bookNormalizeOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveBookNormalizeRootId"
       :entries="bookNormalizeEntries"
       @close="bookNormalizeOpen = false"
       @completed="handleBookNormalizeCompleted"
@@ -1884,28 +2257,28 @@ onBeforeUnmount(() => {
 
     <ComicSeriesToolsModal
       :open="comicSeriesToolsOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveComicRootId"
       :entries="selectedComicEntries"
       @close="comicSeriesToolsOpen = false"
-      @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
+      @completed="reloadCurrentScope"
     />
 
     <MusicToolboxModal
       :open="musicToolsOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveMusicRootId"
       :entries="musicToolsEntries"
       @close="musicToolsOpen = false"
       @updated="(d) => handleDetailUpdated(d, true)"
-      @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
+      @completed="reloadCurrentScope"
     />
 
     <VideoToolboxModal
       :open="videoToolsOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveVideoRootId"
       :entries="videoToolsEntries"
       @close="videoToolsOpen = false"
       @updated="(d) => handleDetailUpdated(d, true)"
-      @completed="() => activeRootId && loadDirectory(activeRootId, currentRelPath)"
+      @completed="reloadCurrentScope"
     />
 
     <AutoScrapeOptionsModal
@@ -1920,7 +2293,7 @@ onBeforeUnmount(() => {
 
     <DryRunScrapeModal
       :open="dryRunModalOpen"
-      :root-id="activeRootId"
+      :root-id="effectiveModalRootId"
       :entries="selectedEntriesForRename"
       @close="dryRunModalOpen = false"
       @confirm="(entries) => enqueueScrapeFiles(entries)"
@@ -1960,13 +2333,13 @@ onBeforeUnmount(() => {
             v-for="p in deleteDialogPaths.slice(0, 12)"
             :key="p"
             class="flex items-center gap-2"
-            :title="p"
+            :title="parseSelectionKey(p).relPath"
           >
             <LuFolder
               v-if="currentFolderMap.has(p)"
               class="h-3.5 w-3.5 shrink-0 text-amber-400"
             />
-            <span class="min-w-0 flex-1 truncate">{{ p }}</span>
+            <span class="min-w-0 flex-1 truncate">{{ parseSelectionKey(p).relPath }}</span>
             <span
               v-if="currentFolderMap.has(p)"
               class="shrink-0 rounded-full bg-red-500/15 px-1.5 py-0.5 font-sans text-[10px] font-medium text-red-400"

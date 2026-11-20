@@ -16,6 +16,7 @@ import {
   LuFilm,
   LuFolder,
   LuFolderPlus,
+  LuHardDrive,
   LuImage,
   LuLayers,
   LuList,
@@ -44,14 +45,23 @@ import type {
   MediaFileEntry,
   RawFileEntryDto,
 } from '../types'
-import type { ToolCompletenessFilter } from './ToolSidebar.vue'
+
+export type ToolCompletenessFilter =
+  | 'all'
+  | 'incomplete'
+  | 'missing_cover'
+  | 'missing_summary'
+  | 'missing_tag'
+  | 'complete'
 
 export type ToolSortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
 
 const props = defineProps<{
   activeDomain: MediaKind
+  activeRootId: string
   currentRelPath: string
   domainRoots: ManagedRootDto[]
+  rootFileCounts: Record<string, number>
   domainLabels: {
     emptyRootsTitle: string
     emptyRootsDesc: string
@@ -90,6 +100,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openSettingsRoots: []
+  selectRoot: [rootId: string, preferredViewMode?: 'flat' | 'folders']
   enterFolder: [relPath: string, switchToItems?: boolean]
   setViewMode: [mode: 'flat' | 'folders']
   selectCompletenessFilter: [filter: ToolCompletenessFilter]
@@ -135,6 +146,22 @@ const selectedBookEntries = computed(() =>
       (f.extension === 'txt' || f.extension === 'epub' || f.extension === 'pdf'),
   ),
 )
+
+const isMultiRootSummary = computed(
+  () => !props.activeRootId && props.domainRoots.length > 1,
+)
+
+const rootNameMap = computed<Map<string, string>>(() => {
+  const m = new Map<string, string>()
+  for (const r of props.domainRoots) {
+    m.set(r.id, r.name)
+  }
+  return m
+})
+
+function fileSelectionKey(file: MediaFileEntry): string {
+  return isMultiRootSummary.value ? `${file.root_id}::${file.rel_path}` : file.rel_path
+}
 
 const isFolderManagerMode = computed(
   () =>
@@ -380,7 +407,12 @@ function relativeDirBadge(relPath: string): string | null {
             v-if="isFolderManagerMode && snapshot"
             class="ml-2 hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] sm:inline-flex"
           >
-            {{ sortedFolders.length }} 文件夹 · {{ sortedRawFiles.length }} 文件
+            <template v-if="isMultiRootSummary">
+              {{ domainRoots.length }} 个挂载目录
+            </template>
+            <template v-else>
+              {{ sortedFolders.length }} 文件夹 · {{ sortedRawFiles.length }} 文件
+            </template>
           </span>
         </div>
 
@@ -532,8 +564,45 @@ function relativeDirBadge(relPath: string): string | null {
 
       <!-- Unified File Manager View (Folders Mode without active search/filter) -->
       <div v-else-if="isFolderManagerMode" class="space-y-3">
+        <!-- Multi-root Summary: list mounted directories so user can drill into any specific mount -->
         <div
-          v-if="
+          v-if="isMultiRootSummary"
+          class="overflow-hidden rounded-[20px] bg-[var(--md-sys-color-surface-container-low)] divide-y divide-[var(--md-sys-color-outline-variant)]/35"
+        >
+          <button
+            v-for="r in domainRoots"
+            :key="`mount-dir-${r.id}`"
+            type="button"
+            class="md-state group flex w-full items-center gap-3.5 px-4 py-3 text-left"
+            @click="emit('selectRoot', r.id, 'folders')"
+          >
+            <div
+              class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--md-sys-color-primary-container)]/85 text-[var(--md-sys-color-on-primary-container)]"
+            >
+              <LuHardDrive class="h-4 w-4" />
+            </div>
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2">
+                <span class="truncate text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
+                  {{ r.name }}
+                </span>
+                <span class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
+                  挂载目录
+                </span>
+              </div>
+              <div class="mt-0.5 truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                {{ r.path }}
+              </div>
+            </div>
+            <div class="hidden shrink-0 font-mono text-xs text-[var(--md-sys-color-on-surface-variant)] sm:block">
+              {{ rootFileCounts[r.id] ?? 0 }} 项媒体
+            </div>
+            <LuChevronRight class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)] opacity-60 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
+          </button>
+        </div>
+
+        <div
+          v-else-if="
             sortedFolders.length === 0 &&
             sortedRawFiles.length === 0 &&
             (!snapshot || snapshot.parent_rel_path === null)
@@ -818,19 +887,19 @@ function relativeDirBadge(relPath: string): string | null {
         >
           <div
             v-for="file in visibleFiles"
-            :key="file.rel_path"
+            :key="fileSelectionKey(file)"
             class="md-state group flex cursor-pointer items-center gap-3.5 px-4 py-3"
             :class="
-              inspectingPath === file.rel_path
+              inspectingPath === fileSelectionKey(file)
                 ? 'bg-[var(--md-sys-color-secondary-container)]/75'
-                : selectedPaths.has(file.rel_path)
+                : selectedPaths.has(fileSelectionKey(file))
                   ? 'bg-[var(--md-sys-color-primary-container)]/35'
                   : ''
             "
             @click="emit('inspectFile', file)"
           >
-            <div @click.stop="emit('toggleSelectFile', file.rel_path, $event.shiftKey)">
-              <AppCheckbox :model-value="selectedPaths.has(file.rel_path)" />
+            <div @click.stop="emit('toggleSelectFile', fileSelectionKey(file), $event.shiftKey)">
+              <AppCheckbox :model-value="selectedPaths.has(fileSelectionKey(file))" />
             </div>
 
             <!-- Artwork Thumbnail -->
@@ -874,6 +943,12 @@ function relativeDirBadge(relPath: string): string | null {
                   class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   {{ file.extension }}
+                </span>
+                <span
+                  v-if="isMultiRootSummary && rootNameMap.get(file.root_id)"
+                  class="hidden shrink-0 rounded-full bg-[var(--md-sys-color-secondary-container)]/75 px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-secondary-container)] sm:inline-flex"
+                >
+                  {{ rootNameMap.get(file.root_id) }}
                 </span>
                 <span
                   v-if="fileTaskStatus(file) === 'running'"
@@ -1066,7 +1141,7 @@ function relativeDirBadge(relPath: string): string | null {
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state text-red-400 hover:bg-red-500/10"
                 title="删除此条目及同名外挂文件"
-                @click.stop="emit('requestDeleteFiles', [file.rel_path], true)"
+                @click.stop="emit('requestDeleteFiles', [fileSelectionKey(file)], true)"
               >
                 <LuTrash2 class="h-4 w-4" />
               </button>
@@ -1330,7 +1405,7 @@ function relativeDirBadge(relPath: string): string | null {
               type="button"
               class="md-btn md-btn-sm md-btn-outlined md-state !border-red-500/45 !text-red-400 hover:!bg-red-500/10"
               title="删除所选媒体条目及同名外挂文件"
-              @click="emit('requestDeleteFiles', checkedFiles.map((f) => f.rel_path), true)"
+              @click="emit('requestDeleteFiles', checkedFiles.map((f) => fileSelectionKey(f)), true)"
             >
               <LuTrash2 class="h-3.5 w-3.5" />
               <span>删除</span>

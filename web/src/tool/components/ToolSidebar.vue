@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, type Component } from 'vue'
 import {
-  LuCheckCircle2,
   LuChevronDown,
   LuChevronRight,
   LuFolder,
@@ -14,14 +13,6 @@ import type { MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
 import type { ManagedRootDto } from '../types'
 
-export type ToolCompletenessFilter =
-  | 'all'
-  | 'incomplete'
-  | 'missing_cover'
-  | 'missing_summary'
-  | 'missing_tag'
-  | 'complete'
-
 defineProps<{
   mobileMenuOpen: boolean
   collapsed: boolean
@@ -32,14 +23,6 @@ defineProps<{
   totalItems: number
   domainRoots: ManagedRootDto[]
   activeRootId: string
-  viewMode: 'flat' | 'folders'
-  completenessFilter: ToolCompletenessFilter
-  filterItems: Array<{
-    id: ToolCompletenessFilter
-    label: string
-    count: number
-    icon: Component
-  }>
 }>()
 
 const emit = defineEmits<{
@@ -49,22 +32,10 @@ const emit = defineEmits<{
   openSettingsRoots: []
   openFoldersView: []
   selectRoot: [rootId: string]
-  selectCompletenessFilter: [filter: ToolCompletenessFilter]
 }>()
 
 const txt = useToolText()
-
-const collapsedGroups = ref<Record<string, boolean>>({
-  roots: false,
-  filters: false,
-})
-
-function toggleGroupFold(key: string): void {
-  collapsedGroups.value = {
-    ...collapsedGroups.value,
-    [key]: !collapsedGroups.value[key],
-  }
-}
+const rootsFolded = ref(false)
 </script>
 
 <template>
@@ -104,7 +75,7 @@ function toggleGroupFold(key: string): void {
       </button>
     </div>
 
-    <!-- COMPACT MODE: Authentic MD3 Navigation Rail (80px, 56x32 Active Pill + Label) -->
+    <!-- COMPACT MODE: MD3 Navigation Rail -->
     <nav
       v-if="isCompact"
       class="hidden flex-1 flex-col items-center gap-2 overflow-y-auto px-2 pt-2 pb-4 md:flex"
@@ -144,7 +115,7 @@ function toggleGroupFold(key: string): void {
         <span
           class="md-state flex h-8 w-14 items-center justify-center rounded-full transition"
           :class="
-            activeNav === 'items'
+            activeNav === 'items' && !activeRootId
               ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
               : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
           "
@@ -154,7 +125,7 @@ function toggleGroupFold(key: string): void {
         <span
           class="truncate"
           :class="
-            activeNav === 'items'
+            activeNav === 'items' && !activeRootId
               ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
               : 'text-[var(--md-sys-color-on-surface-variant)]'
           "
@@ -181,17 +152,9 @@ function toggleGroupFold(key: string): void {
       >
         <LuFolder class="h-[18px] w-[18px]" />
       </button>
-      <button
-        type="button"
-        class="md-icon-btn md-state"
-        :title="txt.filters.incomplete"
-        @click="emit('selectCompletenessFilter', 'incomplete')"
-      >
-        <LuCheckCircle2 class="h-[18px] w-[18px]" />
-      </button>
     </nav>
 
-    <!-- EXPANDED MODE: Authentic MD3 Navigation Drawer (Full-Pill Active Indicator) -->
+    <!-- EXPANDED MODE: MD3 Navigation Drawer -->
     <nav
       v-else
       class="flex-1 space-y-1 overflow-y-auto px-3 pt-2 pb-5"
@@ -214,7 +177,7 @@ function toggleGroupFold(key: string): void {
         type="button"
         class="md-state flex h-11 w-full items-center gap-3 rounded-full px-4 text-[13px] font-medium"
         :class="
-          activeNav === 'items'
+          activeNav === 'items' && !activeRootId
             ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
             : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
         "
@@ -225,15 +188,15 @@ function toggleGroupFold(key: string): void {
         <span class="font-mono text-[11px] opacity-75">{{ totalItems }}</span>
       </button>
 
-      <!-- Group 1: Media Roots -->
+      <!-- Mounted Directories -->
       <div class="pt-4">
         <div class="mb-1 flex items-center justify-between px-3">
           <button
             type="button"
             class="flex min-w-0 flex-1 items-center gap-1 py-1 text-left text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase transition hover:text-[var(--md-sys-color-on-surface)]"
-            @click="toggleGroupFold('roots')"
+            @click="rootsFolded = !rootsFolded"
           >
-            <LuChevronRight v-if="collapsedGroups.roots" class="h-3.5 w-3.5 shrink-0" />
+            <LuChevronRight v-if="rootsFolded" class="h-3.5 w-3.5 shrink-0" />
             <LuChevronDown v-else class="h-3.5 w-3.5 shrink-0" />
             <span class="truncate">{{ txt.roots.title }}</span>
           </button>
@@ -247,7 +210,7 @@ function toggleGroupFold(key: string): void {
           </button>
         </div>
 
-        <div v-if="!collapsedGroups.roots" class="space-y-0.5">
+        <div v-if="!rootsFolded" class="space-y-0.5">
           <button
             v-if="domainRoots.length === 0"
             type="button"
@@ -262,9 +225,9 @@ function toggleGroupFold(key: string): void {
             v-for="r in domainRoots"
             :key="r.id"
             type="button"
-            class="md-state flex h-9 w-full items-center gap-2.5 rounded-full px-3.5 text-xs font-medium"
+            class="md-state flex h-10 w-full items-center gap-2.5 rounded-full px-3.5 text-xs font-medium"
             :class="
-              activeRootId === r.id
+              activeNav === 'items' && activeRootId === r.id
                 ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
                 : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
             "
@@ -273,42 +236,6 @@ function toggleGroupFold(key: string): void {
           >
             <LuHardDrive class="h-3.5 w-3.5 shrink-0" />
             <span class="flex-1 truncate text-left">{{ r.name }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Group 2: Completeness Filters -->
-      <div class="pt-3">
-        <div class="mb-1 flex items-center justify-between px-3">
-          <button
-            type="button"
-            class="flex min-w-0 flex-1 items-center gap-1 py-1 text-left text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase transition hover:text-[var(--md-sys-color-on-surface)]"
-            @click="toggleGroupFold('filters')"
-          >
-            <LuChevronRight v-if="collapsedGroups.filters" class="h-3.5 w-3.5 shrink-0" />
-            <LuChevronDown v-else class="h-3.5 w-3.5 shrink-0" />
-            <span class="truncate">{{ txt.filters.title }}</span>
-          </button>
-        </div>
-
-        <div v-if="!collapsedGroups.filters" class="space-y-0.5">
-          <button
-            v-for="f in filterItems"
-            :key="f.id"
-            type="button"
-            class="md-state flex h-9 w-full items-center gap-2.5 rounded-full px-3.5 text-xs font-medium"
-            :class="
-              activeNav === 'items' &&
-              completenessFilter === f.id &&
-              (f.id !== 'all' || viewMode === 'flat')
-                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-            "
-            @click="emit('selectCompletenessFilter', f.id)"
-          >
-            <component :is="f.icon" class="h-3.5 w-3.5 shrink-0" />
-            <span class="flex-1 truncate text-left">{{ f.label }}</span>
-            <span class="font-mono text-[10px] opacity-75">{{ f.count }}</span>
           </button>
         </div>
       </div>

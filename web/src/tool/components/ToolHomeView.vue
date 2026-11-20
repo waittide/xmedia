@@ -9,7 +9,6 @@ import {
   LuDisc3,
   LuFileSignature,
   LuFileText,
-  LuFolder,
   LuFolderPlus,
   LuImage,
   LuLayers,
@@ -52,8 +51,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   openItems: [filter?: CompletenessFilter]
-  openFoldersView: []
-  enterFolder: [relPath: string]
   inspectFile: [file: MediaFileEntry]
   scrapeFiles: [files: MediaFileEntry[], labelHint?: string]
   openRenameAll: []
@@ -75,6 +72,15 @@ function isEntryComplete(e: MediaFileEntry): boolean {
   )
 }
 
+const scopeSubtitle = computed(() => {
+  if (!props.activeRootId && props.domainRoots.length > 1) {
+    return `已汇总 ${props.domainRoots.length} 个挂载目录`
+  }
+  const name = props.snapshot?.root_name || props.domainRoots[0]?.name || '—'
+  const rel = props.snapshot?.current_rel_path
+  return `当前挂载目录：${name}${rel ? ` / ${rel}` : ''}`
+})
+
 const completionPct = computed(() => {
   if (props.stats.total <= 0) return 0
   return Math.min(100, Math.round((props.stats.complete / props.stats.total) * 100))
@@ -85,30 +91,29 @@ const incompleteFiles = computed<MediaFileEntry[]>(() =>
 )
 
 const previewIncomplete = computed<MediaFileEntry[]>(() => incompleteFiles.value.slice(0, 8))
-const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8))
 </script>
 
 <template>
   <div class="mx-auto max-w-6xl space-y-6 p-4 sm:p-6">
-    <!-- Empty State: No Roots Configured -->
+    <!-- Empty State: No Mounted Directories Configured -->
     <div
       v-if="domainRoots.length === 0"
-      class="mx-auto mt-10 max-w-lg rounded-3xl border border-dashed border-[var(--ctp-surface1)] bg-[var(--ctp-mantle)]/45 p-8 text-center"
+      class="mx-auto mt-10 max-w-lg rounded-[28px] border border-dashed border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] p-8 text-center"
     >
       <div
-        class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
+        class="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
       >
         <LuFolderPlus class="h-6 w-6" />
       </div>
-      <h2 class="text-base font-bold text-[var(--ctp-text)]">
+      <h2 class="text-base font-semibold text-[var(--md-sys-color-on-surface)]">
         {{ domainLabels.emptyRootsTitle }}
       </h2>
-      <p class="mt-2 text-xs leading-relaxed text-[var(--ctp-subtext0)]">
+      <p class="mt-2 text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ domainLabels.emptyRootsDesc }}
       </p>
       <button
         type="button"
-        class="mt-5 inline-flex items-center gap-2 rounded-xl bg-[var(--ctp-accent)] px-5 py-2.5 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95"
+        class="md-btn md-btn-filled md-state mt-6"
         @click="emit('openSettings', 'roots')"
       >
         <LuFolderPlus class="h-4 w-4" />
@@ -117,15 +122,14 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
     </div>
 
     <template v-else>
-      <!-- Top Header & Refresh -->
+      <!-- Top Header & Actions -->
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 class="text-xl font-bold tracking-tight text-[var(--ctp-text)]">
+          <h1 class="text-xl font-semibold tracking-tight text-[var(--md-sys-color-on-surface)]">
             {{ txt.domains[activeDomain] }}概览
           </h1>
-          <p class="mt-0.5 text-xs text-[var(--ctp-subtext0)]">
-            当前目录：{{ snapshot?.root_name || '—'
-            }}{{ snapshot?.current_rel_path ? ` / ${snapshot.current_rel_path}` : '' }}
+          <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+            {{ scopeSubtitle }}
           </p>
         </div>
 
@@ -238,62 +242,23 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
       <section class="md-card-filled space-y-2.5 p-5">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div class="flex items-center gap-2">
-            <span class="text-xs font-bold text-[var(--ctp-text)]">元信息完整率</span>
+            <span class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">元信息完整率</span>
             <span
-              class="rounded-full bg-[var(--ctp-accent-soft)] px-2 py-0.5 font-mono text-[11px] font-bold text-[var(--ctp-accent)]"
+              class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
             >
               {{ completionPct }}%
             </span>
           </div>
-          <span class="text-[11px] text-[var(--ctp-subtext0)]">
+          <span class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
             齐全 {{ stats.complete }} 项 · 待补齐 {{ stats.incomplete }} 项 · 缺标签/NFO
             {{ stats.missingTag }} 项
           </span>
         </div>
-        <div class="h-2 w-full overflow-hidden rounded-full bg-[var(--ctp-surface0)]">
+        <div class="h-2 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]">
           <div
-            class="h-full rounded-full bg-emerald-500 transition-all duration-300"
+            class="h-full rounded-full bg-[var(--md-sys-color-success)] transition-all duration-300"
             :style="{ width: `${completionPct}%` }"
           />
-        </div>
-      </section>
-
-      <!-- Subfolders Quick Grid -->
-      <section v-if="previewFolders.length > 0" class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-sm font-bold text-[var(--ctp-text)]">{{ txt.roots.foldersTitle }}</h2>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:opacity-85"
-            @click="emit('openFoldersView')"
-          >
-            <span>查看全部目录</span>
-            <LuArrowRight class="h-3.5 w-3.5" />
-          </button>
-        </div>
-
-        <div class="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
-          <button
-            v-for="folder in previewFolders"
-            :key="folder.rel_path"
-            type="button"
-            class="card-soft flex items-center gap-3 rounded-2xl bg-[var(--ctp-shell)] p-3 text-left transition hover:border-[var(--ctp-accent)]"
-            @click="emit('enterFolder', folder.rel_path)"
-          >
-            <div
-              class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--ctp-accent-soft)] text-[var(--ctp-accent)]"
-            >
-              <LuFolder class="h-4 w-4" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-xs font-semibold text-[var(--ctp-text)]">
-                {{ folder.name }}
-              </div>
-              <div class="mt-0.5 text-[11px] text-[var(--ctp-subtext0)]">
-                {{ folder.media_file_count }} 个媒体文件
-              </div>
-            </div>
-          </button>
         </div>
       </section>
 
@@ -301,19 +266,19 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
       <section class="space-y-3">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <h2 class="text-sm font-bold text-[var(--ctp-text)]">
+            <h2 class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
               {{ incompleteFiles.length > 0 ? '待补齐元信息条目' : '全部条目元信息已齐全' }}
             </h2>
             <span
               v-if="incompleteFiles.length > 0"
-              class="rounded-full bg-amber-500/15 px-2 py-0.5 font-mono text-[11px] font-semibold text-amber-500"
+              class="rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 font-mono text-[11px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
             >
               {{ incompleteFiles.length }}
             </span>
           </div>
           <button
             type="button"
-            class="inline-flex items-center gap-1 text-xs font-semibold text-[var(--ctp-accent)] hover:opacity-85"
+            class="md-btn md-btn-sm md-btn-text md-state"
             @click="emit('openItems', incompleteFiles.length > 0 ? 'incomplete' : 'all')"
           >
             <span>进入条目列表</span>
@@ -323,20 +288,23 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
 
         <div
           v-if="previewIncomplete.length === 0"
-          class="rounded-2xl border border-dashed border-[var(--ctp-surface1)] bg-[var(--ctp-shell)]/60 py-10 text-center text-xs text-[var(--ctp-subtext0)]"
+          class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
         >
           {{
             stats.total === 0
-              ? '当前目录下暂无受支持的媒体文件'
-              : '当前目录所有媒体文件的封面、简介与标签均已完备'
+              ? '当前挂载目录下暂无受支持的媒体文件'
+              : '所有媒体文件的封面、简介与标签均已完备'
           }}
         </div>
 
-        <div v-else class="space-y-2">
+        <div
+          v-else
+          class="divide-y divide-[var(--md-sys-color-outline-variant)]/35 overflow-hidden rounded-[20px] bg-[var(--md-sys-color-surface-container-low)]"
+        >
           <div
             v-for="file in previewIncomplete"
-            :key="file.rel_path"
-            class="card-soft flex items-center gap-3 rounded-2xl bg-[var(--ctp-shell)] px-3.5 py-2.5 transition hover:border-[var(--ctp-accent)]/60"
+            :key="`${file.root_id}::${file.rel_path}`"
+            class="md-state flex items-center gap-3 px-4 py-2.5"
           >
             <button
               type="button"
@@ -344,7 +312,7 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
               @click="emit('inspectFile', file)"
             >
               <div
-                class="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]"
+                class="relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)]"
               >
                 <img
                   v-if="file.completeness.has_cover"
@@ -353,21 +321,21 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
                   loading="lazy"
                   class="h-full w-full object-cover"
                 />
-                <LuAlertCircle v-else class="h-4 w-4 text-amber-500" />
+                <LuAlertCircle v-else class="h-4 w-4 text-[var(--md-sys-color-warning)]" />
               </div>
 
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
-                  <span class="truncate text-xs font-bold text-[var(--ctp-text)]">
+                  <span class="truncate text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
                     {{ file.display_title }}
                   </span>
                   <span
-                    class="shrink-0 rounded-md bg-[var(--ctp-surface0)]/80 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--ctp-subtext1)]"
+                    class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-surface-variant)]"
                   >
                     {{ file.extension }}
                   </span>
                 </div>
-                <div class="mt-0.5 truncate text-[11px] text-[var(--ctp-subtext0)]">
+                <div class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
                   {{ file.display_subtitle }} · {{ formatBytes(file.file_size) }}
                 </div>
               </div>
@@ -376,32 +344,31 @@ const previewFolders = computed(() => (props.snapshot?.folders ?? []).slice(0, 8
             <div class="hidden shrink-0 items-center gap-1.5 sm:flex">
               <span
                 v-if="!file.completeness.has_cover"
-                class="rounded-full bg-amber-500/12 px-2 py-0.5 text-[10px] font-medium text-amber-500"
+                class="rounded-full bg-[var(--md-sys-color-warning-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-warning-container)]"
               >
                 缺图
               </span>
               <span
                 v-if="!file.completeness.has_summary_or_lyrics"
-                class="rounded-full bg-[var(--ctp-surface0)] px-2 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext0)]"
+                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
               >
                 {{ file.media_kind === 'music' ? '缺歌词' : '缺简介' }}
               </span>
               <span
                 v-if="!file.completeness.has_nfo_or_tag_block"
-                class="rounded-full bg-[var(--ctp-surface0)] px-2 py-0.5 text-[10px] font-medium text-[var(--ctp-subtext0)]"
+                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
               >
-                {{ file.media_kind === 'video' ? '缺 NFO' : '缺标签' }}
+                缺标签
               </span>
             </div>
 
             <button
               type="button"
-              class="inline-flex h-8 shrink-0 items-center gap-1 rounded-xl bg-[var(--ctp-accent-soft)] px-2.5 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
-              title="添加刮削任务（本地已有信息优先 -> 高优先级源 -> 低优先级源）"
-              @click="emit('scrapeFiles', [file])"
+              class="md-icon-btn md-icon-btn-sm md-state shrink-0 text-[var(--md-sys-color-primary)]"
+              title="快速刮削此条目"
+              @click="emit('scrapeFiles', [file], file.display_title)"
             >
-              <LuSparkles class="h-3.5 w-3.5" />
-              <span>{{ txt.actions.scrape }}</span>
+              <LuSparkles class="h-4 w-4" />
             </button>
           </div>
         </div>

@@ -51,7 +51,7 @@ const webhookNotice = ref<string | null>(null)
 const saving = ref(false)
 
 const inboxRootOptions = computed(() => [
-  { value: '', label: '请选择已登记的根目录' },
+  { value: '', label: '请选择已登记的挂载目录' },
   ...(props.settings?.roots ?? []).map((r) => ({
     value: r.id,
     label: `${r.name} (${r.path})`,
@@ -207,7 +207,7 @@ async function handleTestWebhook(): Promise<void> {
       新增「{{ domainBadgeLabels[domainSubTab] }}」本地目录
     </h2>
     <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
-      各媒体类型的根目录白名单彼此隔离，切换上方类型 Tab 可分别管理不同领域的目录
+      各媒体类型的挂载目录彼此隔离，切换上方类型 Tab 可分别管理不同领域的目录
     </p>
 
     <form class="mt-4 space-y-4" @submit.prevent="handleAddRoot">
@@ -253,7 +253,7 @@ async function handleTestWebhook(): Promise<void> {
 
   <section class="card-soft space-y-3 rounded-2xl bg-[var(--ctp-shell)] p-6">
     <h2 class="text-sm font-bold text-[var(--ctp-text)]">
-      已登记「{{ domainBadgeLabels[domainSubTab] }}」根目录 ({{ filteredRoots.length }})
+      已登记「{{ domainBadgeLabels[domainSubTab] }}」挂载目录 ({{ filteredRoots.length }})
     </h2>
 
     <div
@@ -319,7 +319,7 @@ async function handleTestWebhook(): Promise<void> {
         热导入收件箱（Inbox / Watch Folder）
       </h2>
       <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
-        将新下载的媒体文件放入收件箱，一键通过同卷硬链接（PT 保种零额外空间）或移动导入正式根目录并可选自动刮削。
+        将新下载的媒体文件放入收件箱，一键通过同卷硬链接（PT 保种零额外空间）或移动导入正式挂载目录并可选自动刮削。
       </p>
     </div>
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -333,7 +333,7 @@ async function handleTestWebhook(): Promise<void> {
         />
       </label>
       <div class="block">
-        <span class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">目标导入根目录</span>
+        <span class="mb-1.5 block text-xs font-semibold text-[var(--ctp-subtext1)]">目标导入挂载目录</span>
         <AppSelect v-model="inboxTargetRootId" :options="inboxRootOptions" />
       </div>
     </div>
