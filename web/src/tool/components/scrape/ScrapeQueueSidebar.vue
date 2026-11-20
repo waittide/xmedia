@@ -10,10 +10,12 @@ import {
   LuDisc3,
   LuLayers,
   LuList,
+  LuLoader2,
   LuSearch,
   LuX,
 } from 'vue-icons-plus/lu'
 import { buildArtworkUrl } from '../../api'
+import { useToolTaskStore, type ScrapeSubItem } from '../../tasks'
 import type { MediaFileEntry } from '../../types'
 
 type QueueFilter = 'all' | 'incomplete' | 'missing_cover' | 'saved'
@@ -40,6 +42,11 @@ const emit = defineEmits<{
 
 const filter = ref<QueueFilter>('all')
 const query = ref('')
+const taskStore = useToolTaskStore()
+
+function entryTaskStatus(e: MediaFileEntry): ScrapeSubItem['status'] | undefined {
+  return taskStore.fileStatusMap.get(`${e.root_id}::${e.rel_path}`)
+}
 
 function isComplete(e: MediaFileEntry): boolean {
   return (
@@ -298,6 +305,25 @@ const filteredEntries = computed(() => {
             </div>
             <div class="mt-0.5 flex items-center gap-1.5 text-[10px] opacity-75">
               <span class="truncate font-mono">{{ entry.file_name }}</span>
+              <span
+                v-if="!savedPaths.has(entry.rel_path) && entryTaskStatus(entry) === 'running'"
+                class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)] opacity-100"
+              >
+                <LuLoader2 class="h-2.5 w-2.5 animate-spin" />
+                <span>刮削中</span>
+              </span>
+              <span
+                v-else-if="!savedPaths.has(entry.rel_path) && entryTaskStatus(entry) === 'unmatched'"
+                class="shrink-0 rounded-full bg-amber-500/20 px-1.5 py-0.25 text-[9px] font-semibold text-amber-500 opacity-100"
+              >
+                未匹配
+              </span>
+              <span
+                v-else-if="!savedPaths.has(entry.rel_path) && entryTaskStatus(entry) === 'failed'"
+                class="shrink-0 rounded-full bg-[var(--md-sys-color-error-container)] px-1.5 py-0.25 text-[9px] font-semibold text-[var(--md-sys-color-on-error-container)] opacity-100"
+              >
+                失败
+              </span>
             </div>
           </div>
 

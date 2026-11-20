@@ -19,6 +19,7 @@ import {
   LuTrash2,
 } from 'vue-icons-plus/lu'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import type { MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
 import { useToolTaskStore, type ScrapeSubItem, type ToolTaskEntry } from '../tasks'
@@ -40,7 +41,12 @@ export interface InspectTaskItemPayload {
   openCandidates?: boolean
 }
 
+defineProps<{
+  open: boolean
+}>()
+
 const emit = defineEmits<{
+  close: []
   reviewItems: [payload: ReviewItemsPayload]
   inspectItem: [payload: InspectTaskItemPayload]
   openBookEditor: [payload: InspectTaskItemPayload]
@@ -194,6 +200,7 @@ function reviewTaskUnmatched(task: ToolTaskEntry): void {
   )
   if (targets.length === 0) return
   const first: ScrapeSubItem = targets[0]!
+  emit('close')
   emit('reviewItems', {
     domain: task.domain ?? first.mediaKind,
     rootId: first.rootId,
@@ -206,6 +213,7 @@ function reviewTaskAllResults(task: ToolTaskEntry): void {
   const targets = (task.subItems ?? []).filter((it) => it.status !== 'queued')
   if (targets.length === 0) return
   const first: ScrapeSubItem = targets[0]!
+  emit('close')
   emit('reviewItems', {
     domain: task.domain ?? first.mediaKind,
     rootId: first.rootId,
@@ -215,6 +223,7 @@ function reviewTaskAllResults(task: ToolTaskEntry): void {
 }
 
 function inspectSubItem(sub: ScrapeSubItem): void {
+  emit('close')
   emit('inspectItem', {
     domain: sub.mediaKind,
     rootId: sub.rootId,
@@ -224,6 +233,7 @@ function inspectSubItem(sub: ScrapeSubItem): void {
 }
 
 function openSubItemBookEditor(sub: ScrapeSubItem): void {
+  emit('close')
   emit('openBookEditor', {
     domain: sub.mediaKind,
     rootId: sub.rootId,
@@ -250,19 +260,27 @@ function formatElapsed(task: ToolTaskEntry): string {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl space-y-5 p-4 sm:p-6">
-    <!-- Header -->
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h1 class="text-xl font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
-          {{ txt.tasks.title }}
-        </h1>
-        <p class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          {{ txt.tasks.subtitle }}
-        </p>
-      </div>
+  <MdSideSheet
+    :open="open"
+    :title="txt.tasks.title"
+    :subtitle="txt.tasks.subtitle"
+    width-class="w-full max-w-2xl"
+    @close="emit('close')"
+  >
+    <template #subheader>
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <MdSegmentedButton
+          v-model="statusFilter"
+          :options="[
+            { value: 'all', label: `${txt.tasks.filterAll} (${taskStore.persistentTasks.length})` },
+            { value: 'active', label: `${txt.tasks.filterActive} (${taskStore.activeCount})` },
+            { value: 'completed', label: txt.tasks.filterCompleted },
+            { value: 'failed', label: txt.tasks.filterFailed },
+          ]"
+          size="sm"
+          show-check
+        />
 
-      <div class="flex items-center gap-2">
         <button
           v-if="hasCompleted"
           type="button"
@@ -273,35 +291,23 @@ function formatElapsed(task: ToolTaskEntry): string {
           <span>{{ txt.tasks.clearCompleted }}</span>
         </button>
       </div>
-    </div>
+    </template>
 
-    <!-- MD3 Segmented Filter Tabs -->
-    <MdSegmentedButton
-      v-model="statusFilter"
-      :options="[
-        { value: 'all', label: `${txt.tasks.filterAll} (${taskStore.persistentTasks.length})` },
-        { value: 'active', label: `${txt.tasks.filterActive} (${taskStore.activeCount})` },
-        { value: 'completed', label: txt.tasks.filterCompleted },
-        { value: 'failed', label: txt.tasks.filterFailed },
-      ]"
-      size="sm"
-      show-check
-    />
+    <div class="space-y-3.5">
+      <!-- Empty State -->
+      <div
+        v-if="filteredTasks.length === 0"
+        class="rounded-[24px] bg-[var(--md-sys-color-surface-container)] py-16 text-center"
+      >
+        <LuClock class="mx-auto mb-3 h-7 w-7 text-[var(--md-sys-color-on-surface-variant)]" />
+        <p class="text-sm font-semibold">{{ txt.tasks.emptyTitle }}</p>
+        <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          {{ txt.tasks.emptyDesc }}
+        </p>
+      </div>
 
-    <!-- Empty State -->
-    <div
-      v-if="filteredTasks.length === 0"
-      class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-16 text-center"
-    >
-      <LuClock class="mx-auto mb-3 h-7 w-7 text-[var(--md-sys-color-on-surface-variant)]" />
-      <p class="text-sm font-semibold">{{ txt.tasks.emptyTitle }}</p>
-      <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-        {{ txt.tasks.emptyDesc }}
-      </p>
-    </div>
-
-    <!-- MD3 Tonal Task Cards -->
-    <div v-else class="space-y-3.5">
+      <!-- MD3 Tonal Task Cards -->
+      <div v-else class="space-y-3.5">
       <div
         v-for="task in filteredTasks"
         :key="task.id"
@@ -737,6 +743,7 @@ function formatElapsed(task: ToolTaskEntry): string {
           </div>
         </div>
       </div>
+      </div>
     </div>
-  </div>
+  </MdSideSheet>
 </template>

@@ -1,6 +1,5 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { FloatingTaskItem } from '@/components/ui/FloatingTaskShelf.vue'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from './api'
 import type { AutoScrapeOptionsDto, MediaFileDetail, MediaFileEntry } from './types'
@@ -52,7 +51,7 @@ const SCRAPE_CONCURRENCY = 2
 
 export const useToolTaskStore = defineStore('tool-tasks', () => {
   const entries = ref<ToolTaskEntry[]>([])
-  const collapsed = ref(false)
+  const dismissedBannerTaskIds = ref<Set<string>>(new Set())
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   const fileListeners = new Set<FileScrapedListener>()
 
@@ -130,8 +129,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
           timers.delete(opts.id)
         }, 220),
       )
-    } else {
-      collapsed.value = false
     }
 
     return opts.id
@@ -197,7 +194,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     found.status = 'failed'
     found.finishedAt = Date.now()
     found.detail = message
-    collapsed.value = false
   }
 
   /**
@@ -262,7 +258,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     }
 
     entries.value.unshift(entry)
-    collapsed.value = false
     pendingScrapeBatchIds.push(id)
     void pumpScrapeWorker()
     return id
@@ -415,6 +410,11 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     found.processed = found.subItems.filter((it) => it.status === 'matched').length
     found.status = workerRunning ? 'queued' : 'running'
     found.detail = '正在重试未完成项…'
+    if (dismissedBannerTaskIds.value.has(found.id)) {
+      const nextDismissed = new Set(dismissedBannerTaskIds.value)
+      nextDismissed.delete(found.id)
+      dismissedBannerTaskIds.value = nextDismissed
+    }
     pendingScrapeBatchIds.push(found.id)
     void pumpScrapeWorker()
   }
@@ -444,6 +444,12 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     entries.value = entries.value.filter((e) => e.status === 'running' || e.status === 'queued')
   }
 
+  function dismissBannerTask(id: string): void {
+    const next = new Set(dismissedBannerTaskIds.value)
+    next.add(id)
+    dismissedBannerTaskIds.value = next
+  }
+
   const persistentTasks = computed(() => entries.value.filter((e) => !e.ephemeral))
 
   const activeCount = computed(
@@ -451,50 +457,72 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
       persistentTasks.value.filter((e) => e.status === 'running' || e.status === 'queued').length,
   )
 
-  const shelfItems = computed<FloatingTaskItem[]>(() =>
-    entries.value
-      .filter((e) => e.visible)
-      .map((e) => {
-        let progress: number | null = null
-        if (e.status === 'completed') {
-          progress = 100
-        } else if (e.total !== null && e.total > 0) {
-          progress = Math.min(100, Math.round((e.processed / e.total) * 100))
-        }
-
-        let subtitle = e.detail
-        if (e.status === 'running') {
-          if (e.total !== null && e.total > 0) {
-            subtitle = e.detail
-              ? `${e.processed.toLocaleString()} / ${e.total.toLocaleString()} · ${e.detail}`
-              : `${e.processed.toLocaleString()} / ${e.total.toLocaleString()}`
-          } else if (e.processed > 0) {
-            subtitle = `已清点 ${e.processed.toLocaleString()} 项 · ${e.detail}`
-          } else {
-            subtitle = `正在清点目录文件 · ${e.detail}`
-          }
-        } else if (e.status === 'queued') {
-          subtitle = `排队中 (${e.total ?? 0} 项)`
-        }
-
-        return {
-          id: e.id,
-          kind: e.kind,
-          title: e.title,
-          subtitle,
-          status: e.status,
-          progress,
-          clickable: true,
-        }
-      }),
+  const activeTask = computed<ToolTaskEntry | null>(
+    () =>
+      persistentTasks.value.find((e) => e.status === 'running') ??
+      persistentTasks.value.find((e) => e.status === 'queued') ??
+      entries.value.find((e) => e.visible && e.status === 'running') ??
+      null,
   )
+
+  const unresolvedCount = computed<number>(() => {
+    let count = 0
+    for (const task of persistentTasks.value) {
+      if (task.status === 'running' || task.status === 'queued') continue
+      if (task.subItems && task.subItems.length > 0) {
+        for (const it of task.subItems) {
+          if (it.status === 'unmatched' || it.status === 'failed' || it.status === 'cancelled') {
+            count += 1
+          }
+        }
+      } else if (task.status === 'failed') {
+        count += 1
+      }
+    }
+    return count
+  })
+
+  const latestBannerTask = computed<ToolTaskEntry | null>(() => {
+    const running =
+      persistentTasks.value.find((e) => e.status === 'running') ??
+      persistentTasks.value.find((e) => e.status === 'queued')
+    if (running) return running
+    for (const task of persistentTasks.value) {
+      if (dismissedBannerTaskIds.value.has(task.id)) continue
+      const hasNeedsAttention = Boolean(
+        task.status === 'failed' ||
+          task.subItems?.some(
+            (it) =>
+              it.status === 'unmatched' || it.status === 'failed' || it.status === 'cancelled',
+          ),
+      )
+      if (hasNeedsAttention) return task
+    }
+    return null
+  })
+
+  const fileStatusMap = computed<Map<string, ScrapeSubItem['status']>>(() => {
+    const m = new Map<string, ScrapeSubItem['status']>()
+    for (const task of persistentTasks.value) {
+      if (!task.subItems) continue
+      for (const it of task.subItems) {
+        const key = `${it.rootId}::${it.relPath}`
+        if (!m.has(key)) {
+          m.set(key, it.status)
+        }
+      }
+    }
+    return m
+  })
 
   return {
     entries,
     persistentTasks,
     activeCount,
-    collapsed,
-    shelfItems,
+    activeTask,
+    unresolvedCount,
+    latestBannerTask,
+    fileStatusMap,
     onFileScraped,
     startTask,
     updateTask,
@@ -506,5 +534,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     removeTask,
     clearCompleted,
     dismissAll,
+    dismissBannerTask,
   }
 })

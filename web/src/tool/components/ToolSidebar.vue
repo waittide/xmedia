@@ -4,7 +4,6 @@ import {
   LuCheckCircle2,
   LuChevronDown,
   LuChevronRight,
-  LuClock,
   LuFolder,
   LuFolderPlus,
   LuHardDrive,
@@ -13,7 +12,6 @@ import {
 } from 'vue-icons-plus/lu'
 import type { MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
-import { useToolTaskStore } from '../tasks'
 import type { ManagedRootDto } from '../types'
 
 export type ToolCompletenessFilter =
@@ -29,7 +27,7 @@ defineProps<{
   collapsed: boolean
   isCompact: boolean
   activeDomain: MediaKind
-  activeNav: 'home' | 'items' | 'tasks' | 'settings'
+  activeNav: 'home' | 'items' | 'settings'
   domainTabs: Array<{ value: MediaKind; label: string; icon: Component }>
   totalItems: number
   domainRoots: ManagedRootDto[]
@@ -47,7 +45,7 @@ defineProps<{
 const emit = defineEmits<{
   closeMobile: []
   switchDomain: [domain: MediaKind]
-  navigatePrimary: [nav: 'home' | 'items' | 'tasks']
+  navigatePrimary: [nav: 'home' | 'items']
   openSettingsRoots: []
   openFoldersView: []
   selectRoot: [rootId: string]
@@ -55,7 +53,6 @@ const emit = defineEmits<{
 }>()
 
 const txt = useToolText()
-const taskStore = useToolTaskStore()
 
 const collapsedGroups = ref<Record<string, boolean>>({
   roots: false,
@@ -166,37 +163,6 @@ function toggleGroupFold(key: string): void {
         </span>
       </button>
 
-      <button
-        type="button"
-        class="group relative flex w-full flex-col items-center gap-1 py-1 text-[11px] font-medium outline-none"
-        @click="emit('navigatePrimary', 'tasks')"
-      >
-        <span
-          class="md-state relative flex h-8 w-14 items-center justify-center rounded-full transition"
-          :class="
-            activeNav === 'tasks'
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
-          "
-        >
-          <LuClock class="h-[18px] w-[18px]" />
-          <span
-            v-if="taskStore.activeCount > 0"
-            class="absolute top-1 right-3 h-2 w-2 rounded-full bg-[var(--md-sys-color-primary)]"
-          />
-        </span>
-        <span
-          class="truncate"
-          :class="
-            activeNav === 'tasks'
-              ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)]'
-          "
-        >
-          {{ txt.nav.tasks }}
-        </span>
-      </button>
-
       <div class="my-1 h-px w-8 bg-[var(--md-sys-color-outline-variant)]/60" />
 
       <button
@@ -257,32 +223,6 @@ function toggleGroupFold(key: string): void {
         <LuLibrary class="h-[18px] w-[18px] shrink-0" />
         <span class="flex-1 truncate text-left">{{ txt.nav.items }}</span>
         <span class="font-mono text-[11px] opacity-75">{{ totalItems }}</span>
-      </button>
-
-      <button
-        type="button"
-        class="md-state flex h-11 w-full items-center gap-3 rounded-full px-4 text-[13px] font-medium"
-        :class="
-          activeNav === 'tasks'
-            ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-            : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-        "
-        @click="emit('navigatePrimary', 'tasks')"
-      >
-        <LuClock class="h-[18px] w-[18px] shrink-0" />
-        <span class="flex-1 truncate text-left">{{ txt.nav.tasks }}</span>
-        <span
-          v-if="taskStore.activeCount > 0"
-          class="rounded-full bg-[var(--md-sys-color-primary)] px-2 py-0.5 font-mono text-[10px] font-bold text-[var(--md-sys-color-on-primary)]"
-        >
-          {{ taskStore.activeCount }}
-        </span>
-        <span
-          v-else-if="taskStore.persistentTasks.length > 0"
-          class="font-mono text-[11px] opacity-70"
-        >
-          {{ taskStore.persistentTasks.length }}
-        </span>
       </button>
 
       <!-- Group 1: Media Roots -->

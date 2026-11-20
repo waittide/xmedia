@@ -11,7 +11,6 @@ import {
   LuLayers,
   LuSparkles,
 } from 'vue-icons-plus/lu'
-import FloatingTaskShelf from '@/components/ui/FloatingTaskShelf.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../api'
@@ -46,10 +45,10 @@ import ToolHomeView from './ToolHomeView.vue'
 import ToolItemsBrowser from './ToolItemsBrowser.vue'
 import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
 import ToolSidebar from './ToolSidebar.vue'
-import ToolTasksView, {
+import ToolTasksDrawer, {
   type InspectTaskItemPayload,
   type ReviewItemsPayload,
-} from './ToolTasksView.vue'
+} from './ToolTasksDrawer.vue'
 import ToolTopHeader from './ToolTopHeader.vue'
 
 defineProps<{
@@ -64,7 +63,7 @@ const taskStore = useToolTaskStore()
 const snackbar = useSnackbarStore()
 const txt = useToolText()
 
-type PrimaryNavKey = 'home' | 'items' | 'tasks' | 'settings'
+type PrimaryNavKey = 'home' | 'items' | 'settings'
 type BrowseViewMode = 'flat' | 'folders'
 type SortField = 'name' | 'title' | 'incomplete' | 'size' | 'modified'
 type SortDir = 'asc' | 'desc'
@@ -96,8 +95,10 @@ function parseToolHash(): ParsedToolHash {
   if (segs[0] && VALID_DOMAINS.includes(segs[0] as MediaKind)) {
     out.domain = segs[0] as MediaKind
   }
-  if (segs[1] === 'home' || segs[1] === 'items' || segs[1] === 'tasks' || segs[1] === 'settings') {
+  if (segs[1] === 'home' || segs[1] === 'items' || segs[1] === 'settings') {
     out.nav = segs[1]
+  } else if (segs[1] === 'tasks') {
+    out.nav = 'items'
   }
   const params = new URLSearchParams(queryPart)
   const root = params.get('root')
@@ -125,7 +126,7 @@ function loadSavedDomain(): MediaKind {
 function loadSavedNav(): PrimaryNavKey {
   if (initialHash.nav) return initialHash.nav
   const saved = localStorage.getItem('xmedia_tool.active_nav')
-  if (saved === 'home' || saved === 'items' || saved === 'tasks') return saved
+  if (saved === 'home' || saved === 'items') return saved
   return 'home'
 }
 
@@ -144,9 +145,10 @@ function loadSavedSortField(): SortField {
 }
 
 const activeNav = ref<PrimaryNavKey>(loadSavedNav())
-const previousWorkspaceNav = ref<'home' | 'items' | 'tasks'>(
+const previousWorkspaceNav = ref<'home' | 'items'>(
   activeNav.value === 'settings' ? 'home' : activeNav.value,
 )
+const tasksDrawerOpen = ref(false)
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
 function loadSavedViewMode(): BrowseViewMode {
   const saved = localStorage.getItem('xmedia_tool.view_mode')
@@ -247,10 +249,10 @@ function syncHashFromState(replace = false): void {
   }
 }
 
-async function navigatePrimary(nav: 'home' | 'items' | 'tasks'): Promise<void> {
+async function navigatePrimary(nav: 'home' | 'items'): Promise<void> {
   if (
     (activeNav.value !== nav || scrapeWorkbenchActive.value) &&
-    (nav === 'tasks' || nav === 'home' || activeNav.value === 'settings') &&
+    (nav === 'home' || activeNav.value === 'settings') &&
     !(await confirmActiveEditorClean())
   ) {
     return
@@ -652,7 +654,7 @@ async function selectRoot(rootId: string): Promise<void> {
   scrapeWorkbenchActive.value = false
   scrapeWorkbenchPaths.value = null
   mobileMenuOpen.value = false
-  if (activeNav.value === 'settings' || activeNav.value === 'tasks') {
+  if (activeNav.value === 'settings') {
     await navigatePrimary('items')
   }
   if (activeRootId.value === rootId && currentRelPath.value === '') return
@@ -1199,6 +1201,7 @@ async function handleBookNormalizeCompleted(report: NormalizeBooksBatchReportDto
 
 const anyModalOpen = computed(
   () =>
+    tasksDrawerOpen.value ||
     renameModalOpen.value ||
     batchMetadataModalOpen.value ||
     historyModalOpen.value ||
@@ -1367,6 +1370,7 @@ onBeforeUnmount(() => {
       :is-compact="isCompact"
       :active-domain="activeDomain"
       :active-nav="activeNav"
+      :tasks-open="tasksDrawerOpen"
       :domain-tabs="domainTabs"
       :search-query="searchQuery"
       :search-placeholder="domainLabels.searchPlaceholder"
@@ -1376,6 +1380,7 @@ onBeforeUnmount(() => {
       @switch-domain="switchDomain"
       @update:search-query="searchQuery = $event"
       @lock="emit('lock')"
+      @toggle-tasks="tasksDrawerOpen = !tasksDrawerOpen"
       @toggle-settings="activeNav === 'settings' ? exitSettings() : openSettingsTab('appearance')"
     />
 
@@ -1469,15 +1474,7 @@ onBeforeUnmount(() => {
             @select-domain="switchDomain"
           />
 
-          <!-- VIEW 2: TASKS CENTER -->
-          <ToolTasksView
-            v-else-if="activeNav === 'tasks'"
-            @review-items="handleReviewUnmatchedItems"
-            @inspect-item="handleInspectTaskItem"
-            @open-book-editor="handleOpenTaskBookEditor"
-          />
-
-          <!-- VIEW 3: DOMAIN HOME OVERVIEW -->
+          <!-- VIEW 2: DOMAIN HOME OVERVIEW -->
           <ToolHomeView
             v-else-if="activeNav === 'home'"
             :active-domain="activeDomain"
@@ -1555,6 +1552,8 @@ onBeforeUnmount(() => {
             @open-book-normalize-epub="openBookNormalizeModal"
             @open-comic-page-manager="openComicPageManager"
             @enqueue-scrape-files="enqueueScrapeFiles"
+            @open-tasks-drawer="tasksDrawerOpen = true"
+            @review-task-items="handleReviewUnmatchedItems"
             @load-more="visibleLimit += PAGE_CHUNK_SIZE"
             @show-all="visibleLimit = filteredFiles.length"
           />
@@ -1701,16 +1700,13 @@ onBeforeUnmount(() => {
       @manual-scrape="handleDryRunManualScrape"
     />
 
-    <!-- Bottom-Right Floating Task Progress Panel (Click task jumps to Tasks View) -->
-    <FloatingTaskShelf
-      v-if="activeNav !== 'tasks'"
-      high-z-index
-      :tasks="taskStore.shelfItems"
-      :collapsed="taskStore.collapsed"
-      @update:collapsed="taskStore.collapsed = $event"
-      @clear-completed="taskStore.clearCompleted"
-      @dismiss-all="taskStore.dismissAll"
-      @select-task="navigatePrimary('tasks')"
+    <!-- Slide-Over Tasks Drawer (Opened from Top Bar Progress Pill or List Inline Banner) -->
+    <ToolTasksDrawer
+      :open="tasksDrawerOpen"
+      @close="tasksDrawerOpen = false"
+      @review-items="handleReviewUnmatchedItems"
+      @inspect-item="handleInspectTaskItem"
+      @open-book-editor="handleOpenTaskBookEditor"
     />
   </div>
 </template>
