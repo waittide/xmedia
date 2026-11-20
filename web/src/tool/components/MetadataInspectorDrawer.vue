@@ -17,7 +17,6 @@ import {
   LuPackageCheck,
   LuRefreshCw,
   LuSave,
-  LuSparkles,
   LuUnlock,
   LuUpload,
   LuWand2,
@@ -27,7 +26,12 @@ import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { buildArtworkUrl, resolveScraperCoverUrl, toolApi } from '../api'
 import { formatBytes, formatDuration, useToolText } from '../i18n'
-import type { MediaFileDetail, MediaFileEntry, ScrapedMetadata } from '../types'
+import type {
+  MediaFileDetail,
+  MediaFileEntry,
+  PublicSettingsDto,
+  ScrapedMetadata,
+} from '../types'
 import InspectorBookForm from './inspector/InspectorBookForm.vue'
 import InspectorComicForm from './inspector/InspectorComicForm.vue'
 import InspectorMusicForm from './inspector/InspectorMusicForm.vue'
@@ -46,12 +50,14 @@ const props = withDefaults(
   defineProps<{
     detail: MediaFileDetail
     artworkVersion: number
+    settings?: PublicSettingsDto | null
     showCandidates?: boolean
     hasPrev?: boolean
     hasNext?: boolean
     positionLabel?: string
   }>(),
   {
+    settings: null,
     showCandidates: false,
     hasPrev: false,
     hasNext: false,
@@ -64,9 +70,9 @@ const emit = defineEmits<{
   updated: [detail: MediaFileDetail, bumpArtwork: boolean]
   step: [delta: -1 | 1]
   'update:showCandidates': [open: boolean]
-  openScrape: [detail: MediaFileDetail]
   openWorkbench: [detail: MediaFileDetail]
   openSettingsScrapers: []
+  settingsUpdated: [settings: PublicSettingsDto]
   openContentEditor: [entry: MediaFileEntry]
   openNormalizeEpub: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
@@ -468,15 +474,6 @@ defineExpose({
         >
           <LuColumns3 class="h-3.5 w-3.5" />
           <span>刮削工作台</span>
-        </button>
-
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state"
-          title="多源高级刮削向导"
-          @click="emit('openScrape', detail)"
-        >
-          <LuSparkles class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
         </button>
 
         <button
@@ -892,6 +889,7 @@ defineExpose({
         <div class="min-h-0 flex-1 overflow-hidden">
           <WorkbenchCandidatePane
             :detail="detail"
+            :settings="settings"
             :auto-search-trigger="autoSearchTrigger"
             :selected-preview-key="candidatePreview?.key ?? null"
             @fill-all="handleFillAll"
@@ -899,6 +897,7 @@ defineExpose({
             @direct-apply="handleDirectApply"
             @select-preview="candidatePreview = $event"
             @open-settings="emit('openSettingsScrapers')"
+            @settings-updated="emit('settingsUpdated', $event)"
           />
         </div>
       </div>

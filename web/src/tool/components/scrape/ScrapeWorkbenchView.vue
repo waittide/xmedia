@@ -21,7 +21,6 @@ import {
   LuRefreshCw,
   LuSave,
   LuSearch,
-  LuSparkles,
   LuUnlock,
   LuUpload,
   LuWand2,
@@ -31,7 +30,12 @@ import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { buildArtworkUrl, resolveScraperCoverUrl, toolApi } from '../../api'
 import { formatBytes, formatDuration, useToolText } from '../../i18n'
-import type { MediaFileDetail, MediaFileEntry, ScrapedMetadata } from '../../types'
+import type {
+  MediaFileDetail,
+  MediaFileEntry,
+  PublicSettingsDto,
+  ScrapedMetadata,
+} from '../../types'
 import InspectorBookForm from '../inspector/InspectorBookForm.vue'
 import InspectorComicForm from '../inspector/InspectorComicForm.vue'
 import InspectorMusicForm from '../inspector/InspectorMusicForm.vue'
@@ -58,6 +62,7 @@ const props = defineProps<{
   hasPrev: boolean
   hasNext: boolean
   positionLabel: string
+  settings?: PublicSettingsDto | null
 }>()
 
 const emit = defineEmits<{
@@ -66,8 +71,8 @@ const emit = defineEmits<{
   selectEntry: [entry: MediaFileEntry]
   step: [delta: -1 | 1]
   updated: [detail: MediaFileDetail, bumpArtwork: boolean]
-  openScrape: [detail: MediaFileDetail]
   openSettingsScrapers: []
+  settingsUpdated: [settings: PublicSettingsDto]
   openContentEditor: [entry: MediaFileEntry]
   openNormalizeEpub: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
@@ -102,6 +107,7 @@ const {
 const saving = ref(false)
 const polishingBook = ref(false)
 const uploadingArtwork = ref(false)
+const writeAlbumCover = ref(false)
 const errorMsg = ref<string | null>(null)
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
@@ -312,17 +318,31 @@ async function saveMetadata(
     )
 
     let bumpedArt = false
-    if (pendingCoverUrl.value) {
+    const coverToUpload = pendingCoverUrl.value
+    if (coverToUpload) {
       try {
         const slot = updated.entry.media_kind === 'video' ? 'poster' : 'cover'
         updated = await toolApi.uploadArtworkFromUrl(
           updated.entry.root_id,
           updated.entry.rel_path,
-          pendingCoverUrl.value,
+          coverToUpload,
           slot,
           updated.entry.media_kind,
         )
         bumpedArt = true
+        if (updated.entry.media_kind === 'music' && writeAlbumCover.value) {
+          try {
+            updated = await toolApi.uploadArtworkFromUrl(
+              updated.entry.root_id,
+              updated.entry.rel_path,
+              coverToUpload,
+              'album_cover',
+              'music',
+            )
+          } catch {
+            // Non-fatal sidecar album cover failure
+          }
+        }
       } catch {
         // Keep persisted metadata even if remote cover download fails
       }
@@ -680,16 +700,6 @@ defineExpose({
           />
           <span>切项自动搜</span>
         </label>
-
-        <button
-          v-if="detail"
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state"
-          title="多源高级刮削向导"
-          @click="emit('openScrape', detail)"
-        >
-          <LuSparkles class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
-        </button>
       </div>
     </div>
 
@@ -1003,9 +1013,23 @@ defineExpose({
         <div
           class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/75 px-4 py-2.5"
         >
-          <span class="hidden text-[10px] text-[var(--md-sys-color-on-surface-variant)] xl:inline">
-            ⌘S 保存 · ⌘↵ 下一项
-          </span>
+          <div class="flex items-center gap-3">
+            <span class="hidden text-[10px] text-[var(--md-sys-color-on-surface-variant)] xl:inline">
+              ⌘S 保存 · ⌘↵ 下一项
+            </span>
+            <label
+              v-if="detail.metadata.kind === 'music' && pendingCoverUrl"
+              class="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+              title="保存内嵌封面时同步在专辑目录写入 cover 图片"
+            >
+              <input
+                v-model="writeAlbumCover"
+                type="checkbox"
+                class="h-3.5 w-3.5 accent-[var(--md-sys-color-primary)]"
+              />
+              <span>同步专辑 cover</span>
+            </label>
+          </div>
 
           <div class="ml-auto flex flex-wrap items-center gap-1.5">
             <button
@@ -1050,6 +1074,7 @@ defineExpose({
         <div class="min-h-0 flex-1 overflow-hidden">
           <WorkbenchCandidatePane
             :detail="detail"
+            :settings="settings"
             :auto-search-trigger="autoSearchTrigger"
             :selected-preview-key="candidatePreview?.key ?? null"
             @fill-all="handleFillAll"
@@ -1057,6 +1082,7 @@ defineExpose({
             @direct-apply="(m, mode) => handleDirectApply(m, mode, false)"
             @select-preview="candidatePreview = $event"
             @open-settings="emit('openSettingsScrapers')"
+            @settings-updated="emit('settingsUpdated', $event)"
           />
         </div>
       </div>

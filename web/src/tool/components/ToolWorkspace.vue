@@ -40,7 +40,6 @@ import MusicToolboxModal from './MusicToolboxModal.vue'
 import DryRunScrapeModal from './DryRunScrapeModal.vue'
 import VideoToolboxModal from './VideoToolboxModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
-import OnlineScrapeModal from './OnlineScrapeModal.vue'
 import ScrapeQueueSidebar from './scrape/ScrapeQueueSidebar.vue'
 import ScrapeWorkbenchView from './scrape/ScrapeWorkbenchView.vue'
 import ToolHomeView from './ToolHomeView.vue'
@@ -207,9 +206,6 @@ async function confirmActiveEditorClean(): Promise<boolean> {
 }
 
 const settingsInitialTab = ref<ToolSettingsTab>(initialHash.settingsTab ?? 'appearance')
-const scrapeModalOpen = ref(false)
-const scrapeQueue = ref<MediaFileEntry[]>([])
-const scrapeQueueIndex = ref(0)
 const renameModalOpen = ref(false)
 const batchMetadataModalOpen = ref(false)
 const historyModalOpen = ref(false)
@@ -786,36 +782,6 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
   }
 }
 
-async function handleScrapeApplied(updated: MediaFileDetail): Promise<void> {
-  await handleDetailUpdated(updated, true)
-}
-
-async function handleBatchScrapeApplied(
-  lastDetail: MediaFileDetail | null,
-  summary?: { success: number; failed: number },
-): Promise<void> {
-  artworkVersion.value += 1
-  if (lastDetail) {
-    activeDetail.value = lastDetail
-    inspectingPath.value = lastDetail.entry.rel_path
-  }
-  if (activeRootId.value) {
-    await loadDirectory(activeRootId.value, currentRelPath.value)
-  }
-  if (summary) {
-    snackbar.show({
-      message:
-        summary.failed > 0
-          ? `批量刮削完成：成功 ${summary.success} 项，失败 ${summary.failed} 项`
-          : `批量刮削完成：全部 ${summary.success} 项写入成功`,
-      actionLabel: '变更历史',
-      onAction: () => {
-        historyModalOpen.value = true
-      },
-    })
-  }
-}
-
 async function handleRenamed(
   movedCount: number,
   movedMap: Record<string, string>,
@@ -881,6 +847,12 @@ function handleAutoScrapeToDryRun(entries: MediaFileEntry[]): void {
   autoScrapeModalOpen.value = false
   selectedPaths.value = new Set(entries.map((e) => e.rel_path))
   dryRunModalOpen.value = true
+}
+
+async function handleDryRunManualScrape(entries: MediaFileEntry[]): Promise<void> {
+  dryRunModalOpen.value = false
+  if (entries.length === 0) return
+  await openScrapeWorkbench(entries[0], entries)
 }
 
 async function handleBatchMetadataCompleted(
@@ -1094,13 +1066,6 @@ async function triggerManualRescan(): Promise<void> {
   }
 }
 
-async function handleSelectScrapeQueueIndex(nextIdx: number): Promise<void> {
-  const target = scrapeQueue.value[nextIdx]
-  if (!target) return
-  scrapeQueueIndex.value = nextIdx
-  await inspectEntry(target)
-}
-
 function openBookContentEditor(entry: MediaFileEntry): void {
   bookEditorEntry.value = entry
   bookEditorOpen.value = true
@@ -1154,17 +1119,6 @@ async function handleTxtConvertedToEpub(
       ? `已转换为 EPUB 并移除原 TXT：${epubDetail.entry.file_name}`
       : `已生成标准 EPUB：${epubDetail.entry.file_name}`,
   )
-}
-
-async function openManualScrapeModal(entry: MediaFileEntry): Promise<void> {
-  if (activeDetail.value?.entry.rel_path !== entry.rel_path) {
-    await inspectEntry(entry)
-  }
-  scrapeQueue.value = [entry]
-  scrapeQueueIndex.value = 0
-  if (activeDetail.value) {
-    scrapeModalOpen.value = true
-  }
 }
 
 watch(
@@ -1245,7 +1199,6 @@ async function handleBookNormalizeCompleted(report: NormalizeBooksBatchReportDto
 
 const anyModalOpen = computed(
   () =>
-    scrapeModalOpen.value ||
     renameModalOpen.value ||
     batchMetadataModalOpen.value ||
     historyModalOpen.value ||
@@ -1486,13 +1439,14 @@ onBeforeUnmount(() => {
           :has-prev="hasPrevInspect"
           :has-next="hasNextInspect"
           :position-label="inspectPositionLabel"
+          :settings="settings"
           @exit="exitScrapeWorkbench"
           @toggle-sidebar="toggleSidebar"
           @select-entry="inspectEntry"
           @step="stepInspectingFile"
           @updated="handleDetailUpdated"
-          @open-scrape="(d) => openManualScrapeModal(d.entry)"
           @open-settings-scrapers="openSettingsTab('scrapers')"
+          @settings-updated="handleSettingsUpdated"
           @open-content-editor="openBookContentEditor"
           @open-normalize-epub="(e) => openBookNormalizeModal([e])"
           @open-comic-pages="openComicPageManager"
@@ -1626,6 +1580,7 @@ onBeforeUnmount(() => {
               ref="inspectorRef"
               :detail="activeDetail"
               :artwork-version="artworkVersion"
+              :settings="settings"
               :show-candidates="false"
               :has-prev="hasPrevInspect"
               :has-next="hasNextInspect"
@@ -1633,9 +1588,9 @@ onBeforeUnmount(() => {
               @step="stepInspectingFile"
               @close="activeDetail = null; inspectingPath = null"
               @updated="handleDetailUpdated"
-              @open-scrape="(d) => openManualScrapeModal(d.entry)"
               @open-workbench="(d) => openScrapeWorkbench(d.entry)"
               @open-settings-scrapers="openSettingsTab('scrapers')"
+              @settings-updated="handleSettingsUpdated"
               @open-content-editor="openBookContentEditor"
               @open-normalize-epub="(e) => openBookNormalizeModal([e])"
               @open-comic-pages="openComicPageManager"
@@ -1648,21 +1603,6 @@ onBeforeUnmount(() => {
         </template>
       </main>
     </div>
-
-    <!-- Manual Match Scrape Modal (Accessible from Inspector Drawer) -->
-    <OnlineScrapeModal
-      :open="scrapeModalOpen"
-      :detail="activeDetail"
-      :settings="settings"
-      :queue="scrapeQueue"
-      :queue-index="scrapeQueueIndex"
-      @close="scrapeModalOpen = false"
-      @applied="handleScrapeApplied"
-      @batch-applied="handleBatchScrapeApplied"
-      @select-queue-index="handleSelectScrapeQueueIndex"
-      @open-settings="scrapeModalOpen = false; openSettingsTab('scrapers')"
-      @settings-updated="handleSettingsUpdated"
-    />
 
     <BatchMetadataModal
       v-if="activeRootId"
@@ -1758,6 +1698,7 @@ onBeforeUnmount(() => {
       :entries="selectedEntriesForRename"
       @close="dryRunModalOpen = false"
       @confirm="(entries) => enqueueScrapeFiles(entries)"
+      @manual-scrape="handleDryRunManualScrape"
     />
 
     <!-- Bottom-Right Floating Task Progress Panel (Click task jumps to Tasks View) -->

@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   LuAlertTriangle,
   LuCheckCircle2,
+  LuColumns3,
   LuLoader2,
   LuSearchCheck,
   LuSparkles,
@@ -22,6 +23,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   close: []
   confirm: [selectedEntries: MediaFileEntry[]]
+  manualScrape: [entries: MediaFileEntry[]]
 }>()
 
 const loading = ref(false)
@@ -39,6 +41,16 @@ const entryMap = computed(() => {
 
 const selectedCount = computed(() => checkedPaths.value.size)
 const lowConfidenceCount = computed(() => items.value.filter((i) => i.low_confidence).length)
+const unmatchedEntries = computed<MediaFileEntry[]>(() => {
+  const out: MediaFileEntry[] = []
+  for (const item of items.value) {
+    if (!item.matched || item.low_confidence) {
+      const entry = entryMap.value.get(item.rel_path)
+      if (entry) out.push(entry)
+    }
+  }
+  return out
+})
 
 async function runDryCheck(): Promise<void> {
   if (!props.rootId || props.entries.length === 0) return
@@ -115,6 +127,12 @@ function handleConfirm(): void {
   }
   if (selected.length === 0) return
   emit('confirm', selected)
+  emit('close')
+}
+
+function handleManualScrape(): void {
+  if (unmatchedEntries.value.length === 0) return
+  emit('manualScrape', unmatchedEntries.value)
   emit('close')
 }
 </script>
@@ -220,23 +238,37 @@ function handleConfirm(): void {
           </div>
         </div>
 
-        <div class="flex items-center justify-end gap-2 border-t border-[var(--ctp-surface0)] px-5 py-3">
-          <button
-            type="button"
-            class="rounded-xl border border-[var(--ctp-surface0)] px-3.5 py-1.5 text-xs hover:bg-[var(--ctp-surface0)]/60"
-            @click="emit('close')"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            :disabled="loading || selectedCount === 0"
-            class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] disabled:opacity-50"
-            @click="handleConfirm"
-          >
-            <LuSparkles class="h-3.5 w-3.5" />
-            确认执行刮削（{{ selectedCount }} 项）
-          </button>
+        <div class="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--ctp-surface0)] px-5 py-3">
+          <div>
+            <button
+              v-if="!loading && unmatchedEntries.length > 0"
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-xl border border-amber-500/45 bg-amber-500/10 px-3.5 py-1.5 text-xs font-medium text-amber-500 transition hover:bg-amber-500/20"
+              title="在三栏刮削工作台中逐项手动处理未匹配或低置信度条目"
+              @click="handleManualScrape"
+            >
+              <LuColumns3 class="h-3.5 w-3.5" />
+              <span>手动刮削（{{ unmatchedEntries.length }} 项）</span>
+            </button>
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="rounded-xl border border-[var(--ctp-surface0)] px-3.5 py-1.5 text-xs hover:bg-[var(--ctp-surface0)]/60"
+              @click="emit('close')"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              :disabled="loading || selectedCount === 0"
+              class="inline-flex items-center gap-1.5 rounded-xl bg-[var(--ctp-accent)] px-4 py-1.5 text-xs font-medium text-[var(--ctp-on-accent)] disabled:opacity-50"
+              @click="handleConfirm"
+            >
+              <LuSparkles class="h-3.5 w-3.5" />
+              确认执行刮削（{{ selectedCount }} 项）
+            </button>
+          </div>
         </div>
       </div>
     </div>

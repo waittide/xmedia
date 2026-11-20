@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import {
+  LuArrowDown,
   LuArrowLeft,
+  LuArrowUp,
+  LuBan,
   LuCheck,
   LuChevronDown,
   LuChevronUp,
@@ -10,15 +13,20 @@ import {
   LuLayers,
   LuLoader2,
   LuSearch,
+  LuSlidersHorizontal,
   LuSparkles,
   LuZap,
 } from 'vue-icons-plus/lu'
 import { resolveScraperCoverUrl, toolApi } from '../../api'
+import { mergeScrapedClientSide } from '../../merger'
 import type {
   AggregateScrapeResponse,
   FieldSourceBadge,
   MediaFileDetail,
+  MergedScrapedResult,
+  ProviderBriefDto,
   ProviderStatusDto,
+  PublicSettingsDto,
   ScrapeCandidate,
   ScrapedMetadata,
   ScrapeTargetKind,
@@ -34,6 +42,7 @@ import type { CandidatePreviewState } from './CandidateDetailPreviewPane.vue'
 const props = defineProps<{
   detail: MediaFileDetail | null
   autoSearchTrigger: number
+  settings?: PublicSettingsDto | null
   externalKeyword?: string
   externalArtist?: string
   selectedPreviewKey?: string | null
@@ -45,30 +54,108 @@ const emit = defineEmits<{
   directApply: [meta: ScrapedMetadata, mode: ApplyFillMode]
   selectPreview: [preview: CandidatePreviewState | null]
   openSettings: []
+  settingsUpdated: [settings: PublicSettingsDto]
 }>()
 
 const keyword = ref('')
 const artistOrAuthor = ref('')
+const albumOrSeries = ref('')
+const isbn = ref('')
 const yearInput = ref('')
+const seasonInput = ref('')
+const episodeInput = ref('')
+const durationSecs = ref<number | undefined>(undefined)
 const targetKind = ref<ScrapeTargetKind>('book')
 const fillMode = ref<ApplyFillMode>('overwrite')
 
 const providers = ref<ProviderStatusDto[]>([])
 const enabledProviderIds = ref<string[]>([])
+const ignoredProviderIds = ref<Set<string>>(new Set())
 const activeSourceFilter = ref<string>('all')
 
 const searching = ref(false)
 const searchError = ref<string | null>(null)
 const candidates = ref<ScrapeCandidate[]>([])
-const mergedMeta = ref<ScrapedMetadata | null>(null)
-const mergedFieldSources = ref<Record<string, FieldSourceBadge>>({})
+const serverMergedResult = ref<MergedScrapedResult | null>(null)
+const selectedByProvider = ref<Record<string, ScrapeCandidate>>({})
+const detailsByProvider = ref<Record<string, ScrapedMetadata>>({})
 const mergedExpanded = ref(false)
+const waterfallExpanded = ref(false)
 const expandedKey = ref<string | null>(null)
 const selectedKey = ref<string | null>(null)
 const loadingDetailKey = ref<string | null>(null)
 const detailCache = ref<Map<string, ScrapedMetadata>>(new Map())
 const brokenCoverUrls = ref<Set<string>>(new Set())
 const recentFlash = ref<string | null>(null)
+
+let hydratingFromDetail = false
+let searchRequestSeq = 0
+
+const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>(() => {
+  const kind = props.detail?.entry.media_kind
+  if (kind === 'music') {
+    return [
+      { value: 'music_track', label: '单曲' },
+      { value: 'music_album', label: '整张专辑' },
+      { value: 'lyrics', label: '仅歌词' },
+    ]
+  }
+  if (kind === 'video') {
+    return [
+      { value: 'tv_show', label: '剧集 / 番剧' },
+      { value: 'movie', label: '电影' },
+    ]
+  }
+  if (kind === 'comic') {
+    return [
+      { value: 'comic', label: '漫画源' },
+      { value: 'book', label: '图书 / 轻小说源' },
+    ]
+  }
+  return [{ value: 'book', label: '电子书' }]
+})
+
+const canSearch = computed<boolean>(() =>
+  Boolean(props.detail && (keyword.value.trim().length > 0 || isbn.value.trim().length > 0)),
+)
+
+const orderedActiveBriefs = computed<ProviderBriefDto[]>(() =>
+  enabledProviderIds.value
+    .map((id) => providers.value.find((p) => p.id === id && p.configured))
+    .filter((p): p is ProviderStatusDto => Boolean(p))
+    .map((p) => ({ id: p.id, name: p.name })),
+)
+
+const mergedResult = computed<MergedScrapedResult | null>(() => {
+  if (Object.keys(detailsByProvider.value).length > 0) {
+    return mergeScrapedClientSide(
+      orderedActiveBriefs.value,
+      detailsByProvider.value,
+      targetKind.value,
+      brokenCoverUrls.value,
+      ignoredProviderIds.value,
+      {
+        keyword: keyword.value.trim() || undefined,
+        author: artistOrAuthor.value.trim() || undefined,
+        isbn: isbn.value.trim() || undefined,
+      },
+    )
+  }
+  return serverMergedResult.value
+})
+
+const mergedMeta = computed<ScrapedMetadata | null>(() => mergedResult.value?.metadata ?? null)
+const mergedFieldSources = computed<Record<string, FieldSourceBadge>>(
+  () => mergedResult.value?.field_sources ?? {},
+)
+
+const providerCandidateCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {}
+  for (const c of candidates.value) {
+    counts[c.provider_id] = (counts[c.provider_id] ?? 0) + 1
+  }
+  return counts
+})
 
 function isCoverUsable(url: string | null | undefined): boolean {
   const trimmed = url?.trim()
@@ -225,6 +312,23 @@ watch(fillMode, () => {
   }
 })
 
+watch(mergedResult, (next) => {
+  if (selectedKey.value !== '__merged__') return
+  if (next?.metadata) {
+    emit('selectPreview', {
+      key: '__merged__',
+      isMerged: true,
+      sourceLabel: '多源瀑布聚合结果',
+      meta: next.metadata,
+      loading: false,
+      fieldSources: next.field_sources,
+      fillMode: fillMode.value,
+    })
+  } else {
+    emit('selectPreview', null)
+  }
+})
+
 function flashFeedback(label: string): void {
   recentFlash.value = label
   setTimeout(() => {
@@ -258,19 +362,26 @@ const sourceCounts = computed(() => {
   return Array.from(m.values())
 })
 
-async function loadProvidersForDetail(d: MediaFileDetail): Promise<void> {
-  const target = inferTargetKindFromDetail(d)
-  targetKind.value = target
+async function loadProvidersForTarget(
+  target: ScrapeTargetKind,
+  domain: MediaFileDetail['entry']['media_kind'],
+): Promise<void> {
   try {
-    const list = await toolApi.listProviders(target, d.entry.media_kind)
+    const list = await toolApi.listProviders(target, domain)
     providers.value = list
-    // Keep currently enabled ids if valid, else select all configured providers
+    // Keep currently enabled ids in provider priority order if valid, else select all configured
     const configuredIds = list.filter((p) => p.configured).map((p) => p.id)
-    const retained = enabledProviderIds.value.filter((id) => configuredIds.includes(id))
+    const retained = configuredIds.filter((id) => enabledProviderIds.value.includes(id))
     enabledProviderIds.value = retained.length > 0 ? retained : configuredIds
   } catch {
     providers.value = []
   }
+}
+
+async function loadProvidersForDetail(d: MediaFileDetail): Promise<void> {
+  const target = inferTargetKindFromDetail(d)
+  targetKind.value = target
+  await loadProvidersForTarget(target, d.entry.media_kind)
 }
 
 function toggleProvider(p: ProviderStatusDto): void {
@@ -282,20 +393,98 @@ function toggleProvider(p: ProviderStatusDto): void {
     if (enabledProviderIds.value.length <= 1) return
     enabledProviderIds.value = enabledProviderIds.value.filter((id) => id !== p.id)
   } else {
-    enabledProviderIds.value = [...enabledProviderIds.value, p.id]
+    const nextSet = new Set([...enabledProviderIds.value, p.id])
+    enabledProviderIds.value = providers.value
+      .filter((x) => nextSet.has(x.id))
+      .map((x) => x.id)
   }
+}
+
+function toggleProviderIgnored(providerId: string): void {
+  const next = new Set(ignoredProviderIds.value)
+  if (next.has(providerId)) {
+    next.delete(providerId)
+  } else {
+    next.add(providerId)
+  }
+  ignoredProviderIds.value = next
+}
+
+function clearIgnoredProviders(): void {
+  ignoredProviderIds.value = new Set()
+}
+
+async function moveActiveProviderOrder(idx: number, delta: -1 | 1): Promise<void> {
+  const list = [...enabledProviderIds.value]
+  const targetIdx = idx + delta
+  if (targetIdx < 0 || targetIdx >= list.length) return
+  const [moved] = list.splice(idx, 1)
+  list.splice(targetIdx, 0, moved!)
+  enabledProviderIds.value = list
+
+  const reorderedProviders = [...providers.value].sort((a, b) => {
+    const pa = list.indexOf(a.id)
+    const pb = list.indexOf(b.id)
+    return (pa === -1 ? 999 : pa) - (pb === -1 ? 999 : pb)
+  })
+  providers.value = reorderedProviders
+
+  const dom = props.detail?.entry.media_kind
+  if (dom && props.settings) {
+    const existingDomOrder = props.settings.scraper_priorities[dom] ?? []
+    const fullOrder = [...list, ...existingDomOrder.filter((id) => !list.includes(id))]
+    try {
+      const nextSettings = await toolApi.updateSettings({
+        scraper_priorities: {
+          ...props.settings.scraper_priorities,
+          [dom]: fullOrder,
+        },
+      })
+      emit('settingsUpdated', nextSettings)
+    } catch {
+      // Non-fatal UI convenience sync
+    }
+  }
+}
+
+function isProviderRepresentative(c: ScrapeCandidate): boolean {
+  return selectedByProvider.value[c.provider_id]?.external_id === c.external_id
+}
+
+async function useCandidateForMerge(c: ScrapeCandidate): Promise<void> {
+  const full = (await resolveCandidateDetail(c)) ?? buildLightMetadata(c)
+  selectedByProvider.value = {
+    ...selectedByProvider.value,
+    [c.provider_id]: c,
+  }
+  detailsByProvider.value = {
+    ...detailsByProvider.value,
+    [c.provider_id]: full,
+  }
+  if (ignoredProviderIds.value.has(c.provider_id)) {
+    const nextIgnored = new Set(ignoredProviderIds.value)
+    nextIgnored.delete(c.provider_id)
+    ignoredProviderIds.value = nextIgnored
+  }
+  selectMergedPreview()
+  flashFeedback(`已将「${c.title}」设为 ${c.provider_name} 聚合代表`)
 }
 
 async function runSearch(): Promise<void> {
   if (!props.detail) return
   const kw = keyword.value.trim()
-  if (!kw) return
+  const isbnTrim = isbn.value.trim()
+  if (!kw && !isbnTrim) return
+  const reqSeq = ++searchRequestSeq
   searching.value = true
   searchError.value = null
   candidates.value = []
-  mergedMeta.value = null
-  mergedFieldSources.value = {}
+  serverMergedResult.value = null
+  selectedByProvider.value = {}
+  detailsByProvider.value = {}
+  ignoredProviderIds.value = new Set()
   mergedExpanded.value = false
+  waterfallExpanded.value = false
   expandedKey.value = null
   selectedKey.value = null
   activeSourceFilter.value = 'all'
@@ -303,25 +492,51 @@ async function runSearch(): Promise<void> {
 
   try {
     const parsedYear = yearInput.value.trim() ? Number.parseInt(yearInput.value.trim(), 10) : undefined
+    const parsedSeason = seasonInput.value.trim()
+      ? Number.parseInt(seasonInput.value.trim(), 10)
+      : undefined
+    const parsedEpisode = episodeInput.value.trim()
+      ? Number.parseInt(episodeInput.value.trim(), 10)
+      : undefined
     const q = {
       ...buildDefaultQueryFromDetail(props.detail),
       target: targetKind.value,
-      keyword: kw,
+      keyword: kw || isbnTrim,
       artist_or_author: artistOrAuthor.value.trim() || undefined,
+      album_or_series: albumOrSeries.value.trim() || undefined,
+      isbn: isbnTrim || undefined,
       year: parsedYear && Number.isFinite(parsedYear) ? parsedYear : undefined,
+      season: parsedSeason && Number.isFinite(parsedSeason) ? parsedSeason : undefined,
+      episode: parsedEpisode && Number.isFinite(parsedEpisode) ? parsedEpisode : undefined,
+      duration_secs: durationSecs.value,
       providers: enabledProviderIds.value.length > 0 ? enabledProviderIds.value : undefined,
     }
     const resp: AggregateScrapeResponse = await toolApi.aggregateScrapers(q)
+    if (reqSeq !== searchRequestSeq) return
     candidates.value = resp.candidates
-    mergedMeta.value = resp.merged?.metadata ?? null
-    mergedFieldSources.value = resp.merged?.field_sources ?? {}
+    serverMergedResult.value = resp.merged ?? null
+
     const nextCache = new Map(detailCache.value)
+    const nextDetails: Record<string, ScrapedMetadata> = {}
     for (const [pid, detail] of Object.entries(resp.details_by_provider ?? {})) {
       if (detail) {
+        nextDetails[pid] = detail
         nextCache.set(`${pid}::${detail.external_id}`, detail)
       }
     }
     detailCache.value = nextCache
+    detailsByProvider.value = nextDetails
+
+    const nextSelected: Record<string, ScrapeCandidate> = {}
+    for (const c of resp.candidates) {
+      const detailMatch = nextDetails[c.provider_id]
+      if (detailMatch && c.external_id === detailMatch.external_id) {
+        nextSelected[c.provider_id] = c
+      } else if (!nextSelected[c.provider_id]) {
+        nextSelected[c.provider_id] = c
+      }
+    }
+    selectedByProvider.value = nextSelected
 
     if (mergedMeta.value) {
       selectMergedPreview()
@@ -329,9 +544,12 @@ async function runSearch(): Promise<void> {
       void selectCandidatePreview(candidates.value[0]!)
     }
   } catch (err) {
+    if (reqSeq !== searchRequestSeq) return
     searchError.value = err instanceof Error ? err.message : String(err)
   } finally {
-    searching.value = false
+    if (reqSeq === searchRequestSeq) {
+      searching.value = false
+    }
   }
 }
 
@@ -405,31 +623,63 @@ watch(
   () => props.detail?.entry.rel_path,
   async () => {
     const d = props.detail
+    searchRequestSeq += 1
     if (!d) {
       candidates.value = []
-      mergedMeta.value = null
-      mergedFieldSources.value = {}
+      serverMergedResult.value = null
+      selectedByProvider.value = {}
+      detailsByProvider.value = {}
+      ignoredProviderIds.value = new Set()
       mergedExpanded.value = false
+      waterfallExpanded.value = false
       selectedKey.value = null
       emit('selectPreview', null)
       return
     }
+    hydratingFromDetail = true
     const q = buildDefaultQueryFromDetail(d)
     keyword.value = q.keyword
     artistOrAuthor.value = q.artist_or_author ?? ''
+    albumOrSeries.value = q.album_or_series ?? ''
+    isbn.value = q.isbn ?? ''
     yearInput.value = q.year ? String(q.year) : ''
+    seasonInput.value = q.season !== undefined && q.season !== null ? String(q.season) : ''
+    episodeInput.value = q.episode !== undefined && q.episode !== null ? String(q.episode) : ''
+    durationSecs.value = q.duration_secs ?? undefined
     candidates.value = []
-    mergedMeta.value = null
-    mergedFieldSources.value = {}
+    serverMergedResult.value = null
+    selectedByProvider.value = {}
+    detailsByProvider.value = {}
+    ignoredProviderIds.value = new Set()
     mergedExpanded.value = false
+    waterfallExpanded.value = false
     expandedKey.value = null
     selectedKey.value = null
     searchError.value = null
     emit('selectPreview', null)
     await loadProvidersForDetail(d)
+    hydratingFromDetail = false
   },
   { immediate: true },
 )
+
+watch(targetKind, async (next, prev) => {
+  if (hydratingFromDetail || !props.detail) return
+  const d = props.detail
+  if (d.metadata.kind === 'music') {
+    if (next === 'music_album') {
+      const alb = albumOrSeries.value.trim() || d.metadata.data.album.trim()
+      if (alb) keyword.value = alb
+    } else if (prev === 'music_album') {
+      const song = d.metadata.data.title.trim() || d.entry.display_title
+      if (song) keyword.value = song
+    }
+  }
+  await loadProvidersForTarget(next, d.entry.media_kind)
+  if (canSearch.value) {
+    void runSearch()
+  }
+})
 
 watch(
   () => props.autoSearchTrigger,
@@ -565,6 +815,27 @@ defineExpose({
         </div>
       </div>
 
+      <!-- Target Sub-Kind Switcher (Music / Video / Comic) -->
+      <div
+        v-if="detail && targetTabs.length > 1"
+        class="flex flex-wrap items-center gap-1 rounded-xl bg-[var(--ctp-canvas)] p-0.5 border border-[var(--ctp-surface0)]/80"
+      >
+        <button
+          v-for="tab in targetTabs"
+          :key="tab.value"
+          type="button"
+          class="flex-1 rounded-lg px-2 py-1 text-[10px] font-semibold transition"
+          :class="
+            targetKind === tab.value
+              ? 'bg-[var(--ctp-accent)] text-[var(--ctp-on-accent)]'
+              : 'text-[var(--ctp-subtext1)] hover:text-[var(--ctp-text)]'
+          "
+          @click="targetKind = tab.value"
+        >
+          {{ tab.label }}
+        </button>
+      </div>
+
       <!-- Search Inputs -->
       <div class="flex gap-1.5">
         <input
@@ -577,7 +848,7 @@ defineExpose({
         />
         <button
           type="button"
-          :disabled="!detail || searching || !keyword.trim()"
+          :disabled="!canSearch || searching"
           class="inline-flex h-8 shrink-0 items-center gap-1 rounded-xl bg-[var(--ctp-accent)] px-3 text-xs font-semibold text-[var(--ctp-on-accent)] shadow-sm transition hover:opacity-95 disabled:opacity-45"
           @click="runSearch"
         >
@@ -587,12 +858,91 @@ defineExpose({
         </button>
       </div>
 
-      <div class="grid grid-cols-3 gap-1.5">
+      <!-- Domain-Specific Secondary Query Inputs -->
+      <div v-if="detail?.entry.media_kind === 'book'" class="grid grid-cols-2 gap-1.5">
+        <input
+          v-model="artistOrAuthor"
+          type="text"
+          placeholder="作者 (可选)"
+          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+        <input
+          v-model="isbn"
+          type="text"
+          placeholder="ISBN (可选)"
+          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+      </div>
+
+      <div v-else-if="detail?.entry.media_kind === 'music'" class="grid grid-cols-5 gap-1.5">
+        <input
+          v-model="artistOrAuthor"
+          type="text"
+          placeholder="歌手 (可选)"
+          class="col-span-2 h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+        <input
+          v-model="albumOrSeries"
+          type="text"
+          placeholder="专辑 (可选)"
+          class="col-span-2 h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+        <input
+          v-model="yearInput"
+          type="text"
+          placeholder="年份"
+          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+      </div>
+
+      <div
+        v-else-if="detail?.entry.media_kind === 'video' && targetKind === 'tv_show'"
+        class="grid grid-cols-3 gap-1.5"
+      >
+        <input
+          v-model="seasonInput"
+          type="text"
+          placeholder="季 (S)"
+          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+        <input
+          v-model="episodeInput"
+          type="text"
+          placeholder="集 (E)"
+          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+        <input
+          v-model="yearInput"
+          type="text"
+          placeholder="年份"
+          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+      </div>
+
+      <div v-else-if="detail?.entry.media_kind === 'video'" class="grid grid-cols-2 gap-1.5">
+        <input
+          v-model="yearInput"
+          type="text"
+          placeholder="上映年份 (可选)"
+          class="h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)]"
+          @keydown.enter.prevent="runSearch"
+        />
+      </div>
+
+      <div v-else class="grid grid-cols-3 gap-1.5">
         <input
           v-model="artistOrAuthor"
           type="text"
           :disabled="!detail"
-          placeholder="作者/歌手（可选）"
+          placeholder="作者/画师（可选）"
           class="col-span-2 h-7 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 text-[11px] text-[var(--ctp-text)] outline-none focus:border-[var(--ctp-accent)] disabled:opacity-50"
           @keydown.enter.prevent="runSearch"
         />
@@ -623,7 +973,13 @@ defineExpose({
           "
           @click="toggleProvider(p)"
         >
-          <LuKey v-if="!p.configured && p.requires_api_key" class="h-2.5 w-2.5" />
+          <span
+            v-if="p.configured && enabledProviderIds.includes(p.id)"
+            class="font-mono text-[9px] font-bold opacity-80"
+          >
+            #{{ enabledProviderIds.indexOf(p.id) + 1 }}
+          </span>
+          <LuKey v-else-if="!p.configured && p.requires_api_key" class="h-2.5 w-2.5" />
           <span>{{ p.name }}</span>
         </button>
       </div>
@@ -672,7 +1028,7 @@ defineExpose({
           点候选的「← 整条填入」或点任意字段胶囊即可回填至中栏，确认后再保存
         </p>
         <button
-          v-if="configuredProviders.length > 0 && keyword.trim()"
+          v-if="configuredProviders.length > 0 && canSearch"
           type="button"
           class="mt-1 inline-flex items-center gap-1 rounded-xl border border-[var(--ctp-accent)]/60 bg-[var(--ctp-accent-soft)] px-3 py-1.5 text-[11px] font-semibold text-[var(--ctp-accent)] transition hover:opacity-90"
           @click="runSearch"
@@ -683,6 +1039,21 @@ defineExpose({
       </div>
 
       <template v-else>
+        <!-- All-Muted Fallback Banner -->
+        <div
+          v-if="!mergedMeta && ignoredProviderIds.size > 0"
+          class="flex items-center justify-between gap-2 rounded-2xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-400"
+        >
+          <span>已临时屏蔽全部命中源（{{ ignoredProviderIds.size }} 个）</span>
+          <button
+            type="button"
+            class="rounded-lg border border-amber-500/40 px-2 py-0.5 text-[10px] font-semibold hover:bg-amber-500/20"
+            @click="clearIgnoredProviders"
+          >
+            恢复全部源
+          </button>
+        </div>
+
         <!-- Multi-source Merged Quick Card -->
         <div
           v-if="mergedMeta"
@@ -774,8 +1145,25 @@ defineExpose({
 
                 <button
                   type="button"
+                  class="inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-[10px] font-medium transition"
+                  :class="
+                    waterfallExpanded || ignoredProviderIds.size > 0
+                      ? 'border-[var(--ctp-accent)] bg-[var(--ctp-accent-soft)]/60 text-[var(--ctp-accent)]'
+                      : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]'
+                  "
+                  title="调整各源优先级、临时屏蔽干扰源或切换单源聚合代表"
+                  @click.stop="waterfallExpanded = !waterfallExpanded; if (waterfallExpanded) mergedExpanded = false; selectMergedPreview()"
+                >
+                  <LuSlidersHorizontal class="h-3 w-3" />
+                  <span>
+                    调源{{ ignoredProviderIds.size > 0 ? ` (-${ignoredProviderIds.size})` : '' }}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
                   class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-subtext1)] transition hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-text)]"
-                  @click.stop="mergedExpanded = !mergedExpanded; selectMergedPreview()"
+                  @click.stop="mergedExpanded = !mergedExpanded; if (mergedExpanded) waterfallExpanded = false; selectMergedPreview()"
                 >
                   <LuChevronUp v-if="mergedExpanded" class="h-3 w-3" />
                   <LuChevronDown v-else class="h-3 w-3" />
@@ -791,6 +1179,101 @@ defineExpose({
                   <LuZap class="h-3 w-3" />
                   <span>直写</span>
                 </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Interactive Multi-Source Waterfall Priority & Mute Drawer -->
+          <div
+            v-if="waterfallExpanded"
+            class="mt-2.5 space-y-1.5 border-t border-[var(--ctp-accent)]/25 pt-2"
+            @click.stop
+          >
+            <div class="flex items-center justify-between text-[10px] text-[var(--ctp-subtext0)]">
+              <span>按顺序互补填充，可上下调权、屏蔽干扰源或换选候选：</span>
+              <button
+                v-if="ignoredProviderIds.size > 0"
+                type="button"
+                class="shrink-0 font-semibold text-[var(--ctp-accent)] hover:underline"
+                @click="clearIgnoredProviders"
+              >
+                全部恢复
+              </button>
+            </div>
+            <div class="space-y-1">
+              <div
+                v-for="(brief, idx) in orderedActiveBriefs"
+                :key="brief.id"
+                class="flex items-center justify-between gap-1.5 rounded-lg border px-2 py-1.5 text-[10px] transition"
+                :class="
+                  ignoredProviderIds.has(brief.id)
+                    ? 'border-dashed border-[var(--ctp-surface0)] bg-[var(--ctp-mantle)]/40 opacity-55'
+                    : 'border-[var(--ctp-surface0)] bg-[var(--ctp-canvas)]/90'
+                "
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-1">
+                    <span class="font-mono text-[9px] font-bold text-[var(--ctp-accent)]">
+                      #{{ idx + 1 }}
+                    </span>
+                    <span
+                      class="font-semibold text-[var(--ctp-text)]"
+                      :class="ignoredProviderIds.has(brief.id) ? 'line-through' : ''"
+                    >
+                      {{ brief.name }}
+                    </span>
+                  </div>
+                  <div class="truncate text-[9px] text-[var(--ctp-subtext0)]">
+                    {{
+                      selectedByProvider[brief.id]?.title ||
+                      detailsByProvider[brief.id]?.title ||
+                      '未命中'
+                    }}
+                  </div>
+                </div>
+
+                <div class="flex shrink-0 items-center gap-0.5">
+                  <button
+                    v-if="(providerCandidateCounts[brief.id] ?? 0) > 1"
+                    type="button"
+                    class="rounded-md border border-[var(--ctp-surface0)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--ctp-subtext1)] hover:border-[var(--ctp-accent)] hover:text-[var(--ctp-accent)]"
+                    title="筛选此源下的所有候选以便换选聚合条目"
+                    @click="activeSourceFilter = activeSourceFilter === brief.id ? 'all' : brief.id"
+                  >
+                    换选({{ providerCandidateCounts[brief.id] }})
+                  </button>
+                  <button
+                    type="button"
+                    class="rounded-md p-1 transition"
+                    :class="
+                      ignoredProviderIds.has(brief.id)
+                        ? 'bg-rose-500/15 text-rose-400'
+                        : 'text-[var(--ctp-subtext0)] hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)]'
+                    "
+                    :title="ignoredProviderIds.has(brief.id) ? '恢复此源参与聚合' : '临时屏蔽此源'"
+                    @click="toggleProviderIgnored(brief.id)"
+                  >
+                    <LuBan class="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="idx === 0"
+                    class="rounded-md p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)] disabled:opacity-30"
+                    title="提升优先级"
+                    @click="moveActiveProviderOrder(idx, -1)"
+                  >
+                    <LuArrowUp class="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="idx === orderedActiveBriefs.length - 1"
+                    class="rounded-md p-1 text-[var(--ctp-subtext0)] transition hover:bg-[var(--ctp-surface0)]/70 hover:text-[var(--ctp-text)] disabled:opacity-30"
+                    title="降低优先级"
+                    @click="moveActiveProviderOrder(idx, 1)"
+                  >
+                    <LuArrowDown class="h-3 w-3" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -985,6 +1468,26 @@ defineExpose({
                   <LuChevronDown v-else class="h-3 w-3" />
                   <span>逐项挑选</span>
                 </button>
+
+                <button
+                  v-if="!isProviderRepresentative(c)"
+                  type="button"
+                  :disabled="loadingDetailKey === candKey(c)"
+                  class="inline-flex items-center gap-1 rounded-lg border border-[var(--ctp-accent)]/45 bg-[var(--ctp-canvas)] px-2 py-1 text-[10px] font-medium text-[var(--ctp-accent)] transition hover:bg-[var(--ctp-accent-soft)] disabled:opacity-50"
+                  title="将此候选设为该数据源的聚合代表，并实时重算多源瀑布聚合结果"
+                  @click.stop="useCandidateForMerge(c)"
+                >
+                  <LuLayers class="h-3 w-3" />
+                  <span>用于聚合</span>
+                </button>
+                <span
+                  v-else-if="(providerCandidateCounts[c.provider_id] ?? 0) > 1"
+                  class="inline-flex items-center gap-0.5 rounded-lg bg-[var(--ctp-accent-soft)]/50 px-1.5 py-1 text-[9px] font-semibold text-[var(--ctp-accent)]"
+                  title="当前已作为该数据源的聚合代表"
+                >
+                  <LuCheck class="h-2.5 w-2.5" />
+                  <span>聚合中</span>
+                </span>
 
                 <button
                   type="button"
