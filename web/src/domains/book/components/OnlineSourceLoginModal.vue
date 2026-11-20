@@ -102,11 +102,17 @@ async function triggerAction(item: LoginUiItem): Promise<void> {
         ? resp.diagnostics.toasts[resp.diagnostics.toasts.length - 1]
         : null
     if (latestToast) {
-      snackbar.show({
-        message: latestToast.replace(/\s+/g, ' ').slice(0, 120),
-      })
+      const lines = latestToast
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean)
+      if (lines.length === 1 && lines[0]!.length <= 60) {
+        snackbar.show({ message: lines[0]! })
+      } else {
+        snackbar.show({ message: `「${item.name}」执行完成，详情已在上方反馈区完整展示` })
+      }
     } else if (resp.result) {
-      snackbar.show({ message: `${item.name}：${resp.result.slice(0, 100)}` })
+      snackbar.show({ message: `${item.name}：${resp.result.slice(0, 60)}` })
     } else {
       snackbar.show({ message: `已执行「${item.name}」` })
     }
@@ -215,21 +221,30 @@ async function saveRawVariable(): Promise<void> {
                 <LuTerminal class="h-3.5 w-3.5" />
                 <span>书源反馈 · {{ lastActionName }}</span>
               </div>
-              <button
-                v-if="lastDiagnostics.logs.length > 0"
-                type="button"
-                class="text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)]"
-                @click="showLogs = !showLogs"
-              >
-                {{ showLogs ? '隐藏调试日志' : `查看调试日志 (${lastDiagnostics.logs.length})` }}
-              </button>
+              <div class="flex items-center gap-3">
+                <button
+                  v-if="lastDiagnostics.logs.length > 0"
+                  type="button"
+                  class="text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)]"
+                  @click="showLogs = !showLogs"
+                >
+                  {{ showLogs ? '隐藏调试日志' : `查看调试日志 (${lastDiagnostics.logs.length})` }}
+                </button>
+                <button
+                  type="button"
+                  class="text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
+                  @click="lastDiagnostics = null"
+                >
+                  收起
+                </button>
+              </div>
             </div>
 
-            <div class="max-h-40 space-y-1.5 overflow-y-auto">
+            <div class="max-h-[45vh] space-y-1.5 overflow-y-auto">
               <pre
                 v-for="(toast, i) in lastDiagnostics.toasts"
                 :key="`toast-${i}`"
-                class="whitespace-pre-wrap break-words rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface)]"
+                class="whitespace-pre-wrap break-words rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2.5 font-mono text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface)] [tab-size:2]"
               >{{ toast }}</pre>
               <div
                 v-if="lastDiagnostics.toasts.length === 0"
