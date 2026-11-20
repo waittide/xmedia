@@ -16,13 +16,21 @@ const snackbar = useSnackbarStore()
           :key="snackbar.current.id"
           role="status"
           aria-live="polite"
-          class="pointer-events-auto flex max-w-lg items-center gap-3 rounded-[var(--md-sys-shape-corner-md)] py-2.5 pr-2.5 pl-4 text-[13px] font-medium shadow-[var(--md-sys-elevation-3)]"
+          class="pointer-events-auto flex max-w-lg items-center gap-3 overflow-hidden rounded-[var(--md-sys-shape-corner-md)] border py-2.5 pr-2.5 pl-3.5 text-[13px] font-medium shadow-[var(--md-sys-elevation-3)] backdrop-blur-md"
           :class="
             snackbar.current.tone === 'error'
-              ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-              : 'bg-[var(--md-sys-color-inverse-surface)] text-[var(--md-sys-color-inverse-on-surface)]'
+              ? 'border-[var(--md-sys-color-error)]/40 bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
+              : 'border-[var(--md-sys-color-primary)]/30 bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface)]'
           "
         >
+          <span
+            class="h-5 w-1 shrink-0 rounded-full"
+            :class="
+              snackbar.current.tone === 'error'
+                ? 'bg-[var(--md-sys-color-error)]'
+                : 'bg-[var(--md-sys-color-primary)]'
+            "
+          />
           <span class="min-w-0 flex-1 leading-snug">{{ snackbar.current.message }}</span>
 
           <button
@@ -32,8 +40,8 @@ const snackbar = useSnackbarStore()
             class="md-state inline-flex shrink-0 items-center gap-1 rounded-full px-3 py-1.5 text-xs font-semibold tracking-wide transition disabled:opacity-50"
             :class="
               snackbar.current.tone === 'error'
-                ? 'text-[var(--md-sys-color-on-error-container)]'
-                : 'text-[var(--md-sys-color-inverse-primary)]'
+                ? 'bg-[var(--md-sys-color-error)]/15 text-[var(--md-sys-color-on-error-container)]'
+                : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
             "
             @click="snackbar.triggerAction()"
           >

@@ -75,7 +75,7 @@ function selectTab(tab: SettingsTab): void {
           @click="selectTab('appearance')"
         >
           <LuPalette class="h-4 w-4" />
-          <span>{{ t('settings.tabAppearance') }}</span>
+          <span>{{ t('settings.navAppearance') }}</span>
         </button>
 
         <button
@@ -89,7 +89,7 @@ function selectTab(tab: SettingsTab): void {
           @click="selectTab('preferences')"
         >
           <LuRadio class="h-4 w-4" />
-          <span>{{ t('settings.tabPreferences') }}</span>
+          <span>{{ t('settings.navPreferences') }}</span>
         </button>
 
         <button
@@ -103,7 +103,7 @@ function selectTab(tab: SettingsTab): void {
           @click="selectTab('account')"
         >
           <LuKeyRound class="h-4 w-4" />
-          <span>{{ t('settings.tabAccount') }}</span>
+          <span>{{ t('settings.navAccount') }}</span>
         </button>
 
         <template v-if="authStore.isAdmin">
@@ -120,7 +120,7 @@ function selectTab(tab: SettingsTab): void {
             @click="selectTab('libraries')"
           >
             <LuLibrary class="h-4 w-4" />
-            <span>{{ t('settings.tabLibraries') }}</span>
+            <span>{{ t('settings.navLibraries') }}</span>
           </button>
 
           <button
@@ -134,7 +134,7 @@ function selectTab(tab: SettingsTab): void {
             @click="selectTab('users')"
           >
             <LuUsers class="h-4 w-4" />
-            <span>{{ t('settings.tabUsers') }}</span>
+            <span>{{ t('settings.navUsers') }}</span>
           </button>
         </template>
       </nav>

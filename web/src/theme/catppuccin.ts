@@ -495,11 +495,13 @@ export function applyResolvedPaletteToDom(
   const outline = mixHex(resolved.subtext0, surface, 0.65)
   const outlineVariant = mixHex(resolved.surface0, surface, 0.72)
 
-  const inverseSurface = isDark ? '#e3e2e9' : '#2e3038'
-  const inverseOnSurface = isDark ? '#1b1b1f' : '#f2f0f7'
+  const inverseSurface = isDark
+    ? mixHex(resolved.text, resolved.accent, 0.9)
+    : mixHex(resolved.text, resolved.accent, 0.88)
+  const inverseOnSurface = chooseContrastText(inverseSurface)
   const inversePrimary = isDark
-    ? mixHex(resolved.accent, '#000000', 0.52)
-    : mixHex(resolved.accent, '#ffffff', 0.42)
+    ? mixHex(resolved.accent, resolved.canvas, 0.68)
+    : mixHex(resolved.accent, '#ffffff', 0.55)
 
   const [tr, tg, tb] = parseHexRgb(resolved.text)
   const onSurfaceRgb = [tr, tg, tb].join(' ')

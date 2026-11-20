@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, type Component } from 'vue'
+import { computed, ref, watch, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
@@ -16,6 +16,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
+import { useToolText } from '../i18n'
 import type { PublicSettingsDto } from '../types'
 import ToolScrapersSettingsTab from './settings/ToolScrapersSettingsTab.vue'
 import ToolRootsSettingsTab from './settings/ToolRootsSettingsTab.vue'
@@ -37,6 +38,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const txt = useToolText()
 
 const activeTab = ref<ToolSettingsTab>(props.initialTab ?? 'appearance')
 const domainSubTab = ref<MediaKind>(props.activeDomain)
@@ -69,12 +71,12 @@ function flashSavedBanner(): void {
   }, 2200)
 }
 
-const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
-  { value: 'book', label: '图书', icon: LuBookOpen },
-  { value: 'comic', label: '漫画', icon: LuLayers },
-  { value: 'music', label: '音乐', icon: LuDisc3 },
-  { value: 'video', label: '影视', icon: LuClapperboard },
-]
+const domainTabItems = computed<{ value: MediaKind; label: string; icon: Component }[]>(() => [
+  { value: 'book', label: txt.value.domains.book, icon: LuBookOpen },
+  { value: 'comic', label: txt.value.domains.comic, icon: LuLayers },
+  { value: 'music', label: txt.value.domains.music, icon: LuDisc3 },
+  { value: 'video', label: txt.value.domains.video, icon: LuClapperboard },
+])
 </script>
 
 <template>
@@ -86,7 +88,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
           {{ t('settings.title') }}
         </h1>
         <p class="mt-1 text-xs text-[var(--ctp-subtext0)]">
-          管理界面外观、各媒体类型目录白名单、刮削源优先级、元数据缓存与重命名模板
+          {{ txt.settings.subtitle }}
         </p>
       </div>
       <button
@@ -95,7 +97,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
         @click="emit('back')"
       >
         <LuArrowLeft class="h-3.5 w-3.5" />
-        <span>返回整理台</span>
+        <span>{{ txt.settings.backToWorkbench }}</span>
       </button>
     </div>
 
@@ -113,7 +115,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
           @click="activeTab = 'appearance'"
         >
           <LuPalette class="h-4 w-4" />
-          <span>{{ t('settings.tabAppearance') }}</span>
+          <span>{{ t('settings.navAppearance') }}</span>
         </button>
 
         <button
@@ -127,7 +129,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
           @click="activeTab = 'scrapers'"
         >
           <LuSparkles class="h-4 w-4" />
-          <span>刮削源与缓存</span>
+          <span>{{ txt.settings.tabScrapers }}</span>
         </button>
 
         <div class="my-2 hidden h-px bg-[var(--md-sys-color-outline-variant)]/50 lg:block" />
@@ -143,7 +145,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
           @click="activeTab = 'roots'"
         >
           <LuLibrary class="h-4 w-4" />
-          <span>目录白名单</span>
+          <span>{{ txt.settings.tabRoots }}</span>
         </button>
 
         <button
@@ -157,7 +159,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
           @click="activeTab = 'templates'"
         >
           <LuFileSignature class="h-4 w-4" />
-          <span>重命名模板</span>
+          <span>{{ txt.settings.tabTemplates }}</span>
         </button>
 
       </nav>
@@ -177,7 +179,7 @@ const domainTabItems: { value: MediaKind; label: string; icon: Component }[] = [
           class="flex items-center gap-2 rounded-xl border border-[var(--ctp-green)]/40 bg-[var(--ctp-green)]/10 px-4 py-3 text-xs font-medium text-[var(--ctp-green)]"
         >
           <LuCheckCircle2 class="h-4 w-4 shrink-0" />
-          <span>设置已持久化保存并立即生效</span>
+          <span>{{ txt.settings.savedBanner }}</span>
         </div>
 
         <!-- Domain Isolation Sub-Tab Bar (for scrapers / roots / templates) -->
