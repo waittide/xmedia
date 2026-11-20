@@ -3,7 +3,6 @@ import { ref, type Component } from 'vue'
 import {
   LuChevronDown,
   LuChevronRight,
-  LuFolder,
   LuFolderPlus,
   LuHardDrive,
   LuHome,
@@ -30,7 +29,6 @@ const emit = defineEmits<{
   switchDomain: [domain: MediaKind]
   navigatePrimary: [nav: 'home' | 'items']
   openSettingsRoots: []
-  openFoldersView: []
   selectRoot: [rootId: string]
 }>()
 
@@ -143,14 +141,6 @@ const rootsFolded = ref(false)
         @click="emit('openSettingsRoots')"
       >
         <LuHardDrive class="h-[18px] w-[18px]" />
-      </button>
-      <button
-        type="button"
-        class="md-icon-btn md-state"
-        title="文件夹视图"
-        @click="emit('openFoldersView')"
-      >
-        <LuFolder class="h-[18px] w-[18px]" />
       </button>
     </nav>
 

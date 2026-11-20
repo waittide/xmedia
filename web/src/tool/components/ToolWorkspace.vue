@@ -2037,7 +2037,6 @@ onBeforeUnmount(() => {
         @switch-domain="switchDomain"
         @navigate-primary="(nav) => navigatePrimary(nav)"
         @open-settings-roots="openSettingsTab('roots')"
-        @open-folders-view="setViewMode('folders'); navigatePrimary('items')"
         @select-root="(rid) => selectRoot(rid)"
       />
 
