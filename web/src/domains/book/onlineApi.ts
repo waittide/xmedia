@@ -217,10 +217,10 @@ export function buildOnlineDownloadFileUrl(jobId: string): string {
 
 export const onlineBookApi = {
   listSources: (): Promise<BookSourceSummaryDto[]> =>
-    requestJson('/api/v1/book/sources'),
+    requestJson('/book/sources'),
 
   importSources: (rawJson: string): Promise<ImportBookSourcesReportDto> =>
-    requestJson('/api/v1/book/sources/import', {
+    requestJson('/book/sources/import', {
       method: 'POST',
       body: JSON.stringify({ raw_json: rawJson }),
     }),
@@ -235,13 +235,13 @@ export const onlineBookApi = {
       variable?: string
     },
   ): Promise<BookSourceSummaryDto> =>
-    requestJson(`/api/v1/book/sources/${encodeURIComponent(id)}`, {
+    requestJson(`/book/sources/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
 
   deleteSource: (id: string): Promise<void> =>
-    requestJson(`/api/v1/book/sources/${encodeURIComponent(id)}`, {
+    requestJson(`/book/sources/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
 
@@ -253,13 +253,13 @@ export const onlineBookApi = {
     loginInfo: Record<string, string>,
     action?: string,
   ): Promise<LoginActionResponseDto> =>
-    requestJson(`/api/v1/book/sources/${encodeURIComponent(id)}/login-action`, {
+    requestJson(`/book/sources/${encodeURIComponent(id)}/login-action`, {
       method: 'POST',
       body: JSON.stringify({ login_info: loginInfo, action: action ?? null }),
     }),
 
   testSource: (id: string, keyword?: string): Promise<SourceTestReportDto> =>
-    requestJson(`/api/v1/book/sources/${encodeURIComponent(id)}/test`, {
+    requestJson(`/book/sources/${encodeURIComponent(id)}/test`, {
       method: 'POST',
       body: JSON.stringify({ keyword: keyword?.trim() || null }),
     }),
@@ -269,7 +269,7 @@ export const onlineBookApi = {
     sourceIds?: string[],
     page = 1,
   ): Promise<AggregatedSearchResponseDto> =>
-    requestJson('/api/v1/book/online/search', {
+    requestJson('/book/online/search', {
       method: 'POST',
       body: JSON.stringify({
         keyword,
@@ -283,7 +283,7 @@ export const onlineBookApi = {
     bookUrl: string,
     fallbackHint?: BookJsContextInput,
   ): Promise<OnlineBookDetailResponseDto> =>
-    requestJson('/api/v1/book/online/book-info', {
+    requestJson('/book/online/book-info', {
       method: 'POST',
       body: JSON.stringify({
         source_id: sourceId,
@@ -297,7 +297,7 @@ export const onlineBookApi = {
     tocUrl: string,
     book: BookJsContextInput,
   ): Promise<OnlineTocResponseDto> =>
-    requestJson('/api/v1/book/online/toc', {
+    requestJson('/book/online/toc', {
       method: 'POST',
       body: JSON.stringify({
         source_id: sourceId,
@@ -318,7 +318,7 @@ export const onlineBookApi = {
     chapter: ChapterJsContextInput,
     forceRefresh = false,
   ): Promise<OnlineContentResponseDto> =>
-    requestJson('/api/v1/book/online/content', {
+    requestJson('/book/online/content', {
       method: 'POST',
       body: JSON.stringify({
         source_id: sourceId,
@@ -335,7 +335,7 @@ export const onlineBookApi = {
     }),
 
   listShelf: (): Promise<OnlineShelfBookDto[]> =>
-    requestJson('/api/v1/book/online/shelf'),
+    requestJson('/book/online/shelf'),
 
   addToShelf: (payload: {
     source_id: string
@@ -349,7 +349,7 @@ export const onlineBookApi = {
     last_chapter?: string | null
     total_chapters?: number
   }): Promise<OnlineShelfBookDto> =>
-    requestJson('/api/v1/book/online/shelf', {
+    requestJson('/book/online/shelf', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
@@ -367,18 +367,18 @@ export const onlineBookApi = {
       book_url?: string
     },
   ): Promise<OnlineShelfBookDto> =>
-    requestJson(`/api/v1/book/online/shelf/${encodeURIComponent(id)}`, {
+    requestJson(`/book/online/shelf/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
 
   removeFromShelf: (id: string): Promise<void> =>
-    requestJson(`/api/v1/book/online/shelf/${encodeURIComponent(id)}`, {
+    requestJson(`/book/online/shelf/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
 
   listDownloads: (): Promise<OnlineDownloadJobDto[]> =>
-    requestJson('/api/v1/book/online/downloads'),
+    requestJson('/book/online/downloads'),
 
   startDownload: (payload: {
     source_id: string
@@ -393,11 +393,11 @@ export const onlineBookApi = {
     end_chapter?: number
     import_to_library: boolean
   }): Promise<OnlineDownloadJobDto> =>
-    requestJson('/api/v1/book/online/downloads', {
+    requestJson('/book/online/downloads', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
 
   getDownload: (id: string): Promise<OnlineDownloadJobDto> =>
-    requestJson(`/api/v1/book/online/downloads/${encodeURIComponent(id)}`),
+    requestJson(`/book/online/downloads/${encodeURIComponent(id)}`),
 }
