@@ -193,7 +193,7 @@ async function handleDeleteServer(server: ServerProfile): Promise<void> {
 
 <template>
   <div
-    class="safe-pb flex min-h-screen flex-col bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)]"
+    class="safe-pb flex min-h-screen flex-col bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)]"
   >
     <header class="safe-pt safe-px">
       <div class="flex items-center justify-between px-5 py-4 sm:px-6">
@@ -233,7 +233,7 @@ async function handleDeleteServer(server: ServerProfile): Promise<void> {
       <div class="flex w-full flex-col items-center gap-5 px-4 py-6">
       <!-- Connect / Add Server Card -->
       <section
-        class="w-full max-w-lg rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] p-6 shadow-[var(--md-sys-elevation-2)] sm:p-8"
+        class="w-full max-w-lg rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-6 shadow-[var(--md-sys-elevation-2)] sm:p-8"
       >
         <div class="mb-6 flex items-center gap-3">
           <div
@@ -291,7 +291,7 @@ async function handleDeleteServer(server: ServerProfile): Promise<void> {
           </div>
 
           <div
-            class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3"
+            class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-4 py-3"
           >
             <AppSwitch
               v-model="allowInsecureTls"
@@ -351,7 +351,7 @@ async function handleDeleteServer(server: ServerProfile): Promise<void> {
       <!-- Saved Servers List Card -->
       <section
         v-if="appServersStore.servers.length > 0"
-        class="w-full max-w-lg rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] p-5 shadow-[var(--md-sys-elevation-1)] sm:p-6"
+        class="w-full max-w-lg rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-5 shadow-[var(--md-sys-elevation-1)] sm:p-6"
       >
         <div class="mb-3.5 flex items-center justify-between px-1">
           <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
@@ -371,8 +371,8 @@ async function handleDeleteServer(server: ServerProfile): Promise<void> {
             class="flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3 transition-colors"
             :class="
               item.id === appServersStore.activeServerId
-                ? 'bg-[var(--md-sys-color-secondary-container)]/55 ring-1 ring-[var(--md-sys-color-primary)]/40'
-                : 'bg-[var(--md-sys-color-surface-container-low)] hover:bg-[var(--md-sys-color-surface-container)]'
+                ? 'bg-[var(--md-sys-color-secondary-container)]/65 ring-1 ring-[var(--md-sys-color-primary)]/45'
+                : 'bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]'
             "
           >
             <div class="min-w-0 flex-1">

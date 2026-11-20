@@ -33,7 +33,7 @@ async function onSubmit(): Promise<void> {
 
 <template>
   <div
-    class="safe-pb flex min-h-screen flex-col bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)]"
+    class="safe-pb flex min-h-screen flex-col bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)]"
   >
     <header class="safe-pt safe-px">
       <div class="flex items-center justify-between px-6 py-4">
@@ -52,11 +52,11 @@ async function onSubmit(): Promise<void> {
     <main class="safe-px flex flex-1 items-center justify-center">
       <div class="flex w-full justify-center p-4">
         <div
-          class="w-full max-w-md rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] p-8 shadow-[var(--md-sys-elevation-2)]"
+          class="w-full max-w-md rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-8 shadow-[var(--md-sys-elevation-2)]"
         >
         <div
           v-if="appServersStore.isClientApp"
-          class="mb-5 flex items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-3.5 py-2.5 ring-1 ring-[var(--md-sys-color-outline-variant)]/45"
+          class="mb-5 flex items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-3.5 py-2.5 ring-1 ring-[var(--md-sys-color-outline-variant)]/45"
         >
           <div class="flex min-w-0 items-center gap-2.5">
             <LuServer class="h-4 w-4 shrink-0 text-[var(--md-sys-color-primary)]" />

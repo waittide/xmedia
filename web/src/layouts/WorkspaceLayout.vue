@@ -589,17 +589,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Center: Mobile Global Search Trigger Pill (< sm) -->
-      <button
-        type="button"
-        class="md-state flex h-10 min-w-0 flex-1 items-center gap-2 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3.5 text-left text-xs text-[var(--md-sys-color-on-surface-variant)] sm:hidden"
-        :aria-label="t('common.search')"
-        @click="commandPaletteOpen = true"
-      >
-        <LuSearch class="h-4 w-4 shrink-0" />
-        <span class="truncate">{{ activeSearchValue || t('common.search') + '…' }}</span>
-      </button>
-
       <!-- Center: Unified MD3 Search Bar (sm+) -->
       <form
         class="relative mx-auto hidden max-w-md flex-1 sm:block lg:max-w-lg"
@@ -636,8 +625,18 @@ onBeforeUnmount(() => {
         </button>
       </form>
 
-      <!-- Right: Upload Menu + Background Tasks Ring Button + Theme + Avatar Menu -->
+      <!-- Right: Mobile Search Icon + Upload Menu + Background Tasks Ring Button + Theme + Avatar Menu -->
       <div class="flex shrink-0 items-center gap-1">
+        <button
+          type="button"
+          class="md-icon-btn md-state sm:hidden"
+          :title="t('common.search')"
+          :aria-label="t('common.search')"
+          @click="commandPaletteOpen = true"
+        >
+          <LuSearch class="h-[18px] w-[18px]" />
+        </button>
+
         <!-- Upload Menu (Files / Folder) -->
         <div v-if="authStore.isAdmin" ref="uploadMenuRef" class="relative">
           <button
@@ -856,18 +855,22 @@ onBeforeUnmount(() => {
         @open-customizer="layoutCustomizerOpen = true"
       />
 
-      <!-- Main Route Viewport (MD3 Tonal Surface Container without harsh borders) -->
-      <main
-        ref="mainScrollRef"
-        class="min-w-0 flex-1 overflow-y-auto bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
-        :class="!showMobileBottomNav && !showMusicBar ? 'safe-pb md:pb-0' : ''"
+      <!-- Main Route Viewport (Outer rounded clip avoids scroll-layer corner artifacts) -->
+      <div
+        class="min-w-0 flex-1 overflow-hidden bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
       >
-        <RouterView v-slot="{ Component }">
-          <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">
-            <component :is="Component" />
-          </KeepAlive>
-        </RouterView>
-      </main>
+        <main
+          ref="mainScrollRef"
+          class="h-full overflow-y-auto"
+          :class="!showMobileBottomNav && !showMusicBar ? 'safe-pb md:pb-0' : ''"
+        >
+          <RouterView v-slot="{ Component }">
+            <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">
+              <component :is="Component" />
+            </KeepAlive>
+          </RouterView>
+        </main>
+      </div>
     </div>
 
     <!-- Reserve Space for Persistent Global PlayerBar Rendered in App.vue -->

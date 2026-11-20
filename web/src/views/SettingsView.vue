@@ -89,7 +89,7 @@ function selectTab(tab: SettingsTab): void {
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
       <!-- Left Settings Category Rail (MD3 Full-Pill Active Indicator) -->
-      <nav class="flex gap-1 overflow-x-auto lg:flex-col">
+      <nav class="no-scrollbar flex gap-1 overflow-x-auto lg:flex-col">
         <template v-for="(item, idx) in visibleNavItems" :key="item.id">
           <div
             v-if="item.adminOnly && idx > 0 && !visibleNavItems[idx - 1]?.adminOnly"

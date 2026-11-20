@@ -327,12 +327,12 @@ a,
   .md-btn:disabled {
     cursor: not-allowed;
     box-shadow: none;
-    color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+    color: color-mix(in srgb, var(--md-sys-color-on-surface) 48%, transparent);
   }
 
   .md-btn-filled:disabled,
   .md-btn-tonal:disabled {
-    background-color: color-mix(in srgb, var(--md-sys-color-on-surface) 12%, transparent);
+    background-color: color-mix(in srgb, var(--md-sys-color-on-surface) 14%, transparent);
     border-color: transparent;
   }
 
@@ -728,4 +728,15 @@ nav::-webkit-scrollbar-track,
 [class*="overflow-x-auto"]::-webkit-scrollbar-track,
 [class*="overflow-auto"]::-webkit-scrollbar-track {
   background: transparent;
+}
+
+.no-scrollbar {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
 }

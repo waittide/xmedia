@@ -16,6 +16,7 @@ import {
   LuSearch,
   LuSettings2,
   LuTrash2,
+  LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
@@ -604,7 +605,8 @@ function closeDownloadModal(): void {
           class="md-btn md-btn-sm md-btn-filled md-state mt-4"
           @click="activeTab = enabledSources.length > 0 || !authStore.isAdmin ? 'search' : 'sources'"
         >
-          <LuSearch class="h-3.5 w-3.5" />
+          <LuSearch v-if="enabledSources.length > 0 || !authStore.isAdmin" class="h-3.5 w-3.5" />
+          <LuUpload v-else class="h-3.5 w-3.5" />
           <span>{{ enabledSources.length > 0 || !authStore.isAdmin ? '去搜索' : '去导入' }}</span>
         </button>
       </div>

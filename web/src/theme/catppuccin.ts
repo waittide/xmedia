@@ -519,11 +519,11 @@ export function applyResolvedPaletteToDom(
       relativeLuminance(resolved.shell) < surfaceLum - 0.002
         ? mixHex(resolved.shell, '#000000', 0.86)
         : mixHex(surface, '#000000', 0.74)
-    containerLow = mixHex(surface, tintedTop, 0.72)
-    containerDefault = mixHex(surface, tintedTop, 0.48)
-    containerHigh = mixHex(surface, tintedTop, 0.22)
+    containerLow = mixHex(surface, tintedTop, 0.76)
+    containerDefault = mixHex(surface, tintedTop, 0.54)
+    containerHigh = mixHex(surface, tintedTop, 0.28)
     containerHighest = mixHex(tintedTop, resolved.text, 0.94)
-    surfaceBright = mixHex(tintedTop, resolved.text, 0.82)
+    surfaceBright = mixHex(tintedTop, resolved.text, 0.84)
   } else {
     // Light mode: strictly darken from lowest -> surface -> low -> default -> high -> highest -> dim.
     const rawDeep =
@@ -549,20 +549,20 @@ export function applyResolvedPaletteToDom(
   const onPrimary = chooseContrastText(primary)
   const primaryContainer = isDark
     ? mixHex(primary, surface, 0.34)
-    : mixHex(primary, '#ffffff', 0.18)
+    : mixHex(primary, '#ffffff', 0.22)
   const onPrimaryContainer = ensureContrast(
     isDark ? mixHex(primary, '#ffffff', 0.24) : mixHex(primary, '#081020', 0.42),
     primaryContainer,
   )
 
-  const secondarySat = primaryS < 0.06 ? primaryS : Math.max(0.14, Math.min(0.36, primaryS * 0.42))
-  const secondary = hslToHex((primaryH + 8) % 360, secondarySat, isDark ? 0.76 : 0.38)
+  const secondarySat = primaryS < 0.06 ? primaryS : Math.max(0.24, Math.min(0.52, primaryS * 0.64))
+  const secondary = hslToHex((primaryH + 6) % 360, secondarySat, isDark ? 0.78 : 0.4)
   const onSecondary = chooseContrastText(secondary)
   const secondaryContainer = isDark
-    ? mixHex(secondary, containerHighest, 0.26)
-    : mixHex(secondary, '#ffffff', 0.18)
+    ? mixHex(primary, containerHigh, 0.24)
+    : mixHex(primary, '#ffffff', 0.16)
   const onSecondaryContainer = ensureContrast(
-    isDark ? mixHex(secondary, '#ffffff', 0.22) : mixHex(secondary, '#10141c', 0.38),
+    isDark ? mixHex(primary, '#ffffff', 0.2) : mixHex(primary, '#0c1424', 0.36),
     secondaryContainer,
   )
 
