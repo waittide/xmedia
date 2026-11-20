@@ -64,6 +64,7 @@ const emit = defineEmits<{
   step: [delta: -1 | 1]
   'update:showCandidates': [open: boolean]
   openScrape: [detail: MediaFileDetail]
+  openWorkbench: [detail: MediaFileDetail]
   openSettingsScrapers: []
   openContentEditor: [entry: MediaFileEntry]
   openComicPages: [entry: MediaFileEntry]
@@ -456,20 +457,15 @@ defineExpose({
       </div>
 
       <div class="flex shrink-0 items-center gap-1">
-        <!-- Seamless Toggle for Inline Online Candidate Comparison -->
+        <!-- Enter Full 3-Column Scraping Workbench -->
         <button
           type="button"
-          class="md-btn md-btn-sm md-state"
-          :class="
-            showCandidates
-              ? 'md-btn-filled'
-              : 'md-btn-tonal'
-          "
-          title="在同屏右侧展开在线候选并单字段回填"
-          @click="emit('update:showCandidates', !showCandidates)"
+          class="md-btn md-btn-sm md-btn-tonal md-state"
+          title="进入三栏刮削工作台（左本地 · 中刮削源 · 右可编辑预览）"
+          @click="emit('openWorkbench', detail)"
         >
           <LuColumns3 class="h-3.5 w-3.5" />
-          <span>{{ showCandidates ? '收起候选' : '在线对照' }}</span>
+          <span>刮削工作台</span>
         </button>
 
         <button

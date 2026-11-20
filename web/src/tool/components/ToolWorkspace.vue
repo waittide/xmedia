@@ -39,6 +39,8 @@ import DryRunScrapeModal from './DryRunScrapeModal.vue'
 import VideoToolboxModal from './VideoToolboxModal.vue'
 import MetadataInspectorDrawer from './MetadataInspectorDrawer.vue'
 import OnlineScrapeModal from './OnlineScrapeModal.vue'
+import ScrapeQueueSidebar from './scrape/ScrapeQueueSidebar.vue'
+import ScrapeWorkbenchView from './scrape/ScrapeWorkbenchView.vue'
 import ToolHomeView from './ToolHomeView.vue'
 import ToolItemsBrowser from './ToolItemsBrowser.vue'
 import ToolSettingsView, { type ToolSettingsTab } from './ToolSettingsView.vue'
@@ -151,15 +153,6 @@ function loadSavedViewMode(): BrowseViewMode {
   return 'flat'
 }
 const viewMode = ref<BrowseViewMode>(loadSavedViewMode())
-const inspectorCandidatesOpen = ref(
-  localStorage.getItem('xmedia_tool.inspector_candidates') === '1' ||
-    localStorage.getItem('xmedia_tool.view_mode') === 'workbench',
-)
-
-function setInspectorCandidatesOpen(open: boolean): void {
-  inspectorCandidatesOpen.value = open
-  localStorage.setItem('xmedia_tool.inspector_candidates', open ? '1' : '0')
-}
 const sortField = ref<SortField>(loadSavedSortField())
 const sortDir = ref<SortDir>(
   localStorage.getItem('xmedia_tool.sort_dir') === 'desc' ? 'desc' : 'asc',
@@ -194,8 +187,22 @@ const selectedPaths = ref<Set<string>>(new Set())
 const inspectingPath = ref<string | null>(null)
 const activeDetail = ref<MediaFileDetail | null>(null)
 const inspectorRef = ref<InstanceType<typeof MetadataInspectorDrawer> | null>(null)
+const scrapeWorkbenchRef = ref<InstanceType<typeof ScrapeWorkbenchView> | null>(null)
+const scrapeWorkbenchActive = ref(false)
+const scrapeWorkbenchPaths = ref<string[] | null>(null)
+const scrapeWorkbenchSavedPaths = ref<Set<string>>(new Set())
 const loadingInspector = ref(false)
 const artworkVersion = ref(1)
+
+async function confirmActiveEditorClean(): Promise<boolean> {
+  if (scrapeWorkbenchRef.value) {
+    return scrapeWorkbenchRef.value.confirmDiscardIfDirty()
+  }
+  if (inspectorRef.value) {
+    return inspectorRef.value.confirmDiscardIfDirty()
+  }
+  return true
+}
 
 const settingsInitialTab = ref<ToolSettingsTab>(initialHash.settingsTab ?? 'appearance')
 const scrapeModalOpen = ref(false)
@@ -242,12 +249,15 @@ function syncHashFromState(replace = false): void {
 
 async function navigatePrimary(nav: 'home' | 'items' | 'tasks'): Promise<void> {
   if (
-    activeNav.value !== nav &&
-    (nav === 'tasks' || activeNav.value === 'settings') &&
-    inspectorRef.value &&
-    !(await inspectorRef.value.confirmDiscardIfDirty())
+    (activeNav.value !== nav || scrapeWorkbenchActive.value) &&
+    (nav === 'tasks' || nav === 'home' || activeNav.value === 'settings') &&
+    !(await confirmActiveEditorClean())
   ) {
     return
+  }
+  if (nav !== 'items') {
+    scrapeWorkbenchActive.value = false
+    scrapeWorkbenchPaths.value = null
   }
   activeNav.value = nav
   previousWorkspaceNav.value = nav
@@ -509,9 +519,11 @@ async function switchDomain(next: MediaKind): Promise<void> {
     mobileMenuOpen.value = false
     return
   }
-  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+  if (!(await confirmActiveEditorClean())) {
     return
   }
+  scrapeWorkbenchActive.value = false
+  scrapeWorkbenchPaths.value = null
   activeDomain.value = next
   mobileMenuOpen.value = false
   localStorage.setItem('xmedia_tool.active_domain', next)
@@ -634,9 +646,11 @@ async function loadDirectory(rootId: string, relPath: string): Promise<void> {
 }
 
 async function selectRoot(rootId: string): Promise<void> {
-  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+  if (!(await confirmActiveEditorClean())) {
     return
   }
+  scrapeWorkbenchActive.value = false
+  scrapeWorkbenchPaths.value = null
   mobileMenuOpen.value = false
   if (activeNav.value === 'settings' || activeNav.value === 'tasks') {
     await navigatePrimary('items')
@@ -651,9 +665,11 @@ async function selectRoot(rootId: string): Promise<void> {
 }
 
 async function enterFolder(relPath: string, forceFoldersView = true): Promise<void> {
-  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+  if (!(await confirmActiveEditorClean())) {
     return
   }
+  scrapeWorkbenchActive.value = false
+  scrapeWorkbenchPaths.value = null
   mobileMenuOpen.value = false
   workbenchFocusPaths.value = null
   if (forceFoldersView) {
@@ -670,7 +686,7 @@ async function enterFolder(relPath: string, forceFoldersView = true): Promise<vo
 
 async function inspectEntry(entry: MediaFileEntry): Promise<void> {
   if (activeDetail.value?.entry.rel_path === entry.rel_path) return
-  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+  if (!(await confirmActiveEditorClean())) {
     return
   }
   const seq = ++inspectSeq
@@ -742,6 +758,17 @@ async function handleDetailUpdated(updated: MediaFileDetail, bumpArt = false): P
   }
   activeDetail.value = updated
   inspectingPath.value = updated.entry.rel_path
+
+  if (scrapeWorkbenchActive.value) {
+    const nextSaved = new Set(scrapeWorkbenchSavedPaths.value)
+    nextSaved.add(updated.entry.rel_path)
+    scrapeWorkbenchSavedPaths.value = nextSaved
+    if (prevRel && prevRel !== updated.entry.rel_path && scrapeWorkbenchPaths.value) {
+      scrapeWorkbenchPaths.value = scrapeWorkbenchPaths.value.map((p) =>
+        p === prevRel ? updated.entry.rel_path : p,
+      )
+    }
+  }
 
   if (prevRel && prevRel !== updated.entry.rel_path && activeRootId.value) {
     await loadDirectory(activeRootId.value, currentRelPath.value)
@@ -923,9 +950,17 @@ async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<
   completenessFilter.value = 'all'
   workbenchFocusPaths.value = new Set(payload.relPaths)
   setViewMode('flat')
-  setInspectorCandidatesOpen(payload.openCandidates ?? true)
   activeNav.value = 'items'
-  const firstEntry = (snapshot.value?.files ?? []).find((f) => payload.relPaths.includes(f.rel_path))
+  const matchedEntries = (snapshot.value?.files ?? []).filter((f) =>
+    payload.relPaths.includes(f.rel_path),
+  )
+  if (payload.openCandidates ?? true) {
+    if (matchedEntries.length > 0) {
+      await openScrapeWorkbench(matchedEntries[0], matchedEntries)
+    }
+    return
+  }
+  const firstEntry = matchedEntries[0]
   if (firstEntry) {
     void inspectEntry(firstEntry)
   }
@@ -936,11 +971,14 @@ async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<v
   completenessFilter.value = 'all'
   workbenchFocusPaths.value = new Set([payload.relPath])
   setViewMode('flat')
-  setInspectorCandidatesOpen(Boolean(payload.openCandidates))
   activeNav.value = 'items'
   const target = (snapshot.value?.files ?? []).find((f) => f.rel_path === payload.relPath)
   if (target) {
-    await inspectEntry(target)
+    if (payload.openCandidates) {
+      await openScrapeWorkbench(target, [target])
+    } else {
+      await inspectEntry(target)
+    }
   } else {
     try {
       const detail = await toolApi.inspectFile(payload.rootId, payload.relPath, payload.domain)
@@ -973,23 +1011,68 @@ async function handleOpenTaskBookEditor(payload: InspectTaskItemPayload): Promis
   }
 }
 
+const workbenchQueueEntries = computed<MediaFileEntry[]>(() => {
+  const scoped = scrapeWorkbenchPaths.value
+  if (!scoped) return filteredFiles.value
+  const byPath = new Map((snapshot.value?.files ?? []).map((f) => [f.rel_path, f]))
+  const resolved: MediaFileEntry[] = []
+  for (const p of scoped) {
+    const hit = byPath.get(p)
+    if (hit) resolved.push(hit)
+  }
+  return resolved.length > 0 ? resolved : filteredFiles.value
+})
+
+const activeQueueList = computed<MediaFileEntry[]>(() =>
+  scrapeWorkbenchActive.value ? workbenchQueueEntries.value : filteredFiles.value,
+)
+
+async function openScrapeWorkbench(
+  targetEntry?: MediaFileEntry,
+  scopedEntries?: MediaFileEntry[],
+): Promise<void> {
+  if (!(await confirmActiveEditorClean())) return
+  const scopedList = scopedEntries && scopedEntries.length > 0 ? scopedEntries : null
+  scrapeWorkbenchPaths.value = scopedList ? scopedList.map((e) => e.rel_path) : null
+  scrapeWorkbenchSavedPaths.value = new Set()
+  scrapeWorkbenchActive.value = true
+  activeNav.value = 'items'
+  mobileMenuOpen.value = false
+
+  const target =
+    targetEntry ??
+    (scopedList ? scopedList[0] : activeDetail.value?.entry ?? filteredFiles.value[0])
+  if (target) {
+    if (activeDetail.value?.entry.rel_path !== target.rel_path) {
+      await inspectEntry(target)
+    }
+  }
+}
+
+async function exitScrapeWorkbench(): Promise<void> {
+  if (!(await confirmActiveEditorClean())) return
+  scrapeWorkbenchActive.value = false
+  scrapeWorkbenchPaths.value = null
+  mobileMenuOpen.value = false
+}
+
 const inspectingIndex = computed(() => {
   if (!inspectingPath.value) return -1
-  return filteredFiles.value.findIndex((f) => f.rel_path === inspectingPath.value)
+  return activeQueueList.value.findIndex((f) => f.rel_path === inspectingPath.value)
 })
 
 const hasPrevInspect = computed(() => inspectingIndex.value > 0)
 const hasNextInspect = computed(
-  () => inspectingIndex.value >= 0 && inspectingIndex.value < filteredFiles.value.length - 1,
+  () => inspectingIndex.value >= 0 && inspectingIndex.value < activeQueueList.value.length - 1,
 )
 const inspectPositionLabel = computed(() => {
   if (inspectingIndex.value < 0) return ''
-  return `${inspectingIndex.value + 1} / ${filteredFiles.value.length}`
+  return `${inspectingIndex.value + 1} / ${activeQueueList.value.length}`
 })
 
 async function stepInspectingFile(delta: -1 | 1): Promise<void> {
   const nextIdx = inspectingIndex.value + delta
-  const target = filteredFiles.value[nextIdx]
+  const target = activeQueueList.value[nextIdx]
   if (!target) return
   await inspectEntry(target)
 }
@@ -1102,11 +1185,12 @@ function handleSettingsUpdated(next: PublicSettingsDto): void {
 async function openSettingsTab(tab: ToolSettingsTab): Promise<void> {
   if (
     activeNav.value !== 'settings' &&
-    inspectorRef.value &&
-    !(await inspectorRef.value.confirmDiscardIfDirty())
+    !(await confirmActiveEditorClean())
   ) {
     return
   }
+  scrapeWorkbenchActive.value = false
+  scrapeWorkbenchPaths.value = null
   settingsInitialTab.value = tab
   if (activeNav.value !== 'settings') {
     previousWorkspaceNav.value = activeNav.value
@@ -1194,7 +1278,11 @@ function handleKeydown(ev: KeyboardEvent): void {
 }
 
 function handleBeforeUnload(ev: BeforeUnloadEvent): void {
-  if (taskStore.activeCount > 0 || inspectorRef.value?.isDirty) {
+  if (
+    taskStore.activeCount > 0 ||
+    inspectorRef.value?.isDirty ||
+    scrapeWorkbenchRef.value?.isDirty
+  ) {
     ev.preventDefault()
     ev.returnValue = ''
   }
@@ -1203,7 +1291,7 @@ function handleBeforeUnload(ev: BeforeUnloadEvent): void {
 async function handleHashChange(): Promise<void> {
   const parsed = parseToolHash()
   if (!parsed.domain && !parsed.nav) return
-  if (inspectorRef.value && !(await inspectorRef.value.confirmDiscardIfDirty())) {
+  if (!(await confirmActiveEditorClean())) {
     syncHashFromState(true)
     return
   }
@@ -1299,9 +1387,28 @@ onBeforeUnmount(() => {
       @toggle-settings="activeNav === 'settings' ? exitSettings() : openSettingsTab('appearance')"
     />
 
-    <!-- Middle Body: Collapsible Sidebar + Flush Rounded Main Canvas -->
+    <!-- Middle Body: Collapsible Sidebar (Normal Nav OR Scrape Queue) + Flush Rounded Main Canvas -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
+      <ScrapeQueueSidebar
+        v-if="scrapeWorkbenchActive && activeNav === 'items'"
+        :mobile-menu-open="mobileMenuOpen"
+        :collapsed="collapsed"
+        :is-compact="isCompact"
+        :entries="workbenchQueueEntries"
+        :active-path="inspectingPath"
+        :saved-paths="scrapeWorkbenchSavedPaths"
+        :artwork-version="artworkVersion"
+        :has-prev="hasPrevInspect"
+        :has-next="hasNextInspect"
+        @close-mobile="mobileMenuOpen = false"
+        @exit="exitScrapeWorkbench"
+        @toggle-collapse="toggleSidebar"
+        @select-entry="(entry) => { mobileMenuOpen = false; void inspectEntry(entry) }"
+        @step="stepInspectingFile"
+      />
+
       <ToolSidebar
+        v-else
         :mobile-menu-open="mobileMenuOpen"
         :collapsed="collapsed"
         :is-compact="isCompact"
@@ -1327,7 +1434,35 @@ onBeforeUnmount(() => {
       <main
         class="flex min-w-0 flex-1 overflow-hidden bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
       >
-        <div class="min-w-0 flex-1 overflow-y-auto">
+        <!-- FULL-CANVAS 3-COLUMN SCRAPE WORKBENCH MODE -->
+        <ScrapeWorkbenchView
+          v-if="scrapeWorkbenchActive && activeNav === 'items'"
+          ref="scrapeWorkbenchRef"
+          :detail="activeDetail"
+          :loading-detail="loadingInspector"
+          :entries="workbenchQueueEntries"
+          :saved-paths="scrapeWorkbenchSavedPaths"
+          :artwork-version="artworkVersion"
+          :sidebar-collapsed="collapsed"
+          :has-prev="hasPrevInspect"
+          :has-next="hasNextInspect"
+          :position-label="inspectPositionLabel"
+          @exit="exitScrapeWorkbench"
+          @toggle-sidebar="toggleSidebar"
+          @select-entry="inspectEntry"
+          @step="stepInspectingFile"
+          @updated="handleDetailUpdated"
+          @open-scrape="(d) => openManualScrapeModal(d.entry)"
+          @open-settings-scrapers="openSettingsTab('scrapers')"
+          @open-content-editor="openBookContentEditor"
+          @open-comic-pages="openComicPageManager"
+          @open-music-tools="(e) => openMusicToolbox([e])"
+          @open-video-tools="(e) => openVideoToolbox([e])"
+          @open-history="historyModalOpen = true"
+        />
+
+        <template v-else>
+          <div class="min-w-0 flex-1 overflow-y-auto">
           <!-- VIEW 1: IN-PAGE SETTINGS (Server SettingsView Left-Right Layout + Domain Tabs) -->
           <ToolSettingsView
             v-if="activeNav === 'settings'"
@@ -1410,6 +1545,7 @@ onBeforeUnmount(() => {
             @set-sort-field="setSortField"
             @toggle-sort-dir="toggleSortDir"
             @enqueue-scrape-selection="enqueueScrapeForSelection"
+            @open-scrape-workbench="(scoped) => openScrapeWorkbench(undefined, scoped)"
             @open-comic-series-tools="comicSeriesToolsOpen = true"
             @open-music-toolbox="openMusicToolbox"
             @open-video-toolbox="openVideoToolbox"
@@ -1449,15 +1585,15 @@ onBeforeUnmount(() => {
               ref="inspectorRef"
               :detail="activeDetail"
               :artwork-version="artworkVersion"
-              :show-candidates="inspectorCandidatesOpen"
+              :show-candidates="false"
               :has-prev="hasPrevInspect"
               :has-next="hasNextInspect"
               :position-label="inspectPositionLabel"
-              @update:show-candidates="setInspectorCandidatesOpen"
               @step="stepInspectingFile"
               @close="activeDetail = null; inspectingPath = null"
               @updated="handleDetailUpdated"
               @open-scrape="(d) => openManualScrapeModal(d.entry)"
+              @open-workbench="(d) => openScrapeWorkbench(d.entry)"
               @open-settings-scrapers="openSettingsTab('scrapers')"
               @open-content-editor="openBookContentEditor"
               @open-comic-pages="openComicPageManager"
@@ -1467,6 +1603,7 @@ onBeforeUnmount(() => {
             />
           </div>
         </Transition>
+        </template>
       </main>
     </div>
 

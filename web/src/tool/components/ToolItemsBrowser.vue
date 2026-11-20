@@ -7,6 +7,7 @@ import {
   LuCheck,
   LuChevronRight,
   LuClapperboard,
+  LuColumns3,
   LuCornerLeftUp,
   LuDisc3,
   LuFileSignature,
@@ -88,6 +89,7 @@ const emit = defineEmits<{
   setSortField: [field: ToolSortField]
   toggleSortDir: []
   enqueueScrapeSelection: []
+  openScrapeWorkbench: [entries?: MediaFileEntry[]]
   openComicSeriesTools: []
   openMusicToolbox: [entries: MediaFileEntry[]]
   openVideoToolbox: [entries: MediaFileEntry[]]
@@ -318,6 +320,17 @@ function relativeDirBadge(relPath: string): string | null {
             "
             @change="emit('toggleSelectAll')"
           />
+
+          <button
+            v-if="filteredFiles.length > 0 && selectedPaths.size === 0"
+            type="button"
+            class="md-btn md-btn-sm md-btn-outlined md-state"
+            title="进入三栏刮削工作台（左本地 · 中刮削源 · 右对照编辑）"
+            @click="emit('openScrapeWorkbench')"
+          >
+            <LuColumns3 class="h-3.5 w-3.5" />
+            <span>刮削工作台</span>
+          </button>
 
           <button
             v-if="filteredFiles.length > 0 && selectedPaths.size === 0"
@@ -985,6 +998,16 @@ function relativeDirBadge(relPath: string): string | null {
           >
             <LuSparkles class="h-3.5 w-3.5" />
             <span>自动刮削</span>
+          </button>
+
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
+            title="在三栏刮削工作台中逐项对照与编辑已选条目"
+            @click="emit('openScrapeWorkbench', checkedFiles)"
+          >
+            <LuColumns3 class="h-3.5 w-3.5" />
+            <span>刮削工作台</span>
           </button>
 
           <button

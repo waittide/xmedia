@@ -1,20 +1,27 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import {
   LuArrowLeft,
   LuBookOpen,
   LuClapperboard,
   LuDisc3,
   LuImage,
+  LuImageOff,
   LuLayers,
   LuLoader2,
+  LuRotateCcw,
+  LuSkipForward,
   LuX,
   LuZap,
 } from 'vue-icons-plus/lu'
 import type { MediaKind } from '@/types/api'
 import { resolveScraperCoverUrl } from '../../api'
 import type { FieldSourceBadge, ScrapedMetadata } from '../../types'
-import type { ApplyFillMode, ScrapedFieldKey } from '../inspector/useMetadataForm'
+import {
+  splitListTokens,
+  type ApplyFillMode,
+  type ScrapedFieldKey,
+} from '../inspector/useMetadataForm'
 
 export interface CandidatePreviewState {
   key: string
@@ -26,26 +33,168 @@ export interface CandidatePreviewState {
   fillMode: ApplyFillMode
 }
 
-const props = defineProps<{
-  mediaKind: MediaKind
-  preview: CandidatePreviewState
-}>()
+const props = withDefaults(
+  defineProps<{
+    mediaKind: MediaKind
+    preview: CandidatePreviewState
+    hasNext?: boolean
+    closable?: boolean
+    saving?: boolean
+  }>(),
+  {
+    hasNext: false,
+    closable: true,
+    saving: false,
+  },
+)
 
 const emit = defineEmits<{
   fillAll: [meta: ScrapedMetadata, mode: ApplyFillMode]
   fillField: [field: ScrapedFieldKey, meta: ScrapedMetadata, label: string]
   directApply: [meta: ScrapedMetadata, mode: ApplyFillMode]
+  directApplyNext: [meta: ScrapedMetadata, mode: ApplyFillMode]
   close: []
 }>()
 
 const brokenCoverUrls = ref<Set<string>>(new Set())
 
+interface DraftFields {
+  title: string
+  originalTitle: string
+  creators: string
+  directors: string
+  cast: string
+  seriesOrAlbum: string
+  publisherOrStudio: string
+  dateOrYear: string
+  isbn: string
+  rating: string
+  language: string
+  discOrSeason: string
+  trackOrEpisode: string
+  genres: string
+  tags: string
+  combinedBookTags: string
+  summary: string
+  lyrics: string
+  useCover: boolean
+}
+
+const draft = reactive<DraftFields>({
+  title: '',
+  originalTitle: '',
+  creators: '',
+  directors: '',
+  cast: '',
+  seriesOrAlbum: '',
+  publisherOrStudio: '',
+  dateOrYear: '',
+  isbn: '',
+  rating: '',
+  language: '',
+  discOrSeason: '',
+  trackOrEpisode: '',
+  genres: '',
+  tags: '',
+  combinedBookTags: '',
+  summary: '',
+  lyrics: '',
+  useCover: true,
+})
+
+const baselineJson = ref('')
+
+function hydrateDraft(m: ScrapedMetadata | null): void {
+  if (!m) {
+    baselineJson.value = ''
+    return
+  }
+  const combinedTags = Array.from(new Set([...(m.genres ?? []), ...(m.tags ?? [])].filter(Boolean)))
+  draft.title = m.title ?? ''
+  draft.originalTitle = m.original_title ?? ''
+  draft.creators = (m.creators ?? []).join(' / ')
+  draft.directors = (m.illustrators_or_directors ?? []).join(' / ')
+  draft.cast = (m.cast ?? []).join(' / ')
+  draft.seriesOrAlbum = m.series_or_album ?? ''
+  draft.publisherOrStudio = m.publisher_or_studio ?? ''
+  draft.dateOrYear = m.published_date || (m.year ? String(m.year) : '')
+  draft.isbn = m.isbn ?? ''
+  draft.rating = m.rating ? String(m.rating) : ''
+  draft.language = m.language ?? ''
+  draft.discOrSeason = m.disc_or_season_number ? String(m.disc_or_season_number) : ''
+  draft.trackOrEpisode = m.track_or_episode_number ? String(m.track_or_episode_number) : ''
+  draft.genres = (m.genres ?? []).join(' / ')
+  draft.tags = (m.tags ?? []).join(' / ')
+  draft.combinedBookTags = combinedTags.join(' / ')
+  draft.summary = m.summary ?? ''
+  draft.lyrics = m.synced_lyrics || m.plain_lyrics || ''
+  draft.useCover = Boolean(m.cover_url)
+  baselineJson.value = JSON.stringify(draft)
+}
+
 watch(
-  () => props.preview.meta?.cover_url,
-  () => {
-    // keep previously known broken URLs, no-op needed
+  () => [props.preview.key, props.preview.meta, props.preview.loading] as const,
+  ([, meta]) => {
+    hydrateDraft(meta)
   },
+  { immediate: true },
 )
+
+const isDraftEdited = computed(() => {
+  if (!baselineJson.value) return false
+  return JSON.stringify(draft) !== baselineJson.value
+})
+
+function resetDraft(): void {
+  hydrateDraft(props.preview.meta)
+}
+
+function buildEditedMetadata(): ScrapedMetadata | null {
+  const base = props.preview.meta
+  if (!base) return null
+
+  const trimmedDate = draft.dateOrYear.trim()
+  const yearMatch = trimmedDate.match(/^(\d{4})/)
+  const parsedYear = yearMatch ? Number.parseInt(yearMatch[1]!, 10) : null
+  const parsedRating = draft.rating.trim() ? Number.parseFloat(draft.rating.trim()) : null
+  const parsedDisc = draft.discOrSeason.trim()
+    ? Number.parseInt(draft.discOrSeason.trim(), 10)
+    : null
+  const parsedTrack = draft.trackOrEpisode.trim()
+    ? Number.parseInt(draft.trackOrEpisode.trim(), 10)
+    : null
+
+  const lyricsText = draft.lyrics.trim()
+  const hasTimestamps = /\[\d{1,2}:\d{2}/.test(lyricsText)
+
+  return {
+    ...base,
+    title: draft.title.trim() || null,
+    original_title: draft.originalTitle.trim() || null,
+    creators: splitListTokens(draft.creators),
+    illustrators_or_directors: splitListTokens(draft.directors),
+    cast: splitListTokens(draft.cast),
+    series_or_album: draft.seriesOrAlbum.trim() || null,
+    publisher_or_studio: draft.publisherOrStudio.trim() || null,
+    year: parsedYear && Number.isFinite(parsedYear) ? parsedYear : null,
+    published_date: trimmedDate || null,
+    isbn: draft.isbn.trim() || null,
+    rating: parsedRating !== null && Number.isFinite(parsedRating) ? parsedRating : null,
+    language: draft.language.trim() || null,
+    disc_or_season_number: parsedDisc !== null && Number.isFinite(parsedDisc) ? parsedDisc : null,
+    track_or_episode_number:
+      parsedTrack !== null && Number.isFinite(parsedTrack) ? parsedTrack : null,
+    genres: props.mediaKind === 'book' ? [] : splitListTokens(draft.genres),
+    tags:
+      props.mediaKind === 'book'
+        ? splitListTokens(draft.combinedBookTags)
+        : splitListTokens(draft.tags),
+    summary: draft.summary.trim() || null,
+    cover_url: draft.useCover && isCoverUsable(base.cover_url) ? base.cover_url : null,
+    synced_lyrics: lyricsText && hasTimestamps ? lyricsText : null,
+    plain_lyrics: lyricsText && !hasTimestamps ? lyricsText : null,
+  }
+}
 
 function isCoverUsable(url: string | null | undefined): boolean {
   const trimmed = url?.trim()
@@ -70,91 +219,101 @@ function sourceBadgeFor(...keys: string[]): string | null {
   return null
 }
 
-interface PreviewFieldRow {
+type DraftStringKey = Exclude<keyof DraftFields, 'useCover'>
+
+interface EditableFieldSpec {
   id: string
+  draftKey: DraftStringKey
   fillKey: ScrapedFieldKey
   label: string
-  value: string
+  placeholder: string
   multiline?: boolean
+  rows?: number
   half?: boolean
   sourceName?: string | null
 }
 
-const fieldRows = computed<PreviewFieldRow[]>(() => {
-  const m = props.preview.meta
-  if (!m) return []
-
-  const combinedTags = Array.from(new Set([...(m.genres ?? []), ...(m.tags ?? [])].filter(Boolean)))
-  const dateOrYear = m.published_date || (m.year ? String(m.year) : '')
+const fieldSpecs = computed<EditableFieldSpec[]>(() => {
+  if (!props.preview.meta) return []
 
   if (props.mediaKind === 'book') {
     return [
       {
         id: 'title',
+        draftKey: 'title',
         fillKey: 'title',
         label: '书名 (dc:title)',
-        value: m.title || '',
+        placeholder: '书名',
         sourceName: sourceBadgeFor('title'),
       },
       {
         id: 'creators',
+        draftKey: 'creators',
         fillKey: 'creators',
-        label: '作者 (dc:creator)',
-        value: m.creators.join(' / '),
+        label: '作者 (dc:creator，`/` 分隔)',
+        placeholder: '作者',
         sourceName: sourceBadgeFor('creators'),
       },
       {
         id: 'series_or_album',
+        draftKey: 'seriesOrAlbum',
         fillKey: 'series_or_album',
         label: '系列 / 丛书 (Series)',
-        value: m.series_or_album || '',
+        placeholder: '如：三体 / 魔法禁书目录',
         sourceName: sourceBadgeFor('series_or_album'),
       },
       {
         id: 'isbn',
+        draftKey: 'isbn',
         fillKey: 'isbn',
         label: 'ISBN',
-        value: m.isbn || '',
+        placeholder: 'ISBN',
         half: true,
         sourceName: sourceBadgeFor('isbn'),
       },
       {
         id: 'publisher_or_studio',
+        draftKey: 'publisherOrStudio',
         fillKey: 'publisher_or_studio',
         label: '出版社 (dc:publisher)',
-        value: m.publisher_or_studio || '',
+        placeholder: '出版社',
         half: true,
         sourceName: sourceBadgeFor('publisher_or_studio'),
       },
       {
         id: 'year',
+        draftKey: 'dateOrYear',
         fillKey: 'year',
         label: '出版日期 (dc:date)',
-        value: dateOrYear,
+        placeholder: 'YYYY-MM-DD',
         half: true,
         sourceName: sourceBadgeFor('published_date', 'year'),
       },
       {
         id: 'language',
+        draftKey: 'language',
         fillKey: 'language',
         label: '语言 (dc:language)',
-        value: m.language || '',
+        placeholder: 'zh / en / ja',
         half: true,
         sourceName: sourceBadgeFor('language'),
       },
       {
         id: 'tags',
+        draftKey: 'combinedBookTags',
         fillKey: 'tags',
-        label: '标签 / 主题 (dc:subject)',
-        value: combinedTags.join(' / '),
+        label: '标签 / 主题 (dc:subject，`/` 分隔)',
+        placeholder: '标签 / 主题',
         sourceName: sourceBadgeFor('tags', 'genres'),
       },
       {
         id: 'summary',
+        draftKey: 'summary',
         fillKey: 'summary',
         label: '内容简介 (dc:description)',
-        value: m.summary || '',
+        placeholder: '内容简介…',
         multiline: true,
+        rows: 6,
         sourceName: sourceBadgeFor('summary'),
       },
     ]
@@ -164,86 +323,98 @@ const fieldRows = computed<PreviewFieldRow[]>(() => {
     return [
       {
         id: 'title',
+        draftKey: 'title',
         fillKey: 'title',
         label: '标题',
-        value: m.title || '',
+        placeholder: '漫画标题',
         sourceName: sourceBadgeFor('title'),
       },
       {
         id: 'series_or_album',
+        draftKey: 'seriesOrAlbum',
         fillKey: 'series_or_album',
         label: '系列 / 丛书',
-        value: m.series_or_album || m.title || '',
+        placeholder: '系列名称',
         sourceName: sourceBadgeFor('series_or_album', 'title'),
       },
       {
         id: 'creators',
+        draftKey: 'creators',
         fillKey: 'creators',
         label: '作者 / 编剧',
-        value: m.creators.join(' / '),
+        placeholder: '作者',
         half: true,
         sourceName: sourceBadgeFor('creators'),
       },
       {
         id: 'directors',
+        draftKey: 'directors',
         fillKey: 'directors',
         label: '画师 / 作画',
-        value: m.illustrators_or_directors.join(' / '),
+        placeholder: '画师',
         half: true,
         sourceName: sourceBadgeFor('illustrators_or_directors'),
       },
       {
         id: 'publisher_or_studio',
+        draftKey: 'publisherOrStudio',
         fillKey: 'publisher_or_studio',
         label: '出版社',
-        value: m.publisher_or_studio || '',
+        placeholder: '出版社',
         half: true,
         sourceName: sourceBadgeFor('publisher_or_studio'),
       },
       {
         id: 'year',
+        draftKey: 'dateOrYear',
         fillKey: 'year',
         label: '年份 / 日期',
-        value: dateOrYear,
+        placeholder: 'YYYY',
         half: true,
         sourceName: sourceBadgeFor('published_date', 'year'),
       },
       {
         id: 'track_or_episode',
+        draftKey: 'trackOrEpisode',
         fillKey: 'track_or_episode',
         label: '卷 / 话号',
-        value: m.track_or_episode_number ? String(m.track_or_episode_number) : '',
+        placeholder: '如：1',
         half: true,
         sourceName: sourceBadgeFor('track_or_episode_number'),
       },
       {
         id: 'language',
+        draftKey: 'language',
         fillKey: 'language',
         label: '语言',
-        value: m.language || '',
+        placeholder: 'zh / ja / en',
         half: true,
         sourceName: sourceBadgeFor('language'),
       },
       {
         id: 'genres',
+        draftKey: 'genres',
         fillKey: 'genres',
         label: '流派 / 分类',
-        value: m.genres.join(' / '),
+        placeholder: '流派',
         sourceName: sourceBadgeFor('genres'),
       },
       {
         id: 'tags',
+        draftKey: 'tags',
         fillKey: 'tags',
         label: '标签',
-        value: m.tags.join(' / '),
+        placeholder: '标签',
         sourceName: sourceBadgeFor('tags'),
       },
       {
         id: 'summary',
+        draftKey: 'summary',
         fillKey: 'summary',
         label: '内容简介',
-        value: m.summary || '',
+        placeholder: '内容简介…',
         multiline: true,
+        rows: 5,
         sourceName: sourceBadgeFor('summary'),
       },
     ]
@@ -253,173 +424,223 @@ const fieldRows = computed<PreviewFieldRow[]>(() => {
     return [
       {
         id: 'title',
+        draftKey: 'title',
         fillKey: 'title',
         label: '曲目标题',
-        value: m.title || '',
+        placeholder: '曲目标题',
         sourceName: sourceBadgeFor('title'),
       },
       {
         id: 'creators',
+        draftKey: 'creators',
         fillKey: 'creators',
         label: '艺人 / 歌手',
-        value: m.creators.join(' / '),
+        placeholder: '艺人',
         sourceName: sourceBadgeFor('creators'),
       },
       {
         id: 'series_or_album',
+        draftKey: 'seriesOrAlbum',
         fillKey: 'series_or_album',
         label: '所属专辑',
-        value: m.series_or_album || '',
+        placeholder: '专辑名',
         sourceName: sourceBadgeFor('series_or_album'),
       },
       {
         id: 'disc_or_season',
+        draftKey: 'discOrSeason',
         fillKey: 'disc_or_season',
         label: '碟号',
-        value: m.disc_or_season_number ? String(m.disc_or_season_number) : '',
+        placeholder: '1',
         half: true,
         sourceName: sourceBadgeFor('disc_or_season_number'),
       },
       {
         id: 'track_or_episode',
+        draftKey: 'trackOrEpisode',
         fillKey: 'track_or_episode',
         label: '音轨号',
-        value: m.track_or_episode_number ? String(m.track_or_episode_number) : '',
+        placeholder: '1',
         half: true,
         sourceName: sourceBadgeFor('track_or_episode_number'),
       },
       {
         id: 'year',
+        draftKey: 'dateOrYear',
         fillKey: 'year',
         label: '发行年份',
-        value: dateOrYear,
+        placeholder: 'YYYY',
         half: true,
         sourceName: sourceBadgeFor('year', 'published_date'),
       },
       {
         id: 'genres',
+        draftKey: 'genres',
         fillKey: 'genres',
         label: '流派',
-        value: m.genres.join(' / '),
+        placeholder: '流派',
         half: true,
         sourceName: sourceBadgeFor('genres'),
       },
       {
         id: 'lyrics',
+        draftKey: 'lyrics',
         fillKey: 'lyrics',
-        label: m.synced_lyrics ? '同步歌词 (LRC)' : '纯文本歌词',
-        value: m.synced_lyrics || m.plain_lyrics || '',
+        label: '歌词（支持 LRC 或纯文本）',
+        placeholder: '暂无歌词…',
         multiline: true,
+        rows: 7,
         sourceName: sourceBadgeFor('synced_lyrics', 'plain_lyrics'),
       },
     ]
   }
 
-  // Video
   return [
     {
       id: 'title',
+      draftKey: 'title',
       fillKey: 'title',
       label: '标题',
-      value: m.title || '',
+      placeholder: '影片/剧集标题',
       sourceName: sourceBadgeFor('title'),
     },
     {
       id: 'original_title',
+      draftKey: 'originalTitle',
       fillKey: 'original_title',
       label: '原作名',
-      value: m.original_title || '',
+      placeholder: '原作名',
       sourceName: sourceBadgeFor('original_title'),
     },
     {
       id: 'series_or_album',
+      draftKey: 'seriesOrAlbum',
       fillKey: 'series_or_album',
       label: '所属剧集 / 系列',
-      value: m.series_or_album || '',
+      placeholder: '剧集名',
       sourceName: sourceBadgeFor('series_or_album'),
     },
     {
       id: 'disc_or_season',
+      draftKey: 'discOrSeason',
       fillKey: 'disc_or_season',
       label: '季号',
-      value: m.disc_or_season_number ? String(m.disc_or_season_number) : '',
+      placeholder: '1',
       half: true,
       sourceName: sourceBadgeFor('disc_or_season_number'),
     },
     {
       id: 'track_or_episode',
+      draftKey: 'trackOrEpisode',
       fillKey: 'track_or_episode',
       label: '集号',
-      value: m.track_or_episode_number ? String(m.track_or_episode_number) : '',
+      placeholder: '1',
       half: true,
       sourceName: sourceBadgeFor('track_or_episode_number'),
     },
     {
       id: 'year',
+      draftKey: 'dateOrYear',
       fillKey: 'year',
       label: '首播 / 年份',
-      value: dateOrYear,
+      placeholder: 'YYYY-MM-DD',
       half: true,
       sourceName: sourceBadgeFor('year', 'published_date'),
     },
     {
       id: 'rating',
+      draftKey: 'rating',
       fillKey: 'rating',
       label: '评分',
-      value: m.rating ? String(m.rating) : '',
+      placeholder: '8.5',
       half: true,
       sourceName: sourceBadgeFor('rating'),
     },
     {
       id: 'publisher_or_studio',
+      draftKey: 'publisherOrStudio',
       fillKey: 'publisher_or_studio',
       label: '制片 / 发行商',
-      value: m.publisher_or_studio || '',
+      placeholder: '制片厂',
       sourceName: sourceBadgeFor('publisher_or_studio'),
     },
     {
       id: 'directors',
+      draftKey: 'directors',
       fillKey: 'directors',
       label: '导演',
-      value: m.illustrators_or_directors.join(' / '),
+      placeholder: '导演',
       sourceName: sourceBadgeFor('illustrators_or_directors'),
     },
     {
       id: 'cast',
+      draftKey: 'cast',
       fillKey: 'cast',
       label: '主演',
-      value: m.cast.slice(0, 10).join(' / '),
+      placeholder: '演员（`/` 分隔）',
       sourceName: sourceBadgeFor('cast'),
     },
     {
       id: 'genres',
+      draftKey: 'genres',
       fillKey: 'genres',
       label: '流派',
-      value: m.genres.join(' / '),
+      placeholder: '流派',
       sourceName: sourceBadgeFor('genres'),
     },
     {
       id: 'tags',
+      draftKey: 'tags',
       fillKey: 'tags',
       label: '标签',
-      value: m.tags.slice(0, 15).join(' / '),
+      placeholder: '标签',
       sourceName: sourceBadgeFor('tags'),
     },
     {
       id: 'summary',
+      draftKey: 'summary',
       fillKey: 'summary',
       label: '剧情简介',
-      value: m.summary || '',
+      placeholder: '剧情简介…',
       multiline: true,
+      rows: 5,
       sourceName: sourceBadgeFor('summary'),
     },
   ]
 })
+
+function emitEditedField(spec: EditableFieldSpec): void {
+  const edited = buildEditedMetadata()
+  if (!edited) return
+  emit('fillField', spec.fillKey, edited, spec.label)
+}
+
+function emitEditedCover(): void {
+  const edited = buildEditedMetadata()
+  if (!edited || !edited.cover_url) return
+  emit('fillField', 'cover', edited, '封面')
+}
+
+function emitFillAll(): void {
+  const edited = buildEditedMetadata()
+  if (!edited) return
+  emit('fillAll', edited, props.preview.fillMode)
+}
+
+function emitDirectApply(advanceNext = false): void {
+  const edited = buildEditedMetadata()
+  if (!edited) return
+  if (advanceNext) {
+    emit('directApplyNext', edited, props.preview.fillMode)
+  } else {
+    emit('directApply', edited, props.preview.fillMode)
+  }
+}
 </script>
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-[var(--md-sys-color-surface-container-low)]">
-    <!-- Preview Pane Header -->
+    <!-- Preview / Editable Draft Header -->
     <div
       class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/45 px-3.5 py-2.5"
     >
@@ -435,18 +656,37 @@ const fieldRows = computed<PreviewFieldRow[]>(() => {
           {{ preview.sourceLabel }}
         </span>
         <span class="truncate text-[11px] font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-          条目对照预览
+          刮削结果（可编辑）
+        </span>
+        <span
+          v-if="isDraftEdited"
+          class="shrink-0 rounded-full bg-[var(--md-sys-color-warning-container)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-warning-container)]"
+        >
+          已微调
         </span>
       </div>
 
-      <button
-        type="button"
-        class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
-        title="关闭右侧条目预览"
-        @click="emit('close')"
-      >
-        <LuX class="h-3.5 w-3.5" />
-      </button>
+      <div class="flex shrink-0 items-center gap-0.5">
+        <button
+          v-if="isDraftEdited"
+          type="button"
+          class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
+          title="恢复为此刮削源的原始信息"
+          @click="resetDraft"
+        >
+          <LuRotateCcw class="h-3.5 w-3.5" />
+        </button>
+
+        <button
+          v-if="closable"
+          type="button"
+          class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
+          title="关闭右侧条目预览"
+          @click="emit('close')"
+        >
+          <LuX class="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
 
     <!-- Loading State -->
@@ -458,18 +698,21 @@ const fieldRows = computed<PreviewFieldRow[]>(() => {
       <span>正在拉取该候选源完整条目信息…</span>
     </div>
 
-    <!-- Structured Mirror Preview Body (Matches Left Inspector Form) -->
+    <!-- Editable Mirror Form Body (Matches Left Local Metadata Form) -->
     <template v-else-if="preview.meta">
       <div class="flex-1 space-y-3.5 overflow-y-auto px-3.5 pt-3 pb-4">
-        <!-- Cover Card (Same Proportions as Left Inspector Form) -->
+        <!-- Cover Card -->
         <div class="flex gap-3 rounded-2xl bg-[var(--md-sys-color-surface)] p-3">
           <div class="flex shrink-0 flex-col items-center gap-1.5">
             <div
               class="relative overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)]"
-              :class="mediaKind === 'music' ? 'h-24 w-24 album-shadow' : 'h-32 w-24 book-shadow'"
+              :class="[
+                mediaKind === 'music' ? 'h-24 w-24 album-shadow' : 'h-32 w-24 book-shadow',
+                !draft.useCover ? 'opacity-45' : '',
+              ]"
             >
               <img
-                v-if="isCoverUsable(preview.meta.cover_url)"
+                v-if="draft.useCover && isCoverUsable(preview.meta.cover_url)"
                 :src="resolveScraperCoverUrl(preview.meta.cover_url)"
                 alt="scraped cover"
                 referrerpolicy="no-referrer"
@@ -485,12 +728,18 @@ const fieldRows = computed<PreviewFieldRow[]>(() => {
                 <LuDisc3 v-else-if="mediaKind === 'music'" class="h-6 w-6 opacity-50" />
                 <LuClapperboard v-else class="h-6 w-6 opacity-50" />
                 <span class="text-[10px]">
-                  {{ preview.meta.cover_url ? '封面加载失败' : '无封面' }}
+                  {{
+                    !draft.useCover
+                      ? '已取消封面'
+                      : preview.meta.cover_url
+                        ? '封面加载失败'
+                        : '无封面'
+                  }}
                 </span>
               </div>
             </div>
             <span
-              v-if="isCoverUsable(preview.meta.cover_url) && sourceBadgeFor('cover_url')"
+              v-if="draft.useCover && isCoverUsable(preview.meta.cover_url) && sourceBadgeFor('cover_url')"
               class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
             >
               封面 · {{ sourceBadgeFor('cover_url') }}
@@ -500,13 +749,13 @@ const fieldRows = computed<PreviewFieldRow[]>(() => {
           <div class="flex min-w-0 flex-1 flex-col justify-between gap-2">
             <div>
               <div class="line-clamp-2 text-[13px] font-semibold text-[var(--md-sys-color-on-surface)]">
-                {{ preview.meta.title || '—' }}
+                {{ draft.title || preview.meta.title || '—' }}
               </div>
               <div
-                v-if="preview.meta.creators.length > 0"
+                v-if="draft.creators"
                 class="mt-1 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
               >
-                {{ preview.meta.creators.join(' / ') }}
+                {{ draft.creators }}
               </div>
               <div
                 v-if="preview.loading"
@@ -519,91 +768,120 @@ const fieldRows = computed<PreviewFieldRow[]>(() => {
 
             <div class="flex flex-wrap gap-1.5">
               <button
-                v-if="isCoverUsable(preview.meta.cover_url)"
+                v-if="draft.useCover && isCoverUsable(preview.meta.cover_url)"
                 type="button"
                 class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-                @click="emit('fillField', 'cover', preview.meta!, '封面')"
+                @click="emitEditedCover"
               >
                 <LuImage class="h-3 w-3" />
                 <span>← 仅用此封面</span>
+              </button>
+
+              <button
+                v-if="isCoverUsable(preview.meta.cover_url)"
+                type="button"
+                class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+                :class="!draft.useCover ? 'md-chip-selected' : ''"
+                @click="draft.useCover = !draft.useCover"
+              >
+                <LuImageOff v-if="draft.useCover" class="h-3 w-3" />
+                <LuImage v-else class="h-3 w-3" />
+                <span>{{ draft.useCover ? '不用此封面' : '恢复封面' }}</span>
               </button>
             </div>
           </div>
         </div>
 
-        <!-- Structured Fields Grid (1-to-1 Mirror of Left Form) -->
+        <!-- Editable Structured Fields Grid (1-to-1 Mirror of Left Form) -->
         <div class="grid grid-cols-2 gap-2.5">
           <div
-            v-for="row in fieldRows"
-            :key="row.id"
-            :class="row.half ? 'col-span-1' : 'col-span-2'"
+            v-for="spec in fieldSpecs"
+            :key="spec.id"
+            :class="spec.half ? 'col-span-1' : 'col-span-2'"
             class="space-y-1"
           >
             <div class="flex items-center justify-between gap-1.5">
               <div class="flex min-w-0 items-center gap-1.5">
                 <span class="truncate text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-                  {{ row.label }}
+                  {{ spec.label }}
                 </span>
                 <span
-                  v-if="row.sourceName && row.value"
+                  v-if="spec.sourceName && draft[spec.draftKey].trim()"
                   class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-primary)]"
                 >
-                  {{ row.sourceName }}
+                  {{ spec.sourceName }}
                 </span>
               </div>
 
               <button
-                v-if="row.value"
+                v-if="draft[spec.draftKey].trim()"
                 type="button"
                 class="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)]/75 px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary-container)] transition hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
-                :title="`将「${row.label}」填入左侧表单`"
-                @click="emit('fillField', row.fillKey, preview.meta!, row.label)"
+                :title="`将「${spec.label}」填入左侧表单`"
+                @click="emitEditedField(spec)"
               >
                 <LuArrowLeft class="h-2.5 w-2.5" />
-                <span>填入</span>
+                <span>填入左栏</span>
               </button>
             </div>
 
-            <div
-              class="rounded-xl border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] px-2.5 py-2 text-xs leading-relaxed"
-              :class="[
-                row.value
-                  ? 'text-[var(--md-sys-color-on-surface)]'
-                  : 'text-[var(--md-sys-color-on-surface-variant)]/45',
-                row.multiline ? 'max-h-44 overflow-y-auto whitespace-pre-line' : 'break-words',
-              ]"
-            >
-              {{ row.value || '—' }}
-            </div>
+            <textarea
+              v-if="spec.multiline"
+              v-model="draft[spec.draftKey]"
+              :rows="spec.rows ?? 5"
+              :placeholder="spec.placeholder"
+              class="w-full rounded-xl border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] px-2.5 py-2 text-xs leading-relaxed text-[var(--md-sys-color-on-surface)] outline-none transition focus:border-[var(--md-sys-color-primary)]"
+            />
+            <input
+              v-else
+              v-model="draft[spec.draftKey]"
+              type="text"
+              :placeholder="spec.placeholder"
+              class="h-9 w-full rounded-xl border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] px-2.5 text-xs text-[var(--md-sys-color-on-surface)] outline-none transition focus:border-[var(--md-sys-color-primary)]"
+            />
           </div>
         </div>
       </div>
 
       <!-- Bottom Mirror Action Bar -->
       <div
-        class="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/75 px-3.5 py-2.5"
+        class="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/75 px-3.5 py-2.5"
       >
         <span class="text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-          模式：{{ preview.fillMode === 'overwrite' ? '覆盖' : '仅补空' }}
+          写入模式：{{ preview.fillMode === 'overwrite' ? '覆盖' : '仅补空' }}
         </span>
-        <div class="flex items-center gap-1.5">
+        <div class="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            title="将此结果整条回填到左侧表单（暂不落盘）"
-            @click="emit('fillAll', preview.meta!, preview.fillMode)"
+            :disabled="saving"
+            class="md-btn md-btn-sm md-btn-text md-state"
+            title="把右侧当前编辑内容同步到左侧表单（暂不落盘）"
+            @click="emitFillAll"
           >
             <LuArrowLeft class="h-3.5 w-3.5" />
-            <span>整条填入</span>
+            <span>填到左栏</span>
           </button>
           <button
             type="button"
-            class="md-btn md-btn-sm md-btn-filled md-state"
-            title="直接写入文件并保存（含封面）"
-            @click="emit('directApply', preview.meta!, preview.fillMode)"
+            :disabled="saving"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
+            title="直接以右侧微调后的结果保存并写入文件"
+            @click="emitDirectApply(false)"
           >
-            <LuZap class="h-3.5 w-3.5" />
-            <span>直写</span>
+            <LuLoader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" />
+            <LuZap v-else class="h-3.5 w-3.5" />
+            <span>采用右侧保存</span>
+          </button>
+          <button
+            v-if="hasNext"
+            type="button"
+            :disabled="saving"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            title="采用右侧结果写入文件，并自动切换下一项"
+            @click="emitDirectApply(true)"
+          >
+            <LuSkipForward class="h-3.5 w-3.5" />
+            <span>采用并下一项</span>
           </button>
         </div>
       </div>
