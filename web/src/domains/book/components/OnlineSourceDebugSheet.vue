@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   LuArrowRight,
   LuBookOpen,
@@ -12,6 +12,7 @@ import {
   LuLoader2,
   LuPlay,
   LuSearch,
+  LuSquare,
   LuTerminal,
   LuX,
   LuXCircle,
@@ -65,11 +66,27 @@ const lastBookUrl = ref('')
 const lastTocUrl = ref('')
 const lastChapterUrl = ref('')
 
+let runSeq = 0
+let activeAbortController: AbortController | null = null
+
+function abortActiveRun(): void {
+  runSeq += 1
+  if (activeAbortController) {
+    activeAbortController.abort()
+    activeAbortController = null
+  }
+  running.value = false
+}
+
 watch(
   () => [props.open, props.source?.id] as const,
   ([isOpen, srcId], prev) => {
-    if (!isOpen || !props.source) return
+    if (!isOpen || !props.source) {
+      abortActiveRun()
+      return
+    }
     if (!prev || !prev[0] || prev[1] !== srcId) {
+      abortActiveRun()
       mode.value = 'full'
       queryInput.value = props.source.check_keyword?.trim() || '我的'
       report.value = null
@@ -84,20 +101,35 @@ watch(
   { immediate: true },
 )
 
-watch(mode, (nextMode) => {
-  if (nextMode === 'book_info' && lastBookUrl.value && !queryInput.value.startsWith('http')) {
+onBeforeUnmount(() => {
+  abortActiveRun()
+})
+
+function handleModeChange(nextMode: SourceTestMode): void {
+  mode.value = nextMode
+  if (nextMode === 'book_info' && lastBookUrl.value) {
     queryInput.value = lastBookUrl.value
-  } else if (nextMode === 'toc' && lastTocUrl.value && !queryInput.value.startsWith('http')) {
+  } else if (nextMode === 'toc' && lastTocUrl.value) {
     queryInput.value = lastTocUrl.value
-  } else if (nextMode === 'content' && lastChapterUrl.value && !queryInput.value.startsWith('http')) {
+  } else if (nextMode === 'content' && lastChapterUrl.value) {
     queryInput.value = lastChapterUrl.value
   } else if (
     (nextMode === 'full' || nextMode === 'search') &&
-    queryInput.value.startsWith('http') &&
+    queryInput.value.trim().startsWith('http') &&
     props.source
   ) {
     queryInput.value = props.source.check_keyword?.trim() || '我的'
   }
+}
+
+const hasQuickHint = computed(() => {
+  if ((mode.value === 'full' || mode.value === 'search') && props.source?.check_keyword) {
+    return true
+  }
+  if (mode.value === 'book_info' && Boolean(lastBookUrl.value)) return true
+  if (mode.value === 'toc' && Boolean(lastTocUrl.value)) return true
+  if (mode.value === 'content' && Boolean(lastChapterUrl.value)) return true
+  return false
 })
 
 const inputPlaceholder = computed(() => {
@@ -173,12 +205,25 @@ async function executeTest(
   preservePrevious = false,
 ): Promise<void> {
   if (!props.source || running.value) return
+  const targetSourceId = props.source.id
+  const controller = new AbortController()
+  activeAbortController = controller
+  const seq = ++runSeq
+
   running.value = true
   requestError.value = null
   const prev = preservePrevious ? report.value : null
+  const prevBookUrl = prev?.book_detail?.book_url || lastBookUrl.value
   try {
-    const res = await onlineBookApi.testSource(props.source.id, payload)
+    const res = await onlineBookApi.testSource(targetSourceId, payload, {
+      signal: controller.signal,
+    })
+    if (seq !== runSeq || !props.open || props.source?.id !== targetSourceId) return
+
     const ranStages = new Set(res.steps.map((s) => s.stage))
+    const nextBookUrl = res.book_detail?.book_url || payload.book_url?.trim() || ''
+    const bookUrlChanged = Boolean(nextBookUrl && prevBookUrl && nextBookUrl !== prevBookUrl)
+
     const merged: SourceTestReportDto = prev
       ? {
           ...res,
@@ -186,30 +231,55 @@ async function executeTest(
           search_items: ranStages.has('search') ? res.search_items : prev.search_items,
           sample_titles: ranStages.has('search') ? res.sample_titles : prev.sample_titles,
           book_detail: ranStages.has('book_info') ? res.book_detail : prev.book_detail,
-          toc_chapters: ranStages.has('toc') ? res.toc_chapters : prev.toc_chapters,
-          toc_total_count: ranStages.has('toc') ? res.toc_total_count : prev.toc_total_count,
+          toc_chapters: ranStages.has('toc')
+            ? res.toc_chapters
+            : bookUrlChanged
+              ? []
+              : prev.toc_chapters,
+          toc_total_count: ranStages.has('toc')
+            ? res.toc_total_count
+            : bookUrlChanged
+              ? 0
+              : prev.toc_total_count,
           content_chapter_index: ranStages.has('content')
             ? res.content_chapter_index
-            : prev.content_chapter_index,
+            : bookUrlChanged
+              ? null
+              : prev.content_chapter_index,
           content_chapter_title: ranStages.has('content')
             ? res.content_chapter_title
-            : prev.content_chapter_title,
+            : bookUrlChanged
+              ? null
+              : prev.content_chapter_title,
           content_chapter_url: ranStages.has('content')
             ? res.content_chapter_url
-            : prev.content_chapter_url,
-          content_text: ranStages.has('content') ? res.content_text : prev.content_text,
+            : bookUrlChanged
+              ? null
+              : prev.content_chapter_url,
+          content_text: ranStages.has('content')
+            ? res.content_text
+            : bookUrlChanged
+              ? null
+              : prev.content_text,
           content_char_count: ranStages.has('content')
             ? res.content_char_count
-            : prev.content_char_count,
+            : bookUrlChanged
+              ? 0
+              : prev.content_char_count,
         }
       : res
 
     report.value = merged
+    if (bookUrlChanged) {
+      lastTocUrl.value = merged.book_detail?.toc_url || ''
+      lastChapterUrl.value = merged.content_chapter_url || merged.toc_chapters[0]?.url || ''
+    } else {
+      if (merged.book_detail?.toc_url) lastTocUrl.value = merged.book_detail.toc_url
+      if (merged.content_chapter_url) lastChapterUrl.value = merged.content_chapter_url
+      else if (merged.toc_chapters[0]?.url) lastChapterUrl.value = merged.toc_chapters[0].url
+    }
     if (merged.book_detail?.book_url) lastBookUrl.value = merged.book_detail.book_url
     else if (merged.search_items[0]?.book_url) lastBookUrl.value = merged.search_items[0].book_url
-    if (merged.book_detail?.toc_url) lastTocUrl.value = merged.book_detail.toc_url
-    if (merged.content_chapter_url) lastChapterUrl.value = merged.content_chapter_url
-    else if (merged.toc_chapters[0]?.url) lastChapterUrl.value = merged.toc_chapters[0].url
 
     if (preferredTab) {
       activeTab.value = preferredTab
@@ -227,10 +297,20 @@ async function executeTest(
 
     emit('tested')
   } catch (err) {
+    if (seq !== runSeq || controller.signal.aborted) return
     requestError.value = err instanceof Error ? err.message : String(err)
   } finally {
-    running.value = false
+    if (activeAbortController === controller) {
+      activeAbortController = null
+    }
+    if (seq === runSeq) {
+      running.value = false
+    }
   }
+}
+
+function handleStop(): void {
+  abortActiveRun()
 }
 
 async function handleRun(): Promise<void> {
@@ -249,9 +329,12 @@ async function handleRun(): Promise<void> {
 }
 
 async function handleDebugBookItem(item: SearchBookResult): Promise<void> {
+  if (item.book_url && item.book_url !== lastBookUrl.value) {
+    lastTocUrl.value = ''
+    lastChapterUrl.value = ''
+  }
   mode.value = 'full'
   queryInput.value = item.book_url
-  lastBookUrl.value = item.book_url
   await executeTest({ mode: 'full', book_url: item.book_url }, 'timeline', true)
 }
 
@@ -354,10 +437,11 @@ async function copyContentText(): Promise<void> {
         <!-- Rule Mode Selector -->
         <div class="flex flex-wrap items-center justify-between gap-2">
           <MdSegmentedButton
-            v-model="mode"
+            :model-value="mode"
             :options="modeOptions"
             size="sm"
             :show-check="false"
+            @update:model-value="handleModeChange"
           />
 
           <button
@@ -395,19 +479,27 @@ async function copyContentText(): Promise<void> {
           </div>
 
           <button
+            v-if="running"
+            type="button"
+            class="md-btn md-btn-outlined md-state shrink-0 !border-[var(--md-sys-color-error)] !text-[var(--md-sys-color-error)]"
+            @click="handleStop"
+          >
+            <LuSquare class="h-3.5 w-3.5 fill-current" />
+            <span>停止</span>
+          </button>
+          <button
+            v-else
             type="submit"
-            :disabled="running"
             class="md-btn md-btn-filled md-state shrink-0"
           >
-            <LuLoader2 v-if="running" class="h-4 w-4 animate-spin" />
-            <LuPlay v-else class="h-4 w-4" />
-            <span>{{ running ? '调试中…' : '开始测试' }}</span>
+            <LuPlay class="h-4 w-4" />
+            <span>开始测试</span>
           </button>
         </form>
 
         <!-- Quick Hint Chips -->
         <div
-          v-if="source?.check_keyword || lastBookUrl || lastTocUrl || lastChapterUrl"
+          v-if="hasQuickHint"
           class="flex flex-wrap items-center gap-1.5 text-[11px]"
         >
           <span class="text-[var(--md-sys-color-on-surface-variant)]">快捷填入：</span>
@@ -540,8 +632,8 @@ async function copyContentText(): Promise<void> {
           <!-- Stage Steps Strip -->
           <div class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
             <button
-              v-for="step in report.steps"
-              :key="step.stage"
+              v-for="(step, idx) in report.steps"
+              :key="`${step.stage}-${idx}`"
               type="button"
               class="md-state flex items-start gap-2.5 rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2.5 text-left transition"
               :class="

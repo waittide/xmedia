@@ -52,12 +52,23 @@ const searchQuery = ref('')
 const statusFilter = ref<'all' | 'enabled' | 'disabled'>('all')
 const groupFilter = ref<string>('__all__')
 
-const busyId = ref<string | null>(null)
+const busyIds = ref<Set<string>>(new Set())
 const reordering = ref(false)
 const batchBusy = ref(false)
 const loginModalSource = ref<BookSourceSummaryDto | null>(null)
 const editSheetSource = ref<BookSourceSummaryDto | null>(null)
 const debugSheetSource = ref<BookSourceSummaryDto | null>(null)
+
+function isSourceBusy(id: string): boolean {
+  return busyIds.value.has(id)
+}
+
+function setSourceBusy(id: string, busy: boolean): void {
+  const next = new Set(busyIds.value)
+  if (busy) next.add(id)
+  else next.delete(id)
+  busyIds.value = next
+}
 
 // Multi-select state
 const selectionMode = ref(false)
@@ -69,6 +80,7 @@ const localSources = ref<BookSourceSummaryDto[]>([...props.sources])
 watch(
   () => props.sources,
   (next) => {
+    if (reordering.value) return
     localSources.value = [...next]
     if (selectedIds.value.size > 0) {
       const valid = new Set(next.map((s) => s.id))
@@ -77,6 +89,9 @@ watch(
         if (valid.has(id)) pruned.add(id)
       }
       selectedIds.value = pruned
+      if (lastToggledId.value && !valid.has(lastToggledId.value)) {
+        lastToggledId.value = null
+      }
     }
     if (next.length === 0) {
       selectionMode.value = false
@@ -117,6 +132,12 @@ const availableGroups = computed(() => {
   return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'))
 })
 
+watch(availableGroups, (groups) => {
+  if (groupFilter.value !== '__all__' && !groups.includes(groupFilter.value)) {
+    groupFilter.value = '__all__'
+  }
+})
+
 const filteredSources = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   return localSources.value.filter((s) => {
@@ -131,6 +152,27 @@ const filteredSources = computed(() => {
       (s.comment ?? '').toLowerCase().includes(q)
     )
   })
+})
+
+watch(filteredSources, (visible) => {
+  const visibleSet = new Set(visible.map((s) => s.id))
+  if (selectedIds.value.size > 0) {
+    let changed = false
+    const pruned = new Set<string>()
+    for (const id of selectedIds.value) {
+      if (visibleSet.has(id)) {
+        pruned.add(id)
+      } else {
+        changed = true
+      }
+    }
+    if (changed) {
+      selectedIds.value = pruned
+    }
+  }
+  if (lastToggledId.value && !visibleSet.has(lastToggledId.value)) {
+    lastToggledId.value = null
+  }
 })
 
 const selectedCount = computed(() => selectedIds.value.size)
@@ -194,6 +236,7 @@ function toggleSelectAllFiltered(): void {
     }
   }
   selectedIds.value = next
+  lastToggledId.value = null
 }
 
 function invertSelectFiltered(): void {
@@ -203,6 +246,7 @@ function invertSelectFiltered(): void {
     else next.add(s.id)
   }
   selectedIds.value = next
+  lastToggledId.value = null
 }
 
 function closeMenu(): void {
@@ -420,12 +464,17 @@ async function handleBatchExport(): Promise<void> {
     })
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
-    link.href = url
-    link.download = `xmedia-book-sources-${arr.length}.json`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
-    URL.revokeObjectURL(url)
+    try {
+      link.href = url
+      link.download = `xmedia-book-sources-${arr.length}.json`
+      document.body.appendChild(link)
+      link.click()
+    } finally {
+      link.remove()
+      setTimeout(() => {
+        URL.revokeObjectURL(url)
+      }, 1000)
+    }
     snackbar.show({ message: `已导出 ${arr.length} 条书源 JSON` })
   } catch (err) {
     snackbar.show({
@@ -524,7 +573,8 @@ async function handleImportSubmit(): Promise<void> {
 }
 
 async function handleToggleEnabled(src: BookSourceSummaryDto, nextVal: boolean): Promise<void> {
-  busyId.value = src.id
+  if (isSourceBusy(src.id)) return
+  setSourceBusy(src.id, true)
   try {
     await onlineBookApi.updateSource(src.id, { enabled: nextVal })
     emit('refresh')
@@ -534,12 +584,17 @@ async function handleToggleEnabled(src: BookSourceSummaryDto, nextVal: boolean):
       tone: 'error',
     })
   } finally {
-    busyId.value = null
+    setSourceBusy(src.id, false)
   }
 }
 
 async function handlePinSource(src: BookSourceSummaryDto, position: 'top' | 'bottom'): Promise<void> {
   closeMenu()
+  if (reordering.value || localSources.value.length <= 1) return
+  const currentIdx = localSources.value.findIndex((s) => s.id === src.id)
+  if (currentIdx < 0) return
+  if (position === 'top' && currentIdx === 0) return
+  if (position === 'bottom' && currentIdx === localSources.value.length - 1) return
   const rest = localSources.value.filter((s) => s.id !== src.id)
   const nextList = position === 'top' ? [src, ...rest] : [...rest, src]
   await persistOrder(
@@ -575,8 +630,8 @@ async function handleDeleteSource(src: BookSourceSummaryDto): Promise<void> {
     cancelText: '取消',
     danger: true,
   })
-  if (!ok) return
-  busyId.value = src.id
+  if (!ok || isSourceBusy(src.id)) return
+  setSourceBusy(src.id, true)
   try {
     await onlineBookApi.deleteSource(src.id)
     snackbar.show({ message: `已删除书源「${src.name}」` })
@@ -587,12 +642,14 @@ async function handleDeleteSource(src: BookSourceSummaryDto): Promise<void> {
       tone: 'error',
     })
   } finally {
-    busyId.value = null
+    setSourceBusy(src.id, false)
   }
 }
 
 function handleSourceUpdated(updated: BookSourceSummaryDto): void {
-  loginModalSource.value = updated
+  if (loginModalSource.value?.id === updated.id) {
+    loginModalSource.value = updated
+  }
   emit('refresh')
 }
 
@@ -885,8 +942,8 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
         :class="[
           selectionMode
             ? selectedIds.has(src.id)
-              ? 'cursor-pointer bg-[var(--md-sys-color-secondary-container)]/35 ring-1 ring-[var(--md-sys-color-primary)]/55'
-              : 'cursor-pointer bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]/75'
+              ? 'cursor-pointer select-none bg-[var(--md-sys-color-secondary-container)]/35 ring-1 ring-[var(--md-sys-color-primary)]/55'
+              : 'cursor-pointer select-none bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]/75'
             : 'bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]/75',
           !src.enabled && !selectedIds.has(src.id) ? 'opacity-65' : '',
           draggingId === src.id ? 'opacity-40 ring-1 ring-[var(--md-sys-color-primary)]/50' : '',
@@ -913,11 +970,9 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
           <div
             v-if="selectionMode"
             class="flex shrink-0 items-center"
-            @click.stop
           >
             <AppCheckbox
               :model-value="selectedIds.has(src.id)"
-              @update:model-value="toggleSelectItem(src.id)"
             />
           </div>
           <div
@@ -985,7 +1040,7 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
         <div v-else class="flex shrink-0 items-center gap-1.5" @mousedown.stop>
           <AppSwitch
             :model-value="src.enabled"
-            :disabled="busyId === src.id"
+            :disabled="isSourceBusy(src.id)"
             :title="src.enabled ? '禁用书源' : '启用书源'"
             @update:model-value="(val) => handleToggleEnabled(src, val)"
           />
