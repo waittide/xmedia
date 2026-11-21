@@ -1051,7 +1051,7 @@ mod tests {
         let lib_svc = Arc::new(LibraryService::new(
             libs_repo.clone(),
             events.clone(),
-            lifecycles,
+            lifecycles.clone(),
         ));
         let book_services = init_book_module(db, tmp.path(), libs_repo, &lib_svc, events).unwrap();
 
@@ -1132,6 +1132,261 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "deleting a user must cascade-delete their online bookshelf entries"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_delete_cleanup() {
+        use xmedia_core::application::dto::CreateUserInput;
+        use xmedia_core::domain::user::UserRole;
+
+        use crate::application::online::{TrackOnlineBookInput, UpdateBookSourceInput};
+        use crate::domain::book::BookId;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("http_security_test.db");
+        let db_url = format!("sqlite:{}", db_path.display());
+
+        let mut models = ModelSet::new();
+        register_core_models(&mut models);
+        register_book_models(&mut models);
+        let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+        ensure_core_schema(&mut db, &db_url).await.unwrap();
+        ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+        let users = Arc::new(ToastyUserRepository::new(db.clone()));
+        let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+        let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+        let security = Arc::new(SecurityManager::new("sec-test-secret"));
+        let tokens = Arc::new(JwtTokenService::new("sec-test-secret", 3600));
+        let events = Arc::new(BroadcastEventHub::default());
+        let auth = Arc::new(AuthService::new(
+            users,
+            security,
+            tokens,
+            lifecycles.clone(),
+        ));
+        let lib_svc = Arc::new(LibraryService::new(
+            libs_repo.clone(),
+            events.clone(),
+            lifecycles.clone(),
+        ));
+        let book_services = init_book_module(db, tmp.path(), libs_repo, &lib_svc, events).unwrap();
+
+        let admin_session = auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: None,
+                password: "password123".into(),
+            })
+            .await
+            .unwrap();
+        let admin = auth.authenticate_jwt(&admin_session.token).await.unwrap();
+        let _ = auth
+            .create_user(
+                &admin,
+                CreateUserInput {
+                    username: "member".into(),
+                    display_name: None,
+                    password: "password123".into(),
+                    role: UserRole::Member,
+                },
+            )
+            .await
+            .unwrap();
+        let member_session = auth.login("member", "password123").await.unwrap();
+
+        let state = BookHttpState::new(auth, lib_svc.clone(), book_services.clone());
+        let app = Router::new().nest("/api/v1/book", rest_router(state));
+
+        // 1. Import source & set long variable (> 240 chars)
+        let raw_source = serde_json::json!({
+            "bookSourceName": "契约测试源",
+            "bookSourceUrl": "https://contract.example"
+        })
+        .to_string();
+        let imported = book_services
+            .online
+            .import_sources(&admin, &raw_source)
+            .await
+            .unwrap();
+        let source_id = imported.sources[0].id;
+        let long_var = "k=".to_string() + &"z".repeat(400);
+        let _ = book_services
+            .online
+            .update_source(
+                &admin,
+                source_id,
+                UpdateBookSourceInput {
+                    variable: Some(long_var.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        // Admin gets full untruncated variable via GET /sources/{id}/variable
+        let var_admin_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/book/sources/{source_id}/variable"))
+                    .header("authorization", format!("Bearer {}", admin_session.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(var_admin_res.status(), StatusCode::OK);
+        let var_json: serde_json::Value = serde_json::from_slice(
+            &to_bytes(var_admin_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(var_json["variable"], long_var);
+
+        // Non-admin gets 403 Forbidden
+        let var_member_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/book/sources/{source_id}/variable"))
+                    .header("authorization", format!("Bearer {}", member_session.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(var_member_res.status(), StatusCode::FORBIDDEN);
+
+        // Export endpoint includes X-Content-Type-Options: nosniff
+        let export_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/book/sources/{source_id}/export"))
+                    .header("authorization", format!("Bearer {}", admin_session.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(export_res.status(), StatusCode::OK);
+        assert_eq!(
+            export_res
+                .headers()
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+
+        // 2. Track an online book (no network needed since toc_url is empty and host unreachable -> skeleton EPUB)
+        let tracked = book_services
+            .online
+            .track_online_book(
+                &admin,
+                TrackOnlineBookInput {
+                    source_id,
+                    name: "清理验证书".into(),
+                    author: "作者".into(),
+                    book_url: "https://contract.example/b/1".into(),
+                    toc_url: String::new(),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    last_chapter: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Create a dummy tracked chapter dir to confirm lifecycle delete cleans it too
+        let tracked_dir = tmp
+            .path()
+            .join("book")
+            .join("online_tracked")
+            .join(tracked.id.0.to_string());
+        std::fs::create_dir_all(&tracked_dir).unwrap();
+        std::fs::write(tracked_dir.join("manifest.json"), b"{}").unwrap();
+        let epub_path = tmp
+            .path()
+            .join("book")
+            .join("uploads")
+            .join(format!("{}.epub", tracked.id.0));
+        assert!(epub_path.is_file());
+
+        // 3. replace_cover must reject SVG payload
+        let svg_err = book_services
+            .catalog
+            .replace_cover(
+                &admin,
+                BookId(tracked.id.0),
+                bytes::Bytes::from_static(
+                    b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>",
+                ),
+                "image/svg+xml".into(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            svg_err,
+            xmedia_core::domain::error::DomainError::Validation(_)
+        ));
+
+        // 4. POST /books/{id}/online/sync-epub: non-admin with ?force=true -> 403, default (force=false) -> 200
+        let force_member_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/book/books/{}/online/sync-epub?force=true",
+                        tracked.id.0
+                    ))
+                    .header("authorization", format!("Bearer {}", member_session.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(force_member_res.status(), StatusCode::FORBIDDEN);
+
+        let default_member_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/book/books/{}/online/sync-epub",
+                        tracked.id.0
+                    ))
+                    .header("authorization", format!("Bearer {}", member_session.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(default_member_res.status(), StatusCode::OK);
+
+        // 5. BookDomainLifecycle::on_library_deleted must clean up BOTH OnlineTracked EPUB & online_tracked dir
+        let book_lifecycle = lifecycles
+            .read()
+            .unwrap()
+            .get(&MediaKind::Book)
+            .cloned()
+            .expect("book lifecycle registered");
+        book_lifecycle
+            .on_library_deleted(tracked.library_id)
+            .await
+            .unwrap();
+        assert!(
+            !epub_path.exists(),
+            "on_library_deleted must remove OnlineTracked EPUB file"
+        );
+        assert!(
+            !tracked_dir.exists(),
+            "on_library_deleted must remove online_tracked/<id> directory"
         );
     }
 }

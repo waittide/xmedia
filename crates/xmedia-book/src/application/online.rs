@@ -4317,6 +4317,12 @@ mod tests {
     use crate::{ensure_book_schema, init_book_module, register_book_models};
 
     async fn setup_test_online_service() -> (TempDir, User, Arc<BookOnlineService>) {
+        let (tmp, admin, _member, online_svc) = setup_test_online_service_with_member().await;
+        (tmp, admin, online_svc)
+    }
+
+    async fn setup_test_online_service_with_member() -> (TempDir, User, User, Arc<BookOnlineService>)
+    {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("online_unit_test.db");
         let db_url = format!("sqlite:{}", db_path.display());
@@ -4339,7 +4345,7 @@ mod tests {
         let tokens = Arc::new(JwtTokenService::new("book-unit-secret", 3600));
         let events = Arc::new(BroadcastEventHub::default());
         let auth_svc = Arc::new(AuthService::new(
-            users_repo,
+            users_repo.clone(),
             security,
             tokens,
             lifecycles.clone(),
@@ -4353,6 +4359,25 @@ mod tests {
             .await
             .unwrap();
         let admin = auth_svc.authenticate_jwt(&session.token).await.unwrap();
+        let member_dto = auth_svc
+            .create_user(
+                &admin,
+                xmedia_core::application::dto::CreateUserInput {
+                    username: "member".into(),
+                    display_name: Some("Member".into()),
+                    password: "password123".into(),
+                    role: xmedia_core::domain::user::UserRole::Member,
+                },
+            )
+            .await
+            .unwrap();
+        let member = xmedia_core::domain::repository::UserRepository::find_by_id(
+            users_repo.as_ref(),
+            member_dto.id,
+        )
+        .await
+        .unwrap()
+        .unwrap();
         let lib_svc = Arc::new(LibraryService::new(
             libs_repo.clone(),
             events.clone(),
@@ -4379,7 +4404,7 @@ mod tests {
             )
             .unwrap(),
         );
-        (tmp, admin, online_svc)
+        (tmp, admin, member, online_svc)
     }
 
     #[test]
@@ -5200,5 +5225,962 @@ mod tests {
         let remaining = online_svc.list_sources(&admin).await.unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, id2);
+    }
+
+    #[tokio::test]
+    async fn start_download_enforces_admin_and_source_consistency_for_tracked_books() {
+        let mock_app = Router::new()
+            .route(
+                "/toc",
+                get(|| async {
+                    r#"<html><body><ul id="toc">
+                        <li><a href="/ch/1">第一章</a></li>
+                    </ul></body></html>"#
+                }),
+            )
+            .route(
+                "/ch/1",
+                get(|| async { r#"<div id="body"><p>正版正文</p></div>"# }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (_tmp, admin, member, online_svc) = setup_test_online_service_with_member().await;
+        let raw_sources = serde_json::json!([
+            {
+                "bookSourceName": "源A",
+                "bookSourceUrl": format!("http://{addr}"),
+                "ruleToc": { "chapterList": "#toc li a", "chapterName": "text", "chapterUrl": "href" },
+                "ruleContent": { "content": "id.body@html" }
+            },
+            {
+                "bookSourceName": "源B",
+                "bookSourceUrl": format!("http://{addr}#b"),
+                "ruleToc": { "chapterList": "#toc li a", "chapterName": "text", "chapterUrl": "href" },
+                "ruleContent": { "content": "id.body@html" }
+            }
+        ])
+        .to_string();
+        let imported = online_svc
+            .import_sources(&admin, &raw_sources)
+            .await
+            .unwrap();
+        let src_a = imported.sources[0].id;
+        let src_b = imported.sources[1].id;
+
+        let tracked = online_svc
+            .track_online_book(
+                &admin,
+                TrackOnlineBookInput {
+                    source_id: src_a,
+                    name: "权限测试书".into(),
+                    author: "作者".into(),
+                    book_url: format!("http://{addr}/book"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    last_chapter: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // 1. Non-admin passing book_id with import_to_library = false must be rejected (Forbidden)
+        let err = online_svc
+            .start_download(
+                &member,
+                StartDownloadInput {
+                    book_id: Some(tracked.id.0),
+                    source_id: src_a,
+                    book_name: "权限测试书".into(),
+                    author: "作者".into(),
+                    book_url: format!("http://{addr}/book"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    format: OnlineDownloadFormat::Epub,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: false,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DomainError::Forbidden(_)), "got {err:?}");
+
+        // 2. Admin passing mismatched source_id must be rejected
+        let err_src = online_svc
+            .start_download(
+                &admin,
+                StartDownloadInput {
+                    book_id: Some(tracked.id.0),
+                    source_id: src_b,
+                    book_name: "权限测试书".into(),
+                    author: "作者".into(),
+                    book_url: format!("http://{addr}/book"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    format: OnlineDownloadFormat::Epub,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: true,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err_src, DomainError::Validation(_)),
+            "got {err_src:?}"
+        );
+
+        // 3. Admin passing mismatched toc_url must be rejected
+        let err_toc = online_svc
+            .start_download(
+                &admin,
+                StartDownloadInput {
+                    book_id: Some(tracked.id.0),
+                    source_id: src_a,
+                    book_name: "权限测试书".into(),
+                    author: "作者".into(),
+                    book_url: format!("http://{addr}/book"),
+                    toc_url: format!("http://{addr}/other-toc"),
+                    cover_url: None,
+                    intro: None,
+                    format: OnlineDownloadFormat::Epub,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: true,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err_toc, DomainError::Validation(_)),
+            "got {err_toc:?}"
+        );
+
+        // 4. Non-admin personal download (book_id: None, import_to_library: false) succeeds
+        //    and MUST NOT mutate shared tracked_store chapters
+        let job = online_svc
+            .start_download(
+                &member,
+                StartDownloadInput {
+                    book_id: None,
+                    source_id: src_a,
+                    book_name: "权限测试书".into(),
+                    author: "作者".into(),
+                    book_url: format!("http://{addr}/book"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    format: OnlineDownloadFormat::Txt,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: false,
+                },
+            )
+            .await
+            .unwrap();
+        for _ in 0..80 {
+            let st = online_svc.get_download(member.id, job.id).await.unwrap();
+            if st.status == DownloadJobStatus::Completed {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            online_svc
+                .tracked_store
+                .load_chapter(tracked.id, 0)
+                .is_none(),
+            "personal export must not write into shared tracked_store"
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn non_admin_cannot_call_disabled_source_and_logs_are_stripped() {
+        let mock_app = Router::new()
+            .route(
+                "/search",
+                get(|| async { r#"<div class="b"><a href="/book/1">书一</a></div>"# }),
+            )
+            .route(
+                "/book/1",
+                get(|| async { r#"<h1 id="n">书一</h1><a id="t" href="/toc">目录</a>"# }),
+            )
+            .route(
+                "/toc",
+                get(|| async { r#"<ul id="c"><li><a href="/ch/1">第一章</a></li></ul>"# }),
+            )
+            .route(
+                "/ch/1",
+                get(|| async { r#"<div id="body"><p>内容</p></div>"# }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (_tmp, admin, member, online_svc) = setup_test_online_service_with_member().await;
+        let raw_enabled = serde_json::json!({
+            "bookSourceName": "带日志启用源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "enabled": true,
+            "searchUrl": "/search?q={{key}}",
+            "ruleSearch": { "bookList": ".b", "name": "a@text", "bookUrl": "a@href" },
+            "ruleBookInfo": {
+                "name": "<js>java.log('SECRET_TOKEN_123'); java.getString('#n@text');</js>",
+                "tocUrl": "#t@href"
+            },
+            "ruleToc": { "chapterList": "#c li a", "chapterName": "text", "chapterUrl": "href" },
+            "ruleContent": { "content": "id.body@html" }
+        })
+        .to_string();
+        let raw_disabled = serde_json::json!({
+            "bookSourceName": "已禁用源",
+            "bookSourceUrl": format!("http://{addr}#disabled"),
+            "enabled": false,
+            "searchUrl": "/search?q={{key}}",
+            "ruleSearch": { "bookList": ".b", "name": "a@text", "bookUrl": "a@href" },
+            "ruleBookInfo": { "name": "#n@text", "tocUrl": "#t@href" },
+            "ruleToc": { "chapterList": "#c li a", "chapterName": "text", "chapterUrl": "href" },
+            "ruleContent": { "content": "id.body@html" }
+        })
+        .to_string();
+        let en_id = online_svc
+            .import_sources(&admin, &raw_enabled)
+            .await
+            .unwrap()
+            .sources[0]
+            .id;
+        let dis_id = online_svc
+            .import_sources(&admin, &raw_disabled)
+            .await
+            .unwrap()
+            .sources[0]
+            .id;
+
+        // Non-admin searching explicitly with disabled source_id must fail
+        assert!(
+            online_svc
+                .search(&member, "书", Some(vec![dis_id]), 1)
+                .await
+                .is_err()
+        );
+        // Non-admin calling fetch_book_info / fetch_toc / fetch_chapter_content / add_to_shelf / start_download on disabled source -> Forbidden
+        assert!(matches!(
+            online_svc
+                .fetch_book_info(&member, dis_id, &format!("http://{addr}/book/1"), None)
+                .await,
+            Err(DomainError::Forbidden(_))
+        ));
+        assert!(matches!(
+            online_svc
+                .fetch_toc(
+                    &member,
+                    dis_id,
+                    &format!("http://{addr}/toc"),
+                    Default::default()
+                )
+                .await,
+            Err(DomainError::Forbidden(_))
+        ));
+        assert!(matches!(
+            online_svc
+                .fetch_chapter_content(
+                    &member,
+                    dis_id,
+                    &format!("http://{addr}/ch/1"),
+                    Default::default(),
+                    Default::default(),
+                    false
+                )
+                .await,
+            Err(DomainError::Forbidden(_))
+        ));
+        assert!(matches!(
+            online_svc
+                .add_to_shelf(
+                    &member,
+                    AddOnlineShelfInput {
+                        source_id: dis_id,
+                        name: "书一".into(),
+                        author: String::new(),
+                        book_url: format!("http://{addr}/book/1"),
+                        toc_url: format!("http://{addr}/toc"),
+                        cover_url: None,
+                        intro: None,
+                        kind: None,
+                        last_chapter: None,
+                        total_chapters: None,
+                    }
+                )
+                .await,
+            Err(DomainError::Forbidden(_))
+        ));
+
+        // On enabled source: admin sees diagnostics.logs, non-admin gets logs stripped!
+        let admin_info = online_svc
+            .fetch_book_info(&admin, en_id, &format!("http://{addr}/book/1"), None)
+            .await
+            .unwrap();
+        assert!(
+            admin_info
+                .diagnostics
+                .logs
+                .iter()
+                .any(|l| l == "SECRET_TOKEN_123"),
+            "admin should see diagnostics.logs"
+        );
+        let member_info = online_svc
+            .fetch_book_info(&member, en_id, &format!("http://{addr}/book/1"), None)
+            .await
+            .unwrap();
+        assert!(
+            member_info.diagnostics.logs.is_empty(),
+            "non-admin must have diagnostics.logs stripped"
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn switch_tracked_source_preserves_old_state_on_failure_and_updates_cover_on_success() {
+        const TINY_PNG: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78,
+            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        let mock_app = Router::new()
+            .route(
+                "/toc-old",
+                get(|| async { r#"<ul id="toc"><li><a href="/ch-old/1">旧第一章</a></li></ul>"# }),
+            )
+            .route(
+                "/ch-old/1",
+                get(|| async { r#"<div id="body"><p>旧源正文</p></div>"# }),
+            )
+            .route(
+                "/toc-bad",
+                get(|| async { r#"<ul id="toc"></ul>"# }),
+            )
+            .route(
+                "/toc-new",
+                get(|| async {
+                    r#"<ul id="toc"><li><a href="/ch-new/1">新第一章</a></li><li><a href="/ch-new/2">新第二章</a></li></ul>"#
+                }),
+            )
+            .route(
+                "/cover.png",
+                get(|| async { ([(axum::http::header::CONTENT_TYPE, "image/png")], TINY_PNG) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (_tmp, admin, online_svc) = setup_test_online_service().await;
+        let raw_sources = serde_json::json!([
+            {
+                "bookSourceName": "旧源",
+                "bookSourceUrl": format!("http://{addr}"),
+                "ruleToc": { "chapterList": "#toc li a", "chapterName": "text", "chapterUrl": "href" },
+                "ruleContent": { "content": "id.body@html" }
+            },
+            {
+                "bookSourceName": "新源",
+                "bookSourceUrl": format!("http://{addr}#new"),
+                "ruleToc": { "chapterList": "#toc li a", "chapterName": "text", "chapterUrl": "href" },
+                "ruleContent": { "content": "id.body@html" }
+            }
+        ])
+        .to_string();
+        let imported = online_svc
+            .import_sources(&admin, &raw_sources)
+            .await
+            .unwrap();
+        let old_src = imported.sources[0].id;
+        let new_src = imported.sources[1].id;
+
+        let tracked = online_svc
+            .track_online_book(
+                &admin,
+                TrackOnlineBookInput {
+                    source_id: old_src,
+                    name: "换源测试书".into(),
+                    author: "作者".into(),
+                    book_url: format!("http://{addr}/book-old"),
+                    toc_url: format!("http://{addr}/toc-old"),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    last_chapter: None,
+                },
+            )
+            .await
+            .unwrap();
+        let _ = online_svc
+            .get_tracked_chapter(tracked.id, 0, false)
+            .await
+            .unwrap();
+
+        // Failing switch (empty TOC) with clear_cache: true must preserve old source & old cached chapter!
+        assert!(
+            online_svc
+                .switch_tracked_source(
+                    &admin,
+                    tracked.id,
+                    SwitchTrackedSourceInput {
+                        source_id: new_src,
+                        book_url: format!("http://{addr}/book-bad"),
+                        toc_url: format!("http://{addr}/toc-bad"),
+                        cover_url: None,
+                        intro: None,
+                        last_chapter: None,
+                        clear_cache: true,
+                    },
+                )
+                .await
+                .is_err()
+        );
+        let still_old = online_svc.catalog.find_book_raw(tracked.id).await.unwrap();
+        assert!(matches!(
+            still_old.source,
+            BookSource::OnlineTracked { source_id, .. } if source_id == old_src
+        ));
+        assert!(
+            online_svc
+                .tracked_store
+                .load_chapter(tracked.id, 0)
+                .is_some(),
+            "old chapter cache must not be destroyed when new source TOC fails"
+        );
+
+        // Successful switch updates source, cover_key, and clears old cache
+        let switched = online_svc
+            .switch_tracked_source(
+                &admin,
+                tracked.id,
+                SwitchTrackedSourceInput {
+                    source_id: new_src,
+                    book_url: format!("http://{addr}/book-new"),
+                    toc_url: format!("http://{addr}/toc-new"),
+                    cover_url: Some(format!("http://{addr}/cover.png")),
+                    intro: Some("新简介".into()),
+                    last_chapter: None,
+                    clear_cache: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(switched.source_id, new_src);
+        assert_eq!(switched.total_chapters, 2);
+        let updated_book = online_svc.catalog.find_book_raw(tracked.id).await.unwrap();
+        assert!(
+            updated_book.cover_key.is_some(),
+            "cover_url should be applied on switch"
+        );
+        assert!(
+            online_svc
+                .tracked_store
+                .load_chapter(tracked.id, 0)
+                .is_none()
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn source_consistency_dedup_raw_json_sync_variable_and_credential_masking() {
+        let (_tmp, admin, member, online_svc) = setup_test_online_service_with_member().await;
+        // Duplicate key inside same import batch must collapse to 1 record
+        let dup_batch = serde_json::json!([
+            {
+                "bookSourceName": "同批重复源",
+                "bookSourceUrl": "https://dup.example",
+                "enabled": true,
+                "weight": 10,
+                "loginUi": r#"[{"name":"口令","type":"password"},{"name":"自定义密钥","type":"text"},{"name":"昵称","type":"text"}]"#,
+                "loginUrl": "function save(){ return 'ok'; }"
+            },
+            {
+                "bookSourceName": "同批重复源",
+                "bookSourceUrl": "https://dup.example",
+                "bookSourceGroup": "更新分组",
+                "enabled": true,
+                "weight": 20,
+                "loginUi": r#"[{"name":"口令","type":"password"},{"name":"自定义密钥","type":"text"},{"name":"昵称","type":"text"}]"#,
+                "loginUrl": "function save(){ return 'ok'; }"
+            }
+        ])
+        .to_string();
+        let report = online_svc.import_sources(&admin, &dup_batch).await.unwrap();
+        assert_eq!(report.imported_count, 1);
+        assert_eq!(online_svc.list_sources(&admin).await.unwrap().len(), 1);
+        let sid = report.sources[0].id;
+
+        // update_source rejects multi-entry JSON array
+        assert!(
+            online_svc
+                .update_source(
+                    &admin,
+                    sid,
+                    UpdateBookSourceInput {
+                        raw_json: Some(dup_batch.clone()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_err()
+        );
+
+        // update_source syncs enabled/weight/group_name into raw_json and stores long variable
+        let long_var = "x".repeat(500);
+        let updated = online_svc
+            .update_source(
+                &admin,
+                sid,
+                UpdateBookSourceInput {
+                    enabled: Some(false),
+                    weight: Some(77),
+                    group_name: Some("精校组".into()),
+                    variable: Some(long_var.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.variable_preview.chars().count(), 240);
+        let full_var = online_svc.get_source_variable(&admin, sid).await.unwrap();
+        assert_eq!(full_var, long_var);
+        assert!(matches!(
+            online_svc.get_source_variable(&member, sid).await,
+            Err(DomainError::Forbidden(_))
+        ));
+
+        let exported_single: serde_json::Value =
+            serde_json::from_str(&online_svc.export_source_json(&admin, sid).await.unwrap())
+                .unwrap();
+        assert_eq!(exported_single["enabled"], false);
+        assert_eq!(exported_single["weight"], 77);
+        assert_eq!(exported_single["bookSourceGroup"], "精校组");
+
+        // export_sources_batch_json deduplicates duplicate IDs
+        let exported_batch: Vec<serde_json::Value> = serde_json::from_str(
+            &online_svc
+                .export_sources_batch_json(&admin, vec![sid, sid, sid])
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(exported_batch.len(), 1);
+
+        // Credential masking covers loginUi password type + sensitive keywords, and login action merges
+        let login1 = online_svc
+            .run_login_action(
+                &admin,
+                sid,
+                HashMap::from([
+                    ("口令".into(), "secret-pass".into()),
+                    ("自定义密钥".into(), "api-key-999".into()),
+                    ("昵称".into(), "小明".into()),
+                ]),
+                Some("save()".to_string()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            login1.source.login_info.get("口令").map(String::as_str),
+            Some("••••••••")
+        );
+        assert_eq!(
+            login1
+                .source
+                .login_info
+                .get("自定义密钥")
+                .map(String::as_str),
+            Some("••••••••")
+        );
+        assert_eq!(
+            login1.source.login_info.get("昵称").map(String::as_str),
+            Some("小明")
+        );
+
+        // Partial second action preserves omitted credentials and masked values
+        let login2 = online_svc
+            .run_login_action(
+                &admin,
+                sid,
+                HashMap::from([("口令".into(), "••••••••".into())]),
+                Some(
+                    "source.getLoginInfoMap()['口令'] + ':' + source.getLoginInfoMap()['自定义密钥']"
+                        .to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login2.result, "secret-pass:api-key-999");
+
+        // reorder_sources syncs weight to raw_json without clobbering runtime_state
+        let _ = online_svc.reorder_sources(&admin, vec![sid]).await.unwrap();
+        let after_reorder: serde_json::Value =
+            serde_json::from_str(&online_svc.export_source_json(&admin, sid).await.unwrap())
+                .unwrap();
+        assert_eq!(after_reorder["weight"], 10);
+        assert_eq!(
+            online_svc.get_source_variable(&admin, sid).await.unwrap(),
+            long_var
+        );
+    }
+
+    #[tokio::test]
+    async fn test_source_debugger_edge_cases_diagnostics_large_toc_empty_urls_and_data_url() {
+        let mock_app = Router::new()
+            .route(
+                "/toc-510",
+                get(|| async {
+                    let mut html = String::from(r#"<ul id="toc">"#);
+                    for i in 0..510 {
+                        html.push_str(&format!(r#"<li><a href="/ch/{i}">第{i}章</a></li>"#));
+                    }
+                    html.push_str("</ul>");
+                    html
+                }),
+            )
+            .route(
+                "/toc-vol-only",
+                get(|| async {
+                    r#"<ul id="toc"><li><a>第一卷 仅卷名无链接</a></li></ul>"#
+                }),
+            )
+            .route(
+                "/ch/{num}",
+                get(|AxumPath(num): AxumPath<usize>| async move {
+                    format!(r#"<div id="body"><p>章节正文编号{num}</p></div>"#)
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (_tmp, admin, online_svc) = setup_test_online_service().await;
+        // 1. Large TOC (>500 chapters) with chapter_index_override = 505 & data: URL direct jump
+        let raw_large = serde_json::json!({
+            "bookSourceName": "大目录调试源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "ruleBookInfo": {
+                "name": "<js>result.name</js>",
+                "tocUrl": format!("<js>'http://{addr}/toc-510'</js>")
+            },
+            "ruleToc": {
+                "chapterList": "#toc li a",
+                "chapterName": "text",
+                "chapterUrl": "href"
+            },
+            "ruleContent": { "content": "id.body@html" }
+        })
+        .to_string();
+        let large_id = online_svc
+            .import_sources(&admin, &raw_large)
+            .await
+            .unwrap()
+            .sources[0]
+            .id;
+
+        let b64 = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            r#"{"name":"DataUrl书"}"#,
+        );
+        let report_large = online_svc
+            .test_source(
+                &admin,
+                large_id,
+                SourceTestInput {
+                    keyword: Some(format!("data:;base64,{b64}")),
+                    mode: SourceTestMode::Full,
+                    chapter_index: Some(505),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(report_large.ok, "{report_large:?}");
+        assert_eq!(report_large.steps[0].stage, "book_info");
+        assert_eq!(report_large.toc_total_count, 510);
+        assert_eq!(report_large.toc_chapters.len(), 500);
+        assert_eq!(report_large.content_chapter_index, Some(505));
+        assert!(
+            report_large
+                .content_text
+                .as_deref()
+                .unwrap()
+                .contains("章节正文编号505")
+        );
+
+        // 2. Full mode where TOC has only volume entries (no valid chapter URL) -> overall_ok == false
+        let raw_vol = serde_json::json!({
+            "bookSourceName": "空链接目录源",
+            "bookSourceUrl": format!("http://{addr}#vol"),
+            "ruleBookInfo": {
+                "name": "<js>'测试书'</js>",
+                "tocUrl": format!("<js>'http://{addr}/toc-vol-only'</js>")
+            },
+            "ruleToc": {
+                "chapterList": "#toc li a",
+                "chapterName": "text",
+                "chapterUrl": "href"
+            },
+            "ruleContent": { "content": "id.body@html" }
+        })
+        .to_string();
+        let vol_id = online_svc
+            .import_sources(&admin, &raw_vol)
+            .await
+            .unwrap()
+            .sources[0]
+            .id;
+        let report_vol = online_svc
+            .test_source(
+                &admin,
+                vol_id,
+                SourceTestInput {
+                    book_url: Some(format!("data:;base64,{b64}")),
+                    mode: SourceTestMode::Full,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            !report_vol.ok,
+            "Full mode with no valid chapter URL must fail"
+        );
+        assert!(
+            report_vol
+                .steps
+                .iter()
+                .any(|s| s.stage == "content" && !s.ok)
+        );
+
+        // 3. Failed stage preserves diagnostics.logs collected before error
+        let raw_fail = serde_json::json!({
+            "bookSourceName": "失败保留日志源",
+            "bookSourceUrl": format!("http://{addr}#fail"),
+            "searchUrl": "<js>java.log('TRACE_BEFORE_BOOM'); throw new Error('boom');</js>",
+            "ruleSearch": { "bookList": ".x" }
+        })
+        .to_string();
+        let fail_id = online_svc
+            .import_sources(&admin, &raw_fail)
+            .await
+            .unwrap()
+            .sources[0]
+            .id;
+        let report_fail = online_svc
+            .test_source(
+                &admin,
+                fail_id,
+                SourceTestInput {
+                    mode: SourceTestMode::Search,
+                    keyword: Some("测试".into()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!report_fail.ok);
+        assert!(
+            report_fail
+                .diagnostics
+                .logs
+                .iter()
+                .any(|l| l == "TRACE_BEFORE_BOOM"),
+            "failed stage must preserve collected diagnostics: {:?}",
+            report_fail.diagnostics
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_track_online_book_creates_single_book_and_delete_cleans_locks() {
+        let mock_app = Router::new().route(
+            "/toc",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                r#"<ul id="toc"><li><a href="/ch/1">第一章</a></li></ul>"#
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (_tmp, admin, online_svc) = setup_test_online_service().await;
+        let raw_src = serde_json::json!({
+            "bookSourceName": "并发建书源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "ruleToc": { "chapterList": "#toc li a", "chapterName": "text", "chapterUrl": "href" },
+            "ruleContent": { "content": "id.body@html" }
+        })
+        .to_string();
+        let sid = online_svc
+            .import_sources(&admin, &raw_src)
+            .await
+            .unwrap()
+            .sources[0]
+            .id;
+
+        let make_input = || TrackOnlineBookInput {
+            source_id: sid,
+            name: "并发追更书".into(),
+            author: "作者".into(),
+            book_url: format!("http://{addr}/book/dup"),
+            toc_url: format!("http://{addr}/toc"),
+            cover_url: None,
+            intro: None,
+            kind: None,
+            last_chapter: None,
+        };
+        let (r1, r2) = tokio::join!(
+            online_svc.track_online_book(&admin, make_input()),
+            online_svc.track_online_book(&admin, make_input()),
+        );
+        let b1 = r1.unwrap();
+        let b2 = r2.unwrap();
+        assert_eq!(
+            b1.id, b2.id,
+            "concurrent track_online_book must not create duplicates"
+        );
+
+        // Trigger lock entry creation, then delete book and verify lock maps are cleaned
+        let _ = online_svc.sync_tracked_epub(b1.id, true).await.unwrap();
+        assert!(
+            online_svc
+                .epub_sync_locks
+                .lock()
+                .unwrap()
+                .contains_key(&b1.id)
+        );
+        online_svc.catalog.delete_book(&admin, b1.id).await.unwrap();
+        assert!(
+            !online_svc
+                .epub_sync_locks
+                .lock()
+                .unwrap()
+                .contains_key(&b1.id),
+            "delete_book must clean up epub_sync_locks"
+        );
+        assert!(
+            !online_svc
+                .pending_sync_gens
+                .lock()
+                .unwrap()
+                .contains_key(&b1.id),
+            "delete_book must clean up pending_sync_gens"
+        );
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn sync_tracked_epub_preserves_dirty_flag_when_chapter_arrives_concurrently() {
+        let mock_app = Router::new()
+            .route(
+                "/toc",
+                get(|| async {
+                    r#"<ul id="toc">
+                        <li><a href="/ch/1">第一章</a></li>
+                        <li><a href="/ch/2">第二章</a></li>
+                    </ul>"#
+                }),
+            )
+            .route(
+                "/ch/{num}",
+                get(|AxumPath(num): AxumPath<usize>| async move {
+                    format!(r#"<div id="body"><p>第{num}章正文</p></div>"#)
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (_tmp, admin, online_svc) = setup_test_online_service().await;
+        let raw_src = serde_json::json!({
+            "bookSourceName": "同步竞态源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "ruleToc": { "chapterList": "#toc li a", "chapterName": "text", "chapterUrl": "href" },
+            "ruleContent": { "content": "id.body@html" }
+        })
+        .to_string();
+        let sid = online_svc
+            .import_sources(&admin, &raw_src)
+            .await
+            .unwrap()
+            .sources[0]
+            .id;
+
+        let tracked = online_svc
+            .track_online_book(
+                &admin,
+                TrackOnlineBookInput {
+                    source_id: sid,
+                    name: "竞态测试书".into(),
+                    author: "作者".into(),
+                    book_url: format!("http://{addr}/book/race"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    last_chapter: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Fetch ch0 and ch1 concurrently while running sync_tracked_epub
+        let (c0, c1, _sync) = tokio::join!(
+            online_svc.get_tracked_chapter(tracked.id, 0, false),
+            online_svc.get_tracked_chapter(tracked.id, 1, false),
+            online_svc.sync_tracked_epub(tracked.id, true),
+        );
+        c0.unwrap();
+        c1.unwrap();
+
+        // Now run final ensure_tracked_epub_synced; both chapters MUST end up in the EPUB
+        online_svc
+            .ensure_tracked_epub_synced(tracked.id)
+            .await
+            .unwrap();
+        let final_book = online_svc.catalog.find_book_raw(tracked.id).await.unwrap();
+        match final_book.source {
+            BookSource::OnlineTracked {
+                cached_chapters,
+                epub_dirty,
+                ..
+            } => {
+                assert_eq!(cached_chapters, 2);
+                assert!(!epub_dirty);
+            }
+            _ => panic!("expected OnlineTracked"),
+        }
+
+        server_handle.abort();
     }
 }
