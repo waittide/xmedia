@@ -232,7 +232,8 @@ async function handleBatchRemap(): Promise<void> {
     :title="dialogTitle"
     subtitle="外挂字幕转码 / 简繁 / 时间轴平移、内封字幕轨抽取与剧集整季编号映射"
     max-width="max-w-2xl"
-    @close="emit('close')"
+    :close-on-backdrop="!busy"
+    @close="!busy && emit('close')"
   >
     <template #icon>
       <LuFilm class="h-5 w-5" />

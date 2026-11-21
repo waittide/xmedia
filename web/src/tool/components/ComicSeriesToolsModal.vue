@@ -164,7 +164,8 @@ async function handleMerge(): Promise<void> {
     :title="`漫画系列批量工具（已选 ${sortedEntries.length} 项）`"
     subtitle="按文件名自然序处理 · 支持批量同步系列元数据、顺序重编号与多话合卷"
     max-width="max-w-2xl"
-    @close="emit('close')"
+    :close-on-backdrop="!busy"
+    @close="!busy && emit('close')"
   >
     <template #icon>
       <LuLayers class="h-5 w-5" />

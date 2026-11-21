@@ -101,6 +101,14 @@ watch(
     if (isOpen) {
       errorMsg.value = null
       report.value = null
+      form.keep_source = true
+      form.compress_images = true
+      form.image_format = 'webp'
+      form.max_image_dimension = 1600
+      form.image_quality = 82
+      form.generate_jacket = true
+      form.remove_orphans = true
+      form.pdf_scanned_fallback = true
       // Batch mode defaults to skipping already-normalized EPUBs & .orig.epub backups;
       // single-book intentional re-run defaults to force reprocessing unless it's an .orig.epub backup.
       form.skip_normalized = bookEntries.value.length > 1 || origBackupCount.value > 0
@@ -289,7 +297,7 @@ const dialogSubtitle = computed(() => {
 
           <div class="space-y-1">
             <label class="flex items-center justify-between text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-              <span>JPEG 压缩质量</span>
+              <span>{{ form.image_format.toUpperCase() }} 压缩质量</span>
               <span class="font-mono text-[var(--md-sys-color-primary)]">{{ form.image_quality }}</span>
             </label>
             <div class="pt-1.5">
@@ -299,7 +307,7 @@ const dialogSubtitle = computed(() => {
                 :max="95"
                 :step="1"
                 :disabled="running"
-                aria-label="JPEG 压缩质量"
+                :aria-label="`${form.image_format.toUpperCase()} 压缩质量`"
               />
             </div>
           </div>

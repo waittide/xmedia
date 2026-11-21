@@ -84,12 +84,17 @@ function savePrefs(): void {
   })
 }
 
+let providerLoadSeq = 0
+
 async function loadDomainProviders(): Promise<void> {
+  const seq = ++providerLoadSeq
   try {
     const list = await toolApi.listProviders(undefined, props.domain)
+    if (seq !== providerLoadSeq || !props.open) return
     providers.value = list
     selectedProviderIds.value = list.filter((p) => p.configured).map((p) => p.id)
   } catch {
+    if (seq !== providerLoadSeq) return
     providers.value = []
     selectedProviderIds.value = []
   }

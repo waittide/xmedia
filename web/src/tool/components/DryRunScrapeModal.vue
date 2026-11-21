@@ -63,8 +63,11 @@ const unmatchedEntries = computed<MediaFileEntry[]>(() => {
   return out
 })
 
+let dryCheckSeq = 0
+
 async function runDryCheck(): Promise<void> {
   if (!props.rootId || props.entries.length === 0) return
+  const seq = ++dryCheckSeq
   loading.value = true
   errorMsg.value = ''
   items.value = []
@@ -76,6 +79,7 @@ async function runDryCheck(): Promise<void> {
       undefined,
       props.options ?? undefined,
     )
+    if (seq !== dryCheckSeq || !props.open) return
     items.value = res
     const initial = new Set<string>()
     for (const item of res) {
@@ -85,9 +89,12 @@ async function runDryCheck(): Promise<void> {
     }
     checkedPaths.value = initial
   } catch (err) {
+    if (seq !== dryCheckSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loading.value = false
+    if (seq === dryCheckSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -120,11 +127,7 @@ function selectAllMatched(): void {
 }
 
 function handleConfirm(): void {
-  const selected: MediaFileEntry[] = []
-  for (const p of checkedPaths.value) {
-    const entry = entryMap.value.get(p)
-    if (entry) selected.push(entry)
-  }
+  const selected = props.entries.filter((entry) => checkedPaths.value.has(entry.rel_path))
   if (selected.length === 0) return
   emit('confirm', selected, props.options ?? undefined)
   emit('close')
@@ -179,7 +182,7 @@ function handleManualScrape(): void {
           </button>
         </div>
 
-        <label
+        <div
           v-for="item in items"
           :key="item.rel_path"
           class="flex cursor-pointer items-start justify-between gap-3 rounded-2xl border p-3 transition"
@@ -188,11 +191,13 @@ function handleManualScrape(): void {
               ? 'border-[var(--md-sys-color-warning)]/45 bg-[var(--md-sys-color-warning-container)]/35'
               : 'border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)]'
           "
+          @click="togglePath(item.rel_path)"
         >
           <div class="flex min-w-0 items-start gap-2.5">
-            <div class="pt-0.5">
+            <div class="pt-0.5" @click.stop>
               <AppCheckbox
                 :model-value="checkedPaths.has(item.rel_path)"
+                :aria-label="item.display_title"
                 @update:model-value="() => togglePath(item.rel_path)"
               />
             </div>
@@ -228,7 +233,7 @@ function handleManualScrape(): void {
             <LuCheckCircle2 v-else class="h-3.5 w-3.5" />
             <span>{{ item.confidence }}%</span>
           </div>
-        </label>
+        </div>
       </div>
     </div>
 

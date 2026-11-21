@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   LuAlertTriangle,
   LuChevronDown,
@@ -124,11 +124,18 @@ const filteredTocItems = computed(() => {
   })
 })
 
+const renameInputRef = ref<HTMLInputElement[] | HTMLInputElement | null>(null)
+
 function startInlineRename(idx: number): void {
   const target = props.chapters[idx]
   if (!target) return
   renamingIdx.value = idx
   renameDraft.value = target.title
+  void nextTick(() => {
+    const el = Array.isArray(renameInputRef.value) ? renameInputRef.value[0] : renameInputRef.value
+    el?.focus()
+    el?.select()
+  })
 }
 
 function commitInlineRename(): void {
@@ -392,9 +399,10 @@ function onTocDrop(targetIdx: number): void {
       <!-- Inline Rename Input vs Title Label -->
       <input
         v-if="renamingIdx === idx"
+        ref="renameInputRef"
         v-model="renameDraft"
         type="text"
-        autofocus
+        aria-label="重命名章节标题"
         class="h-6 min-w-0 flex-1 rounded border border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface-container-lowest)] px-1.5 text-xs text-[var(--md-sys-color-on-surface)] outline-none"
         @click.stop
         @keydown.enter.prevent="commitInlineRename"
@@ -426,13 +434,14 @@ function onTocDrop(targetIdx: number): void {
       <!-- Hover Compact Inline Actions (No Height Shift) -->
       <div
         v-if="renamingIdx !== idx"
-        class="hidden shrink-0 items-center gap-0.5 group-hover:flex"
+        class="hidden shrink-0 items-center gap-0.5 group-hover:flex group-focus-within:flex"
         @click.stop
       >
         <button
           type="button"
           class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-on-surface)]"
           title="重命名章节标题"
+          aria-label="重命名章节标题"
           @click="startInlineRename(idx)"
         >
           <LuPencil class="h-3 w-3" />
@@ -442,6 +451,7 @@ function onTocDrop(targetIdx: number): void {
           type="button"
           class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-primary)]"
           title="合并到上一章"
+          aria-label="合并到上一章"
           @click="emit('mergePrev', idx)"
         >
           <LuMerge class="h-3 w-3" />
@@ -450,6 +460,7 @@ function onTocDrop(targetIdx: number): void {
           type="button"
           class="rounded p-1 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-lowest)] hover:text-[var(--md-sys-color-error)]"
           title="删除章节"
+          aria-label="删除章节"
           @click="emit('delete', idx)"
         >
           <LuTrash2 class="h-3 w-3" />

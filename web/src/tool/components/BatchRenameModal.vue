@@ -197,6 +197,7 @@ async function runPreview(): Promise<void> {
     taskStore.completeTask(taskId, `已生成 ${nextPlans.length.toLocaleString()} 条预览方案`)
   } catch (err) {
     if (seq !== requestSeq) return
+    plans.value = []
     const msg = err instanceof Error ? err.message : String(err)
     errorMsg.value = msg
     taskStore.failTask(taskId, msg)
@@ -322,12 +323,11 @@ async function handleExecute(): Promise<void> {
     ephemeral: false,
   })
   try {
-    const selected = activePlans.value
+    const selected = activePlans.value.filter((p) => !p.unchanged && !p.conflict)
+    if (selected.length === 0) return
     const movedMap: Record<string, string> = {}
     for (const p of selected) {
-      if (!p.unchanged && !p.conflict) {
-        movedMap[p.from_rel_path] = p.to_rel_path
-      }
+      movedMap[p.from_rel_path] = p.to_rel_path
     }
     const res = await toolApi.executeRename(props.rootId, selected, (prog) => {
       taskStore.updateTask(taskId, prog)
@@ -355,7 +355,8 @@ async function handleExecute(): Promise<void> {
     :title="`按元信息模板整理归档 (${entries.length} 个文件)`"
     subtitle="同名外挂文件（.opf / .lrc / .nfo / .srt / .ass）将自动跟随归档"
     max-width="max-w-4xl"
-    @close="emit('close')"
+    :close-on-backdrop="!executing"
+    @close="!executing && emit('close')"
   >
     <template #icon>
       <LuFileSignature class="h-5 w-5" />

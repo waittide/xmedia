@@ -22,6 +22,7 @@ import {
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import { useDialogStore } from '@/stores/dialog'
 import { formatBytes } from '@/utils/format'
 import { toolApi } from '../api'
 import type {
@@ -109,8 +110,23 @@ function markLoaded(entryName: string): void {
   loadedEntries.value = next
 }
 
+const dialogStore = useDialogStore()
+let pagesLoadSeq = 0
+const initialSnapshot = ref('')
+
+function serializePagesState(): string {
+  return JSON.stringify(
+    pages.value.map((p) => [p.entry_name, p.page_type, p.double_page, p.deleted]),
+  )
+}
+
+const isDirty = computed(
+  () => initialSnapshot.value !== '' && serializePagesState() !== initialSnapshot.value,
+)
+
 async function loadPages(options?: { preserveReport?: boolean }): Promise<void> {
   if (!props.entry) return
+  const seq = ++pagesLoadSeq
   const preserveReport = options?.preserveReport === true
   loading.value = true
   errorMsg.value = ''
@@ -123,14 +139,19 @@ async function loadPages(options?: { preserveReport?: boolean }): Promise<void> 
   lightboxIdx.value = null
   try {
     const snap = await toolApi.getComicPages(props.entry.root_id, props.entry.rel_path)
+    if (seq !== pagesLoadSeq || !props.open) return
     format.value = snap.format
     totalSizeBytes.value = snap.total_size_bytes
     pages.value = snap.pages.map((p) => ({ ...p, deleted: false }))
+    initialSnapshot.value = serializePagesState()
     imgVersion.value += 1
   } catch (err) {
+    if (seq !== pagesLoadSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loading.value = false
+    if (seq === pagesLoadSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -170,10 +191,21 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleLightboxKeydown)
 })
 
-function handleDialogClose(): void {
+async function handleDialogClose(): Promise<void> {
+  if (saving.value) return
   if (lightboxIdx.value !== null) {
     lightboxIdx.value = null
     return
+  }
+  if (isDirty.value) {
+    const ok = await dialogStore.confirm({
+      title: '放弃未保存的页面调整？',
+      message: '当前页面排序、标记或删除操作尚未写入 CBZ 文件，关闭后将丢失。',
+      confirmText: '放弃并关闭',
+      cancelText: '继续编辑',
+      danger: true,
+    })
+    if (!ok) return
   }
   emit('close')
 }
@@ -298,7 +330,7 @@ async function handleSave(): Promise<void> {
     :title="entry ? `漫画页面管理与体积瘦身 · ${entry.file_name}` : '漫画页面管理与体积瘦身'"
     :subtitle="dialogSubtitle"
     max-width="max-w-[96vw] h-[94vh]"
-    :close-on-backdrop="lightboxIdx === null"
+    :close-on-backdrop="!saving && lightboxIdx === null"
     @close="handleDialogClose"
   >
     <template #icon>

@@ -724,6 +724,8 @@ function applyCssPreset(cssCode: string, label: string): void {
   showToast(`已应用「${label}」排版样式预设`)
 }
 
+let cssPreviewSyncTimer: ReturnType<typeof setTimeout> | null = null
+
 function syncPrimaryCssDraftToStylesheets(): void {
   const next = [...docStylesheets.value]
   if (next.length === 0) {
@@ -733,13 +735,17 @@ function syncPrimaryCssDraftToStylesheets(): void {
   }
   docStylesheets.value = next
   hasUnsavedEdits.value = true
-  if (showLivePreview.value && currentRecord.value) {
-    flushActiveSurfaceToRecord()
-    previewSrcdoc.value = buildLivePreviewSrcdoc(
-      currentRecord.value.xhtmlBody,
-      currentRecord.value.sourceHref,
-    )
-  }
+  if (cssPreviewSyncTimer) clearTimeout(cssPreviewSyncTimer)
+  cssPreviewSyncTimer = setTimeout(() => {
+    cssPreviewSyncTimer = null
+    if (showLivePreview.value && currentRecord.value && props.open) {
+      flushActiveSurfaceToRecord()
+      previewSrcdoc.value = buildLivePreviewSrcdoc(
+        currentRecord.value.xhtmlBody,
+        currentRecord.value.sourceHref,
+      )
+    }
+  }, 160)
 }
 
 async function runBackendTextTransform(
@@ -1166,8 +1172,11 @@ async function handleReplaceAll(): Promise<void> {
 
 // ==================== Load, Save (In-Place Ctrl+S), Resegment & Convert ====================
 
+let loadDocSeq = 0
+
 async function loadDocument(): Promise<void> {
   if (!props.entry) return
+  const seq = ++loadDocSeq
   loading.value = true
   errorMsg.value = null
   hasUnsavedEdits.value = false
@@ -1177,6 +1186,7 @@ async function loadDocument(): Promise<void> {
 
   try {
     const doc = await toolApi.getBookContent(props.entry.root_id, props.entry.rel_path)
+    if (seq !== loadDocSeq || !props.open) return
     docFormat.value = doc.format
     docTitle.value = doc.title
     docAuthors.value = doc.authors
@@ -1188,10 +1198,13 @@ async function loadDocument(): Promise<void> {
     loading.value = false
     await mountActiveChapterIntoSurface()
   } catch (err) {
+    if (seq !== loadDocSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
     chapters.value = []
   } finally {
-    loading.value = false
+    if (seq === loadDocSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -1201,6 +1214,16 @@ watch(
     if (isOpen && props.entry) {
       deleteSourceTxt.value = false
       void loadDocument()
+    } else if (!isOpen) {
+      loadDocSeq += 1
+      if (cssPreviewSyncTimer) {
+        clearTimeout(cssPreviewSyncTimer)
+        cssPreviewSyncTimer = null
+      }
+      chapters.value = []
+      docStylesheets.value = []
+      previewSrcdoc.value = ''
+      sourceBuffer.value = ''
     }
   },
   { immediate: true },
@@ -1353,6 +1376,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleWorkbenchKeydown)
   if (idleSyncTimer) clearTimeout(idleSyncTimer)
   if (savedBadgeTimer) clearTimeout(savedBadgeTimer)
+  if (cssPreviewSyncTimer) clearTimeout(cssPreviewSyncTimer)
 })
 </script>
 

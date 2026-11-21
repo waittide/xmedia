@@ -40,7 +40,10 @@ const metadataBatches = ref<MetadataHistoryBatchDto[]>([])
 const renameBatches = ref<RenameHistoryBatchDto[]>([])
 const expandedIds = ref<Set<string>>(new Set())
 
+let historyLoadSeq = 0
+
 async function loadHistory(): Promise<void> {
+  const seq = ++historyLoadSeq
   loading.value = true
   errorMsg.value = null
   const rid = scopeAllRoots.value ? undefined : props.rootId || undefined
@@ -49,12 +52,16 @@ async function loadHistory(): Promise<void> {
       toolApi.listMetadataHistory(rid),
       toolApi.listRenameHistory(rid),
     ])
+    if (seq !== historyLoadSeq || !props.open) return
     metadataBatches.value = metaRes
     renameBatches.value = renameRes
   } catch (err) {
+    if (seq !== historyLoadSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loading.value = false
+    if (seq === historyLoadSeq) {
+      loading.value = false
+    }
   }
 }
 

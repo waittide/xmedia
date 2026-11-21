@@ -77,6 +77,7 @@ const syncModeOptions = [
   { value: 'both', label: '同时同步内嵌 + 侧车 .lrc' },
   { value: 'sidecar_to_embedded', label: '仅写入音频内嵌标签' },
   { value: 'embedded_to_sidecar', label: '仅导出侧车 .lrc 文件' },
+  { value: 'none', label: '仅更新当前缓冲不额外同步' },
 ]
 const coverDimOptions = [
   { value: '1200', label: '1200 px' },
@@ -261,7 +262,8 @@ async function handleBatchSyncAlbum(): Promise<void> {
     :title="dialogTitle"
     subtitle="歌词偏移精校、ReplayGain 响度归一化、封面瘦身、CUE 无损分轨与专辑批量同步"
     max-width="max-w-2xl"
-    @close="emit('close')"
+    :close-on-backdrop="!busy"
+    @close="!busy && emit('close')"
   >
     <template #icon>
       <LuMusic class="h-5 w-5" />

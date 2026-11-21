@@ -4,6 +4,7 @@ import { LuCheckCircle2, LuFolderPlus, LuRotateCw, LuSave, LuTrash2 } from 'vue-
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
+import { useDialogStore } from '@/stores/dialog'
 import type { MediaKind } from '@/types/api'
 import { toolApi } from '../../api'
 import type { ManagedRootDto, PublicSettingsDto } from '../../types'
@@ -25,6 +26,7 @@ const domainBadgeLabels: Record<MediaKind, string> = {
   music: '音乐',
   video: '影视',
 }
+const dialogStore = useDialogStore()
 
 const newRootName = ref('')
 const newRootPath = ref('')
@@ -119,6 +121,14 @@ async function handleToggleRootReadOnly(id: string, currentReadOnly: boolean): P
 }
 
 async function handleRemoveRoot(id: string): Promise<void> {
+  const target = (props.settings?.roots ?? []).find((r) => r.id === id)
+  const confirmed = await dialogStore.confirm({
+    title: '移除挂载目录',
+    message: `确定移除目录「${target?.name || target?.path || id}」吗？（不会删除磁盘上的原始媒体文件）`,
+    confirmText: '确认移除',
+    danger: true,
+  })
+  if (!confirmed) return
   emit('error', null)
   try {
     await toolApi.removeRoot(id)
@@ -129,11 +139,10 @@ async function handleRemoveRoot(id: string): Promise<void> {
   }
 }
 
-async function handleSaveInboxAndWebhook(): Promise<void> {
+async function handleSaveInbox(): Promise<void> {
   saving.value = true
   emit('error', null)
   inboxNotice.value = null
-  webhookNotice.value = null
   try {
     const next = await toolApi.updateSettings({
       inbox: {
@@ -145,6 +154,22 @@ async function handleSaveInboxAndWebhook(): Promise<void> {
         auto_scrape: inboxAutoScrape.value,
         organize_by_template: inboxOrganize.value,
       },
+    })
+    emit('updated', next)
+    emit('saved')
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : String(err))
+  } finally {
+    saving.value = false
+  }
+}
+
+async function handleSaveWebhook(): Promise<void> {
+  saving.value = true
+  emit('error', null)
+  webhookNotice.value = null
+  try {
+    const next = await toolApi.updateSettings({
       xmedia_webhook_enabled: webhookEnabled.value,
       xmedia_webhook_base_url: webhookBaseUrl.value.trim(),
       xmedia_webhook_api_key: webhookApiKey.value.trim() || undefined,
@@ -337,7 +362,8 @@ async function handleTestWebhook(): Promise<void> {
     <div class="flex flex-wrap items-center gap-5">
       <AppCheckbox v-model="inboxUseHardlink" label="优先硬链接（同卷保种零复制）" />
       <AppCheckbox v-model="inboxDeleteSource" label="导入后移除收件箱源文件" />
-      <AppCheckbox v-model="inboxAutoScrape" label="导入后自动刮削归档" />
+      <AppCheckbox v-model="inboxAutoScrape" label="导入后自动刮削" />
+      <AppCheckbox v-model="inboxOrganize" label="按模板整理归档路径" />
     </div>
     <div
       v-if="inboxNotice"
@@ -350,10 +376,10 @@ async function handleTestWebhook(): Promise<void> {
         type="button"
         :disabled="saving"
         class="md-btn md-btn-sm md-btn-filled md-state"
-        @click="handleSaveInboxAndWebhook"
+        @click="handleSaveInbox"
       >
         <LuSave class="h-3.5 w-3.5" />
-        <span>保存收件箱与联动配置</span>
+        <span>保存收件箱配置</span>
       </button>
       <button
         type="button"
@@ -424,7 +450,7 @@ async function handleTestWebhook(): Promise<void> {
         type="button"
         :disabled="saving"
         class="md-btn md-btn-sm md-btn-filled md-state"
-        @click="handleSaveInboxAndWebhook"
+        @click="handleSaveWebhook"
       >
         <LuSave class="h-3.5 w-3.5" />
         <span>保存联动设置</span>
