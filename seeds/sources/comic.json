@@ -1,0 +1,225 @@
+[
+  {
+    "sourceName": "MangaDex (EN)",
+    "sourceUrl": "https://api.mangadex.org#en",
+    "sourceGroup": "Manga,EN",
+    "sourceComment": "Official MangaDex v5 REST API (English)",
+    "sourceType": 2,
+    "enabled": true,
+    "enabledExplore": true,
+    "enabledCookieJar": false,
+    "weight": 100,
+    "readingDirection": "rtl",
+    "concurrentRate": "5/1000",
+    "header": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"application/json\"}",
+    "imageHeader": "{\"User-Agent\":\"xmedia/0.1.0\"}",
+    "searchUrl": "https://api.mangadex.org/manga?title={{java.encodeURI(key)}}&limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[relevance]=desc",
+    "exploreUrl": "Popular::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[followedCount]=desc\nLatest Updated::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[latestUploadedChapter]=desc\nTop Rated::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[rating]=desc",
+    "ruleSearch": {
+      "checkKeyWord": "Yotsuba",
+      "bookList": "$.data[*]",
+      "name": "@js:(function(){var a=result.attributes||{};var t=a.title||{};if(t.en)return t.en;var alts=a.altTitles||[];for(var i=0;i<alts.length;i++){if(alts[i]&&alts[i].en)return alts[i].en;}for(var k in t){if(t[k])return t[k];}return '';})()",
+      "author": "@js:(function(){var r=result.relationships||[];var out=[];for(var i=0;i<r.length;i++){if((r[i].type==='author'||r[i].type==='artist')&&r[i].attributes&&r[i].attributes.name){if(out.indexOf(r[i].attributes.name)===-1)out.push(r[i].attributes.name);}}return out.join(', ');})()",
+      "bookUrl": "https://api.mangadex.org/manga/{{$.id}}?includes[]=cover_art&includes[]=author",
+      "coverUrl": "@js:(function(){var r=result.relationships||[];for(var i=0;i<r.length;i++){if(r[i].type==='cover_art'&&r[i].attributes&&r[i].attributes.fileName){return 'https://uploads.mangadex.org/covers/'+result.id+'/'+r[i].attributes.fileName+'.256.jpg';}}return '';})()",
+      "intro": "@js:(function(){var d=(result.attributes&&result.attributes.description)||{};if(d.en)return d.en;for(var k in d){if(d[k])return d[k];}return '';})()",
+      "kind": "$.attributes.tags[0:5].attributes.name.en##\\n##, "
+    },
+    "ruleBookInfo": {
+      "init": "$.data",
+      "name": "@js:(function(){var a=result.attributes||{};var t=a.title||{};if(t.en)return t.en;var alts=a.altTitles||[];for(var i=0;i<alts.length;i++){if(alts[i]&&alts[i].en)return alts[i].en;}for(var k in t){if(t[k])return t[k];}return '';})()",
+      "author": "@js:(function(){var r=result.relationships||[];var out=[];for(var i=0;i<r.length;i++){if((r[i].type==='author'||r[i].type==='artist')&&r[i].attributes&&r[i].attributes.name){if(out.indexOf(r[i].attributes.name)===-1)out.push(r[i].attributes.name);}}return out.join(', ');})()",
+      "coverUrl": "@js:(function(){var r=result.relationships||[];for(var i=0;i<r.length;i++){if(r[i].type==='cover_art'&&r[i].attributes&&r[i].attributes.fileName){return 'https://uploads.mangadex.org/covers/'+result.id+'/'+r[i].attributes.fileName+'.512.jpg';}}return '';})()",
+      "intro": "@js:(function(){var d=(result.attributes&&result.attributes.description)||{};if(d.en)return d.en;for(var k in d){if(d[k])return d[k];}return '';})()",
+      "kind": "$.attributes.tags[0:6].attributes.name.en##\\n##, ",
+      "status": "$.attributes.status",
+      "tocUrl": "https://api.mangadex.org/manga/{{$.id}}/feed?translatedLanguage[]=en&limit=100&offset=0&order[volume]=asc&order[chapter]=asc&includeExternalUrl=0"
+    },
+    "ruleToc": {
+      "chapterList": "@js:(result.data||[]).filter(function(c){return c&&c.attributes&&!c.attributes.externalUrl&&Number(c.attributes.pages||0)>0;})",
+      "chapterName": "@js:(function(){var a=result.attributes||{};var parts=[];if(a.volume)parts.push('Vol.'+a.volume);if(a.chapter)parts.push('Ch.'+a.chapter);if(a.title)parts.push(a.title);if(parts.length===0)parts.push('Oneshot');return parts.join(' ');})()",
+      "chapterUrl": "https://api.mangadex.org/at-home/server/{{$.id}}",
+      "updateTime": "$.attributes.readableAt##T.*",
+      "nextTocUrl": "@js:(function(){var off=Number(result.offset||0);var lim=Number(result.limit||100);var tot=Number(result.total||0);if(off+lim<tot){return baseUrl.replace(/offset=\\d+/,'offset='+(off+lim));}return '';})()"
+    },
+    "ruleContent": {
+      "content": "@js:(function(){var b=(result.baseUrl||'').replace(/\\/+$/,'');var ch=result.chapter||{};var h=ch.hash||'';var ds=ch.dataSaver||[];var d=ch.data||[];var files=ds.length>0?ds:d;var mode=ds.length>0?'data-saver':'data';if(!b||!h||!files.length)return '';return files.map(function(f){return b+'/'+mode+'/'+h+'/'+f;}).join('\\n');})()"
+    }
+  },
+  {
+    "sourceName": "MangaDex (中文)",
+    "sourceUrl": "https://api.mangadex.org#zh",
+    "sourceGroup": "Manga,中文",
+    "sourceComment": "Official MangaDex v5 REST API (zh / zh-hk)",
+    "sourceType": 2,
+    "enabled": true,
+    "enabledExplore": true,
+    "enabledCookieJar": false,
+    "weight": 95,
+    "readingDirection": "rtl",
+    "concurrentRate": "5/1000",
+    "header": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"application/json\"}",
+    "imageHeader": "{\"User-Agent\":\"xmedia/0.1.0\"}",
+    "searchUrl": "https://api.mangadex.org/manga?title={{java.encodeURI(key)}}&limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=zh&availableTranslatedLanguage[]=zh-hk&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[relevance]=desc",
+    "exploreUrl": "热门中文::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=zh&availableTranslatedLanguage[]=zh-hk&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[followedCount]=desc\n最新更新::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=zh&availableTranslatedLanguage[]=zh-hk&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[latestUploadedChapter]=desc",
+    "ruleSearch": {
+      "checkKeyWord": "一拳超人",
+      "bookList": "$.data[*]",
+      "name": "@js:(function(){var a=result.attributes||{};var t=a.title||{};if(t['zh-hk'])return t['zh-hk'];if(t.zh)return t.zh;var alts=a.altTitles||[];for(var i=0;i<alts.length;i++){if(alts[i]&&alts[i]['zh-hk'])return alts[i]['zh-hk'];if(alts[i]&&alts[i].zh)return alts[i].zh;}if(t.en)return t.en;for(var k in t){if(t[k])return t[k];}return '';})()",
+      "author": "@js:(function(){var r=result.relationships||[];var out=[];for(var i=0;i<r.length;i++){if((r[i].type==='author'||r[i].type==='artist')&&r[i].attributes&&r[i].attributes.name){if(out.indexOf(r[i].attributes.name)===-1)out.push(r[i].attributes.name);}}return out.join(', ');})()",
+      "bookUrl": "https://api.mangadex.org/manga/{{$.id}}?includes[]=cover_art&includes[]=author",
+      "coverUrl": "@js:(function(){var r=result.relationships||[];for(var i=0;i<r.length;i++){if(r[i].type==='cover_art'&&r[i].attributes&&r[i].attributes.fileName){return 'https://uploads.mangadex.org/covers/'+result.id+'/'+r[i].attributes.fileName+'.256.jpg';}}return '';})()",
+      "intro": "@js:(function(){var d=(result.attributes&&result.attributes.description)||{};return d['zh-hk']||d.zh||d.en||'';})()",
+      "kind": "$.attributes.tags[0:5].attributes.name.en##\\n##, "
+    },
+    "ruleBookInfo": {
+      "init": "$.data",
+      "name": "@js:(function(){var a=result.attributes||{};var t=a.title||{};if(t['zh-hk'])return t['zh-hk'];if(t.zh)return t.zh;var alts=a.altTitles||[];for(var i=0;i<alts.length;i++){if(alts[i]&&alts[i]['zh-hk'])return alts[i]['zh-hk'];if(alts[i]&&alts[i].zh)return alts[i].zh;}if(t.en)return t.en;for(var k in t){if(t[k])return t[k];}return '';})()",
+      "author": "@js:(function(){var r=result.relationships||[];var out=[];for(var i=0;i<r.length;i++){if((r[i].type==='author'||r[i].type==='artist')&&r[i].attributes&&r[i].attributes.name){if(out.indexOf(r[i].attributes.name)===-1)out.push(r[i].attributes.name);}}return out.join(', ');})()",
+      "coverUrl": "@js:(function(){var r=result.relationships||[];for(var i=0;i<r.length;i++){if(r[i].type==='cover_art'&&r[i].attributes&&r[i].attributes.fileName){return 'https://uploads.mangadex.org/covers/'+result.id+'/'+r[i].attributes.fileName+'.512.jpg';}}return '';})()",
+      "intro": "@js:(function(){var d=(result.attributes&&result.attributes.description)||{};return d['zh-hk']||d.zh||d.en||'';})()",
+      "kind": "$.attributes.tags[0:6].attributes.name.en##\\n##, ",
+      "status": "$.attributes.status",
+      "tocUrl": "https://api.mangadex.org/manga/{{$.id}}/feed?translatedLanguage[]=zh&translatedLanguage[]=zh-hk&limit=100&offset=0&order[volume]=asc&order[chapter]=asc&includeExternalUrl=0"
+    },
+    "ruleToc": {
+      "chapterList": "@js:(result.data||[]).filter(function(c){return c&&c.attributes&&!c.attributes.externalUrl&&Number(c.attributes.pages||0)>0;})",
+      "chapterName": "@js:(function(){var a=result.attributes||{};var parts=[];if(a.volume)parts.push('Vol.'+a.volume);if(a.chapter)parts.push('Ch.'+a.chapter);if(a.title)parts.push(a.title);if(parts.length===0)parts.push('Oneshot');return parts.join(' ');})()",
+      "chapterUrl": "https://api.mangadex.org/at-home/server/{{$.id}}",
+      "updateTime": "$.attributes.readableAt##T.*",
+      "nextTocUrl": "@js:(function(){var off=Number(result.offset||0);var lim=Number(result.limit||100);var tot=Number(result.total||0);if(off+lim<tot){return baseUrl.replace(/offset=\\d+/,'offset='+(off+lim));}return '';})()"
+    },
+    "ruleContent": {
+      "content": "@js:(function(){var b=(result.baseUrl||'').replace(/\\/+$/,'');var ch=result.chapter||{};var h=ch.hash||'';var ds=ch.dataSaver||[];var d=ch.data||[];var files=ds.length>0?ds:d;var mode=ds.length>0?'data-saver':'data';if(!b||!h||!files.length)return '';return files.map(function(f){return b+'/'+mode+'/'+h+'/'+f;}).join('\\n');})()"
+    }
+  },
+  {
+    "sourceName": "WEBTOON (EN)",
+    "sourceUrl": "https://www.webtoons.com/en",
+    "sourceGroup": "Webtoon,EN",
+    "sourceComment": "LINE WEBTOON English (Desktop UA + Referer imageHeader)",
+    "sourceType": 2,
+    "enabled": true,
+    "enabledExplore": true,
+    "enabledCookieJar": true,
+    "weight": 90,
+    "readingDirection": "webtoon",
+    "concurrentRate": "3/1000",
+    "header": "{\"User-Agent\":\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\",\"Referer\":\"https://www.webtoons.com/\"}",
+    "imageHeader": "{\"User-Agent\":\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\",\"Referer\":\"https://www.webtoons.com/\"}",
+    "searchUrl": "https://www.webtoons.com/en/search?keyword={{java.encodeURI(key)}}&page={{page}}",
+    "exploreUrl": "Originals::https://www.webtoons.com/en/originals\nFantasy::https://www.webtoons.com/en/genres/fantasy?sortOrder=MANA\nAction::https://www.webtoons.com/en/genres/action?sortOrder=MANA\nDrama::https://www.webtoons.com/en/genres/drama?sortOrder=MANA\nRomance::https://www.webtoons.com/en/genres/romance?sortOrder=MANA\nComedy::https://www.webtoons.com/en/genres/comedy?sortOrder=MANA\nThriller::https://www.webtoons.com/en/genres/thriller?sortOrder=MANA",
+    "ruleSearch": {
+      "checkKeyWord": "tower of god",
+      "bookList": "ul.webtoon_list li",
+      "name": ".title@text",
+      "author": ".author@text",
+      "bookUrl": "a@href",
+      "coverUrl": "img@src",
+      "kind": ".genre@text || .view_count@text"
+    },
+    "ruleBookInfo": {
+      "name": ".detail_header .subj@text",
+      "author": ".detail_header .author_area@ownText",
+      "coverUrl": "meta[property=\"og:image\"]@content || .detail_header .thmb img@src",
+      "intro": ".summary@text",
+      "kind": ".detail_header .genre@text",
+      "status": ".day_info@text",
+      "tocUrl": "@js:baseUrl+(baseUrl.indexOf('?')>=0?'&':'?')+'sort=oldest'"
+    },
+    "ruleToc": {
+      "chapterList": "ul#_listUl li._episodeItem",
+      "chapterName": ".subj span@text || .subj@text",
+      "chapterUrl": "a@href",
+      "updateTime": ".date@text",
+      "nextTocUrl": ".paginate a[aria-current=\"true\"] + a@href"
+    },
+    "ruleContent": {
+      "content": "#_imageList img._images@data-url || #_imageList img@data-url"
+    }
+  },
+  {
+    "sourceName": "WEBTOON (繁體中文)",
+    "sourceUrl": "https://www.webtoons.com/zh-hant",
+    "sourceGroup": "Webtoon,中文",
+    "sourceComment": "LINE WEBTOON 繁體中文 (Desktop UA + Referer imageHeader)",
+    "sourceType": 2,
+    "enabled": true,
+    "enabledExplore": true,
+    "enabledCookieJar": true,
+    "weight": 85,
+    "readingDirection": "webtoon",
+    "concurrentRate": "3/1000",
+    "header": "{\"User-Agent\":\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\",\"Referer\":\"https://www.webtoons.com/\"}",
+    "imageHeader": "{\"User-Agent\":\"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36\",\"Referer\":\"https://www.webtoons.com/\"}",
+    "searchUrl": "https://www.webtoons.com/zh-hant/search?keyword={{java.encodeURI(key)}}&page={{page}}",
+    "exploreUrl": "連載新作::https://www.webtoons.com/zh-hant/originals\n奇幻冒險::https://www.webtoons.com/zh-hant/genres/fantasy?sortOrder=MANA\n愛情::https://www.webtoons.com/zh-hant/genres/romance?sortOrder=MANA\n動作::https://www.webtoons.com/zh-hant/genres/action?sortOrder=MANA\n劇情::https://www.webtoons.com/zh-hant/genres/drama?sortOrder=MANA\n搞笑::https://www.webtoons.com/zh-hant/genres/comedy?sortOrder=MANA\n懸疑驚悚::https://www.webtoons.com/zh-hant/genres/thriller?sortOrder=MANA",
+    "ruleSearch": {
+      "checkKeyWord": "神之塔",
+      "bookList": "ul.webtoon_list li",
+      "name": ".title@text",
+      "author": ".author@text",
+      "bookUrl": "a@href",
+      "coverUrl": "img@src",
+      "kind": ".genre@text || .view_count@text"
+    },
+    "ruleBookInfo": {
+      "name": ".detail_header .subj@text",
+      "author": ".detail_header .author_area@ownText",
+      "coverUrl": "meta[property=\"og:image\"]@content || .detail_header .thmb img@src",
+      "intro": ".summary@text",
+      "kind": ".detail_header .genre@text",
+      "status": ".day_info@text",
+      "tocUrl": "@js:baseUrl+(baseUrl.indexOf('?')>=0?'&':'?')+'sort=oldest'"
+    },
+    "ruleToc": {
+      "chapterList": "ul#_listUl li._episodeItem",
+      "chapterName": ".subj span@text || .subj@text",
+      "chapterUrl": "a@href",
+      "updateTime": ".date@text",
+      "nextTocUrl": ".paginate a[aria-current=\"true\"] + a@href"
+    },
+    "ruleContent": {
+      "content": "#_imageList img._images@data-url || #_imageList img@data-url"
+    }
+  },
+  {
+    "sourceName": "XKCD",
+    "sourceUrl": "https://xkcd.com",
+    "sourceGroup": "Webcomic,EN",
+    "sourceComment": "XKCD Official Archive & JSON API",
+    "sourceType": 2,
+    "enabled": true,
+    "enabledExplore": true,
+    "enabledCookieJar": false,
+    "weight": 80,
+    "readingDirection": "ltr",
+    "header": "{\"User-Agent\":\"xmedia/0.1.0\"}",
+    "imageHeader": "{\"User-Agent\":\"xmedia/0.1.0\"}",
+    "searchUrl": "https://xkcd.com/archive/",
+    "exploreUrl": "Latest::https://xkcd.com/archive/",
+    "ruleSearch": {
+      "checkKeyWord": "Plate",
+      "bookList": "@js:(function(){var html=String(result||'');var q=String(key||'').trim().toLowerCase();var pg=Math.max(1,Number(page||1));var re=/<a href=\"\\/(\\d+)\\/\"[^>]*title=\"([^\"]*)\"[^>]*>([^<]+)<\\/a>/g;var out=[];var m;while((m=re.exec(html))!==null){var num=m[1];var date=m[2];var title=m[3].replace(/&#39;/g,\"'\").replace(/&quot;/g,'\"').replace(/&amp;/g,'&');if(!q||title.toLowerCase().indexOf(q)>=0||num===q){out.push({name:'#'+num+' '+title,author:'Randall Munroe',bookUrl:'https://xkcd.com/'+num+'/info.0.json',intro:date});}}var start=(pg-1)*20;return out.slice(start,start+20);})()",
+      "name": "$.name",
+      "author": "$.author",
+      "bookUrl": "$.bookUrl",
+      "intro": "$.intro"
+    },
+    "ruleBookInfo": {
+      "name": "$.safe_title || $.title",
+      "author": "@js:\"Randall Munroe\"",
+      "coverUrl": "$.img",
+      "intro": "$.alt"
+    },
+    "ruleToc": {
+      "chapterList": "@js:[result]",
+      "chapterName": "@js:\"#\"+result.num+\" - \"+(result.safe_title||result.title)",
+      "chapterUrl": "@js:\"https://xkcd.com/\"+result.num+\"/info.0.json\"",
+      "updateTime": "@js:result.year+\"-\"+result.month+\"-\"+result.day"
+    },
+    "ruleContent": {
+      "content": "$.img"
+    }
+  }
+]
