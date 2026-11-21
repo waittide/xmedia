@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use xmedia_core::domain::library::MediaKind;
 
 use crate::local_engine::LocalEngine;
-use crate::opds_client::{OpdsClient, OpdsError};
+use crate::opds_client::{OpdsClient, OpdsError, same_origin_redirect_policy};
 use crate::remote_sources::{
     CreateRemoteSourceInput, RemoteProtocol, RemoteSource, RemoteSourceStore,
     RemoteSourceSummaryDto, SharedRemoteSourceStore, SourceStoreError, UpdateRemoteSourceInput,
@@ -28,6 +28,7 @@ pub const APP_HEADER_NAME: &str = "x-xmedia-app";
 pub const APP_HEADER_VALUE: &str = "standalone";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const READ_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Clone)]
 pub struct StandaloneGatewayState {
@@ -46,7 +47,11 @@ impl StandaloneGatewayState {
     ) -> anyhow::Result<Self> {
         let secure = build_remote_http_client(false)?;
         let insecure = build_remote_http_client(true)?;
-        let opds = OpdsClient::new(secure.clone(), insecure.clone());
+        let opds = OpdsClient::new(
+            secure.clone(),
+            insecure.clone(),
+            local_engine.temp_dir.clone(),
+        );
         let subsonic = SubsonicClient::new(secure, insecure);
         Ok(Self {
             local_engine,
@@ -62,7 +67,8 @@ fn build_remote_http_client(allow_insecure_tls: bool) -> anyhow::Result<reqwest:
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .connect_timeout(CONNECT_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .read_timeout(READ_TIMEOUT)
+        .redirect(same_origin_redirect_policy())
         .danger_accept_invalid_certs(allow_insecure_tls)
         .build()?;
     Ok(client)
