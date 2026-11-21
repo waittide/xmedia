@@ -174,6 +174,8 @@ export default {
     typeUpload: '上传',
     typeDownload: '下载',
     clearCompleted: '清除已完成',
+    chaptersPerSec: '{rate} 章/秒',
+    clearFinishedPartialError: '有 {count} 条任务记录未能清理',
     statusQueued: '排队中',
     statusCompleted: '已入库',
     statusFailed: '失败',

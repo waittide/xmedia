@@ -22,6 +22,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useShowMusicBar } from '@/composables/useShowMusicBar'
 import { ensureDomainLocale } from '@/router'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
@@ -178,9 +179,7 @@ watch(
       mainScrollRef.value.scrollTop = 0
     }
     if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
-    if (loadedDomains.has(next)) {
-      void ensureDomainSidebarLoaded(next)
-    } else {
+    if (!loadedDomains.has(next)) {
       sidebarLoadTimer = setTimeout(() => {
         void ensureDomainSidebarLoaded(next)
       }, 60)
@@ -195,10 +194,18 @@ watch(
     const str = typeof q === 'string' ? q : ''
     if (name === 'comic-series-list') {
       comicSearchQuery.value = str
-    } else if (name === 'video-catalog') {
+    } else if (comicSearchQuery.value) {
+      comicSearchQuery.value = ''
+    }
+    if (name === 'video-catalog') {
       videoSearchQuery.value = str
-    } else if (name === 'music-search') {
+    } else if (videoSearchQuery.value) {
+      videoSearchQuery.value = ''
+    }
+    if (name === 'music-search') {
       musicStore.globalSearchQuery = str
+    } else if (musicStore.globalSearchQuery) {
+      musicStore.globalSearchQuery = ''
     }
   },
   { immediate: true },
@@ -218,11 +225,7 @@ const acceptedExtensions = computed(() =>
   getAcceptedUploadExtensions(authStore.enabledModules),
 )
 
-const showMusicBar = computed(
-  () =>
-    authStore.hasModule('music') &&
-    (domainStore.activeDomain === 'music' || playerStore.currentTrack !== null),
-)
+const showMusicBar = useShowMusicBar()
 
 const { primaryNavItems } = usePrimaryNavItems(() => {
   mobileMenuOpen.value = false
@@ -255,7 +258,11 @@ function handleSidebarButtonClick(): void {
     return
   }
   collapsed.value = !collapsed.value
-  localStorage.setItem('xmedia.sidebar_collapsed', collapsed.value ? '1' : '0')
+  try {
+    localStorage.setItem('xmedia.sidebar_collapsed', collapsed.value ? '1' : '0')
+  } catch {
+    // ignore storage quota / private mode errors
+  }
 }
 
 // Unified search state across 4 domains
@@ -488,7 +495,6 @@ async function handleSignOut(): Promise<void> {
   playerStore.pause()
   eventsStore.disconnect()
   await authStore.logout()
-  eventsStore.disconnect()
   await router.replace('/login')
 }
 
@@ -502,12 +508,26 @@ function handleOutsideClick(ev: MouseEvent): void {
   }
 }
 
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    target.isContentEditable
+  )
+}
+
 function handleGlobalKeydown(ev: KeyboardEvent): void {
-  if (playerStore.lyricsOpen) return
-  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
+  if (ev.isComposing || playerStore.lyricsOpen) return
+  const key = ev.key.toLowerCase()
+  if ((ev.metaKey || ev.ctrlKey) && key === 'k') {
+    if (document.querySelector('[aria-modal="true"]') && !commandPaletteOpen.value) return
     ev.preventDefault()
     commandPaletteOpen.value = !commandPaletteOpen.value
-  } else if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'b') {
+  } else if ((ev.metaKey || ev.ctrlKey) && key === 'b') {
+    if (isEditableEventTarget(ev.target) || document.querySelector('[aria-modal="true"]')) return
     ev.preventDefault()
     handleSidebarButtonClick()
   }

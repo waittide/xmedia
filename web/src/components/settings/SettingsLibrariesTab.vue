@@ -71,25 +71,37 @@ async function refreshAdminLibraries(): Promise<void> {
 }
 
 onMounted(() => {
-  void refreshAdminLibraries().catch(() => {})
+  void refreshAdminLibraries().catch((err) => {
+    emit('error', err instanceof Error ? err.message : String(err))
+  })
 })
 
 watch(
-  () => eventsStore.domainRefreshTick,
+  () => [
+    eventsStore.domainRefreshTick.book,
+    eventsStore.domainRefreshTick.comic,
+    eventsStore.domainRefreshTick.music,
+    eventsStore.domainRefreshTick.video,
+  ],
   () => {
     void refreshAdminLibraries().catch(() => {})
   },
-  { deep: true },
 )
 
 async function handleMountLibrary(): Promise<void> {
   emit('error', '')
+  const trimmedName = libName.value.trim()
+  const trimmedPath = libPath.value.trim()
+  if (!trimmedName || !trimmedPath) {
+    emit('error', t('admin.libraryPathPlaceholder'))
+    return
+  }
   mounting.value = true
   try {
     const created = await api.createLibrary({
-      name: libName.value.trim(),
+      name: trimmedName,
       media_kind: effectiveMountKind.value,
-      root_path: libPath.value.trim(),
+      root_path: trimmedPath,
     })
     if (scanNow.value) {
       await api.scanLibrary(created.id)
@@ -128,18 +140,26 @@ async function handleScanAll(): Promise<void> {
   emit('error', '')
   scanningAll.value = true
   try {
-    await Promise.all([
-      (async () => {
-        for (const lib of filteredLibraries.value) {
-          if (lib.kind.type === 'local_mount' && lib.scan_status.state !== 'scanning') {
-            await api.scanLibrary(lib.id)
-            eventsStore.bumpDomain(lib.media_kind)
-          }
-        }
-        await refreshAdminLibraries()
-      })(),
+    const targets = filteredLibraries.value.filter(
+      (lib) => lib.kind.type === 'local_mount' && lib.scan_status.state !== 'scanning',
+    )
+    const [results] = await Promise.all([
+      Promise.allSettled(
+        targets.map(async (lib) => {
+          await api.scanLibrary(lib.id)
+          eventsStore.bumpDomain(lib.media_kind)
+        }),
+      ),
       new Promise((resolve) => setTimeout(resolve, 450)),
     ])
+    const firstErr = results.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+    if (firstErr) {
+      emit(
+        'error',
+        firstErr.reason instanceof Error ? firstErr.reason.message : String(firstErr.reason),
+      )
+    }
+    await refreshAdminLibraries()
   } catch (err) {
     emit('error', err instanceof Error ? err.message : String(err))
   } finally {

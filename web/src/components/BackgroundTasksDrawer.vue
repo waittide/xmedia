@@ -28,6 +28,7 @@ import {
   isOnlineDownloadJobActive,
   useOnlineDownloadsStore,
 } from '@/stores/onlineDownloads'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 import { formatBytes } from '@/utils/format'
 
@@ -402,6 +403,11 @@ async function handleClearFinished(): Promise<void> {
     if (onlineDownloadsStore.finishedCount > 0) {
       await onlineDownloadsStore.clearFinished()
     }
+  } catch (err) {
+    useSnackbarStore().show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
     clearing.value = false
   }

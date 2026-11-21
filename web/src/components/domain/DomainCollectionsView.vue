@@ -16,6 +16,7 @@ import {
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useDomainStore } from '@/stores/domain'
+import { useSnackbarStore } from '@/stores/snackbar'
 
 export type CollectionSortKey = 'count_desc' | 'count_asc' | 'name_asc' | 'updated_desc'
 export type CollectionViewMode = 'libraries' | 'collections' | 'chips'
@@ -174,6 +175,11 @@ async function handleScanLibrary(id: string): Promise<void> {
       props.onScanLibrary(id),
       new Promise((resolve) => setTimeout(resolve, 450)),
     ])
+  } catch (err) {
+    useSnackbarStore().show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
     scanningId.value = null
   }
@@ -186,6 +192,11 @@ async function handleCreate(): Promise<void> {
   try {
     await props.onCreateCollection(trimmed)
     newName.value = ''
+  } catch (err) {
+    useSnackbarStore().show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
     creating.value = false
   }

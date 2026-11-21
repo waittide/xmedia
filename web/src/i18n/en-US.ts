@@ -174,6 +174,8 @@ export default {
     typeUpload: 'Upload',
     typeDownload: 'Download',
     clearCompleted: 'Clear completed',
+    chaptersPerSec: '{rate} ch/s',
+    clearFinishedPartialError: '{count} task record(s) could not be cleared',
     statusQueued: 'Queued',
     statusCompleted: 'Imported',
     statusFailed: 'Failed',

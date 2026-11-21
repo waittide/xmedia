@@ -744,6 +744,10 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
     }
 
     if (domain === 'comic') {
+      const comicTagsSection =
+        typeof route.query.section === 'string' && route.query.section
+          ? route.query.section
+          : 'genres'
       switch (key) {
         case 'writers':
           return {
@@ -751,8 +755,8 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
             key,
             label,
             icon: LuUser,
-            overviewActive: route.name === 'comic-tags',
-            onOpenOverview: () => go('/comic/tags'),
+            overviewActive: route.name === 'comic-tags' && comicTagsSection === 'writers',
+            onOpenOverview: () => go({ path: '/comic/tags', query: { section: 'writers' } }),
             items: comicSidebarStore.writers.map((w) => ({
               id: w.name,
               label: w.name,
@@ -768,8 +772,8 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
             key,
             label,
             icon: LuPalette,
-            overviewActive: route.name === 'comic-tags',
-            onOpenOverview: () => go('/comic/tags'),
+            overviewActive: route.name === 'comic-tags' && comicTagsSection === 'pencillers',
+            onOpenOverview: () => go({ path: '/comic/tags', query: { section: 'pencillers' } }),
             items: comicSidebarStore.pencillers.map((p) => ({
               id: p.name,
               label: p.name,
@@ -785,8 +789,8 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
             key,
             label,
             icon: LuSparkles,
-            overviewActive: route.name === 'comic-tags',
-            onOpenOverview: () => go('/comic/tags'),
+            overviewActive: route.name === 'comic-tags' && comicTagsSection === 'genres',
+            onOpenOverview: () => go({ path: '/comic/tags', query: { section: 'genres' } }),
             items: comicSidebarStore.genres.map((g) => ({
               id: g.name,
               label: g.name,
@@ -802,8 +806,8 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
             key,
             label,
             icon: LuTag,
-            overviewActive: route.name === 'comic-tags',
-            onOpenOverview: () => go('/comic/tags'),
+            overviewActive: route.name === 'comic-tags' && comicTagsSection === 'tags',
+            onOpenOverview: () => go({ path: '/comic/tags', query: { section: 'tags' } }),
             items: comicSidebarStore.tags.map((tg) => ({
               id: tg.name,
               label: `#${tg.name}`,

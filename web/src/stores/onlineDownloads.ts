@@ -5,10 +5,12 @@ import {
   type DownloadJobStatus,
   type OnlineDownloadJobDto,
 } from '@/domains/book/onlineApi'
+import { i18n } from '@/i18n'
+import { useEventsStore } from '@/stores/events'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useUploadStore } from '@/stores/uploads'
 
 const POLL_INTERVAL_MS = 1200
+const POLL_MAX_BACKOFF_MS = 15000
 
 export function isOnlineDownloadJobActive(status: DownloadJobStatus): boolean {
   return status === 'pending' || status === 'running'
@@ -16,7 +18,7 @@ export function isOnlineDownloadJobActive(status: DownloadJobStatus): boolean {
 
 export function formatDownloadSpeed(cps?: number): string {
   if (typeof cps !== 'number' || !Number.isFinite(cps) || cps <= 0) return ''
-  return `${cps.toFixed(1)} 章/秒`
+  return String(i18n.global.t('transfers.chaptersPerSec', { rate: cps.toFixed(1) }))
 }
 
 export const useOnlineDownloadsStore = defineStore('onlineDownloads', () => {
@@ -28,6 +30,7 @@ export const useOnlineDownloadsStore = defineStore('onlineDownloads', () => {
 
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let pollInFlight = false
+  let consecutivePollErrors = 0
   let refreshPromise: Promise<void> | null = null
   let sessionEpoch = 0
   let hydrated = false
@@ -60,7 +63,7 @@ export const useOnlineDownloadsStore = defineStore('onlineDownloads', () => {
       }
       if (prevStatus !== 'completed' && !notifiedImportedIds.has(job.id)) {
         notifiedImportedIds.add(job.id)
-        useUploadStore().notifyCatalogChanged('book')
+        useEventsStore().bumpDomain('book')
       }
     }
   }
@@ -92,28 +95,40 @@ export const useOnlineDownloadsStore = defineStore('onlineDownloads', () => {
   function ensurePolling(): void {
     if (!hasActiveJobs.value) {
       stopPolling()
+      consecutivePollErrors = 0
       return
     }
     if (pollTimer !== null || pollInFlight) return
 
     const epoch = sessionEpoch
+    const delayMs =
+      consecutivePollErrors === 0
+        ? POLL_INTERVAL_MS
+        : Math.min(POLL_MAX_BACKOFF_MS, POLL_INTERVAL_MS * 2 ** consecutivePollErrors)
+
     pollTimer = setTimeout(async () => {
       pollTimer = null
       if (epoch !== sessionEpoch || !hasActiveJobs.value) return
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        consecutivePollErrors = Math.min(consecutivePollErrors + 1, 4)
+        ensurePolling()
+        return
+      }
       pollInFlight = true
       try {
         const list = await onlineBookApi.listDownloads()
         if (epoch !== sessionEpoch) return
+        consecutivePollErrors = 0
         applyJobList(list, false)
       } catch {
-        // Ignore transient network errors during background polling
+        consecutivePollErrors = Math.min(consecutivePollErrors + 1, 4)
       } finally {
         pollInFlight = false
         if (epoch === sessionEpoch && hasActiveJobs.value) {
           ensurePolling()
         }
       }
-    }, POLL_INTERVAL_MS)
+    }, delayMs)
   }
 
   async function refresh(): Promise<void> {
@@ -248,7 +263,9 @@ export const useOnlineDownloadsStore = defineStore('onlineDownloads', () => {
     }
     if (failedDeletes > 0) {
       snackbar.show({
-        message: `有 ${failedDeletes} 条任务记录未能清理`,
+        message: String(
+          i18n.global.t('transfers.clearFinishedPartialError', { count: failedDeletes }),
+        ),
         tone: 'error',
       })
     }
@@ -258,6 +275,7 @@ export const useOnlineDownloadsStore = defineStore('onlineDownloads', () => {
     sessionEpoch += 1
     stopPolling()
     pollInFlight = false
+    consecutivePollErrors = 0
     refreshPromise = null
     hydrated = false
     jobs.value = []

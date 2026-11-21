@@ -36,17 +36,26 @@ const roleOptions = computed(() => [
 onMounted(async () => {
   try {
     users.value = await api.listUsers()
-  } catch {
-    // ignore
+  } catch (err) {
+    emit('error', err instanceof Error ? err.message : String(err))
   }
 })
 
 async function handleCreateUser(): Promise<void> {
   emit('error', '')
+  const trimmedUsername = newUsername.value.trim()
+  if (trimmedUsername.length < 2) {
+    emit('error', t('auth.usernamePlaceholder'))
+    return
+  }
+  if (newPassword.value.length < 6) {
+    emit('error', t('auth.passwordPlaceholder'))
+    return
+  }
   creatingUser.value = true
   try {
     await api.createUser({
-      username: newUsername.value.trim(),
+      username: trimmedUsername,
       display_name: newDisplayName.value.trim() || undefined,
       password: newPassword.value,
       role: newRole.value,
@@ -84,8 +93,8 @@ async function handleActiveToggle(u: UserDto, nextActive: boolean): Promise<void
 }
 
 async function handleResetUserPassword(u: UserDto): Promise<void> {
-  const pwd = resetPwdMap.value[u.id]?.trim()
-  if (!pwd) return
+  const pwd = resetPwdMap.value[u.id] ?? ''
+  if (pwd.length < 6) return
   const confirmed = await dialogStore.confirm({
     title: t('admin.resetPasswordBtn'),
     message: t('admin.confirmResetPassword', { username: u.username }),
@@ -246,12 +255,14 @@ async function handleDeleteUser(u: UserDto): Promise<void> {
             v-model="resetPwdMap[u.id]"
             type="password"
             minlength="6"
+            autocomplete="new-password"
             :placeholder="t('admin.resetPasswordPlaceholder')"
+            :aria-label="t('admin.resetPasswordPlaceholder')"
             class="md-input h-8 w-36 !px-2.5 text-xs"
           />
           <button
             type="submit"
-            :disabled="!resetPwdMap[u.id]?.trim()"
+            :disabled="(resetPwdMap[u.id]?.length ?? 0) < 6"
             class="md-btn md-btn-sm md-btn-outlined"
           >
             {{ t('admin.resetPasswordBtn') }}

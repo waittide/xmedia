@@ -19,6 +19,11 @@ const errorMsg = ref('')
 
 async function onSubmit(): Promise<void> {
   errorMsg.value = ''
+  const trimmedUsername = username.value.trim()
+  if (trimmedUsername.length < 2) {
+    errorMsg.value = t('auth.usernamePlaceholder')
+    return
+  }
   if (password.value !== confirmPassword.value) {
     errorMsg.value = t('auth.passwordMismatch')
     return
@@ -26,7 +31,7 @@ async function onSubmit(): Promise<void> {
   submitting.value = true
   try {
     await authStore.setupAdmin({
-      username: username.value.trim(),
+      username: trimmedUsername,
       display_name: displayName.value.trim() || undefined,
       password: password.value,
     })

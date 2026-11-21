@@ -1,11 +1,11 @@
 import { onBeforeUnmount, ref, type Ref } from 'vue'
 
-export async function copyToClipboard(val: string): Promise<void> {
-  if (!val) return
+export async function copyToClipboard(val: string): Promise<boolean> {
+  if (!val) return false
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(val)
-      return
+      return true
     }
     throw new Error('clipboard API unavailable')
   } catch {
@@ -15,8 +15,15 @@ export async function copyToClipboard(val: string): Promise<void> {
     ta.style.opacity = '0'
     document.body.appendChild(ta)
     ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    } finally {
+      document.body.removeChild(ta)
+    }
+    return ok
   }
 }
 
@@ -29,7 +36,8 @@ export function useCopyFeedback(resetMs = 1500): {
 
   async function copyText(key: string, val: string): Promise<void> {
     if (!val) return
-    await copyToClipboard(val)
+    const ok = await copyToClipboard(val)
+    if (!ok) return
     copiedKey.value = key
     if (timer !== null) clearTimeout(timer)
     timer = setTimeout(() => {

@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { onBeforeUnmount, watch } from 'vue'
+import { useShowMusicBar } from '@/composables/useShowMusicBar'
 import { useAuthStore } from '@/stores/auth'
-import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
 import { useThemeStore } from '@/stores/theme'
 import { usePlayerStore } from '@/domains/music/player'
@@ -14,9 +13,7 @@ import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
 
 useThemeStore()
 
-const route = useRoute()
 const authStore = useAuthStore()
-const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
 const playerStore = usePlayerStore()
 
@@ -39,17 +36,7 @@ onBeforeUnmount(() => {
   eventsStore.disconnect()
 })
 
-const isFullscreenRoute = computed(() =>
-  route.matched.some((record) => Boolean(record.meta.fullscreen)),
-)
-
-const showMusicBar = computed(
-  () =>
-    authStore.isAuthenticated &&
-    !isFullscreenRoute.value &&
-    authStore.hasModule('music') &&
-    (domainStore.activeDomain === 'music' || playerStore.currentTrack !== null),
-)
+const showMusicBar = useShowMusicBar()
 </script>
 
 <template>

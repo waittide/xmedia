@@ -291,15 +291,17 @@ export const DARK_PALETTE_PRESETS: readonly PalettePreset[] = [
 
 export function parseHexRgb(hex: string): [number, number, number] {
   const clean = hex.trim().replace(/^#/, '')
-  if (clean.length === 3) {
+  if (/^[0-9a-fA-F]{3}$/.test(clean)) {
     const r = Number.parseInt(clean[0]! + clean[0]!, 16)
     const g = Number.parseInt(clean[1]! + clean[1]!, 16)
     const b = Number.parseInt(clean[2]! + clean[2]!, 16)
-    return [r || 0, g || 0, b || 0]
+    return [r, g, b]
   }
-  const num = Number.parseInt(clean.padEnd(6, '0').slice(0, 6), 16)
-  if (Number.isNaN(num)) return [128, 128, 128]
-  return [(num >> 16) & 255, (num >> 8) & 255, num & 255]
+  if (/^[0-9a-fA-F]{6}$/.test(clean)) {
+    const num = Number.parseInt(clean, 16)
+    return [(num >> 16) & 255, (num >> 8) & 255, num & 255]
+  }
+  return [128, 128, 128]
 }
 
 export function rgbToHex(r: number, g: number, b: number): string {
@@ -571,12 +573,17 @@ function hslToHex(h: number, s: number, l: number): string {
 }
 
 export function normalizeHex(input: string, fallback: string): string {
-  const trimmed = input.trim()
-  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) {
-    return trimmed.toLowerCase()
-  }
+  const trimmed = input.trim().replace(/^#/, '')
   if (/^[0-9a-fA-F]{6}$/.test(trimmed)) {
     return `#${trimmed.toLowerCase()}`
+  }
+  if (/^[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const expanded = trimmed
+      .toLowerCase()
+      .split('')
+      .map((c) => c + c)
+      .join('')
+    return `#${expanded}`
   }
   return fallback
 }

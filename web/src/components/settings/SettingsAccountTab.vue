@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuCheck, LuCopy, LuRotateCw } from 'vue-icons-plus/lu'
+import { LuCheck, LuCopy, LuEye, LuEyeOff, LuRotateCw } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
@@ -23,6 +23,7 @@ const nextPwd = ref('')
 const pwdSuccess = ref('')
 const savingPwd = ref(false)
 const rotatingKey = ref(false)
+const showApiKey = ref(false)
 
 async function submitPasswordChange(): Promise<void> {
   emit('error', '')
@@ -80,11 +81,26 @@ async function handleRotateApiKey(): Promise<void> {
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-      <input
-        readonly
-        :value="authStore.user?.api_key || ''"
-        class="md-input h-10 min-w-0 flex-1 font-mono text-xs"
-      />
+      <div class="relative min-w-0 flex-1">
+        <input
+          readonly
+          :type="showApiKey ? 'text' : 'password'"
+          :value="authStore.user?.api_key || ''"
+          :aria-label="t('settings.apiKeyTitle')"
+          autocomplete="off"
+          class="md-input h-10 w-full !pr-10 font-mono text-xs"
+        />
+        <button
+          type="button"
+          class="md-icon-btn md-icon-btn-sm md-state absolute top-1/2 right-1 -translate-y-1/2"
+          :aria-label="showApiKey ? t('common.close') : t('settings.apiKeyTitle')"
+          :aria-pressed="showApiKey"
+          @click="showApiKey = !showApiKey"
+        >
+          <LuEyeOff v-if="showApiKey" class="h-4 w-4" />
+          <LuEye v-else class="h-4 w-4" />
+        </button>
+      </div>
       <button
         type="button"
         class="md-btn md-btn-filled"
@@ -127,6 +143,7 @@ async function handleRotateApiKey(): Promise<void> {
           v-model="currentPwd"
           type="password"
           required
+          autocomplete="current-password"
           class="md-input h-10 w-full text-xs"
         />
       </div>
@@ -140,6 +157,7 @@ async function handleRotateApiKey(): Promise<void> {
           type="password"
           required
           minlength="6"
+          autocomplete="new-password"
           :placeholder="t('auth.passwordPlaceholder')"
           class="md-input h-10 w-full text-xs"
         />

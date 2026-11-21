@@ -29,6 +29,12 @@ function ensureListener(): void {
   listenerAttached = true
 }
 
+function maybeDetachListener(): void {
+  if (!listenerAttached || stack.length > 0 || typeof window === 'undefined') return
+  window.removeEventListener('keydown', handleWindowKeydown)
+  listenerAttached = false
+}
+
 export function pushEscapeHandler(handler: () => boolean | void): () => void {
   ensureListener()
   const id = Symbol('escape-layer')
@@ -38,6 +44,7 @@ export function pushEscapeHandler(handler: () => boolean | void): () => void {
     if (idx !== -1) {
       stack.splice(idx, 1)
     }
+    maybeDetachListener()
   }
 }
 

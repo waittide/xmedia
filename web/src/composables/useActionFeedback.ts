@@ -19,6 +19,7 @@ function sleep(ms: number): Promise<void> {
 export function useActionFeedback(defaults: RunFeedbackOptions = {}) {
   const state = ref<ActionFeedbackState>('idle')
   let resetTimer: ReturnType<typeof setTimeout> | null = null
+  let disposed = false
 
   function clearResetTimer(): void {
     if (resetTimer !== null) {
@@ -29,9 +30,12 @@ export function useActionFeedback(defaults: RunFeedbackOptions = {}) {
 
   function scheduleReset(ms: number): void {
     clearResetTimer()
+    if (disposed) return
     if (ms > 0) {
       resetTimer = setTimeout(() => {
-        state.value = 'idle'
+        if (!disposed) {
+          state.value = 'idle'
+        }
         resetTimer = null
       }, ms)
     } else {
@@ -43,7 +47,7 @@ export function useActionFeedback(defaults: RunFeedbackOptions = {}) {
     task: () => Promise<T> | T,
     options: RunFeedbackOptions = {},
   ): Promise<T | undefined> {
-    if (state.value === 'running') return undefined
+    if (state.value === 'running' || disposed) return undefined
     const minSpinMs = options.minSpinMs ?? defaults.minSpinMs ?? 420
     const doneMs = options.doneMs ?? defaults.doneMs ?? 1100
     const rethrow = options.rethrow ?? defaults.rethrow ?? false
@@ -53,23 +57,31 @@ export function useActionFeedback(defaults: RunFeedbackOptions = {}) {
 
     try {
       const [result] = await Promise.all([Promise.resolve().then(task), sleep(minSpinMs)])
-      state.value = 'done'
-      scheduleReset(doneMs)
+      if (!disposed) {
+        state.value = 'done'
+        scheduleReset(doneMs)
+      }
       return result
     } catch (err) {
-      state.value = 'error'
-      scheduleReset(1500)
+      if (!disposed) {
+        state.value = 'error'
+        scheduleReset(1500)
+      }
       if (rethrow) throw err
       return undefined
     }
   }
 
   function flashDone(doneMs = defaults.doneMs ?? 1100): void {
+    if (disposed) return
     state.value = 'done'
     scheduleReset(doneMs)
   }
 
-  onScopeDispose(clearResetTimer)
+  onScopeDispose(() => {
+    disposed = true
+    clearResetTimer()
+  })
 
   return {
     state,

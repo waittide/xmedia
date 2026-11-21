@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { LuPlay, LuTrash2 } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime } from '@/utils/format'
 import { api as musicApi } from '@/domains/music/api'
 import { usePlayerStore } from '@/domains/music/player'
@@ -107,8 +108,15 @@ function playBookmark(bm: BookmarkDto): void {
 }
 
 async function removeBookmark(trackId: string): Promise<void> {
-  await musicApi.deleteBookmark(trackId)
-  bookmarks.value = bookmarks.value.filter((b) => b.track.id !== trackId)
+  try {
+    await musicApi.deleteBookmark(trackId)
+    bookmarks.value = bookmarks.value.filter((b) => b.track.id !== trackId)
+  } catch (err) {
+    useSnackbarStore().show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 </script>
 
