@@ -4,10 +4,14 @@ import { useRouter } from 'vue-router'
 import {
   LuArrowDownToLine,
   LuArrowUpToLine,
+  LuBan,
+  LuCheckCircle2,
   LuDownload,
   LuFlaskConical,
+  LuFolder,
   LuGripVertical,
   LuKeyRound,
+  LuListChecks,
   LuLoader2,
   LuMoreVertical,
   LuPencil,
@@ -17,6 +21,7 @@ import {
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
+import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -49,9 +54,15 @@ const groupFilter = ref<string>('__all__')
 
 const busyId = ref<string | null>(null)
 const reordering = ref(false)
+const batchBusy = ref(false)
 const loginModalSource = ref<BookSourceSummaryDto | null>(null)
 const editSheetSource = ref<BookSourceSummaryDto | null>(null)
 const debugSheetSource = ref<BookSourceSummaryDto | null>(null)
+
+// Multi-select state
+const selectionMode = ref(false)
+const selectedIds = ref<Set<string>>(new Set())
+const lastToggledId = ref<string | null>(null)
 
 // Local optimistic list so drag-and-drop updates immediately without visual flicker
 const localSources = ref<BookSourceSummaryDto[]>([...props.sources])
@@ -59,6 +70,17 @@ watch(
   () => props.sources,
   (next) => {
     localSources.value = [...next]
+    if (selectedIds.value.size > 0) {
+      const valid = new Set(next.map((s) => s.id))
+      const pruned = new Set<string>()
+      for (const id of selectedIds.value) {
+        if (valid.has(id)) pruned.add(id)
+      }
+      selectedIds.value = pruned
+    }
+    if (next.length === 0) {
+      selectionMode.value = false
+    }
   },
   { deep: false },
 )
@@ -70,6 +92,7 @@ const dropPosition = ref<'before' | 'after'>('before')
 
 const canReorder = computed(
   () =>
+    !selectionMode.value &&
     !searchQuery.value.trim() &&
     statusFilter.value === 'all' &&
     groupFilter.value === '__all__' &&
@@ -110,6 +133,78 @@ const filteredSources = computed(() => {
   })
 })
 
+const selectedCount = computed(() => selectedIds.value.size)
+
+const allFilteredSelected = computed(
+  () =>
+    filteredSources.value.length > 0 &&
+    filteredSources.value.every((s) => selectedIds.value.has(s.id)),
+)
+
+function toggleSelectionMode(): void {
+  closeMenu()
+  selectionMode.value = !selectionMode.value
+  if (!selectionMode.value) {
+    selectedIds.value = new Set()
+    lastToggledId.value = null
+  }
+}
+
+function exitSelectionMode(): void {
+  selectionMode.value = false
+  selectedIds.value = new Set()
+  lastToggledId.value = null
+}
+
+function toggleSelectItem(srcId: string, shiftKey = false): void {
+  const next = new Set(selectedIds.value)
+  if (shiftKey && lastToggledId.value && lastToggledId.value !== srcId) {
+    const ids = filteredSources.value.map((s) => s.id)
+    const startIdx = ids.indexOf(lastToggledId.value)
+    const endIdx = ids.indexOf(srcId)
+    if (startIdx >= 0 && endIdx >= 0) {
+      const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx]
+      const shouldSelect = !next.has(srcId)
+      for (let i = lo; i <= hi; i += 1) {
+        const id = ids[i]
+        if (!id) continue
+        if (shouldSelect) next.add(id)
+        else next.delete(id)
+      }
+      selectedIds.value = next
+      lastToggledId.value = srcId
+      return
+    }
+  }
+  if (next.has(srcId)) next.delete(srcId)
+  else next.add(srcId)
+  selectedIds.value = next
+  lastToggledId.value = srcId
+}
+
+function toggleSelectAllFiltered(): void {
+  const next = new Set(selectedIds.value)
+  if (allFilteredSelected.value) {
+    for (const s of filteredSources.value) {
+      next.delete(s.id)
+    }
+  } else {
+    for (const s of filteredSources.value) {
+      next.add(s.id)
+    }
+  }
+  selectedIds.value = next
+}
+
+function invertSelectFiltered(): void {
+  const next = new Set(selectedIds.value)
+  for (const s of filteredSources.value) {
+    if (next.has(s.id)) next.delete(s.id)
+    else next.add(s.id)
+  }
+  selectedIds.value = next
+}
+
 function closeMenu(): void {
   openMenuSourceId.value = null
 }
@@ -135,8 +230,17 @@ function toggleSourceMenu(src: BookSourceSummaryDto, ev: MouseEvent): void {
 }
 
 function onGlobalKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Escape' && openMenuSourceId.value) {
-    closeMenu()
+  if (ev.key === 'Escape') {
+    if (openMenuSourceId.value) {
+      closeMenu()
+    } else if (
+      selectionMode.value &&
+      !editSheetSource.value &&
+      !debugSheetSource.value &&
+      !loginModalSource.value
+    ) {
+      exitSelectionMode()
+    }
   }
 }
 
@@ -243,6 +347,121 @@ async function handleDrop(targetSrc: BookSourceSummaryDto, ev: DragEvent): Promi
 function handleDragEnd(): void {
   draggingId.value = null
   dropTargetId.value = null
+}
+
+async function handleBatchEnable(enabled: boolean): Promise<void> {
+  const ids = Array.from(selectedIds.value)
+  if (ids.length === 0 || batchBusy.value) return
+  batchBusy.value = true
+  try {
+    const rep = await onlineBookApi.batchSources({
+      ids,
+      action: enabled ? 'enable' : 'disable',
+    })
+    snackbar.show({
+      message: enabled
+        ? `已启用 ${rep.affected_count} 条书源`
+        : `已禁用 ${rep.affected_count} 条书源`,
+    })
+    emit('refresh')
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function handleBatchSetGroup(): Promise<void> {
+  const ids = Array.from(selectedIds.value)
+  if (ids.length === 0 || batchBusy.value) return
+  const groupInput = await dialogStore.prompt({
+    title: '批量设置分组',
+    message: `为已选中的 ${ids.length} 条书源设置分组名称（留空则清除分组）：`,
+    placeholder: '例如：精品、轻小说',
+    confirmText: '应用分组',
+    cancelText: '取消',
+  })
+  if (groupInput === null) return
+  batchBusy.value = true
+  try {
+    const trimmed = groupInput.trim()
+    const rep = await onlineBookApi.batchSources({
+      ids,
+      action: 'set_group',
+      group_name: trimmed,
+    })
+    snackbar.show({
+      message: trimmed
+        ? `已将 ${rep.affected_count} 条书源归入「${trimmed}」`
+        : `已清除 ${rep.affected_count} 条书源的分组`,
+    })
+    emit('refresh')
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function handleBatchExport(): Promise<void> {
+  const ids = Array.from(selectedIds.value)
+  if (ids.length === 0 || batchBusy.value) return
+  batchBusy.value = true
+  try {
+    const arr = await onlineBookApi.exportSourcesBatch(ids)
+    const blob = new Blob([JSON.stringify(arr, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `xmedia-book-sources-${arr.length}.json`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    snackbar.show({ message: `已导出 ${arr.length} 条书源 JSON` })
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+async function handleBatchDelete(): Promise<void> {
+  const ids = Array.from(selectedIds.value)
+  if (ids.length === 0 || batchBusy.value) return
+  const ok = await dialogStore.confirm({
+    title: '批量删除书源',
+    message: `确定删除已选中的 ${ids.length} 条书源吗？这些书源的本地章节缓存也将一并清理。`,
+    confirmText: `删除 (${ids.length})`,
+    cancelText: '取消',
+    danger: true,
+  })
+  if (!ok) return
+  batchBusy.value = true
+  try {
+    const rep = await onlineBookApi.batchSources({ ids, action: 'delete' })
+    snackbar.show({ message: `已删除 ${rep.affected_count} 条书源` })
+    exitSelectionMode()
+    emit('refresh')
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    batchBusy.value = false
+  }
 }
 
 function formatSourceHost(rawUrl: string): string {
@@ -386,7 +605,7 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
 
 <template>
   <div class="space-y-4">
-    <!-- Top Toolbar: Search + Import Actions -->
+    <!-- Top Toolbar: Search + Multi-select + Import Actions -->
     <div class="flex flex-wrap items-center justify-between gap-2.5">
       <div class="relative min-w-[13rem] flex-1 sm:max-w-xs">
         <LuSearch
@@ -408,7 +627,18 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
         </button>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex flex-wrap items-center gap-2">
+        <button
+          v-if="localSources.length > 0"
+          type="button"
+          class="md-btn md-btn-sm md-state"
+          :class="selectionMode ? 'md-btn-tonal' : 'md-btn-outlined'"
+          @click="toggleSelectionMode"
+        >
+          <LuListChecks class="h-3.5 w-3.5" />
+          <span>{{ selectionMode ? '退出多选' : '多选' }}</span>
+        </button>
+
         <input
           ref="fileInputRef"
           type="file"
@@ -484,11 +714,96 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
       </div>
 
       <span
-        v-if="localSources.length > 1"
+        v-if="!selectionMode && localSources.length > 1"
         class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
       >
         {{ canReorder ? '拖动左侧手柄可调整顺序' : '清除筛选后可拖动排序' }}
       </span>
+      <span
+        v-else-if="selectionMode"
+        class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
+      >
+        点击条目勾选，按住 Shift 可连续区间选择
+      </span>
+    </div>
+
+    <!-- Multi-Select Bulk Action Bar -->
+    <div
+      v-if="selectionMode"
+      class="flex flex-wrap items-center justify-between gap-2.5 rounded-2xl bg-[var(--md-sys-color-secondary-container)] px-4 py-2.5 text-xs text-[var(--md-sys-color-on-secondary-container)]"
+    >
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="font-semibold">
+          已选 {{ selectedCount }} / {{ filteredSources.length }} 项
+        </span>
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-[var(--md-sys-color-on-secondary-container)]"
+          @click="toggleSelectAllFiltered"
+        >
+          {{ allFilteredSelected ? '取消全选' : '全选当前' }}
+        </button>
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-text md-state !px-2 !text-[var(--md-sys-color-on-secondary-container)]"
+          @click="invertSelectFiltered"
+        >
+          反选
+        </button>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          :disabled="selectedCount === 0 || batchBusy"
+          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          @click="handleBatchEnable(true)"
+        >
+          <LuCheckCircle2 class="h-3.5 w-3.5 text-[var(--md-sys-color-success)]" />
+          <span>启用</span>
+        </button>
+
+        <button
+          type="button"
+          :disabled="selectedCount === 0 || batchBusy"
+          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          @click="handleBatchEnable(false)"
+        >
+          <LuBan class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
+          <span>禁用</span>
+        </button>
+
+        <button
+          type="button"
+          :disabled="selectedCount === 0 || batchBusy"
+          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          @click="handleBatchSetGroup"
+        >
+          <LuFolder class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+          <span>分组</span>
+        </button>
+
+        <button
+          type="button"
+          :disabled="selectedCount === 0 || batchBusy"
+          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] shadow-sm disabled:opacity-45"
+          @click="handleBatchExport"
+        >
+          <LuDownload class="h-3.5 w-3.5" />
+          <span>导出</span>
+        </button>
+
+        <button
+          type="button"
+          :disabled="selectedCount === 0 || batchBusy"
+          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)] shadow-sm disabled:opacity-45"
+          @click="handleBatchDelete"
+        >
+          <LuLoader2 v-if="batchBusy" class="h-3.5 w-3.5 animate-spin" />
+          <LuTrash2 v-else class="h-3.5 w-3.5" />
+          <span>删除</span>
+        </button>
+      </div>
     </div>
 
     <!-- Paste Import Box -->
@@ -558,17 +873,23 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
       </button>
     </div>
 
-    <!-- Minimal MD3 Draggable Source Cards -->
+    <!-- Minimal MD3 Draggable / Selectable Source Cards -->
     <div v-else class="space-y-2">
       <div
         v-for="src in filteredSources"
         :key="src.id"
         :draggable="canReorder"
-        class="relative flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-3.5 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]/75"
+        class="relative flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3.5 transition"
         :class="[
-          !src.enabled ? 'opacity-65' : '',
+          selectionMode
+            ? selectedIds.has(src.id)
+              ? 'cursor-pointer bg-[var(--md-sys-color-secondary-container)]/35 ring-1 ring-[var(--md-sys-color-primary)]/55'
+              : 'cursor-pointer bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]/75'
+            : 'bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]/75',
+          !src.enabled && !selectedIds.has(src.id) ? 'opacity-65' : '',
           draggingId === src.id ? 'opacity-40 ring-1 ring-[var(--md-sys-color-primary)]/50' : '',
         ]"
+        @click="selectionMode ? toggleSelectItem(src.id, $event.shiftKey) : undefined"
         @dragstart="handleDragStart(src, $event)"
         @dragover="handleDragOver(src, $event)"
         @dragleave="handleDragLeave(src, $event)"
@@ -585,10 +906,20 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
           class="pointer-events-none absolute right-3 -bottom-1.5 left-3 h-0.5 rounded-full bg-[var(--md-sys-color-primary)]"
         />
 
-        <!-- Left: Drag Handle + Source Name + Status Dot & Compact Meta -->
+        <!-- Left: Checkbox (Selection Mode) OR Drag Handle + Source Name & Status Dot -->
         <div class="flex min-w-0 flex-1 items-center gap-2.5">
           <div
-            v-if="localSources.length > 1"
+            v-if="selectionMode"
+            class="flex shrink-0 items-center"
+            @click.stop
+          >
+            <AppCheckbox
+              :model-value="selectedIds.has(src.id)"
+              @update:model-value="toggleSelectItem(src.id)"
+            />
+          </div>
+          <div
+            v-else-if="localSources.length > 1"
             class="flex h-7 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)]/60 transition"
             :class="
               canReorder
@@ -632,8 +963,24 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
           </div>
         </div>
 
-        <!-- Right: Switch + Edit + Overflow Menu -->
-        <div class="flex shrink-0 items-center gap-1.5" @mousedown.stop>
+        <!-- Right: Status Badge in Selection Mode, OR Switch + Edit + Overflow Menu -->
+        <div
+          v-if="selectionMode"
+          class="shrink-0"
+        >
+          <span
+            class="rounded-full px-2.5 py-0.5 text-[11px] font-medium"
+            :class="
+              src.enabled
+                ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
+                : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
+            "
+          >
+            {{ src.enabled ? '已启用' : '已禁用' }}
+          </span>
+        </div>
+
+        <div v-else class="flex shrink-0 items-center gap-1.5" @mousedown.stop>
           <AppSwitch
             :model-value="src.enabled"
             :disabled="busyId === src.id"

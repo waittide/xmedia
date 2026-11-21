@@ -70,6 +70,14 @@ export interface ImportBookSourcesReportDto {
   sources: BookSourceSummaryDto[]
 }
 
+export type BatchBookSourcesPayload =
+  | { ids: string[]; action: 'enable' | 'disable' | 'delete' }
+  | { ids: string[]; action: 'set_group'; group_name: string }
+
+export interface BatchBookSourcesReportDto {
+  affected_count: number
+}
+
 export interface BrowserRedirectHint {
   url: string
   title: string
@@ -297,6 +305,18 @@ export const onlineBookApi = {
     requestJson('/book/sources/reorder', {
       method: 'POST',
       body: JSON.stringify({ ordered_ids: orderedIds }),
+    }),
+
+  batchSources: (payload: BatchBookSourcesPayload): Promise<BatchBookSourcesReportDto> =>
+    requestJson('/book/sources/batch', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  exportSourcesBatch: (ids: string[]): Promise<Record<string, unknown>[]> =>
+    requestJson('/book/sources/export-batch', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
     }),
 
   updateSource: (

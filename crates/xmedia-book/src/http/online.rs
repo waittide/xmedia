@@ -15,11 +15,12 @@ use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename
 
 use crate::application::dto::BookSummaryDto;
 use crate::application::online::{
-    AddOnlineShelfInput, AggregatedSearchResponseDto, BookSourceSummaryDto,
-    ImportBookSourcesReportDto, LoginActionResponseDto, OnlineBookDetailResponseDto,
-    OnlineContentResponseDto, OnlineDownloadJobDto, OnlineShelfBookDto, OnlineTocResponseDto,
-    SourceTestInput, SourceTestReportDto, StartDownloadInput, SwitchTrackedSourceInput,
-    TrackOnlineBookInput, TrackedChapterResponseDto, TrackedTocResponseDto, UpdateBookSourceInput,
+    AddOnlineShelfInput, AggregatedSearchResponseDto, BatchBookSourcesInput,
+    BatchBookSourcesReportDto, BookSourceSummaryDto, ImportBookSourcesReportDto,
+    LoginActionResponseDto, OnlineBookDetailResponseDto, OnlineContentResponseDto,
+    OnlineDownloadJobDto, OnlineShelfBookDto, OnlineTocResponseDto, SourceTestInput,
+    SourceTestReportDto, StartDownloadInput, SwitchTrackedSourceInput, TrackOnlineBookInput,
+    TrackedChapterResponseDto, TrackedTocResponseDto, UpdateBookSourceInput,
     UpdateOnlineShelfInput,
 };
 use crate::domain::book::BookId;
@@ -31,6 +32,8 @@ pub fn router() -> Router<BookHttpState> {
         // Book source management
         .route("/sources", get(list_sources))
         .route("/sources/reorder", post(reorder_sources))
+        .route("/sources/batch", post(batch_sources))
+        .route("/sources/export-batch", post(export_sources_batch))
         .route(
             "/sources/import",
             post(import_sources).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
@@ -84,6 +87,11 @@ struct ImportSourcesRequest {
 #[derive(Debug, Deserialize)]
 struct ReorderSourcesRequest {
     ordered_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportSourcesBatchRequest {
+    ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +177,33 @@ async fn reorder_sources(
         .reorder_sources(&user, req.ordered_ids)
         .await?;
     Ok(Json(list))
+}
+
+async fn batch_sources(
+    State(state): State<BookHttpState>,
+    WebAuth(user): WebAuth,
+    Json(req): Json<BatchBookSourcesInput>,
+) -> ApiResult<Json<BatchBookSourcesReportDto>> {
+    let report = state.services.online.batch_sources(&user, req).await?;
+    Ok(Json(report))
+}
+
+async fn export_sources_batch(
+    State(state): State<BookHttpState>,
+    WebAuth(user): WebAuth,
+    Json(req): Json<ExportSourcesBatchRequest>,
+) -> ApiResult<Response> {
+    let raw = state
+        .services
+        .online
+        .export_sources_batch_json(&user, req.ids)
+        .await?;
+    let mut resp = Response::new(Body::from(raw));
+    resp.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    Ok(resp)
 }
 
 async fn update_source(

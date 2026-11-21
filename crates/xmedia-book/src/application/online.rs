@@ -80,6 +80,27 @@ pub struct UpdateBookSourceInput {
     pub variable: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum BatchBookSourceAction {
+    Enable,
+    Disable,
+    SetGroup { group_name: String },
+    Delete,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BatchBookSourcesInput {
+    pub ids: Vec<Uuid>,
+    #[serde(flatten)]
+    pub action: BatchBookSourceAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchBookSourcesReportDto {
+    pub affected_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginActionResponseDto {
     pub result: String,
@@ -828,6 +849,117 @@ impl BookOnlineService {
         require_admin(actor)?;
         let rec = self.load_source(id).await?;
         Ok(rec.raw_json)
+    }
+
+    pub async fn export_sources_batch_json(
+        &self,
+        actor: &User,
+        ids: Vec<Uuid>,
+    ) -> DomainResult<String> {
+        require_admin(actor)?;
+        if ids.is_empty() {
+            return Err(DomainError::Validation("请至少选择一条书源".into()));
+        }
+        let all = self.sources.list_all().await?;
+        let by_id: HashMap<Uuid, BookSourceRecord> = all.into_iter().map(|r| (r.id, r)).collect();
+        let mut arr: Vec<serde_json::Value> = Vec::new();
+        for id in ids {
+            if let Some(rec) = by_id.get(&id)
+                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
+            {
+                arr.push(val);
+            }
+        }
+        if arr.is_empty() {
+            return Err(DomainError::NotFound("未找到可导出的书源".into()));
+        }
+        serde_json::to_string_pretty(&arr)
+            .map_err(|e| DomainError::Storage(format!("序列化书源导出 JSON 失败: {e}")))
+    }
+
+    pub async fn batch_sources(
+        &self,
+        actor: &User,
+        input: BatchBookSourcesInput,
+    ) -> DomainResult<BatchBookSourcesReportDto> {
+        require_admin(actor)?;
+        if input.ids.is_empty() {
+            return Err(DomainError::Validation("请至少选择一条书源".into()));
+        }
+        let all = self.sources.list_all().await?;
+        let mut by_id: HashMap<Uuid, BookSourceRecord> =
+            all.into_iter().map(|r| (r.id, r)).collect();
+
+        let now = Timestamp::now();
+        let mut affected_count = 0usize;
+
+        for id in input.ids {
+            let Some(mut rec) = by_id.remove(&id) else {
+                continue;
+            };
+            match &input.action {
+                BatchBookSourceAction::Enable => {
+                    rec.enabled = true;
+                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
+                        && let Some(obj) = val.as_object_mut()
+                    {
+                        obj.insert("enabled".into(), serde_json::Value::Bool(true));
+                        if let Ok(s) = serde_json::to_string(&val) {
+                            rec.raw_json = s;
+                        }
+                    }
+                    rec.updated_at = now;
+                    self.sources.save(&rec).await?;
+                    affected_count += 1;
+                }
+                BatchBookSourceAction::Disable => {
+                    rec.enabled = false;
+                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
+                        && let Some(obj) = val.as_object_mut()
+                    {
+                        obj.insert("enabled".into(), serde_json::Value::Bool(false));
+                        if let Ok(s) = serde_json::to_string(&val) {
+                            rec.raw_json = s;
+                        }
+                    }
+                    rec.updated_at = now;
+                    self.sources.save(&rec).await?;
+                    affected_count += 1;
+                }
+                BatchBookSourceAction::SetGroup { group_name } => {
+                    let trimmed = group_name.trim().to_string();
+                    rec.group_name = trimmed.clone();
+                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
+                        && let Some(obj) = val.as_object_mut()
+                    {
+                        if trimmed.is_empty() {
+                            obj.remove("bookSourceGroup");
+                        } else {
+                            obj.insert(
+                                "bookSourceGroup".into(),
+                                serde_json::Value::String(trimmed),
+                            );
+                        }
+                        if let Ok(s) = serde_json::to_string(&val) {
+                            rec.raw_json = s;
+                        }
+                    }
+                    rec.updated_at = now;
+                    self.sources.save(&rec).await?;
+                    affected_count += 1;
+                }
+                BatchBookSourceAction::Delete => {
+                    self.sources.delete(id).await?;
+                    let src_cache = self.cache_dir.join(id.to_string());
+                    if src_cache.is_dir() {
+                        let _ = std::fs::remove_dir_all(src_cache);
+                    }
+                    affected_count += 1;
+                }
+            }
+        }
+
+        Ok(BatchBookSourcesReportDto { affected_count })
     }
 
     pub async fn run_login_action(
@@ -4292,5 +4424,92 @@ mod tests {
         let listed = online_svc.list_sources(&admin).await.unwrap();
         let listed_names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(listed_names, vec!["书源B", "书源C", "书源A"]);
+    }
+
+    #[tokio::test]
+    async fn batch_source_operations_enable_disable_group_export_and_delete() {
+        let (_tmp, admin, online_svc) = setup_test_online_service().await;
+        let batch = serde_json::json!([
+            { "bookSourceName": "源1", "bookSourceUrl": "https://s1.example", "enabled": true },
+            { "bookSourceName": "源2", "bookSourceUrl": "https://s2.example", "enabled": false },
+            { "bookSourceName": "源3", "bookSourceUrl": "https://s3.example", "enabled": true }
+        ])
+        .to_string();
+        let imported = online_svc.import_sources(&admin, &batch).await.unwrap();
+        let id1 = imported.sources[0].id;
+        let id2 = imported.sources[1].id;
+        let id3 = imported.sources[2].id;
+
+        // 1. Batch disable [1, 3]
+        let rep = online_svc
+            .batch_sources(
+                &admin,
+                BatchBookSourcesInput {
+                    ids: vec![id1, id3],
+                    action: BatchBookSourceAction::Disable,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(rep.affected_count, 2);
+
+        // 2. Batch enable [2]
+        online_svc
+            .batch_sources(
+                &admin,
+                BatchBookSourcesInput {
+                    ids: vec![id2],
+                    action: BatchBookSourceAction::Enable,
+                },
+            )
+            .await
+            .unwrap();
+
+        // 3. Batch set group on [1, 2]
+        online_svc
+            .batch_sources(
+                &admin,
+                BatchBookSourcesInput {
+                    ids: vec![id1, id2],
+                    action: BatchBookSourceAction::SetGroup {
+                        group_name: "精选".into(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+
+        let listed = online_svc.list_sources(&admin).await.unwrap();
+        let s1 = listed.iter().find(|s| s.id == id1).unwrap();
+        let s2 = listed.iter().find(|s| s.id == id2).unwrap();
+        let s3 = listed.iter().find(|s| s.id == id3).unwrap();
+        assert!(!s1.enabled && s1.group_name == "精选");
+        assert!(s2.enabled && s2.group_name == "精选");
+        assert!(!s3.enabled && s3.group_name.is_empty());
+
+        // 4. Batch export JSON array [1, 2]
+        let exported = online_svc
+            .export_sources_batch_json(&admin, vec![id1, id2])
+            .await
+            .unwrap();
+        let arr: Vec<serde_json::Value> = serde_json::from_str(&exported).unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["bookSourceGroup"], "精选");
+
+        // 5. Batch delete [1, 3]
+        let del = online_svc
+            .batch_sources(
+                &admin,
+                BatchBookSourcesInput {
+                    ids: vec![id1, id3],
+                    action: BatchBookSourceAction::Delete,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(del.affected_count, 2);
+        let remaining = online_svc.list_sources(&admin).await.unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, id2);
     }
 }
