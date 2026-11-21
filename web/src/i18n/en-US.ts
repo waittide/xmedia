@@ -486,7 +486,7 @@ export default {
       searchPlaceholder: 'Search {domain} name, group, or URL…',
       multiSelect: 'Batch Select',
       exitMultiSelect: 'Exit Select',
-      importJsonBtn: 'Import JSON',
+      importJsonBtn: 'Paste / Import JSON',
       importJsonTitle: 'Paste JSON to import {domain}',
       uploadFileBtn: 'Choose JSON File',
       uploadFileTitle: 'Load {domain} from local JSON file',

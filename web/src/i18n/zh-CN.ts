@@ -486,7 +486,7 @@ export default {
       searchPlaceholder: '搜索{domain}名称、分组或网址…',
       multiSelect: '批量多选',
       exitMultiSelect: '退出多选',
-      importJsonBtn: '导入 JSON',
+      importJsonBtn: '粘贴 / 导入 JSON',
       importJsonTitle: '输入或粘贴 JSON 导入{domain}',
       uploadFileBtn: '选择文件',
       uploadFileTitle: '从本地 JSON 文件加载{domain}',
