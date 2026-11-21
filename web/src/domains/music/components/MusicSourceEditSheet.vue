@@ -502,7 +502,7 @@ const tabItems = computed<EditTabItem<EditTab>[]>(() => [
   },
   {
     id: 'cover',
-    label: 'Cover',
+    label: t('onlineSources.edit.tabCover'),
     icon: LuImage,
     activeDot: hasAnyRule(form.ruleCover),
   },

@@ -42,7 +42,7 @@ const { t } = useI18n()
 
 <template>
   <MdSideSheet
-    :open="open"
+    :open="open && (!loading || Boolean(loadError))"
     :title="title"
     :subtitle="subtitle"
     width-class="w-[min(54rem,100vw)]"
@@ -165,24 +165,24 @@ const { t } = useI18n()
       </button>
       <button
         type="button"
-        :disabled="loading || saving || Boolean(loadError) || !jsonValidation.valid"
+        :disabled="props.loading || props.saving || Boolean(props.loadError) || !props.jsonValidation.valid"
+        class="md-btn md-btn-filled md-state"
+        @click="emit('save', false)"
+      >
+        <LuLoader2 v-if="props.saving" class="h-4 w-4 animate-spin" />
+        <LuSave v-else class="h-4 w-4" />
+        <span>
+          {{ props.saving ? t('onlineSources.edit.savingBtn') : t('onlineSources.edit.saveBtn') }}
+        </span>
+      </button>
+      <button
+        type="button"
+        :disabled="props.loading || props.saving || Boolean(props.loadError) || !props.jsonValidation.valid"
         class="md-btn md-btn-tonal md-state"
         @click="emit('save', true)"
       >
         <LuFlaskConical class="h-4 w-4" />
         <span>{{ t('onlineSources.edit.saveAndDebugBtn') }}</span>
-      </button>
-      <button
-        type="button"
-        :disabled="props.loading || props.saving || Boolean(props.loadError) || !props.jsonValidation.valid"
-        class="md-btn md-btn-filled md-state"
-        @click="emit('save', false)"
-      >
-        <LuLoader2 v-if="saving" class="h-4 w-4 animate-spin" />
-        <LuSave v-else class="h-4 w-4" />
-        <span>
-          {{ saving ? t('onlineSources.edit.savingBtn') : t('onlineSources.edit.saveBtn') }}
-        </span>
       </button>
     </template>
   </MdSideSheet>

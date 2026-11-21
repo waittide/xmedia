@@ -240,7 +240,7 @@ export const onlineComicApi = {
       body: JSON.stringify({
         source_id: sourceId,
         toc_url: tocUrl,
-        comic: comic ?? null,
+        comic: comic ?? undefined,
       }),
     }),
 
@@ -248,6 +248,10 @@ export const onlineComicApi = {
     sourceId: string,
     chapterUrl: string,
     comicUrl?: string | null,
+    options?: {
+      comic?: Partial<OnlineComicDetail> | null
+      chapter?: Partial<OnlineComicChapter> | null
+    },
   ): Promise<OnlineComicPagesResponseDto> =>
     requestJson('/comic/online/pages', {
       method: 'POST',
@@ -255,6 +259,8 @@ export const onlineComicApi = {
         source_id: sourceId,
         chapter_url: chapterUrl,
         comic_url: comicUrl ?? null,
+        comic: options?.comic ?? undefined,
+        chapter: options?.chapter ?? undefined,
       }),
     }),
 }

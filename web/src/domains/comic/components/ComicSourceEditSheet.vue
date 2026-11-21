@@ -294,7 +294,12 @@ function hydrateFormFromObject(
   form.sourceComment = pickFirstString(obj, ['sourceComment', 'bookSourceComment'])
   form.sourceType = numVal(obj[keyMap.typeKey], srcSummary?.source_type ?? 2)
   const dir = strVal(obj.readingDirection).trim().toLowerCase()
-  form.readingDirection = dir === 'ltr' || dir === 'webtoon' ? dir : 'rtl'
+  form.readingDirection =
+    dir === 'ltr' || dir === 'webtoon'
+      ? dir
+      : dir === 'vertical' || dir === 'scroll'
+        ? 'webtoon'
+        : 'rtl'
   form.enabled = srcSummary ? srcSummary.enabled : boolVal(obj.enabled, true)
   form.enabledExplore = boolVal(obj.enabledExplore, true)
   form.enabledCookieJar = boolVal(obj.enabledCookieJar, true)
@@ -352,7 +357,15 @@ const {
     if (!(keyMap.typeKey in base)) {
       out[keyMap.typeKey] = form.sourceType
     }
-    if ('readingDirection' in base || !snap || form.readingDirection !== snap.readingDirection) {
+    const baseDir = strVal(base.readingDirection).trim().toLowerCase()
+    const preserveReadingDirectionAlias =
+      form.readingDirection === 'webtoon' &&
+      snap?.readingDirection === 'webtoon' &&
+      (baseDir === 'vertical' || baseDir === 'scroll')
+    if (
+      !preserveReadingDirectionAlias &&
+      ('readingDirection' in base || !snap || form.readingDirection !== snap.readingDirection)
+    ) {
       out.readingDirection = form.readingDirection
     }
     if ('enabled' in base || !snap || form.enabled !== snap.enabled) {

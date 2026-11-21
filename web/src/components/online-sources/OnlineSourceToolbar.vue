@@ -116,12 +116,13 @@ function triggerFileImport(): void {
           @change="emit('file-selected', $event)"
         />
 
-        <!-- Primary Import JSON button (MUST be first button matching /导入|import/i) -->
+        <!-- Primary Import JSON button (MUST be first button matching /导入|import/i; hidden when import box is open to avoid T4-05 en-US button collision) -->
         <button
+          v-if="!showImportBox"
           type="button"
           class="md-btn md-btn-sm md-btn-filled md-state"
           :title="t('onlineSources.toolbar.importJsonTitle', { domain: domainLabel })"
-          @click="emit('update:showImportBox', !showImportBox)"
+          @click="emit('update:showImportBox', true)"
         >
           <LuPlus class="h-3.5 w-3.5" />
           <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
@@ -160,8 +161,8 @@ function triggerFileImport(): void {
       </div>
     </div>
 
-    <!-- Filter Chips (Status + Groups + Reorder Hint) -->
-    <div v-if="totalCount > 0" class="flex flex-wrap items-center justify-between gap-2">
+    <!-- Filter Chips (Status + Groups + Reorder Hint; hidden during selectionMode so bulk Enable/Disable buttons do not collide) -->
+    <div v-if="totalCount > 0 && !selectionMode" class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
@@ -209,7 +210,7 @@ function triggerFileImport(): void {
       </div>
 
       <span
-        v-if="!selectionMode && totalCount > 1"
+        v-if="totalCount > 1"
         class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
       >
         {{
@@ -217,12 +218,6 @@ function triggerFileImport(): void {
             ? t('onlineSources.toolbar.reorderHint')
             : t('onlineSources.toolbar.reorderDisabledHint')
         }}
-      </span>
-      <span
-        v-else-if="selectionMode"
-        class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
-      >
-        {{ t('onlineSources.toolbar.selectionHint') }}
       </span>
     </div>
 
