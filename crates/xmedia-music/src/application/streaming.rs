@@ -105,19 +105,26 @@ impl MusicStreamingService {
         let max_br = max_bit_rate_kbps.filter(|&b| b > 0);
         let offset = time_offset_secs.filter(|&t| t > 0);
 
+        let format_matches_source = |fmt: &str| -> bool {
+            use crate::domain::catalog::AudioFormat;
+            matches!(
+                (fmt, track.format),
+                ("mp3", AudioFormat::Mp3)
+                    | ("flac", AudioFormat::Flac)
+                    | ("opus", AudioFormat::Opus)
+                    | ("ogg", AudioFormat::Ogg)
+                    | ("m4a" | "aac", AudioFormat::M4a)
+                    | ("wav", AudioFormat::Wav)
+            )
+        };
+        let bitrate_fits = max_br.is_none_or(|limit_kbps| {
+            !track.format.is_lossless() && track.bit_rate_kbps.is_some_and(|src| src <= limit_kbps)
+        });
+
         let wants_raw = match norm_format.as_deref() {
-            Some("raw") => true,
-            Some(_) => false,
-            None => {
-                if offset.is_some() {
-                    false
-                } else if let Some(limit_kbps) = max_br {
-                    !track.format.is_lossless()
-                        && track.bit_rate_kbps.is_some_and(|src| src <= limit_kbps)
-                } else {
-                    true
-                }
-            }
+            Some("raw") => offset.is_none(),
+            Some(fmt) => offset.is_none() && format_matches_source(fmt) && bitrate_fits,
+            None => offset.is_none() && bitrate_fits,
         };
 
         if wants_raw {

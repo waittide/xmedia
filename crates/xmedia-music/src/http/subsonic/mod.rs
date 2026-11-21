@@ -244,11 +244,24 @@ async fn handle_authenticated_method(
                 .await?
                 .items;
 
+            const IGNORED_ARTICLES: &[&str] =
+                &["the ", "el ", "la ", "los ", "las ", "le ", "les "];
             let mut buckets: BTreeMap<String, Vec<SsNode>> = BTreeMap::new();
             for ar in artists {
-                let first_ch = ar
-                    .name
-                    .trim()
+                let trimmed = ar.name.trim();
+                let lower = trimmed.to_ascii_lowercase();
+                let sort_name = IGNORED_ARTICLES
+                    .iter()
+                    .find_map(|prefix| {
+                        if lower.starts_with(prefix) {
+                            let rest = trimmed[prefix.len()..].trim_start();
+                            (!rest.is_empty()).then_some(rest)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(trimmed);
+                let first_ch = sort_name
                     .chars()
                     .next()
                     .map(|c| {
@@ -917,12 +930,13 @@ fn parse_uuid_param(params: &SubsonicParams, key: &str) -> Result<Uuid, Subsonic
     let raw = params
         .first(key)
         .ok_or_else(|| SubsonicError::missing_param(key))?;
-    let clean = raw
-        .trim()
+    let trimmed = raw.trim();
+    let clean = trimmed
         .strip_prefix("al-")
-        .or_else(|| raw.trim().strip_prefix("ar-"))
-        .or_else(|| raw.trim().strip_prefix("tr-"))
-        .unwrap_or_else(|| raw.trim());
+        .or_else(|| trimmed.strip_prefix("ar-"))
+        .or_else(|| trimmed.strip_prefix("tr-"))
+        .or_else(|| trimmed.strip_prefix("pl-"))
+        .unwrap_or(trimmed);
     Uuid::parse_str(clean).map_err(|_| SubsonicError::not_found(format!("invalid id '{raw}'")))
 }
 

@@ -959,13 +959,14 @@ impl MusicCatalogService {
         let mut prioritized: Vec<&Track> = candidates
             .iter()
             .filter(|t| {
-                (title_lower.is_empty() || t.title.to_lowercase() == title_lower)
+                t.has_lyrics()
+                    && (title_lower.is_empty() || t.title.to_lowercase() == title_lower)
                     && (artist_lower.is_empty()
                         || t.artist_name.to_lowercase().contains(&artist_lower))
             })
             .collect();
         for tr in &candidates {
-            if !prioritized.iter().any(|p| p.id == tr.id) {
+            if tr.has_lyrics() && !prioritized.iter().any(|p| p.id == tr.id) {
                 prioritized.push(tr);
             }
         }

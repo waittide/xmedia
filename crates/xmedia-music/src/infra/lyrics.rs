@@ -128,7 +128,10 @@ fn parse_lrc_meta_tag(line: &str) -> Option<(String, String)> {
     }
     let (k, v) = inner.split_once(':')?;
     let key = k.trim().to_ascii_lowercase();
-    if key.chars().all(|c| c.is_ascii_alphabetic()) {
+    if matches!(
+        key.as_str(),
+        "ar" | "ti" | "al" | "au" | "lr" | "length" | "by" | "offset" | "re" | "ve" | "la" | "id"
+    ) {
         Some((key, v.trim().to_string()))
     } else {
         None

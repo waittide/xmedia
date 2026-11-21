@@ -302,10 +302,16 @@ impl MusicCollectionService {
         };
 
         for (track_id, played_at_opt) in entries {
-            let Some(track) = self.catalog_repo.find_track_by_id(track_id).await? else {
+            let Some(track) = self
+                .catalog_repo
+                .find_track_by_id(track_id)
+                .await?
+                .filter(|t| !t.is_missing)
+            else {
                 continue;
             };
             if let Ok(mut guard) = self.now_playing.write() {
+                guard.retain(|_, entry| now.duration_since(entry.updated_at).as_secs() <= 15 * 60);
                 guard.insert(
                     (user.id, client.to_string()),
                     NowPlayingEntry {

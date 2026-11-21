@@ -54,12 +54,14 @@ fn probe_from_reader<R: Read + Seek>(
     if let Some(ft) = FileType::from_ext(ext_hint) {
         probe = probe.set_file_type(ft);
     }
-    if let Ok(guessed) = probe.guess_file_type() {
-        probe = guessed;
-    } else {
-        return Err(DomainError::UnsupportedFormat(
-            "failed to detect audio format".into(),
-        ));
+    if probe.file_type().is_none() {
+        if let Ok(guessed) = probe.guess_file_type() {
+            probe = guessed;
+        } else {
+            return Err(DomainError::UnsupportedFormat(
+                "failed to detect audio format".into(),
+            ));
+        }
     }
 
     let tagged = probe
@@ -286,5 +288,5 @@ fn parse_gain_float(s: &str) -> Option<f32> {
         .trim_end_matches("DB")
         .trim()
         .trim_start_matches('+');
-    cleaned.parse::<f32>().ok()
+    cleaned.parse::<f32>().ok().filter(|v| v.is_finite())
 }

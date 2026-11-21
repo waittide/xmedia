@@ -1769,7 +1769,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
             .await
             .map_err(db_err)?;
 
-        let new_count = if let Some(mut rec) = existing {
+        let (new_count, effective_last_played) = if let Some(mut rec) = existing {
             let next = rec.play_count.saturating_add(1);
             let latest = played_at.max(rec.last_played_at);
             rec.update()
@@ -1779,7 +1779,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
                 .exec(&mut db)
                 .await
                 .map_err(db_err)?;
-            u64::try_from(next.max(1)).unwrap_or(1)
+            (u64::try_from(next.max(1)).unwrap_or(1), latest)
         } else {
             toasty::create!(MusicPlayStatModel {
                 stat_key: stat_key,
@@ -1792,7 +1792,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
             .exec(&mut db)
             .await
             .map_err(db_err)?;
-            1
+            (1, played_at)
         };
 
         toasty::create!(MusicScrobbleModel {
@@ -1810,7 +1810,7 @@ impl MusicCollectionRepository for ToastyMusicCollectionRepository {
             track_id,
             album_id,
             play_count: new_count,
-            last_played_at: played_at,
+            last_played_at: effective_last_played,
         })
     }
 

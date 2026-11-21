@@ -545,8 +545,8 @@ impl MusicIngestService {
                 existing.is_track_artist = true;
                 dirty = true;
             }
-            if let Some(cov) = cover_hint
-                && existing.cover_key.as_deref() != Some(cov)
+            if existing.cover_key.is_none()
+                && let Some(cov) = cover_hint
             {
                 existing.cover_key = Some(cov.to_string());
                 dirty = true;
@@ -606,8 +606,8 @@ impl MusicIngestService {
                 existing.genre = genre.map(str::to_string);
                 dirty = true;
             }
-            if let Some(cov) = cover_hint
-                && existing.cover_key.as_deref() != Some(cov)
+            if existing.cover_key.is_none()
+                && let Some(cov) = cover_hint
             {
                 existing.cover_key = Some(cov.to_string());
                 dirty = true;
@@ -737,7 +737,30 @@ impl MediaDomainLifecycle for MusicIngestService {
             .await
             {
                 Ok(Ok(p)) => p,
-                _ => {
+                Ok(Err(err)) => {
+                    tracing::warn!(
+                        library_id = %library_id,
+                        path = %entry.relative_path,
+                        error = %err,
+                        "failed to probe audio file during scan"
+                    );
+                    if let Some(mut stale) = prev_track
+                        && !stale.is_missing
+                    {
+                        stale.is_missing = true;
+                        stale.updated_at = Timestamp::now();
+                        let _ = self.catalog_repo.save_track(&stale).await;
+                    }
+                    reporter.advance().await;
+                    continue;
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        library_id = %library_id,
+                        path = %entry.relative_path,
+                        error = %err,
+                        "audio probe task panicked during scan"
+                    );
                     reporter.advance().await;
                     continue;
                 }
@@ -830,6 +853,7 @@ impl MediaDomainLifecycle for MusicIngestService {
         let mut track_ids = Vec::with_capacity(tracks.len());
         let mut candidate_albums = HashSet::new();
         let mut candidate_artists = HashSet::new();
+        let mut files_to_delete: Vec<String> = Vec::new();
 
         for tr in &tracks {
             track_ids.push(tr.id);
@@ -842,9 +866,9 @@ impl MediaDomainLifecycle for MusicIngestService {
                 ref sidecar_lrc_key,
             } = tr.source
             {
-                let _ = self.storage.delete_managed_file(storage_key).await;
+                files_to_delete.push(storage_key.clone());
                 if let Some(lrc) = sidecar_lrc_key {
-                    let _ = self.storage.delete_managed_file(lrc).await;
+                    files_to_delete.push(lrc.clone());
                 }
             }
         }
@@ -853,6 +877,10 @@ impl MediaDomainLifecycle for MusicIngestService {
             .delete_tracks_by_library(library_id)
             .await?;
         self.catalog_repo.recompute_catalog_aggregates().await?;
+
+        for key in files_to_delete {
+            let _ = self.storage.delete_managed_file(&key).await;
+        }
 
         let candidate_album_vec: Vec<AlbumId> = candidate_albums.into_iter().collect();
         let surviving_albums: HashSet<AlbumId> = self
