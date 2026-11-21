@@ -1,13 +1,20 @@
+mod html;
+mod jsonpath;
+
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 use regex::Regex;
-use scraper::{ElementRef, Html, Selector};
 
-use crate::source::http::resolve_relative_url;
 use crate::source::js_runtime::LegadoJsSession;
 
+pub use self::jsonpath::eval_jsonpath;
+
+use self::html::{eval_html_list, eval_html_single};
+use self::jsonpath::json_val_to_string;
+
 const MAX_RULE_REGEX_CACHE: usize = 256;
+const MAX_RULE_EVAL_DEPTH: usize = 32;
 
 static RULE_REGEX_CACHE: LazyLock<Mutex<HashMap<String, Regex>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -103,9 +110,6 @@ impl RuleValue {
     }
 }
 
-const MAX_RULE_EVAL_DEPTH: usize = 32;
-const MAX_JSON_RECURSIVE_DEPTH: usize = 128;
-
 /// Evaluates a Legado rule to a single string (supports `<js>`, `@js:`, `{{...}}`, `##regex##rep`, `||`, `&&`, JSONPath, CSS/Legado shorthand).
 pub fn eval_rule_string(
     input: &RuleValue,
@@ -131,7 +135,6 @@ fn eval_rule_string_depth(
         return Ok(String::new());
     }
 
-    // 1. Check `<js>...</js>` or `@js:` pipeline
     if let Some((prefix_rule, js_code, suffix_rule)) = split_js_pipeline(trimmed) {
         let stage1 = if prefix_rule.is_empty() {
             input.clone()
@@ -150,14 +153,12 @@ fn eval_rule_string_depth(
         return eval_rule_string_depth(&js_out, suffix_rule, base_url, js, depth + 1);
     }
 
-    // 2. Check Mustache interpolation `{{...}}`
     if trimmed.contains("{{") && trimmed.contains("}}") {
         let (template_part, regex_suffix) = split_regex_replace_suffix(trimmed);
         let interpolated = eval_mustache_template(template_part, input, base_url, js)?;
         return Ok(apply_regex_replace(&interpolated, regex_suffix));
     }
 
-    // 3. Fallback (`||`) and concat (`&&`) outside quotes
     if let Some(parts) = split_top_level_op(trimmed, "||") {
         for part in parts {
             let res = eval_rule_string_depth(input, part, base_url, js.as_deref_mut(), depth + 1)?;
@@ -178,7 +179,6 @@ fn eval_rule_string_depth(
         return Ok(out.join("\n"));
     }
 
-    // 4. Regex replace suffix `##pattern##replacement`
     let (core_rule, regex_suffix) = split_regex_replace_suffix(trimmed);
     let extracted = eval_non_js_single(input, core_rule, base_url);
     Ok(apply_regex_replace(&extracted, regex_suffix))
@@ -211,7 +211,6 @@ fn eval_rule_list_depth(
         return Ok(Vec::new());
     }
 
-    // 1. `<js>...</js>` or `@js:` pipeline
     if let Some((prefix_rule, js_code, suffix_rule)) = split_js_pipeline(trimmed) {
         let stage1 = if prefix_rule.is_empty() {
             input.clone()
@@ -230,7 +229,6 @@ fn eval_rule_list_depth(
         return eval_rule_list_depth(&js_out, suffix_rule, base_url, js, depth + 1);
     }
 
-    // 2. Fallback `||`
     if let Some(parts) = split_top_level_op(trimmed, "||") {
         for part in parts {
             let list = eval_rule_list_depth(input, part, base_url, js.as_deref_mut(), depth + 1)?;
@@ -241,7 +239,6 @@ fn eval_rule_list_depth(
         return Ok(Vec::new());
     }
 
-    // 3. Concat `&&`
     if let Some(parts) = split_top_level_op(trimmed, "&&") {
         let mut combined = Vec::new();
         for part in parts {
@@ -250,7 +247,6 @@ fn eval_rule_list_depth(
         return Ok(combined);
     }
 
-    // 4. Interleave `%%`
     if let Some(parts) = split_top_level_op(trimmed, "%%") {
         let mut lists = Vec::with_capacity(parts.len());
         let mut max_len = 0usize;
@@ -281,7 +277,6 @@ pub fn eval_non_js_single(input: &RuleValue, rule: &str, base_url: &str) -> Stri
     }
     let (core, regex_suffix) = split_regex_replace_suffix(trimmed);
 
-    // JSONPath (`$.foo`, `@Json:$.foo`, `$[0]`)
     if let Some(jp) = core
         .strip_prefix("@Json:")
         .or_else(|| core.strip_prefix("@json:"))
@@ -302,7 +297,6 @@ pub fn eval_non_js_single(input: &RuleValue, rule: &str, base_url: &str) -> Stri
         return String::new();
     }
 
-    // Direct JSON field access fallback if input is a JSON object and rule looks like a bare key
     if let RuleValue::Json(serde_json::Value::Object(map)) = input
         && !core.contains('@')
         && !core.contains('.')
@@ -312,7 +306,6 @@ pub fn eval_non_js_single(input: &RuleValue, rule: &str, base_url: &str) -> Stri
         return apply_regex_replace(&json_val_to_string(v.clone()), regex_suffix);
     }
 
-    // Regex capture rule (`:pattern`)
     if let Some(pat) = core.strip_prefix(':') {
         let text = input.as_text();
         if let Some(re) = cached_regex(pat)
@@ -328,7 +321,6 @@ pub fn eval_non_js_single(input: &RuleValue, rule: &str, base_url: &str) -> Stri
         return String::new();
     }
 
-    // CSS / Legado HTML rule
     let html_str = input.as_text();
     let extracted = eval_html_single(&html_str, core, base_url);
     apply_regex_replace(&extracted, regex_suffix)
@@ -340,7 +332,6 @@ pub fn eval_non_js_list(input: &RuleValue, rule: &str) -> Vec<RuleValue> {
         return Vec::new();
     }
 
-    // Optional leading `-` reverses order in Legado (`-$.data` or `-class.item`)
     let (reverse, core) = if let Some(rest) = trimmed.strip_prefix('-') {
         (true, rest.trim())
     } else if let Some(rest) = trimmed.strip_prefix('+') {
@@ -595,514 +586,5 @@ fn split_top_level_op<'a>(input: &'a str, op: &str) -> Option<Vec<&'a str>> {
     } else {
         parts.push(input[last..].trim());
         Some(parts)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// JSONPath Evaluator ($.data, $.data[*].title, $..name, $[0].id)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-enum JsonPathStep {
-    Field(String),
-    RecursiveField(String),
-    Index(isize),
-    Wildcard,
-    Slice(Option<isize>, Option<isize>),
-}
-
-pub fn eval_jsonpath(root: &serde_json::Value, path: &str) -> Vec<serde_json::Value> {
-    let trimmed = path.trim();
-    if trimmed == "$" {
-        return vec![root.clone()];
-    }
-    let Some(rest) = trimmed.strip_prefix('$') else {
-        return Vec::new();
-    };
-
-    let steps = parse_jsonpath_steps(rest);
-    let mut current = vec![root];
-
-    for step in steps {
-        let mut next = Vec::new();
-        for node in current {
-            match &step {
-                JsonPathStep::Field(key) => {
-                    if let serde_json::Value::Object(map) = node
-                        && let Some(child) = map.get(key)
-                    {
-                        next.push(child);
-                    } else if let serde_json::Value::Array(arr) = node {
-                        // Legado convenience: `$.list.title` maps over array elements
-                        for el in arr {
-                            if let serde_json::Value::Object(map) = el
-                                && let Some(child) = map.get(key)
-                            {
-                                next.push(child);
-                            }
-                        }
-                    }
-                }
-                JsonPathStep::RecursiveField(key) => {
-                    collect_recursive_field(node, key, &mut next);
-                }
-                JsonPathStep::Index(idx) => {
-                    if let serde_json::Value::Array(arr) = node {
-                        let resolved = if *idx < 0 {
-                            arr.len().checked_sub(idx.unsigned_abs())
-                        } else {
-                            Some(*idx as usize)
-                        };
-                        if let Some(i) = resolved
-                            && let Some(el) = arr.get(i)
-                        {
-                            next.push(el);
-                        }
-                    }
-                }
-                JsonPathStep::Wildcard => match node {
-                    serde_json::Value::Array(arr) => next.extend(arr.iter()),
-                    serde_json::Value::Object(map) => next.extend(map.values()),
-                    _ => {}
-                },
-                JsonPathStep::Slice(start, end) => {
-                    if let serde_json::Value::Array(arr) = node {
-                        let len = arr.len() as isize;
-                        let s = start
-                            .map(|v| if v < 0 { (len + v).max(0) } else { v.min(len) })
-                            .unwrap_or(0) as usize;
-                        let e = end
-                            .map(|v| if v < 0 { (len + v).max(0) } else { v.min(len) })
-                            .unwrap_or(len) as usize;
-                        if s < e {
-                            next.extend(arr[s..e].iter());
-                        }
-                    }
-                }
-            }
-        }
-        current = next;
-        if current.is_empty() {
-            break;
-        }
-    }
-
-    current.into_iter().cloned().collect()
-}
-
-fn collect_recursive_field<'a>(
-    node: &'a serde_json::Value,
-    key: &str,
-    out: &mut Vec<&'a serde_json::Value>,
-) {
-    collect_recursive_field_depth(node, key, out, 0);
-}
-
-fn collect_recursive_field_depth<'a>(
-    node: &'a serde_json::Value,
-    key: &str,
-    out: &mut Vec<&'a serde_json::Value>,
-    depth: usize,
-) {
-    if depth >= MAX_JSON_RECURSIVE_DEPTH {
-        return;
-    }
-    match node {
-        serde_json::Value::Object(map) => {
-            if let Some(v) = map.get(key) {
-                out.push(v);
-            }
-            for v in map.values() {
-                collect_recursive_field_depth(v, key, out, depth + 1);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for el in arr {
-                collect_recursive_field_depth(el, key, out, depth + 1);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn parse_jsonpath_steps(mut s: &str) -> Vec<JsonPathStep> {
-    let mut steps = Vec::new();
-    while !s.is_empty() {
-        if let Some(rest) = s.strip_prefix("..") {
-            let end = rest.find(['.', '[']).unwrap_or(rest.len());
-            let key = &rest[..end];
-            if !key.is_empty() {
-                steps.push(JsonPathStep::RecursiveField(key.to_string()));
-            }
-            s = &rest[end..];
-        } else if let Some(rest) = s.strip_prefix('.') {
-            let end = rest.find(['.', '[']).unwrap_or(rest.len());
-            let key = &rest[..end];
-            if key == "*" {
-                steps.push(JsonPathStep::Wildcard);
-            } else if !key.is_empty() {
-                steps.push(JsonPathStep::Field(key.to_string()));
-            }
-            s = &rest[end..];
-        } else if let Some(rest) = s.strip_prefix('[') {
-            let Some(close) = rest.find(']') else {
-                break;
-            };
-            let inside = rest[..close].trim();
-            if inside == "*" {
-                steps.push(JsonPathStep::Wildcard);
-            } else if (inside.starts_with('\'') && inside.ends_with('\''))
-                || (inside.starts_with('"') && inside.ends_with('"'))
-            {
-                steps.push(JsonPathStep::Field(inside[1..inside.len() - 1].to_string()));
-            } else if let Some((a, b)) = inside.split_once(':') {
-                let start = a.trim().parse::<isize>().ok();
-                let end = b.trim().parse::<isize>().ok();
-                steps.push(JsonPathStep::Slice(start, end));
-            } else if let Ok(idx) = inside.parse::<isize>() {
-                steps.push(JsonPathStep::Index(idx));
-            } else if !inside.is_empty() {
-                steps.push(JsonPathStep::Field(inside.to_string()));
-            }
-            s = &rest[close + 1..];
-        } else {
-            break;
-        }
-    }
-    steps
-}
-
-fn json_val_to_string(v: serde_json::Value) -> String {
-    match v {
-        serde_json::Value::Null => String::new(),
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Number(n) => n.to_string(),
-        serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Array(arr) => arr
-            .into_iter()
-            .map(json_val_to_string)
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(", "),
-        other => other.to_string(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HTML / CSS + Legado Shorthand Evaluator
-// ---------------------------------------------------------------------------
-
-fn eval_html_list(html_str: &str, rule: &str) -> Vec<String> {
-    let doc = Html::parse_fragment(html_str);
-    let clean = rule
-        .strip_prefix("@css:")
-        .or_else(|| rule.strip_prefix("@CSS:"))
-        .unwrap_or(rule)
-        .trim();
-
-    let elements = select_elements_chained(&doc, clean);
-    elements.into_iter().map(|el| el.html()).collect()
-}
-
-fn eval_html_single(html_str: &str, rule: &str, base_url: &str) -> String {
-    let doc = Html::parse_fragment(html_str);
-    let clean = rule
-        .strip_prefix("@css:")
-        .or_else(|| rule.strip_prefix("@CSS:"))
-        .unwrap_or(rule)
-        .trim();
-
-    // Split terminal extractor after last `@`
-    let (selector_part, attr_part) = if let Some((left, right)) = clean.rsplit_once('@') {
-        if is_attr_extractor(right.trim()) {
-            (left.trim(), right.trim())
-        } else {
-            (clean, "text")
-        }
-    } else if is_attr_extractor(clean) {
-        ("", clean)
-    } else {
-        (clean, "text")
-    };
-
-    let elements: Vec<ElementRef<'_>> = if selector_part.is_empty() {
-        doc.root_element()
-            .children()
-            .filter_map(ElementRef::wrap)
-            .collect()
-    } else {
-        select_elements_chained(&doc, selector_part)
-    };
-
-    if elements.is_empty() {
-        return String::new();
-    }
-
-    let values: Vec<String> = elements
-        .into_iter()
-        .filter_map(|el| extract_attr_from_element(el, attr_part, base_url))
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    values.join("\n")
-}
-
-fn is_attr_extractor(s: &str) -> bool {
-    if s.is_empty() || s.contains(' ') || s.contains('.') || s.contains('#') || s.contains('>') {
-        return false;
-    }
-    let lower = s.to_ascii_lowercase();
-    matches!(
-        lower.as_str(),
-        "text"
-            | "textnodes"
-            | "owntext"
-            | "html"
-            | "all"
-            | "href"
-            | "src"
-            | "srcset"
-            | "content"
-            | "title"
-            | "alt"
-            | "value"
-            | "id"
-            | "class"
-            | "name"
-            | "rel"
-            | "type"
-            | "style"
-            | "poster"
-            | "action"
-            | "target"
-            | "placeholder"
-            | "datetime"
-            | "lang"
-            | "property"
-    ) || lower.starts_with("data-")
-        || lower.starts_with("aria-")
-}
-
-fn extract_attr_from_element(el: ElementRef<'_>, attr: &str, base_url: &str) -> Option<String> {
-    match attr.to_ascii_lowercase().as_str() {
-        "text" => {
-            let txt = el.text().collect::<Vec<_>>().join("");
-            Some(txt.trim().to_string())
-        }
-        "textnodes" => {
-            let lines: Vec<String> = el
-                .text()
-                .map(|t| t.trim())
-                .filter(|t| !t.is_empty())
-                .map(str::to_owned)
-                .collect();
-            Some(lines.join("\n"))
-        }
-        "owntext" => {
-            let txt: String = el
-                .children()
-                .filter_map(|c| c.value().as_text().map(|t| t.text.as_ref()))
-                .collect::<Vec<_>>()
-                .join("");
-            Some(txt.trim().to_string())
-        }
-        "html" => Some(el.inner_html()),
-        "all" => Some(el.html()),
-        "href" | "src" | "data-src" | "data-original" => el
-            .value()
-            .attr(attr)
-            .map(|v| resolve_relative_url(v, base_url)),
-        other => el.value().attr(other).map(|v| v.trim().to_string()),
-    }
-}
-
-fn select_elements_chained<'a>(doc: &'a Html, chain: &str) -> Vec<ElementRef<'a>> {
-    let segments: Vec<&str> = chain
-        .split('@')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    if segments.is_empty() {
-        return Vec::new();
-    }
-
-    let mut current: Vec<ElementRef<'a>> = vec![doc.root_element()];
-
-    for seg in segments {
-        let mut next = Vec::new();
-        let (css_expr, index_filter) = parse_legado_html_segment(seg);
-        if css_expr == "__children__" {
-            for parent in &current {
-                for child in parent.children().filter_map(ElementRef::wrap) {
-                    next.push(child);
-                }
-            }
-        } else if let Ok(selector) = Selector::parse(&css_expr) {
-            for parent in &current {
-                for matched in parent.select(&selector) {
-                    next.push(matched);
-                }
-            }
-        }
-        current = apply_index_filter(next, index_filter);
-        if current.is_empty() {
-            break;
-        }
-    }
-
-    current
-}
-
-#[derive(Debug, Clone)]
-enum IndexFilter {
-    None,
-    Single(isize),
-    Exclude(Vec<isize>),
-    Slice(Option<isize>, Option<isize>),
-}
-
-/// Translates Legado shorthand (`class.item.0`, `tag.a.-1`, `id.content`, `children`, `div.list[0:5]`, `tr[!0]`)
-/// into a standard CSS selector plus optional index filter.
-fn parse_legado_html_segment(seg: &str) -> (String, IndexFilter) {
-    let mut s = seg.trim();
-    let mut filter = IndexFilter::None;
-
-    // Bracket index/slice suffix: `[0]`, `[-1]`, `[0:5]`, `[!0]`
-    if let Some(open) = s.rfind('[')
-        && s.ends_with(']')
-    {
-        let inside = s[open + 1..s.len() - 1].trim();
-        let is_index_bracket =
-            inside.starts_with('!') || inside.contains(':') || inside.parse::<isize>().is_ok();
-        if is_index_bracket {
-            if let Some(excl) = inside.strip_prefix('!') {
-                let ids: Vec<isize> = excl
-                    .split([',', ':'])
-                    .filter_map(|p| p.trim().parse::<isize>().ok())
-                    .collect();
-                filter = IndexFilter::Exclude(ids);
-            } else if let Some((a, b)) = inside.split_once(':') {
-                filter = IndexFilter::Slice(
-                    a.trim().parse::<isize>().ok(),
-                    b.trim().parse::<isize>().ok(),
-                );
-            } else if let Ok(idx) = inside.parse::<isize>() {
-                filter = IndexFilter::Single(idx);
-            }
-            s = s[..open].trim();
-        }
-    }
-
-    // Legado shorthand prefixes
-    if s.eq_ignore_ascii_case("children") {
-        return ("__children__".to_string(), filter);
-    }
-
-    if let Some(rest) = s.strip_prefix("class.") {
-        let (name, idx_opt) = split_trailing_dot_index(rest);
-        if let Some(idx) = idx_opt {
-            filter = IndexFilter::Single(idx);
-        }
-        let css = name
-            .split_whitespace()
-            .filter(|c| !c.is_empty())
-            .map(|c| format!(".{c}"))
-            .collect::<String>();
-        return (css, filter);
-    }
-
-    if let Some(rest) = s.strip_prefix("id.") {
-        let (name, idx_opt) = split_trailing_dot_index(rest);
-        if let Some(idx) = idx_opt {
-            filter = IndexFilter::Single(idx);
-        }
-        return (format!("#{name}"), filter);
-    }
-
-    if let Some(rest) = s.strip_prefix("tag.") {
-        let (name, idx_opt) = split_trailing_dot_index(rest);
-        if let Some(idx) = idx_opt {
-            filter = IndexFilter::Single(idx);
-        }
-        return (name.to_string(), filter);
-    }
-
-    // Plain CSS selector with optional trailing `.0` / `.-1` Legado index
-    let (clean_css, idx_opt) = split_trailing_dot_index(s);
-    if let Some(idx) = idx_opt {
-        filter = IndexFilter::Single(idx);
-    }
-    (clean_css.to_string(), filter)
-}
-
-fn split_trailing_dot_index(s: &str) -> (&str, Option<isize>) {
-    if let Some((head, tail)) = s.rsplit_once('.')
-        && !head.is_empty()
-        && let Ok(idx) = tail.parse::<isize>()
-    {
-        return (head, Some(idx));
-    }
-    (s, None)
-}
-
-fn apply_index_filter<T>(items: Vec<T>, filter: IndexFilter) -> Vec<T> {
-    let len = items.len();
-    match filter {
-        IndexFilter::None => items,
-        IndexFilter::Single(idx) => {
-            let resolved = if idx < 0 {
-                len.checked_sub(idx.unsigned_abs())
-            } else {
-                Some(idx as usize)
-            };
-            resolved
-                .and_then(|i| items.into_iter().nth(i))
-                .into_iter()
-                .collect()
-        }
-        IndexFilter::Exclude(excluded) => {
-            let mut bad = std::collections::HashSet::new();
-            for idx in excluded {
-                let resolved = if idx < 0 {
-                    len.checked_sub(idx.unsigned_abs())
-                } else {
-                    Some(idx as usize)
-                };
-                if let Some(i) = resolved {
-                    bad.insert(i);
-                }
-            }
-            items
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, v)| (!bad.contains(&i)).then_some(v))
-                .collect()
-        }
-        IndexFilter::Slice(start, end) => {
-            let ilen = len as isize;
-            let s = start
-                .map(|v| {
-                    if v < 0 {
-                        (ilen + v).max(0)
-                    } else {
-                        v.min(ilen)
-                    }
-                })
-                .unwrap_or(0) as usize;
-            let e = end
-                .map(|v| {
-                    if v < 0 {
-                        (ilen + v).max(0)
-                    } else {
-                        v.min(ilen)
-                    }
-                })
-                .unwrap_or(ilen) as usize;
-            items
-                .into_iter()
-                .enumerate()
-                .filter_map(|(i, v)| (i >= s && i < e).then_some(v))
-                .collect()
-        }
     }
 }
