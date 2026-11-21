@@ -600,7 +600,7 @@ struct RedirectTargetKey {
 struct PaginationCycleGuard {
     visited_requests: HashSet<CanonicalRequestKey>,
     visited_get_bodies: HashMap<String, u64>,
-    redirected_post_final_urls: HashMap<String, u64>,
+    redirected_post_final_urls: HashMap<String, HashSet<u64>>,
     visited_redirect_targets: HashSet<RedirectTargetKey>,
 }
 
@@ -626,7 +626,12 @@ impl PaginationCycleGuard {
         let final_no_frag = strip_fragment(final_url).to_string();
         let body_hash = hash_response_body(body);
         if req_key.is_plain_get_or_head() {
-            if self.visited_get_bodies.contains_key(&final_no_frag) {
+            if self.visited_get_bodies.contains_key(&final_no_frag)
+                || self
+                    .redirected_post_final_urls
+                    .get(&final_no_frag)
+                    .is_some_and(|hashes| hashes.contains(&body_hash))
+            {
                 return false;
             }
             self.visited_get_bodies
@@ -650,12 +655,17 @@ impl PaginationCycleGuard {
                 if self.visited_get_bodies.get(&final_no_frag) == Some(&body_hash) {
                     return false;
                 }
-                if self.redirected_post_final_urls.get(&final_no_frag) == Some(&body_hash) {
+                if self
+                    .redirected_post_final_urls
+                    .get(&final_no_frag)
+                    .is_some_and(|hashes| hashes.contains(&body_hash))
+                {
                     return false;
                 }
                 self.redirected_post_final_urls
                     .entry(final_no_frag)
-                    .or_insert(body_hash);
+                    .or_default()
+                    .insert(body_hash);
             }
             true
         }

@@ -2270,10 +2270,12 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
 
     let smuggled_post_hits = Arc::new(AtomicUsize::new(0));
     let smuggled_hdr_hits = Arc::new(AtomicUsize::new(0));
+    let quote_hdr_hits = Arc::new(AtomicUsize::new(0));
     let delete_hits = Arc::new(AtomicUsize::new(0));
 
     let post_hits_c = smuggled_post_hits.clone();
     let hdr_hits_c = smuggled_hdr_hits.clone();
+    let quote_hits_c = quote_hdr_hits.clone();
     let del_hits_c = delete_hits.clone();
 
     let app = Router::new()
@@ -2298,11 +2300,15 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
             post(move |headers: HeaderMap, body: String| {
                 let post_hits = post_hits_c.clone();
                 let hdr_hits = hdr_hits_c.clone();
+                let quote_hits = quote_hits_c.clone();
                 async move {
                     if headers.get("x-smuggled").is_some() {
                         hdr_hits.fetch_add(1, Ordering::SeqCst);
                     }
-                    if body == "smuggled" || body == "evil" {
+                    if headers.get("x-quote").and_then(|v| v.to_str().ok()) == Some("\"") {
+                        quote_hits.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if body == "smuggled" || body == "evil" || body == "[1,2]" {
                         post_hits.fetch_add(1, Ordering::SeqCst);
                     }
                     Response::builder()
@@ -2370,11 +2376,17 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
     let src_js_concat_opts = make_src(format!(
         "@js:'{base}/search,{{\"method\":\"POST\",\"body\":\"q=' + key + '\"}}'"
     ));
+    let src_js_unquoted_body = make_src(format!(
+        "@js:'{base}/search,{{\"method\":\"POST\",\"body\":' + key + '}}'"
+    ));
     let src_opts_simple = make_src(format!(
         "{base}/search,{{\"method\":\"POST\",\"body\":\"q={{{{key}}}}\"}}"
     ));
     let src_opts_mustache_js = make_src(format!(
         "{base}/search,{{\"method\":\"POST\",\"body\":\"q={{{{String(key)}}}}&off={{{{((page - 1) * 20)}}}}\"}}"
+    ));
+    let src_opts_unquoted_quote_expr = make_src(format!(
+        "{base}/search,{{\"method\":\"POST\",\"headers\":{{\"X-Quote\":{{{{'\"'}}}}}},\"body\":\"q={{{{key}}}}\"}}"
     ));
     let src_js_stringify = make_src(format!(
         "@js:'{base}/search,' + JSON.stringify({{method:'POST', body:'q=' + key}})"
@@ -2385,6 +2397,9 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
         let smuggle_payload = r#"a,{"method":"POST","headers":{"X-Smuggled":"YES"},"body":"evil"}"#;
         let breakout_payload = r#"a","headers":{"X-Smuggled":"PWNED"},"x":""#;
         let dup_method_payload = r#"a","method":"DELETE"#;
+        let replacement_opts_payload = r#"x"},{"method":"DELETE","body":"evil"#;
+        let replacement_junk_payload = r#"x"},junk,{"method":"DELETE","body":"evil"#;
+        let replacement_comma_brace_payload = r#"x","k":"v,{"method":"DELETE","body":"evil"#;
 
         // Bypass A: Mustache arithmetic + {{key}}, {{String(key)}}, and @js: without options must reject
         for src in [&src_mustache_arith, &src_mustache_str, &src_js_plain] {
@@ -2394,8 +2409,14 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
             assert!(err.contains("选项"), "unexpected error: {err}");
         }
 
-        // @js: manual JSON concat breakout (new key and duplicate key) must reject
-        for payload in [breakout_payload, dup_method_payload] {
+        // @js: manual JSON concat breakout (new key, duplicate key, and replacement ,{options}) must reject
+        for payload in [
+            breakout_payload,
+            dup_method_payload,
+            replacement_opts_payload,
+            replacement_junk_payload,
+            replacement_comma_brace_payload,
+        ] {
             let err = engine
                 .search_sync(
                     &src_js_concat_opts,
@@ -2409,6 +2430,20 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
                 "unexpected error: {err}"
             );
         }
+
+        // @js: unquoted JSON body slot must trigger structural probe on array brackets `[1,2]`
+        let arr_err = engine
+            .search_sync(
+                &src_js_unquoted_body,
+                SourceRuntimeState::default(),
+                "[1,2]",
+                1,
+            )
+            .expect_err("unquoted array injection in @js: options must be rejected");
+        assert!(
+            arr_err.contains("选项") || arr_err.contains("结构"),
+            "unexpected error: {arr_err}"
+        );
 
         // Bypass B: simple & Mustache JS ,{options} templates safely JSON-escape keyword inside body without injecting headers
         let res_opts = engine
@@ -2434,6 +2469,21 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
         assert_eq!(
             res_mjs_opts[0].title,
             format!("Post:q={breakout_payload}&off=20")
+        );
+
+        // Unquoted {{'"'}} expression in ,{options} before {{key}} must not corrupt in_string state
+        let res_unquoted_quote = engine
+            .search_sync(
+                &src_opts_unquoted_quote_expr,
+                SourceRuntimeState::default(),
+                breakout_payload,
+                1,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(
+            res_unquoted_quote[0].title,
+            format!("Post:q={breakout_payload}")
         );
 
         // Legitimate @js: JSON.stringify and encodeURI work even with braces/quotes in keyword
@@ -2467,6 +2517,7 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
 
     assert_eq!(smuggled_post_hits.load(Ordering::SeqCst), 0);
     assert_eq!(smuggled_hdr_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(quote_hdr_hits.load(Ordering::SeqCst), 1);
     assert_eq!(delete_hits.load(Ordering::SeqCst), 0);
     server.abort();
 }
@@ -2755,6 +2806,180 @@ async fn pagination_cycle_guard_handles_302_post_to_get_mixed_get_307_post_and_p
 
     let t_307: Vec<&str> = ch_307.iter().map(|c| c.title.as_str()).collect();
     assert_eq!(t_307, vec!["307-Ch1-POST", "307-Ch2-GET"]);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn pagination_cycle_guard_handles_302_alias_to_post_target_and_clamped_307_shared_url() {
+    use axum::extract::Query;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(serde::Deserialize)]
+    struct PQuery {
+        p: Option<u32>,
+    }
+
+    let p1_2d_hits = Arc::new(AtomicUsize::new(0));
+    let p1_2d_hits_c = p1_2d_hits.clone();
+    let shared_2e_hits = Arc::new(AtomicUsize::new(0));
+    let shared_2e_hits_c = shared_2e_hits.clone();
+
+    let app = Router::new()
+        // 2d: POST -> 302 -> GET /2d-real?p=1 -> GET /2d-real?p=2 -> GET /2d-alias -> 302 -> GET /2d-real?p=1
+        .route(
+            "/toc/2d-start",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/toc/2d-real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/2d-real",
+            get(move |Query(q): Query<PQuery>| {
+                let hits = p1_2d_hits_c.clone();
+                async move {
+                    if q.p.unwrap_or(1) == 1 {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Body::from(
+                                r#"{"items":[{"t":"2d-Ch1","u":"/ch/2d1"}],"next":"/toc/2d-real?p=2"}"#,
+                            ))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Body::from(
+                                r#"{"items":[{"t":"2d-Ch2","u":"/ch/2d2"}],"next":"/toc/2d-alias"}"#,
+                            ))
+                            .unwrap()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/toc/2d-alias",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/toc/2d-real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        // 2e: POST /toc/2e-hop -> 307 /toc/2e-shared (p=1 -> Ch1, p=2 -> Ch2, p=3/p=4 clamped to identical p=2 body)
+        .route(
+            "/toc/2e-hop",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", "/toc/2e-shared")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/2e-shared",
+            post(move |body: String| {
+                let hits = shared_2e_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let resp_body = if body.trim() == "p=1" {
+                        r#"{"items":[{"t":"2e-Ch1","u":"/ch/2e1"}]}"#
+                    } else {
+                        r#"{"items":[{"t":"2e-Ch2","u":"/ch/2e2"}]}"#
+                    };
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(resp_body))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source_2d: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Guard2d",
+        "sourceUrl": base,
+        "ruleToc": {
+            "chapterList": "$.items[*]",
+            "chapterName": "$.t",
+            "chapterUrl": "$.u",
+            "nextTocUrl": "$.next"
+        }
+    }))
+    .unwrap();
+
+    let source_2e: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Guard2e",
+        "sourceUrl": base,
+        "ruleToc": {
+            "chapterList": "$.items[*]",
+            "chapterName": "$.t",
+            "chapterUrl": "$.u",
+            "nextTocUrl": "@js: var c = Number(java.get('p2e') || 1); var n = c + 1; java.put('p2e', String(n)); n <= 4 ? baseUrl.replace('/toc/2e-shared', '/toc/2e-hop') + ',{\"method\":\"POST\",\"body\":\"p=' + n + '\"}' : ''"
+        }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_c = base.clone();
+    let (ch_2d, ch_2e) = tokio::task::spawn_blocking(move || {
+        let ch_2d = engine
+            .fetch_chapters_sync(
+                &source_2d,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc/2d-start,{{\"method\":\"POST\",\"body\":\"p=1\"}}"),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let ch_2e = engine
+            .fetch_chapters_sync(
+                &source_2e,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc/2e-hop,{{\"method\":\"POST\",\"body\":\"p=1\"}}"),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        (ch_2d, ch_2e)
+    })
+    .await
+    .unwrap();
+
+    let t_2d: Vec<&str> = ch_2d.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_2d, vec!["2d-Ch1", "2d-Ch2"]);
+    // `GET /toc/2d-alias` redirects to `/toc/2d-real?p=1` server-side before `record_fetched`
+    // can inspect `final_url`, so p=1 sees 2 HTTP requests (initial POST->302 + alias GET->302)
+    // and terminates immediately without duplicating 2d-Ch1 or re-entering p=2.
+    assert_eq!(p1_2d_hits.load(Ordering::SeqCst), 2);
+
+    let t_2e: Vec<&str> = ch_2e.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_2e, vec!["2e-Ch1", "2e-Ch2"]);
+    // p=1 (2e-Ch1), p=2 (2e-Ch2), p=3 (clamped identical 2e-Ch2 -> stopped by guard; p=4 never fetched).
+    assert_eq!(shared_2e_hits.load(Ordering::SeqCst), 3);
 
     server.abort();
 }

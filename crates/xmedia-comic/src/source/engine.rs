@@ -53,7 +53,26 @@ fn template_needs_js(raw_tpl: &str) -> bool {
 fn keyword_may_affect_options(keyword: &str) -> bool {
     keyword
         .chars()
-        .any(|c| matches!(c, '{' | '}' | '"' | '\\') || c.is_control())
+        .any(|c| matches!(c, '{' | '}' | '[' | ']' | '"' | '\\') || c.is_control())
+}
+
+fn count_comma_open_brace(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut count = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b',' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'{' {
+                count += 1;
+            }
+        }
+        i += 1;
+    }
+    count
 }
 
 fn json_escape_str_inner(s: &str) -> String {
@@ -244,13 +263,6 @@ fn eval_json_options_template(
             }
             continue;
         }
-        if bytes[pos] == b'"' {
-            in_string = !in_string;
-            eval_opt.push('"');
-            baseline_opt.push('"');
-            pos += 1;
-            continue;
-        }
         if raw_opt_json[pos..].starts_with("{{") {
             let after_open = &raw_opt_json[pos + 2..];
             if let Some(close) = after_open.find("}}") {
@@ -290,6 +302,13 @@ fn eval_json_options_template(
                 pos += 2 + close + 2;
                 continue;
             }
+        }
+        if bytes[pos] == b'"' {
+            in_string = !in_string;
+            eval_opt.push('"');
+            baseline_opt.push('"');
+            pos += 1;
+            continue;
         }
         if let Some(ch) = raw_opt_json[pos..].chars().next() {
             eval_opt.push(ch);
@@ -419,6 +438,76 @@ pub(super) fn split_legado_url_and_raw_options(input: &str) -> Option<(&str, &st
     let mut in_string = false;
 
     for idx in (0..bytes.len()).rev() {
+        let b = bytes[idx];
+        if b == b'"' {
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes.is_multiple_of(2) {
+                in_string = !in_string;
+            }
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match b {
+            b'}' => depth += 1,
+            b'{' => {
+                depth -= 1;
+                if depth == 0 {
+                    let url_part = trimmed[..idx].trim_end().strip_suffix(',')?;
+                    return Some((url_part.trim(), &trimmed[idx..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_legado_url_template_and_options(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim();
+    if !trimmed.ends_with('}') {
+        return None;
+    }
+
+    let mut mustache_spans: Vec<(usize, usize)> = Vec::new();
+    let mut scan = 0usize;
+    while let Some(rel_open) = trimmed[scan..].find("{{") {
+        let open = scan + rel_open;
+        let after_open = open + 2;
+        let Some(rel_close) = trimmed[after_open..].find("}}") else {
+            break;
+        };
+        let end = after_open + rel_close + 2;
+        mustache_spans.push((open, end));
+        scan = end;
+    }
+
+    let bytes = trimmed.as_bytes();
+    if mustache_spans
+        .last()
+        .is_some_and(|&(_, end)| end == bytes.len())
+    {
+        return None;
+    }
+
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut span_idx = mustache_spans.len();
+    let mut idx = bytes.len();
+
+    while idx > 0 {
+        idx -= 1;
+        if span_idx > 0 && idx + 1 == mustache_spans[span_idx - 1].1 {
+            span_idx -= 1;
+            idx = mustache_spans[span_idx].0;
+            continue;
+        }
         let b = bytes[idx];
         if b == b'"' {
             let mut backslashes = 0usize;
@@ -650,16 +739,25 @@ impl ComicSourceEngine {
             let out = session.eval_string(&input, raw_tpl, &source.source_url)?;
             if !keyword.is_empty()
                 && keyword_may_affect_options(keyword)
-                && let Some((_, eval_opt_json)) = split_legado_url_and_raw_options(out.trim())
+                && let Some((eval_url_part, eval_opt_json)) =
+                    split_legado_url_and_raw_options(out.trim())
             {
                 session.set_search_vars("__xmedia_kw_probe__", page)?;
                 let probe_res = session.eval_string(&input, raw_tpl, &source.source_url);
                 let _ = session.set_search_vars(keyword, page);
                 let probe_out = probe_res?;
-                let Some((_, probe_opt_json)) = split_legado_url_and_raw_options(probe_out.trim())
+                let Some((probe_url_part, probe_opt_json)) =
+                    split_legado_url_and_raw_options(probe_out.trim())
                 else {
                     return Err(format!("{label} 模板参数不允许附加请求选项"));
                 };
+                if (split_legado_url_and_raw_options(probe_url_part.trim()).is_none()
+                    && split_legado_url_and_raw_options(eval_url_part.trim()).is_some())
+                    || count_comma_open_brace(eval_url_part)
+                        != count_comma_open_brace(probe_url_part)
+                {
+                    return Err(format!("{label} 模板参数不允许附加请求选项"));
+                }
                 let expected_sig = json_structure_signature(probe_opt_json);
                 let actual_sig = json_structure_signature(eval_opt_json);
                 if expected_sig.is_none()
@@ -670,7 +768,8 @@ impl ComicSourceEngine {
                 }
             }
             out
-        } else if let Some((raw_url_part, raw_opt_json)) = split_legado_url_and_raw_options(raw_tpl)
+        } else if let Some((raw_url_part, raw_opt_json)) =
+            split_legado_url_template_and_options(raw_tpl)
         {
             if template_needs_js(raw_tpl) {
                 session.set_search_vars(keyword, page)?;
