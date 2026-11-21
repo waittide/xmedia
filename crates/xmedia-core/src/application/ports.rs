@@ -53,6 +53,9 @@ pub struct AuthClaims {
     pub user_id: UserId,
     pub username: String,
     pub role: UserRole,
+    pub cred_ver: String,
+    pub jti: String,
+    pub exp: u64,
 }
 
 #[cfg(feature = "server")]

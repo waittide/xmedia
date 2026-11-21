@@ -266,6 +266,7 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(member.api_key.is_empty());
         let listed_users = auth.list_users(&admin).await.unwrap();
         assert_eq!(listed_users.len(), 2);
         assert!(listed_users.iter().all(|u| u.api_key.is_empty()));
@@ -273,6 +274,7 @@ mod tests {
         assert!(!admin_me.api_key.is_empty());
 
         let member_session = auth.login("member1", "password123").await.unwrap();
+        assert!(!member_session.user.api_key.is_empty());
         let member_actor = auth.authenticate_jwt(&member_session.token).await.unwrap();
         let rotated_session = auth
             .change_own_password(
@@ -284,6 +286,11 @@ mod tests {
             )
             .await
             .unwrap();
+        // Old JWT issued before password change must be immediately invalidated
+        assert!(matches!(
+            auth.authenticate_jwt(&member_session.token).await,
+            Err(DomainError::Unauthorized(_))
+        ));
         assert!(auth.authenticate_jwt(&rotated_session.token).await.is_ok());
 
         let updated_member = auth
@@ -301,7 +308,13 @@ mod tests {
             .unwrap();
         assert!(updated_member.api_key.is_empty());
 
-        // Disabled account must consistently return 403 Forbidden across all 5 auth entry points
+        // Wrong credentials on a disabled account must NOT disclose disabled status
+        assert!(matches!(
+            auth.login("member1", "wrongpassword").await,
+            Err(DomainError::Unauthorized(_))
+        ));
+
+        // Disabled account with valid credentials must consistently return 403 Forbidden
         assert!(matches!(
             auth.login("member1", "newpassword123").await,
             Err(DomainError::Forbidden(_))
@@ -311,7 +324,8 @@ mod tests {
             Err(DomainError::Forbidden(_))
         ));
         assert!(matches!(
-            auth.authenticate_api_key(&member.api_key).await,
+            auth.authenticate_api_key(&rotated_session.user.api_key)
+                .await,
             Err(DomainError::Forbidden(_))
         ));
         assert!(matches!(

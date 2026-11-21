@@ -17,6 +17,34 @@ use crate::application::ports::{AuthClaims, PasswordHasherPort, TokenServicePort
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::user::{UserId, UserRole};
 
+/// Generates a 256-bit (64 hex character) cryptographically secure random secret using the OS RNG.
+pub fn generate_random_secret_hex() -> String {
+    let mut bytes = [0u8; 32];
+    fill_os_random(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn fill_os_random(dest: &mut [u8]) {
+    // Combine two CSPRNG sources: `Uuid::new_v4` is backed by OS getrandom, and hashing full
+    // 128-bit UUID outputs with SHA-256 eliminates fixed version/variant bits so every output
+    // bit has full uniform entropy.
+    let mut offset = 0usize;
+    let mut counter = 0u64;
+    while offset < dest.len() {
+        let u1 = Uuid::new_v4();
+        let u2 = Uuid::new_v4();
+        let mut sha = Sha256::new();
+        sha.update(u1.as_bytes());
+        sha.update(u2.as_bytes());
+        sha.update(counter.to_le_bytes());
+        let block = sha.finalize();
+        let take = (dest.len() - offset).min(block.len());
+        dest[offset..offset + take].copy_from_slice(&block[..take]);
+        offset += take;
+        counter += 1;
+    }
+}
+
 pub const DEFAULT_PASSWORD_CACHE_TTL: Duration = Duration::from_secs(60);
 pub const DEFAULT_PASSWORD_CACHE_CAPACITY: usize = 512;
 
@@ -277,17 +305,15 @@ impl PasswordHasherPort for SecurityManager {
     fn encrypt_subsonic_secret(&self, plain: &str) -> DomainResult<String> {
         let cipher = Aes256Gcm::new_from_slice(&self.cipher_key)
             .map_err(|e| DomainError::Persistence(format!("cipher init error: {e}")))?;
-        let random_uuid = Uuid::new_v4();
-        let nonce_slice = &random_uuid.as_bytes()[..12];
-        let nonce = nonce_slice
-            .try_into()
-            .expect("12-byte slice must fit AES-GCM 96-bit nonce");
+        let mut nonce_bytes = [0u8; 12];
+        fill_os_random(&mut nonce_bytes);
+        let nonce = nonce_bytes.into();
         let ciphertext = cipher
             .encrypt(&nonce, plain.as_bytes())
             .map_err(|e| DomainError::Persistence(format!("encryption failed: {e}")))?;
         Ok(format!(
             "{}:{}",
-            hex::encode(nonce_slice),
+            hex::encode(nonce_bytes),
             hex::encode(ciphertext)
         ))
     }
@@ -324,6 +350,10 @@ struct JwtPayload {
     sub: String,
     username: String,
     role: String,
+    #[serde(default)]
+    ver: String,
+    #[serde(default)]
+    jti: String,
     exp: u64,
     iat: u64,
 }
@@ -349,10 +379,17 @@ impl JwtTokenService {
 impl TokenServicePort for JwtTokenService {
     fn issue_token(&self, claims: &AuthClaims) -> DomainResult<String> {
         let now = jsonwebtoken::get_current_timestamp();
+        let jti = if claims.jti.is_empty() {
+            Uuid::new_v4().to_string()
+        } else {
+            claims.jti.clone()
+        };
         let payload = JwtPayload {
             sub: claims.user_id.0.to_string(),
             username: claims.username.clone(),
             role: claims.role.as_str().to_string(),
+            ver: claims.cred_ver.clone(),
+            jti,
             iat: now,
             exp: now.saturating_add(self.ttl_seconds),
         };
@@ -374,6 +411,9 @@ impl TokenServicePort for JwtTokenService {
             user_id: UserId(user_uuid),
             username: decoded.claims.username,
             role,
+            cred_ver: decoded.claims.ver,
+            jti: decoded.claims.jti,
+            exp: decoded.claims.exp,
         })
     }
 

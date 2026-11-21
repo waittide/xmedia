@@ -15,8 +15,8 @@ use xmedia_tool::{XMediaToolApp, XMediaToolConfig};
     about = "Standalone Web workbench for scraping & editing raw Book, Comic, Music & Video source files"
 )]
 struct Cli {
-    /// Socket address to listen on
-    #[arg(long, env = "XMEDIA_TOOL_BIND", default_value = "0.0.0.0:8091")]
+    /// Socket address to listen on (defaults to loopback for local safety)
+    #[arg(long, env = "XMEDIA_TOOL_BIND", default_value = "127.0.0.1:8091")]
     bind: SocketAddr,
 
     /// Data directory for tool-config.json (managed roots, scraper keys & rename templates)
@@ -27,9 +27,17 @@ struct Cli {
     #[arg(long = "root", value_name = "DIR")]
     roots: Vec<PathBuf>,
 
-    /// Optional access password protecting the Web workbench
+    /// Optional access password protecting the Web workbench (required when binding a non-loopback address)
     #[arg(long, env = "XMEDIA_TOOL_PASSWORD")]
     password: Option<String>,
+
+    /// Explicit allowed CORS origins (repeatable or comma-separated). Cross-origin requests are denied by default.
+    #[arg(
+        long = "cors-allow-origin",
+        env = "XMEDIA_TOOL_CORS_ALLOW_ORIGINS",
+        value_delimiter = ','
+    )]
+    cors_allow_origins: Vec<String>,
 
     /// Path or binary name for FFmpeg/FFprobe (used for Video stream inspection)
     #[arg(long, env = "XMEDIA_TOOL_FFMPEG_BIN", default_value = "ffmpeg")]
@@ -55,13 +63,23 @@ async fn main() -> anyhow::Result<()> {
         .as_deref()
         .is_some_and(|p| !p.trim().is_empty());
 
-    let app = XMediaToolApp::init(XMediaToolConfig {
-        data_dir: cli.data_dir,
-        initial_roots: cli.roots,
-        password: cli.password,
-        ffmpeg_bin: cli.ffmpeg_bin,
-        external_web_dir: cli.web_dir,
-    })
+    if !cli.bind.ip().is_loopback() && !password_enabled {
+        anyhow::bail!(
+            "refusing to bind xmedia-tool on non-loopback address {} without --password / XMEDIA_TOOL_PASSWORD",
+            cli.bind
+        );
+    }
+
+    let app = XMediaToolApp::init_with_cors_origins(
+        XMediaToolConfig {
+            data_dir: cli.data_dir,
+            initial_roots: cli.roots,
+            password: cli.password,
+            ffmpeg_bin: cli.ffmpeg_bin,
+            external_web_dir: cli.web_dir,
+        },
+        &cli.cors_allow_origins,
+    )
     .await?;
 
     let listener = TcpListener::bind(cli.bind)

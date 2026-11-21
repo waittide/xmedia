@@ -14,6 +14,21 @@ use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::MediaKind;
 use crate::domain::repository::UserRepository;
 use crate::domain::user::{User, UserId, UserPreferences, UserRole, require_admin};
+use crate::infra::stream::sha256_hex;
+
+/// Computes a deterministic credential version fingerprint from a user's password hash, API key,
+/// and role so password changes, admin password resets, API key rotations, and role changes
+/// immediately invalidate all previously issued JWTs even across server restarts.
+fn compute_user_cred_ver(user: &User) -> String {
+    let material = format!(
+        "{}\0{}\0{}",
+        user.password_hash,
+        user.api_key,
+        user.role.as_str()
+    );
+    let full = sha256_hex(material.as_bytes());
+    full[..16].to_string()
+}
 
 /// Constant-time byte-slice comparison using XOR accumulation to avoid timing side-channels
 /// when comparing API keys or secrets.
@@ -28,6 +43,8 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     std::hint::black_box(diff) == 0
 }
 
+const MAX_REVOKED_JTIS: usize = 8192;
+
 #[derive(Clone)]
 pub struct AuthService {
     users: Arc<dyn UserRepository>,
@@ -35,6 +52,7 @@ pub struct AuthService {
     tokens: Arc<dyn TokenServicePort>,
     lifecycles: Arc<RwLock<HashMap<MediaKind, Arc<dyn MediaDomainLifecycle>>>>,
     setup_lock: Arc<Mutex<()>>,
+    revoked_jtis: Arc<RwLock<HashMap<String, u64>>>,
 }
 
 impl AuthService {
@@ -50,6 +68,42 @@ impl AuthService {
             tokens,
             lifecycles,
             setup_lock: Arc::new(Mutex::new(())),
+            revoked_jtis: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Revokes a single JWT (by its `jti`) until its natural expiration timestamp.
+    pub fn revoke_jwt_token(&self, raw_token: &str) {
+        let Ok(claims) = self.tokens.verify_token(raw_token) else {
+            return;
+        };
+        if claims.jti.is_empty() {
+            return;
+        }
+        let now = jsonwebtoken::get_current_timestamp();
+        if let Ok(mut guard) = self.revoked_jtis.write() {
+            guard.retain(|_, exp| *exp > now);
+            if guard.len() >= MAX_REVOKED_JTIS
+                && let Some(oldest_key) = guard
+                    .iter()
+                    .min_by_key(|(_, exp)| **exp)
+                    .map(|(k, _)| k.clone())
+            {
+                guard.remove(&oldest_key);
+            }
+            guard.insert(claims.jti, claims.exp);
+        }
+    }
+
+    fn is_jti_revoked(&self, jti: &str) -> bool {
+        if jti.is_empty() {
+            return false;
+        }
+        let now = jsonwebtoken::get_current_timestamp();
+        if let Ok(guard) = self.revoked_jtis.read() {
+            guard.get(jti).is_some_and(|exp| *exp > now)
+        } else {
+            false
         }
     }
 
@@ -95,14 +149,14 @@ impl AuthService {
             .await?
             .ok_or_else(|| DomainError::Unauthorized("invalid username or password".into()))?;
 
-        if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
-        }
-
         if !self.hasher.verify_password(password, &user.password_hash)? {
             return Err(DomainError::Unauthorized(
                 "invalid username or password".into(),
             ));
+        }
+
+        if !user.is_active {
+            return Err(DomainError::Forbidden("account has been disabled".into()));
         }
 
         self.issue_session(user)
@@ -139,6 +193,9 @@ impl AuthService {
 
     pub async fn authenticate_jwt(&self, raw_token: &str) -> DomainResult<User> {
         let claims = self.tokens.verify_token(raw_token)?;
+        if self.is_jti_revoked(&claims.jti) {
+            return Err(DomainError::Unauthorized("token has been revoked".into()));
+        }
         let user = self
             .users
             .find_by_id(claims.user_id)
@@ -146,6 +203,14 @@ impl AuthService {
             .ok_or_else(|| DomainError::Unauthorized("user no longer exists".into()))?;
         if !user.is_active {
             return Err(DomainError::Forbidden("account has been disabled".into()));
+        }
+        let expected_ver = compute_user_cred_ver(&user);
+        if claims.cred_ver.is_empty()
+            || !constant_time_eq(claims.cred_ver.as_bytes(), expected_ver.as_bytes())
+        {
+            return Err(DomainError::Unauthorized(
+                "session has been invalidated by a credential change".into(),
+            ));
         }
         Ok(user)
     }
@@ -179,13 +244,13 @@ impl AuthService {
             .find_by_username(username.trim())
             .await?
             .ok_or_else(|| DomainError::Unauthorized("invalid credentials".into()))?;
-        if !user.is_active {
-            return Err(DomainError::Forbidden("account has been disabled".into()));
-        }
         let ok = constant_time_eq(password.as_bytes(), user.api_key.as_bytes())
             || self.hasher.verify_password(password, &user.password_hash)?;
         if !ok {
             return Err(DomainError::Unauthorized("invalid credentials".into()));
+        }
+        if !user.is_active {
+            return Err(DomainError::Forbidden("account has been disabled".into()));
         }
         Ok(user)
     }
@@ -209,9 +274,6 @@ impl AuthService {
                     .ok_or_else(|| {
                         DomainError::Unauthorized("wrong username or password".into())
                     })?;
-                if !user.is_active {
-                    return Err(DomainError::Forbidden("account has been disabled".into()));
-                }
                 let ok = self.hasher.verify_subsonic_token(
                     &user.subsonic_secret_enc,
                     &user.api_key,
@@ -222,6 +284,9 @@ impl AuthService {
                     return Err(DomainError::Unauthorized(
                         "wrong username or password".into(),
                     ));
+                }
+                if !user.is_active {
+                    return Err(DomainError::Forbidden("account has been disabled".into()));
                 }
                 Ok(user)
             }
@@ -319,7 +384,7 @@ impl AuthService {
             input.role,
         )?;
         self.users.save(&user).await?;
-        Ok(UserDto::from(user))
+        Ok(UserDto::from_redacted(user))
     }
 
     pub async fn update_user(
@@ -393,19 +458,29 @@ impl AuthService {
     }
 
     fn validate_password(password: &str) -> DomainResult<()> {
-        if password.len() < 6 || password.len() > 128 {
+        let char_len = password.chars().count();
+        if !(6..=128).contains(&char_len) {
             return Err(DomainError::Validation(
                 "password length must be between 6 and 128 characters".into(),
+            ));
+        }
+        if password.trim().is_empty() {
+            return Err(DomainError::Validation(
+                "password cannot consist solely of whitespace".into(),
             ));
         }
         Ok(())
     }
 
     fn issue_session(&self, user: User) -> DomainResult<AuthSessionDto> {
+        let cred_ver = compute_user_cred_ver(&user);
         let token = self.tokens.issue_token(&AuthClaims {
             user_id: user.id,
             username: user.username.clone(),
             role: user.role,
+            cred_ver,
+            jti: uuid::Uuid::new_v4().to_string(),
+            exp: 0,
         })?;
         Ok(AuthSessionDto {
             token,

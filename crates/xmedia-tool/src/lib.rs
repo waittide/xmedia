@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use axum::Router;
+use axum::http::HeaderValue;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 
@@ -44,12 +45,32 @@ pub struct XMediaToolApp {
 
 impl XMediaToolApp {
     pub async fn init(cfg: XMediaToolConfig) -> anyhow::Result<Self> {
-        Self::init_with_providers(cfg, build_default_scraper_providers()).await
+        Self::init_with_providers_and_cors(cfg, build_default_scraper_providers(), &[]).await
+    }
+
+    pub async fn init_with_cors_origins(
+        cfg: XMediaToolConfig,
+        cors_allow_origins: &[String],
+    ) -> anyhow::Result<Self> {
+        Self::init_with_providers_and_cors(
+            cfg,
+            build_default_scraper_providers(),
+            cors_allow_origins,
+        )
+        .await
     }
 
     pub async fn init_with_providers(
         cfg: XMediaToolConfig,
         providers: Vec<Arc<dyn ScraperProviderPort>>,
+    ) -> anyhow::Result<Self> {
+        Self::init_with_providers_and_cors(cfg, providers, &[]).await
+    }
+
+    pub async fn init_with_providers_and_cors(
+        cfg: XMediaToolConfig,
+        providers: Vec<Arc<dyn ScraperProviderPort>>,
+        cors_allow_origins: &[String],
     ) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&cfg.data_dir).with_context(|| {
             format!(
@@ -89,15 +110,34 @@ impl XMediaToolApp {
             .and(NotForContentType::const_new("image/"))
             .and(NotForContentType::const_new("application/octet-stream"));
 
-        let spa_service = axum::routing::get(serve_tool_spa).with_state(state.clone());
+        let spa_service = axum::routing::any(serve_tool_spa).with_state(state.clone());
 
-        let router = Router::new()
+        let mut router = Router::new()
             .nest(
                 "/api/v1/tool",
                 tool_api_router(state.clone()).with_state(state),
             )
-            .fallback_service(spa_service)
-            .layer(CorsLayer::permissive())
+            .fallback_service(spa_service);
+        if !cors_allow_origins.is_empty() {
+            let parsed_origins: Vec<HeaderValue> = cors_allow_origins
+                .iter()
+                .map(|o| o.trim())
+                .filter(|o| !o.is_empty())
+                .map(|o| {
+                    HeaderValue::from_str(o)
+                        .with_context(|| format!("invalid CORS allow-origin header value: '{o}'"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if !parsed_origins.is_empty() {
+                router = router.layer(
+                    CorsLayer::new()
+                        .allow_origin(AllowOrigin::list(parsed_origins))
+                        .allow_methods(Any)
+                        .allow_headers(Any),
+                );
+            }
+        }
+        let router = router
             .layer(CompressionLayer::new().compress_when(compression_predicate))
             .layer(TraceLayer::new_for_http());
 

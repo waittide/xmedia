@@ -427,7 +427,8 @@ mod tests {
             .await;
         assert!(matches!(orphan_res, Err(DomainError::Validation(_))));
 
-        let bob_user = auth_svc.authenticate_api_key(&bob.api_key).await.unwrap();
+        let bob_session = auth_svc.login("bob", "bobpassword").await.unwrap();
+        let bob_user = auth_svc.authenticate_jwt(&bob_session.token).await.unwrap();
         let bob_tag_res = music_services
             .catalog
             .set_track_tags(&bob_user, track_id, vec!["night".into()])
@@ -654,7 +655,7 @@ mod tests {
             .await
             .unwrap();
         let admin = env.auth_svc.authenticate_jwt(&session.token).await.unwrap();
-        let member_dto = env
+        let _member_dto = env
             .auth_svc
             .create_user(
                 &admin,
@@ -667,9 +668,10 @@ mod tests {
             )
             .await
             .unwrap();
+        let member_session = env.auth_svc.login("member", "password123").await.unwrap();
         let member = env
             .auth_svc
-            .authenticate_api_key(&member_dto.api_key)
+            .authenticate_jwt(&member_session.token)
             .await
             .unwrap();
 
@@ -1120,7 +1122,7 @@ mod tests {
             .authenticate_jwt(&admin_session.token)
             .await
             .unwrap();
-        let alice_dto = env
+        let _alice_dto = env
             .auth_svc
             .create_user(
                 &admin,
@@ -1133,7 +1135,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let bob_dto = env
+        let _bob_dto = env
             .auth_svc
             .create_user(
                 &admin,
@@ -1146,14 +1148,16 @@ mod tests {
             )
             .await
             .unwrap();
+        let alice_session = env.auth_svc.login("alice", "password123").await.unwrap();
+        let bob_session = env.auth_svc.login("bob", "password123").await.unwrap();
         let alice = env
             .auth_svc
-            .authenticate_api_key(&alice_dto.api_key)
+            .authenticate_jwt(&alice_session.token)
             .await
             .unwrap();
         let bob = env
             .auth_svc
-            .authenticate_api_key(&bob_dto.api_key)
+            .authenticate_jwt(&bob_session.token)
             .await
             .unwrap();
 

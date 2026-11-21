@@ -7,11 +7,12 @@ use std::sync::{Arc, RwLock};
 
 use anyhow::Context;
 use axum::Router;
+use axum::http::HeaderValue;
 use toasty::Db;
 use toasty::schema::ModelSet;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use xmedia_core::application::auth::AuthService;
 use xmedia_core::application::library::LibraryService;
@@ -50,12 +51,20 @@ pub struct XMediaApp {
 
 impl XMediaApp {
     pub async fn connect_and_init(cfg: XMediaConfig) -> anyhow::Result<Self> {
-        Self::connect_and_init_with_cors(cfg, true).await
+        Self::connect_and_init_with_cors_origins(cfg, false, &[]).await
     }
 
     pub async fn connect_and_init_with_cors(
         cfg: XMediaConfig,
         allow_permissive_cors: bool,
+    ) -> anyhow::Result<Self> {
+        Self::connect_and_init_with_cors_origins(cfg, allow_permissive_cors, &[]).await
+    }
+
+    pub async fn connect_and_init_with_cors_origins(
+        cfg: XMediaConfig,
+        allow_permissive_cors: bool,
+        cors_allow_origins: &[String],
     ) -> anyhow::Result<Self> {
         if cfg.secret == DEFAULT_DEV_SECRET || cfg.secret.trim().is_empty() {
             tracing::warn!(
@@ -283,7 +292,7 @@ impl XMediaApp {
             .and(NotForContentType::const_new("application/pdf"))
             .and(NotForContentType::const_new("text/event-stream"));
 
-        let spa_service = axum::routing::get(static_files::serve_spa).with_state(gateway_state);
+        let spa_service = axum::routing::any(static_files::serve_spa).with_state(gateway_state);
 
         let mut router = Router::new()
             .nest("/api/v1", merged_api_v1)
@@ -291,6 +300,24 @@ impl XMediaApp {
             .fallback_service(spa_service);
         if allow_permissive_cors {
             router = router.layer(CorsLayer::permissive());
+        } else if !cors_allow_origins.is_empty() {
+            let parsed_origins: Vec<HeaderValue> = cors_allow_origins
+                .iter()
+                .map(|o| o.trim())
+                .filter(|o| !o.is_empty())
+                .map(|o| {
+                    HeaderValue::from_str(o)
+                        .with_context(|| format!("invalid CORS allow-origin header value: '{o}'"))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            if !parsed_origins.is_empty() {
+                router = router.layer(
+                    CorsLayer::new()
+                        .allow_origin(AllowOrigin::list(parsed_origins))
+                        .allow_methods(Any)
+                        .allow_headers(Any),
+                );
+            }
         }
         let router = router
             .layer(CompressionLayer::new().compress_when(compression_predicate))

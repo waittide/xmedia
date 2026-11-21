@@ -1,5 +1,6 @@
+use std::io::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 use clap::Parser;
@@ -8,6 +9,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use xmedia::{DEFAULT_DEV_SECRET, XMediaApp, XMediaConfig};
 use xmedia_core::domain::library::MediaKind;
+use xmedia_core::infra::security::generate_random_secret_hex;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -29,17 +31,22 @@ struct Cli {
     #[arg(long, env = "XMEDIA_DATABASE_URL")]
     database_url: Option<String>,
 
-    /// Master secret for Web JWT signing and OpenSubsonic credential encryption
-    #[arg(
-        long,
-        env = "XMEDIA_SECRET",
-        default_value = DEFAULT_DEV_SECRET
-    )]
-    secret: String,
+    /// Master secret for Web JWT signing and OpenSubsonic credential encryption.
+    /// When omitted, a cryptographically random 256-bit secret is generated and persisted in `<data_dir>/.secret`.
+    #[arg(long, env = "XMEDIA_SECRET")]
+    secret: Option<String>,
 
     /// JWT expiration duration in seconds (default: 7 days)
     #[arg(long, env = "XMEDIA_JWT_TTL_SECS", default_value_t = 604_800)]
     jwt_ttl_secs: u64,
+
+    /// Explicit allowed CORS origins (repeatable or comma-separated). Cross-origin requests are denied by default.
+    #[arg(
+        long = "cors-allow-origin",
+        env = "XMEDIA_CORS_ALLOW_ORIGINS",
+        value_delimiter = ','
+    )]
+    cors_allow_origins: Vec<String>,
 
     /// Path or binary name for FFmpeg (used by Music & Video transcoding and probing)
     #[arg(long, env = "XMEDIA_FFMPEG_BIN", default_value = "ffmpeg")]
@@ -48,6 +55,47 @@ struct Cli {
     /// Optional external frontend build directory (`web/dist`) overriding embedded assets
     #[arg(long, env = "XMEDIA_WEB_DIR")]
     web_dir: Option<PathBuf>,
+}
+
+fn load_or_generate_secret(data_dir: &Path) -> anyhow::Result<String> {
+    std::fs::create_dir_all(data_dir)
+        .with_context(|| format!("failed to create data directory {}", data_dir.display()))?;
+    let secret_path = data_dir.join(".secret");
+    if secret_path.is_file() {
+        let existing = std::fs::read_to_string(&secret_path)
+            .with_context(|| format!("failed to read {}", secret_path.display()))?;
+        let trimmed = existing.trim();
+        if trimmed.len() >= 32 {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    let generated = generate_random_secret_hex();
+    let tmp_path = data_dir.join(format!(".secret.{}.tmp", std::process::id()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    {
+        let mut f = opts
+            .open(&tmp_path)
+            .with_context(|| format!("failed to create {}", tmp_path.display()))?;
+        f.write_all(generated.as_bytes())?;
+        f.sync_all()?;
+    }
+    if let Err(err) = std::fs::rename(&tmp_path, &secret_path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(err)
+            .with_context(|| format!("failed to persist secret file {}", secret_path.display()));
+    }
+    info!(
+        "generated and persisted new 256-bit master secret at {}",
+        secret_path.display()
+    );
+    Ok(generated)
 }
 
 #[tokio::main]
@@ -60,20 +108,43 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let secret = match cli
+        .secret
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        Some(provided) => {
+            if !cli.bind.ip().is_loopback()
+                && (provided == DEFAULT_DEV_SECRET || provided.len() < 32)
+            {
+                anyhow::bail!(
+                    "refusing to bind non-loopback address {} with a weak or default XMEDIA_SECRET (<32 bytes); omit XMEDIA_SECRET to auto-generate a secure secret or supply a strong >=32-byte value",
+                    cli.bind
+                );
+            }
+            provided
+        }
+        None => load_or_generate_secret(&cli.data_dir)?,
+    };
+
     let database_url = cli.database_url.unwrap_or_else(|| {
         let sqlite_path = cli.data_dir.join("xmedia.db");
         format!("sqlite:{}", sqlite_path.display())
     });
 
     info!("connecting database ({})", redact_db_url(&database_url));
-    let app = XMediaApp::connect_and_init(XMediaConfig {
-        data_dir: cli.data_dir,
-        database_url,
-        secret: cli.secret,
-        jwt_ttl_secs: cli.jwt_ttl_secs,
-        ffmpeg_bin: cli.ffmpeg_bin,
-        external_web_dir: cli.web_dir,
-    })
+    let app = XMediaApp::connect_and_init_with_cors_origins(
+        XMediaConfig {
+            data_dir: cli.data_dir,
+            database_url,
+            secret,
+            jwt_ttl_secs: cli.jwt_ttl_secs,
+            ffmpeg_bin: cli.ffmpeg_bin,
+            external_web_dir: cli.web_dir,
+        },
+        false,
+        &cli.cors_allow_origins,
+    )
     .await?;
 
     let listener = TcpListener::bind(cli.bind)
@@ -103,12 +174,13 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn redact_db_url(url: &str) -> String {
-    if let Some((scheme_and_creds, host_part)) = url.rsplit_once('@')
+    let without_query = url.split('?').next().unwrap_or(url);
+    if let Some((scheme_and_creds, host_part)) = without_query.rsplit_once('@')
         && let Some((scheme, _)) = scheme_and_creds.split_once("://")
     {
         return format!("{scheme}://***@{host_part}");
     }
-    url.to_string()
+    without_query.to_string()
 }
 
 async fn shutdown_signal() {
