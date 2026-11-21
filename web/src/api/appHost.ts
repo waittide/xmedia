@@ -87,6 +87,8 @@ export interface OpdsEntryDto {
   cover_url?: string | null
   updated?: string | null
   downloads: OpdsDownloadLinkDto[]
+  pse_stream_url?: string | null
+  page_count?: number | null
 }
 
 export interface OpdsFeedDto {
@@ -94,6 +96,7 @@ export interface OpdsFeedDto {
   url: string
   opds_version: string
   search_url?: string | null
+  prev_url?: string | null
   next_url?: string | null
   nav_links: OpdsNavLinkDto[]
   entries: OpdsEntryDto[]
