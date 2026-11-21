@@ -52,7 +52,7 @@ impl StandaloneGatewayState {
             insecure.clone(),
             local_engine.temp_dir.clone(),
         );
-        let subsonic = SubsonicClient::new(secure, insecure);
+        let subsonic = SubsonicClient::new(secure, insecure, local_engine.temp_dir.clone());
         Ok(Self {
             local_engine,
             sources,
@@ -129,7 +129,7 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
         )
         .route(
             "/_app/subsonic/{id}/stream/{song_id}",
-            get(subsonic_proxy_stream),
+            get(subsonic_proxy_stream).head(subsonic_proxy_stream),
         )
         .route(
             "/_app/subsonic/{id}/import/{song_id}",
@@ -748,6 +748,7 @@ async fn subsonic_proxy_cover(
 async fn subsonic_proxy_stream(
     State(state): State<StandaloneGatewayState>,
     AxumPath((id, song_id)): AxumPath<(String, String)>,
+    method: axum::http::Method,
     headers: HeaderMap,
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Subsonic) {
@@ -757,7 +758,12 @@ async fn subsonic_proxy_stream(
 
     match state
         .subsonic
-        .proxy_stream(&source, &song_id, &headers)
+        .proxy_stream(
+            &source,
+            &song_id,
+            &headers,
+            method == axum::http::Method::HEAD,
+        )
         .await
     {
         Ok(res) => res,

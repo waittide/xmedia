@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -17,7 +17,11 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 
-use crate::opds_client::{RemoteImportResultDto, tokio_util_file_stream};
+use crate::opds_client::{
+    LimitedByteStream, MAX_IMAGE_BYTES, MAX_METADATA_BYTES, ReadLimitError, RemoteImportResultDto,
+    apply_proxy_security_headers, is_safe_raster_image_content_type,
+    parse_filename_from_content_disposition, read_response_text_limited, tokio_util_file_stream,
+};
 use crate::remote_sources::{RemoteSource, normalize_remote_url};
 
 const SUBSONIC_API_VERSION: &str = "1.16.1";
@@ -25,6 +29,7 @@ const SUBSONIC_CLIENT_NAME: &str = "XMedia";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_IMPORT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_STREAM_ERROR_SNIFF_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubsonicTestResult {
@@ -90,6 +95,7 @@ pub struct SubsonicSearchResultDto {
 pub enum SubsonicError {
     BadRequest(String),
     Upstream(String),
+    Unsupported(String),
     TooLarge(String),
     Internal(String),
 }
@@ -99,6 +105,7 @@ impl SubsonicError {
         match self {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Upstream(_) => StatusCode::BAD_GATEWAY,
+            Self::Unsupported(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::TooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -108,6 +115,7 @@ impl SubsonicError {
         match self {
             Self::BadRequest(_) => "invalid_request",
             Self::Upstream(_) => "upstream_error",
+            Self::Unsupported(_) => "unsupported_media_type",
             Self::TooLarge(_) => "payload_too_large",
             Self::Internal(_) => "internal_error",
         }
@@ -117,7 +125,11 @@ impl SubsonicError {
 impl fmt::Display for SubsonicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadRequest(m) | Self::Upstream(m) | Self::TooLarge(m) | Self::Internal(m) => {
+            Self::BadRequest(m)
+            | Self::Upstream(m)
+            | Self::Unsupported(m)
+            | Self::TooLarge(m)
+            | Self::Internal(m) => {
                 write!(f, "{m}")
             }
         }
@@ -130,11 +142,16 @@ impl std::error::Error for SubsonicError {}
 pub struct SubsonicClient {
     secure: reqwest::Client,
     insecure: reqwest::Client,
+    temp_dir: PathBuf,
 }
 
 impl SubsonicClient {
-    pub fn new(secure: reqwest::Client, insecure: reqwest::Client) -> Self {
-        Self { secure, insecure }
+    pub fn new(secure: reqwest::Client, insecure: reqwest::Client, temp_dir: PathBuf) -> Self {
+        Self {
+            secure,
+            insecure,
+            temp_dir,
+        }
     }
 
     fn client_for(&self, allow_insecure_tls: bool) -> &reqwest::Client {
@@ -194,7 +211,7 @@ impl SubsonicClient {
                     latency_ms: started.elapsed().as_millis() as u64,
                     server_version: None,
                     open_subsonic: None,
-                    error: Some(format!("Connection failed: {err}")),
+                    error: Some(format!("Connection failed: {}", err.without_url())),
                 };
             }
         };
@@ -213,7 +230,31 @@ impl SubsonicClient {
             };
         }
 
-        let json: Value = match resp.json().await {
+        let body = match read_response_text_limited(resp, MAX_METADATA_BYTES).await {
+            Ok(t) => t,
+            Err(ReadLimitError::TooLarge(limit)) => {
+                return SubsonicTestResult {
+                    ok: false,
+                    latency_ms,
+                    server_version: None,
+                    open_subsonic: None,
+                    error: Some(format!(
+                        "Subsonic response exceeded {limit} byte metadata limit"
+                    )),
+                };
+            }
+            Err(ReadLimitError::Read(err)) => {
+                return SubsonicTestResult {
+                    ok: false,
+                    latency_ms,
+                    server_version: None,
+                    open_subsonic: None,
+                    error: Some(format!("Failed to read Subsonic response: {err}")),
+                };
+            }
+        };
+
+        let json: Value = match serde_json::from_str(&body) {
             Ok(v) => v,
             Err(err) => {
                 return SubsonicTestResult {
@@ -271,7 +312,9 @@ impl SubsonicClient {
             .timeout(REQUEST_TIMEOUT)
             .send()
             .await
-            .map_err(|e| SubsonicError::Upstream(format!("Subsonic request failed: {e}")))?;
+            .map_err(|e| {
+                SubsonicError::Upstream(format!("Subsonic request failed: {}", e.without_url()))
+            })?;
 
         if !resp.status().is_success() {
             return Err(SubsonicError::Upstream(format!(
@@ -280,9 +323,17 @@ impl SubsonicClient {
             )));
         }
 
-        let json: Value = resp
-            .json()
+        let body = read_response_text_limited(resp, MAX_METADATA_BYTES)
             .await
+            .map_err(|e| match e {
+                ReadLimitError::TooLarge(limit) => SubsonicError::TooLarge(format!(
+                    "Subsonic JSON response exceeded {limit} byte metadata limit"
+                )),
+                ReadLimitError::Read(msg) => {
+                    SubsonicError::Upstream(format!("Failed to read Subsonic JSON: {msg}"))
+                }
+            })?;
+        let json: Value = serde_json::from_str(&body)
             .map_err(|e| SubsonicError::Upstream(format!("Invalid Subsonic JSON: {e}")))?;
         extract_subsonic_ok(&json).cloned()
     }
@@ -412,7 +463,12 @@ impl SubsonicClient {
             .timeout(REQUEST_TIMEOUT)
             .send()
             .await
-            .map_err(|e| SubsonicError::Upstream(format!("Subsonic cover request failed: {e}")))?;
+            .map_err(|e| {
+                SubsonicError::Upstream(format!(
+                    "Subsonic cover request failed: {}",
+                    e.without_url()
+                ))
+            })?;
 
         if !resp.status().is_success() {
             return Err(SubsonicError::Upstream(format!(
@@ -425,14 +481,26 @@ impl SubsonicClient {
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("image/jpeg")
+            .unwrap_or("")
+            .trim()
             .to_string();
-        if content_type.to_ascii_lowercase().contains("json")
-            || content_type.to_ascii_lowercase().contains("xml")
-        {
+        if is_metadata_content_type(&content_type) {
             return Err(SubsonicError::Upstream(
                 "Subsonic server returned metadata error instead of cover image".to_string(),
             ));
+        }
+        if !is_safe_raster_image_content_type(&content_type) {
+            return Err(SubsonicError::Unsupported(format!(
+                "Subsonic cover endpoint returned disallowed Content-Type '{content_type}'"
+            )));
+        }
+
+        if let Some(len) = resp.content_length()
+            && len > MAX_IMAGE_BYTES
+        {
+            return Err(SubsonicError::TooLarge(format!(
+                "Subsonic cover image exceeds maximum allowed size of {MAX_IMAGE_BYTES} bytes"
+            )));
         }
 
         let content_length = resp
@@ -441,7 +509,8 @@ impl SubsonicClient {
             .and_then(|v| v.to_str().ok())
             .and_then(|s| HeaderValue::from_str(s).ok());
 
-        let mut response = Response::new(Body::from_stream(resp.bytes_stream()));
+        let limited = LimitedByteStream::new(resp.bytes_stream(), MAX_IMAGE_BYTES);
+        let mut response = Response::new(Body::from_stream(limited));
         *response.status_mut() = StatusCode::OK;
         if let Ok(ct) = HeaderValue::from_str(&content_type) {
             response.headers_mut().insert(CONTENT_TYPE, ct);
@@ -453,6 +522,7 @@ impl SubsonicClient {
             CACHE_CONTROL,
             HeaderValue::from_static("private, max-age=3600"),
         );
+        apply_proxy_security_headers(response.headers_mut());
         Ok(response)
     }
 
@@ -461,6 +531,7 @@ impl SubsonicClient {
         source: &RemoteSource,
         song_id: &str,
         req_headers: &HeaderMap,
+        is_head: bool,
     ) -> Result<Response, SubsonicError> {
         let url = build_subsonic_url(
             &source.url,
@@ -470,7 +541,12 @@ impl SubsonicClient {
             &[("id", song_id.to_string())],
         )?;
 
-        let mut req = self.client_for(source.allow_insecure_tls).get(&url);
+        let client = self.client_for(source.allow_insecure_tls);
+        let mut req = if is_head {
+            client.head(&url)
+        } else {
+            client.get(&url)
+        };
         if let Some(range) = req_headers.get(RANGE)
             && let Ok(val) = reqwest::header::HeaderValue::from_bytes(range.as_bytes())
         {
@@ -482,13 +558,51 @@ impl SubsonicClient {
             req = req.header(reqwest::header::IF_RANGE, val);
         }
 
-        let upstream = req
-            .send()
-            .await
-            .map_err(|e| SubsonicError::Upstream(format!("Subsonic stream request failed: {e}")))?;
+        let upstream = req.send().await.map_err(|e| {
+            SubsonicError::Upstream(format!(
+                "Subsonic stream request failed: {}",
+                e.without_url()
+            ))
+        })?;
 
         let status =
             StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        if !status.is_success() && status != StatusCode::RANGE_NOT_SATISFIABLE {
+            return Err(SubsonicError::Upstream(format!(
+                "Subsonic stream endpoint returned HTTP {}",
+                status.as_u16()
+            )));
+        }
+
+        let content_type = upstream
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+
+        if is_disallowed_stream_html_content_type(&content_type) {
+            return Err(SubsonicError::Unsupported(format!(
+                "Subsonic stream endpoint returned disallowed Content-Type '{content_type}'"
+            )));
+        }
+
+        if is_metadata_content_type(&content_type) {
+            if !is_head
+                && content_type.to_ascii_lowercase().contains("json")
+                && let Ok(body) =
+                    read_response_text_limited(upstream, MAX_STREAM_ERROR_SNIFF_BYTES).await
+                && let Ok(json) = serde_json::from_str::<Value>(&body)
+                && let Err(sub_err) = extract_subsonic_ok(&json)
+            {
+                return Err(sub_err);
+            }
+            return Err(SubsonicError::Upstream(
+                "Subsonic server returned metadata error instead of audio stream".to_string(),
+            ));
+        }
+
         let mut out_headers = HeaderMap::new();
         for hdr in [
             CONTENT_TYPE,
@@ -505,11 +619,22 @@ impl SubsonicClient {
                 out_headers.insert(hdr, axum_val);
             }
         }
-        if !out_headers.contains_key(ACCEPT_RANGES) {
+        // Only advertise Accept-Ranges: bytes when upstream supports Range or provides Content-Length.
+        if !out_headers.contains_key(ACCEPT_RANGES)
+            && (status == StatusCode::PARTIAL_CONTENT
+                || out_headers.contains_key(CONTENT_RANGE)
+                || out_headers.contains_key(CONTENT_LENGTH))
+        {
             out_headers.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
         }
+        apply_proxy_security_headers(&mut out_headers);
 
-        let mut response = Response::new(Body::from_stream(upstream.bytes_stream()));
+        let body = if is_head {
+            Body::empty()
+        } else {
+            Body::from_stream(upstream.bytes_stream())
+        };
+        let mut response = Response::new(body);
         *response.status_mut() = status;
         *response.headers_mut() = out_headers;
         Ok(response)
@@ -558,7 +683,9 @@ impl SubsonicClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        if is_metadata_content_type(&content_type) {
+        if is_metadata_content_type(&content_type)
+            || is_disallowed_stream_html_content_type(&content_type)
+        {
             return Err(SubsonicError::Upstream(
                 "Remote Subsonic server returned metadata instead of audio payload".to_string(),
             ));
@@ -570,7 +697,7 @@ impl SubsonicClient {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
 
-        let temp_file = stream_audio_to_temp_file(resp, MAX_IMPORT_BYTES).await?;
+        let temp_file = stream_audio_to_temp_file(resp, MAX_IMPORT_BYTES, &self.temp_dir).await?;
 
         let mut song_meta_title: Option<String> = None;
         let mut song_meta_suffix: Option<String> = None;
@@ -618,24 +745,49 @@ impl SubsonicClient {
             .send()
             .await
             .map_err(|e| {
-                SubsonicError::Internal(format!("Failed to upload track to local library: {e}"))
+                SubsonicError::Internal(format!(
+                    "Failed to upload track to local library: {}",
+                    e.without_url()
+                ))
             })?;
 
         let status = upload_resp.status();
-        let resp_json: Value = upload_resp.json().await.map_err(|e| {
-            SubsonicError::Internal(format!("Invalid local music upload response: {e}"))
+        let body_bytes = upload_resp.bytes().await.map_err(|e| {
+            SubsonicError::Internal(format!(
+                "Failed to read local music upload response: {}",
+                e.without_url()
+            ))
         })?;
+        let parsed_json: Option<Value> = serde_json::from_slice(&body_bytes).ok();
 
         if !status.is_success() {
-            let msg = resp_json
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("Local music library rejected uploaded track");
+            let msg = parsed_json
+                .as_ref()
+                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    let snippet = String::from_utf8_lossy(&body_bytes);
+                    let trimmed = snippet.trim();
+                    if trimmed.is_empty() {
+                        "Local music library rejected uploaded track".to_string()
+                    } else {
+                        trimmed.chars().take(200).collect()
+                    }
+                });
+            if status == StatusCode::PAYLOAD_TOO_LARGE {
+                return Err(SubsonicError::TooLarge(format!(
+                    "Local music import rejected (HTTP 413): {msg}"
+                )));
+            }
             return Err(SubsonicError::Upstream(format!(
                 "Local music import failed (HTTP {}): {msg}",
                 status.as_u16()
             )));
         }
+
+        let resp_json = parsed_json.ok_or_else(|| {
+            SubsonicError::Internal("Local music upload succeeded but returned invalid JSON".into())
+        })?;
 
         let first = resp_json
             .get("uploaded_tracks")
@@ -683,7 +835,9 @@ impl SubsonicClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| SubsonicError::Upstream(format!("Subsonic {endpoint} failed: {e}")))
+            .map_err(|e| {
+                SubsonicError::Upstream(format!("Subsonic {endpoint} failed: {}", e.without_url()))
+            })
     }
 }
 
@@ -701,6 +855,7 @@ impl Drop for TempAudioFile {
 async fn stream_audio_to_temp_file(
     resp: reqwest::Response,
     max_bytes: u64,
+    temp_dir: &Path,
 ) -> Result<TempAudioFile, SubsonicError> {
     if let Some(len) = resp.content_length()
         && len > max_bytes
@@ -710,37 +865,37 @@ async fn stream_audio_to_temp_file(
         )));
     }
 
-    let path = std::env::temp_dir().join(format!("xmedia-subsonic-import-{}.tmp", Uuid::new_v4()));
+    tokio::fs::create_dir_all(temp_dir)
+        .await
+        .map_err(|e| SubsonicError::Internal(format!("Failed to prepare temp directory: {e}")))?;
+    let path = temp_dir.join(format!("xmedia-subsonic-import-{}.tmp", Uuid::new_v4()));
     let mut file = tokio::fs::File::create(&path)
         .await
         .map_err(|e| SubsonicError::Internal(format!("Failed to create temp audio file: {e}")))?;
+    // Immediately attach RAII guard so stream errors, flush failures, or task cancellation clean up.
+    let mut guard = TempAudioFile { path, size: 0 };
 
-    let mut total = 0u64;
     let mut stream = resp.bytes_stream();
     while let Some(chunk_res) = stream.next().await {
-        let chunk = chunk_res
-            .map_err(|e| SubsonicError::Upstream(format!("Error reading audio stream: {e}")))?;
-        total = total.saturating_add(chunk.len() as u64);
-        if total > max_bytes {
+        let chunk = chunk_res.map_err(|e| {
+            SubsonicError::Upstream(format!("Error reading audio stream: {}", e.without_url()))
+        })?;
+        guard.size = guard.size.saturating_add(chunk.len() as u64);
+        if guard.size > max_bytes {
             drop(file);
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(SubsonicError::TooLarge(format!(
-                "Remote audio exceeded 512MB import limit"
-            )));
+            return Err(SubsonicError::TooLarge(
+                "Remote audio exceeded 512MB import limit".to_string(),
+            ));
         }
-        if let Err(err) = file.write_all(&chunk).await {
-            drop(file);
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(SubsonicError::Internal(format!(
-                "Failed writing audio temp file: {err}"
-            )));
-        }
+        file.write_all(&chunk).await.map_err(|err| {
+            SubsonicError::Internal(format!("Failed writing audio temp file: {err}"))
+        })?;
     }
     file.flush()
         .await
         .map_err(|e| SubsonicError::Internal(format!("Failed flushing audio temp file: {e}")))?;
 
-    Ok(TempAudioFile { path, size: total })
+    Ok(guard)
 }
 
 fn is_metadata_content_type(ct: &str) -> bool {
@@ -750,6 +905,19 @@ fn is_metadata_content_type(ct: &str) -> bool {
         || lower.contains("text/xml")
 }
 
+fn is_disallowed_stream_html_content_type(ct: &str) -> bool {
+    let essence = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "text/html" | "application/xhtml+xml" | "image/svg+xml"
+    )
+}
+
 pub fn build_subsonic_url(
     base_url: &str,
     endpoint: &str,
@@ -757,16 +925,38 @@ pub fn build_subsonic_url(
     password: &str,
     extra_params: &[(&str, String)],
 ) -> Result<String, SubsonicError> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    let endpoint_clean = endpoint.trim_start_matches('/');
-    let raw_target = if trimmed.ends_with("/rest") {
-        format!("{trimmed}/{endpoint_clean}")
-    } else {
-        format!("{trimmed}/rest/{endpoint_clean}")
-    };
-
-    let mut parsed = Url::parse(&raw_target)
+    let mut parsed = Url::parse(base_url.trim())
         .map_err(|e| SubsonicError::BadRequest(format!("Invalid Subsonic URL: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(SubsonicError::BadRequest(format!(
+            "Unsupported Subsonic URL scheme '{}'",
+            parsed.scheme()
+        )));
+    }
+
+    let endpoint_clean = endpoint.trim_start_matches('/');
+    {
+        let mut segments = parsed.path_segments_mut().map_err(|()| {
+            SubsonicError::BadRequest("Subsonic base URL cannot be a base".to_string())
+        })?;
+        segments.pop_if_empty();
+    }
+    let ends_with_rest = parsed
+        .path_segments()
+        .and_then(|mut s| s.next_back())
+        .is_some_and(|seg| seg.eq_ignore_ascii_case("rest"));
+
+    {
+        let mut segments = parsed.path_segments_mut().map_err(|()| {
+            SubsonicError::BadRequest("Subsonic base URL cannot be a base".to_string())
+        })?;
+        if !ends_with_rest {
+            segments.push("rest");
+        }
+        for seg in endpoint_clean.split('/').filter(|s| !s.is_empty()) {
+            segments.push(seg);
+        }
+    }
 
     let salt = Uuid::new_v4().simple().to_string()[..12].to_string();
     let mut pairs = parsed.query_pairs_mut();
@@ -817,8 +1007,17 @@ fn extract_subsonic_ok(root: &Value) -> Result<&Value, SubsonicError> {
     }
 }
 
+/// RFC 3986 path-segment percent-encoding (encodes spaces as `%20`, never `+`).
 fn encode_segment(raw: &str) -> String {
-    form_urlencoded::byte_serialize(raw.as_bytes()).collect()
+    let mut out = String::with_capacity(raw.len());
+    for &b in raw.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn value_to_string(v: &Value) -> Option<String> {
@@ -962,17 +1161,7 @@ fn resolve_audio_filename(
     meta_suffix: Option<&str>,
     song_id: &str,
 ) -> String {
-    let cd_name = content_disposition.and_then(|hdr| {
-        hdr.split(';').map(str::trim).find_map(|part| {
-            let lower = part.to_ascii_lowercase();
-            lower.strip_prefix("filename=").map(|rest| {
-                part[part.len() - rest.len()..]
-                    .trim()
-                    .trim_matches('"')
-                    .to_string()
-            })
-        })
-    });
+    let cd_name = content_disposition.and_then(parse_filename_from_content_disposition);
 
     let base = filename_hint
         .map(str::trim)
@@ -1038,5 +1227,50 @@ mod tests {
         md5.update(b"secret123");
         md5.update(salt.as_bytes());
         assert_eq!(token, &hex::encode(md5.finalize()));
+    }
+
+    #[test]
+    fn subsonic_url_builder_handles_existing_query_rest_suffix_and_api_key() {
+        let built = build_subsonic_url(
+            "http://127.0.0.1:4533/music/rest/?foo=bar",
+            "stream.view",
+            "",
+            "xmk_secret_key",
+            &[("id", "track 1+2".into())],
+        )
+        .unwrap();
+
+        let parsed = Url::parse(&built).unwrap();
+        assert_eq!(parsed.path(), "/music/rest/stream.view");
+        let params: std::collections::HashMap<String, String> =
+            parsed.query_pairs().into_owned().collect();
+        assert_eq!(params.get("foo").map(String::as_str), Some("bar"));
+        assert_eq!(
+            params.get("apiKey").map(String::as_str),
+            Some("xmk_secret_key")
+        );
+        assert_eq!(params.get("id").map(String::as_str), Some("track 1+2"));
+        assert!(!params.contains_key("u"));
+    }
+
+    #[test]
+    fn encode_segment_uses_rfc3986_percent20_and_preserves_special_chars() {
+        assert_eq!(encode_segment("song 1+2/test"), "song%201%2B2%2Ftest");
+        assert_eq!(encode_segment("abc-123_4.5~"), "abc-123_4.5~");
+    }
+
+    #[test]
+    fn resolve_audio_filename_decodes_rfc5987_with_plus_intact() {
+        let name = resolve_audio_filename(
+            None,
+            Some(
+                r#"attachment; filename="fallback.flac"; filename*=UTF-8''Rock%20%2B%20Roll+Live.flac"#,
+            ),
+            "audio/flac",
+            None,
+            None,
+            "song-1",
+        );
+        assert_eq!(name, "Rock + Roll+Live.flac");
     }
 }
