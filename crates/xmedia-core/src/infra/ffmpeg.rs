@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
@@ -8,6 +9,68 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tracing::debug;
+
+const MAX_FFPROBE_STDOUT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_FFMPEG_FRAME_STDOUT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_FFMPEG_SUBTITLE_STDOUT_BYTES: usize = 32 * 1024 * 1024;
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn local_file_input_arg(path: &Path) -> OsString {
+    let mut arg = OsString::from("file:");
+    arg.push(path.as_os_str());
+    arg
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn run_command_bounded_stdout(
+    cmd: &mut Command,
+    timeout: Duration,
+    max_stdout_bytes: usize,
+    label: &str,
+) -> DomainResult<(std::process::ExitStatus, Vec<u8>)> {
+    let mut child = cmd
+        .kill_on_drop(true)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| DomainError::Storage(format!("failed to invoke {label}: {e}")))?;
+
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| DomainError::Storage(format!("{label} stdout pipe missing")))?;
+
+    let run_fut = async move {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 16 * 1024];
+        loop {
+            let n = stdout
+                .read(&mut buf)
+                .await
+                .map_err(|e| DomainError::Storage(format!("{label} stdout read error: {e}")))?;
+            if n == 0 {
+                break;
+            }
+            if out.len().saturating_add(n) > max_stdout_bytes {
+                let _ = child.kill().await;
+                return Err(DomainError::Storage(format!(
+                    "{label} output exceeded limit ({max_stdout_bytes} bytes)"
+                )));
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| DomainError::Storage(format!("failed to wait on {label}: {e}")))?;
+        Ok((status, out))
+    };
+
+    tokio::time::timeout(timeout, run_fut)
+        .await
+        .map_err(|_| DomainError::Storage(format!("{label} timed out")))?
+}
 
 use crate::application::dto::FfmpegStatusDto;
 use crate::application::ports::ByteChunkStream;
@@ -136,34 +199,32 @@ impl FfmpegToolkit {
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
-            let fut = Command::new(&self.ffprobe_bin)
-                .kill_on_drop(true)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .args([
-                    "-v",
-                    "quiet",
-                    "-print_format",
-                    "json",
-                    "-show_format",
-                    "-show_streams",
-                ])
-                .arg(path)
-                .output();
+            let mut cmd = Command::new(&self.ffprobe_bin);
+            cmd.args([
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
+            ])
+            .arg(local_file_input_arg(path));
 
-            let out = tokio::time::timeout(Duration::from_secs(15), fut)
-                .await
-                .map_err(|_| DomainError::Storage("ffprobe timed out".into()))?
-                .map_err(|e| DomainError::Storage(format!("failed to invoke ffprobe: {e}")))?;
+            let (status, stdout) = run_command_bounded_stdout(
+                &mut cmd,
+                Duration::from_secs(15),
+                MAX_FFPROBE_STDOUT_BYTES,
+                "ffprobe",
+            )
+            .await?;
 
-            if !out.status.success() {
+            if !status.success() {
                 return Err(DomainError::Storage(
                     "ffprobe exited with non-zero status".into(),
                 ));
             }
 
-            let raw: RawFfprobeOutput = serde_json::from_slice(&out.stdout)
+            let raw: RawFfprobeOutput = serde_json::from_slice(&stdout)
                 .map_err(|e| DomainError::Storage(format!("invalid ffprobe JSON: {e}")))?;
 
             let duration_secs = raw
@@ -257,43 +318,52 @@ impl FfmpegToolkit {
         seek_secs: u32,
         max_width: u32,
     ) -> DomainResult<Vec<u8>> {
-        let vf = format!("scale='min({max_width},iw)':-2");
-        let fut = Command::new(&self.ffmpeg_bin)
-            .kill_on_drop(true)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .arg("-nostdin")
-            .arg("-v")
-            .arg("error")
-            .arg("-ss")
-            .arg(seek_secs.to_string())
-            .arg("-i")
-            .arg(path)
-            .args([
-                "-frames:v",
-                "1",
-                "-vf",
-                &vf,
-                "-f",
-                "image2pipe",
-                "-vcodec",
-                "mjpeg",
-                "pipe:1",
-            ])
-            .output();
-
-        let out = tokio::time::timeout(Duration::from_secs(15), fut)
-            .await
-            .map_err(|_| DomainError::Storage("ffmpeg frame extraction timed out".into()))?
-            .map_err(|e| DomainError::Storage(format!("failed to invoke ffmpeg: {e}")))?;
-
-        if !out.status.success() || out.stdout.is_empty() {
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            let _ = (path, seek_secs, max_width);
             return Err(DomainError::Storage(
-                "ffmpeg failed to extract video frame".into(),
+                "ffmpeg subprocess execution is disabled on mobile platforms".into(),
             ));
         }
-        Ok(out.stdout)
+
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let vf = format!("scale='min({max_width},iw)':-2");
+            let mut cmd = Command::new(&self.ffmpeg_bin);
+            cmd.arg("-nostdin")
+                .arg("-v")
+                .arg("error")
+                .arg("-ss")
+                .arg(seek_secs.to_string())
+                .arg("-i")
+                .arg(local_file_input_arg(path))
+                .args([
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    &vf,
+                    "-f",
+                    "image2pipe",
+                    "-vcodec",
+                    "mjpeg",
+                    "pipe:1",
+                ]);
+
+            let (status, stdout) = run_command_bounded_stdout(
+                &mut cmd,
+                Duration::from_secs(15),
+                MAX_FFMPEG_FRAME_STDOUT_BYTES,
+                "ffmpeg frame extraction",
+            )
+            .await?;
+
+            if !status.success() || stdout.is_empty() {
+                return Err(DomainError::Storage(
+                    "ffmpeg failed to extract video frame".into(),
+                ));
+            }
+            Ok(stdout)
+        }
     }
 
     pub async fn extract_embedded_subtitle_webvtt(
@@ -301,104 +371,124 @@ impl FfmpegToolkit {
         path: &Path,
         stream_index: u32,
     ) -> DomainResult<String> {
-        let map_arg = format!("0:{stream_index}");
-        let fut = Command::new(&self.ffmpeg_bin)
-            .kill_on_drop(true)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .arg("-nostdin")
-            .arg("-v")
-            .arg("error")
-            .arg("-i")
-            .arg(path)
-            .args(["-map", &map_arg, "-c:s", "webvtt", "-f", "webvtt", "pipe:1"])
-            .output();
-
-        let out = tokio::time::timeout(Duration::from_secs(20), fut)
-            .await
-            .map_err(|_| DomainError::Storage("ffmpeg subtitle extraction timed out".into()))?
-            .map_err(|e| DomainError::Storage(format!("failed to invoke ffmpeg: {e}")))?;
-
-        if !out.status.success() {
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            let _ = (path, stream_index);
             return Err(DomainError::Storage(
-                "ffmpeg failed to convert embedded subtitle to WebVTT".into(),
+                "ffmpeg subprocess execution is disabled on mobile platforms".into(),
             ));
         }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let map_arg = format!("0:{stream_index}");
+            let mut cmd = Command::new(&self.ffmpeg_bin);
+            cmd.arg("-nostdin")
+                .arg("-v")
+                .arg("error")
+                .arg("-i")
+                .arg(local_file_input_arg(path))
+                .args(["-map", &map_arg, "-c:s", "webvtt", "-f", "webvtt", "pipe:1"]);
+
+            let (status, stdout) = run_command_bounded_stdout(
+                &mut cmd,
+                Duration::from_secs(20),
+                MAX_FFMPEG_SUBTITLE_STDOUT_BYTES,
+                "ffmpeg subtitle extraction",
+            )
+            .await?;
+
+            if !status.success() {
+                return Err(DomainError::Storage(
+                    "ffmpeg failed to convert embedded subtitle to WebVTT".into(),
+                ));
+            }
+            Ok(String::from_utf8_lossy(&stdout).into_owned())
+        }
     }
 
     pub fn spawn_stdout_stream(&self, args: &[String]) -> DomainResult<ByteChunkStream> {
-        let mut cmd = Command::new(&self.ffmpeg_bin);
-        cmd.kill_on_drop(true)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .args(["-nostdin", "-v", "error"])
-            .args(args);
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            let _ = args;
+            return Err(DomainError::Storage(
+                "ffmpeg subprocess execution is disabled on mobile platforms".into(),
+            ));
+        }
 
-        let mut child = cmd.spawn().map_err(|e| {
-            DomainError::Storage(format!(
-                "failed to spawn ffmpeg ('{}'): {e}",
-                self.ffmpeg_bin
-            ))
-        })?;
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            let mut cmd = Command::new(&self.ffmpeg_bin);
+            cmd.kill_on_drop(true)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .args(["-nostdin", "-v", "error"])
+                .args(args);
 
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| DomainError::Storage("ffmpeg stdout pipe missing".into()))?;
+            let mut child = cmd.spawn().map_err(|e| {
+                DomainError::Storage(format!(
+                    "failed to spawn ffmpeg ('{}'): {e}",
+                    self.ffmpeg_bin
+                ))
+            })?;
 
-        let (tx, rx) = mpsc::channel::<DomainResult<Bytes>>(16);
+            let mut stdout = child
+                .stdout
+                .take()
+                .ok_or_else(|| DomainError::Storage("ffmpeg stdout pipe missing".into()))?;
 
-        tokio::spawn(async move {
-            const CHUNK_SIZE: usize = 32 * 1024;
-            let mut buf = BytesMut::with_capacity(CHUNK_SIZE);
-            loop {
-                if buf.capacity() < CHUNK_SIZE / 2 {
-                    buf.reserve(CHUNK_SIZE);
-                }
-                let read_res = tokio::select! {
-                    biased;
-                    _ = tx.closed() => {
-                        debug!("client disconnected while waiting on ffmpeg stdout, terminating process");
-                        let _ = child.kill().await;
-                        break;
+            let (tx, rx) = mpsc::channel::<DomainResult<Bytes>>(16);
+
+            tokio::spawn(async move {
+                const CHUNK_SIZE: usize = 32 * 1024;
+                let mut buf = BytesMut::with_capacity(CHUNK_SIZE);
+                loop {
+                    if buf.capacity() < CHUNK_SIZE / 2 {
+                        buf.reserve(CHUNK_SIZE);
                     }
-                    res = stdout.read_buf(&mut buf) => res,
-                };
-                match read_res {
-                    Ok(0) => {
-                        let _ = child.wait().await;
-                        break;
-                    }
-                    Ok(_) => {
-                        let chunk = buf.split().freeze();
-                        let send_ok = tokio::select! {
-                            biased;
-                            _ = tx.closed() => false,
-                            res = tx.send(Ok(chunk)) => res.is_ok(),
-                        };
-                        if !send_ok {
-                            debug!("client disconnected, terminating ffmpeg process");
+                    let read_res = tokio::select! {
+                        biased;
+                        _ = tx.closed() => {
+                            debug!("client disconnected while waiting on ffmpeg stdout, terminating process");
+                            let _ = child.kill().await;
+                            break;
+                        }
+                        res = stdout.read_buf(&mut buf) => res,
+                    };
+                    match read_res {
+                        Ok(0) => {
+                            let _ = child.wait().await;
+                            break;
+                        }
+                        Ok(_) => {
+                            let chunk = buf.split().freeze();
+                            let send_ok = tokio::select! {
+                                biased;
+                                _ = tx.closed() => false,
+                                res = tx.send(Ok(chunk)) => res.is_ok(),
+                            };
+                            if !send_ok {
+                                debug!("client disconnected, terminating ffmpeg process");
+                                let _ = child.kill().await;
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx
+                                .send(Err(DomainError::Storage(format!(
+                                    "ffmpeg stream read error: {e}"
+                                ))))
+                                .await;
                             let _ = child.kill().await;
                             break;
                         }
                     }
-                    Err(e) => {
-                        let _ = tx
-                            .send(Err(DomainError::Storage(format!(
-                                "ffmpeg stream read error: {e}"
-                            ))))
-                            .await;
-                        let _ = child.kill().await;
-                        break;
-                    }
                 }
-            }
-        });
+            });
 
-        Ok(MpscByteStream::into_boxed(rx))
+            Ok(MpscByteStream::into_boxed(rx))
+        }
     }
 }
 

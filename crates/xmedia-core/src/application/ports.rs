@@ -59,9 +59,10 @@ pub struct AuthClaims {
 }
 
 #[cfg(feature = "server")]
+#[async_trait]
 pub trait PasswordHasherPort: Send + Sync {
-    fn hash_password(&self, plain: &str) -> DomainResult<String>;
-    fn verify_password(&self, plain: &str, hash: &str) -> DomainResult<bool>;
+    async fn hash_password(&self, plain: &str) -> DomainResult<String>;
+    async fn verify_password(&self, plain: &str, hash: &str) -> DomainResult<bool>;
     fn encrypt_subsonic_secret(&self, plain: &str) -> DomainResult<String>;
     fn verify_subsonic_token(
         &self,

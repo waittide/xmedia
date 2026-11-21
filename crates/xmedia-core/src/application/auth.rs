@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
@@ -44,6 +45,101 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 
 const MAX_REVOKED_JTIS: usize = 8192;
+const AUTH_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+const AUTH_RATE_LIMIT_MAX_FAILURES: usize = 20;
+const AUTH_RATE_LIMIT_MAX_KEYS: usize = 2048;
+
+struct AuthRateLimiter {
+    window: Duration,
+    max_failures: usize,
+    entries: std::sync::Mutex<HashMap<String, VecDeque<Instant>>>,
+}
+
+impl AuthRateLimiter {
+    fn new(window: Duration, max_failures: usize) -> Self {
+        Self {
+            window,
+            max_failures: max_failures.max(1),
+            entries: std::sync::Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn normalize_key(key: &str) -> String {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            "<anonymous>".to_string()
+        } else {
+            trimmed.to_ascii_lowercase()
+        }
+    }
+
+    fn check(&self, key: &str) -> DomainResult<()> {
+        let norm = Self::normalize_key(key);
+        let Ok(mut guard) = self.entries.lock() else {
+            return Ok(());
+        };
+        let now = Instant::now();
+        if let Some(hits) = guard.get_mut(&norm) {
+            while hits
+                .front()
+                .is_some_and(|ts| now.saturating_duration_since(*ts) >= self.window)
+            {
+                hits.pop_front();
+            }
+            if hits.len() >= self.max_failures {
+                return Err(DomainError::TooManyRequests(
+                    "too many failed authentication attempts; please try again later".into(),
+                ));
+            }
+            if hits.is_empty() {
+                guard.remove(&norm);
+            }
+        }
+        Ok(())
+    }
+
+    fn record_failure(&self, key: &str) {
+        let norm = Self::normalize_key(key);
+        let Ok(mut guard) = self.entries.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        if guard.len() >= AUTH_RATE_LIMIT_MAX_KEYS && !guard.contains_key(&norm) {
+            guard.retain(|_, hits| {
+                while hits
+                    .front()
+                    .is_some_and(|ts| now.saturating_duration_since(*ts) >= self.window)
+                {
+                    hits.pop_front();
+                }
+                !hits.is_empty()
+            });
+            if guard.len() >= AUTH_RATE_LIMIT_MAX_KEYS
+                && let Some(oldest_key) = guard
+                    .iter()
+                    .min_by_key(|(_, hits)| hits.back().copied())
+                    .map(|(k, _)| k.clone())
+            {
+                guard.remove(&oldest_key);
+            }
+        }
+        let hits = guard.entry(norm).or_default();
+        while hits
+            .front()
+            .is_some_and(|ts| now.saturating_duration_since(*ts) >= self.window)
+        {
+            hits.pop_front();
+        }
+        hits.push_back(now);
+    }
+
+    fn clear(&self, key: &str) {
+        let norm = Self::normalize_key(key);
+        if let Ok(mut guard) = self.entries.lock() {
+            guard.remove(&norm);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AuthService {
@@ -53,6 +149,7 @@ pub struct AuthService {
     lifecycles: Arc<RwLock<HashMap<MediaKind, Arc<dyn MediaDomainLifecycle>>>>,
     setup_lock: Arc<Mutex<()>>,
     revoked_jtis: Arc<RwLock<HashMap<String, u64>>>,
+    rate_limiter: Arc<AuthRateLimiter>,
 }
 
 impl AuthService {
@@ -69,6 +166,10 @@ impl AuthService {
             lifecycles,
             setup_lock: Arc::new(Mutex::new(())),
             revoked_jtis: Arc::new(RwLock::new(HashMap::new())),
+            rate_limiter: Arc::new(AuthRateLimiter::new(
+                AUTH_RATE_LIMIT_WINDOW,
+                AUTH_RATE_LIMIT_MAX_FAILURES,
+            )),
         }
     }
 
@@ -112,21 +213,21 @@ impl AuthService {
     }
 
     pub async fn setup_status(&self) -> DomainResult<SetupStatusDto> {
-        let count = self.users.count().await?;
+        let has_user = self.users.has_any_user().await?;
         Ok(SetupStatusDto {
-            needs_setup: count == 0,
+            needs_setup: !has_user,
         })
     }
 
     pub async fn setup_initial_admin(&self, req: SetupAdminInput) -> DomainResult<AuthSessionDto> {
         let _guard = self.setup_lock.lock().await;
-        if self.users.count().await? > 0 {
+        if self.users.has_any_user().await? {
             return Err(DomainError::Conflict(
                 "initial administrator has already been configured".into(),
             ));
         }
         Self::validate_password(&req.password)?;
-        let hash = self.hasher.hash_password(&req.password)?;
+        let hash = self.hasher.hash_password(&req.password).await?;
         let enc_secret = self.hasher.encrypt_subsonic_secret(&req.password)?;
         let api_key = self.hasher.generate_api_key();
 
@@ -143,18 +244,28 @@ impl AuthService {
     }
 
     pub async fn login(&self, username: &str, password: &str) -> DomainResult<AuthSessionDto> {
-        let user = self
-            .users
-            .find_by_username(username.trim())
-            .await?
-            .ok_or_else(|| DomainError::Unauthorized("invalid username or password".into()))?;
+        let rate_key = format!("login:{}", username.trim());
+        self.rate_limiter.check(&rate_key)?;
 
-        if !self.hasher.verify_password(password, &user.password_hash)? {
+        let Some(user) = self.users.find_by_username(username.trim()).await? else {
+            self.rate_limiter.record_failure(&rate_key);
+            return Err(DomainError::Unauthorized(
+                "invalid username or password".into(),
+            ));
+        };
+
+        if !self
+            .hasher
+            .verify_password(password, &user.password_hash)
+            .await?
+        {
+            self.rate_limiter.record_failure(&rate_key);
             return Err(DomainError::Unauthorized(
                 "invalid username or password".into(),
             ));
         }
 
+        self.rate_limiter.clear(&rate_key);
         if !user.is_active {
             return Err(DomainError::Forbidden("account has been disabled".into()));
         }
@@ -239,16 +350,23 @@ impl AuthService {
         username: &str,
         password: &str,
     ) -> DomainResult<User> {
-        let user = self
-            .users
-            .find_by_username(username.trim())
-            .await?
-            .ok_or_else(|| DomainError::Unauthorized("invalid credentials".into()))?;
+        let rate_key = format!("basic:{}", username.trim());
+        self.rate_limiter.check(&rate_key)?;
+
+        let Some(user) = self.users.find_by_username(username.trim()).await? else {
+            self.rate_limiter.record_failure(&rate_key);
+            return Err(DomainError::Unauthorized("invalid credentials".into()));
+        };
         let ok = constant_time_eq(password.as_bytes(), user.api_key.as_bytes())
-            || self.hasher.verify_password(password, &user.password_hash)?;
+            || self
+                .hasher
+                .verify_password(password, &user.password_hash)
+                .await?;
         if !ok {
+            self.rate_limiter.record_failure(&rate_key);
             return Err(DomainError::Unauthorized("invalid credentials".into()));
         }
+        self.rate_limiter.clear(&rate_key);
         if !user.is_active {
             return Err(DomainError::Forbidden("account has been disabled".into()));
         }
@@ -267,13 +385,14 @@ impl AuthService {
                 token,
                 salt,
             } => {
-                let user = self
-                    .users
-                    .find_by_username(username.trim())
-                    .await?
-                    .ok_or_else(|| {
-                        DomainError::Unauthorized("wrong username or password".into())
-                    })?;
+                let rate_key = format!("subsonic:{}", username.trim());
+                self.rate_limiter.check(&rate_key)?;
+                let Some(user) = self.users.find_by_username(username.trim()).await? else {
+                    self.rate_limiter.record_failure(&rate_key);
+                    return Err(DomainError::Unauthorized(
+                        "wrong username or password".into(),
+                    ));
+                };
                 let ok = self.hasher.verify_subsonic_token(
                     &user.subsonic_secret_enc,
                     &user.api_key,
@@ -281,10 +400,12 @@ impl AuthService {
                     &token,
                 )?;
                 if !ok {
+                    self.rate_limiter.record_failure(&rate_key);
                     return Err(DomainError::Unauthorized(
                         "wrong username or password".into(),
                     ));
                 }
+                self.rate_limiter.clear(&rate_key);
                 if !user.is_active {
                     return Err(DomainError::Forbidden("account has been disabled".into()));
                 }
@@ -313,7 +434,13 @@ impl AuthService {
             .await?
             .ok_or_else(|| DomainError::NotFound("user not found".into()))?;
         user.update_preferences(preferences);
-        self.users.save(&user).await?;
+        if !self
+            .users
+            .update_preferences(user.id, &user.preferences, user.updated_at)
+            .await?
+        {
+            return Err(DomainError::NotFound("user not found".into()));
+        }
         Ok(UserDto::from(user))
     }
 
@@ -329,17 +456,29 @@ impl AuthService {
             .ok_or_else(|| DomainError::NotFound("user not found".into()))?;
         if !self
             .hasher
-            .verify_password(&input.current_password, &user.password_hash)?
+            .verify_password(&input.current_password, &user.password_hash)
+            .await?
         {
             return Err(DomainError::Unauthorized(
                 "current password is incorrect".into(),
             ));
         }
         Self::validate_password(&input.new_password)?;
-        let hash = self.hasher.hash_password(&input.new_password)?;
+        let hash = self.hasher.hash_password(&input.new_password).await?;
         let enc_secret = self.hasher.encrypt_subsonic_secret(&input.new_password)?;
         user.update_credentials(hash, enc_secret)?;
-        self.users.save(&user).await?;
+        if !self
+            .users
+            .update_credentials(
+                user.id,
+                &user.password_hash,
+                &user.subsonic_secret_enc,
+                user.updated_at,
+            )
+            .await?
+        {
+            return Err(DomainError::NotFound("user not found".into()));
+        }
         self.issue_session(user)
     }
 
@@ -351,7 +490,13 @@ impl AuthService {
             .ok_or_else(|| DomainError::NotFound("user not found".into()))?;
         let new_key = self.hasher.generate_api_key();
         user.rotate_api_key(new_key)?;
-        self.users.save(&user).await?;
+        if !self
+            .users
+            .update_api_key(user.id, &user.api_key, user.updated_at)
+            .await?
+        {
+            return Err(DomainError::NotFound("user not found".into()));
+        }
         Ok(UserDto::from(user))
     }
 
@@ -372,7 +517,7 @@ impl AuthService {
         {
             return Err(DomainError::Conflict("username already exists".into()));
         }
-        let hash = self.hasher.hash_password(&input.password)?;
+        let hash = self.hasher.hash_password(&input.password).await?;
         let enc_secret = self.hasher.encrypt_subsonic_secret(&input.password)?;
         let api_key = self.hasher.generate_api_key();
         let user = User::new(
@@ -420,7 +565,7 @@ impl AuthService {
             && !new_pwd.trim().is_empty()
         {
             Self::validate_password(new_pwd)?;
-            let hash = self.hasher.hash_password(new_pwd)?;
+            let hash = self.hasher.hash_password(new_pwd).await?;
             let enc = self.hasher.encrypt_subsonic_secret(new_pwd)?;
             target.update_credentials(hash, enc)?;
         }

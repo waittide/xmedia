@@ -15,9 +15,10 @@ pub fn register_core_models(set: &mut ModelSet) {
     <LibraryModel as Model>::register(set);
 }
 
-/// Returns `true` if the core schema (`users` table) is already present in the database.
+/// Returns `true` if all core schema tables (`users` and `libraries`) are already present.
 pub async fn is_core_schema_initialized(db: &mut Db) -> bool {
     UserModel::all().limit(1).exec(db).await.is_ok()
+        && LibraryModel::all().limit(1).exec(db).await.is_ok()
 }
 
 pub async fn ensure_core_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {

@@ -92,6 +92,9 @@ impl IntoResponse for ApiError {
             DomainError::Conflict(msg) => {
                 error_json_response(StatusCode::CONFLICT, "conflict", &msg)
             }
+            DomainError::TooManyRequests(msg) => {
+                error_json_response(StatusCode::TOO_MANY_REQUESTS, "rate_limited", &msg)
+            }
             DomainError::UnsupportedFormat(msg) => error_json_response(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "unsupported_format",

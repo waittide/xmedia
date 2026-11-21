@@ -17,6 +17,9 @@ pub enum DomainError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("too many requests: {0}")]
+    TooManyRequests(String),
+
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 

@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -34,6 +35,50 @@ use xmedia_core::infra::events::BroadcastEventHub;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
 
 const FFMPEG_STATUS_CACHE_TTL: Duration = Duration::from_secs(60);
+const MAX_SSE_STREAMS_PER_USER: usize = 8;
+
+#[derive(Clone, Default)]
+pub struct SseConnectionLimiter {
+    counts: Arc<Mutex<HashMap<UserId, usize>>>,
+}
+
+impl SseConnectionLimiter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn try_acquire(&self, user_id: UserId) -> Option<SseConnectionPermit> {
+        let mut guard = self.counts.lock().ok()?;
+        let count = guard.entry(user_id).or_insert(0);
+        if *count >= MAX_SSE_STREAMS_PER_USER {
+            return None;
+        }
+        *count += 1;
+        Some(SseConnectionPermit {
+            counts: self.counts.clone(),
+            user_id,
+        })
+    }
+}
+
+pub struct SseConnectionPermit {
+    counts: Arc<Mutex<HashMap<UserId, usize>>>,
+    user_id: UserId,
+}
+
+impl Drop for SseConnectionPermit {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.counts.lock()
+            && let Some(count) = guard.get_mut(&self.user_id)
+        {
+            if *count <= 1 {
+                guard.remove(&self.user_id);
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 struct CachedFfmpegStatus {
@@ -90,6 +135,7 @@ pub struct GatewayState {
     pub libraries: Arc<LibraryService>,
     pub libraries_repo: Arc<dyn LibraryRepository>,
     pub events: Arc<BroadcastEventHub>,
+    pub sse_limiter: SseConnectionLimiter,
     pub ffmpeg: FfmpegToolkit,
     pub ffmpeg_status_cache: FfmpegStatusCache,
     pub enabled_modules: Arc<Vec<MediaKind>>,
@@ -398,6 +444,7 @@ async fn system_overview(
 
 struct SseEventStream {
     rx: mpsc::Receiver<Result<Event, Infallible>>,
+    _permit: Option<SseConnectionPermit>,
 }
 
 impl Stream for SseEventStream {
@@ -411,6 +458,8 @@ impl Stream for SseEventStream {
 fn spawn_sse_event_stream(
     mut rx: tokio::sync::broadcast::Receiver<SystemEvent>,
     initial_events: Vec<SystemEvent>,
+    resync_modules: Vec<MediaKind>,
+    permit: Option<SseConnectionPermit>,
 ) -> SseEventStream {
     let (tx, stream_rx) = mpsc::channel::<Result<Event, Infallible>>(64);
     tokio::spawn(async move {
@@ -435,19 +484,44 @@ fn spawn_sse_event_stream(
                             break;
                         }
                     }
-                    Err(RecvError::Lagged(_)) => continue,
+                    Err(RecvError::Lagged(_)) => {
+                        for &media_kind in &resync_modules {
+                            let resync = SystemEvent::MediaChanged { media_kind };
+                            let Ok(sse_event) = Event::default().json_data(&resync) else {
+                                continue;
+                            };
+                            if tx.send(Ok(sse_event)).await.is_err() {
+                                return;
+                            }
+                        }
+                    }
                     Err(RecvError::Closed) => break,
                 }
             }
         }
     });
-    SseEventStream { rx: stream_rx }
+    SseEventStream {
+        rx: stream_rx,
+        _permit: permit,
+    }
 }
 
 async fn events_stream(
     State(state): State<GatewayState>,
-    CoreWebAuth(_user): CoreWebAuth,
+    CoreWebAuth(user): CoreWebAuth,
 ) -> Response {
+    let Some(permit) = state.sse_limiter.try_acquire(user.id) else {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "error": {
+                    "code": "rate_limited",
+                    "message": "too many concurrent event stream connections for this user"
+                }
+            })),
+        )
+            .into_response();
+    };
     let rx = state.events.subscribe();
     let initial_scans = state
         .libraries_repo
@@ -467,7 +541,12 @@ async fn events_stream(
         })
         .collect::<Vec<_>>();
 
-    let stream = spawn_sse_event_stream(rx, initial_scans);
+    let stream = spawn_sse_event_stream(
+        rx,
+        initial_scans,
+        (*state.enabled_modules).clone(),
+        Some(permit),
+    );
     let mut res = Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response();
@@ -498,7 +577,7 @@ mod tests {
             scanned: 3,
             total: Some(10),
         }];
-        let mut stream = spawn_sse_event_stream(rx, initial);
+        let mut stream = spawn_sse_event_stream(rx, initial, vec![MediaKind::Book], None);
 
         let first = tokio::time::timeout(Duration::from_secs(2), next_event(&mut stream))
             .await

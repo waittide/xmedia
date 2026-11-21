@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use tracing::{error, info, warn};
@@ -63,14 +63,25 @@ impl ScanProgressReporter {
     pub async fn start(&mut self) {
         self.scanned = 0;
         self.library.mark_scanning(0, self.total);
-        let _ = self.libraries.save(&self.library).await;
-        self.events.publish(SystemEvent::LibraryScanProgress {
-            library_id: self.library.id,
-            library_name: self.library.name.clone(),
-            media_kind: self.library.media_kind,
-            scanned: 0,
-            total: self.total,
-        });
+        let updated = self
+            .libraries
+            .update_scan_state(
+                self.library.id,
+                &self.library.scan_status,
+                self.library.last_scanned_at,
+                self.library.updated_at,
+            )
+            .await
+            .unwrap_or(false);
+        if updated {
+            self.events.publish(SystemEvent::LibraryScanProgress {
+                library_id: self.library.id,
+                library_name: self.library.name.clone(),
+                media_kind: self.library.media_kind,
+                scanned: 0,
+                total: self.total,
+            });
+        }
     }
 
     /// Increments the scanned item counter by 1 and emits a throttled progress update.
@@ -85,14 +96,25 @@ impl ScanProgressReporter {
         let reached_total = self.total.is_some_and(|t| scanned >= t);
         if scanned.is_multiple_of(self.progress_step) || reached_total {
             self.library.mark_scanning(scanned, self.total);
-            let _ = self.libraries.save(&self.library).await;
-            self.events.publish(SystemEvent::LibraryScanProgress {
-                library_id: self.library.id,
-                library_name: self.library.name.clone(),
-                media_kind: self.library.media_kind,
-                scanned,
-                total: self.total,
-            });
+            let updated = self
+                .libraries
+                .update_scan_state(
+                    self.library.id,
+                    &self.library.scan_status,
+                    self.library.last_scanned_at,
+                    self.library.updated_at,
+                )
+                .await
+                .unwrap_or(false);
+            if updated {
+                self.events.publish(SystemEvent::LibraryScanProgress {
+                    library_id: self.library.id,
+                    library_name: self.library.name.clone(),
+                    media_kind: self.library.media_kind,
+                    scanned,
+                    total: self.total,
+                });
+            }
         }
     }
 
@@ -114,7 +136,20 @@ impl ScanProgressReporter {
     ) -> DomainResult<Library> {
         self.library
             .mark_scan_completed(scanned, added, updated, missing);
-        self.libraries.save(&self.library).await?;
+        let existed = self
+            .libraries
+            .update_scan_state(
+                self.library.id,
+                &self.library.scan_status,
+                self.library.last_scanned_at,
+                self.library.updated_at,
+            )
+            .await?;
+        if !existed {
+            return Err(DomainError::NotFound(
+                "library was deleted while scan was in progress".into(),
+            ));
+        }
         self.events.publish(SystemEvent::LibraryScanCompleted {
             library_id: self.library.id,
             library_name: self.library.name.clone(),
@@ -136,19 +171,32 @@ impl ScanProgressReporter {
     pub async fn fail(mut self, message: impl Into<String>) {
         let msg = message.into();
         self.library.mark_scan_failed(msg.clone());
-        let _ = self.libraries.save(&self.library).await;
-        self.events.publish(SystemEvent::LibraryScanFailed {
-            library_id: self.library.id,
-            library_name: self.library.name.clone(),
-            media_kind: self.library.media_kind,
-            message: msg,
-        });
+        let existed = self
+            .libraries
+            .update_scan_state(
+                self.library.id,
+                &self.library.scan_status,
+                self.library.last_scanned_at,
+                self.library.updated_at,
+            )
+            .await
+            .unwrap_or(false);
+        if existed {
+            self.events.publish(SystemEvent::LibraryScanFailed {
+                library_id: self.library.id,
+                library_name: self.library.name.clone(),
+                media_kind: self.library.media_kind,
+                message: msg,
+            });
+        }
     }
 }
 
 struct ActiveScanEntry {
     scan_seq: u64,
     abort_handle: Option<tokio::task::AbortHandle>,
+    cancelled_by_delete: Arc<AtomicBool>,
+    done: Arc<tokio::sync::Notify>,
 }
 
 struct ScanSettlementGuard {
@@ -158,6 +206,8 @@ struct ScanSettlementGuard {
     active_scans: Arc<Mutex<HashMap<LibraryId, ActiveScanEntry>>>,
     libraries: Arc<dyn LibraryRepository>,
     events: Arc<dyn RealtimeEventPort>,
+    cancelled_by_delete: Arc<AtomicBool>,
+    done: Arc<tokio::sync::Notify>,
     settled: bool,
 }
 
@@ -175,7 +225,8 @@ impl Drop for ScanSettlementGuard {
                 active.remove(&self.library_id);
             }
         }
-        if !self.settled {
+        self.done.notify_waiters();
+        if !self.settled && !self.cancelled_by_delete.load(Ordering::Acquire) {
             let library_id = self.library_id;
             let media_kind = self.media_kind;
             let libraries = self.libraries.clone();
@@ -203,6 +254,7 @@ pub struct LibraryService {
     allowed_mount_prefixes: Vec<PathBuf>,
     active_scans: Arc<Mutex<HashMap<LibraryId, ActiveScanEntry>>>,
     next_scan_seq: Arc<AtomicU64>,
+    mount_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl LibraryService {
@@ -232,6 +284,7 @@ impl LibraryService {
             allowed_mount_prefixes,
             active_scans: Arc::new(Mutex::new(HashMap::new())),
             next_scan_seq: Arc::new(AtomicU64::new(1)),
+            mount_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -257,7 +310,15 @@ impl LibraryService {
             if lib.scan_status.is_scanning() {
                 warn!(library_id = %lib.id, name = %lib.name, "resetting interrupted library scan state from previous run");
                 lib.mark_scan_failed("scan interrupted by server restart");
-                self.libraries.save(&lib).await?;
+                let _ = self
+                    .libraries
+                    .update_scan_state(
+                        lib.id,
+                        &lib.scan_status,
+                        lib.last_scanned_at,
+                        lib.updated_at,
+                    )
+                    .await?;
             }
         }
         Ok(())
@@ -313,44 +374,61 @@ impl LibraryService {
         require_admin(actor)?;
         self.ensure_media_enabled(input.media_kind)?;
 
-        let path = Path::new(input.root_path.trim());
-        if !path.exists() || !path.is_dir() {
-            return Err(DomainError::Validation(format!(
-                "mount directory does not exist or is not a directory: {}",
-                input.root_path.trim()
-            )));
-        }
+        let _mount_guard = self.mount_lock.lock().await;
 
-        let canonical_path = path
-            .canonicalize()
-            .map_err(|e| DomainError::Storage(format!("failed to canonicalize path: {e}")))?;
+        let raw_root = input.root_path.trim().to_string();
+        let data_dir = self.data_dir.clone();
+        let allowed_prefixes = self.allowed_mount_prefixes.clone();
+        let existing_mounts: Vec<(String, String)> = self
+            .libraries
+            .list_all()
+            .await?
+            .into_iter()
+            .filter_map(|existing| match existing.kind {
+                LibraryKind::LocalMount { root_path } => Some((existing.name, root_path)),
+                LibraryKind::Managed => None,
+            })
+            .collect();
 
-        verify_mount_prefixes(&canonical_path, &self.allowed_mount_prefixes)?;
-
-        if let Some(ref data_dir) = self.data_dir {
-            let data_canonical = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
-            if paths_overlap(&canonical_path, &data_canonical) {
-                return Err(DomainError::Validation(
-                    "mount path cannot overlap with xmedia data directory".into(),
-                ));
+        let canonical_path = tokio::task::spawn_blocking(move || -> DomainResult<PathBuf> {
+            let path = Path::new(&raw_root);
+            if !path.exists() || !path.is_dir() {
+                return Err(DomainError::Validation(format!(
+                    "mount directory does not exist or is not a directory: {raw_root}"
+                )));
             }
-        }
 
-        for existing in self.libraries.list_all().await? {
-            if let LibraryKind::LocalMount { ref root_path } = existing.kind {
-                let existing_path = Path::new(root_path);
+            let canonical_path = path
+                .canonicalize()
+                .map_err(|e| DomainError::Storage(format!("failed to canonicalize path: {e}")))?;
+
+            verify_mount_prefixes(&canonical_path, &allowed_prefixes)?;
+
+            if let Some(ref data_dir) = data_dir {
+                let data_canonical = data_dir.canonicalize().unwrap_or_else(|_| data_dir.clone());
+                if paths_overlap(&canonical_path, &data_canonical) {
+                    return Err(DomainError::Validation(
+                        "mount path cannot overlap with xmedia data directory".into(),
+                    ));
+                }
+            }
+
+            for (existing_name, root_path) in existing_mounts {
+                let existing_path = Path::new(&root_path);
                 let existing_canonical = existing_path
                     .canonicalize()
                     .unwrap_or_else(|_| existing_path.to_path_buf());
                 if paths_overlap(&canonical_path, &existing_canonical) {
                     return Err(DomainError::Validation(format!(
-                        "mount path '{}' overlaps with existing library '{}' ({root_path})",
-                        canonical_path.display(),
-                        existing.name
+                        "mount path overlaps with existing library '{existing_name}'"
                     )));
                 }
             }
-        }
+
+            Ok(canonical_path)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("mount validation task failed: {e}")))??;
 
         let canonical = canonical_path.to_string_lossy().to_string();
 
@@ -372,7 +450,13 @@ impl LibraryService {
             .await?
             .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
         lib.rename(input.name)?;
-        self.libraries.save(&lib).await?;
+        if !self
+            .libraries
+            .update_name(lib.id, &lib.name, lib.updated_at)
+            .await?
+        {
+            return Err(DomainError::NotFound("library not found".into()));
+        }
         let count = self.count_items(&lib).await?;
         Ok(LibraryDto::from_domain(lib, count))
     }
@@ -405,10 +489,15 @@ impl LibraryService {
 
         if let LibraryKind::LocalMount { ref root_path } = lib.kind {
             let existing_count = self.count_items(&lib).await.unwrap_or(0);
-            verify_mount_root_alive(Path::new(root_path), existing_count)?;
+            let root = PathBuf::from(root_path);
+            tokio::task::spawn_blocking(move || verify_mount_root_alive(&root, existing_count))
+                .await
+                .map_err(|e| DomainError::Storage(format!("mount health check failed: {e}")))??;
         }
 
         let scan_seq = self.next_scan_seq.fetch_add(1, Ordering::Relaxed);
+        let cancelled_by_delete = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(tokio::sync::Notify::new());
         {
             let mut active = self
                 .active_scans
@@ -424,14 +513,32 @@ impl LibraryService {
                 ActiveScanEntry {
                     scan_seq,
                     abort_handle: None,
+                    cancelled_by_delete: cancelled_by_delete.clone(),
+                    done: done.clone(),
                 },
             );
         }
 
         lib.mark_scanning(0, None);
-        if let Err(err) = self.libraries.save(&lib).await {
-            self.remove_active_scan_if_seq(lib.id, scan_seq);
-            return Err(err);
+        match self
+            .libraries
+            .update_scan_state(
+                lib.id,
+                &lib.scan_status,
+                lib.last_scanned_at,
+                lib.updated_at,
+            )
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                self.remove_active_scan_if_seq(lib.id, scan_seq);
+                return Err(DomainError::NotFound("library not found".into()));
+            }
+            Err(err) => {
+                self.remove_active_scan_if_seq(lib.id, scan_seq);
+                return Err(err);
+            }
         }
         let count = match self.count_items(&lib).await {
             Ok(c) => c,
@@ -469,11 +576,16 @@ impl LibraryService {
                 active_scans,
                 libraries: libraries_repo.clone(),
                 events: events.clone(),
+                cancelled_by_delete: cancelled_by_delete.clone(),
+                done,
                 settled: false,
             };
             info!(library_id = %lib.id, media = %lib.media_kind.as_str(), "starting background library scan");
             let res = handler.scan_library(lib).await;
             guard.settled = true;
+            if cancelled_by_delete.load(Ordering::Acquire) {
+                return;
+            }
             match res {
                 Ok(()) => {
                     settle_scan_failure(
@@ -539,10 +651,14 @@ impl LibraryService {
         };
         let was_scanning = lib.scan_status.is_scanning() || removed_scan.is_some();
         if let Some(entry) = removed_scan {
+            entry.cancelled_by_delete.store(true, Ordering::Release);
+            let notified = entry.done.notified();
             if let Some(handle) = entry.abort_handle {
                 handle.abort();
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), notified).await;
+            } else {
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
         }
         if was_scanning {
             self.events.publish(SystemEvent::LibraryScanFailed {
@@ -679,13 +795,23 @@ async fn settle_scan_failure(
         && current.scan_status.is_scanning()
     {
         current.mark_scan_failed(message.clone());
-        let _ = libraries_repo.save(&current).await;
-        events.publish(SystemEvent::LibraryScanFailed {
-            library_id,
-            library_name: current.name,
-            media_kind,
-            message,
-        });
+        let existed = libraries_repo
+            .update_scan_state(
+                current.id,
+                &current.scan_status,
+                current.last_scanned_at,
+                current.updated_at,
+            )
+            .await
+            .unwrap_or(false);
+        if existed {
+            events.publish(SystemEvent::LibraryScanFailed {
+                library_id,
+                library_name: current.name,
+                media_kind,
+                message,
+            });
+        }
     }
 }
 

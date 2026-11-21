@@ -1,10 +1,11 @@
 use async_trait::async_trait;
+use jiff::Timestamp;
 use toasty::Db;
 
 use crate::domain::error::{DomainError, DomainResult};
-use crate::domain::library::{Library, LibraryId, MediaKind};
+use crate::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
 use crate::domain::repository::{LibraryRepository, UserRepository};
-use crate::domain::user::{User, UserId, UserRole};
+use crate::domain::user::{User, UserId, UserPreferences, UserRole};
 
 use super::models::{LibraryModel, UserModel};
 
@@ -44,6 +45,16 @@ impl UserRepository for ToastyUserRepository {
             .await
             .map_err(|e| DomainError::Persistence(format!("count users failed: {e}")))?;
         Ok(rows.len() as u64)
+    }
+
+    async fn has_any_user(&self) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let rows = UserModel::all()
+            .limit(1)
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("probe users failed: {e}")))?;
+        Ok(!rows.is_empty())
     }
 
     async fn find_by_id(&self, id: UserId) -> DomainResult<Option<User>> {
@@ -131,6 +142,84 @@ impl UserRepository for ToastyUserRepository {
             .map_err(|e| DomainError::Persistence(format!("insert user failed: {e}")))?;
         }
         Ok(())
+    }
+
+    async fn update_preferences(
+        &self,
+        id: UserId,
+        preferences: &UserPreferences,
+        updated_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut m) = UserModel::filter_by_id(id.0)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("probe user failed: {e}")))?
+        else {
+            return Ok(false);
+        };
+        m.update()
+            .preferences(toasty::Json(preferences.clone()))
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(|e| {
+                DomainError::Persistence(format!("update user preferences failed: {e}"))
+            })?;
+        Ok(true)
+    }
+
+    async fn update_credentials(
+        &self,
+        id: UserId,
+        password_hash: &str,
+        subsonic_secret_enc: &str,
+        updated_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut m) = UserModel::filter_by_id(id.0)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("probe user failed: {e}")))?
+        else {
+            return Ok(false);
+        };
+        m.update()
+            .password_hash(password_hash.to_string())
+            .subsonic_secret_enc(subsonic_secret_enc.to_string())
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(|e| {
+                DomainError::Persistence(format!("update user credentials failed: {e}"))
+            })?;
+        Ok(true)
+    }
+
+    async fn update_api_key(
+        &self,
+        id: UserId,
+        api_key: &str,
+        updated_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut m) = UserModel::filter_by_id(id.0)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("probe user failed: {e}")))?
+        else {
+            return Ok(false);
+        };
+        m.update()
+            .api_key(api_key.to_string())
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("update user api_key failed: {e}")))?;
+        Ok(true)
     }
 
     async fn delete(&self, id: UserId) -> DomainResult<()> {
@@ -259,6 +348,58 @@ impl LibraryRepository for ToastyLibraryRepository {
             .map_err(|e| DomainError::Persistence(format!("insert library failed: {e}")))?;
         }
         Ok(())
+    }
+
+    async fn update_name(
+        &self,
+        id: LibraryId,
+        name: &str,
+        updated_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut m) = LibraryModel::filter_by_id(id.0)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("probe library failed: {e}")))?
+        else {
+            return Ok(false);
+        };
+        m.update()
+            .name(name.to_string())
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("update library name failed: {e}")))?;
+        Ok(true)
+    }
+
+    async fn update_scan_state(
+        &self,
+        id: LibraryId,
+        scan_status: &ScanStatus,
+        last_scanned_at: Option<Timestamp>,
+        updated_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut m) = LibraryModel::filter_by_id(id.0)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| DomainError::Persistence(format!("probe library failed: {e}")))?
+        else {
+            return Ok(false);
+        };
+        m.update()
+            .scan_status(toasty::Json(scan_status.clone()))
+            .last_scanned_at(last_scanned_at)
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(|e| {
+                DomainError::Persistence(format!("update library scan state failed: {e}"))
+            })?;
+        Ok(true)
     }
 
     async fn delete(&self, id: LibraryId) -> DomainResult<()> {

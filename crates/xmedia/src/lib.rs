@@ -27,7 +27,7 @@ use xmedia_core::{
     ensure_core_schema, ensure_sqlite_parent_dir, is_core_schema_initialized, register_core_models,
 };
 
-use gateway::{FfmpegStatusCache, GatewayState, core_api_router};
+use gateway::{FfmpegStatusCache, GatewayState, SseConnectionLimiter, core_api_router};
 
 pub const DEFAULT_DEV_SECRET: &str = "xmedia-change-this-secret-in-production";
 
@@ -131,7 +131,10 @@ impl XMediaApp {
         let lifecycles = Arc::new(RwLock::new(HashMap::new()));
         let events = Arc::new(BroadcastEventHub::default());
         let security = Arc::new(SecurityManager::new(&cfg.secret));
-        let tokens = Arc::new(JwtTokenService::new(&cfg.secret, cfg.jwt_ttl_secs));
+        let tokens = Arc::new(
+            JwtTokenService::try_new(&cfg.secret, cfg.jwt_ttl_secs)
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+        );
         let ffmpeg = FfmpegToolkit::from_ffmpeg_bin(&cfg.ffmpeg_bin);
 
         let auth = Arc::new(AuthService::new(
@@ -275,6 +278,7 @@ impl XMediaApp {
             libraries: libraries.clone(),
             libraries_repo,
             events: events.clone(),
+            sse_limiter: SseConnectionLimiter::new(),
             ffmpeg,
             ffmpeg_status_cache: FfmpegStatusCache::new(),
             enabled_modules: Arc::new(enabled_modules.clone()),

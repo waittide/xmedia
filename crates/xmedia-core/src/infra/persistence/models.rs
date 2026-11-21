@@ -17,7 +17,7 @@ pub(crate) struct UserModel {
     pub password_hash: String,
     pub subsonic_secret_enc: String,
 
-    #[index]
+    #[unique]
     pub api_key: String,
 
     pub role: String,

@@ -7,10 +7,12 @@ use aes_gcm::aead::{Aead, KeyInit};
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
+use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use md5::{Digest as Md5DigestTrait, Md5};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use crate::application::ports::{AuthClaims, PasswordHasherPort, TokenServicePort};
@@ -103,24 +105,6 @@ impl PasswordVerifyCache {
         self.insert_valid(key);
     }
 
-    pub fn check_user_basic(&self, user_id: UserId, password_hash: &str, plain: &str) -> bool {
-        let key = VerifyCacheKey {
-            scope: user_id.0.to_string(),
-            password_hash_prefix: password_hash_prefix(password_hash),
-            plain_sha256: sha256_bytes(plain.as_bytes()),
-        };
-        self.contains_valid(&key)
-    }
-
-    pub fn record_user_basic(&self, user_id: UserId, password_hash: &str, plain: &str) {
-        let key = VerifyCacheKey {
-            scope: user_id.0.to_string(),
-            password_hash_prefix: password_hash_prefix(password_hash),
-            plain_sha256: sha256_bytes(plain.as_bytes()),
-        };
-        self.insert_valid(key);
-    }
-
     pub fn len(&self) -> usize {
         self.entries.lock().map(|g| g.len()).unwrap_or(0)
     }
@@ -184,20 +168,28 @@ fn hash_argon2_raw(plain: &str) -> DomainResult<String> {
         .map_err(|e| DomainError::Persistence(format!("password hashing failed: {e}")))
 }
 
-fn run_cpu_offloaded<T>(f: impl FnOnce() -> T) -> T {
-    if tokio::runtime::Handle::try_current()
-        .ok()
-        .is_some_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
-    {
-        tokio::task::block_in_place(f)
-    } else {
-        f()
-    }
+fn default_argon2_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get().clamp(2, 8))
+        .unwrap_or(4)
 }
 
 pub struct SecurityManager {
     cipher_key: [u8; 32],
     verify_cache: Arc<PasswordVerifyCache>,
+    hash_semaphore: Arc<Semaphore>,
+}
+
+impl Drop for SecurityManager {
+    fn drop(&mut self) {
+        for b in &mut self.cipher_key {
+            // SAFETY: `b` is a valid, aligned mutable reference to a byte owned by `self`.
+            unsafe {
+                std::ptr::write_volatile(b, 0);
+            }
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl SecurityManager {
@@ -211,6 +203,7 @@ impl SecurityManager {
         Self {
             cipher_key,
             verify_cache: Arc::new(PasswordVerifyCache::default()),
+            hash_semaphore: Arc::new(Semaphore::new(default_argon2_concurrency())),
         }
     }
 
@@ -219,11 +212,17 @@ impl SecurityManager {
     }
 
     /// Verifies a password against an Argon2 PHC hash without blocking Tokio worker threads.
-    /// Uses the bounded short-TTL in-memory cache on repeated requests (e.g. concurrent OPDS reads).
+    /// Uses the bounded short-TTL in-memory cache on repeated requests and bounds concurrent
+    /// Argon2 evaluations via a semaphore.
     pub async fn verify_password_async(&self, plain: &str, hash: &str) -> DomainResult<bool> {
         if self.verify_cache.check_hash(hash, plain) {
             return Ok(true);
         }
+        let _permit = self
+            .hash_semaphore
+            .acquire()
+            .await
+            .map_err(|_| DomainError::Persistence("password hash semaphore closed".into()))?;
         let plain_owned = plain.to_owned();
         let hash_owned = hash.to_owned();
         let matched =
@@ -236,6 +235,19 @@ impl SecurityManager {
             self.verify_cache.record_hash(hash, plain);
         }
         Ok(matched)
+    }
+
+    /// Hashes a password with Argon2 on the blocking threadpool under the concurrency semaphore.
+    pub async fn hash_password_async(&self, plain: &str) -> DomainResult<String> {
+        let _permit = self
+            .hash_semaphore
+            .acquire()
+            .await
+            .map_err(|_| DomainError::Persistence("password hash semaphore closed".into()))?;
+        let plain_owned = plain.to_owned();
+        tokio::task::spawn_blocking(move || hash_argon2_raw(&plain_owned))
+            .await
+            .map_err(|e| DomainError::Persistence(format!("password hashing task failed: {e}")))?
     }
 
     pub fn decrypt_subsonic_secret(&self, encoded: &str) -> DomainResult<String> {
@@ -286,20 +298,14 @@ impl SecurityManager {
     }
 }
 
+#[async_trait]
 impl PasswordHasherPort for SecurityManager {
-    fn hash_password(&self, plain: &str) -> DomainResult<String> {
-        run_cpu_offloaded(|| hash_argon2_raw(plain))
+    async fn hash_password(&self, plain: &str) -> DomainResult<String> {
+        self.hash_password_async(plain).await
     }
 
-    fn verify_password(&self, plain: &str, hash: &str) -> DomainResult<bool> {
-        if self.verify_cache.check_hash(hash, plain) {
-            return Ok(true);
-        }
-        let matched = run_cpu_offloaded(|| verify_argon2_raw(plain, hash))?;
-        if matched {
-            self.verify_cache.record_hash(hash, plain);
-        }
-        Ok(matched)
+    async fn verify_password(&self, plain: &str, hash: &str) -> DomainResult<bool> {
+        self.verify_password_async(plain, hash).await
     }
 
     fn encrypt_subsonic_secret(&self, plain: &str) -> DomainResult<String> {
@@ -365,14 +371,20 @@ pub struct JwtTokenService {
 }
 
 impl JwtTokenService {
-    pub fn new(secret: &str, ttl_seconds: u64) -> Self {
-        Self {
-            encoding_key: EncodingKey::from_secret(secret.as_bytes())
-                .expect("HMAC secret key construction must succeed"),
-            decoding_key: DecodingKey::from_secret(secret.as_bytes())
-                .expect("HMAC secret key construction must succeed"),
+    pub fn try_new(secret: &str, ttl_seconds: u64) -> DomainResult<Self> {
+        let encoding_key = EncodingKey::from_secret(secret.as_bytes())
+            .map_err(|e| DomainError::Validation(format!("invalid JWT secret: {e}")))?;
+        let decoding_key = DecodingKey::from_secret(secret.as_bytes())
+            .map_err(|e| DomainError::Validation(format!("invalid JWT secret: {e}")))?;
+        Ok(Self {
+            encoding_key,
+            decoding_key,
             ttl_seconds,
-        }
+        })
+    }
+
+    pub fn new(secret: &str, ttl_seconds: u64) -> Self {
+        Self::try_new(secret, ttl_seconds).expect("HMAC secret key construction must succeed")
     }
 }
 
@@ -429,8 +441,8 @@ mod tests {
     #[tokio::test]
     async fn verify_password_async_caches_positive_result_and_invalidates_on_hash_change() {
         let mgr = SecurityManager::new("test-secret");
-        let hash1 = mgr.hash_password("super-secret-1").unwrap();
-        let hash2 = mgr.hash_password("super-secret-2").unwrap();
+        let hash1 = mgr.hash_password("super-secret-1").await.unwrap();
+        let hash2 = mgr.hash_password("super-secret-2").await.unwrap();
 
         assert!(
             mgr.verify_password_async("super-secret-1", &hash1)
@@ -473,25 +485,22 @@ mod tests {
     #[test]
     fn password_verify_cache_respects_ttl_and_capacity_eviction() {
         let cache = PasswordVerifyCache::new(Duration::from_millis(25), 2);
-        let u1 = UserId(Uuid::new_v4());
-        let u2 = UserId(Uuid::new_v4());
-        let u3 = UserId(Uuid::new_v4());
 
-        cache.record_user_basic(u1, "$argon2id$v=19$hash1", "pw1");
+        cache.record_hash("$argon2id$v=19$hash1", "pw1");
         std::thread::sleep(Duration::from_millis(5));
-        cache.record_user_basic(u2, "$argon2id$v=19$hash2", "pw2");
-        assert!(cache.check_user_basic(u1, "$argon2id$v=19$hash1", "pw1"));
-        assert!(cache.check_user_basic(u2, "$argon2id$v=19$hash2", "pw2"));
+        cache.record_hash("$argon2id$v=19$hash2", "pw2");
+        assert!(cache.check_hash("$argon2id$v=19$hash1", "pw1"));
+        assert!(cache.check_hash("$argon2id$v=19$hash2", "pw2"));
 
-        // Third insert evicts oldest entry (u1) due to max_entries=2.
-        cache.record_user_basic(u3, "$argon2id$v=19$hash3", "pw3");
+        // Third insert evicts oldest entry (hash1) due to max_entries=2.
+        cache.record_hash("$argon2id$v=19$hash3", "pw3");
         assert_eq!(cache.len(), 2);
-        assert!(!cache.check_user_basic(u1, "$argon2id$v=19$hash1", "pw1"));
-        assert!(cache.check_user_basic(u3, "$argon2id$v=19$hash3", "pw3"));
+        assert!(!cache.check_hash("$argon2id$v=19$hash1", "pw1"));
+        assert!(cache.check_hash("$argon2id$v=19$hash3", "pw3"));
 
         // Wait past TTL -> expired entries miss.
         std::thread::sleep(Duration::from_millis(30));
-        assert!(!cache.check_user_basic(u2, "$argon2id$v=19$hash2", "pw2"));
-        assert!(!cache.check_user_basic(u3, "$argon2id$v=19$hash3", "pw3"));
+        assert!(!cache.check_hash("$argon2id$v=19$hash2", "pw2"));
+        assert!(!cache.check_hash("$argon2id$v=19$hash3", "pw3"));
     }
 }
