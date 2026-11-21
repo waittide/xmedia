@@ -40,7 +40,6 @@ const props = defineProps<{
   open: boolean
   target: OnlineDownloadTarget | null
   externalJob?: OnlineDownloadJobDto | null
-  disablePolling?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -54,8 +53,8 @@ const router = useRouter()
 
 const format = ref<OnlineDownloadFormat>('epub')
 const useRange = ref(false)
-const startChapter = ref(1)
-const endChapter = ref(100)
+const startChapter = ref<number | string>(1)
+const endChapter = ref<number | string>(100)
 const importToLibrary = ref(false)
 const starting = ref(false)
 const cancelling = ref(false)
@@ -78,20 +77,42 @@ function isJobActive(status: OnlineDownloadJobDto['status']): boolean {
 }
 
 watch(
-  () => [props.open, props.target] as const,
-  ([isOpen, t]) => {
-    if (!isOpen || !t) return
+  () => [
+    props.open,
+    props.target?.bookId ?? '',
+    props.target?.sourceId ?? '',
+    props.target?.bookUrl ?? '',
+    props.target?.tocUrl ?? '',
+  ] as const,
+  ([isOpen, bookId, sourceId, bookUrl, tocUrl], prev) => {
+    if (!isOpen || !props.target) return
+    const wasOpen = prev?.[0] ?? false
+    const sameTarget =
+      wasOpen &&
+      prev?.[1] === bookId &&
+      prev?.[2] === sourceId &&
+      prev?.[3] === bookUrl &&
+      prev?.[4] === tocUrl
+    if (sameTarget) return
+
     errorMsg.value = null
     localJob.value = null
     cancelling.value = false
     format.value = 'epub'
     useRange.value = false
     startChapter.value = 1
-    endChapter.value = Math.max(1, t.totalChapters || 100)
+    endChapter.value = Math.max(1, props.target.totalChapters || 100)
     importToLibrary.value = authStore.isAdmin
   },
   { immediate: true },
 )
+
+function parsePositiveInt(val: number | string): number | null {
+  if (typeof val === 'string' && val.trim() === '') return null
+  const num = typeof val === 'number' ? val : Number(val)
+  if (!Number.isFinite(num) || !Number.isInteger(num) || num < 1) return null
+  return num
+}
 
 const progressPct = computed(() => {
   const j = activeJob.value
@@ -103,8 +124,26 @@ const speedLabel = computed(() => formatDownloadSpeed(activeJob.value?.chapters_
 
 async function handleStart(): Promise<void> {
   if (!props.target || starting.value) return
-  starting.value = true
   errorMsg.value = null
+
+  let startIdx: number | undefined
+  let endIdx: number | undefined
+  if (useRange.value) {
+    const parsedStart = parsePositiveInt(startChapter.value)
+    const parsedEnd = parsePositiveInt(endChapter.value)
+    if (parsedStart === null || parsedEnd === null) {
+      errorMsg.value = '请输入有效的起始章和结束章（必须为大于等于 1 的整数）'
+      return
+    }
+    if (parsedStart > parsedEnd) {
+      errorMsg.value = '起始章不能大于结束章'
+      return
+    }
+    startIdx = parsedStart - 1
+    endIdx = parsedEnd - 1
+  }
+
+  starting.value = true
   try {
     const job = await onlineBookApi.startDownload({
       book_id: props.target.bookId,
@@ -116,8 +155,8 @@ async function handleStart(): Promise<void> {
       cover_url: props.target.coverUrl ?? null,
       intro: props.target.intro ?? null,
       format: format.value,
-      start_chapter: useRange.value ? Math.max(0, startChapter.value - 1) : undefined,
-      end_chapter: useRange.value ? Math.max(0, endChapter.value - 1) : undefined,
+      start_chapter: startIdx,
+      end_chapter: endIdx,
       import_to_library: authStore.isAdmin && importToLibrary.value,
     })
     localJob.value = job

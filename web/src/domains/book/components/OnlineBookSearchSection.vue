@@ -610,7 +610,6 @@ function goManageDataSources(): void {
       :open="downloadTarget !== null"
       :target="downloadTarget"
       :external-job="modalTrackedJob"
-      :disable-polling="true"
       @close="closeDownloadModal"
       @job-updated="handleJobUpdated"
     />

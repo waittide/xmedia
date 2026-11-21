@@ -66,6 +66,14 @@ const shelfPopoverOpen = ref(false)
 const moreMenuOpen = ref(false)
 const editModalOpen = ref(false)
 const saving = ref(false)
+const togglingFavorite = ref(false)
+const togglingShelfIds = ref<Set<string>>(new Set())
+const deletingBook = ref(false)
+const deletingBookmarkIds = ref<Set<string>>(new Set())
+
+let detailSeq = 0
+let refreshTocSeq = 0
+let syncEpubSeq = 0
 
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const actionsAreaRef = ref<HTMLElement | null>(null)
@@ -87,20 +95,27 @@ function onOutsideClick(ev: MouseEvent): void {
 }
 
 async function loadDetail(id: string): Promise<void> {
+  const seq = ++detailSeq
+  refreshTocSeq += 1
+  syncEpubSeq += 1
   loading.value = true
   statusMsg.value = ''
   trackedSourceName.value = ''
+  refreshingToc.value = false
+  syncingEpub.value = false
   try {
     const [b, bms] = await Promise.all([
       api.getBook(id),
       api.listBookmarks(id).catch(() => []),
     ])
+    if (seq !== detailSeq) return
     book.value = b
     bookmarks.value = bms
     catalogStore.activeBookId = b.id
 
     if (b.online_tracking) {
       const trackedToc = await onlineBookApi.getTrackedToc(id, false).catch(() => null)
+      if (seq !== detailSeq) return
       if (trackedToc) {
         trackedSourceName.value = trackedToc.source_name
         toc.value = trackedToc.chapters.map((ch) => ({
@@ -113,20 +128,29 @@ async function loadDetail(id: string): Promise<void> {
         toc.value = []
       }
     } else {
-      toc.value = await api.getToc(id).catch(() => [])
+      const loadedToc = await api.getToc(id).catch(() => [])
+      if (seq !== detailSeq) return
+      toc.value = loadedToc
     }
   } catch {
+    if (seq !== detailSeq) return
     book.value = null
   } finally {
-    loading.value = false
+    if (seq === detailSeq) {
+      loading.value = false
+    }
   }
 }
 
 async function handleRefreshTrackedToc(): Promise<void> {
-  if (!book.value?.online_tracking || refreshingToc.value) return
+  const targetBook = book.value
+  if (!targetBook?.online_tracking || refreshingToc.value) return
+  const targetId = targetBook.id
+  const seq = ++refreshTocSeq
   refreshingToc.value = true
   try {
-    const res = await onlineBookApi.getTrackedToc(book.value.id, true)
+    const res = await onlineBookApi.getTrackedToc(targetId, true)
+    if (seq !== refreshTocSeq || book.value?.id !== targetId) return
     trackedSourceName.value = res.source_name
     toc.value = res.chapters.map((ch) => ({
       index: ch.index,
@@ -134,31 +158,44 @@ async function handleRefreshTrackedToc(): Promise<void> {
       href: `chapter:${ch.index}`,
       level: 0,
     }))
-    book.value = await api.getBook(book.value.id)
+    const refreshedBook = await api.getBook(targetId)
+    if (seq !== refreshTocSeq || book.value?.id !== targetId) return
+    book.value = refreshedBook
     snackbarStore.show(`目录已刷新，共 ${res.total_chapters} 章`)
   } catch (err) {
+    if (seq !== refreshTocSeq || book.value?.id !== targetId) return
     snackbarStore.show({
       message: err instanceof Error ? err.message : String(err),
       tone: 'error',
     })
   } finally {
-    refreshingToc.value = false
+    if (seq === refreshTocSeq) {
+      refreshingToc.value = false
+    }
   }
 }
 
 async function handleSyncTrackedEpub(): Promise<void> {
-  if (!book.value?.online_tracking || syncingEpub.value) return
+  const targetBook = book.value
+  if (!targetBook?.online_tracking || syncingEpub.value) return
+  const targetId = targetBook.id
+  const seq = ++syncEpubSeq
   syncingEpub.value = true
   try {
-    book.value = await onlineBookApi.syncTrackedEpub(book.value.id)
+    const synced = await onlineBookApi.syncTrackedEpub(targetId)
+    if (seq !== syncEpubSeq || book.value?.id !== targetId) return
+    book.value = synced
     snackbarStore.show('标准 EPUB 3.0 已同步更新')
   } catch (err) {
+    if (seq !== syncEpubSeq || book.value?.id !== targetId) return
     snackbarStore.show({
       message: err instanceof Error ? err.message : String(err),
       tone: 'error',
     })
   } finally {
-    syncingEpub.value = false
+    if (seq === syncEpubSeq) {
+      syncingEpub.value = false
+    }
   }
 }
 
@@ -220,7 +257,7 @@ const formattedLanguage = computed(() => {
 
 function goBack(): void {
   const prev = (window.history.state as { back?: string | null } | null)?.back
-  if (typeof prev === 'string' && !prev.startsWith('/read/')) {
+  if (typeof prev === 'string' && !prev.startsWith('/book/read/')) {
     router.back()
   } else {
     void router.push('/book/catalog')
@@ -239,21 +276,49 @@ function filterByTag(tag: string): void {
 }
 
 async function toggleFavorite(): Promise<void> {
-  if (!book.value) return
+  if (!book.value || togglingFavorite.value) return
+  const targetId = book.value.id
   const next = !book.value.is_favorite
-  await api.setFavorite(book.value.id, next)
-  book.value = { ...book.value, is_favorite: next }
-  catalogStore.updateBookInList(book.value)
+  togglingFavorite.value = true
+  try {
+    await api.setFavorite(targetId, next)
+    if (book.value?.id === targetId) {
+      book.value = { ...book.value, is_favorite: next }
+      catalogStore.updateBookInList(book.value)
+    }
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    togglingFavorite.value = false
+  }
 }
 
 async function toggleShelf(shelfId: string, inShelf: boolean): Promise<void> {
-  if (!book.value) return
-  if (inShelf) {
-    await api.removeBookFromShelf(shelfId, book.value.id)
-  } else {
-    await api.addBookToShelf(shelfId, book.value.id)
+  if (!book.value || togglingShelfIds.value.has(shelfId)) return
+  const targetId = book.value.id
+  const nextSet = new Set(togglingShelfIds.value)
+  nextSet.add(shelfId)
+  togglingShelfIds.value = nextSet
+  try {
+    if (inShelf) {
+      await api.removeBookFromShelf(shelfId, targetId)
+    } else {
+      await api.addBookToShelf(shelfId, targetId)
+    }
+    await catalogStore.refreshSidebarData()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    const done = new Set(togglingShelfIds.value)
+    done.delete(shelfId)
+    togglingShelfIds.value = done
   }
-  await catalogStore.refreshSidebarData()
 }
 
 function openEditModal(): void {
@@ -309,34 +374,67 @@ async function onCoverChange(ev: Event): Promise<void> {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
+  const targetId = book.value.id
   try {
-    const updated = await api.replaceCover(book.value.id, file)
-    book.value = updated
-    catalogStore.updateBookInList(updated)
+    const updated = await api.replaceCover(targetId, file)
+    if (book.value?.id === targetId) {
+      book.value = updated
+      catalogStore.updateBookInList(updated)
+    }
   } catch (err) {
-    statusMsg.value = err instanceof Error ? err.message : String(err)
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
     input.value = ''
   }
 }
 
 async function handleDeleteBook(): Promise<void> {
-  if (!book.value) return
+  if (!book.value || deletingBook.value) return
+  const targetId = book.value.id
+  const targetTitle = book.value.metadata.title
   moreMenuOpen.value = false
   const confirmed = await dialogStore.confirm({
     title: t('detail.deleteBook'),
-    message: t('detail.confirmDeleteBook', { title: book.value.metadata.title }),
+    message: t('detail.confirmDeleteBook', { title: targetTitle }),
     danger: true,
   })
   if (!confirmed) return
-  await api.deleteBook(book.value.id)
-  await Promise.all([catalogStore.refreshSidebarData(), catalogStore.fetchBooks()])
-  await router.replace('/book/catalog')
+  deletingBook.value = true
+  try {
+    await api.deleteBook(targetId)
+    await Promise.all([catalogStore.refreshSidebarData(), catalogStore.fetchBooks()])
+    await router.replace('/book/catalog')
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    deletingBook.value = false
+  }
 }
 
 async function deleteBookmark(bmId: string): Promise<void> {
-  await api.deleteBookmark(bmId)
-  bookmarks.value = bookmarks.value.filter((b) => b.id !== bmId)
+  if (deletingBookmarkIds.value.has(bmId)) return
+  const nextSet = new Set(deletingBookmarkIds.value)
+  nextSet.add(bmId)
+  deletingBookmarkIds.value = nextSet
+  try {
+    await api.deleteBookmark(bmId)
+    bookmarks.value = bookmarks.value.filter((b) => b.id !== bmId)
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    const done = new Set(deletingBookmarkIds.value)
+    done.delete(bmId)
+    deletingBookmarkIds.value = done
+  }
 }
 
 function openTocTargetInReader(href: string): void {
@@ -368,7 +466,7 @@ function openBookmarkInReader(bm: Bookmark): void {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl px-6 py-6 sm:px-8">
+  <div class="mx-auto max-w-6xl px-6 py-8 sm:px-8">
     <!-- Top Back & Refresh Bar -->
     <div class="mb-6 flex items-center justify-between gap-3">
       <button
@@ -924,7 +1022,6 @@ function openBookmarkInReader(bm: Bookmark): void {
       :open="onlineDownloadTarget !== null"
       :target="onlineDownloadTarget"
       :external-job="trackedDownloadJob"
-      :disable-polling="true"
       @close="closeTrackedDownloadModal"
       @job-updated="onlineDownloadJobId = $event.id; onlineDownloadsStore.trackJob($event)"
     />

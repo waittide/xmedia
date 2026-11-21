@@ -74,8 +74,11 @@ const altCandidates = ref<AggregatedSearchItemDto[]>([])
 const switchingKey = ref<string | null>(null)
 const downloadOpen = ref(false)
 
-const maxWidthPx = ref(800)
+const maxWidthPx = computed(() => Math.max(520, 920 - (themeStore.reader.margin_px || 48) * 2))
 const contentScrollRef = ref<HTMLElement | null>(null)
+let loadSeq = 0
+let tocSeq = 0
+let unmounted = false
 
 // Sync typography preferences directly with themeStore (shared with local book reader)
 const fontSize = computed<number>({
@@ -108,8 +111,9 @@ const readableChapters = computed(() =>
 
 const filteredToc = computed(() => {
   const q = tocQuery.value.trim().toLowerCase()
-  if (!q) return chapters.value
-  return chapters.value.filter((c) => c.title.toLowerCase().includes(q))
+  const entries = chapters.value.map((chapter, pos) => ({ chapter, pos }))
+  if (!q) return entries
+  return entries.filter((entry) => entry.chapter.title.toLowerCase().includes(q))
 })
 
 const currentChapter = computed<OnlineChapterItem | null>(
@@ -330,8 +334,7 @@ function matchChapterIndexByTitle(
   return bestIdx >= 0 && bestScore >= 0.45 ? bestIdx : fallbackIdx
 }
 
-function buildBookJsCtx(idx: number, title: string): BookJsContextInput {
-  const c = readerCtx.value!
+function buildBookJsCtxFrom(c: ReaderContext, idx: number, title: string): BookJsContextInput {
   return {
     name: c.name,
     author: c.author,
@@ -342,6 +345,13 @@ function buildBookJsCtx(idx: number, title: string): BookJsContextInput {
     dur_chapter_index: idx,
     dur_chapter_title: title,
   }
+}
+
+function resolveChapterPos(list: OnlineChapterItem[], rawIdx: number): number {
+  if (list.length === 0) return 0
+  const byIndex = list.findIndex((c) => c.index === rawIdx)
+  if (byIndex >= 0) return byIndex
+  return Math.max(0, Math.min(rawIdx, list.length - 1))
 }
 
 async function initReader(): Promise<void> {
@@ -357,13 +367,13 @@ async function initReader(): Promise<void> {
   const parsedChapter = chapterQuery ? Number.parseInt(chapterQuery, 10) : NaN
 
   let storedCtx: ReaderContext | null = null
-  const rawStored = sessionStorage.getItem('xmedia_online_reader_ctx')
-  if (rawStored) {
-    try {
+  try {
+    const rawStored = sessionStorage.getItem('xmedia_online_reader_ctx')
+    if (rawStored) {
       storedCtx = JSON.parse(rawStored) as ReaderContext
-    } catch {
-      storedCtx = null
     }
+  } catch {
+    storedCtx = null
   }
 
   // 1. Prefer explicit route query parameters (supports multi-tab & refresh for non-shelf books)
@@ -467,20 +477,22 @@ async function initReader(): Promise<void> {
 async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<void> {
   const ctx = readerCtx.value
   if (!ctx) return
+  const seq = ++tocSeq
   loadingToc.value = true
   errorMsg.value = null
   try {
     const tocRes = await onlineBookApi.fetchToc(
       ctx.sourceId,
       ctx.tocUrl,
-      buildBookJsCtx(targetIdx, matchTitle || ''),
+      buildBookJsCtxFrom(ctx, targetIdx, matchTitle || ''),
     )
+    if (unmounted || seq !== tocSeq) return
     chapters.value = tocRes.chapters
     if (tocRes.chapters.length === 0) {
       errorMsg.value = '目录为空，请检查书源状态或尝试换源'
       return
     }
-    const clampedFallback = Math.max(0, Math.min(targetIdx, tocRes.chapters.length - 1))
+    const clampedFallback = resolveChapterPos(tocRes.chapters, targetIdx)
     let idx = matchTitle
       ? matchChapterIndexByTitle(matchTitle, tocRes.chapters, clampedFallback)
       : clampedFallback
@@ -491,30 +503,46 @@ async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<v
     }
     await openChapter(idx, false)
   } catch (err) {
+    if (unmounted || seq !== tocSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loadingToc.value = false
+    if (!unmounted && seq === tocSeq) {
+      loadingToc.value = false
+    }
   }
 }
 
-async function openChapter(idx: number, forceRefresh = false): Promise<void> {
+async function openChapter(pos: number, forceRefresh = false): Promise<void> {
   const ctx = readerCtx.value
-  const ch = chapters.value[idx]
+  const ch = chapters.value[pos]
   if (!ctx || !ch || ch.is_volume || !ch.url) return
 
-  activeIndex.value = idx
+  const seq = ++loadSeq
+  const sourceId = ctx.sourceId
+  const bookUrl = ctx.bookUrl
+
+  activeIndex.value = pos
   tocOpen.value = false
   loadingContent.value = true
   errorMsg.value = null
 
   try {
     const res = await onlineBookApi.fetchContent(
-      ctx.sourceId,
+      sourceId,
       ch.url,
-      buildBookJsCtx(idx, ch.title),
+      buildBookJsCtxFrom(ctx, ch.index, ch.title),
       { index: ch.index, title: ch.title, url: ch.url },
       forceRefresh,
     )
+    if (
+      unmounted ||
+      seq !== loadSeq ||
+      readerCtx.value?.sourceId !== sourceId ||
+      readerCtx.value?.bookUrl !== bookUrl
+    ) {
+      return
+    }
+
     chapterTitle.value = res.content.title || ch.title
     paragraphs.value = res.content.content
       .split(/\n+/)
@@ -523,17 +551,18 @@ async function openChapter(idx: number, forceRefresh = false): Promise<void> {
     contentCached.value = res.cached
 
     await nextTick()
+    if (unmounted || seq !== loadSeq) return
     if (contentScrollRef.value) {
       contentScrollRef.value.scrollTop = 0
     }
 
     // Persist reading progress in URL query, sessionStorage, and online shelf
-    ctx.currentChapterIndex = idx
+    ctx.currentChapterIndex = pos
     syncContextToUrlAndStorage(ctx)
     if (ctx.shelfId) {
       void onlineBookApi
         .updateShelfBook(ctx.shelfId, {
-          current_chapter_index: idx,
+          current_chapter_index: pos,
           current_chapter_title: chapterTitle.value,
           total_chapters: chapters.value.length,
           last_chapter: chapters.value[chapters.value.length - 1]?.title ?? null,
@@ -542,15 +571,15 @@ async function openChapter(idx: number, forceRefresh = false): Promise<void> {
     }
 
     // Prefetch next chapter silently into server disk cache
-    const nextIdx = nextReadableIndex.value
-    if (nextIdx !== null) {
-      const nextCh = chapters.value[nextIdx]
+    const nextPos = nextReadableIndex.value
+    if (nextPos !== null) {
+      const nextCh = chapters.value[nextPos]
       if (nextCh && nextCh.url) {
         void onlineBookApi
           .fetchContent(
-            ctx.sourceId,
+            sourceId,
             nextCh.url,
-            buildBookJsCtx(nextIdx, nextCh.title),
+            buildBookJsCtxFrom(ctx, nextCh.index, nextCh.title),
             { index: nextCh.index, title: nextCh.title, url: nextCh.url },
             false,
           )
@@ -558,9 +587,12 @@ async function openChapter(idx: number, forceRefresh = false): Promise<void> {
       }
     }
   } catch (err) {
+    if (unmounted || seq !== loadSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loadingContent.value = false
+    if (!unmounted && seq === loadSeq) {
+      loadingContent.value = false
+    }
   }
 }
 
@@ -622,7 +654,7 @@ async function openSwitchSource(): Promise<void> {
 
 async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<void> {
   const ctx = readerCtx.value
-  if (!ctx) return
+  if (!ctx || switchingKey.value !== null) return
   const key = `${item.source_id}:${item.book.book_url}`
   switchingKey.value = key
   const previousTitle = currentChapter.value?.title || chapterTitle.value || ''
@@ -635,20 +667,65 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
       cover_url: item.book.cover_url,
       intro: item.book.intro,
     })
-    ctx.sourceId = item.source_id
-    ctx.sourceName = item.source_name
-    ctx.bookUrl = item.book.book_url
-    ctx.tocUrl = detailRes.detail.toc_url
-    if (ctx.shelfId) {
-      await onlineBookApi.updateShelfBook(ctx.shelfId, {
-        source_id: ctx.sourceId,
-        book_url: ctx.bookUrl,
-        toc_url: ctx.tocUrl,
+    const nextTocUrl = detailRes.detail.toc_url?.trim()
+    if (!nextTocUrl) {
+      throw new Error('目标书源未解析到目录地址，未切换')
+    }
+    const nextCtx: ReaderContext = {
+      ...ctx,
+      sourceId: item.source_id,
+      sourceName: item.source_name,
+      bookUrl: item.book.book_url,
+      tocUrl: nextTocUrl,
+      coverUrl: detailRes.detail.cover_url ?? item.book.cover_url ?? ctx.coverUrl,
+      intro: detailRes.detail.intro ?? item.book.intro ?? ctx.intro,
+    }
+
+    // Validate new source TOC BEFORE committing context & shelf update
+    const tocRes = await onlineBookApi.fetchToc(
+      nextCtx.sourceId,
+      nextCtx.tocUrl,
+      buildBookJsCtxFrom(nextCtx, activeIndex.value, previousTitle),
+    )
+    if (tocRes.chapters.length === 0) {
+      throw new Error('目标书源目录为空，未切换')
+    }
+    const clampedFallback = Math.max(0, Math.min(activeIndex.value, tocRes.chapters.length - 1))
+    let targetPos = previousTitle
+      ? matchChapterIndexByTitle(previousTitle, tocRes.chapters, clampedFallback)
+      : clampedFallback
+    if (tocRes.chapters[targetPos]?.is_volume || !tocRes.chapters[targetPos]?.url) {
+      const firstReadable = tocRes.chapters.findIndex((c) => !c.is_volume && Boolean(c.url))
+      if (firstReadable < 0) {
+        throw new Error('目标书源无可读章节，未切换')
+      }
+      targetPos = firstReadable
+    }
+
+    if (nextCtx.shelfId) {
+      await onlineBookApi.updateShelfBook(nextCtx.shelfId, {
+        source_id: nextCtx.sourceId,
+        book_url: nextCtx.bookUrl,
+        toc_url: nextCtx.tocUrl,
       })
     }
-    syncContextToUrlAndStorage(ctx)
+
+    // Commit switched source atomically
+    tocSeq += 1
+    nextCtx.currentChapterIndex = targetPos
+    readerCtx.value = nextCtx
+    chapters.value = tocRes.chapters
+    syncContextToUrlAndStorage(nextCtx)
     switchSourceOpen.value = false
-    await loadTocAndOpen(activeIndex.value, previousTitle)
+
+    await openChapter(targetPos, false)
+    if (errorMsg.value) {
+      snackbar.show({
+        message: `已切换至书源「${item.source_name}」，但正文拉取失败：${errorMsg.value}`,
+        tone: 'error',
+      })
+      return
+    }
     const matchedTitle = currentChapter.value?.title || chapterTitle.value
     snackbar.show({
       message: matchedTitle
@@ -667,6 +744,7 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
 
 function handleKeydown(ev: KeyboardEvent): void {
   if (ev.metaKey || ev.ctrlKey || ev.altKey) return
+  if (loadingContent.value || loadingToc.value) return
   const target = ev.target
   if (
     target instanceof HTMLElement &&
@@ -687,11 +765,15 @@ function handleKeydown(ev: KeyboardEvent): void {
 }
 
 onMounted(() => {
+  unmounted = false
   window.addEventListener('keydown', handleKeydown)
   void initReader()
 })
 
 onBeforeUnmount(() => {
+  unmounted = true
+  loadSeq += 1
+  tocSeq += 1
   window.removeEventListener('keydown', handleKeydown)
 })
 </script>
@@ -1003,21 +1085,21 @@ onBeforeUnmount(() => {
 
       <div class="space-y-0.5">
         <button
-          v-for="ch in filteredToc"
-          :key="`toc-${ch.index}`"
+          v-for="entry in filteredToc"
+          :key="`toc-${entry.pos}-${entry.chapter.index}`"
           type="button"
-          :disabled="ch.is_volume || !ch.url"
+          :disabled="entry.chapter.is_volume || !entry.chapter.url"
           class="flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs transition"
           :class="
-            ch.is_volume
+            entry.chapter.is_volume
               ? 'mt-2 font-bold text-[var(--md-sys-color-primary)] opacity-90'
-              : ch.index === activeIndex
+              : entry.pos === activeIndex
                 ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
                 : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
           "
-          @click="openChapter(ch.index)"
+          @click="openChapter(entry.pos)"
         >
-          <span class="truncate">{{ ch.title }}</span>
+          <span class="truncate">{{ entry.chapter.title }}</span>
         </button>
       </div>
     </MdSideSheet>
