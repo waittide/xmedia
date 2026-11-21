@@ -3501,7 +3501,7 @@ fn detect_safe_raster_image_mime(bytes: &[u8]) -> Option<&'static str> {
         Some("image/webp")
     } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         Some("image/gif")
-    } else if bytes.starts_with(b"BM") {
+    } else if bytes.len() >= 14 && bytes.starts_with(b"BM") {
         Some("image/bmp")
     } else if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
         Some("image/x-icon")

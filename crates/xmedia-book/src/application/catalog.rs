@@ -13,6 +13,7 @@ use crate::application::dto::{
     BookHomeOverviewDto, BookLibraryStatsDto, BookSummaryDto, CatalogSearchFilter,
     UpdateMetadataPatch,
 };
+use crate::application::online::validate_safe_cover_image;
 use crate::application::ports::{
     BookAsset, BookParserPort, BookStoragePort, CoverPayload, StoredManagedBook, TocItem,
     TxtChapterContent,
@@ -353,11 +354,18 @@ impl BookCatalogService {
         if bytes.is_empty() {
             return Err(DomainError::Validation("cover file cannot be empty".into()));
         }
+        let safe_mime = validate_safe_cover_image(Some(&mime_type), &bytes)?;
         let mut book = self.find_book(book_id).await?;
         let old_key = book.cover_key.clone();
         let new_key = self
             .storage
-            .save_cover(book.id, &CoverPayload { bytes, mime_type })
+            .save_cover(
+                book.id,
+                &CoverPayload {
+                    bytes,
+                    mime_type: safe_mime,
+                },
+            )
             .await?;
         book.set_cover(Some(new_key.clone()));
         self.books.save(&book).await?;

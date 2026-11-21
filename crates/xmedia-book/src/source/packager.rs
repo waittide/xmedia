@@ -133,20 +133,34 @@ p {
     )
     .map_err(|e| e.to_string())?;
 
-    // 4. Optional Cover Image
+    // 4. Optional Cover Image (only safe raster formats with normalized extension/MIME)
     let cover_info = if let Some((ref bytes, ref mime)) = meta.cover_bytes {
         if !bytes.is_empty() {
-            let ext = match mime.as_str() {
-                "image/png" => "png",
-                "image/webp" => "webp",
-                "image/gif" => "gif",
-                _ => "jpg",
+            let normalized_mime = mime
+                .split(';')
+                .next()
+                .unwrap_or(mime)
+                .trim()
+                .to_ascii_lowercase();
+            let ext_and_mime: Option<(&'static str, &'static str)> = match normalized_mime.as_str()
+            {
+                "image/jpeg" | "image/jpg" => Some(("jpg", "image/jpeg")),
+                "image/png" => Some(("png", "image/png")),
+                "image/webp" => Some(("webp", "image/webp")),
+                "image/gif" => Some(("gif", "image/gif")),
+                "image/avif" => Some(("avif", "image/avif")),
+                "image/bmp" => Some(("bmp", "image/bmp")),
+                _ => None,
             };
-            let cover_file = format!("cover.{ext}");
-            zip.start_file(format!("OEBPS/{cover_file}"), stored)
-                .map_err(|e| e.to_string())?;
-            zip.write_all(bytes).map_err(|e| e.to_string())?;
-            Some((cover_file, mime.clone()))
+            if let Some((ext, safe_mime)) = ext_and_mime {
+                let cover_file = format!("cover.{ext}");
+                zip.start_file(format!("OEBPS/{cover_file}"), stored)
+                    .map_err(|e| e.to_string())?;
+                zip.write_all(bytes).map_err(|e| e.to_string())?;
+                Some((cover_file, safe_mime.to_string()))
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -161,8 +175,9 @@ p {
     let mut ncx_points = String::new();
 
     if let Some((ref cover_file, ref cover_mime)) = cover_info {
+        let escaped_mime = xml_escape(cover_mime);
         manifest_items.push_str(&format!(
-            "    <item id=\"cover-image\" href=\"{cover_file}\" media-type=\"{cover_mime}\" properties=\"cover-image\"/>\n"
+            "    <item id=\"cover-image\" href=\"{cover_file}\" media-type=\"{escaped_mime}\" properties=\"cover-image\"/>\n"
         ));
     }
 

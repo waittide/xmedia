@@ -9,10 +9,21 @@ use quick_xml::events::{BytesStart, Event};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use zip::ZipArchive;
 
+use crate::application::online::validate_safe_cover_image;
 use crate::application::ports::{BookAsset, CoverPayload, ParsedBook, TocItem};
 use crate::domain::book::BookMetadata;
 
 use super::svg_cover::generate_placeholder_svg_cover;
+
+const MAX_EPUB_METADATA_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_EPUB_RESOURCE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_ZIP_PREALLOC_BYTES: usize = 1024 * 1024;
+
+enum ZipEntryRead {
+    Ok(Vec<u8>),
+    NotFound,
+    TooLarge,
+}
 
 #[derive(Debug, Clone)]
 struct ManifestItem {
@@ -68,12 +79,38 @@ fn normalize_zip_path(base_dir: &Path, relative: &str) -> String {
         .join("/")
 }
 
-fn read_zip_entry(archive: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Option<Vec<u8>> {
+fn read_bounded_zip_file<R: Read>(
+    file: &mut R,
+    declared_size: u64,
+    max_bytes: u64,
+) -> ZipEntryRead {
+    let cap = usize::try_from(declared_size)
+        .unwrap_or(0)
+        .min(MAX_ZIP_PREALLOC_BYTES)
+        .min(usize::try_from(max_bytes).unwrap_or(MAX_ZIP_PREALLOC_BYTES));
+    let mut buf = Vec::with_capacity(cap);
+    if file
+        .by_ref()
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut buf)
+        .is_err()
+    {
+        return ZipEntryRead::NotFound;
+    }
+    if buf.len() as u64 > max_bytes {
+        return ZipEntryRead::TooLarge;
+    }
+    ZipEntryRead::Ok(buf)
+}
+
+fn read_zip_entry_bounded(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+    max_bytes: u64,
+) -> ZipEntryRead {
     if let Ok(mut file) = archive.by_name(name) {
-        let mut buf = Vec::with_capacity(usize::try_from(file.size()).unwrap_or(0));
-        if file.read_to_end(&mut buf).is_ok() {
-            return Some(buf);
-        }
+        let size = file.size();
+        return read_bounded_zip_file(&mut file, size, max_bytes);
     }
     let target_lower = name.to_lowercase();
     let mut matched_idx = None;
@@ -86,11 +123,25 @@ fn read_zip_entry(archive: &mut ZipArchive<Cursor<&[u8]>>, name: &str) -> Option
             break;
         }
     }
-    let idx = matched_idx?;
-    let mut file = archive.by_index(idx).ok()?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf).ok()?;
-    Some(buf)
+    let Some(idx) = matched_idx else {
+        return ZipEntryRead::NotFound;
+    };
+    let Ok(mut file) = archive.by_index(idx) else {
+        return ZipEntryRead::NotFound;
+    };
+    let size = file.size();
+    read_bounded_zip_file(&mut file, size, max_bytes)
+}
+
+fn read_zip_entry(
+    archive: &mut ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+    max_bytes: u64,
+) -> Option<Vec<u8>> {
+    match read_zip_entry_bounded(archive, name, max_bytes) {
+        ZipEntryRead::Ok(bytes) => Some(bytes),
+        ZipEntryRead::NotFound | ZipEntryRead::TooLarge => None,
+    }
 }
 
 fn attr_value(e: &BytesStart<'_>, local_key: &str) -> Option<String> {
@@ -561,18 +612,19 @@ fn extract_cover(
         })?;
 
     let zip_path = normalize_zip_path(opf_dir, &candidate.href);
-    let bytes = read_zip_entry(archive, &zip_path)?;
+    let bytes = read_zip_entry(archive, &zip_path, MAX_EPUB_RESOURCE_BYTES)?;
     if bytes.is_empty() {
         return None;
     }
-    let mime_type = if candidate.media_type.starts_with("image/") {
+    let declared_mime = if candidate.media_type.starts_with("image/") {
         candidate.media_type.clone()
     } else {
         guess_epub_mime(&zip_path).to_string()
     };
+    let safe_mime = validate_safe_cover_image(Some(&declared_mime), &bytes).ok()?;
     Some(CoverPayload {
         bytes: Bytes::from(bytes),
-        mime_type,
+        mime_type: safe_mime,
     })
 }
 
@@ -591,7 +643,7 @@ fn extract_toc(
         let nav_dir = Path::new(&nav_path)
             .parent()
             .unwrap_or_else(|| Path::new(""));
-        if let Some(bytes) = read_zip_entry(archive, &nav_path) {
+        if let Some(bytes) = read_zip_entry(archive, &nav_path, MAX_EPUB_METADATA_BYTES) {
             nav_toc = parse_nav_xhtml_toc(&bytes, nav_dir);
         }
     }
@@ -611,7 +663,7 @@ fn extract_toc(
         let ncx_dir = Path::new(&ncx_path)
             .parent()
             .unwrap_or_else(|| Path::new(""));
-        if let Some(bytes) = read_zip_entry(archive, &ncx_path) {
+        if let Some(bytes) = read_zip_entry(archive, &ncx_path, MAX_EPUB_METADATA_BYTES) {
             ncx_toc = parse_ncx_toc(&bytes, ncx_dir);
         }
     }
@@ -644,11 +696,15 @@ pub fn parse_epub(file_bytes: &[u8], fallback_title: &str) -> DomainResult<Parse
     let mut archive = ZipArchive::new(cursor)
         .map_err(|e| DomainError::Validation(format!("invalid EPUB archive: {e}")))?;
 
-    let container_bytes = read_zip_entry(&mut archive, "META-INF/container.xml")
-        .ok_or_else(|| DomainError::Validation("EPUB missing META-INF/container.xml".into()))?;
+    let container_bytes = read_zip_entry(
+        &mut archive,
+        "META-INF/container.xml",
+        MAX_EPUB_METADATA_BYTES,
+    )
+    .ok_or_else(|| DomainError::Validation("EPUB missing META-INF/container.xml".into()))?;
     let opf_path = find_opf_path(&container_bytes)
         .ok_or_else(|| DomainError::Validation("EPUB container.xml missing rootfile".into()))?;
-    let opf_bytes = read_zip_entry(&mut archive, &opf_path)
+    let opf_bytes = read_zip_entry(&mut archive, &opf_path, MAX_EPUB_METADATA_BYTES)
         .ok_or_else(|| DomainError::Validation(format!("EPUB missing OPF package: {opf_path}")))?;
 
     let opf_dir = Path::new(&opf_path)
@@ -694,11 +750,15 @@ pub fn list_epub_toc(file_bytes: &[u8]) -> DomainResult<Vec<TocItem>> {
     let cursor = Cursor::new(file_bytes);
     let mut archive = ZipArchive::new(cursor)
         .map_err(|e| DomainError::Validation(format!("invalid EPUB archive: {e}")))?;
-    let container_bytes = read_zip_entry(&mut archive, "META-INF/container.xml")
-        .ok_or_else(|| DomainError::Validation("EPUB missing META-INF/container.xml".into()))?;
+    let container_bytes = read_zip_entry(
+        &mut archive,
+        "META-INF/container.xml",
+        MAX_EPUB_METADATA_BYTES,
+    )
+    .ok_or_else(|| DomainError::Validation("EPUB missing META-INF/container.xml".into()))?;
     let opf_path = find_opf_path(&container_bytes)
         .ok_or_else(|| DomainError::Validation("EPUB container.xml missing rootfile".into()))?;
-    let opf_bytes = read_zip_entry(&mut archive, &opf_path)
+    let opf_bytes = read_zip_entry(&mut archive, &opf_path, MAX_EPUB_METADATA_BYTES)
         .ok_or_else(|| DomainError::Validation(format!("EPUB missing OPF package: {opf_path}")))?;
     let opf_dir = Path::new(&opf_path)
         .parent()
@@ -715,11 +775,88 @@ pub fn read_epub_resource(file_bytes: &[u8], resource_path: &str) -> DomainResul
     let cursor = Cursor::new(file_bytes);
     let mut archive = ZipArchive::new(cursor)
         .map_err(|e| DomainError::Validation(format!("invalid EPUB archive: {e}")))?;
-    let bytes = read_zip_entry(&mut archive, &normalized)
-        .ok_or_else(|| DomainError::NotFound(format!("epub resource {normalized} not found")))?;
+    let bytes = match read_zip_entry_bounded(&mut archive, &normalized, MAX_EPUB_RESOURCE_BYTES) {
+        ZipEntryRead::Ok(bytes) => bytes,
+        ZipEntryRead::TooLarge => {
+            return Err(DomainError::Validation(format!(
+                "epub resource {normalized} exceeds maximum allowed size"
+            )));
+        }
+        ZipEntryRead::NotFound => {
+            return Err(DomainError::NotFound(format!(
+                "epub resource {normalized} not found"
+            )));
+        }
+    };
     let mime_type = guess_epub_mime(&normalized).to_string();
     Ok(BookAsset {
         bytes: Bytes::from(bytes),
         mime_type,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+    use zip::{CompressionMethod, ZipWriter};
+
+    use super::*;
+
+    #[test]
+    fn extract_cover_rejects_svg_and_falls_back_to_placeholder() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zw = ZipWriter::new(&mut cursor);
+            let opts = SimpleFileOptions::default();
+            zw.start_file("META-INF/container.xml", opts).unwrap();
+            zw.write_all(
+                br#"<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>"#,
+            )
+            .unwrap();
+            zw.start_file("OEBPS/content.opf", opts).unwrap();
+            zw.write_all(
+                br#"<?xml version="1.0"?><package version="3.0" xmlns="http://www.idpf.org/opf"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Evil SVG</dc:title></metadata><manifest><item id="cover" href="cover.svg" media-type="image/svg+xml" properties="cover-image"/><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>"#,
+            )
+            .unwrap();
+            zw.start_file("OEBPS/cover.svg", opts).unwrap();
+            zw.write_all(
+                br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#,
+            )
+            .unwrap();
+            zw.start_file("OEBPS/ch1.xhtml", opts).unwrap();
+            zw.write_all(b"<html/>").unwrap();
+            zw.finish().unwrap();
+        }
+        let parsed = parse_epub(&cursor.into_inner(), "Fallback").unwrap();
+        let cover = parsed.cover.expect("placeholder cover");
+        let text = String::from_utf8_lossy(&cover.bytes);
+        assert!(
+            !text.contains("alert(1)"),
+            "untrusted EPUB SVG cover must never be extracted"
+        );
+    }
+
+    #[test]
+    fn read_zip_entry_bounded_blocks_oversized_entries() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut zw = ZipWriter::new(&mut cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zw.start_file("bomb.txt", opts).unwrap();
+            // Highly compressible 64 KiB of zeroes
+            zw.write_all(&vec![b'A'; 64 * 1024]).unwrap();
+            zw.finish().unwrap();
+        }
+        let raw = cursor.into_inner();
+        let mut archive = ZipArchive::new(Cursor::new(raw.as_slice())).unwrap();
+        assert!(matches!(
+            read_zip_entry_bounded(&mut archive, "bomb.txt", 1024),
+            ZipEntryRead::TooLarge
+        ));
+        assert!(matches!(
+            read_zip_entry_bounded(&mut archive, "bomb.txt", 128 * 1024),
+            ZipEntryRead::Ok(ref b) if b.len() == 64 * 1024
+        ));
+    }
 }

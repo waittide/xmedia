@@ -3,7 +3,9 @@ use std::fmt::Write as _;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -436,6 +438,12 @@ async fn opds_cover(
     if let Ok(ct) = HeaderValue::from_str(&cover.mime_type) {
         res.headers_mut().insert(CONTENT_TYPE, ct);
     }
+    res.headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    res.headers_mut().insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:"),
+    );
     res.headers_mut().insert(
         CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=600"),

@@ -94,12 +94,18 @@ impl BookStoragePort for LocalBookStorage {
         let file_hash = fast_bytes_fingerprint(&data);
         let file_size = data.len() as u64;
 
-        tokio::fs::write(&tmp_path, &data)
-            .await
-            .map_err(|e| DomainError::Storage(format!("failed to write temp managed book: {e}")))?;
-        tokio::fs::rename(&tmp_path, &full_path)
-            .await
-            .map_err(|e| DomainError::Storage(format!("failed to commit managed book: {e}")))?;
+        if let Err(e) = tokio::fs::write(&tmp_path, &data).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(DomainError::Storage(format!(
+                "failed to write temp managed book: {e}"
+            )));
+        }
+        if let Err(e) = tokio::fs::rename(&tmp_path, &full_path).await {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(DomainError::Storage(format!(
+                "failed to commit managed book: {e}"
+            )));
+        }
 
         Ok(StoredManagedBook {
             storage_key: file_name,
