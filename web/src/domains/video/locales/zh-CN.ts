@@ -25,7 +25,7 @@ export default {
     favorites: '收藏',
     moviesAndClips: '影片与视频',
     shows: '剧集与番剧',
-    newShelf: '新建片单',
+    newShelf: '创建片单',
     shelfNamePlaceholder: '片单名称，回车创建…',
   },
   home: {
@@ -65,7 +65,7 @@ export default {
     empty: '暂无收藏内容',
   },
   shelf: {
-    createTitle: '新建片单',
+    createTitle: '创建片单',
     createPrompt: '请输入新片单名称：',
     namePlaceholder: '例如：周末科幻马拉松',
     renameTitle: '编辑片单',

@@ -150,9 +150,9 @@ export default {
   shelves: {
     title: '个人书架',
     subtitle: '',
-    newShelf: '新建书架',
+    newShelf: '创建书架',
     shelfNamePlaceholder: '书架名称，回车创建…',
-    createShelf: '新建书架',
+    createShelf: '创建书架',
     editShelf: '编辑书架',
     deleteShelf: '删除书架',
     shelfName: '书架名称',

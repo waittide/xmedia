@@ -4,7 +4,7 @@ export default {
     allBooks: '全部',
     recentReading: '继续',
     favorites: '收藏',
-    newShelf: '新建书架',
+    newShelf: '创建书架',
     shelfNamePlaceholder: '书架名称，回车创建…',
   },
   collections: {

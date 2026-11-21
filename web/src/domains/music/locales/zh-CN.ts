@@ -26,7 +26,7 @@ export default {
     songs: '歌曲',
     albums: '专辑',
     artists: '艺术家',
-    newPlaylist: '新建歌单',
+    newPlaylist: '创建歌单',
     playlistNamePlaceholder: '歌单名称，回车创建…',
   },
   collections: {
@@ -109,7 +109,7 @@ export default {
     empty: '暂无收藏内容',
   },
   playlist: {
-    createTitle: '新建歌单',
+    createTitle: '创建歌单',
     createPrompt: '请输入新歌单名称：',
     namePlaceholder: '例如：深夜爵士精选',
     renameTitle: '编辑歌单名称',
