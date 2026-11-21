@@ -63,13 +63,31 @@ const errorMsg = ref<string | null>(null)
 const localJob = ref<OnlineDownloadJobDto | null>(null)
 
 const activeJob = computed<OnlineDownloadJobDto | null>(() => {
-  if (!localJob.value) return null
-  if (props.externalJob && props.externalJob.id === localJob.value.id) {
-    return props.externalJob
+  if (localJob.value) {
+    if (props.externalJob && props.externalJob.id === localJob.value.id) {
+      return props.externalJob
+    }
+    return (
+      onlineDownloadsStore.jobs.find((job) => job.id === localJob.value?.id) ??
+      localJob.value
+    )
   }
+  if (props.externalJob) {
+    return (
+      onlineDownloadsStore.jobs.find((job) => job.id === props.externalJob?.id) ??
+      props.externalJob
+    )
+  }
+  const target = props.target
+  if (!target) return null
   return (
-    onlineDownloadsStore.jobs.find((job) => job.id === localJob.value?.id) ??
-    localJob.value
+    onlineDownloadsStore.jobs.find(
+      (job) =>
+        isOnlineDownloadJobActive(job.status) &&
+        job.source_id === target.sourceId &&
+        job.book_name === target.bookName &&
+        job.author === target.author,
+    ) ?? null
   )
 })
 

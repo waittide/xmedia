@@ -41,6 +41,9 @@ let varLoadSeq = 0
 function resetEditorState(): void {
   actionSeq += 1
   varLoadSeq += 1
+  for (const k of Object.keys(formValues)) {
+    delete formValues[k]
+  }
   runningActionKey.value = null
   showVarEditor.value = false
   rawVariableDraft.value = ''

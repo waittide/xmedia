@@ -12,8 +12,31 @@ import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 
+function clearScopedBrowserCaches(): void {
+  try {
+    sessionStorage.removeItem('xmedia_online_reader_ctx')
+  } catch {
+    // ignore
+  }
+  try {
+    const keysToRemove: string[] = []
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith('xmedia.epub.locations:')) {
+        keysToRemove.push(k)
+      }
+    }
+    for (const k of keysToRemove) {
+      localStorage.removeItem(k)
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export function resetAllSessionState(): void {
   clearHomeCache()
+  clearScopedBrowserCaches()
   useDialogStore().resetState()
   useSnackbarStore().resetState()
   usePreferencesStore().resetState()

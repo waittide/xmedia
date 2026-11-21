@@ -227,6 +227,7 @@ onMounted(async () => {
       height: '100%',
       flow: flowMode,
       spread: 'none',
+      allowScriptedContent: false,
     })
     rendition = localRendition
 
@@ -296,6 +297,15 @@ onMounted(async () => {
         })
     }
   } catch (err) {
+    const r = rendition as EpubRenditionWithOff | null
+    if (r && typeof r.off === 'function') {
+      r.off('keydown', handleRenditionKeydown)
+      r.off('relocated', handleRelocated)
+    }
+    rendition?.destroy()
+    book?.destroy()
+    rendition = null
+    book = null
     if (unmounted) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
@@ -320,6 +330,7 @@ watch(
   (nextFlow) => {
     if (!rendition) return
     rendition.flow(nextFlow === 'scrolled' ? 'scrolled-doc' : 'paginated')
+    applyRenditionTheme()
   },
 )
 

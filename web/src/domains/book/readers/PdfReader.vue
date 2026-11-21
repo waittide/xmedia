@@ -75,8 +75,8 @@ async function renderPage(pageNum: number): Promise<void> {
     pageInput.value = currentPage.value
     return
   }
+  const prevPage = currentPage.value
   const clamped = Math.min(totalPages.value, Math.max(1, Math.trunc(pageNum)))
-  currentPage.value = clamped
   pageInput.value = clamped
 
   const seq = ++renderSeq
@@ -93,53 +93,70 @@ async function renderPage(pageNum: number): Promise<void> {
   }
   if (seq !== renderSeq || unmounted || !pdfDoc || !canvasEl.value) return
 
-  const page = await pdfDoc.getPage(clamped)
-  if (seq !== renderSeq || unmounted || !canvasEl.value) return
-
-  if (fitMode.value === 'width' || fitMode.value === 'page') {
-    const computedScale = await computeFitScale(page, fitMode.value)
-    if (seq !== renderSeq || unmounted || !canvasEl.value) return
-    scale.value = computedScale
-  }
-
-  const dpr = window.devicePixelRatio || 1
-  const viewport = page.getViewport({ scale: scale.value })
-
-  const canvas = canvasEl.value
-  const ctx = canvas.getContext('2d')
-  if (!ctx) return
-
-  canvas.width = Math.floor(viewport.width * dpr)
-  canvas.height = Math.floor(viewport.height * dpr)
-  canvas.style.width = `${Math.floor(viewport.width)}px`
-  canvas.style.height = `${Math.floor(viewport.height)}px`
-
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-
-  const task = page.render({
-    canvasContext: ctx,
-    canvas,
-    viewport,
-  })
-  activeRenderTask = task
+  let page: pdfjsLib.PDFPageProxy | null = null
   try {
-    await task.promise
-  } catch {
-    return
+    page = await pdfDoc.getPage(clamped)
+    if (seq !== renderSeq || unmounted || !canvasEl.value) return
+
+    if (fitMode.value === 'width' || fitMode.value === 'page') {
+      const computedScale = await computeFitScale(page, fitMode.value)
+      if (seq !== renderSeq || unmounted || !canvasEl.value) return
+      scale.value = computedScale
+    }
+
+    const dpr = window.devicePixelRatio || 1
+    const viewport = page.getViewport({ scale: scale.value })
+
+    const canvas = canvasEl.value
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    canvas.width = Math.floor(viewport.width * dpr)
+    canvas.height = Math.floor(viewport.height * dpr)
+    canvas.style.width = `${Math.floor(viewport.width)}px`
+    canvas.style.height = `${Math.floor(viewport.height)}px`
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+
+    const task = page.render({
+      canvasContext: ctx,
+      canvas,
+      viewport,
+    })
+    activeRenderTask = task
+    try {
+      await task.promise
+    } finally {
+      if (activeRenderTask === task) {
+        activeRenderTask = null
+      }
+    }
+
+    if (seq !== renderSeq || unmounted) return
+    errorMsg.value = ''
+    currentPage.value = clamped
+    pageInput.value = clamped
+
+    const pct = (clamped / Math.max(1, totalPages.value)) * 100
+    emit('progress', {
+      progress_percent: Number(pct.toFixed(2)),
+      locator: `page:${clamped}`,
+      page_number: clamped,
+    })
+  } catch (err) {
+    if (seq !== renderSeq || unmounted) return
+    const name = err instanceof Error ? err.name : ''
+    if (name === 'RenderingCancelledException') return
+    currentPage.value = prevPage
+    pageInput.value = prevPage
+    errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    if (activeRenderTask === task) {
-      activeRenderTask = null
+    try {
+      page?.cleanup()
+    } catch {
+      // ignore page cleanup failure
     }
   }
-
-  if (seq !== renderSeq || unmounted) return
-
-  const pct = (clamped / Math.max(1, totalPages.value)) * 100
-  emit('progress', {
-    progress_percent: Number(pct.toFixed(2)),
-    locator: `page:${clamped}`,
-    page_number: clamped,
-  })
 }
 
 function handlePageSubmit(): void {
@@ -239,6 +256,10 @@ onBeforeUnmount(() => {
   if (resizeTimer) clearTimeout(resizeTimer)
   activeRenderTask?.cancel()
   activeRenderTask = null
+  if (canvasEl.value) {
+    canvasEl.value.width = 0
+    canvasEl.value.height = 0
+  }
   void pdfDoc?.cleanup()
   pdfDoc = null
   void loadingTask?.destroy()
@@ -255,6 +276,7 @@ onBeforeUnmount(() => {
         :disabled="currentPage <= 1"
         class="md-icon-btn md-icon-btn-sm md-state disabled:opacity-35"
         :title="t('reader.prevPage')"
+        :aria-label="t('reader.prevPage')"
         @click="renderPage(currentPage - 1)"
       >
         <LuChevronLeft class="h-4 w-4" />
@@ -266,6 +288,7 @@ onBeforeUnmount(() => {
           type="number"
           min="1"
           :max="totalPages"
+          :aria-label="t('reader.page')"
           class="md-input h-8 w-16 !px-2 text-center text-xs"
         />
         <span class="text-[var(--md-sys-color-on-surface-variant)]">/ {{ totalPages }}</span>
@@ -276,6 +299,7 @@ onBeforeUnmount(() => {
         :disabled="currentPage >= totalPages"
         class="md-icon-btn md-icon-btn-sm md-state disabled:opacity-35"
         :title="t('reader.nextPage')"
+        :aria-label="t('reader.nextPage')"
         @click="renderPage(currentPage + 1)"
       >
         <LuChevronRight class="h-4 w-4" />
@@ -287,6 +311,7 @@ onBeforeUnmount(() => {
         type="button"
         class="md-icon-btn md-icon-btn-sm md-state"
         :title="t('reader.zoomOut')"
+        :aria-label="t('reader.zoomOut')"
         @click="changeScale(-0.2)"
       >
         <LuZoomOut class="h-4 w-4" />
@@ -298,6 +323,7 @@ onBeforeUnmount(() => {
         type="button"
         class="md-icon-btn md-icon-btn-sm md-state"
         :title="t('reader.zoomIn')"
+        :aria-label="t('reader.zoomIn')"
         @click="changeScale(0.2)"
       >
         <LuZoomIn class="h-4 w-4" />

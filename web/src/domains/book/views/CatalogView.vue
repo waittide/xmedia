@@ -58,8 +58,16 @@ const searchScopeOptions = computed<SegmentedOption<CatalogSearchScope>[]>(() =>
   { value: 'online', label: t('catalog.scopeOnline'), icon: LuGlobe },
 ])
 
-function buildQueryFromStore(): Record<string, string> {
-  const q: Record<string, string> = {}
+function readQueryList(val: unknown): string[] {
+  if (typeof val === 'string') return val ? [val] : []
+  if (Array.isArray(val)) {
+    return val.filter((v): v is string => typeof v === 'string' && v.length > 0)
+  }
+  return []
+}
+
+function buildQueryFromStore(): Record<string, string | string[]> {
+  const q: Record<string, string | string[]> = {}
   if (searchScope.value === 'online') {
     q.scope = 'online'
     if (onlineSourceId.value) {
@@ -80,12 +88,21 @@ function buildQueryFromStore(): Record<string, string> {
   }
   if (catalogStore.filterAuthors.length === 1) {
     q.author = catalogStore.filterAuthors[0]!
+  } else if (catalogStore.filterAuthors.length > 1) {
+    q.author = [...catalogStore.filterAuthors]
   }
   if (catalogStore.filterTags.length === 1) {
     q.tag = catalogStore.filterTags[0]!
+  } else if (catalogStore.filterTags.length > 1) {
+    q.tag = [...catalogStore.filterTags]
   }
   if (catalogStore.filterFormats.length === 1) {
     q.format = catalogStore.filterFormats[0]!
+  } else if (catalogStore.filterFormats.length > 1) {
+    q.format = [...catalogStore.filterFormats]
+  }
+  if (catalogStore.includeMissing) {
+    q.missing = '1'
   }
   if (catalogStore.sortBy !== 'created_at') {
     q.sort_by = catalogStore.sortBy
@@ -99,12 +116,21 @@ function buildQueryFromStore(): Record<string, string> {
   return q
 }
 
+function queryValuesEqual(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    const la = readQueryList(a)
+    const lb = readQueryList(b)
+    return la.length === lb.length && la.every((v, i) => v === lb[i])
+  }
+  return a === b
+}
+
 function syncStoreToRouteQuery(): void {
   const next = buildQueryFromStore()
   const cur = route.query
   const same =
     Object.keys(next).length === Object.keys(cur).length &&
-    Object.entries(next).every(([k, v]) => cur[k] === v)
+    Object.entries(next).every(([k, v]) => queryValuesEqual(cur[k], v))
   if (same) return
   syncingRouteQuery = true
   void router.replace({ path: '/book/catalog', query: next }).finally(() => {
@@ -118,9 +144,12 @@ function applyQueryParamsFromRoute(): void {
   const qLibrary = typeof route.query.library === 'string' ? route.query.library : ''
   const qShelf = typeof route.query.shelf === 'string' ? route.query.shelf : ''
   const qKeyword = typeof route.query.q === 'string' ? route.query.q : ''
-  const qAuthor = typeof route.query.author === 'string' ? route.query.author : ''
-  const qTag = typeof route.query.tag === 'string' ? route.query.tag : ''
-  const qFormat = typeof route.query.format === 'string' ? route.query.format : ''
+  const qAuthors = readQueryList(route.query.author)
+  const qTags = readQueryList(route.query.tag)
+  const qFormats = readQueryList(route.query.format).filter(
+    (f): f is 'epub' | 'txt' | 'pdf' => f === 'epub' || f === 'txt' || f === 'pdf',
+  )
+  const qMissing = route.query.missing === '1' || route.query.missing === 'true'
   const qSortBy = typeof route.query.sort_by === 'string' ? route.query.sort_by : ''
   const qSortOrder = typeof route.query.sort_order === 'string' ? route.query.sort_order : ''
   const qPage = typeof route.query.page === 'string' ? Number.parseInt(route.query.page, 10) : NaN
@@ -146,10 +175,10 @@ function applyQueryParamsFromRoute(): void {
   catalogStore.activeLibraryId = qLibrary
   catalogStore.activeShelfId = qShelf
   catalogStore.keyword = qKeyword
-  catalogStore.filterAuthors = qAuthor ? [qAuthor] : []
-  catalogStore.filterTags = qTag ? [qTag] : []
-  catalogStore.filterFormats =
-    qFormat === 'epub' || qFormat === 'txt' || qFormat === 'pdf' ? [qFormat] : []
+  catalogStore.filterAuthors = qAuthors
+  catalogStore.filterTags = qTags
+  catalogStore.filterFormats = qFormats
+  catalogStore.includeMissing = qMissing
   catalogStore.sortBy =
     qSortBy === 'created_at' ||
     qSortBy === 'updated_at' ||

@@ -401,6 +401,7 @@ async function initReader(): Promise<void> {
           cover_url: resolvedCoverUrl,
           intro: resolvedIntro,
         })
+        if (unmounted) return
         resolvedTocUrl = info.detail.toc_url
         resolvedName = info.detail.name || resolvedName
         resolvedAuthor = info.detail.author || resolvedAuthor
@@ -437,6 +438,7 @@ async function initReader(): Promise<void> {
     } else {
       try {
         const shelf = await onlineBookApi.listShelf()
+        if (unmounted) return
         const found = shelf.find((b) => b.id === shelfIdQuery)
         if (found) {
           readerCtx.value = {
@@ -466,6 +468,7 @@ async function initReader(): Promise<void> {
     readerCtx.value = storedCtx
   }
 
+  if (unmounted) return
   if (!readerCtx.value) {
     void router.replace({ path: '/book/catalog', query: { scope: 'online' } })
     return
@@ -668,6 +671,7 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
       cover_url: item.book.cover_url,
       intro: item.book.intro,
     })
+    if (unmounted) return
     const nextTocUrl = detailRes.detail.toc_url?.trim()
     if (!nextTocUrl) {
       throw new Error('目标书源未解析到目录地址，未切换')
@@ -688,6 +692,7 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
       nextCtx.tocUrl,
       buildBookJsCtxFrom(nextCtx, activeIndex.value, previousTitle),
     )
+    if (unmounted) return
     if (tocRes.chapters.length === 0) {
       throw new Error('目标书源目录为空，未切换')
     }
@@ -709,6 +714,7 @@ async function handleSelectAltSource(item: AggregatedSearchItemDto): Promise<voi
         book_url: nextCtx.bookUrl,
         toc_url: nextCtx.tocUrl,
       })
+      if (unmounted) return
     }
 
     // Commit switched source atomically
@@ -790,6 +796,7 @@ onBeforeUnmount(() => {
           type="button"
           class="md-icon-btn md-icon-btn-sm md-state"
           title="返回在线搜索"
+          aria-label="返回在线搜索"
           @click="router.push({ path: '/book/catalog', query: { scope: 'online' } })"
         >
           <LuArrowLeft class="h-4 w-4" />
@@ -819,6 +826,7 @@ onBeforeUnmount(() => {
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
             title="减小字号"
+            aria-label="减小字号"
             @click="fontSize = fontSize - 1"
           >
             <LuMinus class="h-3.5 w-3.5" />
@@ -828,6 +836,7 @@ onBeforeUnmount(() => {
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
             title="增大字号"
+            aria-label="增大字号"
             @click="fontSize = fontSize + 1"
           >
             <LuPlus class="h-3.5 w-3.5" />
