@@ -40,7 +40,7 @@ const rootsFolded = ref(false)
   <Transition name="md-fade">
     <div
       v-if="mobileMenuOpen"
-      class="fixed inset-0 z-30 bg-black/40 backdrop-blur-[1px] md:hidden"
+      class="fixed inset-0 z-30 bg-[var(--md-sys-color-scrim)]/32 md:hidden"
       @click="emit('closeMobile')"
     />
   </Transition>

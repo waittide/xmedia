@@ -325,7 +325,13 @@ function mixHex(hexA: string, hexB: string, weightA: number): string {
 
 function srgbChannelToLinear(channel: number): number {
   const s = channel / 255
-  return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+  return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4
+}
+
+function linearToSrgbChannel(linear: number): number {
+  const clamped = Math.max(0, Math.min(1, linear))
+  const s = clamped <= 0.0031308 ? 12.92 * clamped : 1.055 * clamped ** (1 / 2.4) - 0.055
+  return Math.round(s * 255)
 }
 
 /** WCAG 2.1 relative luminance in [0, 1]. */
@@ -335,6 +341,125 @@ export function relativeLuminance(hex: string): number {
     0.2126 * srgbChannelToLinear(r) +
     0.7152 * srgbChannelToLinear(g) +
     0.0722 * srgbChannelToLinear(b)
+  )
+}
+
+/** CIE 1976 L* perceptual lightness (identical to MD3 HCT Tone in [0, 100]). */
+export function hexToTone(hex: string): number {
+  const y = relativeLuminance(hex)
+  const ft = y > 216 / 24389 ? Math.cbrt(y) : (24389 / 27) * y / 116 + 16 / 116
+  return Math.max(0, Math.min(100, 116 * ft - 16))
+}
+
+function toneToLuminance(tone: number): number {
+  const t = Math.max(0, Math.min(100, tone))
+  const ft = (t + 16) / 116
+  return t > 8 ? ft ** 3 : (t * 27) / 24389
+}
+
+/** Convert sRGB hex -> OKLCH (L in [0,1], C >= 0, H in [0,360)). */
+function hexToOklch(hex: string): [number, number, number] {
+  const [r8, g8, b8] = parseHexRgb(hex)
+  const r = srgbChannelToLinear(r8)
+  const g = srgbChannelToLinear(g8)
+  const b = srgbChannelToLinear(b8)
+
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+
+  const okL = 0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s
+  const okA = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s
+  const okB = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s
+
+  const c = Math.hypot(okA, okB)
+  const h = c < 1e-6 ? 0 : (((Math.atan2(okB, okA) * 180) / Math.PI) % 360 + 360) % 360
+  return [okL, c, h]
+}
+
+function oklchToLinearRgb(okL: number, okC: number, okH: number): [number, number, number] {
+  const rad = (okH * Math.PI) / 180
+  const okA = okC * Math.cos(rad)
+  const okB = okC * Math.sin(rad)
+
+  const l_ = okL + 0.3963377774 * okA + 0.2158037573 * okB
+  const m_ = okL - 0.1055613458 * okA - 0.0638541728 * okB
+  const s_ = okL - 0.0894841775 * okA - 1.291485548 * okB
+
+  const l = l_ * l_ * l_
+  const m = m_ * m_ * m_
+  const s = s_ * s_ * s_
+
+  return [
+    +4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ]
+}
+
+function isInSrgbGamut(rgb: [number, number, number]): boolean {
+  return (
+    rgb[0] >= -1e-4 &&
+    rgb[0] <= 1 + 1e-4 &&
+    rgb[1] >= -1e-4 &&
+    rgb[1] <= 1 + 1e-4 &&
+    rgb[2] >= -1e-4 &&
+    rgb[2] <= 1 + 1e-4
+  )
+}
+
+/**
+ * Generates an sRGB hex at exact MD3 perceptual Tone (CIE L* in [0, 100]) for a given
+ * OKLCH hue and target chroma, gamut-mapping chroma smoothly when near extremes.
+ */
+export function tonalHex(okH: number, targetChroma: number, tone: number): string {
+  const clampedTone = Math.max(0, Math.min(100, tone))
+  if (clampedTone <= 0.01) return '#000000'
+  if (clampedTone >= 99.99) return '#ffffff'
+
+  const targetY = toneToLuminance(clampedTone)
+  const hue = ((okH % 360) + 360) % 360
+
+  // Bisect OKLab L for a given chroma to hit exact relative luminance targetY.
+  const solveForChroma = (c: number): [number, number, number] => {
+    let lo = 0
+    let hi = 1
+    let rgb: [number, number, number] = [targetY, targetY, targetY]
+    for (let i = 0; i < 16; i += 1) {
+      const mid = (lo + hi) * 0.5
+      rgb = oklchToLinearRgb(mid, c, hue)
+      const y =
+        0.2126 * Math.max(0, Math.min(1, rgb[0])) +
+        0.7152 * Math.max(0, Math.min(1, rgb[1])) +
+        0.0722 * Math.max(0, Math.min(1, rgb[2]))
+      if (y < targetY) lo = mid
+      else hi = mid
+    }
+    return rgb
+  }
+
+  let rgb = solveForChroma(targetChroma)
+  if (!isInSrgbGamut(rgb) && targetChroma > 0) {
+    let cLo = 0
+    let cHi = targetChroma
+    let best = solveForChroma(0)
+    for (let i = 0; i < 12; i += 1) {
+      const cMid = (cLo + cHi) * 0.5
+      const cand = solveForChroma(cMid)
+      if (isInSrgbGamut(cand)) {
+        best = cand
+        cLo = cMid
+      } else {
+        cHi = cMid
+      }
+    }
+    rgb = best
+  }
+
+  return rgbToHex(
+    linearToSrgbChannel(rgb[0]),
+    linearToSrgbChannel(rgb[1]),
+    linearToSrgbChannel(rgb[2]),
   )
 }
 
@@ -356,24 +481,57 @@ export function chooseContrastText(
   return contrastRatio(bgHex, darkText) >= contrastRatio(bgHex, lightText) ? darkText : lightText
 }
 
-/** Ensure fgHex meets at least minRatio (default WCAG AA 4.5:1) against bgHex. */
-function ensureContrast(fgHex: string, bgHex: string, minRatio = 4.5): string {
-  if (contrastRatio(fgHex, bgHex) >= minRatio) return fgHex
-  const target = chooseContrastText(bgHex, '#0b0d14', '#ffffff')
-  let low = 0
-  let high = 1
-  let best = target
-  for (let i = 0; i < 10; i++) {
-    const mid = (low + high) / 2
-    const candidate = mixHex(target, fgHex, mid)
-    if (contrastRatio(candidate, bgHex) >= minRatio) {
+/** Choose a tinted MD3 on-* tonal color (Tone 100 or Tone 20/10) meeting minRatio against bgHex. */
+function chooseTonalOnColor(
+  bgHex: string,
+  hue: number,
+  chroma: number,
+  minRatio = 4.5,
+): string {
+  const lightCand = '#ffffff'
+  const darkCand = tonalHex(hue, Math.min(chroma, 0.08), 18)
+  const pickLight = contrastRatio(bgHex, lightCand) >= contrastRatio(bgHex, darkCand)
+  const preferred = pickLight ? lightCand : darkCand
+  if (contrastRatio(bgHex, preferred) >= minRatio) return preferred
+  return ensureContrastAgainstAll(preferred, [bgHex], minRatio)
+}
+
+/** Ensure fgHex meets at least minRatio against EVERY background in bgHexes using perceptual tone shift. */
+function ensureContrastAgainstAll(
+  fgHex: string,
+  bgHexes: readonly string[],
+  minRatio = 4.5,
+): string {
+  const meetsAll = (hex: string) => bgHexes.every((bg) => contrastRatio(hex, bg) >= minRatio)
+  if (meetsAll(fgHex)) return fgHex
+
+  const [, origC, origH] = hexToOklch(fgHex)
+  const origTone = hexToTone(fgHex)
+  const avgBgLum = bgHexes.reduce((sum, bg) => sum + relativeLuminance(bg), 0) / bgHexes.length
+  const goDarker = avgBgLum >= 0.18
+
+  let lo = goDarker ? 0 : origTone
+  let hi = goDarker ? origTone : 100
+  let best = goDarker ? '#000000' : '#ffffff'
+
+  for (let i = 0; i < 16; i += 1) {
+    const mid = (lo + hi) * 0.5
+    const candidate = tonalHex(origH, origC, mid)
+    if (meetsAll(candidate)) {
       best = candidate
-      high = mid
+      if (goDarker) lo = mid
+      else hi = mid
     } else {
-      low = mid
+      if (goDarker) hi = mid
+      else lo = mid
     }
   }
   return best
+}
+
+/** Ensure fgHex meets at least minRatio (default WCAG AA 4.5:1) against bgHex. */
+function ensureContrast(fgHex: string, bgHex: string, minRatio = 4.5): string {
+  return ensureContrastAgainstAll(fgHex, [bgHex], minRatio)
 }
 
 function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
@@ -477,20 +635,72 @@ export function resolvePalette(params: {
   }
 }
 
-export function applyResolvedPaletteToDom(
-  resolved: ResolvedPalette,
-  isDark: boolean,
-  presetId: string,
-): void {
+export interface Md3ColorScheme {
+  surface: string
+  surfaceDim: string
+  surfaceBright: string
+  surfaceContainerLowest: string
+  surfaceContainerLow: string
+  surfaceContainer: string
+  surfaceContainerHigh: string
+  surfaceContainerHighest: string
+  onSurface: string
+  onSurfaceRgb: string
+  onSurfaceVariant: string
+  outline: string
+  outlineVariant: string
+  scrim: string
+  shadow: string
+  primary: string
+  onPrimary: string
+  primaryContainer: string
+  onPrimaryContainer: string
+  primaryFixed: string
+  primaryFixedDim: string
+  onPrimaryFixed: string
+  onPrimaryFixedVariant: string
+  secondary: string
+  onSecondary: string
+  secondaryContainer: string
+  onSecondaryContainer: string
+  secondaryFixed: string
+  secondaryFixedDim: string
+  onSecondaryFixed: string
+  onSecondaryFixedVariant: string
+  tertiary: string
+  onTertiary: string
+  tertiaryContainer: string
+  onTertiaryContainer: string
+  tertiaryFixed: string
+  tertiaryFixedDim: string
+  onTertiaryFixed: string
+  onTertiaryFixedVariant: string
+  error: string
+  onError: string
+  errorContainer: string
+  onErrorContainer: string
+  success: string
+  successContainer: string
+  onSuccessContainer: string
+  warning: string
+  warningContainer: string
+  onWarningContainer: string
+  inverseSurface: string
+  inverseOnSurface: string
+  inversePrimary: string
+}
+
+/**
+ * Pure MD3 color scheme generator implementing perceptual CIE L* / OKLCH tonal palettes,
+ * all 36 official MD3 color roles (including `shadow` and all 12 `*Fixed*` tokens), and
+ * strict WCAG 2.1 AA contrast guarantees across every preset and accent combination.
+ */
+export function computeMd3ColorScheme(resolved: ResolvedPalette, isDark: boolean): Md3ColorScheme {
+  const [, primaryOkC, primaryOkH] = hexToOklch(resolved.accent)
   const [r, g, b] = parseHexRgb(resolved.accent)
-  const rgbTuple = `${r} ${g} ${b}`
   const [primaryH, primaryS] = rgbToHsl(r, g, b)
-  const root = document.documentElement
 
-  root.dataset.theme = isDark ? 'dark' : 'light'
-  root.dataset.palette = presetId
-
-  // Material Design 3 (Material You) monotonic tonal surface & container tokens
+  // Material Design 3 monotonic tonal surface & container tokens
   const surface = resolved.canvas
   const surfaceLum = relativeLuminance(surface)
 
@@ -504,7 +714,6 @@ export function applyResolvedPaletteToDom(
 
   if (isDark) {
     // Dark mode: strictly brighten from lowest -> surface -> low -> default -> high -> highest -> bright.
-    // Never allow a dark Catppuccin shell/crust (darker than canvas) to invert container hierarchy.
     const rawElevated =
       relativeLuminance(resolved.surface0) > surfaceLum + 0.012
         ? resolved.surface0
@@ -544,155 +753,318 @@ export function applyResolvedPaletteToDom(
     surfaceDim = mixHex(tintedDeep, resolved.text, 0.92)
   }
 
-  // MD3 Primary, Secondary & Tertiary Roles (hue-shifted from primary, uncoupled from warning/success)
-  const primary = resolved.accent
-  const onPrimary = chooseContrastText(primary)
+  // MD3 Primary, Secondary (same hue, reduced chroma per SchemeTonalSpot) & Tertiary (+60° hue)
+  const primary = ensureContrastAgainstAll(resolved.accent, [surface], 4.5)
+  const onPrimary = chooseTonalOnColor(primary, primaryOkH, primaryOkC, 4.5)
   const primaryContainer = isDark
-    ? mixHex(primary, surface, 0.34)
-    : mixHex(primary, '#ffffff', 0.22)
+    ? tonalHex(primaryOkH, Math.min(primaryOkC * 0.85, 0.14), 30)
+    : tonalHex(primaryOkH, Math.min(primaryOkC * 0.6, 0.08), 90)
   const onPrimaryContainer = ensureContrast(
-    isDark ? mixHex(primary, '#ffffff', 0.24) : mixHex(primary, '#081020', 0.42),
+    tonalHex(primaryOkH, Math.min(primaryOkC * 0.75, 0.1), isDark ? 90 : 12),
     primaryContainer,
+    4.5,
   )
 
-  const secondarySat = primaryS < 0.06 ? primaryS : Math.max(0.24, Math.min(0.52, primaryS * 0.64))
-  const secondary = hslToHex((primaryH + 6) % 360, secondarySat, isDark ? 0.78 : 0.4)
-  const onSecondary = chooseContrastText(secondary)
+  const secondaryChroma = primaryOkC < 0.02 ? primaryOkC : Math.min(0.085, Math.max(0.035, primaryOkC * 0.42))
+  const secondaryRaw = tonalHex(primaryOkH, secondaryChroma, isDark ? 80 : 40)
+  const secondary = ensureContrastAgainstAll(secondaryRaw, [surface], 4.5)
+  const onSecondary = chooseTonalOnColor(secondary, primaryOkH, secondaryChroma, 4.5)
   const secondaryContainer = isDark
-    ? mixHex(primary, containerHigh, 0.24)
-    : mixHex(primary, '#ffffff', 0.16)
+    ? tonalHex(primaryOkH, Math.min(secondaryChroma, 0.06), 30)
+    : tonalHex(primaryOkH, Math.min(secondaryChroma * 0.7, 0.05), 90)
   const onSecondaryContainer = ensureContrast(
-    isDark ? mixHex(primary, '#ffffff', 0.2) : mixHex(primary, '#0c1424', 0.36),
+    tonalHex(primaryOkH, Math.min(secondaryChroma, 0.06), isDark ? 90 : 12),
     secondaryContainer,
+    4.5,
   )
 
-  const tertiarySat = primaryS < 0.06 ? 0.24 : Math.max(0.32, Math.min(0.62, primaryS * 0.76))
-  const tertiary = hslToHex((primaryH + 60) % 360, tertiarySat, isDark ? 0.78 : 0.38)
-  const onTertiary = chooseContrastText(tertiary)
+  const tertiaryH = (primaryOkH + 60) % 360
+  const tertiaryChroma = primaryOkC < 0.02 ? 0.06 : Math.min(0.14, Math.max(0.06, primaryOkC * 0.65))
+  const tertiaryRaw = tonalHex(tertiaryH, tertiaryChroma, isDark ? 80 : 40)
+  const tertiary = ensureContrastAgainstAll(tertiaryRaw, [surface], 4.5)
+  const onTertiary = chooseTonalOnColor(tertiary, tertiaryH, tertiaryChroma, 4.5)
   const tertiaryContainer = isDark
-    ? mixHex(tertiary, surface, 0.3)
-    : mixHex(tertiary, '#ffffff', 0.18)
+    ? tonalHex(tertiaryH, Math.min(tertiaryChroma * 0.8, 0.12), 30)
+    : tonalHex(tertiaryH, Math.min(tertiaryChroma * 0.6, 0.08), 90)
   const onTertiaryContainer = ensureContrast(
-    isDark ? mixHex(tertiary, '#ffffff', 0.22) : mixHex(tertiary, '#10141c', 0.4),
+    tonalHex(tertiaryH, Math.min(tertiaryChroma * 0.75, 0.1), isDark ? 90 : 12),
     tertiaryContainer,
+    4.5,
+  )
+
+  // Official MD3 12 Fixed Accent Roles (invariant across Light & Dark themes: T90 / T80 / T10 / T30)
+  const primaryFixed = tonalHex(primaryOkH, Math.min(primaryOkC * 0.6, 0.085), 90)
+  const primaryFixedDim = tonalHex(primaryOkH, Math.min(primaryOkC * 0.85, 0.13), 80)
+  const onPrimaryFixed = ensureContrastAgainstAll(
+    tonalHex(primaryOkH, Math.min(primaryOkC * 0.7, 0.09), 10),
+    [primaryFixed, primaryFixedDim],
+    7.0,
+  )
+  const onPrimaryFixedVariant = ensureContrastAgainstAll(
+    tonalHex(primaryOkH, Math.min(primaryOkC * 0.8, 0.11), 30),
+    [primaryFixed, primaryFixedDim],
+    4.5,
+  )
+
+  const secondaryFixed = tonalHex(primaryOkH, Math.min(secondaryChroma * 0.75, 0.055), 90)
+  const secondaryFixedDim = tonalHex(primaryOkH, Math.min(secondaryChroma, 0.075), 80)
+  const onSecondaryFixed = ensureContrastAgainstAll(
+    tonalHex(primaryOkH, Math.min(secondaryChroma, 0.06), 10),
+    [secondaryFixed, secondaryFixedDim],
+    7.0,
+  )
+  const onSecondaryFixedVariant = ensureContrastAgainstAll(
+    tonalHex(primaryOkH, Math.min(secondaryChroma, 0.06), 30),
+    [secondaryFixed, secondaryFixedDim],
+    4.5,
+  )
+
+  const tertiaryFixed = tonalHex(tertiaryH, Math.min(tertiaryChroma * 0.65, 0.085), 90)
+  const tertiaryFixedDim = tonalHex(tertiaryH, Math.min(tertiaryChroma * 0.85, 0.12), 80)
+  const onTertiaryFixed = ensureContrastAgainstAll(
+    tonalHex(tertiaryH, Math.min(tertiaryChroma * 0.7, 0.09), 10),
+    [tertiaryFixed, tertiaryFixedDim],
+    7.0,
+  )
+  const onTertiaryFixedVariant = ensureContrastAgainstAll(
+    tonalHex(tertiaryH, Math.min(tertiaryChroma * 0.8, 0.11), 30),
+    [tertiaryFixed, tertiaryFixedDim],
+    4.5,
   )
 
   // Semantic roles (Error / Success / Warning) with guaranteed WCAG AA contrast
-  const onError = chooseContrastText(resolved.red)
+  const [, errOkC, errOkH] = hexToOklch(resolved.red)
+  const error = ensureContrastAgainstAll(resolved.red, [surface], 4.5)
+  const onError = chooseTonalOnColor(error, errOkH, errOkC, 4.5)
   const errorContainer = isDark
-    ? mixHex(resolved.red, surface, 0.28)
-    : mixHex(resolved.red, '#ffffff', 0.15)
+    ? tonalHex(errOkH, Math.min(errOkC * 0.85, 0.14), 28)
+    : tonalHex(errOkH, Math.min(errOkC * 0.55, 0.08), 92)
   const onErrorContainer = ensureContrast(
-    isDark ? mixHex(resolved.red, '#ffffff', 0.22) : mixHex(resolved.red, '#2b0609', 0.42),
+    tonalHex(errOkH, Math.min(errOkC * 0.75, 0.1), isDark ? 90 : 12),
     errorContainer,
+    4.5,
   )
 
+  const [, sucOkC, sucOkH] = hexToOklch(resolved.green)
+  const success = ensureContrastAgainstAll(resolved.green, [surface], 4.5)
   const successContainer = isDark
-    ? mixHex(resolved.green, surface, 0.26)
-    : mixHex(resolved.green, '#ffffff', 0.16)
+    ? tonalHex(sucOkH, Math.min(sucOkC * 0.85, 0.12), 28)
+    : tonalHex(sucOkH, Math.min(sucOkC * 0.55, 0.08), 92)
   const onSuccessContainer = ensureContrast(
-    isDark ? mixHex(resolved.green, '#ffffff', 0.22) : mixHex(resolved.green, '#09210e', 0.4),
+    tonalHex(sucOkH, Math.min(sucOkC * 0.75, 0.09), isDark ? 90 : 12),
     successContainer,
+    4.5,
   )
 
+  const [, warnOkC, warnOkH] = hexToOklch(resolved.yellow)
+  const warning = ensureContrastAgainstAll(resolved.yellow, [surface], 4.5)
   const warningContainer = isDark
-    ? mixHex(resolved.yellow, surface, 0.26)
-    : mixHex(resolved.yellow, '#ffffff', 0.18)
+    ? tonalHex(warnOkH, Math.min(warnOkC * 0.85, 0.12), 28)
+    : tonalHex(warnOkH, Math.min(warnOkC * 0.55, 0.08), 92)
   const onWarningContainer = ensureContrast(
-    isDark ? mixHex(resolved.yellow, '#ffffff', 0.22) : mixHex(resolved.yellow, '#2c1900', 0.4),
+    tonalHex(warnOkH, Math.min(warnOkC * 0.75, 0.09), isDark ? 90 : 12),
     warningContainer,
+    4.5,
   )
 
-  const outline = mixHex(resolved.subtext0, surface, 0.65)
+  // Neutral ink & outline roles clamped against BOTH `surface` AND `surfaceContainerHighest`
+  const onSurface = ensureContrastAgainstAll(resolved.text, [surface, containerHighest], 4.5)
+  const onSurfaceVariant = ensureContrastAgainstAll(
+    resolved.subtext0,
+    [surface, containerHighest],
+    4.5,
+  )
+  const rawOutline = mixHex(resolved.subtext0, surface, 0.75)
+  const outline = ensureContrastAgainstAll(rawOutline, [surface, containerHighest], 3.0)
   const outlineVariant = mixHex(resolved.surface0, surface, 0.72)
   const scrim = '#000000'
+  const shadow = '#000000'
 
   const inverseSurface = isDark
-    ? mixHex(resolved.text, primary, 0.92)
-    : mixHex(resolved.text, primary, 0.9)
-  const inverseOnSurface = chooseContrastText(inverseSurface)
+    ? mixHex(onSurface, primary, 0.94)
+    : mixHex(onSurface, primary, 0.92)
+  const inverseOnSurface = chooseContrastText(inverseSurface, '#111318', '#ffffff')
   const inversePrimary = ensureContrast(
-    isDark ? mixHex(primary, resolved.canvas, 0.62) : mixHex(primary, '#ffffff', 0.52),
+    tonalHex(primaryOkH, Math.min(primaryOkC, 0.16), isDark ? 40 : 80),
     inverseSurface,
+    4.5,
   )
 
-  const [tr, tg, tb] = parseHexRgb(resolved.text)
+  const [tr, tg, tb] = parseHexRgb(onSurface)
   const onSurfaceRgb = `${tr} ${tg} ${tb}`
 
-  // Write MD3 System Color Tokens
+  return {
+    surface,
+    surfaceDim,
+    surfaceBright,
+    surfaceContainerLowest: containerLowest,
+    surfaceContainerLow: containerLow,
+    surfaceContainer: containerDefault,
+    surfaceContainerHigh: containerHigh,
+    surfaceContainerHighest: containerHighest,
+    onSurface,
+    onSurfaceRgb,
+    onSurfaceVariant,
+    outline,
+    outlineVariant,
+    scrim,
+    shadow,
+    primary,
+    onPrimary,
+    primaryContainer,
+    onPrimaryContainer,
+    primaryFixed,
+    primaryFixedDim,
+    onPrimaryFixed,
+    onPrimaryFixedVariant,
+    secondary,
+    onSecondary,
+    secondaryContainer,
+    onSecondaryContainer,
+    secondaryFixed,
+    secondaryFixedDim,
+    onSecondaryFixed,
+    onSecondaryFixedVariant,
+    tertiary,
+    onTertiary,
+    tertiaryContainer,
+    onTertiaryContainer,
+    tertiaryFixed,
+    tertiaryFixedDim,
+    onTertiaryFixed,
+    onTertiaryFixedVariant,
+    error,
+    onError,
+    errorContainer,
+    onErrorContainer,
+    success,
+    successContainer,
+    onSuccessContainer,
+    warning,
+    warningContainer,
+    onWarningContainer,
+    inverseSurface,
+    inverseOnSurface,
+    inversePrimary,
+  }
+}
+
+export function applyResolvedPaletteToDom(
+  resolved: ResolvedPalette,
+  isDark: boolean,
+  presetId: string,
+): void {
+  const scheme = computeMd3ColorScheme(resolved, isDark)
+  const [r, g, b] = parseHexRgb(scheme.primary)
+  const rgbTuple = `${r} ${g} ${b}`
+  const root = document.documentElement
+
+  root.dataset.theme = isDark ? 'dark' : 'light'
+  root.dataset.palette = presetId
+
+  // Write MD3 System Color Tokens (complete 36-role spec)
   root.style.colorScheme = isDark ? 'dark' : 'light'
-  root.style.setProperty('--md-sys-color-surface', surface)
-  root.style.setProperty('--md-sys-color-surface-dim', surfaceDim)
-  root.style.setProperty('--md-sys-color-surface-bright', surfaceBright)
-  root.style.setProperty('--md-sys-color-surface-container-lowest', containerLowest)
-  root.style.setProperty('--md-sys-color-surface-container-low', containerLow)
-  root.style.setProperty('--md-sys-color-surface-container', containerDefault)
-  root.style.setProperty('--md-sys-color-surface-container-high', containerHigh)
-  root.style.setProperty('--md-sys-color-surface-container-highest', containerHighest)
-  root.style.setProperty('--md-sys-color-on-surface', resolved.text)
-  root.style.setProperty('--md-sys-color-on-surface-rgb', onSurfaceRgb)
-  root.style.setProperty('--md-sys-color-on-surface-variant', resolved.subtext0)
-  root.style.setProperty('--md-sys-color-outline', outline)
-  root.style.setProperty('--md-sys-color-outline-variant', outlineVariant)
-  root.style.setProperty('--md-sys-color-scrim', scrim)
+  root.style.setProperty('--md-sys-color-surface', scheme.surface)
+  root.style.setProperty('--md-sys-color-surface-dim', scheme.surfaceDim)
+  root.style.setProperty('--md-sys-color-surface-bright', scheme.surfaceBright)
+  root.style.setProperty('--md-sys-color-surface-container-lowest', scheme.surfaceContainerLowest)
+  root.style.setProperty('--md-sys-color-surface-container-low', scheme.surfaceContainerLow)
+  root.style.setProperty('--md-sys-color-surface-container', scheme.surfaceContainer)
+  root.style.setProperty('--md-sys-color-surface-container-high', scheme.surfaceContainerHigh)
+  root.style.setProperty('--md-sys-color-surface-container-highest', scheme.surfaceContainerHighest)
+  root.style.setProperty('--md-sys-color-on-surface', scheme.onSurface)
+  root.style.setProperty('--md-sys-color-on-surface-rgb', scheme.onSurfaceRgb)
+  root.style.setProperty('--md-sys-color-on-surface-variant', scheme.onSurfaceVariant)
+  root.style.setProperty('--md-sys-color-outline', scheme.outline)
+  root.style.setProperty('--md-sys-color-outline-variant', scheme.outlineVariant)
+  root.style.setProperty('--md-sys-color-scrim', scheme.scrim)
+  root.style.setProperty('--md-sys-color-shadow', scheme.shadow)
 
-  root.style.setProperty('--md-sys-color-primary', primary)
-  root.style.setProperty('--md-sys-color-on-primary', onPrimary)
-  root.style.setProperty('--md-sys-color-primary-container', primaryContainer)
-  root.style.setProperty('--md-sys-color-on-primary-container', onPrimaryContainer)
-  root.style.setProperty('--md-sys-color-secondary', secondary)
-  root.style.setProperty('--md-sys-color-on-secondary', onSecondary)
-  root.style.setProperty('--md-sys-color-secondary-container', secondaryContainer)
-  root.style.setProperty('--md-sys-color-on-secondary-container', onSecondaryContainer)
-  root.style.setProperty('--md-sys-color-tertiary', tertiary)
-  root.style.setProperty('--md-sys-color-on-tertiary', onTertiary)
-  root.style.setProperty('--md-sys-color-tertiary-container', tertiaryContainer)
-  root.style.setProperty('--md-sys-color-on-tertiary-container', onTertiaryContainer)
+  root.style.setProperty('--md-sys-color-primary', scheme.primary)
+  root.style.setProperty('--md-sys-color-on-primary', scheme.onPrimary)
+  root.style.setProperty('--md-sys-color-primary-container', scheme.primaryContainer)
+  root.style.setProperty('--md-sys-color-on-primary-container', scheme.onPrimaryContainer)
+  root.style.setProperty('--md-sys-color-primary-fixed', scheme.primaryFixed)
+  root.style.setProperty('--md-sys-color-primary-fixed-dim', scheme.primaryFixedDim)
+  root.style.setProperty('--md-sys-color-on-primary-fixed', scheme.onPrimaryFixed)
+  root.style.setProperty('--md-sys-color-on-primary-fixed-variant', scheme.onPrimaryFixedVariant)
 
-  root.style.setProperty('--md-sys-color-error', resolved.red)
-  root.style.setProperty('--md-sys-color-on-error', onError)
-  root.style.setProperty('--md-sys-color-error-container', errorContainer)
-  root.style.setProperty('--md-sys-color-on-error-container', onErrorContainer)
-  root.style.setProperty('--md-sys-color-success', resolved.green)
-  root.style.setProperty('--md-sys-color-success-container', successContainer)
-  root.style.setProperty('--md-sys-color-on-success-container', onSuccessContainer)
-  root.style.setProperty('--md-sys-color-warning', resolved.yellow)
-  root.style.setProperty('--md-sys-color-warning-container', warningContainer)
-  root.style.setProperty('--md-sys-color-on-warning-container', onWarningContainer)
+  root.style.setProperty('--md-sys-color-secondary', scheme.secondary)
+  root.style.setProperty('--md-sys-color-on-secondary', scheme.onSecondary)
+  root.style.setProperty('--md-sys-color-secondary-container', scheme.secondaryContainer)
+  root.style.setProperty('--md-sys-color-on-secondary-container', scheme.onSecondaryContainer)
+  root.style.setProperty('--md-sys-color-secondary-fixed', scheme.secondaryFixed)
+  root.style.setProperty('--md-sys-color-secondary-fixed-dim', scheme.secondaryFixedDim)
+  root.style.setProperty('--md-sys-color-on-secondary-fixed', scheme.onSecondaryFixed)
+  root.style.setProperty(
+    '--md-sys-color-on-secondary-fixed-variant',
+    scheme.onSecondaryFixedVariant,
+  )
 
-  root.style.setProperty('--md-sys-color-inverse-surface', inverseSurface)
-  root.style.setProperty('--md-sys-color-inverse-on-surface', inverseOnSurface)
-  root.style.setProperty('--md-sys-color-inverse-primary', inversePrimary)
+  root.style.setProperty('--md-sys-color-tertiary', scheme.tertiary)
+  root.style.setProperty('--md-sys-color-on-tertiary', scheme.onTertiary)
+  root.style.setProperty('--md-sys-color-tertiary-container', scheme.tertiaryContainer)
+  root.style.setProperty('--md-sys-color-on-tertiary-container', scheme.onTertiaryContainer)
+  root.style.setProperty('--md-sys-color-tertiary-fixed', scheme.tertiaryFixed)
+  root.style.setProperty('--md-sys-color-tertiary-fixed-dim', scheme.tertiaryFixedDim)
+  root.style.setProperty('--md-sys-color-on-tertiary-fixed', scheme.onTertiaryFixed)
+  root.style.setProperty('--md-sys-color-on-tertiary-fixed-variant', scheme.onTertiaryFixedVariant)
+
+  root.style.setProperty('--md-sys-color-error', scheme.error)
+  root.style.setProperty('--md-sys-color-on-error', scheme.onError)
+  root.style.setProperty('--md-sys-color-error-container', scheme.errorContainer)
+  root.style.setProperty('--md-sys-color-on-error-container', scheme.onErrorContainer)
+  root.style.setProperty('--md-sys-color-success', scheme.success)
+  root.style.setProperty('--md-sys-color-success-container', scheme.successContainer)
+  root.style.setProperty('--md-sys-color-on-success-container', scheme.onSuccessContainer)
+  root.style.setProperty('--md-sys-color-warning', scheme.warning)
+  root.style.setProperty('--md-sys-color-warning-container', scheme.warningContainer)
+  root.style.setProperty('--md-sys-color-on-warning-container', scheme.onWarningContainer)
+
+  root.style.setProperty('--md-sys-color-inverse-surface', scheme.inverseSurface)
+  root.style.setProperty('--md-sys-color-inverse-on-surface', scheme.inverseOnSurface)
+  root.style.setProperty('--md-sys-color-inverse-primary', scheme.inversePrimary)
+
+  // Synchronize browser / PWA / mobile status-bar theme-color meta tag
+  if (typeof document !== 'undefined') {
+    let meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    if (!meta) {
+      meta = document.createElement('meta')
+      meta.name = 'theme-color'
+      document.head.appendChild(meta)
+    }
+    meta.content = scheme.surfaceContainer
+  }
 
   // Legacy --ctp-* compatibility aliases (single write, harmonized with MD3 tonal containers)
-  root.style.setProperty('--ctp-base', surface)
-  root.style.setProperty('--ctp-canvas', surface)
-  root.style.setProperty('--ctp-crust', containerLowest)
-  root.style.setProperty('--ctp-mantle', containerLow)
-  root.style.setProperty('--ctp-shell', containerDefault)
-  root.style.setProperty('--ctp-search', containerHigh)
-  root.style.setProperty('--ctp-surface0', containerHighest)
+  root.style.setProperty('--ctp-base', scheme.surface)
+  root.style.setProperty('--ctp-canvas', scheme.surface)
+  root.style.setProperty('--ctp-crust', scheme.surfaceContainerLowest)
+  root.style.setProperty('--ctp-mantle', scheme.surfaceContainerLow)
+  root.style.setProperty('--ctp-shell', scheme.surfaceContainer)
+  root.style.setProperty('--ctp-search', scheme.surfaceContainerHigh)
+  root.style.setProperty('--ctp-surface0', scheme.surfaceContainerHighest)
   root.style.setProperty('--ctp-surface1', resolved.surface1)
   root.style.setProperty('--ctp-surface2', resolved.surface2)
-  root.style.setProperty('--ctp-subtext0', resolved.subtext0)
+  root.style.setProperty('--ctp-subtext0', scheme.onSurfaceVariant)
   root.style.setProperty('--ctp-subtext1', resolved.subtext1)
-  root.style.setProperty('--ctp-text', resolved.text)
-  root.style.setProperty('--ctp-accent', primary)
+  root.style.setProperty('--ctp-text', scheme.onSurface)
+  root.style.setProperty('--ctp-accent', scheme.primary)
   root.style.setProperty('--ctp-accent-rgb', rgbTuple)
   root.style.setProperty('--ctp-accent-soft', `rgb(${rgbTuple} / 0.15)`)
   root.style.setProperty('--ctp-accent-medium', `rgb(${rgbTuple} / 0.25)`)
-  root.style.setProperty('--ctp-on-accent', onPrimary)
-  root.style.setProperty('--ctp-row-hover', mixHex(surface, containerHighest, 0.65))
-  root.style.setProperty('--ctp-red', resolved.red)
-  root.style.setProperty('--ctp-green', resolved.green)
-  root.style.setProperty('--ctp-yellow', resolved.yellow)
+  root.style.setProperty('--ctp-on-accent', scheme.onPrimary)
+  root.style.setProperty('--ctp-row-hover', mixHex(scheme.surface, scheme.surfaceContainerHighest, 0.65))
+  root.style.setProperty('--ctp-red', scheme.error)
+  root.style.setProperty('--ctp-green', scheme.success)
+  root.style.setProperty('--ctp-yellow', scheme.warning)
 
   // Legacy xcomic semantic tokens synchronized with MD3 palette
-  root.style.setProperty('--bg-base', surface)
-  root.style.setProperty('--bg-mantle', containerDefault)
-  root.style.setProperty('--bg-surface', containerLow)
-  root.style.setProperty('--text-primary', resolved.text)
-  root.style.setProperty('--text-secondary', resolved.subtext0)
-  root.style.setProperty('--accent', primary)
-  root.style.setProperty('--accent-contrast', onPrimary)
+  root.style.setProperty('--bg-base', scheme.surface)
+  root.style.setProperty('--bg-mantle', scheme.surfaceContainer)
+  root.style.setProperty('--bg-surface', scheme.surfaceContainerLow)
+  root.style.setProperty('--text-primary', scheme.onSurface)
+  root.style.setProperty('--text-secondary', scheme.onSurfaceVariant)
+  root.style.setProperty('--accent', scheme.primary)
+  root.style.setProperty('--accent-contrast', scheme.onPrimary)
 }

@@ -417,7 +417,7 @@ function handleKeydown(ev: KeyboardEvent): void {
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center bg-black/45 px-4 pt-[8vh] backdrop-blur-[2px] sm:pt-[10vh]"
+        class="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center bg-[var(--md-sys-color-scrim)]/32 px-0 pt-0 sm:px-4 sm:pt-[10vh]"
         @mousedown.self="emit('close')"
       >
         <Transition name="md-dialog" appear>
