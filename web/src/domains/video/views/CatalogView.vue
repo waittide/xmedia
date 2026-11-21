@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LuSearch, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
 import ShowCard from '../components/ShowCard.vue'
@@ -21,6 +22,9 @@ const route = useRoute()
 const router = useRouter()
 const videoStore = useVideoStore()
 const uploadStore = useUploadStore()
+const snackbarStore = useSnackbarStore()
+let fetchSeq = 0
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 function resolveTabFromQuery(): CatalogTab {
   return route.query.tab === 'shows' ? 'shows' : 'videos'
@@ -140,10 +144,11 @@ function clearScopeFilters(): void {
 }
 
 async function fetchVideos(): Promise<void> {
+  const seq = ++fetchSeq
   loading.value = true
   try {
     const [sortBy, order] = sortKey.value.split(':') as [VideoSortBy, string]
-    videos.value = await api.listVideos({
+    const list = await api.listVideos({
       library_id: selectedLibrary.value || undefined,
       kind: kindFilter.value,
       genre: selectedGenre.value || undefined,
@@ -152,22 +157,43 @@ async function fetchVideos(): Promise<void> {
       sort_by: sortBy,
       sort_desc: order === 'desc',
     })
+    if (seq !== fetchSeq) return
+    videos.value = list
+  } catch (err) {
+    if (seq !== fetchSeq) return
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
   }
 }
 
 async function fetchShows(): Promise<void> {
+  const seq = ++fetchSeq
   loading.value = true
   try {
-    shows.value = await api.listShows({
+    const list = await api.listShows({
       library_id: selectedLibrary.value || undefined,
       genre: selectedGenre.value || undefined,
       tag: selectedTag.value || undefined,
       search: search.value.trim() || undefined,
     })
+    if (seq !== fetchSeq) return
+    shows.value = list
+  } catch (err) {
+    if (seq !== fetchSeq) return
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -177,6 +203,15 @@ async function fetchActive(): Promise<void> {
   } else {
     await fetchVideos()
   }
+}
+
+function handleSearchInput(): void {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    syncRouteQuery()
+    void fetchActive()
+  }, 220)
 }
 
 function handleFilterChange(): void {
@@ -201,7 +236,7 @@ watch(
     const nextTag = typeof qTag === 'string' ? qTag : ''
     const nextKind: VideoKindFilter =
       qKind === 'standalone' || qKind === 'episodes' ? qKind : 'all'
-    const nextSearch = typeof qSearch === 'string' ? qSearch : search.value
+    const nextSearch = typeof qSearch === 'string' ? qSearch : ''
     const changed =
       nextTab !== activeTab.value ||
       nextLib !== selectedLibrary.value ||
@@ -226,6 +261,12 @@ async function refreshPage(): Promise<void> {
 }
 
 onMounted(fetchActive)
+onBeforeUnmount(() => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+})
 watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive)
 </script>
 
@@ -278,7 +319,7 @@ watch(() => [videoStore.catalogVersion, uploadStore.versionCounter], fetchActive
           type="text"
           :placeholder="t('common.filterPlaceholder')"
           class="md-input h-9 w-full pl-8.5 pr-3 text-xs"
-          @input="fetchActive"
+          @input="handleSearchInput"
         />
       </div>
 

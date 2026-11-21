@@ -38,8 +38,10 @@ async function loadStarred(): Promise<void> {
   starred.value = await api.getStarred()
 }
 
-onMounted(loadStarred)
-watch(() => musicStore.catalogVersion, () => {
+onMounted(() => {
+  void loadStarred().catch(() => {})
+})
+watch(() => [musicStore.catalogVersion, musicStore.favoritesVersion], () => {
   void loadStarred().catch(() => {})
 })
 </script>

@@ -27,6 +27,7 @@ import MdDialog from '@/components/ui/MdDialog.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import SeriesMetadataModal from '@/domains/comic/components/SeriesMetadataModal.vue'
 import ChapterMetadataModal from '@/domains/comic/components/ChapterMetadataModal.vue'
+import { useSnackbarStore } from '@/stores/snackbar'
 import type { ChapterItemDto, SeriesDetailDto, ShelfDetailDto } from '@/domains/comic/types'
 
 const { t } = useI18n()
@@ -34,6 +35,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const dialog = useDialogStore()
+const snackbar = useSnackbarStore()
 const sidebarStore = useSidebarStore()
 const upload = useUploadStore()
 
@@ -53,6 +55,9 @@ const coverInputRef = ref<HTMLInputElement | null>(null)
 const chapterUploadRef = ref<HTMLInputElement | null>(null)
 
 const seriesId = computed(() => String(route.params.id))
+watch(seriesId, () => {
+  collapsedVolumes.value = {}
+})
 const isManagedSeries = computed(() =>
   sidebarStore.libraries.some(
     (l) => l.id === detail.value?.series.library_id && l.kind === 'managed_upload'
@@ -199,17 +204,35 @@ async function handleMarkSeriesRead(completed: boolean): Promise<void> {
 
 async function handleMarkVolumeRead(volNum: number): Promise<void> {
   if (!detail.value) return
-  await api.markVolumeRead(detail.value.series.id, volNum, true)
-  await loadDetail()
+  try {
+    await api.markVolumeRead(detail.value.series.id, volNum, true)
+    await loadDetail()
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 async function onPickCover(ev: Event): Promise<void> {
   const input = ev.target as HTMLInputElement
   const file = input.files?.[0]
-  if (!file || !detail.value) return
-  await api.uploadSeriesCover(detail.value.series.id, file)
-  input.value = ''
-  await loadDetail()
+  if (!file || !detail.value) {
+    input.value = ''
+    return
+  }
+  try {
+    await api.uploadSeriesCover(detail.value.series.id, file)
+    await loadDetail()
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    input.value = ''
+  }
 }
 
 function onUploadChaptersToSeries(ev: Event): void {

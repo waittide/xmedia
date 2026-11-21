@@ -101,24 +101,24 @@ export const api = {
     sort_by?: VideoSortBy
     sort_desc?: boolean
   } = {}) => requestJson<VideoSummaryDto[]>(`/video/videos${toQuery(params)}`),
-  getVideo: (id: string) => requestJson<VideoDetailDto>(`/video/videos/${id}`),
+  getVideo: (id: string) => requestJson<VideoDetailDto>(`/video/videos/${encodeURIComponent(id)}`),
   updateVideo: (id: string, patch: VideoMetadataPatch) =>
-    requestJson<VideoSummaryDto>(`/video/videos/${id}`, {
+    requestJson<VideoSummaryDto>(`/video/videos/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
   deleteVideo: (id: string) =>
-    requestJson<{ ok: boolean }>(`/video/videos/${id}`, { method: 'DELETE' }),
+    requestJson<{ ok: boolean }>(`/video/videos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   uploadVideoPoster: (id: string, file: File) => {
     const fd = new FormData()
     fd.append('poster', file)
-    return requestJson<VideoSummaryDto>(`/video/videos/${id}/poster`, {
+    return requestJson<VideoSummaryDto>(`/video/videos/${encodeURIComponent(id)}/poster`, {
       method: 'POST',
       body: fd,
     })
   },
   listSubtitles: (videoId: string) =>
-    requestJson<SubtitleTrackDto[]>(`/video/videos/${videoId}/subtitles`),
+    requestJson<SubtitleTrackDto[]>(`/video/videos/${encodeURIComponent(videoId)}/subtitles`),
   saveProgress: (
     videoId: string,
     payload: {
@@ -129,12 +129,12 @@ export const api = {
       selected_subtitle?: string | null
     },
   ) =>
-    requestJson<WatchProgressDto>(`/video/videos/${videoId}/progress`, {
+    requestJson<WatchProgressDto>(`/video/videos/${encodeURIComponent(videoId)}/progress`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
   setWatched: (videoId: string, watched: boolean) =>
-    requestJson<WatchProgressDto>(`/video/videos/${videoId}/watched`, {
+    requestJson<WatchProgressDto>(`/video/videos/${encodeURIComponent(videoId)}/watched`, {
       method: 'POST',
       body: JSON.stringify({ watched }),
     }),
@@ -142,16 +142,16 @@ export const api = {
   listShows: (
     params: { library_id?: string; genre?: string; tag?: string; search?: string } = {},
   ) => requestJson<ShowSummaryDto[]>(`/video/shows${toQuery(params)}`),
-  getShow: (id: string) => requestJson<ShowDetailDto>(`/video/shows/${id}`),
+  getShow: (id: string) => requestJson<ShowDetailDto>(`/video/shows/${encodeURIComponent(id)}`),
   updateShow: (id: string, patch: ShowMetadataPatch) =>
-    requestJson<ShowSummaryDto>(`/video/shows/${id}`, {
+    requestJson<ShowSummaryDto>(`/video/shows/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
   uploadShowPoster: (id: string, file: File) => {
     const fd = new FormData()
     fd.append('poster', file)
-    return requestJson<ShowSummaryDto>(`/video/shows/${id}/poster`, {
+    return requestJson<ShowSummaryDto>(`/video/shows/${encodeURIComponent(id)}/poster`, {
       method: 'POST',
       body: fd,
     })
@@ -159,13 +159,13 @@ export const api = {
 
   listFavorites: () => requestJson<VideoFavoritesDto>('/video/favorites'),
   setFavorite: (kind: 'video' | 'show', id: string, favorite: boolean) =>
-    requestJson<{ ok: boolean }>(`/video/favorites/${kind}/${id}`, {
+    requestJson<{ ok: boolean }>(`/video/favorites/${encodeURIComponent(kind)}/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify({ favorite }),
     }),
 
   listShelves: () => requestJson<VideoShelfDto[]>('/video/shelves'),
-  getShelf: (id: string) => requestJson<VideoShelfDetailDto>(`/video/shelves/${id}`),
+  getShelf: (id: string) => requestJson<VideoShelfDetailDto>(`/video/shelves/${encodeURIComponent(id)}`),
   createShelf: (payload: { name: string; description?: string; video_ids?: string[] }) =>
     requestJson<VideoShelfDetailDto>('/video/shelves', {
       method: 'POST',
@@ -179,7 +179,7 @@ export const api = {
     id: string,
     payload: { name: string; description?: string; video_ids: string[] },
   ) =>
-    requestJson<VideoShelfDetailDto>(`/video/shelves/${id}`, {
+    requestJson<VideoShelfDetailDto>(`/video/shelves/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify({
         name: payload.name,
@@ -188,5 +188,5 @@ export const api = {
       }),
     }),
   deleteShelf: (id: string) =>
-    requestJson<{ ok: boolean }>(`/video/shelves/${id}`, { method: 'DELETE' }),
+    requestJson<{ ok: boolean }>(`/video/shelves/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

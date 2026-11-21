@@ -845,10 +845,10 @@ async function togglePageBookmark(): Promise<void> {
       <!-- Paginated Single / Double-Page Spread Mode (RTL & LTR) -->
       <div
         v-else
-        class="flex h-full w-full items-center justify-center overflow-auto"
+        class="flex h-full w-full overflow-auto"
       >
         <div
-          class="flex items-center justify-center gap-0"
+          class="m-auto flex items-center justify-center gap-0"
           :class="isRtl ? 'flex-row-reverse' : 'flex-row'"
         >
           <img

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { LuPlay, LuShuffle, LuSearch, LuHeart, LuX } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
@@ -33,6 +34,9 @@ const router = useRouter()
 const musicStore = useMusicStore()
 const playerStore = usePlayerStore()
 const uploadStore = useUploadStore()
+const snackbarStore = useSnackbarStore()
+let fetchSeq = 0
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
 function resolveTabFromQuery(): CatalogTab {
   const q = route.query.tab
@@ -63,7 +67,10 @@ const albumListType = ref<AlbumListType>('newest')
 // Artists state
 const artists = ref<ArtistDto[]>([])
 const artistsTotal = ref(0)
+const artistsPage = ref(1)
+const artistsPageSize = 48
 const artistRoleFilter = ref<ArtistRoleFilter>('all')
+const artistsTotalPages = computed(() => Math.max(1, Math.ceil(artistsTotal.value / artistsPageSize)))
 
 const loading = ref(false)
 
@@ -187,6 +194,7 @@ function clearScopeFilters(): void {
 }
 
 async function fetchSongs(): Promise<void> {
+  const seq = ++fetchSeq
   loading.value = true
   try {
     const [field, order] = tracksSortKey.value.split(':') as [TrackSortField, SortOrder]
@@ -200,14 +208,24 @@ async function fetchSongs(): Promise<void> {
       page: tracksPage.value,
       page_size: tracksPageSize,
     })
+    if (seq !== fetchSeq) return
     tracks.value = res.items
     tracksTotal.value = res.total
+  } catch (err) {
+    if (seq !== fetchSeq) return
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
   }
 }
 
 async function fetchAlbums(): Promise<void> {
+  const seq = ++fetchSeq
   loading.value = true
   try {
     const res = await api.listAlbums({
@@ -218,27 +236,71 @@ async function fetchAlbums(): Promise<void> {
       offset: (albumsPage.value - 1) * albumsPageSize,
       size: albumsPageSize,
     })
+    if (seq !== fetchSeq) return
     albums.value = res.items
     albumsTotal.value = res.total
+  } catch (err) {
+    if (seq !== fetchSeq) return
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
   }
 }
 
 async function fetchArtists(): Promise<void> {
+  const seq = ++fetchSeq
   loading.value = true
   try {
     const res = await api.listArtists({
       search: search.value.trim() || undefined,
       role: artistRoleFilter.value,
-      size: 200,
+      offset: (artistsPage.value - 1) * artistsPageSize,
+      size: artistsPageSize,
     })
+    if (seq !== fetchSeq) return
     artists.value = res.items
     artistsTotal.value = res.total
+  } catch (err) {
+    if (seq !== fetchSeq) return
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
   }
 }
+
+function scheduleSearchFetch(target: 'songs' | 'albums' | 'artists'): void {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    if (target === 'songs') {
+      tracksPage.value = 1
+      void fetchSongs()
+    } else if (target === 'albums') {
+      albumsPage.value = 1
+      void fetchAlbums()
+    } else {
+      artistsPage.value = 1
+      void fetchArtists()
+    }
+  }, 220)
+}
+
+onBeforeUnmount(() => {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+})
 
 async function fetchActiveTab(): Promise<void> {
   if (activeTab.value === 'albums') {
@@ -363,7 +425,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
             type="text"
             :placeholder="t('common.filterPlaceholder')"
             class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
-            @input="tracksPage = 1; fetchSongs()"
+            @input="scheduleSearchFetch('songs')"
           />
         </div>
 
@@ -443,7 +505,7 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
             type="text"
             :placeholder="t('common.filterPlaceholder')"
             class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
-            @input="albumsPage = 1; fetchAlbums()"
+            @input="scheduleSearchFetch('albums')"
           />
         </div>
 
@@ -517,14 +579,14 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
             type="text"
             :placeholder="t('common.filterPlaceholder')"
             class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
-            @input="fetchArtists"
+            @input="scheduleSearchFetch('artists')"
           />
         </div>
 
         <AppSelect
           v-model="artistRoleFilter"
           :options="artistRoleOptions"
-          @change="fetchArtists"
+          @change="artistsPage = 1; fetchArtists()"
         />
       </div>
 
@@ -539,8 +601,13 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
         <div
           v-for="ar in artists"
           :key="ar.id"
-          class="group relative flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--md-sys-color-surface-container)]"
+          role="link"
+          tabindex="0"
+          :aria-label="ar.name"
+          class="group relative flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--md-sys-color-surface-container)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
           @click="router.push(`/music/artists/${ar.id}`)"
+          @keydown.enter.self="router.push(`/music/artists/${ar.id}`)"
+          @keydown.space.self.prevent="router.push(`/music/artists/${ar.id}`)"
         >
           <div class="relative mb-3 w-3/4">
             <CoverImage
@@ -552,6 +619,8 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
             />
             <button
               type="button"
+              :aria-label="ar.starred_at ? t('common.unfavorite') : t('common.favorite')"
+              :aria-pressed="Boolean(ar.starred_at)"
               class="md-icon-btn md-icon-btn-sm md-state absolute right-0 bottom-0 h-7 w-7 border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface)] shadow-[var(--md-sys-elevation-1)] transition hover:scale-110"
               @click.stop="musicStore.toggleArtistStar(ar)"
             >
@@ -576,17 +645,44 @@ watch(() => [musicStore.catalogVersion, uploadStore.versionCounter], fetchActive
           <div class="mt-1.5 flex flex-wrap justify-center gap-1">
             <span
               v-if="ar.is_album_artist"
-              class="rounded-md bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
+              class="md-label-small rounded-md bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 font-semibold text-[var(--md-sys-color-on-primary-container)]"
             >
               {{ t('catalog.badgeAlbumArtist') }}
             </span>
             <span
               v-if="ar.is_track_artist && !ar.is_album_artist"
-              class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+              class="md-label-small rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 font-medium text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ t('catalog.badgeTrackArtist') }}
             </span>
           </div>
+        </div>
+      </div>
+
+      <div
+        v-if="artistsTotalPages > 1"
+        class="flex items-center justify-between pt-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      >
+        <span>
+          {{ t('common.pageInfo', { page: artistsPage, totalPages: artistsTotalPages, total: artistsTotal }) }}
+        </span>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            :disabled="artistsPage <= 1"
+            class="md-btn md-btn-outlined md-btn-sm md-state"
+            @click="artistsPage -= 1; fetchArtists()"
+          >
+            {{ t('common.prevPage') }}
+          </button>
+          <button
+            type="button"
+            :disabled="artistsPage >= artistsTotalPages"
+            class="md-btn md-btn-outlined md-btn-sm md-state"
+            @click="artistsPage += 1; fetchArtists()"
+          >
+            {{ t('common.nextPage') }}
+          </button>
         </div>
       </div>
     </template>

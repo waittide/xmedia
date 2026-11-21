@@ -5,6 +5,7 @@ import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import { LuArrowUpDown, LuX } from 'vue-icons-plus/lu'
 import { api } from '@/domains/comic/api'
 import { resolveLibrarySeriesCount, useSidebarStore } from '@/domains/comic/store'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
@@ -20,9 +21,11 @@ const route = useRoute()
 const router = useRouter()
 const upload = useUploadStore()
 const sidebarStore = useSidebarStore()
+const snackbarStore = useSnackbarStore()
 
 const seriesList = ref<SeriesSummaryDto[]>([])
 const loading = ref(true)
+let fetchSeq = 0
 
 const statusFilter = ref<string>('')
 const readStatusFilter = ref<string>('')
@@ -104,13 +107,14 @@ function onSelectLibrary(val: string | number): void {
 }
 
 async function fetchSeries(): Promise<void> {
+  const seq = ++fetchSeq
   loading.value = true
   try {
     const effectiveRead =
       props.presetMode === 'continue'
         ? 'in_progress'
         : (readStatusFilter.value as '' | 'unread' | 'in_progress' | 'completed')
-    seriesList.value = await api.listSeries({
+    const list = await api.listSeries({
       search: (route.query.q as string) || undefined,
       library_id: selectedLibraryId.value || undefined,
       shelf_id: (route.query.shelf_id as string) || undefined,
@@ -124,8 +128,18 @@ async function fetchSeries(): Promise<void> {
       sort_by: sortBy.value,
       sort_dir: sortDir.value,
     })
+    if (seq !== fetchSeq) return
+    seriesList.value = list
+  } catch (err) {
+    if (seq !== fetchSeq) return
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
-    loading.value = false
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
   }
 }
 

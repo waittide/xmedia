@@ -136,8 +136,9 @@ export const api = {
     requestJson<TrackDto[]>(`/music/tracks/random${toQuery({ size, genre })}`),
   recentTracks: (limit = 50) =>
     requestJson<TrackDto[]>(`/music/tracks/recent${toQuery({ limit })}`),
-  getTrack: (id: string) => requestJson<TrackDto>(`/music/tracks/${id}`),
-  getTrackLyrics: (id: string) => requestJson<StructuredLyricsDto>(`/music/tracks/${id}/lyrics`),
+  getTrack: (id: string) => requestJson<TrackDto>(`/music/tracks/${encodeURIComponent(id)}`),
+  getTrackLyrics: (id: string) =>
+    requestJson<StructuredLyricsDto>(`/music/tracks/${encodeURIComponent(id)}/lyrics`),
   listAlbums: (params: {
     type?: AlbumListType
     library_id?: string
@@ -148,14 +149,14 @@ export const api = {
     offset?: number
     size?: number
   }) => requestJson<PagedResult<AlbumDto>>(`/music/albums${toQuery(params)}`),
-  getAlbum: (id: string) => requestJson<AlbumDetailDto>(`/music/albums/${id}`),
+  getAlbum: (id: string) => requestJson<AlbumDetailDto>(`/music/albums/${encodeURIComponent(id)}`),
   listArtists: (params: {
     search?: string
     role?: ArtistRoleFilter
     offset?: number
     size?: number
   }) => requestJson<PagedResult<ArtistDto>>(`/music/artists${toQuery(params)}`),
-  getArtist: (id: string) => requestJson<ArtistDetailDto>(`/music/artists/${id}`),
+  getArtist: (id: string) => requestJson<ArtistDetailDto>(`/music/artists/${encodeURIComponent(id)}`),
   listGenres: () => requestJson<GenreStatDto[]>('/music/genres'),
   listTags: () => requestJson<MusicTagStatDto[]>('/music/tags'),
   setTrackTags: (trackId: string, tags: string[]) =>
@@ -181,7 +182,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  getPlaylist: (id: string) => requestJson<PlaylistDetailDto>(`/music/playlists/${id}`),
+  getPlaylist: (id: string) =>
+    requestJson<PlaylistDetailDto>(`/music/playlists/${encodeURIComponent(id)}`),
   updatePlaylist: (
     id: string,
     payload: {
@@ -193,12 +195,12 @@ export const api = {
       remove_indices?: number[]
     },
   ) =>
-    requestJson<PlaylistDetailDto>(`/music/playlists/${id}`, {
+    requestJson<PlaylistDetailDto>(`/music/playlists/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     }),
   deletePlaylist: (id: string) =>
-    requestJson<{ ok: boolean }>(`/music/playlists/${id}`, { method: 'DELETE' }),
+    requestJson<{ ok: boolean }>(`/music/playlists/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   getStarred: () => requestJson<StarredBundleDto>('/music/starred'),
   star: (payload: { ids?: string[]; album_ids?: string[]; artist_ids?: string[] }) =>
@@ -233,10 +235,12 @@ export const api = {
     }),
   listBookmarks: () => requestJson<BookmarkDto[]>('/music/bookmarks'),
   saveBookmark: (trackId: string, position_ms: number, comment?: string) =>
-    requestJson<BookmarkDto>(`/music/bookmarks/${trackId}`, {
+    requestJson<BookmarkDto>(`/music/bookmarks/${encodeURIComponent(trackId)}`, {
       method: 'PUT',
       body: JSON.stringify({ position_ms, comment }),
     }),
   deleteBookmark: (trackId: string) =>
-    requestJson<{ ok: boolean }>(`/music/bookmarks/${trackId}`, { method: 'DELETE' }),
+    requestJson<{ ok: boolean }>(`/music/bookmarks/${encodeURIComponent(trackId)}`, {
+      method: 'DELETE',
+    }),
 }

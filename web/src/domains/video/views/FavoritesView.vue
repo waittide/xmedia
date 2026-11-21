@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { LuHeart } from 'vue-icons-plus/lu'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { api } from '../api'
 import ShowCard from '../components/ShowCard.vue'
 import VideoCard from '../components/VideoCard.vue'
@@ -11,18 +12,29 @@ import { useVideoI18n as useI18n } from '../i18n'
 import type { VideoFavoritesDto, VideoSummaryDto } from '../types'
 
 const { t } = useI18n()
+const snackbarStore = useSnackbarStore()
 
 const activeTab = ref<'videos' | 'shows'>('videos')
 const favorites = ref<VideoFavoritesDto>({ videos: [], shows: [] })
 const editingVideo = ref<VideoSummaryDto | null>(null)
 
+const visibleVideos = computed(() => favorites.value.videos.filter((v) => v.is_favorite))
+const visibleShows = computed(() => favorites.value.shows.filter((sh) => sh.is_favorite))
+
 const tabOptions = computed(() => [
-  { value: 'videos' as const, label: `${t('favorites.tabVideos')} (${favorites.value.videos.length})` },
-  { value: 'shows' as const, label: `${t('favorites.tabShows')} (${favorites.value.shows.length})` },
+  { value: 'videos' as const, label: `${t('favorites.tabVideos')} (${visibleVideos.value.length})` },
+  { value: 'shows' as const, label: `${t('favorites.tabShows')} (${visibleShows.value.length})` },
 ])
 
 async function loadFavorites(): Promise<void> {
-  favorites.value = await api.listFavorites()
+  try {
+    favorites.value = await api.listFavorites()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 onMounted(loadFavorites)
@@ -47,11 +59,11 @@ onMounted(loadFavorites)
 
     <div v-if="activeTab === 'videos'">
       <div
-        v-if="favorites.videos.length > 0"
+        v-if="visibleVideos.length > 0"
         class="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4"
       >
         <VideoCard
-          v-for="v in favorites.videos"
+          v-for="v in visibleVideos"
           :key="v.id"
           :video="v"
           @edit="editingVideo = $event"
@@ -69,10 +81,10 @@ onMounted(loadFavorites)
 
     <div v-else>
       <div
-        v-if="favorites.shows.length > 0"
+        v-if="visibleShows.length > 0"
         class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6"
       >
-        <ShowCard v-for="sh in favorites.shows" :key="sh.id" :show="sh" />
+        <ShowCard v-for="sh in visibleShows" :key="sh.id" :show="sh" />
       </div>
       <div
         v-else

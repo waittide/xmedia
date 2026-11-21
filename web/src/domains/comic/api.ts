@@ -85,7 +85,7 @@ export const api = {
     return {
       library: mapped,
       series_count: scanned.item_count,
-      chapter_count: scanned.item_count,
+      chapter_count: scanned.scan_status.state === 'completed' ? scanned.scan_status.scanned : 0,
       missing_count: 0,
     }
   },
@@ -94,12 +94,13 @@ export const api = {
     const libs = await coreApi.listLibraries('comic')
     const results: ScanResultDto[] = []
     for (const lib of libs) {
-      if (lib.kind.type === 'local_mount' && lib.scan_status.state !== 'scanning') {
+      if (lib.scan_status.state !== 'scanning') {
         const scanned = await coreApi.scanLibrary(lib.id)
         results.push({
           library: mapComicLibrary(scanned),
           series_count: scanned.item_count,
-          chapter_count: scanned.item_count,
+          chapter_count:
+            scanned.scan_status.state === 'completed' ? scanned.scan_status.scanned : 0,
           missing_count: 0,
         })
       }

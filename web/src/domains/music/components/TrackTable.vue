@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
@@ -16,6 +16,7 @@ import {
 } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime as formatDuration } from '@/utils/format'
 import { api, buildDownloadUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
@@ -49,8 +50,15 @@ const authStore = useAuthStore()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 const dialogStore = useDialogStore()
+const snackbarStore = useSnackbarStore()
 
-const activeMenuIdx = ref<number | null>(null)
+const activeMenuTrackId = ref<string | null>(null)
+const activeMenuRowIndex = computed<number>(() =>
+  activeMenuTrackId.value ? props.tracks.findIndex((t) => t.id === activeMenuTrackId.value) : -1,
+)
+const activeMenuTrack = computed<TrackDto | null>(() =>
+  activeMenuRowIndex.value >= 0 ? (props.tracks[activeMenuRowIndex.value] ?? null) : null,
+)
 const menuPos = ref<{ top: string; left: string }>({ top: '0px', left: '0px' })
 const menuRef = ref<HTMLDivElement | null>(null)
 
@@ -75,42 +83,60 @@ function handlePlayRow(idx: number): void {
   }
 }
 
-function openRowMenu(ev: MouseEvent, idx: number): void {
+async function openRowMenu(ev: MouseEvent, track: TrackDto): Promise<void> {
   ev.stopPropagation()
-  if (activeMenuIdx.value === idx) {
-    activeMenuIdx.value = null
+  if (activeMenuTrackId.value === track.id) {
+    activeMenuTrackId.value = null
     return
   }
   const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect()
   const vw = window.innerWidth
   const vh = window.innerHeight
-  const menuW = 216
-  const menuH = 220
+  const menuW = 224
+  const estH = 220
   const left = Math.min(rect.right - menuW, Math.max(8, vw - menuW - 8))
-  const top = rect.bottom + menuH > vh ? Math.max(8, rect.top - menuH) : rect.bottom + 4
+  const top = rect.bottom + estH > vh ? Math.max(8, rect.top - estH) : rect.bottom + 4
   menuPos.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px` }
-  activeMenuIdx.value = idx
+  activeMenuTrackId.value = track.id
+
+  await nextTick()
+  if (activeMenuTrackId.value !== track.id || !menuRef.value) return
+  const measured = menuRef.value.getBoundingClientRect()
+  const finalLeft = Math.min(rect.right - measured.width, Math.max(8, vw - measured.width - 8))
+  const finalTop =
+    rect.bottom + measured.height + 8 > vh
+      ? Math.max(8, rect.top - measured.height - 4)
+      : rect.bottom + 4
+  menuPos.value = { top: `${Math.round(finalTop)}px`, left: `${Math.round(finalLeft)}px` }
 }
 
 async function createPlaylistWithTrack(track: TrackDto): Promise<void> {
-  activeMenuIdx.value = null
+  activeMenuTrackId.value = null
   const name = await dialogStore.prompt({
     title: t('playlist.createTitle'),
     message: t('playlist.createPrompt'),
     placeholder: t('playlist.namePlaceholder'),
   })
   if (!name || !name.trim()) return
-  await api.createPlaylist({ name: name.trim(), track_ids: [track.id] })
-  await musicStore.refreshSidebar()
+  try {
+    await api.createPlaylist({ name: name.trim(), track_ids: [track.id] })
+    await musicStore.refreshSidebar()
+  } catch (err) {
+    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+  }
 }
 
 async function addToExistingPlaylist(playlistId: string, track: TrackDto): Promise<void> {
-  activeMenuIdx.value = null
-  await musicStore.addTrackToPlaylist(playlistId, track.id)
+  activeMenuTrackId.value = null
+  try {
+    await musicStore.addTrackToPlaylist(playlistId, track.id)
+  } catch (err) {
+    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+  }
 }
 
 async function editTrackTags(track: TrackDto): Promise<void> {
-  activeMenuIdx.value = null
+  activeMenuTrackId.value = null
   const raw = await dialogStore.prompt({
     title: globalT('musicTags.editPromptTitle'),
     message: globalT('musicTags.editPromptMessage'),
@@ -122,34 +148,42 @@ async function editTrackTags(track: TrackDto): Promise<void> {
     .split(/[,，]/)
     .map((s) => s.trim())
     .filter(Boolean)
-  const updated = await api.setTrackTags(track.id, nextTags)
-  track.tags = updated.tags
-  await musicStore.refreshSidebar()
+  try {
+    const updated = await api.setTrackTags(track.id, nextTags)
+    track.tags = updated.tags
+    await musicStore.refreshSidebar()
+  } catch (err) {
+    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+  }
 }
 
 async function confirmDeleteTrack(track: TrackDto): Promise<void> {
-  activeMenuIdx.value = null
+  activeMenuTrackId.value = null
   const confirmed = await dialogStore.confirm({
     title: t('common.deleteTrackConfirmTitle'),
     message: t('common.deleteTrackConfirm', { title: track.title }),
     danger: true,
   })
   if (!confirmed) return
-  await api.deleteTrack(track.id)
-  playerStore.removeByTrackId(track.id)
-  musicStore.bumpCatalogVersion()
-  await musicStore.refreshSidebar()
+  try {
+    await api.deleteTrack(track.id)
+    playerStore.removeByTrackId(track.id)
+    musicStore.bumpCatalogVersion()
+    await musicStore.refreshSidebar()
+  } catch (err) {
+    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+  }
 }
 
 function handleOutside(ev: MouseEvent): void {
-  if (activeMenuIdx.value === null) return
+  if (activeMenuTrackId.value === null) return
   if (menuRef.value?.contains(ev.target as Node)) return
-  activeMenuIdx.value = null
+  activeMenuTrackId.value = null
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Escape' && activeMenuIdx.value !== null) {
-    activeMenuIdx.value = null
+  if (ev.key === 'Escape' && activeMenuTrackId.value !== null) {
+    activeMenuTrackId.value = null
   }
 }
 
@@ -326,9 +360,9 @@ onBeforeUnmount(() => {
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
                 :aria-label="t('common.moreActions')"
-                :aria-expanded="activeMenuIdx === idx"
+                :aria-expanded="activeMenuTrackId === tr.id"
                 aria-haspopup="menu"
-                @click="openRowMenu($event, idx)"
+                @click="openRowMenu($event, tr)"
               >
                 <LuMoreHorizontal class="h-4 w-4" />
               </button>
@@ -342,7 +376,7 @@ onBeforeUnmount(() => {
   <Teleport to="body">
     <Transition name="md-fade">
       <div
-        v-if="activeMenuIdx !== null && tracks[activeMenuIdx]"
+        v-if="activeMenuTrack"
         ref="menuRef"
         role="menu"
         :style="menuPos"
@@ -352,7 +386,7 @@ onBeforeUnmount(() => {
           type="button"
           role="menuitem"
           class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="playerStore.enqueueNext(tracks[activeMenuIdx]!); activeMenuIdx = null"
+          @click="playerStore.enqueueNext(activeMenuTrack); activeMenuTrackId = null"
         >
           <LuListPlus class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
           <span>{{ t('common.addToQueue') }}</span>
@@ -363,7 +397,7 @@ onBeforeUnmount(() => {
           type="button"
           role="menuitem"
           class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="editTrackTags(tracks[activeMenuIdx]!)"
+          @click="editTrackTags(activeMenuTrack)"
         >
           <LuTag class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
           <span>{{ globalT('musicTags.editTags') }}</span>
@@ -373,7 +407,7 @@ onBeforeUnmount(() => {
           type="button"
           role="menuitem"
           class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="createPlaylistWithTrack(tracks[activeMenuIdx]!)"
+          @click="createPlaylistWithTrack(activeMenuTrack)"
         >
           <LuPlus class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
           <span>{{ t('nav.newPlaylist') }}</span>
@@ -389,31 +423,31 @@ onBeforeUnmount(() => {
             type="button"
             role="menuitem"
             class="md-state flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-            @click="addToExistingPlaylist(pl.id, tracks[activeMenuIdx]!)"
+            @click="addToExistingPlaylist(pl.id, activeMenuTrack)"
           >
             <span class="truncate">+ {{ pl.name }}</span>
-            <span class="font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+            <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               {{ pl.track_count }}
             </span>
           </button>
         </div>
 
         <a
-          :href="buildDownloadUrl(tracks[activeMenuIdx]!.id)"
+          :href="buildDownloadUrl(activeMenuTrack.id)"
           role="menuitem"
           class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="activeMenuIdx = null"
+          @click="activeMenuTrackId = null"
         >
           <LuDownload class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
           <span>{{ t('common.download') }}</span>
         </a>
 
         <button
-          v-if="removable"
+          v-if="removable && activeMenuRowIndex >= 0"
           type="button"
           role="menuitem"
           class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)]"
-          @click="emit('remove', activeMenuIdx); activeMenuIdx = null"
+          @click="emit('remove', activeMenuRowIndex); activeMenuTrackId = null"
         >
           <LuTrash2 class="h-3.5 w-3.5" />
           <span>{{ t('playlist.removeTrack') }}</span>
@@ -423,7 +457,7 @@ onBeforeUnmount(() => {
           type="button"
           role="menuitem"
           class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)]"
-          @click="confirmDeleteTrack(tracks[activeMenuIdx]!)"
+          @click="confirmDeleteTrack(activeMenuTrack)"
         >
           <LuTrash2 class="h-3.5 w-3.5" />
           <span>{{ t('common.delete') }}</span>
