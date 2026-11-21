@@ -20,7 +20,17 @@ function normalizeForMatch(raw: string | null | undefined): string {
 
 function normalizeIsbn(raw: string | null | undefined): string {
   if (!raw) return ''
-  return raw.replace(/[^0-9xX]/g, '').toUpperCase()
+  const cleaned = raw.replace(/[^0-9xX]/g, '').toUpperCase()
+  if (cleaned.length === 10 && /^\d{9}[\dX]$/.test(cleaned)) {
+    const core = `978${cleaned.slice(0, 9)}`
+    let sum = 0
+    for (let i = 0; i < 12; i += 1) {
+      sum += Number(core[i]) * (i % 2 === 0 ? 1 : 3)
+    }
+    const check = (10 - (sum % 10)) % 10
+    return `${core}${check}`
+  }
+  return cleaned
 }
 
 const CN_WEBNOVEL_PROVIDERS = new Set([
@@ -191,7 +201,13 @@ function isCompatibleSecondarySource(
       CN_WEBNOVEL_PROVIDERS.has(secondary.provider_id)
     if (pCreators.length > 0 && sCreators.length > 0 && (pAscii === sAscii || involvesCnWebnovel)) {
       const sameAuthor = pCreators.some((pc) =>
-        sCreators.some((sc) => pc === sc || pc.includes(sc) || sc.includes(pc)),
+        sCreators.some(
+          (sc) =>
+            pc === sc ||
+            (Array.from(pc).length >= 2 &&
+              Array.from(sc).length >= 2 &&
+              (pc.includes(sc) || sc.includes(pc))),
+        ),
       )
       if (!sameAuthor) return false
     }
@@ -357,10 +373,11 @@ export function mergeScrapedClientSide(
       sources.rating = badge
     }
 
+    const allowZeroEpisode = target === 'tv_show' || src.target === 'tv_show'
     if (
       out.track_or_episode_number === null &&
       src.track_or_episode_number !== null &&
-      src.track_or_episode_number > 0
+      (src.track_or_episode_number > 0 || (allowZeroEpisode && src.track_or_episode_number === 0))
     ) {
       out.track_or_episode_number = src.track_or_episode_number
       sources.track_or_episode_number = badge

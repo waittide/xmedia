@@ -323,7 +323,7 @@ export function useMetadataForm() {
           series_group: comicForm.seriesGroup,
           title: comicForm.title,
           number: comicForm.number,
-          volume: comicForm.volume.trim() ? Number.parseInt(comicForm.volume, 10) : -1,
+          volume: parseClearableInt(comicForm.volume),
           year: parseOptInt(comicForm.year, 0),
           language_iso: comicForm.language,
           reading_direction: comicForm.direction,
@@ -391,8 +391,16 @@ export function useMetadataForm() {
   ): boolean {
     if (field === 'cover') {
       if (!meta.cover_url) return false
+      if (kind === 'book' && isBookFieldLocked('cover')) return false
+      if (kind === 'video' && isVideoFieldLocked('poster')) {
+        if (meta.backdrop_url && !isVideoFieldLocked('fanart')) {
+          pendingBackdropUrl.value = meta.backdrop_url
+          return true
+        }
+        return false
+      }
       pendingCoverUrl.value = meta.cover_url
-      if (kind === 'video' && meta.backdrop_url) {
+      if (kind === 'video' && meta.backdrop_url && !isVideoFieldLocked('fanart')) {
         pendingBackdropUrl.value = meta.backdrop_url
       }
       return true
@@ -589,11 +597,23 @@ export function useMetadataForm() {
       videoForm.summary = meta.summary
       return true
     }
-    if (field === 'track_or_episode' && meta.track_or_episode_number && shouldWrite(videoForm.episode, fillMode)) {
+    if (
+      field === 'track_or_episode' &&
+      meta.track_or_episode_number !== null &&
+      meta.track_or_episode_number !== undefined &&
+      !isVideoFieldLocked('episode_number') &&
+      shouldWrite(videoForm.episode, fillMode)
+    ) {
       videoForm.episode = String(meta.track_or_episode_number)
       return true
     }
-    if (field === 'disc_or_season' && meta.disc_or_season_number && shouldWrite(videoForm.season, fillMode)) {
+    if (
+      field === 'disc_or_season' &&
+      meta.disc_or_season_number !== null &&
+      meta.disc_or_season_number !== undefined &&
+      !isVideoFieldLocked('season_number') &&
+      shouldWrite(videoForm.season, fillMode)
+    ) {
       videoForm.season = String(meta.disc_or_season_number)
       return true
     }
@@ -635,10 +655,10 @@ export function useMetadataForm() {
       const extIds = meta.external_ids ?? {}
       const tmdbId = extIds.tmdb || (meta.provider_id === 'tmdb' ? meta.external_id : '')
       const bgmId = extIds.bangumi || (meta.provider_id === 'bangumi' ? meta.external_id : '')
-      if (tmdbId && shouldWrite(videoForm.tmdbId, fillMode)) {
+      if (tmdbId && !isVideoFieldLocked('tmdb_id') && shouldWrite(videoForm.tmdbId, fillMode)) {
         videoForm.tmdbId = tmdbId
       }
-      if (bgmId && shouldWrite(videoForm.bangumiId, fillMode)) {
+      if (bgmId && !isVideoFieldLocked('bangumi_id') && shouldWrite(videoForm.bangumiId, fillMode)) {
         videoForm.bangumiId = bgmId
       }
     }

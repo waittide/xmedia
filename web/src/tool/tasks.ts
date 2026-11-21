@@ -53,6 +53,7 @@ const SCRAPE_CONCURRENCY = 2
 export const useToolTaskStore = defineStore('tool-tasks', () => {
   const entries = ref<ToolTaskEntry[]>([])
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  const taskAbortControllers = new Map<string, AbortController>()
   const fileListeners = new Set<FileScrapedListener>()
   const batchSettledListeners = new Set<BatchSettledListener>()
 
@@ -295,12 +296,14 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
         }
 
         task.status = 'running'
+        const controller = new AbortController()
+        taskAbortControllers.set(task.id, controller)
         let cursor = 0
         const items = task.subItems
 
         async function runLane(): Promise<void> {
           while (cursor < items.length) {
-            if (task!.cancelled) break
+            if (task!.cancelled || controller.signal.aborted) break
             const idx = cursor
             cursor += 1
             const sub = items[idx]!
@@ -318,7 +321,13 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
                 prevRelPath,
                 sub.mediaKind,
                 task!.scrapeOptions,
+                controller.signal,
               )
+              if (task!.cancelled || controller.signal.aborted) {
+                sub.status = 'cancelled'
+                sub.finishedAt = Date.now()
+                break
+              }
               sub.confidence = res.confidence
               sub.finishedAt = Date.now()
               if (res.detail?.entry) {
@@ -341,10 +350,19 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
                 task!.unmatchedCount = (task!.unmatchedCount ?? 0) + 1
               }
             } catch (err) {
-              sub.status = 'failed'
-              sub.finishedAt = Date.now()
-              sub.error = err instanceof Error ? err.message : String(err)
-              task!.failedCount = (task!.failedCount ?? 0) + 1
+              if (
+                task!.cancelled ||
+                controller.signal.aborted ||
+                (err instanceof DOMException && err.name === 'AbortError')
+              ) {
+                sub.status = 'cancelled'
+                sub.finishedAt = Date.now()
+              } else {
+                sub.status = 'failed'
+                sub.finishedAt = Date.now()
+                sub.error = err instanceof Error ? err.message : String(err)
+                task!.failedCount = (task!.failedCount ?? 0) + 1
+              }
             } finally {
               task!.processed = items.filter(
                 (it) =>
@@ -365,7 +383,12 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
 
         const laneCount = Math.min(SCRAPE_CONCURRENCY, items.length)
         await Promise.all(Array.from({ length: laneCount }, () => runLane()))
-        settleBatchTask(task)
+        if (taskAbortControllers.get(task.id) === controller) {
+          taskAbortControllers.delete(task.id)
+        }
+        if (entries.value.some((e) => e.id === task!.id)) {
+          settleBatchTask(task)
+        }
       }
     } finally {
       workerRunning = false
@@ -407,6 +430,11 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     const found = entries.value.find((e) => e.id === id)
     if (!found) return
     found.cancelled = true
+    const ctrl = taskAbortControllers.get(id)
+    if (ctrl) {
+      taskAbortControllers.delete(id)
+      ctrl.abort()
+    }
     if (found.status === 'queued') {
       const qIdx = pendingScrapeBatchIds.indexOf(id)
       if (qIdx >= 0) pendingScrapeBatchIds.splice(qIdx, 1)
@@ -417,6 +445,7 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
   function retryTaskFailedOrUnmatched(id: string): void {
     const found = entries.value.find((e) => e.id === id)
     if (!found || !found.subItems) return
+    if (found.status === 'running' || found.status === 'queued') return
     const retryTargets = found.subItems.filter(
       (it) => it.status === 'failed' || it.status === 'unmatched' || it.status === 'cancelled',
     )
@@ -465,6 +494,10 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
 
   function resetState(): void {
     pendingScrapeBatchIds.length = 0
+    for (const ctrl of taskAbortControllers.values()) {
+      ctrl.abort()
+    }
+    taskAbortControllers.clear()
     for (const item of entries.value) {
       item.cancelled = true
       clearTaskTimer(item.id)

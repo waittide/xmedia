@@ -233,10 +233,10 @@ const sortedRawFiles = computed<RawFileEntryDto[]>(() => {
           }))
   const dir = props.sortDir === 'asc' ? 1 : -1
   return [...rawList].sort((a, b) => {
-    if (props.sortField === 'size') {
+    if (effectiveSortField.value === 'size') {
       return (a.file_size - b.file_size) * dir
     }
-    if (props.sortField === 'modified') {
+    if (effectiveSortField.value === 'modified') {
       return (a.modified_unix_secs - b.modified_unix_secs) * dir
     }
     return a.file_name.localeCompare(b.file_name, undefined, { numeric: true }) * dir

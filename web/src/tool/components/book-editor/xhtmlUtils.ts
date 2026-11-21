@@ -448,9 +448,57 @@ export function hydrateXhtmlForBrowser(
   return body.innerHTML || '<p><br></p>'
 }
 
+export function computeRelativeZipPath(fromHref: string | null, targetZipPath: string): string {
+  const fromDirs = (fromHref ?? '').split('/').slice(0, -1).filter(Boolean)
+  const targetParts = targetZipPath.split('/').filter(Boolean)
+  let common = 0
+  while (
+    common < fromDirs.length &&
+    common < targetParts.length - 1 &&
+    fromDirs[common] === targetParts[common]
+  ) {
+    common += 1
+  }
+  const ups = Array(fromDirs.length - common).fill('..')
+  return [...ups, ...targetParts.slice(common)].join('/')
+}
+
+export function rewriteChapterRelativeAssetPaths(
+  xhtmlBody: string,
+  fromHref: string | null,
+  toHref: string | null,
+): string {
+  if (!xhtmlBody || fromHref === toHref) return xhtmlBody
+  const fromDir = (fromHref ?? '').split('/').slice(0, -1).join('/')
+  const toDir = (toHref ?? '').split('/').slice(0, -1).join('/')
+  if (fromDir === toDir) return xhtmlBody
+
+  const doc = new DOMParser().parseFromString(`<body>${xhtmlBody}</body>`, 'text/html')
+  if (!doc.body) return xhtmlBody
+
+  doc.body.querySelectorAll('img[src]').forEach((el) => {
+    const raw = el.getAttribute('src') ?? ''
+    const resolved = resolveZipRelativePath(fromHref, raw)
+    if (resolved) {
+      el.setAttribute('src', computeRelativeZipPath(toHref, resolved))
+    }
+  })
+  doc.body.querySelectorAll('image').forEach((el) => {
+    const raw = el.getAttribute('href') ?? el.getAttribute('xlink:href') ?? ''
+    const resolved = resolveZipRelativePath(fromHref, raw)
+    if (resolved) {
+      const next = computeRelativeZipPath(toHref, resolved)
+      el.removeAttribute('xlink:href')
+      el.setAttribute('href', next)
+    }
+  })
+  return serializeContainerToValidXhtml(doc.body) || xhtmlBody
+}
+
 const VOID_TAGS = new Set(['br', 'hr', 'img', 'col', 'meta', 'link', 'input'])
 const BLOCK_TAGS = new Set([
   'p',
+  'div',
   'h1',
   'h2',
   'h3',
@@ -461,6 +509,9 @@ const BLOCK_TAGS = new Set([
   'ul',
   'ol',
   'li',
+  'dl',
+  'dt',
+  'dd',
   'pre',
   'hr',
   'figure',
@@ -468,11 +519,18 @@ const BLOCK_TAGS = new Set([
   'table',
   'thead',
   'tbody',
+  'tfoot',
   'tr',
   'th',
   'td',
+  'caption',
   'section',
   'article',
+  'aside',
+  'header',
+  'footer',
+  'main',
+  'nav',
 ])
 const ALLOWED_ATTRS = new Set([
   'class',
@@ -481,13 +539,41 @@ const ALLOWED_ATTRS = new Set([
   'src',
   'alt',
   'title',
+  'dir',
+  'lang',
+  'xml:lang',
+  'style',
+  'rel',
+  'start',
+  'type',
   'colspan',
   'rowspan',
   'width',
   'height',
   'viewBox',
+  'preserveAspectRatio',
   'xmlns',
+  'xmlns:xlink',
+  'xmlns:epub',
 ])
+
+const ATTR_CANONICAL_CASE: Record<string, string> = {
+  viewbox: 'viewBox',
+  preserveaspectratio: 'preserveAspectRatio',
+}
+
+function isSafeSerializableUri(raw: string, allowRelative = true): boolean {
+  const cleaned = stripControlChars(raw)
+  if (!cleaned) return false
+  if (cleaned.startsWith('#')) return true
+  if (SAFE_RASTER_DATA_URI_RE.test(cleaned)) return true
+  const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(cleaned)
+  if (!schemeMatch) {
+    return allowRelative && !cleaned.startsWith('//')
+  }
+  const scheme = schemeMatch[1]!.toLowerCase()
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto'
+}
 
 export function serializeNodeToValidXhtml(node: Node, topLevel = false): string {
   if (node.nodeType === Node.TEXT_NODE) {
@@ -505,7 +591,7 @@ export function serializeNodeToValidXhtml(node: Node, topLevel = false): string 
 
   const el = node as HTMLElement
   let tag = el.tagName.toLowerCase()
-  if (tag === 'script' || tag === 'style') return ''
+  if (DROP_SUBTREE_TAGS.has(tag)) return ''
   if (tag === 'b') tag = 'strong'
   if (tag === 'i') tag = 'em'
   // Normalize browser contenteditable `<div>` paragraphs into semantic `<p>` unless it wraps blocks
@@ -519,27 +605,58 @@ export function serializeNodeToValidXhtml(node: Node, topLevel = false): string 
   }
 
   const attrs: string[] = []
+  const emittedAttrNames = new Set<string>()
   const origEpubSrc = el.getAttribute('data-epub-src')
   const origEpubHref = el.getAttribute('data-epub-href')
 
-  for (const attr of Array.from(el.attributes)) {
-    const name = attr.name
-    if (name === 'data-epub-src' || name === 'data-epub-href') continue
-    if (name === 'contenteditable' || name === 'draggable') continue
-    if (tag === 'img' && name === 'src' && origEpubSrc) {
-      attrs.push(`src="${escapeXml(origEpubSrc)}"`)
-      continue
-    }
-    if (tag === 'image' && (name === 'href' || name === 'xlink:href') && origEpubHref) {
-      attrs.push(`href="${escapeXml(origEpubHref)}"`)
-      continue
-    }
-    if (ALLOWED_ATTRS.has(name) || name.startsWith('epub:')) {
-      attrs.push(`${name}="${escapeXml(attr.value)}"`)
-    }
+  const pushAttr = (name: string, value: string): void => {
+    const key = name.toLowerCase()
+    if (emittedAttrNames.has(key)) return
+    emittedAttrNames.add(key)
+    attrs.push(`${name}="${escapeXml(value)}"`)
   }
-  if (tag === 'img' && origEpubSrc && !attrs.some((a) => a.startsWith('src='))) {
-    attrs.push(`src="${escapeXml(origEpubSrc)}"`)
+
+  for (const attr of Array.from(el.attributes)) {
+    const rawName = attr.name
+    const lowerName = rawName.toLowerCase()
+    if (lowerName === 'data-epub-src' || lowerName === 'data-epub-href') continue
+    if (lowerName === 'contenteditable' || lowerName === 'draggable') continue
+    if (lowerName.startsWith('on')) continue
+
+    if (tag === 'img' && lowerName === 'src') {
+      const target = origEpubSrc || attr.value
+      if (isSafeSerializableUri(target, true)) {
+        pushAttr('src', target)
+      }
+      continue
+    }
+    if (tag === 'image' && (lowerName === 'href' || lowerName === 'xlink:href')) {
+      const target = origEpubHref || attr.value
+      if (isSafeSerializableUri(target, true)) {
+        pushAttr('href', target)
+      }
+      continue
+    }
+
+    const canonicalName = ATTR_CANONICAL_CASE[lowerName] ?? rawName
+    if (!ALLOWED_ATTRS.has(canonicalName) && !lowerName.startsWith('epub:')) continue
+
+    if (lowerName === 'href' || lowerName === 'src') {
+      if (!isSafeSerializableUri(attr.value, true)) continue
+    }
+    if (lowerName === 'style') {
+      const safeStyle = sanitizeInlineStyle(attr.value)
+      if (!safeStyle) continue
+      pushAttr('style', safeStyle)
+      continue
+    }
+    pushAttr(canonicalName, attr.value)
+  }
+  if (tag === 'img' && origEpubSrc && !emittedAttrNames.has('src') && isSafeSerializableUri(origEpubSrc, true)) {
+    pushAttr('src', origEpubSrc)
+  }
+  if (tag === 'image' && origEpubHref && !emittedAttrNames.has('href') && isSafeSerializableUri(origEpubHref, true)) {
+    pushAttr('href', origEpubHref)
   }
 
   const attrStr = attrs.length > 0 ? ` ${attrs.join(' ')}` : ''
@@ -571,8 +688,13 @@ export function serializeContainerToValidXhtml(container: ParentNode): string {
   return lines.join('\n')
 }
 
-
-export function replaceInTextNodes(root: Node, re: RegExp, replacement: string, limitOne: boolean): number {
+export function replaceInTextNodes(
+  root: Node,
+  re: RegExp,
+  replacement: string,
+  limitOne: boolean,
+  literal = true,
+): number {
   let replaced = 0
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
   const textNodes: Text[] = []
@@ -581,6 +703,7 @@ export function replaceInTextNodes(root: Node, re: RegExp, replacement: string, 
     textNodes.push(cur as Text)
     cur = walker.nextNode()
   }
+  const literalReplacer = () => replacement
   for (const tn of textNodes) {
     const val = tn.nodeValue ?? ''
     re.lastIndex = 0
@@ -589,12 +712,12 @@ export function replaceInTextNodes(root: Node, re: RegExp, replacement: string, 
     if (limitOne) {
       const singleFlags = re.flags.replace('g', '')
       const singleRe = new RegExp(re.source, singleFlags)
-      tn.nodeValue = val.replace(singleRe, replacement)
+      tn.nodeValue = literal ? val.replace(singleRe, literalReplacer) : val.replace(singleRe, replacement)
       return 1
     }
     const matches = Array.from(val.matchAll(re)).length
     replaced += matches
-    tn.nodeValue = val.replace(re, replacement)
+    tn.nodeValue = literal ? val.replace(re, literalReplacer) : val.replace(re, replacement)
   }
   return replaced
 }

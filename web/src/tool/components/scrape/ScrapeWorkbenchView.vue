@@ -477,6 +477,7 @@ async function confirmDiscardIfDirty(): Promise<boolean> {
 }
 
 async function requestStep(delta: -1 | 1): Promise<void> {
+  if (saving.value || savingLocal.value) return
   if (delta < 0 && !props.hasPrev) return
   if (delta > 0 && !props.hasNext) return
   if (!(await confirmDiscardIfDirty())) return
@@ -485,6 +486,7 @@ async function requestStep(delta: -1 | 1): Promise<void> {
 }
 
 async function requestPickEntry(entry: MediaFileEntry): Promise<void> {
+  if (saving.value || savingLocal.value) return
   queueDropdownOpen.value = false
   if (props.detail && entryCompositeKey(props.detail.entry) === entryCompositeKey(entry)) return
   if (!(await confirmDiscardIfDirty())) return
@@ -492,6 +494,7 @@ async function requestPickEntry(entry: MediaFileEntry): Promise<void> {
 }
 
 async function requestExit(): Promise<void> {
+  if (saving.value || savingLocal.value) return
   if (!(await confirmDiscardIfDirty())) return
   queueDropdownOpen.value = false
   emit('exit')

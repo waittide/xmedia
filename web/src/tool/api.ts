@@ -214,27 +214,31 @@ async function toolStreamRequest<T>(
     }
   }
 
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let nl = buffer.indexOf('\n')
-    while (nl >= 0) {
-      const line = buffer.slice(0, nl)
-      buffer = buffer.slice(nl + 1)
-      handleLine(line)
-      nl = buffer.indexOf('\n')
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let nl = buffer.indexOf('\n')
+      while (nl >= 0) {
+        const line = buffer.slice(0, nl)
+        buffer = buffer.slice(nl + 1)
+        handleLine(line)
+        nl = buffer.indexOf('\n')
+      }
     }
-  }
-  buffer += decoder.decode()
-  if (buffer.trim()) {
-    handleLine(buffer)
-  }
+    buffer += decoder.decode()
+    if (buffer.trim()) {
+      handleLine(buffer)
+    }
 
-  if (!receivedDone) {
-    throw new Error('Stream ended before completion')
+    if (!receivedDone) {
+      throw new Error('Stream ended before completion')
+    }
+    return finalData as T
+  } finally {
+    void reader.cancel().catch(() => {})
   }
-  return finalData as T
 }
 
 const SCRAPER_IMAGE_PROXY_DOMAINS = [
@@ -372,6 +376,7 @@ export const toolApi = {
     kind: MediaKind | null,
     recursive = true,
     onProgress?: StreamProgressCallback,
+    signal?: AbortSignal,
   ): Promise<DirectorySnapshot> {
     const q = new URLSearchParams({
       root_id: rootId,
@@ -382,16 +387,16 @@ export const toolApi = {
     if (onProgress) {
       return toolStreamRequest<DirectorySnapshot>(
         `/fs/browse/stream?${q.toString()}`,
-        { method: 'GET' },
+        { method: 'GET', signal },
         onProgress,
       ).catch((err: Error & { streamRouteMissing?: boolean }) => {
         if (err?.streamRouteMissing) {
-          return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`)
+          return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`, { signal })
         }
         throw err
       })
     }
-    return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`)
+    return toolRequest<DirectorySnapshot>(`/fs/browse?${q.toString()}`, { signal })
   },
 
   inspectFile(rootId: string, relPath: string, kind: MediaKind | null): Promise<MediaFileDetail> {
@@ -630,9 +635,11 @@ export const toolApi = {
     relPath: string,
     mediaKind: MediaKind,
     options?: AutoScrapeOptionsDto,
+    signal?: AbortSignal,
   ): Promise<AutoScrapeResultDto> {
     return toolRequest<AutoScrapeResultDto>('/scrapers/auto-apply', {
       method: 'POST',
+      signal,
       body: JSON.stringify({
         root_id: rootId,
         path: relPath,

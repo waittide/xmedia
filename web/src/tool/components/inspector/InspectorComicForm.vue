@@ -62,7 +62,11 @@ const inputCls =
         <span class="mb-1 block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">出版社</span>
         <input v-model="form.publisher" type="text" :class="inputCls" />
       </label>
-      <div class="block">
+      <label class="block">
+        <span class="mb-1 block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">语言 (LanguageISO)</span>
+        <input v-model="form.language" type="text" placeholder="如：zh-CN / ja / en" :class="inputCls" />
+      </label>
+      <div class="block sm:col-span-2">
         <span class="mb-1 block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">阅读方向</span>
         <AppSelect v-model="form.direction" :options="directionOptions" />
       </div>

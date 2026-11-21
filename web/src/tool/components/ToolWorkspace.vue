@@ -192,6 +192,8 @@ let suppressHashSync = false
 let initialLoaded = false
 
 const settings = ref<PublicSettingsDto | null>(null)
+const initialLoadError = ref<string | null>(null)
+const loadingInitial = ref(false)
 const domainNavMemory = ref<Record<MediaKind, { rootId: string; relPath: string }>>({
   book: { rootId: '', relPath: '' },
   comic: { rootId: '', relPath: '' },
@@ -293,6 +295,13 @@ function syncHashFromState(replace = false): void {
   }
 }
 
+function clearActiveDetail(): void {
+  inspectSeq += 1
+  activeDetail.value = null
+  inspectingPath.value = null
+  loadingInspector.value = false
+}
+
 async function navigatePrimary(nav: 'home' | 'items', keepFilter = false): Promise<void> {
   if (
     (activeNav.value !== nav || scrapeWorkbenchActive.value) &&
@@ -320,8 +329,7 @@ async function navigatePrimary(nav: 'home' | 'items', keepFilter = false): Promi
     selectedPaths.value = new Set()
     lastSelectedRelPath.value = null
     if (wasScopedToSingleRoot || !snapshot.value) {
-      activeDetail.value = null
-      inspectingPath.value = null
+      clearActiveDetail()
       syncHashFromState()
       await loadAllDomainRoots()
       return
@@ -669,8 +677,7 @@ function syncDomainStateToMemory(dom: MediaKind, rootId: string, relPath: string
 async function activateDomainWorkspace(dom: MediaKind): Promise<void> {
   const roots = (settings.value?.roots ?? []).filter((r) => r.default_kind === dom)
   selectedPaths.value = new Set()
-  inspectingPath.value = null
-  activeDetail.value = null
+  clearActiveDetail()
   completenessFilter.value = 'all'
   searchQuery.value = ''
   dirError.value = null
@@ -714,34 +721,42 @@ async function switchDomain(next: MediaKind): Promise<void> {
 }
 
 async function loadInitial(): Promise<void> {
-  const s = await toolApi.getSettings()
-  settings.value = s
+  loadingInitial.value = true
+  initialLoadError.value = null
+  try {
+    const s = await toolApi.getSettings()
+    settings.value = s
 
-  if (initialHash.rootId) {
-    const matched = s.roots.find((r) => r.id === initialHash.rootId)
-    if (matched && matched.default_kind) {
-      activeDomain.value = matched.default_kind
-      domainNavMemory.value = {
-        ...domainNavMemory.value,
-        [matched.default_kind]: {
-          rootId: matched.id,
-          relPath: initialHash.relPath ?? '',
-        },
+    if (initialHash.rootId) {
+      const matched = s.roots.find((r) => r.id === initialHash.rootId)
+      if (matched && matched.default_kind) {
+        activeDomain.value = matched.default_kind
+        domainNavMemory.value = {
+          ...domainNavMemory.value,
+          [matched.default_kind]: {
+            rootId: matched.id,
+            relPath: initialHash.relPath ?? '',
+          },
+        }
       }
     }
-  }
 
-  const currentHasRoots = s.roots.some((r) => r.default_kind === activeDomain.value)
-  if (!currentHasRoots) {
-    const firstWithRoot = VALID_DOMAINS.find((d) => s.roots.some((r) => r.default_kind === d))
-    if (firstWithRoot) {
-      activeDomain.value = firstWithRoot
-      localStorage.setItem('xmedia_tool.active_domain', firstWithRoot)
+    const currentHasRoots = s.roots.some((r) => r.default_kind === activeDomain.value)
+    if (!currentHasRoots) {
+      const firstWithRoot = VALID_DOMAINS.find((d) => s.roots.some((r) => r.default_kind === d))
+      if (firstWithRoot) {
+        activeDomain.value = firstWithRoot
+        localStorage.setItem('xmedia_tool.active_domain', firstWithRoot)
+      }
     }
+    await activateDomainWorkspace(activeDomain.value)
+    syncHashFromState(true)
+    initialLoaded = true
+  } catch (err) {
+    initialLoadError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    loadingInitial.value = false
   }
-  await activateDomainWorkspace(activeDomain.value)
-  syncHashFromState(true)
-  initialLoaded = true
 }
 
 async function loadAllDomainRoots(): Promise<void> {
@@ -981,8 +996,7 @@ async function selectRoot(
     syncHashFromState()
     return
   }
-  activeDetail.value = null
-  inspectingPath.value = null
+  clearActiveDetail()
   syncHashFromState()
   await loadDirectory(rootId, '')
 }
@@ -1247,8 +1261,7 @@ async function confirmDeleteFiles(): Promise<void> {
       activeDetail.value &&
       isKeyRemoved(entrySelectionKey(activeDetail.value.entry))
     ) {
-      activeDetail.value = null
-      inspectingPath.value = null
+      clearActiveDetail()
     }
     if (allFailed.length > 0 && totalDeleted === 0) {
       deleteDialogError.value = allFailed.map((f) => `${f.rel_path}: ${f.error}`).join('；')
@@ -1483,8 +1496,7 @@ async function handleHistoryRestored(): Promise<void> {
     if (stillHere) {
       void inspectEntry(stillHere)
     } else {
-      activeDetail.value = null
-      inspectingPath.value = null
+      clearActiveDetail()
     }
   }
 }
@@ -1492,15 +1504,19 @@ async function handleHistoryRestored(): Promise<void> {
 async function ensureTaskItemDirectoryLoaded(
   domain: MediaKind,
   rootId: string,
-): Promise<void> {
+): Promise<boolean> {
   if (activeDomain.value !== domain) {
+    if (!(await confirmActiveEditorClean())) return false
     await switchDomain(domain)
   }
   if (activeRootId.value !== rootId || currentRelPath.value !== '') {
+    if (!(await confirmActiveEditorClean())) return false
+    clearActiveDetail()
     activeRootId.value = rootId
     currentRelPath.value = ''
     await loadDirectory(rootId, '')
   }
+  return true
 }
 
 async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<void> {
@@ -1509,13 +1525,17 @@ async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<
   if (uniqueRoots.size <= 1) {
     const onlyRootId = Array.from(uniqueRoots)[0] ?? ''
     if (onlyRootId) {
-      await ensureTaskItemDirectoryLoaded(payload.domain, onlyRootId)
+      const ok = await ensureTaskItemDirectoryLoaded(payload.domain, onlyRootId)
+      if (!ok) return
     }
   } else {
     if (activeDomain.value !== payload.domain) {
+      if (!(await confirmActiveEditorClean())) return
       await switchDomain(payload.domain)
     }
     if (activeRootId.value !== '' || currentRelPath.value !== '' || !snapshot.value) {
+      if (!(await confirmActiveEditorClean())) return
+      clearActiveDetail()
       activeRootId.value = ''
       currentRelPath.value = ''
       await loadAllDomainRoots()
@@ -1544,6 +1564,8 @@ async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<
     }
     return
   }
+  scrapeWorkbenchActive.value = false
+  scrapeWorkbenchPaths.value = null
   const firstEntry = matchedEntries[0]
   if (firstEntry) {
     void inspectEntry(firstEntry)
@@ -1551,11 +1573,16 @@ async function handleReviewUnmatchedItems(payload: ReviewItemsPayload): Promise<
 }
 
 async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<void> {
-  await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  const ok = await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  if (!ok) return
   completenessFilter.value = 'all'
   workbenchFocusPaths.value = new Set([`${payload.rootId}::${payload.relPath}`])
   setViewMode('flat')
   activeNav.value = 'items'
+  if (!payload.openCandidates) {
+    scrapeWorkbenchActive.value = false
+    scrapeWorkbenchPaths.value = null
+  }
   const target = (snapshot.value?.files ?? []).find(
     (f) => f.root_id === payload.rootId && f.rel_path === payload.relPath,
   )
@@ -1566,8 +1593,10 @@ async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<v
       await inspectEntry(target)
     }
   } else {
+    const seq = ++inspectSeq
     try {
       const detail = await toolApi.inspectFile(payload.rootId, payload.relPath, payload.domain)
+      if (seq !== inspectSeq) return
       activeDetail.value = detail
       inspectingPath.value = entrySelectionKey(detail.entry)
     } catch (err) {
@@ -1580,7 +1609,8 @@ async function handleInspectTaskItem(payload: InspectTaskItemPayload): Promise<v
 }
 
 async function handleOpenTaskBookEditor(payload: InspectTaskItemPayload): Promise<void> {
-  await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  const ok = await ensureTaskItemDirectoryLoaded(payload.domain, payload.rootId)
+  if (!ok) return
   const target = (snapshot.value?.files ?? []).find(
     (f) => f.root_id === payload.rootId && f.rel_path === payload.relPath,
   )
@@ -1892,7 +1922,10 @@ function handleKeydown(ev: KeyboardEvent): void {
   }
   if (anyModalOpen.value) return
   if (ev.key === 'Escape') {
-    if (activeDetail.value && inspectorRef.value) {
+    if (mobileMenuOpen.value) {
+      ev.preventDefault()
+      mobileMenuOpen.value = false
+    } else if (activeDetail.value && inspectorRef.value && !scrapeWorkbenchActive.value) {
       ev.preventDefault()
       void inspectorRef.value.requestClose()
     } else if (selectedPaths.value.size > 0) {
@@ -1902,7 +1935,11 @@ function handleKeydown(ev: KeyboardEvent): void {
     return
   }
   if (isTypingTarget(ev.target)) return
-  if (activeNav.value === 'items' && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
+  if (
+    activeNav.value === 'items' &&
+    !scrapeWorkbenchActive.value &&
+    (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')
+  ) {
     const list = filteredFiles.value
     if (list.length === 0) return
     ev.preventDefault()
@@ -1943,6 +1980,8 @@ async function handleHashChange(): Promise<void> {
   }
   suppressHashSync = true
   try {
+    scrapeWorkbenchActive.value = false
+    scrapeWorkbenchPaths.value = null
     const domainChanged = Boolean(parsed.domain && parsed.domain !== activeDomain.value)
     if (parsed.domain) {
       activeDomain.value = parsed.domain
@@ -2181,9 +2220,26 @@ onBeforeUnmount(() => {
 
         <template v-else>
           <div class="min-w-0 flex-1 overflow-y-auto">
+          <div
+            v-if="initialLoadError && !settings"
+            role="alert"
+            class="flex h-full flex-col items-center justify-center gap-3 px-6 text-center"
+          >
+            <p class="max-w-md text-sm font-medium text-[var(--md-sys-color-error)]">
+              {{ initialLoadError }}
+            </p>
+            <button
+              type="button"
+              :disabled="loadingInitial"
+              class="md-btn md-btn-filled md-state"
+              @click="loadInitial()"
+            >
+              重试加载配置
+            </button>
+          </div>
           <!-- VIEW 1: IN-PAGE SETTINGS (Server SettingsView Left-Right Layout + Domain Tabs) -->
           <ToolSettingsView
-            v-if="activeNav === 'settings'"
+            v-else-if="activeNav === 'settings'"
             :settings="settings"
             :active-domain="activeDomain"
             :initial-tab="settingsInitialTab"
@@ -2306,8 +2362,9 @@ onBeforeUnmount(() => {
               :has-prev="hasPrevInspect"
               :has-next="hasNextInspect"
               :position-label="inspectPositionLabel"
+              :shortcuts-disabled="anyModalOpen"
               @step="stepInspectingFile"
-              @close="activeDetail = null; inspectingPath = null"
+              @close="clearActiveDetail()"
               @updated="handleDetailUpdated"
               @open-workbench="(d) => openScrapeWorkbench(d.entry)"
               @open-content-editor="openBookContentEditor"

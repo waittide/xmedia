@@ -126,6 +126,10 @@ watch(
   { immediate: true },
 )
 
+function toOptInt(val: unknown): number | undefined {
+  return typeof val === 'number' && Number.isFinite(val) ? Math.trunc(val) : undefined
+}
+
 async function handleProcessLyrics(): Promise<void> {
   if (!primaryEntry.value) return
   busy.value = true
@@ -136,7 +140,7 @@ async function handleProcessLyrics(): Promise<void> {
       primaryEntry.value.root_id,
       primaryEntry.value.rel_path,
       {
-        offset_ms: offsetMs.value,
+        offset_ms: toOptInt(offsetMs.value) ?? 0,
         strip_credit_noise: stripCreditNoise.value,
         zh_direction: zhDirection.value || null,
         sync_mode: syncMode.value,
@@ -234,11 +238,11 @@ async function handleBatchSyncAlbum(): Promise<void> {
         album: albumName.value.trim() || undefined,
         album_artist: albumArtist.value.trim() || undefined,
         artist: trackArtist.value.trim() || undefined,
-        year: albumYear.value ?? undefined,
+        year: toOptInt(albumYear.value),
         genre: albumGenre.value.trim() || undefined,
-        disc_number: discNumber.value ?? undefined,
+        disc_number: toOptInt(discNumber.value),
         auto_number_tracks: autoNumberTracks.value,
-        start_track: startTrack.value,
+        start_track: toOptInt(startTrack.value) ?? 1,
       },
     )
     successMsg.value = `已同步 ${rep.updated_count} 首曲目的专辑信息${rep.failed_paths.length > 0 ? `（失败 ${rep.failed_paths.length}）` : ''}`

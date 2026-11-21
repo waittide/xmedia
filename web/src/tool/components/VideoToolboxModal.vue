@@ -140,6 +140,10 @@ watch(
   { immediate: true },
 )
 
+function toOptInt(val: unknown): number | undefined {
+  return typeof val === 'number' && Number.isFinite(val) ? Math.trunc(val) : undefined
+}
+
 async function handleProcessSubtitle(): Promise<void> {
   if (!primaryEntry.value || !selectedSubName.value) return
   busy.value = true
@@ -152,7 +156,7 @@ async function handleProcessSubtitle(): Promise<void> {
       {
         subtitle_filename: selectedSubName.value,
         convert_utf8: convertUtf8.value,
-        offset_ms: subOffsetMs.value,
+        offset_ms: toOptInt(subOffsetMs.value) ?? 0,
         zh_direction: subZhDir.value || null,
         rename_language: renameLang.value.trim() || undefined,
         forced: subForced.value,
@@ -204,10 +208,10 @@ async function handleBatchRemap(): Promise<void> {
       sortedEntries.value.map((e) => e.rel_path),
       {
         show_title: showTitle.value.trim() || undefined,
-        season_number: seasonNumber.value ?? undefined,
+        season_number: toOptInt(seasonNumber.value),
         mode: remapMode.value,
-        start_episode: startEpisode.value,
-        episode_offset: episodeOffset.value,
+        start_episode: toOptInt(startEpisode.value) ?? 1,
+        episode_offset: toOptInt(episodeOffset.value) ?? 0,
         write_season_nfo: writeSeasonNfo.value,
       },
     )

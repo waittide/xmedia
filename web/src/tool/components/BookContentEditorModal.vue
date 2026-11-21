@@ -57,6 +57,7 @@ import {
   hydrateXhtmlForBrowser as hydrateXhtmlForBrowserRaw,
   plainToCleanXhtml,
   replaceInTextNodes,
+  rewriteChapterRelativeAssetPaths,
   sanitizeEpubCssForPreview,
   serializeContainerToValidXhtml,
 } from './book-editor/xhtmlUtils'
@@ -512,6 +513,11 @@ async function cleanChapterTypography(): Promise<void> {
 async function splitChapterAtCursor(): Promise<void> {
   const rec = currentRecord.value
   if (!rec) return
+  if (idleSyncTimer) {
+    clearTimeout(idleSyncTimer)
+    idleSyncTimer = null
+  }
+  flushActiveSurfaceToRecord()
 
   if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
     const root = wysiwygRef.value
@@ -561,7 +567,7 @@ async function splitChapterAtCursor(): Promise<void> {
       plainCache: tailPlain,
       charCount: countNonWhitespace(tailPlain),
       hasRichMedia: /<(?:img|svg|image|table)\b/i.test(tailXhtml),
-      sourceHref: null,
+      sourceHref: rec.sourceHref,
     }
 
     const nextList = [...chapters.value]
@@ -581,9 +587,18 @@ async function splitChapterAtCursor(): Promise<void> {
       showToast('请先将光标放在源码中间需要拆分的位置')
       return
     }
-    const before = sourceBuffer.value.slice(0, pos).trimEnd()
-    const after = sourceBuffer.value.slice(pos).trimStart()
-    rec.xhtmlBody = before || '  <p><br/></p>'
+    const rawBefore = sourceBuffer.value.slice(0, pos).trimEnd()
+    const rawAfter = sourceBuffer.value.slice(pos).trimStart()
+    // Balance and normalize both halves through DOMParser + XHTML serializer to prevent malformed XML.
+    const beforeDoc = new DOMParser().parseFromString(`<body>${rawBefore}</body>`, 'text/html')
+    const afterDoc = new DOMParser().parseFromString(`<body>${rawAfter}</body>`, 'text/html')
+    const before = serializeContainerToValidXhtml(beforeDoc.body) || '  <p><br/></p>'
+    const after = serializeContainerToValidXhtml(afterDoc.body)
+    if (!after.trim()) {
+      showToast('光标后没有可拆分的内容')
+      return
+    }
+    rec.xhtmlBody = before
     rec.plainCache = extractPlainFromXhtml(rec.xhtmlBody, rec.title)
     rec.charCount = countNonWhitespace(rec.plainCache)
 
@@ -597,7 +612,7 @@ async function splitChapterAtCursor(): Promise<void> {
       plainCache: tailPlain,
       charCount: countNonWhitespace(tailPlain),
       hasRichMedia: /<(?:img|svg|image|table)\b/i.test(after),
-      sourceHref: null,
+      sourceHref: rec.sourceHref,
     }
 
     const nextList = [...chapters.value]
@@ -960,7 +975,12 @@ async function mergeWithPrevious(idx: number): Promise<void> {
   const prev = chapters.value[idx - 1]!
   const cur = chapters.value[idx]!
 
-  prev.xhtmlBody = [prev.xhtmlBody.trim(), cur.xhtmlBody.trim()].filter(Boolean).join('\n\n')
+  const rewrittenCurBody = rewriteChapterRelativeAssetPaths(
+    cur.xhtmlBody,
+    cur.sourceHref,
+    prev.sourceHref,
+  )
+  prev.xhtmlBody = [prev.xhtmlBody.trim(), rewrittenCurBody.trim()].filter(Boolean).join('\n\n')
   prev.plainCache = extractPlainFromXhtml(prev.xhtmlBody, prev.title)
   prev.charCount = countNonWhitespace(prev.plainCache)
   prev.hasRichMedia = prev.hasRichMedia || cur.hasRichMedia
@@ -1029,36 +1049,52 @@ async function handleReorderChapter(
 
 // ==================== Find & Replace (Chapter or Whole Book) ====================
 
-function buildSearchRegex(): RegExp | null {
+function buildSearchRegexResult(): { regex: RegExp | null; error: string | null } {
   const q = findQuery.value
-  if (!q) return null
+  if (!q) return { regex: null, error: null }
   try {
     const pattern = findUseRegex.value ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const flags = findCaseSensitive.value ? 'g' : 'gi'
-    return new RegExp(pattern, flags)
-  } catch {
-    return null
+    return { regex: new RegExp(pattern, flags), error: null }
+  } catch (err) {
+    return { regex: null, error: err instanceof Error ? err.message : '正则表达式语法错误' }
   }
 }
 
+function countTextNodeMatches(xhtmlBody: string, re: RegExp): number {
+  const doc = new DOMParser().parseFromString(`<body>${xhtmlBody}</body>`, 'text/html')
+  if (!doc.body) return 0
+  let count = 0
+  const walker = document.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+  let cur = walker.nextNode()
+  while (cur) {
+    const val = cur.nodeValue ?? ''
+    if (val) {
+      re.lastIndex = 0
+      count += Array.from(val.matchAll(re)).length
+    }
+    cur = walker.nextNode()
+  }
+  return count
+}
+
 const searchMatchSummary = computed<string>(() => {
-  const re = buildSearchRegex()
+  const { regex: re, error } = buildSearchRegexResult()
+  if (error) return `正则错误：${error}`
   if (!re) return ''
   if (findScope.value === 'chapter') {
     const rec = currentRecord.value
     if (!rec) return '0 处'
-    const hay =
-      surfaceMode.value === 'xhtml'
-        ? sourceBuffer.value
-        : (wysiwygRef.value?.innerText ?? rec.plainCache)
-    const count = Array.from(hay.matchAll(re)).length
+    const count = countTextNodeMatches(
+      surfaceMode.value === 'xhtml' ? sourceBuffer.value : rec.xhtmlBody,
+      re,
+    )
     return `本章 ${count} 处`
   }
   let total = 0
   let chapHits = 0
   for (const ch of chapters.value) {
-    const target = surfaceMode.value === 'xhtml' ? ch.xhtmlBody : ch.plainCache
-    const m = Array.from(target.matchAll(re)).length
+    const m = countTextNodeMatches(ch.xhtmlBody, re)
     if (m > 0) {
       total += m
       chapHits += 1
@@ -1068,24 +1104,16 @@ const searchMatchSummary = computed<string>(() => {
 })
 
 async function handleReplaceSingle(): Promise<void> {
-  const re = buildSearchRegex()
+  const { regex: re, error } = buildSearchRegexResult()
+  if (error) {
+    showToast(`正则语法错误：${error}`)
+    return
+  }
   if (!re || !currentRecord.value) return
   flushActiveSurfaceToRecord()
 
-  if (surfaceMode.value === 'xhtml') {
-    const singleRe = new RegExp(re.source, re.flags.replace('g', ''))
-    const next = sourceBuffer.value.replace(singleRe, replaceQuery.value)
-    if (next !== sourceBuffer.value) {
-      sourceBuffer.value = next
-      flushActiveSurfaceToRecord()
-      hasUnsavedEdits.value = true
-      showToast('已替换 1 处')
-    }
-    return
-  }
-
   const doc = new DOMParser().parseFromString(`<body>${currentRecord.value.xhtmlBody}</body>`, 'text/html')
-  const count = replaceInTextNodes(doc.body, re, replaceQuery.value, true)
+  const count = replaceInTextNodes(doc.body, re, replaceQuery.value, true, !findUseRegex.value)
   if (count > 0) {
     currentRecord.value.xhtmlBody = serializeContainerToValidXhtml(doc.body) || '  <p><br/></p>'
     currentRecord.value.plainCache = extractPlainFromXhtml(
@@ -1101,7 +1129,11 @@ async function handleReplaceSingle(): Promise<void> {
 }
 
 async function handleReplaceAll(): Promise<void> {
-  const re = buildSearchRegex()
+  const { regex: re, error } = buildSearchRegexResult()
+  if (error) {
+    showToast(`正则语法错误：${error}`)
+    return
+  }
   if (!re) return
   flushActiveSurfaceToRecord()
 
@@ -1114,23 +1146,13 @@ async function handleReplaceAll(): Promise<void> {
   for (const idx of indices) {
     const ch = chapters.value[idx]
     if (!ch) continue
-    if (surfaceMode.value === 'xhtml') {
-      const matches = Array.from(ch.xhtmlBody.matchAll(re)).length
-      if (matches > 0) {
-        ch.xhtmlBody = ch.xhtmlBody.replace(re, replaceQuery.value)
-        ch.plainCache = extractPlainFromXhtml(ch.xhtmlBody, ch.title)
-        ch.charCount = countNonWhitespace(ch.plainCache)
-        totalReplaced += matches
-      }
-    } else {
-      const doc = new DOMParser().parseFromString(`<body>${ch.xhtmlBody}</body>`, 'text/html')
-      const count = replaceInTextNodes(doc.body, re, replaceQuery.value, false)
-      if (count > 0) {
-        ch.xhtmlBody = serializeContainerToValidXhtml(doc.body) || '  <p><br/></p>'
-        ch.plainCache = extractPlainFromXhtml(ch.xhtmlBody, ch.title)
-        ch.charCount = countNonWhitespace(ch.plainCache)
-        totalReplaced += count
-      }
+    const doc = new DOMParser().parseFromString(`<body>${ch.xhtmlBody}</body>`, 'text/html')
+    const count = replaceInTextNodes(doc.body, re, replaceQuery.value, false, !findUseRegex.value)
+    if (count > 0) {
+      ch.xhtmlBody = serializeContainerToValidXhtml(doc.body) || '  <p><br/></p>'
+      ch.plainCache = extractPlainFromXhtml(ch.xhtmlBody, ch.title)
+      ch.charCount = countNonWhitespace(ch.plainCache)
+      totalReplaced += count
     }
   }
 

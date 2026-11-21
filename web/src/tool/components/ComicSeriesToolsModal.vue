@@ -113,8 +113,8 @@ async function handleBatchSync(): Promise<void> {
         tags: splitCsv(tags.value),
         reading_direction: readingDirection.value || undefined,
         numbering_mode: numberingMode.value,
-        start_index: startIndex.value,
-        pad_width: padWidth.value,
+        start_index: toOptInt(startIndex.value) ?? 1,
+        pad_width: toOptInt(padWidth.value) ?? 2,
       },
     )
     successMsg.value = `已同步 ${rep.updated_count} 本漫画${rep.failed_paths.length > 0 ? `（失败 ${rep.failed_paths.length} 本）` : ''}`
@@ -124,6 +124,10 @@ async function handleBatchSync(): Promise<void> {
   } finally {
     busy.value = false
   }
+}
+
+function toOptInt(val: unknown): number | undefined {
+  return typeof val === 'number' && Number.isFinite(val) ? Math.trunc(val) : undefined
 }
 
 async function handleMerge(): Promise<void> {
@@ -142,7 +146,7 @@ async function handleMerge(): Promise<void> {
       mergeOutputName.value.trim(),
       mergeSeries.value.trim() || undefined,
       mergeTitle.value.trim() || undefined,
-      mergeVolume.value,
+      toOptInt(mergeVolume.value) ?? null,
     )
     successMsg.value = `已合并 ${res.report.source_count} 话为 ${res.report.output_rel_path}（共 ${res.report.total_pages} 页）`
     emit('completed')

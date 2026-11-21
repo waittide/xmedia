@@ -44,11 +44,13 @@ const props = withDefaults(
     hasPrev?: boolean
     hasNext?: boolean
     positionLabel?: string
+    shortcutsDisabled?: boolean
   }>(),
   {
     hasPrev: false,
     hasNext: false,
     positionLabel: '',
+    shortcutsDisabled: false,
   },
 )
 
@@ -94,16 +96,21 @@ const uploadingArtwork = ref(false)
 const errorMsg = ref<string | null>(null)
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const pendingSlot = ref<'cover' | 'series_cover' | 'poster' | 'fanart' | 'thumb'>('cover')
-const skipNextHydrate = ref(false)
+const skipNextHydrateKey = ref<string | null>(null)
+
+function detailIdentityKey(d: MediaFileDetail): string {
+  return `${d.entry.root_id}::${d.entry.rel_path}`
+}
 
 watch(
   () => props.detail,
   (d) => {
     if (!d) return
-    if (skipNextHydrate.value) {
-      skipNextHydrate.value = false
+    if (skipNextHydrateKey.value === detailIdentityKey(d)) {
+      skipNextHydrateKey.value = null
       return
     }
+    skipNextHydrateKey.value = null
     errorMsg.value = null
     hydrateForm(d)
   },
@@ -157,11 +164,13 @@ async function confirmDiscardIfDirty(): Promise<boolean> {
 }
 
 async function requestClose(): Promise<void> {
+  if (saving.value || uploadingArtwork.value) return
   if (!(await confirmDiscardIfDirty())) return
   emit('close')
 }
 
 async function requestStep(delta: -1 | 1): Promise<void> {
+  if (saving.value || uploadingArtwork.value) return
   if (delta < 0 && !props.hasPrev) return
   if (delta > 0 && !props.hasNext) return
   if (!(await confirmDiscardIfDirty())) return
@@ -191,7 +200,7 @@ async function handleArtworkPicked(ev: Event): Promise<void> {
       props.detail.entry.media_kind,
     )
     pendingCoverUrl.value = null
-    skipNextHydrate.value = true
+    skipNextHydrateKey.value = detailIdentityKey(updated)
     emit('updated', updated, true)
     snackbar.show('封面已更新并写入磁盘')
   } catch (err) {
@@ -237,6 +246,7 @@ async function saveMetadata(
     )
 
     let bumpedArt = false
+    const artworkWarnings: string[] = []
     if (pendingCoverUrl.value) {
       try {
         const slot = updated.entry.media_kind === 'video' ? 'poster' : 'cover'
@@ -248,8 +258,10 @@ async function saveMetadata(
           updated.entry.media_kind,
         )
         bumpedArt = true
-      } catch {
-        // Keep persisted metadata even if remote cover download fails
+      } catch (artErr) {
+        artworkWarnings.push(
+          `封面下载写入失败：${artErr instanceof Error ? artErr.message : String(artErr)}`,
+        )
       }
       pendingCoverUrl.value = null
     }
@@ -263,8 +275,10 @@ async function saveMetadata(
           'video',
         )
         bumpedArt = true
-      } catch {
-        // Ignore backdrop fetch failure
+      } catch (artErr) {
+        artworkWarnings.push(
+          `背景图下载写入失败：${artErr instanceof Error ? artErr.message : String(artErr)}`,
+        )
       }
       pendingBackdropUrl.value = null
     }
@@ -289,11 +303,19 @@ async function saveMetadata(
 
     hydrateForm(updated)
     emit('updated', updated, bumpedArt)
-    snackbar.show({
-      message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已保存元数据更改',
-      actionLabel: '变更历史',
-      onAction: () => emit('openHistory'),
-    })
+    if (artworkWarnings.length > 0) {
+      errorMsg.value = artworkWarnings.join('；')
+      snackbar.show({
+        message: `元数据已保存，但${artworkWarnings.join('；')}`,
+        tone: 'error',
+      })
+    } else {
+      snackbar.show({
+        message: organizeAfterSave ? '已保存元数据并完成路径归档' : '已保存元数据更改',
+        actionLabel: '变更历史',
+        onAction: () => emit('openHistory'),
+      })
+    }
 
     if (advanceNext && props.hasNext) {
       emit('step', 1)
@@ -306,6 +328,8 @@ async function saveMetadata(
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
+  if (props.shortcutsDisabled) return
+  if (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]')) return
   if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') {
     ev.preventDefault()
     void saveMetadata(false, false)

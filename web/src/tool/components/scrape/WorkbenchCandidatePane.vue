@@ -234,7 +234,15 @@ function selectMergedPreview(): void {
   })
 }
 
+function currentEntryKey(): string {
+  return props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''
+}
+
+let providerLoadSeq = 0
+let pendingAutoSearch = false
+
 async function selectCandidatePreview(c: ScrapeCandidate): Promise<void> {
+  const entryKey = currentEntryKey()
   const key = candKey(c)
   selectedKey.value = key
   const cached = getCachedDetail(key)
@@ -262,7 +270,7 @@ async function selectCandidatePreview(c: ScrapeCandidate): Promise<void> {
   })
 
   const full = await resolveCandidateDetail(c)
-  if (selectedKey.value !== key) return
+  if (selectedKey.value !== key || currentEntryKey() !== entryKey) return
   emit('selectPreview', {
     key,
     isMerged: false,
@@ -359,13 +367,16 @@ async function loadProvidersForTarget(
   target: ScrapeTargetKind,
   domain: MediaFileDetail['entry']['media_kind'],
 ): Promise<void> {
+  const seq = ++providerLoadSeq
   try {
     const list = await toolApi.listProviders(target, domain)
+    if (seq !== providerLoadSeq) return
     providers.value = list
     const configuredIds = list.filter((p) => p.configured).map((p) => p.id)
     const retained = configuredIds.filter((id) => enabledProviderIds.value.includes(id))
     enabledProviderIds.value = retained.length > 0 ? retained : configuredIds
   } catch {
+    if (seq !== providerLoadSeq) return
     providers.value = []
   }
 }
@@ -444,7 +455,9 @@ function isProviderRepresentative(c: ScrapeCandidate): boolean {
 }
 
 async function useCandidateForMerge(c: ScrapeCandidate): Promise<void> {
+  const entryKey = currentEntryKey()
   const full = (await resolveCandidateDetail(c)) ?? buildLightMetadata(c)
+  if (currentEntryKey() !== entryKey) return
   selectedByProvider.value = {
     ...selectedByProvider.value,
     [c.provider_id]: c,
@@ -552,6 +565,7 @@ const CN_NOVEL_PROVIDER_IDS = new Set([
   'faloo',
 ])
 const MUSIC_PROVIDER_IDS = new Set([
+  'qq',
   'qq_music',
   'netease',
   'kugou',
@@ -658,14 +672,15 @@ async function resolveCandidateDetail(c: ScrapeCandidate): Promise<ScrapedMetada
 }
 
 async function handleDirectApplyCandidate(c: ScrapeCandidate): Promise<void> {
+  const entryKey = currentEntryKey()
   const meta = await resolveCandidateDetail(c)
-  if (!meta) return
+  if (!meta || currentEntryKey() !== entryKey) return
   emit('directApply', meta, fillMode.value)
 }
 
 watch(
   () => (props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''),
-  async () => {
+  async (entryKey) => {
     const d = props.detail
     searchRequestSeq += 1
     if (!d) {
@@ -676,6 +691,7 @@ watch(
       ignoredProviderIds.value = new Set()
       waterfallExpanded.value = false
       selectedKey.value = null
+      pendingAutoSearch = false
       emit('selectPreview', null)
       return
     }
@@ -698,14 +714,30 @@ watch(
     selectedKey.value = null
     searchError.value = null
     emit('selectPreview', null)
-    await loadProvidersForDetail(d)
-    hydratingFromDetail = false
+    try {
+      await loadProvidersForDetail(d)
+    } finally {
+      if (currentEntryKey() === entryKey) {
+        hydratingFromDetail = false
+      }
+    }
+    if (currentEntryKey() === entryKey && pendingAutoSearch) {
+      pendingAutoSearch = false
+      if (props.externalKeyword !== undefined && props.externalKeyword.trim()) {
+        keyword.value = props.externalKeyword.trim()
+      }
+      if (props.externalArtist !== undefined) {
+        artistOrAuthor.value = props.externalArtist.trim()
+      }
+      void runSearch()
+    }
   },
   { immediate: true },
 )
 
 watch(targetKind, async (next, prev) => {
   if (hydratingFromDetail || !props.detail) return
+  const entryKey = currentEntryKey()
   const d = props.detail
   if (d.metadata.kind === 'music') {
     if (next === 'music_album') {
@@ -717,7 +749,7 @@ watch(targetKind, async (next, prev) => {
     }
   }
   await loadProvidersForTarget(next, d.entry.media_kind)
-  if (canSearch.value) {
+  if (currentEntryKey() === entryKey && canSearch.value) {
     void runSearch()
   }
 })
@@ -726,6 +758,10 @@ watch(
   () => props.autoSearchTrigger,
   (val, prev) => {
     if (val > 0 && val !== prev && props.detail) {
+      if (hydratingFromDetail) {
+        pendingAutoSearch = true
+        return
+      }
       if (props.externalKeyword !== undefined && props.externalKeyword.trim()) {
         keyword.value = props.externalKeyword.trim()
       }
