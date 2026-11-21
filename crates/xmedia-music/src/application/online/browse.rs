@@ -190,7 +190,9 @@ impl MusicOnlineService {
             match res {
                 Ok(out) => {
                     if out.state != prev_state {
-                        let _ = self.persist_runtime_state(sid, out.state).await;
+                        let _ = self
+                            .persist_runtime_state_delta(sid, &prev_state, &out.state)
+                            .await;
                     }
                     for t in out.diagnostics.toasts {
                         if !toasts.contains(&t) {
@@ -254,7 +256,9 @@ impl MusicOnlineService {
         .map_err(|e| DomainError::Validation(e.message))?;
 
         if out.state != prev_state_cmp {
-            let _ = self.persist_runtime_state(source_id, out.state).await;
+            let _ = self
+                .persist_runtime_state_delta(source_id, &prev_state_cmp, &out.state)
+                .await;
         }
 
         let mut diagnostics = out.diagnostics;
@@ -407,7 +411,9 @@ impl MusicOnlineService {
         .map_err(|e| DomainError::Storage(format!("解析曲目详情线程失败: {e}")))??;
 
         if final_state != prev_state_cmp {
-            let _ = self.persist_runtime_state(source_id, final_state).await;
+            let _ = self
+                .persist_runtime_state_delta(source_id, &prev_state_cmp, &final_state)
+                .await;
         }
         if !actor.role.is_admin() {
             diag.logs.clear();
@@ -477,7 +483,9 @@ impl MusicOnlineService {
         .map_err(|e| DomainError::Validation(e.message))?;
 
         if out.state != prev_state_cmp {
-            let _ = self.persist_runtime_state(source_id, out.state).await;
+            let _ = self
+                .persist_runtime_state_delta(source_id, &prev_state_cmp, &out.state)
+                .await;
         }
 
         let stream_url = out.data.stream_url.trim().to_string();
@@ -523,7 +531,9 @@ impl MusicOnlineService {
         .map_err(|e| DomainError::Validation(e.message))?;
 
         if out.state != prev_state_cmp {
-            let _ = self.persist_runtime_state(source_id, out.state).await;
+            let _ = self
+                .persist_runtime_state_delta(source_id, &prev_state_cmp, &out.state)
+                .await;
         }
 
         Ok(out

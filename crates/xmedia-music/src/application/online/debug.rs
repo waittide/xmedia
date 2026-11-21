@@ -14,7 +14,7 @@ use xmedia_source::crud::{
 use crate::domain::catalog::StructuredLyrics;
 use crate::source::model::{
     ExecutionDiagnostics, MusicSourceSpec, MusicSourceTestMode, MusicTrackContext,
-    OnlineMusicTrackItem,
+    OnlineMusicTrackItem, SourceRuntimeState,
 };
 
 use super::browse::{build_proxy_cover_url, build_proxy_stream_url, track_item_to_dto};
@@ -57,6 +57,7 @@ impl MusicOnlineService {
         let mode = input.mode;
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
+        let prev_state_cmp = prev_state.clone();
         let kw_clone = effective_keyword.clone();
         let source_name = rec.name.clone();
         let qualities = parsed.supported_qualities.clone();
@@ -571,8 +572,11 @@ impl MusicOnlineService {
         )
         .await;
 
-        let (final_state, report) = match timed_res {
-            Ok(Ok(pair)) => pair,
+        let (state_delta, report) = match timed_res {
+            Ok(Ok((final_state, report))) => (
+                super::runtime_state_delta(&prev_state_cmp, &final_state),
+                report,
+            ),
             Ok(Err(e)) => {
                 return Err(DomainError::Storage(format!("测试音源线程失败: {e}")));
             }
@@ -597,7 +601,7 @@ impl MusicOnlineService {
                     )],
                     payload: MusicSourceTestPayload::default(),
                 };
-                (Default::default(), report)
+                (SourceRuntimeState::default(), report)
             }
         };
 
@@ -615,7 +619,7 @@ impl MusicOnlineService {
         let lock = self.source_state_lock_for(id);
         let _guard = lock.lock().await;
         let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged_state = merge_runtime_state(current, final_state);
+        let merged_state = merge_runtime_state(current, state_delta);
 
         let _ = self
             .sources

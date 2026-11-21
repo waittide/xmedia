@@ -179,25 +179,28 @@ pub fn infer_audio_format(url: &str) -> Option<String> {
 }
 
 fn is_known_template_placeholder(expr: &str) -> bool {
-    matches!(
-        expr,
-        "key"
-            | "page"
-            | "limit"
-            | "quality"
-            | "urlId"
-            | "trackId"
-            | "coverId"
-            | "lyricId"
-            | "playUrl"
-            | "detailUrl"
-            | "title"
-            | "artist"
-            | "album"
-    )
+    expr.eq_ignore_ascii_case("quality")
+        || matches!(
+            expr,
+            "key"
+                | "page"
+                | "limit"
+                | "urlId"
+                | "trackId"
+                | "coverId"
+                | "lyricId"
+                | "playUrl"
+                | "detailUrl"
+                | "title"
+                | "artist"
+                | "album"
+        )
 }
 
 fn resolve_static_placeholder(expr: &str, vars: &MusicTemplateVars<'_>) -> Option<String> {
+    if expr.eq_ignore_ascii_case("quality") {
+        return Some(vars.quality.to_string());
+    }
     match expr {
         "key" => Some(url_encode_component(vars.key)),
         "title" => Some(url_encode_component(vars.title)),
@@ -205,7 +208,6 @@ fn resolve_static_placeholder(expr: &str, vars: &MusicTemplateVars<'_>) -> Optio
         "album" => Some(url_encode_component(vars.album)),
         "page" => Some(vars.page.to_string()),
         "limit" => Some(vars.limit.to_string()),
-        "quality" => Some(vars.quality.to_string()),
         "urlId" => Some(vars.url_id.to_string()),
         "trackId" => Some(vars.track_id.to_string()),
         "coverId" => Some(vars.cover_id.to_string()),
@@ -214,6 +216,48 @@ fn resolve_static_placeholder(expr: &str, vars: &MusicTemplateVars<'_>) -> Optio
         "detailUrl" => Some(vars.detail_url.to_string()),
         _ => None,
     }
+}
+
+fn substitute_static_explore_placeholders(raw: &str, page: u32, limit: u32) -> String {
+    let page_str = page.to_string();
+    let limit_str = limit.to_string();
+    let mut out = String::with_capacity(raw.len() + 16);
+    let mut rest = raw;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let expr = after_open[..close].trim();
+        if expr == "page" {
+            out.push_str(&page_str);
+        } else if expr == "limit" {
+            out.push_str(&limit_str);
+        } else {
+            out.push_str(&rest[open..open + 2 + close + 2]);
+        }
+        rest = &after_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn resolve_literal_http_url(raw: &str, base_url: &str, label: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label} 不能为空"));
+    }
+    if split_js_pipeline(trimmed).is_some() {
+        return Err(format!("{label} 不允许包含 JS 脚本"));
+    }
+    let resolved = resolve_relative_url(trimmed, base_url);
+    if !resolved.starts_with("http://") && !resolved.starts_with("https://") {
+        return Err(format!("{label} 必须是有效的 HTTP(S) URL: {resolved}"));
+    }
+    Ok(resolved)
 }
 
 fn template_needs_js(raw_tpl: &str) -> bool {
@@ -746,13 +790,6 @@ impl MusicSourceEngine {
                 .map(|raw| parse_explore_categories(raw, &source.source_url))
                 .unwrap_or_default();
 
-            let target_tpl = explore_url_override
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-                .or_else(|| categories.first().map(|c| c.url.clone()))
-                .ok_or_else(|| format!("音源「{}」未配置 exploreUrl", source.source_name))?;
-
             let rule = source
                 .rule_explore
                 .as_ref()
@@ -761,22 +798,66 @@ impl MusicSourceEngine {
 
             let page_clamped = page.max(1);
             let limit_clamped = limit.clamp(1, 50);
-            session.set_search_vars("", page_clamped, limit_clamped)?;
 
-            let vars = MusicTemplateVars {
-                page: page_clamped,
-                limit: limit_clamped,
-                ..Default::default()
+            let override_trimmed = explore_url_override
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+
+            let target_url = if let Some(raw_override) = override_trimmed {
+                if let Some(matched_cat) = categories.iter().find(|c| c.url == raw_override) {
+                    session.set_search_vars("", page_clamped, limit_clamped)?;
+                    let vars = MusicTemplateVars {
+                        page: page_clamped,
+                        limit: limit_clamped,
+                        ..Default::default()
+                    };
+                    let empty_input = RuleValue::Text(String::new());
+                    let evaluated = eval_template_expression(
+                        &mut session,
+                        &matched_cat.url,
+                        &vars,
+                        &empty_input,
+                        &source.source_url,
+                    )?;
+                    if evaluated.trim().is_empty() {
+                        return Err("exploreUrl 求值结果为空".into());
+                    }
+                    resolve_relative_url(evaluated.trim(), &source.source_url)
+                } else {
+                    if split_js_pipeline(raw_override).is_some() {
+                        return Err("自定义 exploreUrl 不允许包含 JS 脚本".into());
+                    }
+                    let substituted = substitute_static_explore_placeholders(
+                        raw_override,
+                        page_clamped,
+                        limit_clamped,
+                    );
+                    resolve_literal_http_url(&substituted, &source.source_url, "exploreUrl")?
+                }
+            } else {
+                let default_cat = categories
+                    .first()
+                    .ok_or_else(|| format!("音源「{}」未配置 exploreUrl", source.source_name))?;
+                session.set_search_vars("", page_clamped, limit_clamped)?;
+                let vars = MusicTemplateVars {
+                    page: page_clamped,
+                    limit: limit_clamped,
+                    ..Default::default()
+                };
+                let empty_input = RuleValue::Text(String::new());
+                let evaluated = eval_template_expression(
+                    &mut session,
+                    &default_cat.url,
+                    &vars,
+                    &empty_input,
+                    &source.source_url,
+                )?;
+                if evaluated.trim().is_empty() {
+                    return Err("exploreUrl 求值结果为空".into());
+                }
+                resolve_relative_url(evaluated.trim(), &source.source_url)
             };
-            let empty_input = RuleValue::Text(String::new());
-            let evaluated = eval_template_expression(
-                &mut session,
-                &target_tpl,
-                &vars,
-                &empty_input,
-                &source.source_url,
-            )?;
-            let target_url = resolve_relative_url(evaluated.trim(), &source.source_url);
+
             let fetched = fetch_api(&session, &target_url, &source.source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
             let tracks =
@@ -845,28 +926,34 @@ impl MusicSourceEngine {
 
             let quality = ctx.quality.as_deref().unwrap_or("");
             let vars = MusicTemplateVars::from_track(ctx, quality);
-            let req_tpl = rule
+            let target_url = if let Some(req_tpl) = rule
                 .request_url
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-                .or_else(|| {
-                    ctx.detail_url
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                })
-                .ok_or_else(|| "缺少 track detail 请求 URL".to_string())?;
-
-            let empty_input = RuleValue::Text(String::new());
-            let evaluated_url = eval_template_expression(
-                &mut session,
-                req_tpl,
-                &vars,
-                &empty_input,
-                &source.source_url,
-            )?;
-            let target_url = resolve_relative_url(evaluated_url.trim(), &source.source_url);
+            {
+                let empty_input = RuleValue::Text(String::new());
+                let evaluated_url = eval_template_expression(
+                    &mut session,
+                    req_tpl,
+                    &vars,
+                    &empty_input,
+                    &source.source_url,
+                )?;
+                if evaluated_url.trim().is_empty() {
+                    return Err("ruleTrackDetail.requestUrl 求值结果为空".into());
+                }
+                resolve_relative_url(evaluated_url.trim(), &source.source_url)
+            } else if let Some(detail_url) = ctx
+                .detail_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                resolve_literal_http_url(detail_url, &source.source_url, "detailUrl")?
+            } else {
+                return Err("缺少 track detail 请求 URL".to_string());
+            };
             let fetched = fetch_api(&session, &target_url, &source.source_url)?;
             let mut input = RuleValue::from_raw(fetched.body);
 
@@ -1452,30 +1539,51 @@ impl MusicSourceEngine {
             } else if let Some(ref detail_rule) = source.rule_track_detail
                 && let Some(ref lyric_rule) = detail_rule.lyric
                 && !lyric_rule.trim().is_empty()
-                && let Some(req_tpl) = detail_rule
+            {
+                let target_url = if let Some(req_tpl) = detail_rule
                     .request_url
                     .as_deref()
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        ctx.detail_url
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                    })
-            {
-                let evaluated_req = eval_template_expression(
-                    &mut session,
-                    req_tpl,
-                    &vars,
-                    &empty_input,
-                    &source.source_url,
-                )?;
-                let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
-                let fetched = fetch_api(&session, &target_url, &source.source_url)?;
-                let input = RuleValue::from_raw(fetched.body);
-                let lrc = session.eval_opt(&input, Some(lyric_rule), &fetched.final_url);
-                (lrc, None)
+                {
+                    let evaluated_req = eval_template_expression(
+                        &mut session,
+                        req_tpl,
+                        &vars,
+                        &empty_input,
+                        &source.source_url,
+                    )?;
+                    if evaluated_req.trim().is_empty() {
+                        None
+                    } else {
+                        Some(resolve_relative_url(
+                            evaluated_req.trim(),
+                            &source.source_url,
+                        ))
+                    }
+                } else if let Some(detail_url) = ctx
+                    .detail_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(resolve_literal_http_url(
+                        detail_url,
+                        &source.source_url,
+                        "detailUrl",
+                    )?)
+                } else {
+                    None
+                };
+
+                if let Some(target_url) = target_url {
+                    let fetched = fetch_api(&session, &target_url, &source.source_url)?;
+                    let input = RuleValue::from_raw(fetched.body);
+                    let lrc = session.eval_opt(&input, Some(lyric_rule), &fetched.final_url);
+                    (lrc, None)
+                } else {
+                    (String::new(), None)
+                }
             } else {
                 (String::new(), None)
             };

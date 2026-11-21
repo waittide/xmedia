@@ -1867,3 +1867,692 @@ async fn engine_blocks_template_js_injection_and_fixes_short_circuit_headers_ia_
 
     server.abort();
 }
+
+#[tokio::test]
+async fn regression_explore_detail_url_js_injection_and_uppercase_quality() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::source::model::{MusicStreamRule, MusicTrackDetailRule};
+
+    #[derive(Deserialize)]
+    struct QueryCapture {
+        q: Option<String>,
+        p: Option<String>,
+        l: Option<String>,
+        calc: Option<String>,
+        leak: Option<String>,
+        x: Option<String>,
+    }
+
+    let seen_stream_q: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_stream_q_srv = seen_stream_q.clone();
+    let seen_detail_x: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_detail_x_srv = seen_detail_x.clone();
+    let seen_explore: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_explore_srv = seen_explore.clone();
+    let seen_explore_srv2 = seen_explore.clone();
+    let stream_hits = Arc::new(AtomicUsize::new(0));
+    let stream_hits_srv = stream_hits.clone();
+
+    let mock_app = Router::new()
+        .route(
+            "/cat-js",
+            get(move |Query(q): Query<QueryCapture>| {
+                let se = seen_explore_srv.clone();
+                async move {
+                    se.lock().unwrap().push(format!(
+                        "cat:p={}:l={}:calc={}",
+                        q.p.as_deref().unwrap_or(""),
+                        q.l.as_deref().unwrap_or(""),
+                        q.calc.as_deref().unwrap_or("")
+                    ));
+                    axum::Json(serde_json::json!([
+                        { "id": "c1", "name": "Cat Track", "artist": "Cat Artist" }
+                    ]))
+                }
+            }),
+        )
+        .route(
+            "/custom-explore",
+            get(move |Query(q): Query<QueryCapture>| {
+                let se = seen_explore_srv2.clone();
+                async move {
+                    se.lock().unwrap().push(format!(
+                        "custom:p={}:l={}:leak={}",
+                        q.p.as_deref().unwrap_or(""),
+                        q.l.as_deref().unwrap_or(""),
+                        q.leak.as_deref().unwrap_or("")
+                    ));
+                    axum::Json(serde_json::json!([
+                        { "id": "c2", "name": "Custom Track", "artist": "Custom Artist" }
+                    ]))
+                }
+            }),
+        )
+        .route(
+            "/detail-ok",
+            get(move |Query(q): Query<QueryCapture>| {
+                let sd = seen_detail_x_srv.clone();
+                async move {
+                    sd.lock().unwrap().push(q.x.unwrap_or_default());
+                    axum::Json(serde_json::json!({
+                        "id": "d1",
+                        "name": "Detail Track",
+                        "artist": "Detail Artist",
+                        "lrc": "[00:01.00]Safe Lyric Line"
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/stream-q",
+            get(move |Query(q): Query<QueryCapture>| {
+                let hits = stream_hits_srv.clone();
+                let sq = seen_stream_q_srv.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    sq.lock().unwrap().push(q.q.unwrap_or_default());
+                    axum::Json(serde_json::json!({
+                        "url": "https://cdn.example.test/hq.mp3"
+                    }))
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = MusicSourceEngine::new(
+        HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: true,
+            proxy_url: None,
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_clone = base.clone();
+    let seen_detail_x_check = seen_detail_x.clone();
+    let seen_stream_q_check = seen_stream_q.clone();
+    tokio::task::spawn_blocking(move || {
+        // 1. {{ QUALITY }} uppercase wire substitution
+        let q_spec = MusicSourceSpec {
+            source_name: "Uppercase Quality".into(),
+            source_url: base_clone.clone(),
+            supported_qualities: vec!["256".into()],
+            rule_stream: Some(MusicStreamRule {
+                request_url: Some(format!("{base_clone}/stream-q?q={{{{ QUALITY }}}}")),
+                stream_url: Some("$.url".into()),
+                format: Some("mp3".into()),
+                bitrate: Some("256".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let q_ctx = MusicTrackContext {
+            track_id: "t1".into(),
+            play_url: Some("https://cdn.example.test/low.mp3".into()),
+            ..Default::default()
+        };
+        let q_out = engine
+            .resolve_stream_sync(&q_spec, SourceRuntimeState::default(), &q_ctx, Some("256"))
+            .unwrap();
+        assert_eq!(stream_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(q_out.data.stream_url, "https://cdn.example.test/hq.mp3");
+        assert_eq!(seen_stream_q_check.lock().unwrap().as_slice(), &["256"]);
+
+        // 2. fetch_track_detail_sync & resolve_lyrics_sync block JS/template injection on ctx.detail_url fallback
+        let detail_spec = MusicSourceSpec {
+            source_name: "Detail Fallback Guard".into(),
+            source_url: base_clone.clone(),
+            rule_track_detail: Some(MusicTrackDetailRule {
+                request_url: None,
+                track_id: Some("$.id".into()),
+                title: Some("$.name".into()),
+                artist: Some("$.artist".into()),
+                lyric: Some("$.lrc".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut rt_secret = SourceRuntimeState {
+            variable: "ADMIN_VAR".into(),
+            ..Default::default()
+        };
+        rt_secret
+            .login_info
+            .insert("api_secret".into(), "TOP_SECRET".into());
+
+        // 2a. @js: in ctx.detail_url is rejected without executing QuickJS
+        let js_ctx = MusicTrackContext {
+            track_id: "t1".into(),
+            detail_url: Some(format!(
+                "@js:java.toast(source.getLoginInfo()); source.setVariable('PWN'); '{base_clone}/detail-ok'"
+            )),
+            ..Default::default()
+        };
+        let detail_js_err = engine
+            .fetch_track_detail_sync(&detail_spec, rt_secret.clone(), &js_ctx)
+            .unwrap_err();
+        assert!(detail_js_err.diagnostics.toasts.is_empty());
+
+        let lyric_js_err = engine
+            .resolve_lyrics_sync(&detail_spec, rt_secret.clone(), &js_ctx)
+            .unwrap_err();
+        assert!(lyric_js_err.diagnostics.toasts.is_empty());
+
+        // 2b. {{java.toast(...)}} in ctx.detail_url is NOT evaluated as Mustache/JS
+        let mustache_ctx = MusicTrackContext {
+            track_id: "t1".into(),
+            detail_url: Some(format!(
+                "{base_clone}/detail-ok?x={{{{java.toast(source.getLoginInfo())}}}}"
+            )),
+            ..Default::default()
+        };
+        let detail_ok = engine
+            .fetch_track_detail_sync(&detail_spec, rt_secret.clone(), &mustache_ctx)
+            .unwrap();
+        assert!(detail_ok.diagnostics.toasts.is_empty());
+        assert_eq!(detail_ok.state.variable, "ADMIN_VAR");
+        assert_eq!(detail_ok.data.title, "Detail Track");
+
+        let lyric_ok = engine
+            .resolve_lyrics_sync(&detail_spec, rt_secret, &mustache_ctx)
+            .unwrap();
+        assert!(lyric_ok.diagnostics.toasts.is_empty());
+        assert_eq!(lyric_ok.state.variable, "ADMIN_VAR");
+        assert_eq!(
+            lyric_ok.data.unwrap().lyrics.lines[0].text,
+            "Safe Lyric Line"
+        );
+        {
+            let xs = seen_detail_x_check.lock().unwrap();
+            assert_eq!(xs.len(), 2);
+            assert_eq!(xs[0], "{{java.toast(source.getLoginInfo())}}");
+        }
+    })
+    .await
+    .unwrap();
+
+    // 3. REST API non-admin POST /online/explore, /online/track-info, /online/lyrics hardening
+    let h = setup_online_test_harness(true).await;
+    let source_json = serde_json::json!({
+        "sourceName": "Explore Guard Source",
+        "sourceUrl": base,
+        "enabled": true,
+        "exploreUrl": format!("分类JS::{base}/cat-js?p={{{{page}}}}&l={{{{limit}}}}&calc={{{{1+1}}}}"),
+        "loginUrl": "function login() { source.setVariable('ADMIN_SECRET_VAR'); return 'ok'; }",
+        "ruleSearch": {
+            "trackList": "$",
+            "trackId": "$.id",
+            "title": "$.name",
+            "artist": "$.artist"
+        },
+        "ruleTrackDetail": {
+            "trackId": "$.id",
+            "title": "$.name",
+            "artist": "$.artist",
+            "lyric": "$.lrc"
+        }
+    });
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": source_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let imp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let sid = imp["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st, _, _) = send_json(
+        &h.app,
+        "POST",
+        &format!("/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "api_secret": "TOP_SECRET_999" },
+            "action": "login()"
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // 3a. Matching category URL from exploreUrl still evaluates admin-authored {{1+1}}
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/online/explore",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "explore_url": format!("{base}/cat-js?p={{{{page}}}}&l={{{{limit}}}}&calc={{{{1+1}}}}"),
+            "page": 2,
+            "limit": 5
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let cat_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(cat_resp["results"][0]["title"], "Cat Track");
+
+    // 3b. Non-matching @js: explore_url from non-admin is rejected and never mutates state
+    let (st, _, _) = send_json(
+        &h.app,
+        "POST",
+        "/online/explore",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "explore_url": format!("@js:java.toast(source.getLoginInfo()); source.setVariable('PWNED'); '{base}/custom-explore'")
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // 3c. Non-matching custom HTTP URL substitutes ONLY {{page}}/{{limit}} without QuickJS
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/online/explore",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "explore_url": format!("{base}/custom-explore?p={{{{page}}}}&l={{{{limit}}}}&leak={{{{java.toast(source.getLoginInfo())}}}}"),
+            "page": 3,
+            "limit": 7
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let custom_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(custom_resp["results"][0]["title"], "Custom Track");
+    assert!(
+        custom_resp["diagnostics"]["toasts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // 3d. Non-admin /online/track-info & /online/lyrics with tainted detail_url do NOT execute QuickJS
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/online/track-info",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "track_id": "d1",
+            "detail_url": format!("{base}/detail-ok?x={{{{java.toast(source.getLoginInfo())}}}}")
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let ti_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(ti_resp["track"]["title"], "Detail Track");
+    assert!(
+        ti_resp["diagnostics"]["toasts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let (st, _, _) = send_json(
+        &h.app,
+        "POST",
+        "/online/lyrics",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "track_id": "d1",
+            "detail_url": format!("@js:java.toast('PWN'); '{base}/detail-ok'")
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/online/lyrics",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "track_id": "d1",
+            "detail_url": format!("{base}/detail-ok?x={{{{java.toast('PWN')}}}}")
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let lrc_resp: StructuredLyrics = serde_json::from_slice(&body).unwrap();
+    assert_eq!(lrc_resp.lines[0].text, "Safe Lyric Line");
+
+    // Admin variable must remain intact
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{sid}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let var_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(var_resp["variable"], "ADMIN_SECRET_VAR");
+
+    {
+        let ex = seen_explore.lock().unwrap();
+        assert_eq!(ex[0], "cat:p=2:l=5:calc=2");
+        assert_eq!(
+            ex[1],
+            "custom:p=3:l=7:leak={{java.toast(source.getLoginInfo())}}"
+        );
+    }
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_preservation() {
+    use tokio::sync::Notify;
+
+    let search_started = Arc::new(Notify::new());
+    let search_release = Arc::new(Notify::new());
+    let started_srv = search_started.clone();
+    let release_srv = search_release.clone();
+
+    let mock_app = Router::new().route(
+        "/slow-search",
+        get(move || {
+            let st = started_srv.clone();
+            let rel = release_srv.clone();
+            async move {
+                st.notify_one();
+                rel.notified().await;
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .header("set-cookie", "test_cookie=1; Path=/")
+                    .body(Body::from(
+                        serde_json::json!([
+                            { "id": "s1", "name": "Slow Song", "artist": "Slow Artist" }
+                        ])
+                        .to_string(),
+                    ))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let h = setup_online_test_harness(true).await;
+
+    // 1. import_sources & update_source(raw_json) trim and sync sourceGroup in exported raw_json
+    let batch = serde_json::json!([
+        {
+            "sourceName": "Sync Group A",
+            "sourceUrl": base,
+            "sourceGroup": "  Indie Rock  ",
+            "enabled": true,
+            "enabledCookieJar": true,
+            "loginUrl": "function login() { source.setVariable('var_' + (result.secret || '')); return 'ok'; }",
+            "loginUi": serde_json::json!([{"name": "secret", "type": "password"}]).to_string(),
+            "searchUrl": format!("{base}/slow-search?k={{{{key}}}}"),
+            "ruleSearch": {
+                "trackList": "$",
+                "trackId": "$.id",
+                "title": "$.name",
+                "artist": "$.artist"
+            }
+        },
+        {
+            "sourceName": "Sync Group B",
+            "sourceUrl": "https://sync-b.example.test",
+            "sourceGroup": "   ",
+            "enabled": true
+        }
+    ]);
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": batch.to_string() })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let imp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let id_a = imp["sources"][0]["id"].as_str().unwrap().to_string();
+    let id_b = imp["sources"][1]["id"].as_str().unwrap().to_string();
+    assert_eq!(imp["sources"][0]["group_name"], "Indie Rock");
+    assert_eq!(imp["sources"][1]["group_name"], "");
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{id_a}/export"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let exp_a: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(exp_a["sourceGroup"], "Indie Rock");
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{id_b}/export"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let exp_b: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(exp_b.get("sourceGroup").is_none());
+
+    // update_source(raw_json) with padded sourceGroup, then whitespace-only sourceGroup
+    let mut updated_raw = exp_a.clone();
+    updated_raw["sourceGroup"] = serde_json::json!("  Jazz Fusion  ");
+    let (st, _, body) = send_json(
+        &h.app,
+        "PATCH",
+        &format!("/sources/{id_a}"),
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": updated_raw.to_string() })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let upd_dto: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(upd_dto["group_name"], "Jazz Fusion");
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{id_a}/export"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let exp_a2: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(exp_a2["sourceGroup"], "Jazz Fusion");
+
+    updated_raw["sourceGroup"] = serde_json::json!("   ");
+    let (st, _, body) = send_json(
+        &h.app,
+        "PATCH",
+        &format!("/sources/{id_a}"),
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": updated_raw.to_string() })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let upd_dto2: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(upd_dto2["group_name"], "");
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{id_a}/export"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let exp_a3: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(exp_a3.get("sourceGroup").is_none());
+
+    // 2. Concurrent test_source + login_action preserves pre-existing & newly-updated variable/login_info
+    let (st, _, _) = send_json(
+        &h.app,
+        "POST",
+        &format!("/sources/{id_a}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "secret": "s1" },
+            "action": "login()"
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let app_clone = h.app.clone();
+    let token_clone = h.admin_token.clone();
+    let id_clone = id_a.clone();
+    let test_task = tokio::spawn(async move {
+        send_json(
+            &app_clone,
+            "POST",
+            &format!("/sources/{id_clone}/test"),
+            &token_clone,
+            Some(serde_json::json!({ "mode": "search" })),
+        )
+        .await
+    });
+
+    search_started.notified().await;
+
+    // Concurrent login_action while test_source is in flight
+    let (st, _, _) = send_json(
+        &h.app,
+        "POST",
+        &format!("/sources/{id_a}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "secret": "newer_s3" },
+            "action": "login()"
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    search_release.notify_one();
+    let (test_st, _, test_body) = test_task.await.unwrap();
+    assert_eq!(test_st, StatusCode::OK);
+    let test_rep: serde_json::Value = serde_json::from_slice(&test_body).unwrap();
+    assert_eq!(test_rep["ok"], true);
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{id_a}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let var_after: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(var_after["variable"], "var_newer_s3");
+
+    // Re-running login with MASKED_SECRET_PLACEHOLDER confirms login_info["secret"] == "newer_s3"
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        &format!("/sources/{id_a}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "secret": MASKED_SECRET_PLACEHOLDER },
+            "action": "login()"
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let relogin: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(relogin["source"]["variable_preview"], "var_newer_s3");
+    assert!(
+        relogin["source"]["cookie_hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "127.0.0.1")
+    );
+
+    // 3. Concurrent test_source + PATCH(weight, variable) preserves both PATCH updates
+    let app_clone2 = h.app.clone();
+    let token_clone2 = h.admin_token.clone();
+    let id_clone2 = id_a.clone();
+    let test_task2 = tokio::spawn(async move {
+        send_json(
+            &app_clone2,
+            "POST",
+            &format!("/sources/{id_clone2}/test"),
+            &token_clone2,
+            Some(serde_json::json!({ "mode": "search" })),
+        )
+        .await
+    });
+
+    search_started.notified().await;
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "PATCH",
+        &format!("/sources/{id_a}"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "weight": 77,
+            "variable": "patched_concurrent"
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let patch_dto: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(patch_dto["weight"], 77);
+
+    search_release.notify_one();
+    let (test_st2, _, _) = test_task2.await.unwrap();
+    assert_eq!(test_st2, StatusCode::OK);
+
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{id_a}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let var_after2: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(var_after2["variable"], "patched_concurrent");
+
+    let (st, _, body) = send_json(&h.app, "GET", "/sources", &h.admin_token, None).await;
+    assert_eq!(st, StatusCode::OK);
+    let list: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
+    let found = list.iter().find(|s| s["id"] == id_a).unwrap();
+    assert_eq!(found["weight"], 77);
+
+    server.abort();
+}

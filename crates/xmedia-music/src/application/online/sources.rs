@@ -113,6 +113,19 @@ impl MusicOnlineService {
             .await
     }
 
+    pub(super) async fn persist_runtime_state_delta(
+        &self,
+        id: Uuid,
+        prev: &SourceRuntimeState,
+        next: &SourceRuntimeState,
+    ) -> DomainResult<()> {
+        let delta = super::runtime_state_delta(prev, next);
+        if delta == SourceRuntimeState::default() {
+            return Ok(());
+        }
+        self.persist_runtime_state(id, delta).await
+    }
+
     pub async fn list_sources(&self, actor: &User) -> DomainResult<Vec<MusicSourceSummaryDto>> {
         let mut rows = self.sources.list_all().await?;
         if !actor.role.is_admin() {
@@ -185,6 +198,8 @@ impl MusicOnlineService {
                 .map(str::trim)
                 .unwrap_or("")
                 .to_string();
+            let synced_raw =
+                MusicSourceRecord::sync_raw_json_fields(&item_raw, None, None, Some(&group_name));
             let key = (src.source_url.clone(), src.source_name.clone());
 
             if let Some(mut rec) = existing_by_key.remove(&key) {
@@ -192,7 +207,7 @@ impl MusicOnlineService {
                 rec.enabled = src.enabled;
                 rec.weight = src.weight;
                 rec.source_type = 0;
-                rec.raw_json = item_raw;
+                rec.raw_json = synced_raw;
                 rec.updated_at = now;
                 self.sources.save(&rec).await?;
                 let summary = Self::record_to_summary(&rec, true);
@@ -215,7 +230,7 @@ impl MusicOnlineService {
                     enabled: src.enabled,
                     weight: src.weight,
                     source_type: 0,
-                    raw_json: item_raw,
+                    raw_json: synced_raw,
                     runtime_state: rt,
                     last_test_ok: None,
                     last_test_msg: None,
@@ -244,6 +259,8 @@ impl MusicOnlineService {
         input: UpdateMusicSourceInput,
     ) -> DomainResult<MusicSourceSummaryDto> {
         require_admin(actor)?;
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
         let mut rec = self.load_source(id).await?;
         let now = Timestamp::now();
 
@@ -266,7 +283,12 @@ impl MusicOnlineService {
                 .to_string();
             rec.enabled = parsed.enabled;
             rec.weight = parsed.weight;
-            rec.raw_json = clean_raw;
+            rec.raw_json = MusicSourceRecord::sync_raw_json_fields(
+                &clean_raw,
+                None,
+                None,
+                Some(&rec.group_name),
+            );
         }
         if let Some(en) = input.enabled {
             rec.enabled = en;
@@ -402,6 +424,7 @@ impl MusicOnlineService {
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
+        let prev_state_cmp = prev_state.clone();
         let action_clone = action.clone();
 
         let out = tokio::task::spawn_blocking(move || {
@@ -411,7 +434,8 @@ impl MusicOnlineService {
         .map_err(|e| DomainError::Storage(format!("执行登录脚本线程失败: {e}")))?
         .map_err(|e| DomainError::Validation(e.message))?;
 
-        self.persist_runtime_state(id, out.state).await?;
+        self.persist_runtime_state_delta(id, &prev_state_cmp, &out.state)
+            .await?;
         let refreshed = self.load_source(id).await?;
 
         Ok(LoginActionResponseDto {
