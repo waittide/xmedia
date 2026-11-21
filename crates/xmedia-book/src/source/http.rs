@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::io::Read;
-use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD as BASE64_STD, STANDARD_NO_PAD as BASE64_NO_PAD};
 use encoding_rs::Encoding;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{COOKIE, HeaderMap, HeaderName, HeaderValue, SET_COOKIE, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -14,6 +15,8 @@ use url::Url;
 pub const DEFAULT_WEBVIEW_UA: &str = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36";
 pub const MAX_RESPONSE_BODY_BYTES: usize = 16 * 1024 * 1024;
 pub const MAX_REDIRECT_HOPS: usize = 6;
+pub const MAX_COOKIE_ENTRIES: usize = 256;
+pub const MAX_COOKIE_TOTAL_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LegadoUrlOptions {
@@ -203,7 +206,7 @@ pub fn normalize_cookie_key(raw_url: &str) -> String {
     if let Ok(u) = Url::parse(trimmed)
         && let Some(host) = u.host_str()
     {
-        return host.to_ascii_lowercase();
+        return host.trim_end_matches('.').to_ascii_lowercase();
     }
     trimmed
         .trim_start_matches("https://")
@@ -214,6 +217,7 @@ pub fn normalize_cookie_key(raw_url: &str) -> String {
         .split(':')
         .next()
         .unwrap_or(trimmed)
+        .trim_end_matches('.')
         .to_ascii_lowercase()
 }
 
@@ -248,7 +252,7 @@ pub fn merge_cookie_string(existing: &str, incoming: &str) -> String {
         .join("; ")
 }
 
-/// Checks whether an IP address is private, loopback, link-local, or otherwise non-public.
+/// Checks whether an IP address is private, loopback, link-local, transition, or otherwise non-public.
 pub fn is_restricted_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_restricted_ipv4(v4),
@@ -256,17 +260,44 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
             if let Some(mapped) = v6.to_ipv4_mapped() {
                 return is_restricted_ipv4(mapped);
             }
+            let s = v6.segments();
+            let is_ipv4_compatible =
+                s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0;
+            let is_ipv4_translated =
+                s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0xffff && s[5] == 0;
+            let is_nat64_well_known = s[0] == 0x0064
+                && s[1] == 0xff9b
+                && s[2] == 0
+                && s[3] == 0
+                && s[4] == 0
+                && s[5] == 0;
+            let is_nat64_local = s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0x0001;
+            let is_6to4 = s[0] == 0x2002;
+            let is_teredo = s[0] == 0x2001 && s[1] == 0x0000;
+            let is_doc = s[0] == 0x2001 && s[1] == 0x0db8;
+            let is_site_local = (s[0] & 0xffc0) == 0xfec0;
+            let is_ula = (s[0] & 0xfe00) == 0xfc00;
+            let is_link_local = (s[0] & 0xffc0) == 0xfe80;
+
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 ULA
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+                || is_ipv4_compatible
+                || is_ipv4_translated
+                || is_nat64_well_known
+                || is_nat64_local
+                || is_6to4
+                || is_teredo
+                || is_doc
+                || is_site_local
+                || is_ula
+                || is_link_local
         }
     }
 }
 
 fn is_restricted_ipv4(v4: Ipv4Addr) -> bool {
-    let [a, b, _, _] = v4.octets();
+    let [a, b, c, _] = v4.octets();
     v4.is_loopback()
         || v4.is_private()
         || v4.is_link_local()
@@ -275,11 +306,23 @@ fn is_restricted_ipv4(v4: Ipv4Addr) -> bool {
         || v4.is_multicast()
         || v4.is_unspecified()
         || (a == 100 && (64..=127).contains(&b)) // CGNAT 100.64.0.0/10
+        || (a == 192 && b == 0 && c == 0) // IETF protocol assignments 192.0.0.0/24
+        || (a == 198 && (b == 18 || b == 19)) // Benchmarking 198.18.0.0/15
         || (a == 0)
         || (a >= 240)
 }
 
-pub fn validate_target_url(raw_url: &str, allow_private_ips: bool) -> Result<Url, String> {
+fn is_restricted_hostname(host: &str) -> bool {
+    let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+    normalized.is_empty()
+        || normalized == "localhost"
+        || normalized.ends_with(".localhost")
+        || normalized.ends_with(".local")
+}
+
+/// Validates URL scheme, hostname, and literal IP without performing DNS resolution.
+/// Used by async clients & redirect policies where DNS is resolved once via `SsrfSafeResolver`.
+pub fn validate_target_url_static(raw_url: &str, allow_private_ips: bool) -> Result<Url, String> {
     let parsed = Url::parse(raw_url).map_err(|e| format!("无效的 URL '{raw_url}': {e}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(format!("不支持的 URL 协议: {}", parsed.scheme()));
@@ -292,36 +335,131 @@ pub fn validate_target_url(raw_url: &str, allow_private_ips: bool) -> Result<Url
         return Ok(parsed);
     }
 
-    let lower = host.to_ascii_lowercase();
-    if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") {
+    if is_restricted_hostname(host) {
         return Err(format!("安全策略拦截了对本地主机 '{host}' 的请求"));
     }
 
-    if let Ok(ip) = host
+    let ip_candidate = host
         .trim_matches(|c| c == '[' || c == ']')
-        .parse::<IpAddr>()
-    {
+        .trim_end_matches('.');
+    if let Ok(ip) = ip_candidate.parse::<IpAddr>() {
         if is_restricted_ip(ip) {
             return Err(format!("安全策略拦截了对内网/保留地址 '{ip}' 的请求"));
         }
         return Ok(parsed);
     }
 
+    Ok(parsed)
+}
+
+/// Validates URL scheme, hostname, literal IP, and (when `!allow_private_ips`) DNS records fail-closed.
+pub fn validate_target_url(raw_url: &str, allow_private_ips: bool) -> Result<Url, String> {
+    let parsed = validate_target_url_static(raw_url, allow_private_ips)?;
+    if allow_private_ips {
+        return Ok(parsed);
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("URL 缺少主机名: {raw_url}"))?;
+    let ip_candidate = host
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_end_matches('.');
+    if ip_candidate.parse::<IpAddr>().is_ok() {
+        return Ok(parsed);
+    }
+
     let port = parsed.port_or_known_default().unwrap_or(80);
-    if let Ok(addrs) = (host, port).to_socket_addrs() {
-        for addr in addrs {
-            if is_restricted_ip(addr.ip()) {
-                return Err(format!(
-                    "安全策略拦截了目标 '{host}' 解析到的内网/保留地址 '{}'",
-                    addr.ip()
-                ));
-            }
+    let addrs: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("安全策略拒绝未解析目标 '{host}': {e}"))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("安全策略拒绝无 DNS 解析结果的目标 '{host}'"));
+    }
+    for addr in addrs {
+        if is_restricted_ip(addr.ip()) {
+            return Err(format!(
+                "安全策略拦截了目标 '{host}' 解析到的内网/保留地址 '{}'",
+                addr.ip()
+            ));
         }
     }
     Ok(parsed)
 }
 
-/// Builds a redirect policy that enforces hop limit and SSRF validation on every redirect target.
+/// Async custom DNS resolver injected into `reqwest` clients when `allow_private_ips == false`
+/// and no proxy is configured. Validates every resolved IP and returns the validated addresses
+/// directly to `reqwest`, eliminating DNS Rebinding TOCTOU and blocking DNS on Tokio workers.
+#[derive(Debug, Default)]
+struct SsrfSafeResolver;
+
+impl Resolve for SsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            if is_restricted_hostname(&host) {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("安全策略拦截了对本地主机 '{host}' 的请求"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let ip_candidate = host
+                .trim_matches(|c| c == '[' || c == ']')
+                .trim_end_matches('.');
+            if let Ok(ip) = ip_candidate.parse::<IpAddr>() {
+                if is_restricted_ip(ip) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("安全策略拦截了对内网/保留地址 '{ip}' 的请求"),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+                let addrs: Addrs = Box::new(std::iter::once(SocketAddr::new(ip, 0)));
+                return Ok(addrs);
+            }
+
+            let resolved: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::AddrNotAvailable,
+                        format!("安全策略拒绝未解析目标 '{host}': {e}"),
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                })?
+                .collect();
+
+            if resolved.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::AddrNotAvailable,
+                    format!("安全策略拒绝无 DNS 解析结果的目标 '{host}'"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            for addr in &resolved {
+                if is_restricted_ip(addr.ip()) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "安全策略拦截了目标 '{host}' 解析到的内网/保留地址 '{}'",
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+
+            let addrs: Addrs = Box::new(resolved.into_iter());
+            Ok(addrs)
+        })
+    }
+}
+
+/// Builds a redirect policy that enforces hop limit and static SSRF validation on every redirect target.
+/// Actual DNS resolution and IP enforcement run asynchronously inside `SsrfSafeResolver` (no blocking DNS).
 pub fn ssrf_redirect_policy(allow_private_ips: bool, max_hops: usize) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() >= max_hops {
@@ -329,7 +467,7 @@ pub fn ssrf_redirect_policy(allow_private_ips: bool, max_hops: usize) -> reqwest
                 "重定向次数超过上限 ({max_hops})"
             )));
         }
-        if let Err(reason) = validate_target_url(attempt.url().as_str(), allow_private_ips) {
+        if let Err(reason) = validate_target_url_static(attempt.url().as_str(), allow_private_ips) {
             return attempt.error(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 reason,
@@ -464,6 +602,8 @@ pub fn get_or_build_blocking_client(
     if let Some(ref proxy) = key.proxy_url {
         let p = reqwest::Proxy::all(proxy.as_str()).map_err(|e| format!("代理配置无效: {e}"))?;
         builder = builder.proxy(p);
+    } else if !key.allow_private_ips {
+        builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
     }
     let client = builder
         .build()
@@ -512,6 +652,8 @@ pub fn get_or_build_async_client(
     if let Some(ref proxy) = key.proxy_url {
         let p = reqwest::Proxy::all(proxy.as_str()).map_err(|e| format!("代理配置无效: {e}"))?;
         builder = builder.proxy(p);
+    } else if !key.allow_private_ips {
+        builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
     }
     let client = builder
         .build()
@@ -566,30 +708,69 @@ impl LegadoHttpClient {
 
     pub fn get_cookie_header(&self, url_or_domain: &str) -> String {
         let key = normalize_cookie_key(url_or_domain);
+        if key.is_empty() {
+            return String::new();
+        }
         let guard = self.cookies.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(v) = guard.get(&key) {
             return v.clone();
         }
-        // Fallback: suffix match (e.g. "fanqienovel.com" matching "api.fanqienovel.com")
+        // Only allow parent-domain cookies to match subdomains (never child -> parent),
+        // picking the most specific (longest) matching suffix deterministically.
+        let mut best: Option<(&str, &str)> = None;
         for (stored_host, val) in guard.iter() {
-            if key.ends_with(&format!(".{stored_host}"))
-                || stored_host.ends_with(&format!(".{key}"))
+            let clean_stored = stored_host.trim_start_matches('.');
+            if clean_stored.is_empty() {
+                continue;
+            }
+            if key.len() > clean_stored.len()
+                && key.ends_with(clean_stored)
+                && key.as_bytes()[key.len() - clean_stored.len() - 1] == b'.'
             {
-                return val.clone();
+                let replace = match best {
+                    None => true,
+                    Some((prev_host, _)) => {
+                        clean_stored.len() > prev_host.len()
+                            || (clean_stored.len() == prev_host.len() && clean_stored < prev_host)
+                    }
+                };
+                if replace {
+                    best = Some((clean_stored, val.as_str()));
+                }
             }
         }
-        String::new()
+        best.map(|(_, v)| v.to_string()).unwrap_or_default()
     }
 
-    pub fn set_cookie(&self, url_or_domain: &str, cookie_val: &str) {
+    pub fn set_cookie(&self, url_or_domain: &str, cookie_val: &str) -> bool {
         let key = normalize_cookie_key(url_or_domain);
         if key.is_empty() {
-            return;
+            return false;
         }
         let mut guard = self.cookies.lock().unwrap_or_else(|e| e.into_inner());
         let existing = guard.get(&key).cloned().unwrap_or_default();
         let merged = merge_cookie_string(&existing, cookie_val);
+
+        let is_new = !guard.contains_key(&key);
+        if is_new && guard.len() >= MAX_COOKIE_ENTRIES {
+            return false;
+        }
+        let current_bytes: usize = guard.iter().map(|(k, v)| k.len() + v.len()).sum();
+        let old_entry_bytes = if is_new {
+            0
+        } else {
+            key.len() + existing.len()
+        };
+        let new_total = current_bytes
+            .saturating_sub(old_entry_bytes)
+            .saturating_add(key.len())
+            .saturating_add(merged.len());
+        if new_total > MAX_COOKIE_TOTAL_BYTES {
+            return false;
+        }
+
         guard.insert(key, merged);
+        true
     }
 
     pub fn remove_cookie(&self, url_or_domain: &str) {
@@ -605,7 +786,9 @@ impl LegadoHttpClient {
         }
 
         let resolved_url = resolve_relative_url(&parsed.url, base_url);
-        let validated = validate_target_url(&resolved_url, self.config.allow_private_ips)?;
+        // Static validation runs upfront; DNS resolution & IP checks execute once inside
+        // `SsrfSafeResolver` (when no proxy is configured) to prevent DNS rebinding TOCTOU.
+        let validated = validate_target_url_static(&resolved_url, self.config.allow_private_ips)?;
 
         let method_str = parsed
             .options
@@ -768,6 +951,9 @@ mod tests {
             "192.168.1.1",
             "169.254.169.254",
             "100.64.0.1",
+            "192.0.0.1",
+            "198.18.0.1",
+            "198.19.255.254",
             "0.0.0.0",
             "240.0.0.1",
             "::1",
@@ -775,8 +961,17 @@ mod tests {
             "fc00::1",
             "fd12:3456::1",
             "fe80::1",
+            "fec0::1",
             "::ffff:127.0.0.1",
             "::ffff:172.16.5.4",
+            "::127.0.0.1",
+            "::ffff:0:127.0.0.1",
+            "64:ff9b::127.0.0.1",
+            "64:ff9b::1.1.1.1",
+            "64:ff9b:1::1",
+            "2002:7f00:1::1",
+            "2001:0000::1",
+            "2001:db8::1",
         ] {
             let ip: IpAddr = blocked.parse().unwrap();
             assert!(is_restricted_ip(ip), "expected {blocked} to be restricted");
@@ -798,11 +993,107 @@ mod tests {
     fn validate_target_url_rejects_local_private_and_non_http() {
         assert!(validate_target_url("http://127.0.0.1/admin", false).is_err());
         assert!(validate_target_url("http://localhost:8080/a", false).is_err());
+        assert!(validate_target_url("http://localhost./a", false).is_err());
+        assert!(validate_target_url("http://sub.localhost./a", false).is_err());
+        assert!(validate_target_url("http://printer.local./a", false).is_err());
         assert!(validate_target_url("http://172.16.1.2/secret", false).is_err());
         assert!(validate_target_url("http://[::ffff:10.0.0.1]/x", false).is_err());
+        assert!(validate_target_url("http://[64:ff9b::127.0.0.1]/x", false).is_err());
+        assert!(validate_target_url("http://[2002:7f00:1::1]/x", false).is_err());
         assert!(validate_target_url("file:///etc/passwd", false).is_err());
+        // Fail-closed when DNS resolution fails for a nonexistent domain
+        assert!(
+            validate_target_url("http://definitely-nonexistent-host.invalid/", false).is_err(),
+            "DNS failure must fail-closed"
+        );
         assert!(validate_target_url("https://1.1.1.1/ok", false).is_ok());
         assert!(validate_target_url("http://127.0.0.1/ok", true).is_ok());
+    }
+
+    #[test]
+    fn ssrf_redirect_policy_blocks_302_to_loopback_and_localhost() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let resp = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/secret\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        // Build a blocking client that permits connecting to the initial test server IP
+        // ONLY by bypassing initial check, while testing ssrf_redirect_policy(false, 6).
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(ssrf_redirect_policy(false, MAX_REDIRECT_HOPS))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{addr}/start"))
+            .send()
+            .unwrap_err();
+        assert!(
+            err.is_redirect(),
+            "expected redirect policy error, got: {err}"
+        );
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn cookie_matching_only_allows_parent_to_child_with_longest_suffix() {
+        let cookies = Arc::new(Mutex::new(HashMap::new()));
+        let client = LegadoHttpClient::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            cookies,
+            None,
+            true,
+        )
+        .unwrap();
+
+        assert!(client.set_cookie("https://api.example.com", "secret=child"));
+        assert!(client.set_cookie("https://example.com", "base=root"));
+        assert!(client.set_cookie("https://sub.example.com", "sub=mid"));
+
+        // Exact matches
+        assert_eq!(client.get_cookie_header("https://example.com"), "base=root");
+        assert_eq!(
+            client.get_cookie_header("https://api.example.com"),
+            "secret=child"
+        );
+        // Subdomain inherits longest parent suffix
+        assert_eq!(
+            client.get_cookie_header("https://deep.sub.example.com"),
+            "sub=mid"
+        );
+        assert_eq!(
+            client.get_cookie_header("https://other.example.com"),
+            "base=root"
+        );
+
+        // Child cookie must NEVER leak upward to parent domain
+        client.remove_cookie("https://example.com");
+        assert_eq!(
+            client.get_cookie_header("https://example.com"),
+            "",
+            "child domain cookie must not leak to parent domain"
+        );
+        assert_eq!(
+            client.get_cookie_header("https://evil-example.com"),
+            "",
+            "unrelated domain with matching string suffix must not receive cookie"
+        );
+
+        // Cookie quota enforcement
+        let oversized = format!("big={}", "a".repeat(MAX_COOKIE_TOTAL_BYTES + 16));
+        assert!(
+            !client.set_cookie("https://quota.example.com", &oversized),
+            "oversized cookie must be rejected by quota"
+        );
     }
 
     #[test]
