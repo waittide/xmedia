@@ -169,7 +169,7 @@ watch(creatingGroupId, async (id) => {
         v-for="item in primaryNavItems"
         :key="item.key"
         type="button"
-        class="md-state flex h-11 w-full items-center gap-3 rounded-full px-4 text-[13px] font-medium"
+        class="md-state hidden h-11 w-full items-center gap-3 rounded-full px-4 text-[13px] font-medium md:flex"
         :class="
           item.active
             ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
@@ -181,7 +181,7 @@ watch(creatingGroupId, async (id) => {
         <span class="truncate">{{ item.label }}</span>
       </button>
 
-      <div class="mt-4 flex items-center justify-between px-3 pt-2">
+      <div class="mt-2 flex items-center justify-between px-3 pt-1 md:mt-4 md:pt-2">
         <span
           class="text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase"
         >

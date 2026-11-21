@@ -43,6 +43,7 @@ import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
+import { usePrimaryNavItems } from '@/layouts/useWorkspaceSidebar'
 
 const { t } = useI18n()
 
@@ -203,7 +204,11 @@ const showMusicBar = computed(
     (domainStore.activeDomain === 'music' || playerStore.currentTrack !== null),
 )
 
-const showMobileBottomNav = computed(() => domainTabs.value.length > 1)
+const { primaryNavItems } = usePrimaryNavItems(() => {
+  mobileMenuOpen.value = false
+})
+
+const showMobileBottomNav = computed(() => primaryNavItems.value.length > 0)
 
 const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
 
@@ -863,44 +868,44 @@ onBeforeUnmount(() => {
       aria-hidden="true"
     />
 
-    <!-- Mobile MD3 Navigation Bar (< md) -->
+    <!-- Mobile MD3 Navigation Bar (< md): Active Domain Primary Navigation -->
     <nav
       v-if="showMobileBottomNav"
       data-mobile-bottom-nav
-      :aria-label="t('nav.mobileDomains')"
+      :aria-label="t(`app.domains.${domainStore.activeDomain}`)"
       class="safe-pb safe-px relative z-30 shrink-0 border-t border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container)] select-none md:hidden"
     >
       <div
         class="grid h-16 items-center"
-        :style="{ gridTemplateColumns: `repeat(${domainTabs.length}, minmax(0, 1fr))` }"
+        :style="{ gridTemplateColumns: `repeat(${primaryNavItems.length}, minmax(0, 1fr))` }"
       >
         <button
-          v-for="tab in domainTabs"
-          :key="`bottom-${tab.kind}`"
+          v-for="item in primaryNavItems"
+          :key="`bottom-${domainStore.activeDomain}-${item.key}`"
           type="button"
-          :aria-current="domainStore.activeDomain === tab.kind ? 'page' : undefined"
+          :aria-current="item.active ? 'page' : undefined"
           class="group flex h-full flex-col items-center justify-center gap-1 outline-none"
-          @click="switchDomain(tab.kind)"
+          @click="item.onClick()"
         >
           <span
             class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-200"
             :class="
-              domainStore.activeDomain === tab.kind
+              item.active
                 ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
                 : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
             "
           >
-            <component :is="tab.icon" class="h-5 w-5 shrink-0" />
+            <component :is="item.icon" class="h-5 w-5 shrink-0" />
           </span>
           <span
             class="md-label-medium max-w-full truncate px-1"
             :class="
-              domainStore.activeDomain === tab.kind
+              item.active
                 ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
                 : 'text-[var(--md-sys-color-on-surface-variant)]'
             "
           >
-            {{ tab.label }}
+            {{ item.label }}
           </span>
         </button>
       </div>
