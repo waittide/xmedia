@@ -84,9 +84,354 @@ export function resolveZipRelativePath(baseFileHref: string | null, relTarget: s
   return stack.join('/')
 }
 
+const DROP_SUBTREE_TAGS = new Set([
+  'script',
+  'style',
+  'iframe',
+  'frame',
+  'frameset',
+  'object',
+  'embed',
+  'applet',
+  'link',
+  'meta',
+  'base',
+  'noscript',
+  'template',
+  'form',
+  'input',
+  'button',
+  'select',
+  'textarea',
+  'option',
+  'audio',
+  'video',
+  'source',
+  'track',
+  'foreignobject',
+  'animate',
+  'animatetransform',
+  'animatemotion',
+  'set',
+  'handler',
+  'listener',
+])
+
+const SAFE_HYDRATE_TAGS = new Set([
+  'p',
+  'div',
+  'span',
+  'br',
+  'hr',
+  'h1',
+  'h2',
+  'h3',
+  'h4',
+  'h5',
+  'h6',
+  'blockquote',
+  'pre',
+  'code',
+  'ul',
+  'ol',
+  'li',
+  'dl',
+  'dt',
+  'dd',
+  'strong',
+  'b',
+  'em',
+  'i',
+  'u',
+  's',
+  'del',
+  'ins',
+  'sub',
+  'sup',
+  'small',
+  'mark',
+  'abbr',
+  'cite',
+  'q',
+  'ruby',
+  'rt',
+  'rp',
+  'figure',
+  'figcaption',
+  'section',
+  'article',
+  'aside',
+  'header',
+  'footer',
+  'main',
+  'nav',
+  'table',
+  'thead',
+  'tbody',
+  'tfoot',
+  'tr',
+  'th',
+  'td',
+  'caption',
+  'colgroup',
+  'col',
+  'a',
+  'img',
+  'svg',
+  'g',
+  'image',
+  'path',
+  'rect',
+  'circle',
+  'ellipse',
+  'line',
+  'polyline',
+  'polygon',
+  'defs',
+  'title',
+  'desc',
+  'text',
+  'tspan',
+])
+
+const SAFE_HYDRATE_ATTRS = new Set([
+  'class',
+  'id',
+  'title',
+  'alt',
+  'dir',
+  'lang',
+  'xml:lang',
+  'colspan',
+  'rowspan',
+  'width',
+  'height',
+  'start',
+  'type',
+  'viewbox',
+  'preserveaspectratio',
+  'xmlns',
+  'xmlns:xlink',
+  'xmlns:epub',
+  'data-epub-src',
+  'data-epub-href',
+  'href',
+  'src',
+  'style',
+  'd',
+  'x',
+  'y',
+  'x1',
+  'y1',
+  'x2',
+  'y2',
+  'cx',
+  'cy',
+  'r',
+  'rx',
+  'ry',
+  'points',
+  'fill',
+  'stroke',
+  'stroke-width',
+  'opacity',
+  'transform',
+])
+
+const SAFE_RASTER_DATA_URI_RE =
+  /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp);base64,[a-z0-9+/=\s]+$/i
+
+function stripControlChars(value: string): string {
+  return value.replace(/[\u0000-\u001F\u007F]+/g, '').trim()
+}
+
+function isSafeImageSrc(raw: string): boolean {
+  const cleaned = stripControlChars(raw)
+  if (!cleaned) return false
+  if (
+    cleaned.startsWith('/api/v1/tool/books/epub-asset?') ||
+    cleaned.startsWith('/api/tool/books/epub-asset?')
+  ) {
+    return true
+  }
+  if (cleaned.startsWith('blob:')) return true
+  if (SAFE_RASTER_DATA_URI_RE.test(cleaned)) return true
+  return false
+}
+
+function isSafeLinkHref(raw: string): boolean {
+  const cleaned = stripControlChars(raw)
+  if (!cleaned) return false
+  if (cleaned.startsWith('#')) return true
+  const schemeMatch = /^([a-z][a-z0-9+.-]*):/i.exec(cleaned)
+  if (!schemeMatch) {
+    return !cleaned.startsWith('//')
+  }
+  const scheme = schemeMatch[1].toLowerCase()
+  return scheme === 'http' || scheme === 'https' || scheme === 'mailto'
+}
+
+function sanitizeInlineStyle(raw: string): string {
+  return raw
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/expression\s*\([^)]*\)/gi, '')
+    .replace(/-moz-binding\s*:[^;]*/gi, '')
+    .replace(/behavior\s*:[^;]*/gi, '')
+    .replace(/@import\b[^;]*/gi, '')
+    .replace(/url\s*\([^)]*\)/gi, '')
+    .replace(/javascript\s*:/gi, '')
+    .replace(/vbscript\s*:/gi, '')
+    .trim()
+}
+
+/**
+ * Sanitizes untrusted EPUB CSS before injecting into a `<style>` tag inside an iframe `srcdoc`.
+ * Prevents `</style>` tag breakout, `@import` / external `url(...)` tracking requests,
+ * and legacy script execution vectors.
+ */
+export function sanitizeEpubCssForPreview(rawCss: string): string {
+  if (!rawCss) return ''
+  return rawCss
+    .replace(/<\s*\/?\s*style\b[^>]*>/gi, '')
+    .replace(/</g, '\\3c ')
+    .replace(/@import\b[^;\n]*(?:;|$)/gi, '')
+    .replace(/expression\s*\(/gi, 'blocked(')
+    .replace(/behavior\s*:/gi, 'x-blocked-behavior:')
+    .replace(/-moz-binding\s*:/gi, 'x-blocked-binding:')
+    .replace(/url\s*\(\s*(['"]?)([^)'"]*)\1\s*\)/gi, (_match, _q: string, inner: string) => {
+      const target = stripControlChars(inner)
+      if (SAFE_RASTER_DATA_URI_RE.test(target)) {
+        return `url("${target}")`
+      }
+      return 'none'
+    })
+}
+
+function sanitizeHydratedElement(
+  el: Element,
+  sourceHref: string | null,
+  epubContext?: { rootId: string; relPath: string } | null,
+): void {
+  const children = Array.from(el.childNodes)
+  for (const child of children) {
+    if (
+      child.nodeType === Node.COMMENT_NODE ||
+      child.nodeType === Node.PROCESSING_INSTRUCTION_NODE
+    ) {
+      child.remove()
+      continue
+    }
+    if (child.nodeType !== Node.ELEMENT_NODE) {
+      continue
+    }
+    const childEl = child as Element
+    const tag = childEl.tagName.toLowerCase()
+
+    if (DROP_SUBTREE_TAGS.has(tag)) {
+      childEl.remove()
+      continue
+    }
+
+    if (!SAFE_HYDRATE_TAGS.has(tag)) {
+      sanitizeHydratedElement(childEl, sourceHref, epubContext)
+      while (childEl.firstChild) {
+        childEl.parentNode?.insertBefore(childEl.firstChild, childEl)
+      }
+      childEl.remove()
+      continue
+    }
+
+    // Rewrite EPUB internal image references before attribute allowlist filtering
+    if (tag === 'img') {
+      const origSrc = childEl.getAttribute('src')
+      if (origSrc && epubContext) {
+        const resolved = resolveZipRelativePath(sourceHref, origSrc)
+        if (resolved) {
+          childEl.setAttribute('data-epub-src', origSrc)
+          childEl.setAttribute(
+            'src',
+            buildEpubAssetUrl(epubContext.rootId, epubContext.relPath, resolved),
+          )
+        }
+      }
+    } else if (tag === 'image') {
+      const origHref = childEl.getAttribute('href') || childEl.getAttribute('xlink:href')
+      childEl.removeAttribute('xlink:href')
+      if (origHref && epubContext) {
+        const resolved = resolveZipRelativePath(sourceHref, origHref)
+        if (resolved) {
+          const apiUrl = buildEpubAssetUrl(epubContext.rootId, epubContext.relPath, resolved)
+          childEl.setAttribute('data-epub-href', origHref)
+          childEl.setAttribute('href', apiUrl)
+        } else if (isSafeImageSrc(origHref)) {
+          childEl.setAttribute('href', stripControlChars(origHref))
+        } else {
+          childEl.removeAttribute('href')
+        }
+      } else if (origHref && isSafeImageSrc(origHref)) {
+        childEl.setAttribute('href', stripControlChars(origHref))
+      } else {
+        childEl.removeAttribute('href')
+      }
+    }
+
+    // Filter attributes against strict allowlist
+    for (const attr of Array.from(childEl.attributes)) {
+      const rawName = attr.name
+      const lowerName = rawName.toLowerCase()
+      if (lowerName.startsWith('on')) {
+        childEl.removeAttribute(rawName)
+        continue
+      }
+      if (!SAFE_HYDRATE_ATTRS.has(lowerName) && !lowerName.startsWith('epub:')) {
+        childEl.removeAttribute(rawName)
+        continue
+      }
+      if (lowerName === 'src') {
+        if (tag !== 'img' || !isSafeImageSrc(attr.value)) {
+          childEl.removeAttribute(rawName)
+        }
+        continue
+      }
+      if (lowerName === 'href') {
+        if (tag === 'image') {
+          if (!isSafeImageSrc(attr.value)) {
+            childEl.removeAttribute(rawName)
+          }
+        } else if (tag === 'a') {
+          if (!isSafeLinkHref(attr.value)) {
+            childEl.removeAttribute(rawName)
+          }
+        } else {
+          childEl.removeAttribute(rawName)
+        }
+        continue
+      }
+      if (lowerName === 'style') {
+        const safeStyle = sanitizeInlineStyle(attr.value)
+        if (safeStyle) {
+          childEl.setAttribute(rawName, safeStyle)
+        } else {
+          childEl.removeAttribute(rawName)
+        }
+      }
+    }
+
+    if (tag === 'a' && childEl.hasAttribute('href')) {
+      const href = childEl.getAttribute('href') ?? ''
+      if (/^https?:\/\//i.test(href)) {
+        childEl.setAttribute('rel', 'noopener noreferrer')
+      }
+    }
+
+    sanitizeHydratedElement(childEl, sourceHref, epubContext)
+  }
+}
+
 /**
  * Converts stored EPUB XHTML into safe HTML for the WYSIWYG surface,
- * rewriting internal EPUB image paths to authenticated `/books/epub-asset` URLs.
+ * sanitizing active elements/attributes/schemes and rewriting internal EPUB
+ * image paths to authenticated `/books/epub-asset` URLs.
  */
 export function hydrateXhtmlForBrowser(
   xhtmlBody: string,
@@ -96,29 +441,9 @@ export function hydrateXhtmlForBrowser(
   const raw = xhtmlBody.trim() || '<p><br/></p>'
   const doc = new DOMParser().parseFromString(`<body>${raw}</body>`, 'text/html')
   const body = doc.body
-  if (!body) return raw
+  if (!body) return '<p><br></p>'
 
-  if (epubContext) {
-    body.querySelectorAll('img').forEach((img) => {
-      const origSrc = img.getAttribute('src')
-      if (!origSrc) return
-      const resolved = resolveZipRelativePath(sourceHref, origSrc)
-      if (resolved) {
-        img.setAttribute('data-epub-src', origSrc)
-        img.setAttribute('src', buildEpubAssetUrl(epubContext.rootId, epubContext.relPath, resolved))
-      }
-    })
-    body.querySelectorAll('image').forEach((svgImg) => {
-      const origHref = svgImg.getAttribute('href') || svgImg.getAttribute('xlink:href')
-      if (!origHref) return
-      const resolved = resolveZipRelativePath(sourceHref, origHref)
-      if (resolved) {
-        const apiUrl = buildEpubAssetUrl(epubContext.rootId, epubContext.relPath, resolved)
-        svgImg.setAttribute('data-epub-href', origHref)
-        svgImg.setAttribute('href', apiUrl)
-      }
-    })
-  }
+  sanitizeHydratedElement(body, sourceHref, epubContext)
 
   return body.innerHTML || '<p><br></p>'
 }

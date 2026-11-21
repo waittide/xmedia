@@ -57,6 +57,7 @@ import {
   hydrateXhtmlForBrowser as hydrateXhtmlForBrowserRaw,
   plainToCleanXhtml,
   replaceInTextNodes,
+  sanitizeEpubCssForPreview,
   serializeContainerToValidXhtml,
 } from './book-editor/xhtmlUtils'
 import type {
@@ -179,17 +180,24 @@ function hydrateXhtmlForBrowser(xhtmlBody: string, sourceHref: string | null): s
 }
 function buildLivePreviewSrcdoc(xhtmlBody: string, sourceHref: string | null): string {
   const hydrated = hydrateXhtmlForBrowser(xhtmlBody, sourceHref)
-  const bg = readRootCssToken('--md-sys-color-surface', 'Canvas')
-  const fg = readRootCssToken('--md-sys-color-on-surface', 'CanvasText')
-  const primary = readRootCssToken('--md-sys-color-primary', 'Highlight')
-  const outline = readRootCssToken('--md-sys-color-outline-variant', 'GrayText')
-  const epubCss = docStylesheets.value.join('\n')
+  const bg = sanitizeEpubCssForPreview(readRootCssToken('--md-sys-color-surface', 'Canvas'))
+  const fg = sanitizeEpubCssForPreview(readRootCssToken('--md-sys-color-on-surface', 'CanvasText'))
+  const primary = sanitizeEpubCssForPreview(readRootCssToken('--md-sys-color-primary', 'Highlight'))
+  const outline = sanitizeEpubCssForPreview(
+    readRootCssToken('--md-sys-color-outline-variant', 'GrayText'),
+  )
+  const epubCss = sanitizeEpubCssForPreview(docStylesheets.value.join('\n'))
   const indentRule = indentParagraphs.value ? 'text-indent: 2em;' : 'text-indent: 0;'
+  const originImgSrc =
+    typeof window !== 'undefined' && window.location.origin && window.location.origin !== 'null'
+      ? `${window.location.origin} `
+      : ''
 
   return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${originImgSrc}data: blob:; style-src 'unsafe-inline';"/>
 <style>
   html, body {
     margin: 0;
@@ -1869,7 +1877,7 @@ onBeforeUnmount(() => {
           <iframe
             :srcdoc="previewSrcdoc"
             title="EPUB Live Preview"
-            sandbox="allow-same-origin"
+            sandbox=""
             class="min-h-0 w-full flex-1 border-0 bg-[var(--md-sys-color-surface)]"
           />
         </aside>
