@@ -2242,3 +2242,243 @@ async fn patch_and_import_upsert_concurrent_with_login_action_preserve_runtime_s
         assert_eq!(chk_val["source"]["group_name"], group_import);
     }
 }
+
+#[tokio::test]
+async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_cookies_e2e() {
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    let smuggle_hits = Arc::new(AtomicUsize::new(0));
+    let smuggle_hits_c = smuggle_hits.clone();
+    let smuggle_hits_opt = smuggle_hits.clone();
+    let detail_entered = Arc::new(Notify::new());
+    let detail_release = Arc::new(Notify::new());
+    let de = detail_entered.clone();
+    let dr = detail_release.clone();
+
+    let mock_app = Router::new()
+        .route(
+            "/search_plain",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"items":[{"t":"PlainOk","u":"/detail"}]}"#))
+                    .unwrap()
+            })
+            .post(move || {
+                let hits = smuggle_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"Smuggled","u":"/detail"}]}"#))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/search_opts",
+            post(move |headers: HeaderMap, body: String| {
+                let hits = smuggle_hits_opt.clone();
+                async move {
+                    if headers.get("x-smuggled").is_some() {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "items": [{ "t": format!("Opts:{body}"), "u": "/detail" }]
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/detail",
+            get(move || {
+                let de = de.clone();
+                let dr = dr.clone();
+                async move {
+                    de.notify_one();
+                    dr.notified().await;
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .header("set-cookie", "detail_ck=from_detail; Path=/")
+                        .body(Body::from(r#"{"title":"DetailTitle"}"#))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let h = setup_test_harness(true).await;
+
+    let sources = serde_json::json!([
+        {
+            "sourceName": "JsSearch",
+            "sourceUrl": format!("{base}#js"),
+            "searchUrl": format!("@js:'{base}/search_plain?q=' + key"),
+            "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+        },
+        {
+            "sourceName": "MustacheArithSearch",
+            "sourceUrl": format!("{base}#ma"),
+            "searchUrl": format!("{base}/search_plain?offset={{{{((page - 1) * 20)}}}}&q={{{{key}}}}"),
+            "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+        },
+        {
+            "sourceName": "OptsSearch",
+            "sourceUrl": format!("{base}#opts"),
+            "enabledCookieJar": true,
+            "loginUrl": "@js:'ok'",
+            "searchUrl": format!("{base}/search_opts,{{\"method\":\"POST\",\"body\":\"q={{{{key}}}}\"}}"),
+            "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" },
+            "ruleDetail": { "name": "$.title" }
+        }
+    ]);
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": sources.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let js_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+    let ma_id = imp_val["sources"][1]["id"].as_str().unwrap().to_string();
+    let opts_id = imp_val["sources"][2]["id"].as_str().unwrap().to_string();
+
+    // 1. Member search smuggling attempts on @js: and Mustache arithmetic templates are isolated as errors
+    for sid in [&js_id, &ma_id] {
+        let (st, b) = json_request(
+            &h.app,
+            "POST",
+            "/api/v1/comic/online/search",
+            &h.member_token,
+            Some(serde_json::json!({
+                "keyword": r#"a,{"method":"POST","headers":{"X-Smuggled":"YES"},"body":"evil"}"#,
+                "source_ids": [sid],
+                "page": 1
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        assert!(v["results"].as_array().unwrap().is_empty());
+        assert_eq!(v["errors"].as_array().unwrap().len(), 1);
+    }
+
+    // 2. Member JSON breakout attempt inside ,{options} searchUrl does NOT smuggle X-Smuggled header
+    let breakout_kw = r#"a","headers":{"X-Smuggled":"PWNED_HEADER"},"x":""#;
+    let (st_opt, b_opt) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/search",
+        &h.member_token,
+        Some(serde_json::json!({
+            "keyword": breakout_kw,
+            "source_ids": [&opts_id],
+            "page": 1
+        })),
+    )
+    .await;
+    assert_eq!(st_opt, StatusCode::OK);
+    let v_opt: serde_json::Value = serde_json::from_slice(&b_opt).unwrap();
+    assert_eq!(
+        v_opt["results"][0]["title"],
+        format!("Opts:q={breakout_kw}")
+    );
+
+    // 3. Same-host cookie-pair granularity: slow online/detail Set-Cookie: detail_ck=from_detail
+    //    must preserve concurrent login-action session=s1_fresh rotation on 127.0.0.1!
+    let (st_seed_ck, _) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{opts_id}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": {},
+            "action": format!("cookie.setCookie('{base}', 'session=s0');'ok'")
+        })),
+    )
+    .await;
+    assert_eq!(st_seed_ck, StatusCode::OK);
+
+    let app_d = h.app.clone();
+    let tok_d = h.member_token.clone();
+    let oid_d = opts_id.clone();
+    let base_d = base.clone();
+    let detail_task = tokio::spawn(async move {
+        json_request(
+            &app_d,
+            "POST",
+            "/api/v1/comic/online/detail",
+            &tok_d,
+            Some(serde_json::json!({
+                "source_id": oid_d,
+                "comic_url": format!("{base_d}/detail")
+            })),
+        )
+        .await
+    });
+
+    detail_entered.notified().await;
+    let (st_rot, _) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{opts_id}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": {},
+            "action": format!("cookie.setCookie('{base}', 'session=s1_fresh');'ok'")
+        })),
+    )
+    .await;
+    assert_eq!(st_rot, StatusCode::OK);
+    detail_release.notify_one();
+
+    let (st_det, _) = detail_task.await.unwrap();
+    assert_eq!(st_det, StatusCode::OK);
+
+    let (st_chk, b_chk) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{opts_id}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": {},
+            "action": format!("cookie.getCookie('{base}')")
+        })),
+    )
+    .await;
+    assert_eq!(st_chk, StatusCode::OK);
+    let chk_val: serde_json::Value = serde_json::from_slice(&b_chk).unwrap();
+    let cookies_str = chk_val["result"].as_str().unwrap();
+    assert!(
+        cookies_str.contains("session=s1_fresh"),
+        "concurrent login-action cookie rotation was clobbered: {cookies_str}"
+    );
+    assert!(
+        cookies_str.contains("detail_ck=from_detail"),
+        "detail Set-Cookie was lost: {cookies_str}"
+    );
+    assert_eq!(smuggle_hits.load(Ordering::SeqCst), 0);
+
+    server.abort();
+}

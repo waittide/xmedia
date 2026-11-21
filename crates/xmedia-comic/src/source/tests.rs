@@ -2262,3 +2262,620 @@ async fn chapters_and_pages_support_post_options_pagination_relative_options_and
 
     server.abort();
 }
+
+#[tokio::test]
+async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
+    use axum::routing::{delete, post};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let smuggled_post_hits = Arc::new(AtomicUsize::new(0));
+    let smuggled_hdr_hits = Arc::new(AtomicUsize::new(0));
+    let delete_hits = Arc::new(AtomicUsize::new(0));
+
+    let post_hits_c = smuggled_post_hits.clone();
+    let hdr_hits_c = smuggled_hdr_hits.clone();
+    let del_hits_c = delete_hits.clone();
+
+    let app = Router::new()
+        .route(
+            "/search",
+            get(|headers: HeaderMap| async move {
+                if headers.get("x-smuggled").is_some() {
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::empty())
+                        .unwrap();
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"items":[{"t":"LegitGet","u":"/c/get"}]}"#))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/search",
+            post(move |headers: HeaderMap, body: String| {
+                let post_hits = post_hits_c.clone();
+                let hdr_hits = hdr_hits_c.clone();
+                async move {
+                    if headers.get("x-smuggled").is_some() {
+                        hdr_hits.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if body == "smuggled" || body == "evil" {
+                        post_hits.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "items": [{ "t": format!("Post:{body}"), "u": "/c/post" }]
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/search",
+            delete(move || {
+                let del_hits = del_hits_c.clone();
+                async move {
+                    del_hits.fetch_add(1, Ordering::SeqCst);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[]}"#))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let make_src = |search_url: String| -> ComicSourceSpec {
+        serde_json::from_value(serde_json::json!({
+            "sourceName": "SmuggleTest",
+            "sourceUrl": base,
+            "searchUrl": search_url,
+            "ruleSearch": {
+                "bookList": "$.items[*]",
+                "name": "$.t",
+                "bookUrl": "$.u"
+            }
+        }))
+        .unwrap()
+    };
+
+    let src_mustache_arith = make_src(format!(
+        "{base}/search?offset={{{{((page - 1) * 20)}}}}&q={{{{key}}}}"
+    ));
+    let src_mustache_str = make_src(format!("{base}/search?q={{{{String(key)}}}}"));
+    let src_js_plain = make_src(format!("@js:'{base}/search?q=' + key"));
+    let src_js_concat_opts = make_src(format!(
+        "@js:'{base}/search,{{\"method\":\"POST\",\"body\":\"q=' + key + '\"}}'"
+    ));
+    let src_opts_simple = make_src(format!(
+        "{base}/search,{{\"method\":\"POST\",\"body\":\"q={{{{key}}}}\"}}"
+    ));
+    let src_opts_mustache_js = make_src(format!(
+        "{base}/search,{{\"method\":\"POST\",\"body\":\"q={{{{String(key)}}}}&off={{{{((page - 1) * 20)}}}}\"}}"
+    ));
+    let src_js_stringify = make_src(format!(
+        "@js:'{base}/search,' + JSON.stringify({{method:'POST', body:'q=' + key}})"
+    ));
+    let src_encode_uri = make_src(format!("{base}/search?q={{{{java.encodeURI(key)}}}}"));
+
+    tokio::task::spawn_blocking(move || {
+        let smuggle_payload = r#"a,{"method":"POST","headers":{"X-Smuggled":"YES"},"body":"evil"}"#;
+        let breakout_payload = r#"a","headers":{"X-Smuggled":"PWNED"},"x":""#;
+        let dup_method_payload = r#"a","method":"DELETE"#;
+
+        // Bypass A: Mustache arithmetic + {{key}}, {{String(key)}}, and @js: without options must reject
+        for src in [&src_mustache_arith, &src_mustache_str, &src_js_plain] {
+            let err = engine
+                .search_sync(src, SourceRuntimeState::default(), smuggle_payload, 1)
+                .expect_err("options smuggling via keyword must be rejected");
+            assert!(err.contains("选项"), "unexpected error: {err}");
+        }
+
+        // @js: manual JSON concat breakout (new key and duplicate key) must reject
+        for payload in [breakout_payload, dup_method_payload] {
+            let err = engine
+                .search_sync(
+                    &src_js_concat_opts,
+                    SourceRuntimeState::default(),
+                    payload,
+                    1,
+                )
+                .expect_err("JS JSON breakout must be rejected");
+            assert!(
+                err.contains("选项") || err.contains("结构"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // Bypass B: simple & Mustache JS ,{options} templates safely JSON-escape keyword inside body without injecting headers
+        let res_opts = engine
+            .search_sync(
+                &src_opts_simple,
+                SourceRuntimeState::default(),
+                breakout_payload,
+                1,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(res_opts[0].title, format!("Post:q={breakout_payload}"));
+
+        let res_mjs_opts = engine
+            .search_sync(
+                &src_opts_mustache_js,
+                SourceRuntimeState::default(),
+                breakout_payload,
+                2,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(
+            res_mjs_opts[0].title,
+            format!("Post:q={breakout_payload}&off=20")
+        );
+
+        // Legitimate @js: JSON.stringify and encodeURI work even with braces/quotes in keyword
+        let res_js_stringify = engine
+            .search_sync(
+                &src_js_stringify,
+                SourceRuntimeState::default(),
+                breakout_payload,
+                1,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(
+            res_js_stringify[0].title,
+            format!("Post:q={breakout_payload}")
+        );
+
+        let res_enc = engine
+            .search_sync(
+                &src_encode_uri,
+                SourceRuntimeState::default(),
+                smuggle_payload,
+                1,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(res_enc[0].title, "LegitGet");
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(smuggled_post_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(smuggled_hdr_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(delete_hits.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn pagination_cycle_guard_handles_302_post_to_get_mixed_get_307_post_and_post_200_307_alias()
+{
+    use axum::extract::Query;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(serde::Deserialize)]
+    struct PQuery {
+        p: Option<u32>,
+    }
+
+    let p1_302_hits = Arc::new(AtomicUsize::new(0));
+    let p1_302_hits_c = p1_302_hits.clone();
+    let ch_302_hits = Arc::new(AtomicUsize::new(0));
+    let ch_302_hits_c = ch_302_hits.clone();
+
+    let app = Router::new()
+        // 2a: POST -> 302 -> GET -> GET#frag
+        .route(
+            "/toc/302-post-entry",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/toc/302-real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/302-real",
+            get(move |Query(q): Query<PQuery>| {
+                let hits = p1_302_hits_c.clone();
+                async move {
+                    if q.p.unwrap_or(1) == 1 {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<ul><li><a href="/ch/1">302-Ch1</a></li></ul><a class="next" href="/toc/302-real?p=2">Next</a>"##,
+                            ))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<ul><li><a href="/ch/2">302-Ch2</a></li></ul><a class="next" href="/toc/302-real?p=1#frag">Loop</a>"##,
+                            ))
+                            .unwrap()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/ch/302-post-entry",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/ch/302-real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/302-real",
+            get(move |Query(q): Query<PQuery>| {
+                let hits = ch_302_hits_c.clone();
+                async move {
+                    if q.p.unwrap_or(1) == 1 {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<div id="imgs"><img src="/302_1.jpg"></div><a class="next-page" href="/ch/302-real?p=2">Next</a>"##,
+                            ))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<div id="imgs"><img src="/302_2.jpg"></div><a class="next-page" href="/ch/302-real?p=1#frag">Loop</a>"##,
+                            ))
+                            .unwrap()
+                    }
+                }
+            }),
+        )
+        // 2b: GET /mixed -> POST 307 to /mixed
+        .route(
+            "/toc/mixed-endpoint",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"items":[{"t":"MixedGet1","u":"/ch/m1"}],"next":"/toc/307-to-mixed,{\"method\":\"POST\",\"body\":\"p=2\"}"}"#,
+                    ))
+                    .unwrap()
+            })
+            .post(|body: String| async move {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"items":[{{"t":"MixedPost2({body})","u":"/ch/m2"}}]}}"#
+                    )))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/307-to-mixed",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", "/toc/mixed-endpoint")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        // 2c: POST 200 -> POST 307 alias with same (method, body, headers)
+        .route(
+            "/toc/post-200-then-307-alias",
+            post(|body: String| async move {
+                assert_eq!(body.trim(), "p=1");
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"items":[{"t":"Ch1","u":"/ch/c1"}],"next":"/toc/307-to-post200,{\"method\":\"POST\",\"body\":\"p=1\"}"}"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/307-to-post200",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", "/toc/post-200-then-307-alias")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        // 307 cycle: POST -> 307 -> POST /307-real?p=1 -> GET /307-real?p=2 -> POST /307-entry
+        .route(
+            "/toc/307-entry",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::TEMPORARY_REDIRECT)
+                    .header("location", "/toc/307-real?p=1#top")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/307-real",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        r#"<ul><li><a href="/ch/1">307-Ch1-POST</a></li></ul><a class="next" href="/toc/307-real?p=2">Next</a>"#,
+                    ))
+                    .unwrap()
+            })
+            .get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        r#"<ul><li><a href="/ch/2">307-Ch2-GET</a></li></ul><a class="next" href="/toc/307-entry,{&quot;method&quot;:&quot;POST&quot;,&quot;body&quot;:&quot;p=1&quot;}">Loop</a>"#,
+                    ))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Redirect302_307Test",
+        "sourceUrl": base,
+        "ruleToc": {
+            "chapterList": "$.items[*] || ul li",
+            "chapterName": "$.t || a@text",
+            "chapterUrl": "$.u || a@href",
+            "nextTocUrl": "$.next || a.next@href"
+        },
+        "ruleContent": {
+            "content": "#imgs@html",
+            "nextContentUrl": "a.next-page@href"
+        }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_c = base.clone();
+    let (ch_2a, pg_2a, ch_2b, ch_2c, ch_307) = tokio::task::spawn_blocking(move || {
+        let ch_2a = engine
+            .fetch_chapters_sync(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc/302-post-entry,{{\"method\":\"POST\",\"body\":\"p=1\"}}"),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let pg_2a = engine
+            .fetch_pages_sync(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/302-post-entry,{{\"method\":\"POST\",\"body\":\"p=1\"}}"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let ch_2b = engine
+            .fetch_chapters_sync(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc/mixed-endpoint"),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let ch_2c = engine
+            .fetch_chapters_sync(
+                &source,
+                SourceRuntimeState::default(),
+                &format!(
+                    "{base_c}/toc/post-200-then-307-alias,{{\"method\":\"POST\",\"body\":\"p=1\"}}"
+                ),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let ch_307 = engine
+            .fetch_chapters_sync(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc/307-entry,{{\"method\":\"POST\",\"body\":\"p=1\"}}"),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        (ch_2a, pg_2a, ch_2b, ch_2c, ch_307)
+    })
+    .await
+    .unwrap();
+
+    let t_2a: Vec<&str> = ch_2a.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_2a, vec!["302-Ch1", "302-Ch2"]);
+    assert_eq!(p1_302_hits.load(Ordering::SeqCst), 1);
+
+    assert_eq!(
+        pg_2a,
+        vec![format!("{base}/302_1.jpg"), format!("{base}/302_2.jpg")]
+    );
+    assert_eq!(ch_302_hits.load(Ordering::SeqCst), 1);
+
+    let t_2b: Vec<&str> = ch_2b.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_2b, vec!["MixedGet1", "MixedPost2(p=2)"]);
+
+    let t_2c: Vec<&str> = ch_2c.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_2c, vec!["Ch1"]);
+
+    let t_307: Vec<&str> = ch_307.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_307, vec!["307-Ch1-POST", "307-Ch2-GET"]);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn extract_page_urls_self_closing_svg_and_math_do_not_swallow_trailing_urls() {
+    let app = Router::new()
+        .route(
+            "/ch/svg-self-close",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html; charset=utf-8")
+                    .body(Body::from(
+                        "<svg width=\"10\" height=\"10\" />\nhttps://cdn.example/after_svg.jpg\n<svg/>\nhttps://cdn.example/after_svg_compact.jpg\n",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/math-self-close",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html; charset=utf-8")
+                    .body(Body::from(
+                        "<math xmlns=\"http://www.w3.org/1998/Math/MathML\" />\nhttps://cdn.example/after_math.jpg\n<svg><path d=\"M0 0\" /></svg>\nhttps://cdn.example/after_nested_svg.jpg\n<math><mi>x</mi></math>\nhttps://cdn.example/after_nested_math.jpg\n",
+                    ))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+    let raw_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SelfCloseForeign",
+        "sourceUrl": base,
+        "ruleContent": { "content": "@js:result" }
+    }))
+    .unwrap();
+    let rule_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SelfCloseForeignRule",
+        "sourceUrl": base,
+        "ruleContent": {
+            "content": "@js:result",
+            "imageUrl": "@js:result + '?v=1'"
+        }
+    }))
+    .unwrap();
+
+    let base_c = base.clone();
+    let (svg_pages, math_pages, svg_rule_pages) = tokio::task::spawn_blocking(move || {
+        let p1 = engine
+            .fetch_pages_sync(
+                &raw_src,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/svg-self-close"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let p2 = engine
+            .fetch_pages_sync(
+                &raw_src,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/math-self-close"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let p3 = engine
+            .fetch_pages_sync(
+                &rule_src,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/svg-self-close"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        (p1, p2, p3)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        svg_pages,
+        vec![
+            "https://cdn.example/after_svg.jpg",
+            "https://cdn.example/after_svg_compact.jpg",
+        ]
+    );
+    assert_eq!(
+        math_pages,
+        vec![
+            "https://cdn.example/after_math.jpg",
+            "https://cdn.example/after_nested_svg.jpg",
+            "https://cdn.example/after_nested_math.jpg",
+        ]
+    );
+    assert_eq!(
+        svg_rule_pages,
+        vec![
+            "https://cdn.example/after_svg.jpg?v=1",
+            "https://cdn.example/after_svg_compact.jpg?v=1",
+        ]
+    );
+
+    server.abort();
+}

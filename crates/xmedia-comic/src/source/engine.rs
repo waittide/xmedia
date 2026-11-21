@@ -50,6 +50,267 @@ fn template_needs_js(raw_tpl: &str) -> bool {
     false
 }
 
+fn keyword_may_affect_options(keyword: &str) -> bool {
+    keyword
+        .chars()
+        .any(|c| matches!(c, '{' | '}' | '"' | '\\') || c.is_control())
+}
+
+fn json_escape_str_inner(s: &str) -> String {
+    let serialized = serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string());
+    serialized
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or("")
+        .to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JsonSigToken {
+    ObjectStart,
+    Key(String),
+    ObjectEnd,
+    ArrayStart,
+    ArrayEnd,
+    Scalar,
+}
+
+fn json_structure_signature(raw: &str) -> Option<Vec<JsonSigToken>> {
+    struct Parser<'a> {
+        src: &'a str,
+        bytes: &'a [u8],
+        pos: usize,
+        tokens: Vec<JsonSigToken>,
+    }
+
+    impl<'a> Parser<'a> {
+        fn skip_ws(&mut self) {
+            while self.pos < self.bytes.len()
+                && matches!(self.bytes[self.pos], b' ' | b'\t' | b'\n' | b'\r')
+            {
+                self.pos += 1;
+            }
+        }
+
+        fn parse_string(&mut self) -> Option<String> {
+            if self.bytes.get(self.pos) != Some(&b'"') {
+                return None;
+            }
+            let start = self.pos;
+            self.pos += 1;
+            while self.pos < self.bytes.len() {
+                match self.bytes[self.pos] {
+                    b'\\' => {
+                        self.pos += 1;
+                        let ch = self.src[self.pos..].chars().next()?;
+                        self.pos += ch.len_utf8();
+                    }
+                    b'"' => {
+                        self.pos += 1;
+                        return serde_json::from_str::<String>(&self.src[start..self.pos]).ok();
+                    }
+                    _ => {
+                        self.pos += 1;
+                    }
+                }
+            }
+            None
+        }
+
+        fn parse_value(&mut self) -> Option<()> {
+            self.skip_ws();
+            let b = *self.bytes.get(self.pos)?;
+            match b {
+                b'{' => {
+                    self.pos += 1;
+                    self.tokens.push(JsonSigToken::ObjectStart);
+                    self.skip_ws();
+                    if self.bytes.get(self.pos) == Some(&b'}') {
+                        self.pos += 1;
+                        self.tokens.push(JsonSigToken::ObjectEnd);
+                        return Some(());
+                    }
+                    loop {
+                        self.skip_ws();
+                        let key = self.parse_string()?;
+                        self.tokens.push(JsonSigToken::Key(key));
+                        self.skip_ws();
+                        if self.bytes.get(self.pos) != Some(&b':') {
+                            return None;
+                        }
+                        self.pos += 1;
+                        self.parse_value()?;
+                        self.skip_ws();
+                        match self.bytes.get(self.pos)? {
+                            b',' => {
+                                self.pos += 1;
+                            }
+                            b'}' => {
+                                self.pos += 1;
+                                self.tokens.push(JsonSigToken::ObjectEnd);
+                                return Some(());
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                b'[' => {
+                    self.pos += 1;
+                    self.tokens.push(JsonSigToken::ArrayStart);
+                    self.skip_ws();
+                    if self.bytes.get(self.pos) == Some(&b']') {
+                        self.pos += 1;
+                        self.tokens.push(JsonSigToken::ArrayEnd);
+                        return Some(());
+                    }
+                    loop {
+                        self.parse_value()?;
+                        self.skip_ws();
+                        match self.bytes.get(self.pos)? {
+                            b',' => {
+                                self.pos += 1;
+                            }
+                            b']' => {
+                                self.pos += 1;
+                                self.tokens.push(JsonSigToken::ArrayEnd);
+                                return Some(());
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                b'"' => {
+                    self.parse_string()?;
+                    self.tokens.push(JsonSigToken::Scalar);
+                    Some(())
+                }
+                _ => {
+                    let start = self.pos;
+                    while self.pos < self.bytes.len()
+                        && !matches!(
+                            self.bytes[self.pos],
+                            b' ' | b'\t' | b'\n' | b'\r' | b',' | b'}' | b']'
+                        )
+                    {
+                        self.pos += 1;
+                    }
+                    let lit = &self.src[start..self.pos];
+                    let val = serde_json::from_str::<serde_json::Value>(lit).ok()?;
+                    if val.is_object() || val.is_array() {
+                        return None;
+                    }
+                    self.tokens.push(JsonSigToken::Scalar);
+                    Some(())
+                }
+            }
+        }
+    }
+
+    let mut parser = Parser {
+        src: raw,
+        bytes: raw.as_bytes(),
+        pos: 0,
+        tokens: Vec::new(),
+    };
+    parser.parse_value()?;
+    parser.skip_ws();
+    (parser.pos == parser.bytes.len()).then_some(parser.tokens)
+}
+
+fn eval_json_options_template(
+    session: &mut ReusableComicSession,
+    raw_opt_json: &str,
+    base_url: &str,
+    keyword: &str,
+    page: u32,
+    label: &str,
+) -> Result<String, String> {
+    let needs_js = template_needs_js(raw_opt_json);
+    let bytes = raw_opt_json.as_bytes();
+    let mut eval_opt = String::with_capacity(raw_opt_json.len() + keyword.len() + 16);
+    let mut baseline_opt = String::with_capacity(raw_opt_json.len() + 32);
+    let mut in_string = false;
+    let mut pos = 0usize;
+
+    while pos < bytes.len() {
+        if in_string && bytes[pos] == b'\\' {
+            eval_opt.push('\\');
+            baseline_opt.push('\\');
+            pos += 1;
+            if let Some(ch) = raw_opt_json[pos..].chars().next() {
+                eval_opt.push(ch);
+                baseline_opt.push(ch);
+                pos += ch.len_utf8();
+            }
+            continue;
+        }
+        if bytes[pos] == b'"' {
+            in_string = !in_string;
+            eval_opt.push('"');
+            baseline_opt.push('"');
+            pos += 1;
+            continue;
+        }
+        if raw_opt_json[pos..].starts_with("{{") {
+            let after_open = &raw_opt_json[pos + 2..];
+            if let Some(close) = after_open.find("}}") {
+                let expr = after_open[..close].trim();
+                baseline_opt.push_str(if in_string {
+                    "_XMEDIA_PROBE_"
+                } else {
+                    "\"_XMEDIA_PROBE_\""
+                });
+
+                let raw_val = match expr {
+                    "key" => keyword.to_string(),
+                    "page" => page.to_string(),
+                    _ if !needs_js => format!("{{{{{expr}}}}}"),
+                    _ => session.eval_string(
+                        &RuleValue::Text(String::new()),
+                        &format!("{{{{{expr}}}}}"),
+                        base_url,
+                    )?,
+                };
+
+                if in_string {
+                    eval_opt.push_str(&json_escape_str_inner(&raw_val));
+                } else {
+                    let trimmed_val = raw_val.trim();
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed_val)
+                        && !v.is_object()
+                        && !v.is_array()
+                    {
+                        eval_opt.push_str(trimmed_val);
+                    } else {
+                        let serialized =
+                            serde_json::to_string(&raw_val).unwrap_or_else(|_| "\"\"".to_string());
+                        eval_opt.push_str(&serialized);
+                    }
+                }
+                pos += 2 + close + 2;
+                continue;
+            }
+        }
+        if let Some(ch) = raw_opt_json[pos..].chars().next() {
+            eval_opt.push(ch);
+            baseline_opt.push(ch);
+            pos += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let expected_sig = json_structure_signature(&baseline_opt);
+    let actual_sig = json_structure_signature(&eval_opt);
+    if expected_sig.is_none()
+        || actual_sig != expected_sig
+        || serde_json::from_str::<LegadoUrlOptions>(&eval_opt).is_err()
+    {
+        return Err(format!("{label} 请求选项 JSON 结构无效或不允许被参数修改"));
+    }
+    Ok(eval_opt)
+}
+
 fn substitute_simple_template(raw_tpl: &str, keyword: &str, page: u32) -> String {
     let page_str = page.to_string();
     let mut out = String::with_capacity(raw_tpl.len() + keyword.len());
@@ -383,14 +644,61 @@ impl ComicSourceEngine {
         page: u32,
         label: &str,
     ) -> Result<String, String> {
-        let raw_had_options = split_legado_url_and_raw_options(raw_tpl).is_some();
-        let evaluated = if template_needs_js(raw_tpl) {
+        let evaluated = if split_js_pipeline(raw_tpl).is_some() {
             session.set_search_vars(keyword, page)?;
             let input = RuleValue::Text(String::new());
-            session.eval_string(&input, raw_tpl, &source.source_url)?
+            let out = session.eval_string(&input, raw_tpl, &source.source_url)?;
+            if !keyword.is_empty()
+                && keyword_may_affect_options(keyword)
+                && let Some((_, eval_opt_json)) = split_legado_url_and_raw_options(out.trim())
+            {
+                session.set_search_vars("__xmedia_kw_probe__", page)?;
+                let probe_res = session.eval_string(&input, raw_tpl, &source.source_url);
+                let _ = session.set_search_vars(keyword, page);
+                let probe_out = probe_res?;
+                let Some((_, probe_opt_json)) = split_legado_url_and_raw_options(probe_out.trim())
+                else {
+                    return Err(format!("{label} 模板参数不允许附加请求选项"));
+                };
+                let expected_sig = json_structure_signature(probe_opt_json);
+                let actual_sig = json_structure_signature(eval_opt_json);
+                if expected_sig.is_none()
+                    || actual_sig != expected_sig
+                    || serde_json::from_str::<LegadoUrlOptions>(eval_opt_json).is_err()
+                {
+                    return Err(format!("{label} 模板参数不允许修改请求选项结构"));
+                }
+            }
+            out
+        } else if let Some((raw_url_part, raw_opt_json)) = split_legado_url_and_raw_options(raw_tpl)
+        {
+            if template_needs_js(raw_tpl) {
+                session.set_search_vars(keyword, page)?;
+            }
+            let eval_url_part = if template_needs_js(raw_url_part) {
+                let input = RuleValue::Text(String::new());
+                session.eval_string(&input, raw_url_part, &source.source_url)?
+            } else {
+                substitute_simple_template(raw_url_part, keyword, page)
+            };
+            let eval_opt_json = eval_json_options_template(
+                session,
+                raw_opt_json,
+                &source.source_url,
+                keyword,
+                page,
+                label,
+            )?;
+            format!("{},{eval_opt_json}", eval_url_part.trim())
         } else {
-            let sub = substitute_simple_template(raw_tpl, keyword, page);
-            if !raw_had_options && split_legado_url_and_raw_options(sub.trim()).is_some() {
+            let sub = if template_needs_js(raw_tpl) {
+                session.set_search_vars(keyword, page)?;
+                let input = RuleValue::Text(String::new());
+                session.eval_string(&input, raw_tpl, &source.source_url)?
+            } else {
+                substitute_simple_template(raw_tpl, keyword, page)
+            };
+            if split_legado_url_and_raw_options(sub.trim()).is_some() {
                 return Err(format!("{label} 模板参数不允许附加请求选项"));
             }
             sub

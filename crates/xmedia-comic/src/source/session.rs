@@ -245,7 +245,7 @@ impl ReusableComicSession {
             };
             pages_fetched += 1;
             let fetched = self.http_fetch(&page_url)?;
-            if !guard.record_fetched(&req_key, &fetched.final_url) {
+            if !guard.record_fetched(&req_key, &fetched.final_url, &fetched.body) {
                 break;
             }
             let mut raw_input = RuleValue::from_raw(fetched.body);
@@ -351,7 +351,7 @@ impl ReusableComicSession {
             };
             pages_fetched += 1;
             let fetched = self.http_fetch(&page_url)?;
-            if !guard.record_fetched(&req_key, &fetched.final_url) {
+            if !guard.record_fetched(&req_key, &fetched.final_url, &fetched.body) {
                 break;
             }
             let raw_input = RuleValue::from_raw(fetched.body);
@@ -599,8 +599,16 @@ struct RedirectTargetKey {
 #[derive(Default)]
 struct PaginationCycleGuard {
     visited_requests: HashSet<CanonicalRequestKey>,
-    visited_get_final_urls: HashSet<String>,
+    visited_get_bodies: HashMap<String, u64>,
+    redirected_post_final_urls: HashMap<String, u64>,
     visited_redirect_targets: HashSet<RedirectTargetKey>,
+}
+
+fn hash_response_body(body: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    body.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl PaginationCycleGuard {
@@ -609,28 +617,46 @@ impl PaginationCycleGuard {
         self.visited_requests.insert(key.clone()).then_some(key)
     }
 
-    fn record_fetched(&mut self, req_key: &CanonicalRequestKey, final_url: &str) -> bool {
+    fn record_fetched(
+        &mut self,
+        req_key: &CanonicalRequestKey,
+        final_url: &str,
+        body: &str,
+    ) -> bool {
         let final_no_frag = strip_fragment(final_url).to_string();
+        let body_hash = hash_response_body(body);
         if req_key.is_plain_get_or_head() {
-            if !self.visited_get_final_urls.insert(final_no_frag.clone()) {
+            if self.visited_get_bodies.contains_key(&final_no_frag) {
                 return false;
             }
+            self.visited_get_bodies
+                .insert(final_no_frag.clone(), body_hash);
             if final_no_frag != req_key.url_no_frag {
                 self.visited_requests
                     .insert(CanonicalRequestKey::plain_get(&final_no_frag));
             }
             true
-        } else if final_no_frag != req_key.url_no_frag {
-            if self.visited_get_final_urls.contains(&final_no_frag) {
-                return false;
-            }
-            self.visited_redirect_targets.insert(RedirectTargetKey {
-                final_url: final_no_frag,
+        } else {
+            let target_key = RedirectTargetKey {
+                final_url: final_no_frag.clone(),
                 method: req_key.method.clone(),
                 body: req_key.body.clone(),
                 headers: req_key.headers.clone(),
-            })
-        } else {
+            };
+            if !self.visited_redirect_targets.insert(target_key) {
+                return false;
+            }
+            if final_no_frag != req_key.url_no_frag {
+                if self.visited_get_bodies.get(&final_no_frag) == Some(&body_hash) {
+                    return false;
+                }
+                if self.redirected_post_final_urls.get(&final_no_frag) == Some(&body_hash) {
+                    return false;
+                }
+                self.redirected_post_final_urls
+                    .entry(final_no_frag)
+                    .or_insert(body_hash);
+            }
             true
         }
     }
@@ -640,9 +666,20 @@ impl PaginationCycleGuard {
         if self.visited_requests.contains(&next_key) {
             return false;
         }
-        if next_key.is_plain_get_or_head()
-            && self.visited_get_final_urls.contains(&next_key.url_no_frag)
-        {
+        if next_key.is_plain_get_or_head() {
+            if self.visited_get_bodies.contains_key(&next_key.url_no_frag)
+                || self
+                    .redirected_post_final_urls
+                    .contains_key(&next_key.url_no_frag)
+            {
+                return false;
+            }
+        } else if self.visited_redirect_targets.contains(&RedirectTargetKey {
+            final_url: next_key.url_no_frag.clone(),
+            method: next_key.method.clone(),
+            body: next_key.body.clone(),
+            headers: next_key.headers.clone(),
+        }) {
             return false;
         }
         true
@@ -922,7 +959,9 @@ fn segment_page_content(input: &str) -> (Vec<PageSegment<'_>>, bool) {
             apply_html5_implicit_close(&mut element_stack, &tag_name);
             let in_foreign = element_stack.iter().any(|t| t == "svg" || t == "math");
 
-            if is_void_html_element(&tag_name) || (self_closing && in_foreign) {
+            if is_void_html_element(&tag_name)
+                || (self_closing && (in_foreign || tag_name == "svg" || tag_name == "math"))
+            {
                 if element_stack.is_empty()
                     && let Some(start) = html_start.take()
                 {

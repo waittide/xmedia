@@ -450,6 +450,133 @@ impl ComicOnlineService {
     }
 }
 
+fn parse_cookie_pairs(raw: &str) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for part in raw.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = trimmed.split_once('=') {
+            let key = k.trim().to_string();
+            let val = v.trim().to_string();
+            if key.is_empty() {
+                continue;
+            }
+            if let Some(slot) = pairs.iter_mut().find(|(ek, _)| ek == &key) {
+                slot.1 = val;
+            } else {
+                pairs.push((key, val));
+            }
+        }
+    }
+    pairs
+}
+
+fn serialize_cookie_pairs(pairs: Vec<(String, String)>) -> String {
+    pairs
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn merge_cookie_string_with_base(
+    base_str: Option<&str>,
+    cur_str: Option<&str>,
+    upd_str: Option<&str>,
+) -> Option<String> {
+    let has_pairs = [base_str, cur_str, upd_str]
+        .into_iter()
+        .flatten()
+        .any(|s| !parse_cookie_pairs(s).is_empty());
+    if !has_pairs {
+        return match upd_str {
+            None => {
+                if cur_str == base_str {
+                    None
+                } else {
+                    cur_str.map(ToString::to_string)
+                }
+            }
+            Some(u) => {
+                if base_str == Some(u) {
+                    cur_str.map(ToString::to_string)
+                } else {
+                    Some(u.to_string())
+                }
+            }
+        };
+    }
+
+    let base_pairs = base_str.map(parse_cookie_pairs).unwrap_or_default();
+    let mut cur_pairs = cur_str.map(parse_cookie_pairs).unwrap_or_default();
+    let upd_pairs = upd_str.map(parse_cookie_pairs).unwrap_or_default();
+
+    let base_map: HashMap<&str, &str> = base_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let upd_map: HashMap<&str, &str> = upd_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    cur_pairs.retain(|(name, cur_val)| {
+        if upd_map.contains_key(name.as_str()) {
+            true
+        } else {
+            base_map.get(name.as_str()) != Some(&cur_val.as_str())
+        }
+    });
+
+    for (name, upd_val) in upd_pairs {
+        if base_map.get(name.as_str()) != Some(&upd_val.as_str()) {
+            if let Some(slot) = cur_pairs.iter_mut().find(|(cn, _)| cn == &name) {
+                slot.1 = upd_val;
+            } else {
+                cur_pairs.push((name, upd_val));
+            }
+        }
+    }
+
+    if cur_pairs.is_empty() {
+        if let Some("") = upd_str
+            && base_str != Some("")
+        {
+            Some(String::new())
+        } else {
+            None
+        }
+    } else {
+        Some(serialize_cookie_pairs(cur_pairs))
+    }
+}
+
+fn merge_cookies_with_base(
+    base: &HashMap<String, String>,
+    merged: &mut HashMap<String, String>,
+    updated: HashMap<String, String>,
+) {
+    let mut hosts: std::collections::HashSet<String> = base.keys().cloned().collect();
+    hosts.extend(merged.keys().cloned());
+    hosts.extend(updated.keys().cloned());
+
+    for host in hosts {
+        let b = base.get(&host).map(String::as_str);
+        let c = merged.get(&host).map(String::as_str);
+        let u = updated.get(&host).map(String::as_str);
+        match merge_cookie_string_with_base(b, c, u) {
+            Some(val) => {
+                merged.insert(host, val);
+            }
+            None => {
+                merged.remove(&host);
+            }
+        }
+    }
+}
+
 fn merge_map_with_base(
     base: &HashMap<String, String>,
     merged: &mut HashMap<String, String>,
@@ -477,7 +604,7 @@ pub(super) fn merge_runtime_state_with_base(
         return updated;
     };
 
-    merge_map_with_base(&base.cookies, &mut merged.cookies, updated.cookies);
+    merge_cookies_with_base(&base.cookies, &mut merged.cookies, updated.cookies);
     merge_map_with_base(&base.cache, &mut merged.cache, updated.cache);
 
     if updated.variable != base.variable {
@@ -671,5 +798,59 @@ mod tests {
             merged.login_info.get("extra").map(String::as_str),
             Some("e2")
         );
+    }
+
+    #[test]
+    fn merge_runtime_state_with_base_merges_same_host_cookies_at_cookie_pair_granularity() {
+        let base = sample_state(
+            "v1",
+            &[],
+            &[
+                ("127.0.0.1", "session=s0; old_ck=o0; conflict_ck=c0"),
+                ("remove.example", "token=t0"),
+            ],
+            &[],
+            "dev1",
+        );
+        let current = sample_state(
+            "v1",
+            &[],
+            &[
+                (
+                    "127.0.0.1",
+                    "session=s1_fresh; old_ck=o0; conflict_ck=c_login; login_only=l1",
+                ),
+                ("remove.example", "token=t0; login_added=la1"),
+            ],
+            &[],
+            "dev1",
+        );
+        let updated = sample_state(
+            "v1",
+            &[],
+            &[(
+                "127.0.0.1",
+                "session=s0; conflict_ck=c0; detail_ck=from_detail",
+            )],
+            &[],
+            "dev1",
+        );
+
+        let merged = merge_runtime_state_with_base(&base, Some(current), updated, false);
+        assert_eq!(
+            merged.cookies.get("127.0.0.1").map(String::as_str),
+            Some("session=s1_fresh; conflict_ck=c_login; login_only=l1; detail_ck=from_detail")
+        );
+        assert_eq!(
+            merged.cookies.get("remove.example").map(String::as_str),
+            Some("login_added=la1")
+        );
+
+        // Unconflicted full host removal still removes the host key
+        let base_del = sample_state("v1", &[], &[("gone.example", "a=1")], &[], "dev1");
+        let cur_del = sample_state("v1", &[], &[("gone.example", "a=1")], &[], "dev1");
+        let upd_del = sample_state("v1", &[], &[], &[], "dev1");
+        let merged_del = merge_runtime_state_with_base(&base_del, Some(cur_del), upd_del, false);
+        assert!(!merged_del.cookies.contains_key("gone.example"));
     }
 }
