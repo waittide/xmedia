@@ -1621,4 +1621,108 @@ mod gateway_seed_tests {
             .unwrap();
         assert_eq!(disabled_entry["enabled"], false);
     }
+
+    #[tokio::test]
+    async fn concurrent_import_seeds_and_manual_import_produce_no_duplicates() {
+        use std::collections::HashSet;
+        use std::sync::Arc;
+        use tokio::sync::Barrier;
+
+        let tmp = TempDir::new().unwrap();
+        let app_instance = XMediaApp::connect_and_init(make_cfg(&tmp)).await.unwrap();
+        let (admin_token, _) = setup_admin_and_member(&app_instance).await;
+        let router = app_instance.router;
+
+        let domains: [(&str, &str, usize); 3] = [
+            ("comic", crate::seeds::COMIC_SEEDS_JSON, 5),
+            ("music", crate::seeds::MUSIC_SEEDS_JSON, 4),
+            ("video", crate::seeds::VIDEO_SEEDS_JSON, 6),
+        ];
+
+        // 4 import-seeds + 4 manual import per domain = 24 concurrent tasks across a barrier
+        let tasks_per_kind = 4usize;
+        let total_tasks = domains.len() * tasks_per_kind * 2;
+        let barrier = Arc::new(Barrier::new(total_tasks));
+        let mut handles = Vec::with_capacity(total_tasks);
+
+        for (domain, seeds_json, _) in domains {
+            let import_payload =
+                Arc::new(serde_json::json!({ "raw_json": seeds_json }).to_string());
+            for i in 0..(tasks_per_kind * 2) {
+                let is_seed = i % 2 == 0;
+                let r = router.clone();
+                let tok = admin_token.clone();
+                let bar = barrier.clone();
+                let payload = import_payload.clone();
+                handles.push(tokio::spawn(async move {
+                    bar.wait().await;
+                    let (uri, body, ct) = if is_seed {
+                        (
+                            format!("/api/v1/{domain}/sources/import-seeds"),
+                            Body::from("{}"),
+                            Some("application/json"),
+                        )
+                    } else {
+                        (
+                            format!("/api/v1/{domain}/sources/import"),
+                            Body::from(payload.as_str().to_owned()),
+                            Some("application/json"),
+                        )
+                    };
+                    let (st, json) = send_req(&r, "POST", &uri, Some(&tok), body, ct).await;
+                    (domain, st, json)
+                }));
+            }
+        }
+
+        let mut imported_sums: std::collections::HashMap<&'static str, u64> =
+            std::collections::HashMap::new();
+        for handle in handles {
+            let (domain, st, json) = handle.await.unwrap();
+            assert_eq!(st, StatusCode::OK, "domain={domain} body={json}");
+            let imp = json["imported_count"].as_u64().unwrap();
+            *imported_sums.entry(domain).or_insert(0) += imp;
+        }
+
+        for (domain, _, expected_count) in domains {
+            assert_eq!(
+                imported_sums.get(domain).copied().unwrap_or(0),
+                expected_count as u64,
+                "sum of imported_count for {domain} must equal {expected_count}"
+            );
+
+            let (st, listed) = send_req(
+                &router,
+                "GET",
+                &format!("/api/v1/{domain}/sources"),
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+            let arr = listed.as_array().unwrap();
+            assert_eq!(
+                arr.len(),
+                expected_count,
+                "duplicate rows detected for {domain}: got {}",
+                arr.len()
+            );
+
+            let unique_keys: HashSet<(String, String)> = arr
+                .iter()
+                .map(|item| {
+                    (
+                        item["name"].as_str().unwrap().to_string(),
+                        item["source_url"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                unique_keys.len(),
+                expected_count,
+                "expected {expected_count} unique (name, source_url) entries for {domain}"
+            );
+        }
+    }
 }

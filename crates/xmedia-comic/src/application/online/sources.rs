@@ -171,6 +171,7 @@ impl ComicOnlineService {
         let parsed_batch =
             ComicSourceSpec::parse_json_batch(raw_json).map_err(DomainError::Validation)?;
 
+        let _seed_guard = self.seed_import_lock.lock().await;
         let existing_all = self.sources.list_all().await?;
         let mut existing_by_key: HashMap<(String, String), ComicSourceRecord> = existing_all
             .into_iter()
