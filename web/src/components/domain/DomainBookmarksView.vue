@@ -24,7 +24,7 @@ const { t } = useI18n()
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-6 px-6 py-8 sm:px-8">
+  <div class="mx-auto max-w-7xl space-y-6 px-6 py-7 sm:px-8">
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>
         <div class="flex items-center gap-2.5">

@@ -333,7 +333,7 @@ async function refreshPage(): Promise<void> {
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl px-6 py-6 sm:px-8">
+  <div class="mx-auto max-w-7xl px-6 py-7 sm:px-8">
     <!-- Local vs Online Book Source Search Switcher -->
     <div
       v-if="showSearchScopeSwitch"

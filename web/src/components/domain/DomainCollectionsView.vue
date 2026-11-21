@@ -186,7 +186,7 @@ async function handleCreate(): Promise<void> {
 </script>
 
 <template>
-  <div class="mx-auto space-y-6 px-6 py-8 sm:px-8" :class="maxWidthClass">
+  <div class="mx-auto space-y-6 px-6 py-7 sm:px-8" :class="maxWidthClass">
     <!-- Top Header + Actions -->
     <div class="flex flex-wrap items-end justify-between gap-4">
       <div>

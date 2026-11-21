@@ -98,7 +98,7 @@ async function removeLibrary(lib: Library): Promise<void> {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl space-y-6 p-6 sm:p-8">
+  <div class="mx-auto max-w-7xl space-y-6 px-6 py-7 sm:px-8">
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
         <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">

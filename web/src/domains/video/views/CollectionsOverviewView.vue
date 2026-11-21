@@ -178,7 +178,6 @@ async function removeShelf(id: string): Promise<void> {
 
 <template>
   <DomainCollectionsView
-    max-width-class="max-w-6xl"
     :mode="viewMode"
     :reset-key="kind"
     :title="headerMeta.title"

@@ -168,7 +168,7 @@ watch(
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-6 p-6 sm:p-8">
+  <div class="mx-auto max-w-7xl space-y-6 px-6 py-7 sm:px-8">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex flex-wrap items-center gap-2.5">
         <div class="w-44">

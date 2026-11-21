@@ -75,7 +75,7 @@ async function removeShelf(item: ShelfDetailDto): Promise<void> {
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-8 p-6 sm:p-8">
+  <div class="mx-auto max-w-7xl space-y-8 px-6 py-7 sm:px-8">
     <div class="flex items-center justify-between gap-4">
       <div>
         <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">

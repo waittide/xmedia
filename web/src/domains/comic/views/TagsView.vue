@@ -24,7 +24,7 @@ onMounted(loadTaxonomy)
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-6 p-6 sm:p-8">
+  <div class="mx-auto max-w-7xl space-y-6 px-6 py-7 sm:px-8">
     <div class="flex items-center justify-end">
       <RefreshButton :action="refreshPage" />
     </div>

@@ -202,7 +202,7 @@ const continueItems = computed<ContinueListenItem[]>(() => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-10 px-6 py-8 sm:px-8">
+  <div class="mx-auto max-w-7xl space-y-10 px-6 py-7 sm:px-8">
     <HomeStatCards domain="music" :cards="statCards" :on-refresh="refreshPage" />
 
     <!-- Cold-Load Skeleton -->

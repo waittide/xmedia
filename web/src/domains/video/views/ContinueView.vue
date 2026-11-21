@@ -33,7 +33,7 @@ watch(() => videoStore.catalogVersion, loadContinue)
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-8 px-6 py-7 sm:px-8">
+  <div class="mx-auto max-w-7xl space-y-8 px-6 py-7 sm:px-8">
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
         <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">

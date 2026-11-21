@@ -130,7 +130,7 @@ watch(() => musicStore.catalogVersion, loadContinueData)
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-8 px-6 py-7 sm:px-8">
+  <div class="mx-auto max-w-7xl space-y-8 px-6 py-7 sm:px-8">
     <!-- Header -->
     <div class="flex flex-wrap items-center justify-between gap-4">
       <div>
