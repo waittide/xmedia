@@ -7,8 +7,7 @@ use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
-    format_test_failure_summary, format_timeout_step, merge_diagnostics, merge_runtime_state,
-    summarize_steps_outcome,
+    format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
 };
 
 use crate::source::hls::{build_hls_proxy_url, build_poster_proxy_url, build_stream_proxy_url};
@@ -21,6 +20,7 @@ use super::dto::{
     VideoSourceTestInput, VideoSourceTestMode, VideoSourceTestPayload, VideoSourceTestReportDto,
     VideoSourceTestStepDto,
 };
+use super::sources::merge_runtime_state_with_base;
 use super::{SOURCE_TEST_TOTAL_TIMEOUT, VideoOnlineService};
 
 impl VideoOnlineService {
@@ -141,6 +141,7 @@ impl VideoOnlineService {
         let mode = input.mode;
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
+        let base_state = prev_state.clone();
         let kw_clone = effective_keyword.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
@@ -583,8 +584,8 @@ impl VideoOnlineService {
         )
         .await;
 
-        let (final_state, report) = match timed_res {
-            Ok(Ok(pair)) => pair,
+        let (maybe_final_state, report) = match timed_res {
+            Ok(Ok((state, report))) => (Some(state), report),
             Ok(Err(e)) => {
                 return Err(DomainError::Storage(format!("测试影视源线程失败: {e}")));
             }
@@ -609,7 +610,7 @@ impl VideoOnlineService {
                     )],
                     payload: VideoSourceTestPayload::default(),
                 };
-                (rec.runtime_state, report)
+                (None, report)
             }
         };
 
@@ -627,7 +628,12 @@ impl VideoOnlineService {
         let lock = self.source_state_lock_for(id);
         let _guard = lock.lock().await;
         let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged_state = merge_runtime_state(current, final_state);
+        let merged_state = match maybe_final_state {
+            Some(final_state) => {
+                merge_runtime_state_with_base(&base_state, current, final_state, false)
+            }
+            None => current.unwrap_or(base_state),
+        };
 
         let _ = self
             .sources

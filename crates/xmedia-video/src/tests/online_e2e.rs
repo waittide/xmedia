@@ -1634,3 +1634,226 @@ async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e() {
+    let (_tmp, app, admin_tok, _member_tok) = setup_test_app(true).await;
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let entered_srv = entered.clone();
+    let release_srv = release.clone();
+
+    let origin_app = Router::new().route(
+        "/delayed/api.php/provide/vod/",
+        get(move |Query(q): Query<AppleCmsQuery>| {
+            let entered_inner = entered_srv.clone();
+            let release_inner = release_srv.clone();
+            async move {
+                if q.wd.as_deref() == Some("Delayed") {
+                    entered_inner.notify_one();
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        release_inner.notified(),
+                    )
+                    .await;
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "code": 1,
+                            "page": 1,
+                            "pagecount": 1,
+                            "total": 1,
+                            "list": [{
+                                "vod_id": 9901,
+                                "vod_name": "Delayed Movie",
+                                "type_name": "电影",
+                                "vod_remarks": "HD"
+                            }]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let src_json = serde_json::json!({
+        "sourceName": "Delayed Mock AppleCMS",
+        "sourceUrl": format!("{origin}/delayed/api.php/provide/vod/"),
+        "sourceFormat": "applecms_v10",
+        "apiUrl": format!("{origin}/delayed/api.php/provide/vod/"),
+        "enabled": true,
+        "searchable": true,
+        "loginUi": "[{\"name\":\"username\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"},{\"name\":\"varVal\",\"type\":\"text\"}]",
+        "loginUrl": "function doLogin(){ source.setVariable(String(source.getLoginInfoMap()['varVal'] || '')); return 'ok'; }"
+    });
+
+    let (st, import_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let sid = import_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 1. Establish prior runtime_state (Case B pre-existing var_1 / alice_1 / secret_1).
+    let (st, login1) = post_json(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &admin_tok,
+        serde_json::json!({
+            "login_info": {
+                "username": "alice_1",
+                "apiToken": "secret_1",
+                "varVal": "var_1"
+            },
+            "action": "doLogin()"
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(login1["result"], "ok");
+    assert_eq!(login1["source"]["login_info"]["username"], "alice_1");
+
+    // 2. Start delayed test_source (captures prev_state with var_1 / alice_1) and pause at upstream.
+    let app_for_test = app.clone();
+    let tok_for_test = admin_tok.clone();
+    let sid_for_test = sid.clone();
+    let test_task = tokio::spawn(async move {
+        post_json(
+            &app_for_test,
+            &format!("/api/v1/video/sources/{sid_for_test}/test"),
+            &tok_for_test,
+            serde_json::json!({ "mode": "search", "keyword": "Delayed" }),
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .expect("delayed mock search request should reach upstream");
+
+    // 3. Concurrently run login-action updating to var_2 / bob_2 / secret_2 while test_source is in flight.
+    let (st, login2) = post_json(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &admin_tok,
+        serde_json::json!({
+            "login_info": {
+                "username": "bob_2",
+                "apiToken": "secret_2",
+                "varVal": "var_2"
+            },
+            "action": "doLogin()"
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(login2["result"], "ok");
+
+    // 4. Release upstream response and wait for test_source to finish and persist test result.
+    release.notify_one();
+    let (test_st, test_res) = test_task.await.unwrap();
+    assert_eq!(test_st, StatusCode::OK);
+    assert_eq!(test_res["ok"], true);
+
+    // 5. Verify newer login-action variable & login_info survived test_source completion.
+    let (st, _, var_bytes) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/variable"),
+        Some(&admin_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let var_json: serde_json::Value = serde_json::from_slice(&var_bytes).unwrap();
+    assert_eq!(var_json["variable"], "var_2");
+
+    let (st, _, list_bytes) =
+        get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+    assert_eq!(st, StatusCode::OK);
+    let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
+    let rec = sources
+        .iter()
+        .find(|s| s["id"].as_str() == Some(sid.as_str()))
+        .unwrap();
+    assert_eq!(rec["login_info"]["username"], "bob_2");
+    assert_eq!(rec["login_info"]["varVal"], "var_2");
+    assert_eq!(rec["login_info"]["apiToken"], "••••••••");
+
+    // 6. Also verify concurrent online search preserves newer login-action state (var_3 / carol_3).
+    let app_for_search = app.clone();
+    let tok_for_search = admin_tok.clone();
+    let sid_for_search = sid.clone();
+    let search_task = tokio::spawn(async move {
+        post_json(
+            &app_for_search,
+            "/api/v1/video/online/search",
+            &tok_for_search,
+            serde_json::json!({ "keyword": "Delayed", "source_ids": [sid_for_search] }),
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .expect("delayed mock search request should reach upstream");
+
+    let (st, _) = post_json(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &admin_tok,
+        serde_json::json!({
+            "login_info": {
+                "username": "carol_3",
+                "apiToken": "secret_3",
+                "varVal": "var_3"
+            },
+            "action": "doLogin()"
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    release.notify_one();
+    let (search_st, search_res) = search_task.await.unwrap();
+    assert_eq!(search_st, StatusCode::OK);
+    assert_eq!(search_res["results"].as_array().unwrap().len(), 1);
+
+    let (st, _, var_bytes2) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/variable"),
+        Some(&admin_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let var_json2: serde_json::Value = serde_json::from_slice(&var_bytes2).unwrap();
+    assert_eq!(var_json2["variable"], "var_3");
+
+    let (st, _, list_bytes2) =
+        get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+    assert_eq!(st, StatusCode::OK);
+    let sources2: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes2).unwrap();
+    let rec2 = sources2
+        .iter()
+        .find(|s| s["id"].as_str() == Some(sid.as_str()))
+        .unwrap();
+    assert_eq!(rec2["login_info"]["username"], "carol_3");
+    assert_eq!(rec2["login_info"]["varVal"], "var_3");
+
+    srv.abort();
+}

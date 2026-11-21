@@ -83,7 +83,9 @@ impl VideoOnlineService {
         .map_err(|e| DomainError::Validation(e.message))?;
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after categories");
         }
@@ -215,7 +217,9 @@ impl VideoOnlineService {
                 match res {
                     Ok(out) => {
                         if out.state != prev_state
-                            && let Err(err) = self.persist_runtime_state(sid, out.state).await
+                            && let Err(err) = self
+                                .persist_runtime_state_with_base(sid, &prev_state, out.state, false)
+                                .await
                         {
                             tracing::warn!(source_id = %sid, error = %err, "failed to persist video source runtime state after search");
                         }
@@ -291,7 +295,9 @@ impl VideoOnlineService {
         .map_err(|e| DomainError::Validation(e.message))?;
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after browse");
         }
@@ -352,7 +358,9 @@ impl VideoOnlineService {
         .map_err(|e| DomainError::Validation(e.message))?;
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after detail");
         }
@@ -407,7 +415,9 @@ impl VideoOnlineService {
         .map_err(|e| DomainError::Validation(e.message))?;
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after play");
         }
