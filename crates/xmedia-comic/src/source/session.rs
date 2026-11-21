@@ -225,7 +225,9 @@ impl ReusableComicSession {
                 .inner
                 .http()
                 .fetch(&page_url, &self.source.source_url)?;
-            visited.insert(fetched.final_url.clone());
+            if fetched.final_url != page_url && !visited.insert(fetched.final_url.clone()) {
+                break;
+            }
             let mut raw_input = RuleValue::from_raw(fetched.body);
 
             if let Some(ref pre_js) = rule_toc.pre_update_js
@@ -328,7 +330,9 @@ impl ReusableComicSession {
                 .inner
                 .http()
                 .fetch(&page_url, &self.source.source_url)?;
-            visited_pages.insert(fetched.final_url.clone());
+            if fetched.final_url != page_url && !visited_pages.insert(fetched.final_url.clone()) {
+                break;
+            }
             let raw_input = RuleValue::from_raw(fetched.body);
 
             let evaluated = self.eval_string(&raw_input, content_rule, &fetched.final_url)?;
@@ -403,33 +407,137 @@ impl ReusableComicSession {
             return normalize_extracted_urls(raw_candidates, base_url);
         }
 
-        // 2. Full HTML fragment <img> extraction when no per-item imageUrl rule is configured
-        if img_rule_opt.is_none() && trimmed.to_ascii_lowercase().contains("<img") {
-            extract_img_srcs_from_html(trimmed, &mut raw_candidates);
-            return normalize_extracted_urls(raw_candidates, base_url);
-        }
+        // 2. Scan lines grouping contiguous HTML blocks / open `<...>` tags while preserving plain URL lines
+        let mut html_buf = String::new();
+        let mut in_open_tag = false;
+        let mut in_comment = false;
+        let mut quote: Option<char> = None;
 
-        // 3. Line-by-line / HTML <img> extraction (preserving HTML without stripping!)
         for line in trimmed.lines() {
             let l = line.trim();
             if l.is_empty() {
                 continue;
             }
-            let lower = l.to_ascii_lowercase();
-            if lower.contains("<img") {
-                extract_img_srcs_from_html(l, &mut raw_candidates);
-            } else if let Some(img_rule) = img_rule_opt {
-                let rv = RuleValue::from_raw(l.to_string());
-                let extracted = self.eval_opt(&rv, Some(img_rule), base_url);
-                if !extracted.is_empty() {
-                    raw_candidates.push(extracted);
+            let is_html_line = in_open_tag
+                || in_comment
+                || l.starts_with('<')
+                || l.to_ascii_lowercase().contains("<img");
+            if is_html_line {
+                if !html_buf.is_empty() {
+                    html_buf.push('\n');
                 }
-            } else if !l.starts_with('<') {
-                raw_candidates.push(l.to_string());
+                html_buf.push_str(l);
+                update_html_scan_state(l, &mut in_open_tag, &mut in_comment, &mut quote);
+            } else {
+                self.flush_html_page_candidates(
+                    &mut html_buf,
+                    img_rule_opt,
+                    base_url,
+                    &mut raw_candidates,
+                );
+                self.push_page_candidate(
+                    l.to_string(),
+                    img_rule_opt,
+                    base_url,
+                    &mut raw_candidates,
+                );
             }
         }
+        self.flush_html_page_candidates(&mut html_buf, img_rule_opt, base_url, &mut raw_candidates);
 
         normalize_extracted_urls(raw_candidates, base_url)
+    }
+
+    fn flush_html_page_candidates(
+        &mut self,
+        html_buf: &mut String,
+        img_rule_opt: Option<&str>,
+        base_url: &str,
+        out: &mut Vec<String>,
+    ) {
+        if html_buf.is_empty() {
+            return;
+        }
+        let mut srcs = Vec::new();
+        extract_img_srcs_from_html(html_buf, &mut srcs);
+        html_buf.clear();
+        for src in srcs {
+            self.push_page_candidate(src, img_rule_opt, base_url, out);
+        }
+    }
+
+    fn push_page_candidate(
+        &mut self,
+        candidate: String,
+        img_rule_opt: Option<&str>,
+        base_url: &str,
+        out: &mut Vec<String>,
+    ) {
+        if let Some(img_rule) = img_rule_opt {
+            let rv = RuleValue::from_raw(candidate);
+            let extracted = self.eval_opt(&rv, Some(img_rule), base_url);
+            if !extracted.trim().is_empty() {
+                out.push(extracted);
+            }
+        } else {
+            out.push(candidate);
+        }
+    }
+}
+
+fn update_html_scan_state(
+    line: &str,
+    in_open_tag: &mut bool,
+    in_comment: &mut bool,
+    quote: &mut Option<char>,
+) {
+    let mut rest = line;
+    while !rest.is_empty() {
+        if *in_comment {
+            if let Some(end_idx) = rest.find("-->") {
+                *in_comment = false;
+                rest = &rest[end_idx + 3..];
+            } else {
+                break;
+            }
+            continue;
+        }
+        if *in_open_tag {
+            let mut closed_at = None;
+            for (idx, ch) in rest.char_indices() {
+                if let Some(q) = *quote {
+                    if ch == q {
+                        *quote = None;
+                    }
+                } else if ch == '"' || ch == '\'' {
+                    *quote = Some(ch);
+                } else if ch == '>' {
+                    closed_at = Some(idx + ch.len_utf8());
+                    break;
+                }
+            }
+            if let Some(next_start) = closed_at {
+                *in_open_tag = false;
+                *quote = None;
+                rest = &rest[next_start..];
+            } else {
+                break;
+            }
+            continue;
+        }
+        if let Some(lt_idx) = rest.find('<') {
+            let after_lt = &rest[lt_idx..];
+            if let Some(stripped) = after_lt.strip_prefix("<!--") {
+                *in_comment = true;
+                rest = stripped;
+            } else {
+                *in_open_tag = true;
+                *quote = None;
+                rest = &after_lt[1..];
+            }
+        } else {
+            break;
+        }
     }
 }
 

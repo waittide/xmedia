@@ -974,3 +974,345 @@ async fn chapters_and_pages_ignore_hash_javascript_and_redirect_cycles() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn extract_page_urls_handles_mixed_plain_and_img_and_html_wrapper_with_image_url_rule() {
+    let app = Router::new()
+        .route(
+            "/ch/mixed",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/plain; charset=utf-8")
+                    .body(Body::from(
+                        "https://cdn.example/plain1.jpg\n<img src=\"/img2.jpg\">\n/plain3.jpg",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/html-wrapper-rule",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html; charset=utf-8")
+                    .body(Body::from(
+                        "<div id=\"imgs\">\n<div class=\"wrap\">\n<img\n data-url=\"/a.jpg\">\n</div>\n</div>",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/mixed-multiline-rule",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html; charset=utf-8")
+                    .body(Body::from(
+                        "<div class=\"wrap\">\n<img\n data-url=\"/a.jpg\">\n</div>\n<!-- multi\nline -->\n/plain_after.jpg",
+                    ))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let mixed_plain_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "MixedPlain",
+        "sourceUrl": base,
+        "ruleContent": { "content": "@js:result" }
+    }))
+    .unwrap();
+    let mixed_rule_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "MixedRule",
+        "sourceUrl": base,
+        "ruleContent": {
+            "content": "@js:result",
+            "imageUrl": "@js:result + '?tok=1'"
+        }
+    }))
+    .unwrap();
+    let wrapper_rule_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "WrapperRule",
+        "sourceUrl": base,
+        "ruleContent": {
+            "content": "#imgs@html",
+            "imageUrl": "@js:result + '?tok=1'"
+        }
+    }))
+    .unwrap();
+
+    let base_c = base.clone();
+    let (mixed_no_rule, mixed_with_rule, wrapper_with_rule, mixed_ml_rule) =
+        tokio::task::spawn_blocking(move || {
+            let p1 = engine
+                .fetch_pages_sync(
+                    &mixed_plain_src,
+                    SourceRuntimeState::default(),
+                    &format!("{base_c}/ch/mixed"),
+                    &ComicJsContext::default(),
+                    &ComicChapterJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            let p2 = engine
+                .fetch_pages_sync(
+                    &mixed_rule_src,
+                    SourceRuntimeState::default(),
+                    &format!("{base_c}/ch/mixed"),
+                    &ComicJsContext::default(),
+                    &ComicChapterJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            let p3 = engine
+                .fetch_pages_sync(
+                    &wrapper_rule_src,
+                    SourceRuntimeState::default(),
+                    &format!("{base_c}/ch/html-wrapper-rule"),
+                    &ComicJsContext::default(),
+                    &ComicChapterJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            let p4 = engine
+                .fetch_pages_sync(
+                    &mixed_rule_src,
+                    SourceRuntimeState::default(),
+                    &format!("{base_c}/ch/mixed-multiline-rule"),
+                    &ComicJsContext::default(),
+                    &ComicChapterJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            (p1, p2, p3, p4)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        mixed_no_rule,
+        vec![
+            "https://cdn.example/plain1.jpg".to_string(),
+            format!("{base}/img2.jpg"),
+            format!("{base}/plain3.jpg"),
+        ]
+    );
+    assert_eq!(
+        mixed_with_rule,
+        vec![
+            "https://cdn.example/plain1.jpg?tok=1".to_string(),
+            format!("{base}/img2.jpg?tok=1"),
+            format!("{base}/plain3.jpg?tok=1"),
+        ]
+    );
+    assert_eq!(wrapper_with_rule, vec![format!("{base}/a.jpg?tok=1")]);
+    assert_eq!(
+        mixed_ml_rule,
+        vec![
+            format!("{base}/a.jpg?tok=1"),
+            format!("{base}/plain_after.jpg?tok=1"),
+        ]
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn fetch_chapters_and_pages_stop_on_302_redirect_alias_cycle() {
+    use axum::extract::Query;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(serde::Deserialize)]
+    struct PQuery {
+        p: Option<u32>,
+    }
+
+    let toc_p1_hits = Arc::new(AtomicUsize::new(0));
+    let ch_p1_hits = Arc::new(AtomicUsize::new(0));
+    let toc_p1_hits_c = toc_p1_hits.clone();
+    let ch_p1_hits_c = ch_p1_hits.clone();
+
+    let app = Router::new()
+        .route(
+            "/toc/alias_entry",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/toc/alias_real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/alias_redir",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/toc/alias_real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/alias_real",
+            get(move |Query(q): Query<PQuery>| {
+                let hits = toc_p1_hits_c.clone();
+                async move {
+                    if q.p.unwrap_or(1) == 1 {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html; charset=utf-8")
+                            .body(Body::from(
+                                r#"<ul><li><a href="/ch/1">Alias Ch 1</a></li></ul>
+                                <a class="next" href="/toc/alias_real?p=2">Next</a>"#,
+                            ))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html; charset=utf-8")
+                            .body(Body::from(
+                                r#"<ul><li><a href="/ch/2">Alias Ch 2</a></li></ul>
+                                <a class="next" href="/toc/alias_redir">Alias Loop</a>"#,
+                            ))
+                            .unwrap()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/ch/alias_entry",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/ch/alias_real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/alias_redir",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/ch/alias_real?p=1")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/alias_real",
+            get(move |Query(q): Query<PQuery>| {
+                let hits = ch_p1_hits_c.clone();
+                async move {
+                    if q.p.unwrap_or(1) == 1 {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html; charset=utf-8")
+                            .body(Body::from(
+                                r#"<div id="imgs"><img src="/ap1.jpg"></div>
+                                <a class="next-page" href="/ch/alias_real?p=2">Next</a>"#,
+                            ))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html; charset=utf-8")
+                            .body(Body::from(
+                                r#"<div id="imgs"><img src="/ap2.jpg"></div>
+                                <a class="next-page" href="/ch/alias_redir">Alias Loop</a>"#,
+                            ))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "AliasCycleTest",
+        "sourceUrl": base,
+        "ruleToc": {
+            "chapterList": "ul li",
+            "chapterName": "a@text",
+            "chapterUrl": "a@href",
+            "nextTocUrl": "a.next@href"
+        },
+        "ruleContent": {
+            "content": "#imgs@html",
+            "nextContentUrl": "a.next-page@href"
+        }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_c = base.clone();
+    let (chapters, pages) = tokio::task::spawn_blocking(move || {
+        let ch = engine
+            .fetch_chapters_sync(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc/alias_entry"),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let pg = engine
+            .fetch_pages_sync(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/alias_entry"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        (ch, pg)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(chapters.len(), 2);
+    assert_eq!(chapters[0].title, "Alias Ch 1");
+    assert_eq!(chapters[1].title, "Alias Ch 2");
+    // /toc/alias_entry -> 302 -> p=1 (hit 1), then /toc/alias_redir -> 302 -> p=1 (hit 2),
+    // after which fetch_chapters breaks before parsing p=1 a second time.
+    assert_eq!(toc_p1_hits.load(Ordering::SeqCst), 2);
+
+    assert_eq!(
+        pages,
+        vec![format!("{base}/ap1.jpg"), format!("{base}/ap2.jpg")]
+    );
+    assert_eq!(ch_p1_hits.load(Ordering::SeqCst), 2);
+
+    server.abort();
+}
