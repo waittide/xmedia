@@ -60,8 +60,26 @@ struct Cli {
     web_dir: Option<PathBuf>,
 
     /// Seed curated online sources for enabled domains on startup (insert-if-missing)
-    #[arg(long, env = "XMEDIA_SEED_SOURCES", default_value_t = false)]
+    #[arg(
+        long,
+        env = "XMEDIA_SEED_SOURCES",
+        default_value_t = false,
+        default_missing_value = "true",
+        num_args = 0..=1,
+        require_equals = true,
+        value_parser = parse_boolish_flag
+    )]
     seed_sources: bool,
+}
+
+fn parse_boolish_flag(raw: &str) -> Result<bool, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "" | "0" | "false" | "no" | "off" => Ok(false),
+        other => Err(format!(
+            "invalid boolean value '{other}' (expected one of: true, false, 1, 0, yes, no, on, off)"
+        )),
+    }
 }
 
 fn load_or_generate_secret(data_dir: &Path) -> anyhow::Result<String> {
@@ -223,4 +241,113 @@ async fn shutdown_signal() {
         () = terminate => {},
     }
     info!("shutdown signal received, stopping xmedia server");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct SeedEnvGuard {
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl SeedEnvGuard {
+        fn capture() -> Self {
+            Self {
+                original: std::env::var_os("XMEDIA_SEED_SOURCES"),
+            }
+        }
+
+        fn set(&self, val: Option<&str>) {
+            // SAFETY: Only this single test in the `xmedia` binary mutates `XMEDIA_SEED_SOURCES`,
+            // and `Drop` restores the original value.
+            unsafe {
+                match val {
+                    Some(v) => std::env::set_var("XMEDIA_SEED_SOURCES", v),
+                    None => std::env::remove_var("XMEDIA_SEED_SOURCES"),
+                }
+            }
+        }
+    }
+
+    impl Drop for SeedEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: Restores `XMEDIA_SEED_SOURCES` after the single env-mutating test completes.
+            unsafe {
+                match &self.original {
+                    Some(v) => std::env::set_var("XMEDIA_SEED_SOURCES", v),
+                    None => std::env::remove_var("XMEDIA_SEED_SOURCES"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cli_seed_sources_parses_flags_and_boolish_env_values() {
+        let guard = SeedEnvGuard::capture();
+
+        // 1. No flag, no env -> false
+        guard.set(None);
+        let cli = Cli::try_parse_from(["xmedia"]).unwrap();
+        assert!(!cli.seed_sources);
+
+        // 2. CLI `--seed-sources` (no value) -> true, and does not swallow subsequent flags
+        let cli =
+            Cli::try_parse_from(["xmedia", "--seed-sources", "--bind", "127.0.0.1:9000"]).unwrap();
+        assert!(cli.seed_sources);
+        assert_eq!(cli.bind, "127.0.0.1:9000".parse::<SocketAddr>().unwrap());
+
+        // 3. CLI `--seed-sources=<val>` explicit values
+        for truthy in ["1", "true", "TRUE", "yes", "on"] {
+            let arg = format!("--seed-sources={truthy}");
+            let cli = Cli::try_parse_from(["xmedia", &arg]).unwrap();
+            assert!(cli.seed_sources, "expected true for CLI {arg}");
+        }
+        for falsy in ["0", "false", "FALSE", "no", "off", ""] {
+            let arg = format!("--seed-sources={falsy}");
+            let cli = Cli::try_parse_from(["xmedia", &arg]).unwrap();
+            assert!(!cli.seed_sources, "expected false for CLI {arg}");
+        }
+        assert!(Cli::try_parse_from(["xmedia", "--seed-sources=maybe"]).is_err());
+
+        // 4. `XMEDIA_SEED_SOURCES` env var truthy values
+        for truthy in ["1", "true", "True", "yes", "YES", "on", " ON ", " 1 "] {
+            guard.set(Some(truthy));
+            let cli = Cli::try_parse_from(["xmedia"]).unwrap();
+            assert!(
+                cli.seed_sources,
+                "expected true for XMEDIA_SEED_SOURCES={truthy:?}"
+            );
+        }
+
+        // 5. `XMEDIA_SEED_SOURCES` env var falsy and empty values
+        for falsy in ["0", "false", "False", "no", "NO", "off", " OFF ", "", "   "] {
+            guard.set(Some(falsy));
+            let cli = Cli::try_parse_from(["xmedia"]).unwrap();
+            assert!(
+                !cli.seed_sources,
+                "expected false for XMEDIA_SEED_SOURCES={falsy:?}"
+            );
+        }
+
+        // 6. Invalid env value -> clean clap validation error (not silently true)
+        for invalid in ["maybe", "2", "enable", "disabled"] {
+            guard.set(Some(invalid));
+            let err = Cli::try_parse_from(["xmedia"]).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "expected ValueValidation for XMEDIA_SEED_SOURCES={invalid:?}"
+            );
+        }
+
+        // 7. CLI overrides env
+        guard.set(Some("0"));
+        let cli = Cli::try_parse_from(["xmedia", "--seed-sources"]).unwrap();
+        assert!(cli.seed_sources);
+
+        guard.set(Some("1"));
+        let cli = Cli::try_parse_from(["xmedia", "--seed-sources=false"]).unwrap();
+        assert!(!cli.seed_sources);
+    }
 }
