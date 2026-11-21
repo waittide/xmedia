@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
@@ -28,15 +27,8 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const { t, te, locale } = useI18n()
+const { t } = useI18n()
 const escapeStack = useEscapeStack()
-const closeLabel = computed(() =>
-  te('common.close')
-    ? t('common.close')
-    : String(locale.value).toLowerCase().startsWith('zh')
-      ? '关闭'
-      : 'Close',
-)
 
 escapeStack.register(
   () => props.open,
@@ -92,7 +84,7 @@ escapeStack.register(
                   v-if="!hideClose"
                   type="button"
                   class="md-icon-btn md-icon-btn-sm md-state"
-                  :aria-label="closeLabel"
+                  :aria-label="t('common.close')"
                   @click="emit('close')"
                 >
                   <LuX class="h-4 w-4" />

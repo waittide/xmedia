@@ -53,7 +53,7 @@ watch(() => route.params.id, loadAlbum)
 </script>
 
 <template>
-  <div v-if="detail" class="mx-auto max-w-5xl space-y-7 px-6 py-8 sm:px-8">
+  <div v-if="detail" class="mx-auto max-w-6xl space-y-7 px-6 py-8 sm:px-8">
     <!-- Album Header -->
     <div class="flex flex-col items-start gap-6 sm:flex-row sm:items-end">
       <CoverImage

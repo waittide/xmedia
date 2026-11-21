@@ -1,19 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuLoader2, LuX } from 'vue-icons-plus/lu'
 import { useSnackbarStore } from '@/stores/snackbar'
 
-const { t, te, locale } = useI18n()
+const { t } = useI18n()
 const snackbar = useSnackbarStore()
-
-const closeLabel = computed(() =>
-  te('common.close')
-    ? t('common.close')
-    : String(locale.value).toLowerCase().startsWith('zh')
-      ? '关闭'
-      : 'Close',
-)
 </script>
 
 <template>
@@ -64,7 +55,7 @@ const closeLabel = computed(() =>
           <button
             type="button"
             class="md-state flex h-8 w-8 shrink-0 items-center justify-center rounded-full opacity-85 transition hover:opacity-100"
-            :aria-label="closeLabel"
+            :aria-label="t('common.close')"
             @click="snackbar.dismiss()"
           >
             <LuX class="h-4 w-4" />

@@ -1109,8 +1109,6 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
     newCollectionName.value = ''
   }
 
-  // Upload & Drag-and-Drop
-
   return {
     t,
     domainStore,

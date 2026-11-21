@@ -30,14 +30,9 @@ interface DomainI18nHandle {
 
 let targetLocale: LocaleCode = saved
 const domainHandles = new Set<DomainI18nHandle>()
-const legacyListeners: Array<(loc: LocaleCode) => void> = []
 
 export function getTargetLocale(): LocaleCode {
   return targetLocale
-}
-
-export function registerDomainLocaleListener(fn: (loc: LocaleCode) => void): void {
-  legacyListeners.push(fn)
 }
 
 function commitLocaleSwitch(code: LocaleCode): void {
@@ -46,9 +41,6 @@ function commitLocaleSwitch(code: LocaleCode): void {
     if (handle.hasLocale(code)) {
       handle.applyLocale(code)
     }
-  }
-  for (const fn of legacyListeners) {
-    fn(code)
   }
 }
 

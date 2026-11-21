@@ -128,5 +128,3 @@ export const useAppClientStore = defineStore('appClient', () => {
     testSource,
   }
 })
-
-export const useAppServersStore = useAppClientStore

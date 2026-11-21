@@ -40,29 +40,26 @@ const emit = defineEmits<{
   change: [value: string[]]
 }>()
 
-const { t, locale } = useI18n()
-const isZh = computed(() => String(locale.value).toLowerCase().startsWith('zh'))
+const { t } = useI18n()
 
 const resolvedSearchPlaceholder = computed(
   () => props.searchPlaceholder || t('common.filterPlaceholder'),
 )
 const resolvedNoMatchText = computed(() => props.noMatchText || t('common.noResults'))
-const resolvedClearText = computed(() => props.clearText || (isZh.value ? '清空' : 'Clear'))
+const resolvedClearText = computed(() => props.clearText || t('common.clear'))
 
 function formatSelectedCount(count: number): string {
   if (props.selectedCountText) {
     return props.selectedCountText(props.label, count)
   }
-  return isZh.value ? `${props.label} · 已选 ${count}` : `${props.label} · ${count} selected`
+  return t('common.selectedCount', { label: props.label, count })
 }
 
 function formatShowingTop(shown: number, total: number): string {
   if (props.showingTopText) {
     return props.showingTopText(shown, total)
   }
-  return isZh.value
-    ? `显示前 ${shown} / ${total} 项，输入关键字可精确检索`
-    : `Showing top ${shown} of ${total} — type to refine`
+  return t('common.showingTop', { shown, total })
 }
 
 const open = ref(false)

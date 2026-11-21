@@ -92,7 +92,7 @@ export const router = createRouter({
             return `/${target}`
           },
         },
-        // 1. Ebooks Domain (/book)
+        // 1. Books Domain (/book)
         {
           path: 'book',
           name: 'book-home',

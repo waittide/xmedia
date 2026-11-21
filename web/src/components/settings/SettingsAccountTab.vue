@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuCopy, LuRotateCw } from 'vue-icons-plus/lu'
 import { api, setStoredToken } from '@/api/client'
@@ -12,13 +12,12 @@ const emit = defineEmits<{
   error: [message: string]
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
 const { copiedKey, copyText } = useCopyFeedback()
 
-const isZh = computed(() => String(locale.value).toLowerCase().startsWith('zh'))
 const currentPwd = ref('')
 const nextPwd = ref('')
 const pwdSuccess = ref('')
@@ -59,7 +58,7 @@ async function handleRotateApiKey(): Promise<void> {
   try {
     const updated = await api.rotateApiKey()
     authStore.setUser(updated)
-    snackbarStore.show(isZh.value ? 'API Key 已重新生成' : 'API Key regenerated')
+    snackbarStore.show(t('settings.apiKeyRotated'))
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     emit('error', msg)

@@ -208,7 +208,7 @@ function selectDomain(domain: MediaKind): void {
 </script>
 
 <template>
-  <div class="mx-auto max-w-5xl px-6 py-8 sm:px-8">
+  <div class="mx-auto max-w-6xl px-6 py-8 sm:px-8">
     <div class="mb-8">
       <h1 class="md-headline-small text-[var(--md-sys-color-on-surface)]">
         {{ t('settings.title') }}
@@ -225,7 +225,7 @@ function selectDomain(domain: MediaKind): void {
       <!-- Left Settings Category Rail (Upper: Global / Lower: Domain-Scoped) -->
       <nav
         ref="navRef"
-        aria-label="Settings navigation"
+        :aria-label="t('settings.navLabel')"
         class="no-scrollbar -m-1 flex items-center gap-1 overflow-x-auto p-1 lg:flex-col lg:items-stretch lg:overflow-visible"
       >
         <p

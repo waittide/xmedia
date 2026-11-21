@@ -54,7 +54,7 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
@@ -65,9 +65,8 @@ escapeStack.register(
   () => emit('close'),
 )
 
-const isZh = computed(() => locale.value.toLowerCase().startsWith('zh'))
-const viewAllLabel = computed(() => (isZh.value ? '查看全部' : 'View all'))
-const quickNavHeading = computed(() => (isZh.value ? '快捷导航' : 'Quick navigation'))
+const viewAllLabel = computed(() => t('common.viewAll'))
+const quickNavHeading = computed(() => t('globalSearch.quickNavigation'))
 
 const inputRef = ref<HTMLInputElement | null>(null)
 const listRef = ref<HTMLElement | null>(null)
@@ -121,8 +120,8 @@ const onlineBookSearchItem = computed<QuickResultItem | null>(() => {
   return {
     id: 'online-book-search',
     group: 'book',
-    title: isZh.value ? `在线书源搜索「${q}」` : `Search online book sources for "${q}"`,
-    subtitle: isZh.value ? '聚合检索已启用的书源，支持在线阅读与入库' : 'Aggregate search across enabled book sources',
+    title: t('globalSearch.onlineBookSearchTitle', { query: q }),
+    subtitle: t('globalSearch.onlineBookSearchSubtitle'),
     to: `/book/catalog?q=${encodeURIComponent(q)}&scope=online`,
     icon: LuGlobe,
     domain: 'book',
@@ -551,7 +550,7 @@ function handleKeydown(ev: KeyboardEvent): void {
                 <section v-if="onlineBookSearchItem && !loading" class="space-y-1">
                   <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase">
                     <LuGlobe class="h-3.5 w-3.5" />
-                    <span>{{ isZh ? '在线书源' : 'Online Book Sources' }}</span>
+                    <span>{{ t('globalSearch.onlineBookSources') }}</span>
                   </div>
                   <button
                     type="button"

@@ -107,9 +107,12 @@ const remoteProtocol = computed<RemoteProtocol | null>(() => {
       </div>
     </div>
 
-    <div v-if="domain === 'music'" class="md-card-filled px-3.5 py-2.5 text-xs">
+    <div
+      v-if="domain === 'music'"
+      class="md-card-filled flex flex-wrap items-center gap-x-2 gap-y-1 px-3.5 py-2.5 text-xs"
+    >
       <span class="font-semibold text-[var(--md-sys-color-on-surface)]">
-        {{ t('settings.subsonicAuthModes') }}：
+        {{ t('settings.subsonicAuthModes') }}
       </span>
       <span class="text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('settings.subsonicAuthModesVal') }}

@@ -15,12 +15,11 @@ const emit = defineEmits<{
   error: [message: string]
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
 
-const isZh = computed(() => String(locale.value).toLowerCase().startsWith('zh'))
 const users = ref<UserDto[]>([])
 const newUsername = ref('')
 const newDisplayName = ref('')
@@ -89,9 +88,7 @@ async function handleResetUserPassword(u: UserDto): Promise<void> {
   if (!pwd) return
   const confirmed = await dialogStore.confirm({
     title: t('admin.resetPasswordBtn'),
-    message: isZh.value
-      ? `确定重置用户「${u.username}」的登录密码？`
-      : `Reset password for user "${u.username}"?`,
+    message: t('admin.confirmResetPassword', { username: u.username }),
     confirmText: t('admin.resetPasswordBtn'),
     danger: true,
   })
@@ -100,9 +97,7 @@ async function handleResetUserPassword(u: UserDto): Promise<void> {
   try {
     await api.updateUser(u.id, { password: pwd })
     resetPwdMap.value[u.id] = ''
-    snackbarStore.show(
-      isZh.value ? `已重置用户「${u.username}」的密码` : `Password reset for "${u.username}"`,
-    )
+    snackbarStore.show(t('admin.passwordResetSuccess', { username: u.username }))
   } catch (err) {
     emit('error', err instanceof Error ? err.message : String(err))
   }
