@@ -49,6 +49,7 @@ export interface BookSourceSummaryDto {
   source_url: string
   group_name: string
   comment: string | null
+  check_keyword: string | null
   enabled: boolean
   weight: number
   source_type: number
@@ -86,13 +87,47 @@ export interface LoginActionResponseDto {
   source: BookSourceSummaryDto
 }
 
+export type SourceTestMode = 'full' | 'search' | 'book_info' | 'toc' | 'content'
+
+export interface SourceTestInput {
+  keyword?: string | null
+  mode?: SourceTestMode
+  book_url?: string | null
+  toc_url?: string | null
+  chapter_url?: string | null
+  chapter_index?: number | null
+  chapter_title?: string | null
+}
+
+export interface SourceDebugStepDto {
+  stage: 'search' | 'book_info' | 'toc' | 'content' | string
+  label: string
+  ok: boolean
+  elapsed_ms: number
+  summary: string
+  error: string | null
+  diagnostics: ExecutionDiagnostics
+}
+
 export interface SourceTestReportDto {
   ok: boolean
+  mode: SourceTestMode
   keyword: string
+  total_elapsed_ms: number
   result_count: number
   sample_titles: string[]
   error: string | null
   diagnostics: ExecutionDiagnostics
+  steps: SourceDebugStepDto[]
+  search_items: SearchBookResult[]
+  book_detail: OnlineBookDetail | null
+  toc_chapters: OnlineChapterItem[]
+  toc_total_count: number
+  content_chapter_index: number | null
+  content_chapter_title: string | null
+  content_chapter_url: string | null
+  content_text: string | null
+  content_char_count: number
 }
 
 export interface SearchBookResult {
@@ -291,11 +326,27 @@ export const onlineBookApi = {
       body: JSON.stringify({ login_info: loginInfo, action: action ?? null }),
     }),
 
-  testSource: (id: string, keyword?: string): Promise<SourceTestReportDto> =>
-    requestJson(`/book/sources/${encodeURIComponent(id)}/test`, {
+  testSource: (
+    id: string,
+    payload?: string | SourceTestInput,
+  ): Promise<SourceTestReportDto> => {
+    const body: SourceTestInput =
+      typeof payload === 'string'
+        ? { keyword: payload.trim() || null }
+        : {
+            keyword: payload?.keyword?.trim() || null,
+            mode: payload?.mode ?? 'full',
+            book_url: payload?.book_url?.trim() || null,
+            toc_url: payload?.toc_url?.trim() || null,
+            chapter_url: payload?.chapter_url?.trim() || null,
+            chapter_index: payload?.chapter_index ?? null,
+            chapter_title: payload?.chapter_title?.trim() || null,
+          }
+    return requestJson(`/book/sources/${encodeURIComponent(id)}/test`, {
       method: 'POST',
-      body: JSON.stringify({ keyword: keyword?.trim() || null }),
-    }),
+      body: JSON.stringify(body),
+    })
+  },
 
   search: (
     keyword: string,

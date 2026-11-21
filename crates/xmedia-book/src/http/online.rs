@@ -18,8 +18,8 @@ use crate::application::online::{
     AddOnlineShelfInput, AggregatedSearchResponseDto, BookSourceSummaryDto,
     ImportBookSourcesReportDto, LoginActionResponseDto, OnlineBookDetailResponseDto,
     OnlineContentResponseDto, OnlineDownloadJobDto, OnlineShelfBookDto, OnlineTocResponseDto,
-    SourceTestReportDto, StartDownloadInput, SwitchTrackedSourceInput, TrackOnlineBookInput,
-    TrackedChapterResponseDto, TrackedTocResponseDto, UpdateBookSourceInput,
+    SourceTestInput, SourceTestReportDto, StartDownloadInput, SwitchTrackedSourceInput,
+    TrackOnlineBookInput, TrackedChapterResponseDto, TrackedTocResponseDto, UpdateBookSourceInput,
     UpdateOnlineShelfInput,
 };
 use crate::domain::book::BookId;
@@ -85,11 +85,6 @@ struct LoginActionRequest {
     #[serde(default)]
     login_info: HashMap<String, String>,
     action: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TestSourceRequest {
-    keyword: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,13 +203,9 @@ async fn test_source(
     State(state): State<BookHttpState>,
     WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
-    Json(req): Json<TestSourceRequest>,
+    Json(req): Json<SourceTestInput>,
 ) -> ApiResult<Json<SourceTestReportDto>> {
-    let out = state
-        .services
-        .online
-        .test_source(&user, id, req.keyword)
-        .await?;
+    let out = state.services.online.test_source(&user, id, req).await?;
     Ok(Json(out))
 }
 

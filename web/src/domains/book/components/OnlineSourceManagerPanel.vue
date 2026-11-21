@@ -14,11 +14,8 @@ import {
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
-import {
-  onlineBookApi,
-  type BookSourceSummaryDto,
-  type SourceTestReportDto,
-} from '../onlineApi'
+import { onlineBookApi, type BookSourceSummaryDto } from '../onlineApi'
+import OnlineSourceDebugSheet from './OnlineSourceDebugSheet.vue'
 import OnlineSourceLoginModal from './OnlineSourceLoginModal.vue'
 
 const props = defineProps<{
@@ -39,9 +36,8 @@ const importError = ref<string | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
 const busyId = ref<string | null>(null)
-const testingId = ref<string | null>(null)
-const testReports = ref<Record<string, SourceTestReportDto>>({})
 const loginModalSource = ref<BookSourceSummaryDto | null>(null)
+const debugSheetSource = ref<BookSourceSummaryDto | null>(null)
 
 function triggerFileImport(): void {
   fileInputRef.value?.click()
@@ -93,22 +89,6 @@ async function handleToggleEnabled(src: BookSourceSummaryDto, nextVal: boolean):
     })
   } finally {
     busyId.value = null
-  }
-}
-
-async function handleTestSource(src: BookSourceSummaryDto): Promise<void> {
-  testingId.value = src.id
-  try {
-    const rep = await onlineBookApi.testSource(src.id)
-    testReports.value = { ...testReports.value, [src.id]: rep }
-    emit('refresh')
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    testingId.value = null
   }
 }
 
@@ -253,17 +233,19 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
               </span>
               <span
                 v-if="src.last_test_ok === true"
-                class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
+                :title="src.last_test_msg || '测试通过'"
+                class="inline-flex max-w-xs items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
               >
-                <LuCheckCircle2 class="h-3 w-3" />
-                <span>{{ src.last_test_msg || '测试通过' }}</span>
+                <LuCheckCircle2 class="h-3 w-3 shrink-0" />
+                <span class="truncate">{{ src.last_test_msg || '测试通过' }}</span>
               </span>
               <span
                 v-else-if="src.last_test_ok === false"
-                class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-error-container)]"
+                :title="src.last_test_msg || '测试失败'"
+                class="inline-flex max-w-xs items-center gap-1 rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-error-container)]"
               >
-                <LuXCircle class="h-3 w-3" />
-                <span>{{ src.last_test_msg || '测试失败' }}</span>
+                <LuXCircle class="h-3 w-3 shrink-0" />
+                <span class="truncate">{{ src.last_test_msg || '测试失败' }}</span>
               </span>
             </div>
             <p class="mt-0.5 truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
@@ -290,22 +272,20 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
               v-if="src.has_login_url || src.login_ui.length > 0"
               type="button"
               class="md-btn md-btn-sm md-btn-tonal md-state"
-              title="打开书源自带登录/配置面板"
+              title="打开书源登录面板"
               @click="loginModalSource = src"
             >
               <LuKeyRound class="h-3.5 w-3.5" />
-              <span>登录 / 设置</span>
+              <span>登录</span>
             </button>
 
             <button
               type="button"
-              :disabled="testingId === src.id"
               class="md-btn md-btn-sm md-btn-outlined md-state"
-              title="使用测试关键词检查书源搜索是否正常"
-              @click="handleTestSource(src)"
+              title="打开书源规则调试器，指定关键词测试各条规则"
+              @click="debugSheetSource = src"
             >
-              <LuLoader2 v-if="testingId === src.id" class="h-3.5 w-3.5 animate-spin" />
-              <LuFlaskConical v-else class="h-3.5 w-3.5" />
+              <LuFlaskConical class="h-3.5 w-3.5" />
               <span>测试</span>
             </button>
 
@@ -329,28 +309,6 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
             </button>
           </div>
         </div>
-
-        <!-- Inline Test Result -->
-        <div
-          v-if="testReports[src.id]"
-          class="rounded-xl bg-[var(--md-sys-color-surface-container-low)] px-3 py-2 text-[11px]"
-        >
-          <div class="font-medium text-[var(--md-sys-color-on-surface)]">
-            测试关键词「{{ testReports[src.id]!.keyword }}」：命中 {{ testReports[src.id]!.result_count }} 条
-            <span
-              v-if="testReports[src.id]!.sample_titles.length > 0"
-              class="text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              （{{ testReports[src.id]!.sample_titles.join(' / ') }}）
-            </span>
-          </div>
-          <div
-            v-if="testReports[src.id]!.error"
-            class="mt-1 text-[var(--md-sys-color-error)]"
-          >
-            {{ testReports[src.id]!.error }}
-          </div>
-        </div>
       </div>
     </div>
 
@@ -359,6 +317,13 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
       :source="loginModalSource"
       @close="loginModalSource = null"
       @updated="handleSourceUpdated"
+    />
+
+    <OnlineSourceDebugSheet
+      :open="debugSheetSource !== null"
+      :source="debugSheetSource"
+      @close="debugSheetSource = null"
+      @tested="emit('refresh')"
     />
   </div>
 </template>
