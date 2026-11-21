@@ -1,19 +1,21 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::header::{CACHE_CONTROL, SET_COOKIE};
+use axum::extract::{Path as AxumPath, Query, Request, State};
+use axum::http::header::{CACHE_CONTROL, HOST, ORIGIN, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post, put};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+use url::Url;
 use xmedia_core::domain::library::MediaKind;
 
 use crate::local_engine::LocalEngine;
@@ -21,6 +23,7 @@ use crate::opds_client::{OpdsClient, OpdsError, same_origin_redirect_policy};
 use crate::remote_sources::{
     CreateRemoteSourceInput, RemoteProtocol, RemoteSource, RemoteSourceStore,
     RemoteSourceSummaryDto, SharedRemoteSourceStore, SourceStoreError, UpdateRemoteSourceInput,
+    is_same_origin, normalize_remote_url,
 };
 use crate::subsonic_client::{SubsonicAlbumDto, SubsonicClient, SubsonicError};
 
@@ -37,6 +40,7 @@ pub struct StandaloneGatewayState {
     pub opds: OpdsClient,
     pub subsonic: SubsonicClient,
     pub local_gateway_url: String,
+    pub expected_port: u16,
 }
 
 impl StandaloneGatewayState {
@@ -44,6 +48,7 @@ impl StandaloneGatewayState {
         local_engine: LocalEngine,
         sources: SharedRemoteSourceStore,
         local_gateway_url: String,
+        expected_port: u16,
     ) -> anyhow::Result<Self> {
         let secure = build_remote_http_client(false)?;
         let insecure = build_remote_http_client(true)?;
@@ -59,7 +64,30 @@ impl StandaloneGatewayState {
             opds,
             subsonic,
             local_gateway_url,
+            expected_port,
         })
+    }
+}
+
+pub fn format_gateway_url(addr: SocketAddr) -> String {
+    let port = addr.port();
+    match addr.ip() {
+        IpAddr::V4(ip) => {
+            let host = if ip.is_unspecified() {
+                Ipv4Addr::LOCALHOST
+            } else {
+                ip
+            };
+            format!("http://{host}:{port}")
+        }
+        IpAddr::V6(ip) => {
+            let host = if ip.is_unspecified() {
+                Ipv6Addr::LOCALHOST
+            } else {
+                ip
+            };
+            format!("http://[{host}]:{port}")
+        }
     }
 }
 
@@ -84,11 +112,17 @@ pub struct RunningGateway {
 
 impl RunningGateway {
     pub async fn shutdown(mut self) {
+        self.shutdown_gracefully(Duration::from_secs(5)).await;
+    }
+
+    pub async fn shutdown_gracefully(&mut self, timeout: Duration) {
         if let Some(tx) = self.shutdown_tx.take() {
             let _ = tx.send(());
         }
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.await;
+        if let Some(handle) = self.handle.take()
+            && tokio::time::timeout(timeout, handle).await.is_err()
+        {
+            tracing::warn!("timed out waiting for standalone local gateway shutdown");
         }
     }
 }
@@ -101,8 +135,107 @@ impl Drop for RunningGateway {
     }
 }
 
+fn parse_loopback_host_header(raw_host: &str, expected_port: u16) -> Option<(&'static str, u16)> {
+    let trimmed = raw_host.trim().to_ascii_lowercase();
+    if expected_port == 80 {
+        match trimmed.as_str() {
+            "127.0.0.1" => return Some(("127.0.0.1", 80)),
+            "localhost" => return Some(("localhost", 80)),
+            "[::1]" => return Some(("[::1]", 80)),
+            _ => {}
+        }
+    }
+    let expected_suffix = format!(":{expected_port}");
+    let host_part = trimmed.strip_suffix(&expected_suffix)?;
+    match host_part {
+        "127.0.0.1" => Some(("127.0.0.1", expected_port)),
+        "localhost" => Some(("localhost", expected_port)),
+        "[::1]" => Some(("[::1]", expected_port)),
+        _ => None,
+    }
+}
+
+fn is_allowed_same_origin_header(
+    raw_origin: &str,
+    canonical_host: &str,
+    expected_port: u16,
+) -> bool {
+    let Ok(parsed) = Url::parse(raw_origin.trim()) else {
+        return false;
+    };
+    if parsed.scheme() != "http" {
+        return false;
+    }
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return false;
+    }
+    if parsed.port_or_known_default() != Some(expected_port) {
+        return false;
+    }
+    parsed
+        .host_str()
+        .is_some_and(|h| h.eq_ignore_ascii_case(canonical_host))
+}
+
+async fn guard_app_loopback_request(
+    State(state): State<StandaloneGatewayState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    let Some(raw_host) = req.headers().get(HOST).and_then(|v| v.to_str().ok()) else {
+        return app_error(
+            StatusCode::FORBIDDEN,
+            "invalid_host",
+            "Missing or invalid Host header on local gateway endpoint",
+        );
+    };
+    let Some((canonical_host, port)) = parse_loopback_host_header(raw_host, state.expected_port)
+    else {
+        return app_error(
+            StatusCode::FORBIDDEN,
+            "invalid_host",
+            "Local gateway endpoints only accept loopback Host headers",
+        );
+    };
+
+    if let Some(sec_fetch_site) = req
+        .headers()
+        .get("sec-fetch-site")
+        .and_then(|v| v.to_str().ok())
+        && sec_fetch_site.trim().eq_ignore_ascii_case("cross-site")
+    {
+        return app_error(
+            StatusCode::FORBIDDEN,
+            "cross_site_blocked",
+            "Cross-site requests to local gateway endpoints are forbidden",
+        );
+    }
+
+    if let Some(origin_val) = req.headers().get(ORIGIN) {
+        let valid = origin_val
+            .to_str()
+            .ok()
+            .is_some_and(|raw| is_allowed_same_origin_header(raw, canonical_host, port));
+        if !valid {
+            return app_error(
+                StatusCode::FORBIDDEN,
+                "cross_origin_blocked",
+                "Cross-origin requests to local gateway endpoints are forbidden",
+            );
+        }
+    }
+
+    next.run(req).await
+}
+
 pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router) -> Router {
     let app_router = Router::new()
+        .route("/_app", any(app_not_found))
+        .route("/_app/", any(app_not_found))
         .route("/_app/health", get(app_health))
         .route("/_app/auto-session", get(app_auto_session))
         .route(
@@ -136,6 +269,10 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
             post(subsonic_import_song),
         )
         .route("/_app/{*path}", any(app_not_found))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            guard_app_loopback_request,
+        ))
         .with_state(state);
 
     app_router.merge(xmedia_router)
@@ -151,9 +288,10 @@ pub async fn start_gateway(
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;
-    let url = format!("http://127.0.0.1:{}", addr.port());
+    let url = format_gateway_url(addr);
 
-    let state = StandaloneGatewayState::new(local_engine.clone(), sources, url.clone())?;
+    let state =
+        StandaloneGatewayState::new(local_engine.clone(), sources, url.clone(), addr.port())?;
     let router = build_gateway_router(state, xmedia_router);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
@@ -175,6 +313,29 @@ pub async fn start_gateway(
     })
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            sig.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+}
+
 pub async fn run_gateway_forever(
     bind_addr: SocketAddr,
     data_dir: PathBuf,
@@ -185,9 +346,9 @@ pub async fn run_gateway_forever(
 
     let listener = TcpListener::bind(bind_addr).await?;
     let addr = listener.local_addr()?;
-    let url = format!("http://127.0.0.1:{}", addr.port());
+    let url = format_gateway_url(addr);
 
-    let state = StandaloneGatewayState::new(local_engine, sources, url.clone())?;
+    let state = StandaloneGatewayState::new(local_engine, sources, url.clone(), addr.port())?;
     let router = build_gateway_router(state, xmedia_router);
 
     tracing::info!(%url, "XMedia standalone local loopback gateway listening");
@@ -195,9 +356,7 @@ pub async fn run_gateway_forever(
     let _ = std::io::Write::flush(&mut std::io::stdout());
 
     axum::serve(listener, router)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
 }
@@ -342,35 +501,45 @@ fn subsonic_error_response(err: SubsonicError) -> Response {
     app_error(err.status_code(), err.code(), err.to_string())
 }
 
+struct AppApiError {
+    status: StatusCode,
+    code: &'static str,
+    message: String,
+}
+
+impl AppApiError {
+    fn into_response(self) -> Response {
+        app_error(self.status, self.code, self.message)
+    }
+}
+
 fn load_source_with_protocol(
     state: &StandaloneGatewayState,
     id: &str,
     expected: RemoteProtocol,
-) -> Result<RemoteSource, Response> {
-    let guard = state.sources.read().map_err(|_| {
-        app_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "store_poisoned",
-            "Remote source store lock poisoned",
-        )
+) -> Result<RemoteSource, AppApiError> {
+    let guard = state.sources.read().map_err(|_| AppApiError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        code: "store_poisoned",
+        message: "Remote source store lock poisoned".to_string(),
     })?;
     let Some(src) = guard.get(id) else {
-        return Err(app_error(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            format!("Remote source '{id}' not found"),
-        ));
+        return Err(AppApiError {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found",
+            message: format!("Remote source '{id}' not found"),
+        });
     };
     if src.protocol != expected {
-        return Err(app_error(
-            StatusCode::BAD_REQUEST,
-            "protocol_mismatch",
-            format!(
+        return Err(AppApiError {
+            status: StatusCode::BAD_REQUEST,
+            code: "protocol_mismatch",
+            message: format!(
                 "Remote source '{id}' uses protocol '{}', expected '{}'",
                 src.protocol.as_str(),
                 expected.as_str()
             ),
-        ));
+        });
     }
     Ok(src)
 }
@@ -523,7 +692,28 @@ async fn test_remote_source(
         && let Some(ref source_id) = input.source_id
         && let Ok(guard) = state.sources.read()
         && let Some(existing) = guard.get(source_id)
+        && !existing.password.is_empty()
     {
+        let input_norm = match normalize_remote_url(&input.url) {
+            Ok(u) => u,
+            Err(err) => return store_error_response(err),
+        };
+        let (Ok(input_parsed), Ok(existing_parsed)) =
+            (Url::parse(&input_norm), Url::parse(&existing.url))
+        else {
+            return app_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_url",
+                "Invalid remote source URL",
+            );
+        };
+        if !is_same_origin(&input_parsed, &existing_parsed) {
+            return app_error(
+                StatusCode::BAD_REQUEST,
+                "origin_mismatch",
+                "Cannot reuse stored credentials when testing a different origin",
+            );
+        }
         password = existing.password;
     }
 
@@ -593,7 +783,7 @@ async fn opds_browse(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Opds) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     match state
@@ -616,7 +806,7 @@ async fn opds_proxy_image(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Opds) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     match state.opds.proxy_image(&source, &query.url).await {
@@ -632,7 +822,7 @@ async fn opds_import(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Opds) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     let session = match state.local_engine.issue_auto_session().await {
@@ -669,7 +859,7 @@ async fn subsonic_list_albums(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Subsonic) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     let list_type = query.list_type.as_deref().unwrap_or("newest");
@@ -695,7 +885,7 @@ async fn subsonic_get_album(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Subsonic) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     match state.subsonic.get_album(&source, &album_id).await {
@@ -714,7 +904,7 @@ async fn subsonic_search(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Subsonic) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     match state
@@ -736,7 +926,7 @@ async fn subsonic_proxy_cover(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Subsonic) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     match state.subsonic.proxy_cover(&source, &cover_id).await {
@@ -753,7 +943,7 @@ async fn subsonic_proxy_stream(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Subsonic) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     match state
@@ -778,7 +968,7 @@ async fn subsonic_import_song(
 ) -> Response {
     let source = match load_source_with_protocol(&state, &id, RemoteProtocol::Subsonic) {
         Ok(s) => s,
-        Err(resp) => return resp,
+        Err(err) => return err.into_response(),
     };
 
     let input: SubsonicImportRequest = if body.is_empty() {
@@ -829,4 +1019,75 @@ async fn app_not_found() -> Response {
         "not_found",
         "Unknown client API route",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_ipv4_and_ipv6_gateway_urls_from_actual_socket_addr() {
+        assert_eq!(
+            format_gateway_url("127.0.0.1:41234".parse().unwrap()),
+            "http://127.0.0.1:41234"
+        );
+        assert_eq!(
+            format_gateway_url("0.0.0.0:41234".parse().unwrap()),
+            "http://127.0.0.1:41234"
+        );
+        assert_eq!(
+            format_gateway_url("[::1]:41234".parse().unwrap()),
+            "http://[::1]:41234"
+        );
+        assert_eq!(
+            format_gateway_url("[::]:41234".parse().unwrap()),
+            "http://[::1]:41234"
+        );
+    }
+
+    #[test]
+    fn validates_loopback_host_and_same_origin_headers() {
+        assert_eq!(
+            parse_loopback_host_header("127.0.0.1:8099", 8099),
+            Some(("127.0.0.1", 8099))
+        );
+        assert_eq!(
+            parse_loopback_host_header("LOCALHOST:8099", 8099),
+            Some(("localhost", 8099))
+        );
+        assert_eq!(
+            parse_loopback_host_header("[::1]:8099", 8099),
+            Some(("[::1]", 8099))
+        );
+        assert_eq!(parse_loopback_host_header("127.0.0.1:9999", 8099), None);
+        assert_eq!(parse_loopback_host_header("evil.example:8099", 8099), None);
+        assert_eq!(parse_loopback_host_header("192.168.1.5:8099", 8099), None);
+
+        assert!(is_allowed_same_origin_header(
+            "http://127.0.0.1:8099",
+            "127.0.0.1",
+            8099
+        ));
+        assert!(is_allowed_same_origin_header(
+            "http://[::1]:8099",
+            "[::1]",
+            8099
+        ));
+        assert!(!is_allowed_same_origin_header(
+            "https://127.0.0.1:8099",
+            "127.0.0.1",
+            8099
+        ));
+        assert!(!is_allowed_same_origin_header(
+            "http://127.0.0.1:9999",
+            "127.0.0.1",
+            8099
+        ));
+        assert!(!is_allowed_same_origin_header(
+            "http://evil.example:8099",
+            "127.0.0.1",
+            8099
+        ));
+        assert!(!is_allowed_same_origin_header("null", "127.0.0.1", 8099));
+    }
 }

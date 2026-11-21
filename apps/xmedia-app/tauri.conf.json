@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "app.xmedia.client",
   "build": {
+    "beforeBuildCommand": "pnpm --dir ../../web build",
     "frontendDist": "fallback-dist"
   },
   "app": {
@@ -22,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:*; script-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:*; style-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:* http://[::1]:*; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:* http://[::1]:*; media-src 'self' data: blob: http://127.0.0.1:* http://localhost:* http://[::1]:*; font-src 'self' data: http://127.0.0.1:* http://localhost:* http://[::1]:*; connect-src 'self' http://127.0.0.1:* http://localhost:* http://[::1]:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
     }
   },
   "bundle": {

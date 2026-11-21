@@ -6,6 +6,8 @@ pub mod subsonic_client;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use tauri::Manager;
 use tracing_subscriber::EnvFilter;
@@ -13,6 +15,7 @@ use tracing_subscriber::EnvFilter;
 use crate::gateway::RunningGateway;
 
 pub struct GatewayUrlState(pub String);
+struct GatewayLifecycleState(Mutex<Option<RunningGateway>>);
 
 #[tauri::command]
 fn get_local_gateway_url(state: tauri::State<'_, GatewayUrlState>) -> String {
@@ -58,6 +61,12 @@ pub fn parse_headless_addr_from_env_and_args() -> Option<String> {
 
 fn run_headless_gateway(raw_addr: &str) -> anyhow::Result<()> {
     let bind_addr: SocketAddr = raw_addr.parse()?;
+    if !bind_addr.ip().is_loopback() {
+        anyhow::bail!(
+            "headless standalone gateway must bind to a loopback address (got {})",
+            bind_addr.ip()
+        );
+    }
     let data_dir = std::env::var_os("XMEDIA_APP_DATA_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
@@ -82,7 +91,7 @@ pub fn run() {
         return;
     }
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![get_local_gateway_url])
         .setup(|app| {
             let data_dir = app
@@ -99,7 +108,7 @@ pub fn run() {
             tracing::info!(url = %gateway_url, "started Tauri standalone local loopback gateway");
 
             app.manage(GatewayUrlState(gateway_url.clone()));
-            app.manage(gateway);
+            app.manage(GatewayLifecycleState(Mutex::new(Some(gateway))));
 
             let external_url: tauri::Url = gateway_url.parse()?;
             if let Some(window) = app.get_webview_window("main") {
@@ -124,6 +133,16 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running XMedia Tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building XMedia Tauri application");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event
+            && let Some(lifecycle) = app_handle.try_state::<GatewayLifecycleState>()
+            && let Ok(mut guard) = lifecycle.0.lock()
+            && let Some(mut gateway) = guard.take()
+        {
+            tauri::async_runtime::block_on(gateway.shutdown_gracefully(Duration::from_secs(5)));
+        }
+    });
 }
