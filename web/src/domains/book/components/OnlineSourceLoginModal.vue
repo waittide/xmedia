@@ -8,6 +8,7 @@ import {
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
+  isSafeHttpUrl,
   onlineBookApi,
   type BookSourceSummaryDto,
   type LoginUiItem,
@@ -26,22 +27,62 @@ const emit = defineEmits<{
 const snackbar = useSnackbarStore()
 
 const formValues = reactive<Record<string, string>>({})
-const runningAction = ref<string | null>(null)
+const runningActionKey = ref<string | null>(null)
 const showVarEditor = ref(false)
 const rawVariableDraft = ref('')
+const loadingVar = ref(false)
+const varLoaded = ref(false)
+const varLoadError = ref<string | null>(null)
 const savingVar = ref(false)
+
+let actionSeq = 0
+let varLoadSeq = 0
+
+function resetEditorState(): void {
+  actionSeq += 1
+  varLoadSeq += 1
+  runningActionKey.value = null
+  showVarEditor.value = false
+  rawVariableDraft.value = ''
+  loadingVar.value = false
+  varLoaded.value = false
+  varLoadError.value = null
+  savingVar.value = false
+}
+
+async function loadFullVariable(sourceId: string): Promise<void> {
+  const seq = ++varLoadSeq
+  loadingVar.value = true
+  varLoadError.value = null
+  try {
+    const res = await onlineBookApi.getSourceVariable(sourceId)
+    if (seq !== varLoadSeq || !props.open || props.source?.id !== sourceId) return
+    rawVariableDraft.value = res.variable ?? ''
+    varLoaded.value = true
+  } catch (err) {
+    if (seq !== varLoadSeq || !props.open || props.source?.id !== sourceId) return
+    varLoadError.value = err instanceof Error ? err.message : String(err)
+    varLoaded.value = false
+  } finally {
+    if (seq === varLoadSeq) {
+      loadingVar.value = false
+    }
+  }
+}
 
 watch(
   () => [props.open, props.source?.id] as const,
   ([isOpen, srcId], prev) => {
     const src = props.source
-    if (!isOpen || !src || !srcId) return
+    if (!isOpen || !src || !srcId) {
+      resetEditorState()
+      return
+    }
     const wasOpen = prev?.[0] ?? false
     const prevId = prev?.[1]
     if (wasOpen && prevId === srcId) return
 
-    showVarEditor.value = false
-    rawVariableDraft.value = src.variable_preview || ''
+    resetEditorState()
 
     for (const k of Object.keys(formValues)) {
       delete formValues[k]
@@ -55,6 +96,22 @@ watch(
   { immediate: true },
 )
 
+function fieldInputId(idx: number): string {
+  const sid = props.source?.id ?? 'src'
+  return `online-source-login-${sid}-${idx}`
+}
+
+function actionKeyFor(item: LoginUiItem, idx: number): string {
+  return `${idx}:${item.name}`
+}
+
+function toggleVarEditor(): void {
+  showVarEditor.value = !showVarEditor.value
+  if (showVarEditor.value && props.source && !varLoaded.value && !loadingVar.value) {
+    void loadFullVariable(props.source.id)
+  }
+}
+
 function buttonSpanClass(item: LoginUiItem): string {
   const basis = item.style?.layout_flex_basis_percent ?? 0.5
   if (basis >= 0.85) return 'col-span-4'
@@ -66,43 +123,66 @@ function isDividerButton(item: LoginUiItem): boolean {
   return item.type === 'button' && (!item.action || !item.action.trim())
 }
 
-async function triggerAction(item: LoginUiItem): Promise<void> {
-  if (!props.source || runningAction.value) return
+function openExternalUrlSafely(url: string): void {
+  if (!isSafeHttpUrl(url)) {
+    snackbar.show({ message: '已拦截不安全的外部链接协议（仅允许 http/https）', tone: 'error' })
+    return
+  }
+  window.open(url.trim(), '_blank', 'noopener,noreferrer')
+}
+
+async function triggerAction(item: LoginUiItem, idx: number): Promise<void> {
+  const src = props.source
+  if (!src || runningActionKey.value !== null) return
   const act = item.action?.trim()
   if (!act) return
-  runningAction.value = item.name
+  const sourceId = src.id
+  const seq = ++actionSeq
+  runningActionKey.value = actionKeyFor(item, idx)
   try {
     const resp = await onlineBookApi.runLoginAction(
-      props.source.id,
+      sourceId,
       { ...formValues },
       act,
     )
-    rawVariableDraft.value = resp.source.variable_preview || ''
+    if (seq !== actionSeq || !props.open || props.source?.id !== sourceId) return
+
+    varLoaded.value = false
+    if (showVarEditor.value) {
+      void loadFullVariable(sourceId)
+    }
     emit('updated', resp.source)
 
     const toasts = resp.diagnostics.toasts
       .map((t) => t.trim())
       .filter(Boolean)
-    const firstLink = resp.diagnostics.browser_urls[0]
+    const rawLinks = resp.diagnostics.browser_urls
+    const safeLink = rawLinks.find((link) => isSafeHttpUrl(link.url))
+    const hasBlockedLink = rawLinks.length > 0 && !safeLink
 
     if (toasts.length > 0) {
       const finalMsg = toasts[toasts.length - 1]!
       snackbar.show({
         message: finalMsg,
-        actionLabel: firstLink ? firstLink.title || '打开链接' : undefined,
-        onAction: firstLink
+        actionLabel: safeLink ? safeLink.title || '打开链接' : undefined,
+        onAction: safeLink
           ? () => {
-              window.open(firstLink.url, '_blank', 'noopener,noreferrer')
+              openExternalUrlSafely(safeLink.url)
             }
           : undefined,
       })
-    } else if (firstLink) {
+    } else if (safeLink) {
       snackbar.show({
         message: `${item.name}：点击打开外部页面`,
-        actionLabel: firstLink.title || '打开链接',
+        actionLabel: safeLink.title || '打开链接',
         onAction: () => {
-          window.open(firstLink.url, '_blank', 'noopener,noreferrer')
+          openExternalUrlSafely(safeLink.url)
         },
+      })
+    } else if (hasBlockedLink) {
+      snackbar.show({
+        message: `${item.name}：已拦截非 http/https 协议的跳转链接`,
+        tone: 'error',
       })
     } else if (resp.result) {
       snackbar.show({ message: `${item.name}：${resp.result}` })
@@ -110,30 +190,40 @@ async function triggerAction(item: LoginUiItem): Promise<void> {
       snackbar.show({ message: `已执行「${item.name}」` })
     }
   } catch (err) {
+    if (seq !== actionSeq || !props.open || props.source?.id !== sourceId) return
     const msg = err instanceof Error ? err.message : String(err)
     snackbar.show({ message: msg, tone: 'error' })
   } finally {
-    runningAction.value = null
+    if (seq === actionSeq) {
+      runningActionKey.value = null
+    }
   }
 }
 
 async function saveRawVariable(): Promise<void> {
-  if (!props.source || savingVar.value) return
+  const src = props.source
+  if (!src || savingVar.value || loadingVar.value || !varLoaded.value || varLoadError.value) return
+  const sourceId = src.id
+  const seq = varLoadSeq
   savingVar.value = true
   try {
-    const updated = await onlineBookApi.updateSource(props.source.id, {
+    const updated = await onlineBookApi.updateSource(sourceId, {
       variable: rawVariableDraft.value,
     })
+    if (seq !== varLoadSeq || !props.open || props.source?.id !== sourceId) return
     emit('updated', updated)
     showVarEditor.value = false
     snackbar.show({ message: '已保存源变量' })
   } catch (err) {
+    if (seq !== varLoadSeq || !props.open || props.source?.id !== sourceId) return
     snackbar.show({
       message: err instanceof Error ? err.message : String(err),
       tone: 'error',
     })
   } finally {
-    savingVar.value = false
+    if (seq === varLoadSeq) {
+      savingVar.value = false
+    }
   }
 }
 </script>
@@ -187,12 +277,17 @@ async function saveRawVariable(): Promise<void> {
             v-if="item.type === 'text' || item.type === 'password'"
             class="col-span-4"
           >
-            <label class="mb-1 block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
+            <label
+              :for="fieldInputId(idx)"
+              class="mb-1 block text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+            >
               {{ item.name }}
             </label>
             <input
+              :id="fieldInputId(idx)"
               v-model="formValues[item.name]"
               :type="item.type === 'password' ? 'password' : 'text'"
+              :autocomplete="item.type === 'password' ? 'off' : undefined"
               class="md-input h-9 w-full text-xs"
               :placeholder="`输入 ${item.name}`"
             />
@@ -210,13 +305,13 @@ async function saveRawVariable(): Promise<void> {
           <button
             v-else-if="item.type === 'button'"
             type="button"
-            :disabled="runningAction !== null"
+            :disabled="runningActionKey !== null"
             class="md-btn md-btn-sm md-btn-tonal md-state w-full justify-center"
             :class="buttonSpanClass(item)"
-            @click="triggerAction(item)"
+            @click="triggerAction(item, idx)"
           >
             <LuLoader2
-              v-if="runningAction === item.name"
+              v-if="runningActionKey === actionKeyFor(item, idx)"
               class="h-3.5 w-3.5 animate-spin"
             />
             <span class="truncate">{{ item.name }}</span>
@@ -236,13 +331,34 @@ async function saveRawVariable(): Promise<void> {
         <button
           type="button"
           class="text-[11px] font-medium text-[var(--md-sys-color-primary)] hover:underline"
-          @click="showVarEditor = !showVarEditor"
+          @click="toggleVarEditor"
         >
           {{ showVarEditor ? '收起源变量 (source.variable)' : '高级：查看 / 手动编辑源变量 (source.variable)' }}
         </button>
 
         <div v-if="showVarEditor" class="mt-2 space-y-2">
+          <div
+            v-if="loadingVar"
+            class="flex items-center gap-2 rounded-xl bg-[var(--md-sys-color-surface-container)] px-3 py-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+          >
+            <LuLoader2 class="h-3.5 w-3.5 animate-spin" />
+            <span>正在加载完整源变量…</span>
+          </div>
+          <div
+            v-else-if="varLoadError"
+            class="flex items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)] px-3 py-2 text-[11px] text-[var(--md-sys-color-on-error-container)]"
+          >
+            <span class="min-w-0 truncate">加载源变量失败：{{ varLoadError }}</span>
+            <button
+              type="button"
+              class="shrink-0 font-medium underline"
+              @click="source && loadFullVariable(source.id)"
+            >
+              重试
+            </button>
+          </div>
           <textarea
+            v-else
             v-model="rawVariableDraft"
             rows="4"
             class="md-input w-full py-2 font-mono text-[11px]"
@@ -251,7 +367,7 @@ async function saveRawVariable(): Promise<void> {
           <div class="flex justify-end">
             <button
               type="button"
-              :disabled="savingVar"
+              :disabled="savingVar || loadingVar || !varLoaded || Boolean(varLoadError)"
               class="md-btn md-btn-sm md-btn-filled md-state"
               @click="saveRawVariable"
             >

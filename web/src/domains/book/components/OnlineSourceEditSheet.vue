@@ -20,6 +20,7 @@ import AppSwitch from '@/components/ui/AppSwitch.vue'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { onlineBookApi, type BookSourceSummaryDto } from '../onlineApi'
+import RuleFieldsSection, { type RuleFieldDef } from './RuleFieldsSection.vue'
 
 const props = defineProps<{
   open: boolean
@@ -35,16 +36,6 @@ const emit = defineEmits<{
 const snackbar = useSnackbarStore()
 
 type EditTab = 'basic' | 'search' | 'explore' | 'book_info' | 'toc' | 'content' | 'json'
-
-interface RuleFieldDef {
-  key: string
-  label: string
-  hint?: string
-  placeholder?: string
-  multiline?: boolean
-  rows?: number
-  fullWidth?: boolean
-}
 
 const sourceTypeOptions = [
   { value: '0', label: '0 · 文本' },
@@ -122,6 +113,31 @@ const jsonText = ref('')
 const jsonDirty = ref(false)
 const variableText = ref('')
 const initialVariableText = ref('')
+let loadSeq = 0
+
+interface FormSnapshot {
+  bookSourceGroup: string
+  bookSourceComment: string
+  bookSourceType: string
+  enabled: boolean
+  enabledExplore: boolean
+  enabledCookieJar: boolean
+  weight: number
+  concurrentRate: string
+  header: string
+  bookUrlPattern: string
+  loginUrl: string
+  loginUi: string
+  loginCheckJs: string
+  jsLib: string
+  searchUrl: string
+  exploreUrl: string
+  ruleSearch: Record<string, string>
+  ruleExplore: Record<string, string>
+  ruleBookInfo: Record<string, string>
+  ruleToc: Record<string, string>
+  ruleContent: Record<string, string>
+}
 
 const form = reactive({
   bookSourceName: '',
@@ -132,7 +148,7 @@ const form = reactive({
   enabled: true,
   enabledExplore: true,
   enabledCookieJar: true,
-  weight: 0,
+  weight: 0 as number | string,
   concurrentRate: '',
   header: '',
   bookUrlPattern: '',
@@ -148,6 +164,8 @@ const form = reactive({
   ruleToc: {} as Record<string, string>,
   ruleContent: {} as Record<string, string>,
 })
+
+let initialSnapshot: FormSnapshot | null = null
 
 function strVal(v: unknown): string {
   if (v === null || v === undefined) return ''
@@ -173,7 +191,7 @@ function boolVal(v: unknown, fallback = true): boolean {
 
 function numVal(v: unknown, fallback = 0): number {
   if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v)
-  if (typeof v === 'string') {
+  if (typeof v === 'string' && v.trim() !== '') {
     const n = Number(v.trim())
     if (Number.isFinite(n)) return Math.trunc(n)
   }
@@ -190,6 +208,64 @@ function readRuleMap(rawRule: unknown, fields: RuleFieldDef[]): Record<string, s
     out[f.key] = strVal(srcObj[f.key])
   }
   return out
+}
+
+function clearFormState(): void {
+  rawBaseObj.value = {}
+  initialSnapshot = null
+  jsonText.value = ''
+  jsonDirty.value = false
+  variableText.value = ''
+  initialVariableText.value = ''
+  form.bookSourceName = ''
+  form.bookSourceUrl = ''
+  form.bookSourceGroup = ''
+  form.bookSourceComment = ''
+  form.bookSourceType = '0'
+  form.enabled = true
+  form.enabledExplore = true
+  form.enabledCookieJar = true
+  form.weight = 0
+  form.concurrentRate = ''
+  form.header = ''
+  form.bookUrlPattern = ''
+  form.loginUrl = ''
+  form.loginUi = ''
+  form.loginCheckJs = ''
+  form.jsLib = ''
+  form.searchUrl = ''
+  form.exploreUrl = ''
+  form.ruleSearch = readRuleMap(undefined, searchRuleFields)
+  form.ruleExplore = readRuleMap(undefined, exploreRuleFields)
+  form.ruleBookInfo = readRuleMap(undefined, bookInfoRuleFields)
+  form.ruleToc = readRuleMap(undefined, tocRuleFields)
+  form.ruleContent = readRuleMap(undefined, contentRuleFields)
+}
+
+function captureSnapshot(): FormSnapshot {
+  return {
+    bookSourceGroup: form.bookSourceGroup,
+    bookSourceComment: form.bookSourceComment,
+    bookSourceType: form.bookSourceType,
+    enabled: form.enabled,
+    enabledExplore: form.enabledExplore,
+    enabledCookieJar: form.enabledCookieJar,
+    weight: numVal(form.weight, 0),
+    concurrentRate: form.concurrentRate,
+    header: form.header,
+    bookUrlPattern: form.bookUrlPattern,
+    loginUrl: form.loginUrl,
+    loginUi: form.loginUi,
+    loginCheckJs: form.loginCheckJs,
+    jsLib: form.jsLib,
+    searchUrl: form.searchUrl,
+    exploreUrl: form.exploreUrl,
+    ruleSearch: { ...form.ruleSearch },
+    ruleExplore: { ...form.ruleExplore },
+    ruleBookInfo: { ...form.ruleBookInfo },
+    ruleToc: { ...form.ruleToc },
+    ruleContent: { ...form.ruleContent },
+  }
 }
 
 function hydrateFormFromObject(obj: Record<string, unknown>, srcSummary?: BookSourceSummaryDto): void {
@@ -218,22 +294,51 @@ function hydrateFormFromObject(obj: Record<string, unknown>, srcSummary?: BookSo
   form.ruleBookInfo = readRuleMap(obj.ruleBookInfo, bookInfoRuleFields)
   form.ruleToc = readRuleMap(obj.ruleToc, tocRuleFields)
   form.ruleContent = readRuleMap(obj.ruleContent, contentRuleFields)
+  initialSnapshot = captureSnapshot()
+}
+
+function coerceEditedValue(original: unknown, edited: string): unknown {
+  if (typeof original === 'boolean') {
+    const lower = edited.trim().toLowerCase()
+    if (lower === 'true') return true
+    if (lower === 'false') return false
+  } else if (typeof original === 'number') {
+    const n = Number(edited.trim())
+    if (edited.trim() !== '' && Number.isFinite(n)) return n
+  } else if (original !== null && typeof original === 'object') {
+    try {
+      const parsed = JSON.parse(edited)
+      if (parsed !== null && typeof parsed === 'object') {
+        return parsed
+      }
+    } catch {
+      // fall back to string
+    }
+  }
+  return edited
 }
 
 function mergeRuleSection(
   baseRule: unknown,
   editedMap: Record<string, string>,
+  initialMap: Record<string, string> | undefined,
   fields: RuleFieldDef[],
 ): Record<string, unknown> | undefined {
-  const merged: Record<string, unknown> =
+  const baseObj =
     baseRule && typeof baseRule === 'object' && !Array.isArray(baseRule)
-      ? { ...(baseRule as Record<string, unknown>) }
-      : {}
+      ? (baseRule as Record<string, unknown>)
+      : null
+  const merged: Record<string, unknown> = baseObj ? { ...baseObj } : {}
 
   for (const f of fields) {
     const val = editedMap[f.key] ?? ''
+    const initVal = initialMap?.[f.key] ?? ''
+    if (val === initVal) {
+      // Unchanged from snapshot: preserve original value & type (or absence) losslessly
+      continue
+    }
     if (val.trim().length > 0) {
-      merged[f.key] = val
+      merged[f.key] = coerceEditedValue(baseObj?.[f.key], val)
     } else {
       delete merged[f.key]
     }
@@ -241,44 +346,69 @@ function mergeRuleSection(
   return Object.keys(merged).length > 0 ? merged : undefined
 }
 
-function setOptionalString(target: Record<string, unknown>, key: string, value: string): void {
-  if (value.trim().length > 0) {
-    target[key] = value
+function mergeOptionalField(
+  target: Record<string, unknown>,
+  key: string,
+  edited: string,
+  initial: string | undefined,
+  trim = false,
+): void {
+  if (initial !== undefined && edited === initial) {
+    return
+  }
+  const next = trim ? edited.trim() : edited
+  if (next.trim().length > 0) {
+    target[key] = coerceEditedValue(rawBaseObj.value[key], next)
   } else {
     delete target[key]
   }
 }
 
 function buildMergedObject(): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...rawBaseObj.value }
+  const base = rawBaseObj.value
+  const snap = initialSnapshot
+  const out: Record<string, unknown> = { ...base }
   out.bookSourceName = form.bookSourceName.trim()
   out.bookSourceUrl = form.bookSourceUrl.trim()
-  setOptionalString(out, 'bookSourceGroup', form.bookSourceGroup.trim())
-  setOptionalString(out, 'bookSourceComment', form.bookSourceComment)
-  out.bookSourceType = numVal(form.bookSourceType, 0)
-  out.enabled = form.enabled
-  out.enabledExplore = form.enabledExplore
-  out.enabledCookieJar = form.enabledCookieJar
-  out.weight = Number.isFinite(form.weight) ? Math.trunc(form.weight) : 0
-  setOptionalString(out, 'concurrentRate', form.concurrentRate.trim())
-  setOptionalString(out, 'header', form.header)
-  setOptionalString(out, 'bookUrlPattern', form.bookUrlPattern.trim())
-  setOptionalString(out, 'loginUrl', form.loginUrl)
-  setOptionalString(out, 'loginUi', form.loginUi)
-  setOptionalString(out, 'loginCheckJs', form.loginCheckJs)
-  setOptionalString(out, 'jsLib', form.jsLib)
-  setOptionalString(out, 'searchUrl', form.searchUrl)
-  setOptionalString(out, 'exploreUrl', form.exploreUrl)
+  mergeOptionalField(out, 'bookSourceGroup', form.bookSourceGroup, snap?.bookSourceGroup, true)
+  mergeOptionalField(out, 'bookSourceComment', form.bookSourceComment, snap?.bookSourceComment)
 
-  const sections: Array<[string, Record<string, string>, RuleFieldDef[]]> = [
-    ['ruleSearch', form.ruleSearch, searchRuleFields],
-    ['ruleExplore', form.ruleExplore, exploreRuleFields],
-    ['ruleBookInfo', form.ruleBookInfo, bookInfoRuleFields],
-    ['ruleToc', form.ruleToc, tocRuleFields],
-    ['ruleContent', form.ruleContent, contentRuleFields],
+  if ('bookSourceType' in base || !snap || form.bookSourceType !== snap.bookSourceType) {
+    out.bookSourceType = numVal(form.bookSourceType, 0)
+  }
+  if ('enabled' in base || !snap || form.enabled !== snap.enabled) {
+    out.enabled = form.enabled
+  }
+  if ('enabledExplore' in base || !snap || form.enabledExplore !== snap.enabledExplore) {
+    out.enabledExplore = form.enabledExplore
+  }
+  if ('enabledCookieJar' in base || !snap || form.enabledCookieJar !== snap.enabledCookieJar) {
+    out.enabledCookieJar = form.enabledCookieJar
+  }
+  const normalizedWeight = numVal(form.weight, 0)
+  if ('weight' in base || !snap || normalizedWeight !== snap.weight) {
+    out.weight = normalizedWeight
+  }
+
+  mergeOptionalField(out, 'concurrentRate', form.concurrentRate, snap?.concurrentRate, true)
+  mergeOptionalField(out, 'header', form.header, snap?.header)
+  mergeOptionalField(out, 'bookUrlPattern', form.bookUrlPattern, snap?.bookUrlPattern, true)
+  mergeOptionalField(out, 'loginUrl', form.loginUrl, snap?.loginUrl)
+  mergeOptionalField(out, 'loginUi', form.loginUi, snap?.loginUi)
+  mergeOptionalField(out, 'loginCheckJs', form.loginCheckJs, snap?.loginCheckJs)
+  mergeOptionalField(out, 'jsLib', form.jsLib, snap?.jsLib)
+  mergeOptionalField(out, 'searchUrl', form.searchUrl, snap?.searchUrl)
+  mergeOptionalField(out, 'exploreUrl', form.exploreUrl, snap?.exploreUrl)
+
+  const sections: Array<[string, Record<string, string>, Record<string, string> | undefined, RuleFieldDef[]]> = [
+    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, searchRuleFields],
+    ['ruleExplore', form.ruleExplore, snap?.ruleExplore, exploreRuleFields],
+    ['ruleBookInfo', form.ruleBookInfo, snap?.ruleBookInfo, bookInfoRuleFields],
+    ['ruleToc', form.ruleToc, snap?.ruleToc, tocRuleFields],
+    ['ruleContent', form.ruleContent, snap?.ruleContent, contentRuleFields],
   ]
-  for (const [key, map, fields] of sections) {
-    const merged = mergeRuleSection(rawBaseObj.value[key], map, fields)
+  for (const [key, map, initMap, fields] of sections) {
+    const merged = mergeRuleSection(base[key], map, initMap, fields)
     if (merged) {
       out[key] = merged
     } else {
@@ -301,6 +431,12 @@ const jsonValidation = computed<{ valid: boolean; error: string | null }>(() => 
     const parsed = JSON.parse(txt)
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { valid: false, error: '书源 JSON 必须是单个对象 {...}' }
+    }
+    const obj = parsed as Record<string, unknown>
+    const name = strVal(obj.bookSourceName).trim()
+    const url = strVal(obj.bookSourceUrl).trim()
+    if (!name && !url) {
+      return { valid: false, error: 'bookSourceName 与 bookSourceUrl 不能同时为空' }
     }
     return { valid: true, error: null }
   } catch (err) {
@@ -374,20 +510,31 @@ function switchTab(next: EditTab): void {
 }
 
 async function loadSourceRaw(src: BookSourceSummaryDto): Promise<void> {
+  const seq = ++loadSeq
+  const targetId = src.id
   loading.value = true
   loadError.value = null
   activeTab.value = 'basic'
-  jsonDirty.value = false
-  variableText.value = src.variable_preview ?? ''
-  initialVariableText.value = src.variable_preview ?? ''
+  clearFormState()
   try {
-    const obj = await onlineBookApi.fetchSourceJson(src.id)
+    const [obj, varRes] = await Promise.all([
+      onlineBookApi.fetchSourceJson(targetId),
+      onlineBookApi.getSourceVariable(targetId),
+    ])
+    if (seq !== loadSeq || !props.open || props.source?.id !== targetId) return
     hydrateFormFromObject(obj, src)
+    const fullVar = varRes.variable ?? ''
+    variableText.value = fullVar
+    initialVariableText.value = fullVar
     jsonText.value = JSON.stringify(buildMergedObject(), null, 2)
   } catch (err) {
+    if (seq !== loadSeq || !props.open || props.source?.id !== targetId) return
+    clearFormState()
     loadError.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -396,6 +543,11 @@ watch(
   ([isOpen]) => {
     if (isOpen && props.source) {
       void loadSourceRaw(props.source)
+    } else {
+      loadSeq += 1
+      loading.value = false
+      loadError.value = null
+      clearFormState()
     }
   },
   { immediate: true },
@@ -425,8 +577,9 @@ async function copyJson(): Promise<void> {
 }
 
 async function saveSource(openDebugAfter = false): Promise<void> {
-  if (!props.source || saving.value || !jsonValidation.value.valid) return
+  if (!props.source || loading.value || saving.value || Boolean(loadError.value) || !jsonValidation.value.valid) return
 
+  const targetId = props.source.id
   let finalObj: Record<string, unknown>
   if (activeTab.value === 'json' && jsonDirty.value) {
     try {
@@ -454,13 +607,13 @@ async function saveSource(openDebugAfter = false): Promise<void> {
     } = {
       enabled: form.enabled,
       group_name: form.bookSourceGroup.trim(),
-      weight: Number.isFinite(form.weight) ? Math.trunc(form.weight) : 0,
+      weight: numVal(form.weight, 0),
       raw_json: JSON.stringify(finalObj),
     }
     if (variableText.value !== initialVariableText.value) {
       patch.variable = variableText.value
     }
-    const updated = await onlineBookApi.updateSource(props.source.id, patch)
+    const updated = await onlineBookApi.updateSource(targetId, patch)
     snackbar.show({ message: `已保存书源「${updated.name}」` })
     if (openDebugAfter) {
       emit('savedAndDebug', updated)
@@ -741,40 +894,11 @@ async function saveSource(openDebugAfter = false): Promise<void> {
           />
         </section>
 
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            搜索结果解析规则 (ruleSearch)
-          </h4>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label
-              v-for="field in searchRuleFields"
-              :key="field.key"
-              class="block space-y-1"
-              :class="field.fullWidth ? 'sm:col-span-2' : ''"
-            >
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ field.label }}
-                <span v-if="field.hint" class="font-mono opacity-65">{{ field.hint }}</span>
-              </span>
-              <textarea
-                v-if="field.multiline"
-                v-model="form.ruleSearch[field.key]"
-                :rows="field.rows ?? 2"
-                :placeholder="field.placeholder"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-              <input
-                v-else
-                v-model="form.ruleSearch[field.key]"
-                type="text"
-                :placeholder="field.placeholder"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs"
-              />
-            </label>
-          </div>
-        </section>
+        <RuleFieldsSection
+          v-model="form.ruleSearch"
+          title="搜索结果解析规则 (ruleSearch)"
+          :fields="searchRuleFields"
+        />
       </template>
 
       <!-- TAB 3: Explore Rule -->
@@ -792,146 +916,38 @@ async function saveSource(openDebugAfter = false): Promise<void> {
           />
         </section>
 
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            发现结果解析规则 (ruleExplore)
-          </h4>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label
-              v-for="field in exploreRuleFields"
-              :key="field.key"
-              class="block space-y-1"
-              :class="field.fullWidth ? 'sm:col-span-2' : ''"
-            >
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ field.label }}
-                <span v-if="field.hint" class="font-mono opacity-65">{{ field.hint }}</span>
-              </span>
-              <textarea
-                v-if="field.multiline"
-                v-model="form.ruleExplore[field.key]"
-                :rows="field.rows ?? 2"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-              <input
-                v-else
-                v-model="form.ruleExplore[field.key]"
-                type="text"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs"
-              />
-            </label>
-          </div>
-        </section>
+        <RuleFieldsSection
+          v-model="form.ruleExplore"
+          title="发现结果解析规则 (ruleExplore)"
+          :fields="exploreRuleFields"
+        />
       </template>
 
       <!-- TAB 4: Book Info Rule -->
       <template v-else-if="activeTab === 'book_info'">
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            书籍详情解析规则 (ruleBookInfo)
-          </h4>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label
-              v-for="field in bookInfoRuleFields"
-              :key="field.key"
-              class="block space-y-1"
-              :class="field.fullWidth ? 'sm:col-span-2' : ''"
-            >
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ field.label }}
-                <span v-if="field.hint" class="font-mono opacity-65">{{ field.hint }}</span>
-              </span>
-              <textarea
-                v-if="field.multiline"
-                v-model="form.ruleBookInfo[field.key]"
-                :rows="field.rows ?? 2"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-              <input
-                v-else
-                v-model="form.ruleBookInfo[field.key]"
-                type="text"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs"
-              />
-            </label>
-          </div>
-        </section>
+        <RuleFieldsSection
+          v-model="form.ruleBookInfo"
+          title="书籍详情解析规则 (ruleBookInfo)"
+          :fields="bookInfoRuleFields"
+        />
       </template>
 
       <!-- TAB 5: TOC Rule -->
       <template v-else-if="activeTab === 'toc'">
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            目录列表解析规则 (ruleToc)
-          </h4>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label
-              v-for="field in tocRuleFields"
-              :key="field.key"
-              class="block space-y-1"
-              :class="field.fullWidth ? 'sm:col-span-2' : ''"
-            >
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ field.label }}
-                <span v-if="field.hint" class="font-mono opacity-65">{{ field.hint }}</span>
-              </span>
-              <textarea
-                v-if="field.multiline"
-                v-model="form.ruleToc[field.key]"
-                :rows="field.rows ?? 2"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-              <input
-                v-else
-                v-model="form.ruleToc[field.key]"
-                type="text"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs"
-              />
-            </label>
-          </div>
-        </section>
+        <RuleFieldsSection
+          v-model="form.ruleToc"
+          title="目录列表解析规则 (ruleToc)"
+          :fields="tocRuleFields"
+        />
       </template>
 
       <!-- TAB 6: Content Rule -->
       <template v-else-if="activeTab === 'content'">
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            正文内容解析规则 (ruleContent)
-          </h4>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label
-              v-for="field in contentRuleFields"
-              :key="field.key"
-              class="block space-y-1"
-              :class="field.fullWidth ? 'sm:col-span-2' : ''"
-            >
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ field.label }}
-                <span v-if="field.hint" class="font-mono opacity-65">{{ field.hint }}</span>
-              </span>
-              <textarea
-                v-if="field.multiline"
-                v-model="form.ruleContent[field.key]"
-                :rows="field.rows ?? 2"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-              <input
-                v-else
-                v-model="form.ruleContent[field.key]"
-                type="text"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs"
-              />
-            </label>
-          </div>
-        </section>
+        <RuleFieldsSection
+          v-model="form.ruleContent"
+          title="正文内容解析规则 (ruleContent)"
+          :fields="contentRuleFields"
+        />
       </template>
 
       <!-- TAB 7: Raw JSON Source Mode -->
@@ -1006,7 +1022,7 @@ async function saveSource(openDebugAfter = false): Promise<void> {
       </button>
       <button
         type="button"
-        :disabled="loading || saving || !jsonValidation.valid"
+        :disabled="loading || saving || Boolean(loadError) || !jsonValidation.valid"
         class="md-btn md-btn-tonal md-state"
         @click="saveSource(true)"
       >
@@ -1015,7 +1031,7 @@ async function saveSource(openDebugAfter = false): Promise<void> {
       </button>
       <button
         type="button"
-        :disabled="loading || saving || !jsonValidation.valid"
+        :disabled="loading || saving || Boolean(loadError) || !jsonValidation.valid"
         class="md-btn md-btn-filled md-state"
         @click="saveSource(false)"
       >

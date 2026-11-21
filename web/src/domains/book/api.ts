@@ -107,24 +107,25 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
-  getBook: (id: string) => requestJson<BookSummaryDto>(`/book/books/${id}`),
+  getBook: (id: string) => requestJson<BookSummaryDto>(`/book/books/${encodeURIComponent(id)}`),
   updateBook: (id: string, patch: UpdateMetadataPatch) =>
-    requestJson<BookSummaryDto>(`/book/books/${id}`, {
+    requestJson<BookSummaryDto>(`/book/books/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       body: JSON.stringify(patch),
     }),
   replaceCover: (id: string, file: File) => {
     const fd = new FormData()
     fd.append('cover', file)
-    return requestJson<BookSummaryDto>(`/book/books/${id}/cover`, {
+    return requestJson<BookSummaryDto>(`/book/books/${encodeURIComponent(id)}/cover`, {
       method: 'PUT',
       body: fd,
     })
   },
-  deleteBook: (id: string) => requestJson<void>(`/book/books/${id}`, { method: 'DELETE' }),
-  getToc: (id: string) => requestJson<TocItem[]>(`/book/books/${id}/toc`),
+  deleteBook: (id: string) =>
+    requestJson<void>(`/book/books/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  getToc: (id: string) => requestJson<TocItem[]>(`/book/books/${encodeURIComponent(id)}/toc`),
   getTxtChapter: (id: string, index: number) =>
-    requestJson<TxtChapterContent>(`/book/books/${id}/chapters/${index}`),
+    requestJson<TxtChapterContent>(`/book/books/${encodeURIComponent(id)}/chapters/${index}`),
   listAuthors: () => requestJson<FacetCount[]>('/book/authors'),
   listTags: () => requestJson<FacetCount[]>('/book/tags'),
   homeOverview: () => requestJson<BookHomeOverviewDto>('/book/home'),
@@ -132,7 +133,7 @@ export const api = {
 
   listRecent: (limit = 24) => requestJson<BookSummaryDto[]>(`/book/recent?limit=${limit}`),
   getProgress: (bookId: string) =>
-    requestJson<ReadingProgress | null>(`/book/books/${bookId}/progress`),
+    requestJson<ReadingProgress | null>(`/book/books/${encodeURIComponent(bookId)}/progress`),
   saveProgress: (
     bookId: string,
     payload: {
@@ -143,17 +144,17 @@ export const api = {
       scroll_ratio?: number | null
     },
   ) =>
-    requestJson<ReadingProgress>(`/book/books/${bookId}/progress`, {
+    requestJson<ReadingProgress>(`/book/books/${encodeURIComponent(bookId)}/progress`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     }),
   setFavorite: (bookId: string, favorite: boolean) =>
-    requestJson<void>(`/book/books/${bookId}/favorite`, {
+    requestJson<void>(`/book/books/${encodeURIComponent(bookId)}/favorite`, {
       method: 'PUT',
       body: JSON.stringify({ favorite }),
     }),
   listBookmarks: (bookId: string) =>
-    requestJson<Bookmark[]>(`/book/books/${bookId}/bookmarks`),
+    requestJson<Bookmark[]>(`/book/books/${encodeURIComponent(bookId)}/bookmarks`),
   createBookmark: (
     bookId: string,
     payload: {
@@ -166,12 +167,12 @@ export const api = {
       scroll_ratio?: number | null
     },
   ) =>
-    requestJson<Bookmark>(`/book/books/${bookId}/bookmarks`, {
+    requestJson<Bookmark>(`/book/books/${encodeURIComponent(bookId)}/bookmarks`, {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
   deleteBookmark: (bookmarkId: string) =>
-    requestJson<void>(`/book/bookmarks/${bookmarkId}`, { method: 'DELETE' }),
+    requestJson<void>(`/book/bookmarks/${encodeURIComponent(bookmarkId)}`, { method: 'DELETE' }),
 
   listShelves: () => requestJson<ShelfDto[]>('/book/shelves'),
   createShelf: (name: string) =>
@@ -180,27 +181,33 @@ export const api = {
       body: JSON.stringify({ name }),
     }),
   renameShelf: (shelfId: string, name: string) =>
-    requestJson<ShelfDto>(`/book/shelves/${shelfId}`, {
+    requestJson<ShelfDto>(`/book/shelves/${encodeURIComponent(shelfId)}`, {
       method: 'PATCH',
       body: JSON.stringify({ name }),
     }),
   deleteShelf: (shelfId: string) =>
-    requestJson<void>(`/book/shelves/${shelfId}`, { method: 'DELETE' }),
+    requestJson<void>(`/book/shelves/${encodeURIComponent(shelfId)}`, { method: 'DELETE' }),
   addBookToShelf: (shelfId: string, bookId: string) =>
-    requestJson<ShelfDto>(`/book/shelves/${shelfId}/books/${bookId}`, { method: 'POST' }),
+    requestJson<ShelfDto>(
+      `/book/shelves/${encodeURIComponent(shelfId)}/books/${encodeURIComponent(bookId)}`,
+      { method: 'POST' },
+    ),
   removeBookFromShelf: (shelfId: string, bookId: string) =>
-    requestJson<ShelfDto>(`/book/shelves/${shelfId}/books/${bookId}`, { method: 'DELETE' }),
+    requestJson<ShelfDto>(
+      `/book/shelves/${encodeURIComponent(shelfId)}/books/${encodeURIComponent(bookId)}`,
+      { method: 'DELETE' },
+    ),
 
   coverUrl: (bookId: string, updatedAt?: string) => {
     const params = new URLSearchParams()
     if (updatedAt) params.set('v', updatedAt)
     const qs = params.toString()
-    return withAuthToken(`/api/v1/book/books/${bookId}/cover${qs ? `?${qs}` : ''}`)
+    return withAuthToken(`/api/v1/book/books/${encodeURIComponent(bookId)}/cover${qs ? `?${qs}` : ''}`)
   },
   fileUrl: (bookId: string, download = false) => {
     const params = new URLSearchParams()
     if (download) params.set('download', 'true')
     const qs = params.toString()
-    return withAuthToken(`/api/v1/book/books/${bookId}/file${qs ? `?${qs}` : ''}`)
+    return withAuthToken(`/api/v1/book/books/${encodeURIComponent(bookId)}/file${qs ? `?${qs}` : ''}`)
   },
 }

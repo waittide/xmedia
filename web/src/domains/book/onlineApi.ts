@@ -280,10 +280,25 @@ export interface ChapterJsContextInput {
   url: string
 }
 
+const SAFE_DATA_IMAGE_RE = /^data:image\/(png|jpeg|jpg|webp|gif|avif);base64,/i
+
+export function isSafeHttpUrl(rawUrl: string | null | undefined): boolean {
+  if (!rawUrl || !rawUrl.trim()) return false
+  try {
+    const parsed = new URL(rawUrl.trim())
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 export function buildOnlineCoverUrl(rawUrl: string | null | undefined): string {
   if (!rawUrl || !rawUrl.trim()) return ''
   const u = rawUrl.trim()
-  if (u.startsWith('data:')) return u
+  if (u.toLowerCase().startsWith('data:')) {
+    return SAFE_DATA_IMAGE_RE.test(u) ? u : ''
+  }
+  if (!isSafeHttpUrl(u)) return ''
   return withAuthToken(`/api/v1/book/online/cover-proxy?url=${encodeURIComponent(u)}`)
 }
 
@@ -345,6 +360,9 @@ export const onlineBookApi = {
   fetchSourceJson: (id: string): Promise<Record<string, unknown>> =>
     requestJson(`/book/sources/${encodeURIComponent(id)}/export`),
 
+  getSourceVariable: (id: string): Promise<{ variable: string }> =>
+    requestJson(`/book/sources/${encodeURIComponent(id)}/variable`),
+
   runLoginAction: (
     id: string,
     loginInfo: Record<string, string>,
@@ -358,6 +376,7 @@ export const onlineBookApi = {
   testSource: (
     id: string,
     payload?: string | SourceTestInput,
+    options?: { signal?: AbortSignal },
   ): Promise<SourceTestReportDto> => {
     const body: SourceTestInput =
       typeof payload === 'string'
@@ -374,6 +393,7 @@ export const onlineBookApi = {
     return requestJson(`/book/sources/${encodeURIComponent(id)}/test`, {
       method: 'POST',
       body: JSON.stringify(body),
+      signal: options?.signal,
     })
   },
 
