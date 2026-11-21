@@ -12,6 +12,10 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 
+const props = defineProps<{
+  domain?: MediaKind
+}>()
+
 const emit = defineEmits<{
   error: [message: string]
 }>()
@@ -23,14 +27,27 @@ const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
 
 const allLibraries = ref<CoreLibraryDto[]>([])
-const libraryFilterKind = ref<'all' | MediaKind>('all')
-const libKind = ref<MediaKind>(domainStore.activeDomain)
+const libraryFilterKind = ref<'all' | MediaKind>(props.domain ?? 'all')
+const libKind = ref<MediaKind>(props.domain ?? domainStore.activeDomain)
 const libName = ref('')
 const libPath = ref('')
 const scanNow = ref(true)
 const mounting = ref(false)
 const scanningId = ref<string | null>(null)
 const scanningAll = ref(false)
+
+watch(
+  () => props.domain,
+  (next) => {
+    if (next) {
+      libKind.value = next
+      libraryFilterKind.value = next
+    }
+  },
+)
+
+const effectiveFilterKind = computed<'all' | MediaKind>(() => props.domain ?? libraryFilterKind.value)
+const effectiveMountKind = computed<MediaKind>(() => props.domain ?? libKind.value)
 
 const domainSelectOptions = computed(() =>
   authStore.enabledModules.map((k) => ({
@@ -45,8 +62,8 @@ const libraryFilterOptions = computed(() => [
 ])
 
 const filteredLibraries = computed(() => {
-  if (libraryFilterKind.value === 'all') return allLibraries.value
-  return allLibraries.value.filter((l) => l.media_kind === libraryFilterKind.value)
+  if (effectiveFilterKind.value === 'all') return allLibraries.value
+  return allLibraries.value.filter((l) => l.media_kind === effectiveFilterKind.value)
 })
 
 async function refreshAdminLibraries(): Promise<void> {
@@ -71,7 +88,7 @@ async function handleMountLibrary(): Promise<void> {
   try {
     const created = await api.createLibrary({
       name: libName.value.trim(),
-      media_kind: libKind.value,
+      media_kind: effectiveMountKind.value,
       root_path: libPath.value.trim(),
     })
     if (scanNow.value) {
@@ -179,8 +196,11 @@ function formatScanStatus(lib: CoreLibraryDto): string {
     </p>
 
     <form class="mt-4 space-y-4" @submit.prevent="handleMountLibrary">
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <div>
+      <div
+        class="grid grid-cols-1 gap-4"
+        :class="domain ? 'sm:grid-cols-2' : 'sm:grid-cols-3'"
+      >
+        <div v-if="!domain">
           <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
             {{ t('admin.libraryKind') }}
           </label>
@@ -234,12 +254,22 @@ function formatScanStatus(lib: CoreLibraryDto): string {
 
   <section class="md-card-outlined space-y-4 p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="w-48">
+      <div v-if="!domain" class="w-48">
         <AppSelect
           :model-value="libraryFilterKind"
           :options="libraryFilterOptions"
           @update:model-value="libraryFilterKind = $event as 'all' | MediaKind"
         />
+      </div>
+      <div v-else class="flex items-center gap-2">
+        <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+          {{ t('settings.domainMediaSourcesListTitle') }}
+        </h2>
+        <span
+          class="md-label-small rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 tabular-nums text-[var(--md-sys-color-on-surface-variant)]"
+        >
+          {{ filteredLibraries.length }}
+        </span>
       </div>
 
       <div class="flex items-center gap-2">

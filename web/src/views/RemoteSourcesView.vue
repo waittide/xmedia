@@ -57,6 +57,10 @@ import { formatBytes, formatDuration, formatTime } from '@/utils/format'
 
 type ActiveTab = 'opds' | 'subsonic' | 'manage'
 
+const props = defineProps<{
+  embeddedProtocol?: RemoteProtocol
+}>()
+
 const ALBUM_PAGE_SIZE = 30
 
 const { t } = useI18n()
@@ -68,13 +72,14 @@ const snackbarStore = useSnackbarStore()
 const uploadStore = useUploadStore()
 const playerStore = usePlayerStore()
 
-const activeTab = ref<ActiveTab>('opds')
+const isEmbedded = computed(() => Boolean(props.embeddedProtocol))
+const activeTab = ref<ActiveTab>(props.embeddedProtocol ?? 'opds')
 const initLoading = ref(false)
 
 // Source form dialog state
 const formDialogOpen = ref(false)
 const editingSource = ref<RemoteSourceSummaryDto | null>(null)
-const formDefaultProtocol = ref<RemoteProtocol>('opds')
+const formDefaultProtocol = ref<RemoteProtocol>(props.embeddedProtocol ?? 'opds')
 
 // Source management list actions
 const testingSourceId = ref<string | null>(null)
@@ -136,11 +141,37 @@ const previewSong = computed<SubsonicSongDto | null>(() => {
 })
 
 // ---------------- Computed Options ----------------
-const tabOptions = computed<SegmentedOption<ActiveTab>[]>(() => [
-  { value: 'opds', label: t('remote.tabOpds'), icon: LuBookOpen },
-  { value: 'subsonic', label: t('remote.tabSubsonic'), icon: LuDisc3 },
-  { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
-])
+const tabOptions = computed<SegmentedOption<ActiveTab>[]>(() => {
+  if (props.embeddedProtocol === 'opds') {
+    return [
+      { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
+      { value: 'opds', label: t('remote.browseBtn'), icon: LuBookOpen },
+    ]
+  }
+  if (props.embeddedProtocol === 'subsonic') {
+    return [
+      { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
+      { value: 'subsonic', label: t('remote.browseBtn'), icon: LuDisc3 },
+    ]
+  }
+  return [
+    { value: 'opds', label: t('remote.tabOpds'), icon: LuBookOpen },
+    { value: 'subsonic', label: t('remote.tabSubsonic'), icon: LuDisc3 },
+    { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
+  ]
+})
+
+const managedSources = computed<RemoteSourceSummaryDto[]>(() => {
+  if (props.embeddedProtocol === 'opds') return appClientStore.opdsSources
+  if (props.embeddedProtocol === 'subsonic') return appClientStore.subsonicSources
+  return appClientStore.remoteSources
+})
+
+const embeddedHeaderTitle = computed(() => {
+  if (props.embeddedProtocol === 'opds') return t('settings.remoteOpdsTitle')
+  if (props.embeddedProtocol === 'subsonic') return t('settings.remoteSubsonicTitle')
+  return t('remote.title')
+})
 
 const opdsSourceOptions = computed<SelectOption[]>(() =>
   appClientStore.opdsSources.map((src) => ({
@@ -739,6 +770,25 @@ watch(activeTab, (tab) => {
   }
 })
 
+watch(
+  () => props.embeddedProtocol,
+  (proto) => {
+    if (!proto) return
+    formDefaultProtocol.value = proto
+    if (proto === 'opds') {
+      activeTab.value = appClientStore.opdsSources.length > 0 ? 'opds' : 'manage'
+      if (appClientStore.opdsSources.length > 0 && !selectedOpdsId.value) {
+        selectedOpdsId.value = appClientStore.opdsSources[0]!.id
+      }
+    } else {
+      activeTab.value = appClientStore.subsonicSources.length > 0 ? 'subsonic' : 'manage'
+      if (appClientStore.subsonicSources.length > 0 && !selectedSubsonicId.value) {
+        selectedSubsonicId.value = appClientStore.subsonicSources[0]!.id
+      }
+    }
+  },
+)
+
 onMounted(async () => {
   initLoading.value = true
   try {
@@ -752,15 +802,21 @@ onMounted(async () => {
     initLoading.value = false
   }
 
-  const queryTab = route.query.tab
-  if (queryTab === 'opds' || queryTab === 'subsonic' || queryTab === 'manage') {
-    activeTab.value = queryTab
-  } else if (appClientStore.opdsSources.length > 0) {
-    activeTab.value = 'opds'
-  } else if (appClientStore.subsonicSources.length > 0) {
-    activeTab.value = 'subsonic'
+  if (props.embeddedProtocol === 'opds') {
+    activeTab.value = appClientStore.opdsSources.length > 0 ? 'opds' : 'manage'
+  } else if (props.embeddedProtocol === 'subsonic') {
+    activeTab.value = appClientStore.subsonicSources.length > 0 ? 'subsonic' : 'manage'
   } else {
-    activeTab.value = 'manage'
+    const queryTab = route.query.tab
+    if (queryTab === 'opds' || queryTab === 'subsonic' || queryTab === 'manage') {
+      activeTab.value = queryTab
+    } else if (appClientStore.opdsSources.length > 0) {
+      activeTab.value = 'opds'
+    } else if (appClientStore.subsonicSources.length > 0) {
+      activeTab.value = 'subsonic'
+    } else {
+      activeTab.value = 'manage'
+    }
   }
 
   if (appClientStore.opdsSources.length > 0) {
@@ -783,10 +839,18 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6">
-    <!-- Header + MD3 Segmented Tabs (single row, no redundant subtitle) -->
-    <div class="flex flex-wrap items-center justify-between gap-4">
+  <div :class="isEmbedded ? 'space-y-4' : 'mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6'">
+    <!-- Header + MD3 Segmented Tabs -->
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h2
+        v-if="isEmbedded"
+        class="md-title-small flex items-center gap-2 text-[var(--md-sys-color-on-surface)]"
+      >
+        <LuCloud class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+        <span>{{ embeddedHeaderTitle }}</span>
+      </h2>
       <h1
+        v-else
         class="flex items-center gap-2 text-2xl font-bold tracking-tight text-[var(--md-sys-color-on-surface)]"
       >
         <LuCloud class="h-6 w-6 text-[var(--md-sys-color-primary)]" />
@@ -1489,14 +1553,14 @@ onBeforeUnmount(() => {
           <span
             class="md-label-small rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 tabular-nums text-[var(--md-sys-color-on-surface-variant)]"
           >
-            {{ appClientStore.remoteSources.length }}
+            {{ managedSources.length }}
           </span>
         </div>
 
         <button
           type="button"
           class="md-btn md-btn-filled md-btn-sm"
-          @click="openAddSourceDialog('opds')"
+          @click="openAddSourceDialog(embeddedProtocol ?? 'opds')"
         >
           <LuPlus class="h-4 w-4" />
           <span>{{ t('remote.addSource') }}</span>
@@ -1504,22 +1568,37 @@ onBeforeUnmount(() => {
       </div>
 
       <div
-        v-if="appClientStore.remoteSources.length === 0"
+        v-if="managedSources.length === 0"
         class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] px-6 py-16 text-center"
       >
         <div
           class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
         >
-          <LuCloud class="h-6 w-6" />
+          <LuBookOpen v-if="embeddedProtocol === 'opds'" class="h-6 w-6" />
+          <LuDisc3 v-else-if="embeddedProtocol === 'subsonic'" class="h-6 w-6" />
+          <LuCloud v-else class="h-6 w-6" />
         </div>
         <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ t('remote.emptySourcesTitle') }}
+          {{
+            embeddedProtocol === 'opds'
+              ? t('remote.opdsEmptySourcesTitle')
+              : embeddedProtocol === 'subsonic'
+                ? t('remote.subsonicEmptySourcesTitle')
+                : t('remote.emptySourcesTitle')
+          }}
         </p>
         <p class="mx-auto mt-1 max-w-md text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('remote.emptySourcesHint') }}
+          {{
+            embeddedProtocol === 'opds'
+              ? t('remote.opdsEmptySourcesHint')
+              : embeddedProtocol === 'subsonic'
+                ? t('remote.subsonicEmptySourcesHint')
+                : t('remote.emptySourcesHint')
+          }}
         </p>
         <div class="mt-5 flex flex-wrap justify-center gap-2">
           <button
+            v-if="!embeddedProtocol || embeddedProtocol === 'opds'"
             type="button"
             class="md-btn md-btn-sm md-btn-filled"
             @click="openAddSourceDialog('opds')"
@@ -1528,8 +1607,10 @@ onBeforeUnmount(() => {
             <span>{{ t('remote.opdsAddBtn') }}</span>
           </button>
           <button
+            v-if="!embeddedProtocol || embeddedProtocol === 'subsonic'"
             type="button"
-            class="md-btn md-btn-sm md-btn-tonal"
+            class="md-btn md-btn-sm"
+            :class="embeddedProtocol === 'subsonic' ? 'md-btn-filled' : 'md-btn-tonal'"
             @click="openAddSourceDialog('subsonic')"
           >
             <LuDisc3 class="h-3.5 w-3.5" />
@@ -1540,7 +1621,7 @@ onBeforeUnmount(() => {
 
       <div v-else class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <article
-          v-for="source in appClientStore.remoteSources"
+          v-for="source in managedSources"
           :key="source.id"
           class="flex flex-col justify-between gap-3 rounded-[22px] border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-low)] p-4 transition-colors hover:bg-[var(--md-sys-color-surface-container)]"
         >

@@ -31,12 +31,14 @@ const props = withDefaults(
     domain?: MediaKind
     initialTab?: 'cards' | 'sidebar'
     inline?: boolean
+    hideDomainTabs?: boolean
   }>(),
   {
     open: false,
     domain: 'book',
     initialTab: 'cards',
     inline: false,
+    hideDomainTabs: false,
   },
 )
 
@@ -192,7 +194,7 @@ function onDropAt(targetIdx: number): void {
     <!-- Domain Switcher & Cards/Sidebar Tabs -->
     <div class="flex flex-wrap items-center justify-between gap-2.5">
       <div
-        v-if="domainOptions.length > 1"
+        v-if="!hideDomainTabs && domainOptions.length > 1"
         class="inline-flex flex-wrap gap-1 rounded-full bg-[var(--md-sys-color-surface-container)] p-1"
       >
         <button

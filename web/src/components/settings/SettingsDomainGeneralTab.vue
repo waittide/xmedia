@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuAlertCircle, LuCheck, LuCheckCircle2, LuCopy, LuPlay, LuTrash2 } from 'vue-icons-plus/lu'
+import { LuPlay, LuTrash2 } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
 import { usePreferencesStore } from '@/stores/preferences'
 import { formatTime } from '@/utils/format'
@@ -13,14 +13,19 @@ import { useComicI18n } from '@/domains/comic/i18n'
 import type {
   ComicFitMode,
   ComicReaderMode,
+  MediaKind,
   ReadingFlow,
   TranscodeProfile,
   VideoQualityProfile,
 } from '@/types/api'
+import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
-import { useCopyFeedback } from './clipboard'
+
+const props = defineProps<{
+  domain: MediaKind
+}>()
 
 const { t } = useI18n()
 const { t: bookT } = useBookI18n()
@@ -28,10 +33,9 @@ const { t: comicT } = useComicI18n()
 const authStore = useAuthStore()
 const playerStore = usePlayerStore()
 const prefsStore = usePreferencesStore()
-const { copiedKey, copyText } = useCopyFeedback()
 
-const originUrl = computed(() => window.location.origin)
 const bookmarks = ref<BookmarkDto[]>([])
+const bookmarksLoaded = ref(false)
 
 const bookFontOptions = computed(() => [
   { value: 'system-ui', label: bookT('reader.fontSystem') },
@@ -73,39 +77,26 @@ const videoQualityOptions = computed(() => [
   { value: 'p480', label: t('settings.videoQuality480p') },
 ])
 
-const protocolEndpoints = computed(() => {
-  const list: Array<{ key: string; label: string; url: string }> = []
-  if (authStore.hasModule('book')) {
-    list.push(
-      { key: 'book12', label: t('settings.bookOpds12Url'), url: `${originUrl.value}/opds/book/v1.2` },
-      { key: 'book20', label: t('settings.bookOpds20Url'), url: `${originUrl.value}/opds/book/v2` },
-    )
+async function ensureMusicBookmarks(): Promise<void> {
+  if (props.domain !== 'music' || !authStore.hasModule('music') || bookmarksLoaded.value) return
+  bookmarksLoaded.value = true
+  try {
+    bookmarks.value = await musicApi.listBookmarks()
+  } catch {
+    bookmarksLoaded.value = false
   }
-  if (authStore.hasModule('comic')) {
-    list.push({
-      key: 'comicPse',
-      label: t('settings.comicOpdsPseUrl'),
-      url: `${originUrl.value}/opds/comic/v1.2`,
-    })
-  }
-  if (authStore.hasModule('music')) {
-    list.push(
-      { key: 'subServer', label: t('settings.subsonicServerUrl'), url: originUrl.value },
-      { key: 'subRest', label: t('settings.subsonicEndpointUrl'), url: `${originUrl.value}/rest` },
-    )
-  }
-  return list
+}
+
+onMounted(() => {
+  void ensureMusicBookmarks()
 })
 
-onMounted(async () => {
-  if (authStore.hasModule('music')) {
-    try {
-      bookmarks.value = await musicApi.listBookmarks()
-    } catch {
-      // ignore
-    }
-  }
-})
+watch(
+  () => props.domain,
+  () => {
+    void ensureMusicBookmarks()
+  },
+)
 
 function formatBookmarkPos(ms: number): string {
   return formatTime(ms / 1000)
@@ -122,50 +113,11 @@ async function removeBookmark(trackId: string): Promise<void> {
 </script>
 
 <template>
-  <!-- FFmpeg Engine Status -->
-  <section class="md-card-outlined p-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-          {{ t('settings.ffmpegStatusTitle') }}
-        </h2>
-        <p
-          v-if="authStore.capabilities?.ffmpeg.ffmpeg_version"
-          class="md-body-small mt-1 font-mono text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ authStore.capabilities.ffmpeg.ffmpeg_version }}
-        </p>
-      </div>
-      <span
-        v-if="authStore.capabilities?.ffmpeg.ffmpeg_available"
-        class="md-label-medium inline-flex items-center gap-1.5 rounded-full bg-[var(--md-sys-color-success-container)] px-3 py-1 text-[var(--md-sys-color-on-success-container)]"
-      >
-        <LuCheckCircle2 class="h-4 w-4" />
-        <span>{{ t('settings.ffmpegAvailable') }}</span>
-      </span>
-      <span
-        v-else
-        class="md-label-medium inline-flex items-center gap-1.5 rounded-full bg-[var(--md-sys-color-warning-container)] px-3 py-1 text-[var(--md-sys-color-on-warning-container)]"
-      >
-        <LuAlertCircle class="h-4 w-4" />
-        <span>{{ t('settings.ffmpegMissing') }}</span>
-      </span>
-    </div>
-  </section>
-
   <!-- Book Reader Preferences -->
-  <section v-if="authStore.hasModule('book')" class="md-card-outlined space-y-4 p-6">
-    <div>
-      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-        {{ t('settings.bookPrefsTitle') }}
-      </h2>
-      <p
-        v-if="t('settings.bookPrefsDesc')"
-        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('settings.bookPrefsDesc') }}
-      </p>
-    </div>
+  <section v-if="domain === 'book'" class="md-card-outlined space-y-4 p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('settings.bookPrefsTitle') }}
+    </h2>
 
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
@@ -233,18 +185,10 @@ async function removeBookmark(trackId: string): Promise<void> {
   </section>
 
   <!-- Comic Reader Preferences -->
-  <section v-if="authStore.hasModule('comic')" class="md-card-outlined space-y-4 p-6">
-    <div>
-      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-        {{ t('settings.comicPrefsTitle') }}
-      </h2>
-      <p
-        v-if="t('settings.comicPrefsDesc')"
-        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('settings.comicPrefsDesc') }}
-      </p>
-    </div>
+  <section v-else-if="domain === 'comic'" class="md-card-outlined space-y-4 p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('settings.comicPrefsTitle') }}
+    </h2>
 
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div>
@@ -289,18 +233,10 @@ async function removeBookmark(trackId: string): Promise<void> {
   </section>
 
   <!-- Music Playback Preferences & Bookmarks -->
-  <section v-if="authStore.hasModule('music')" class="md-card-outlined space-y-4 p-6">
-    <div>
-      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-        {{ t('settings.playbackDefaultQuality') }}
-      </h2>
-      <p
-        v-if="t('settings.playbackDefaultQualityDesc')"
-        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('settings.playbackDefaultQualityDesc') }}
-      </p>
-    </div>
+  <section v-else-if="domain === 'music'" class="md-card-outlined space-y-4 p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('settings.playbackDefaultQuality') }}
+    </h2>
 
     <div class="max-w-sm">
       <AppSelect
@@ -355,18 +291,10 @@ async function removeBookmark(trackId: string): Promise<void> {
   </section>
 
   <!-- Video Playback Preferences -->
-  <section v-if="authStore.hasModule('video')" class="md-card-outlined space-y-4 p-6">
-    <div>
-      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-        {{ t('settings.videoPrefsTitle') }}
-      </h2>
-      <p
-        v-if="t('settings.videoPrefsDesc')"
-        class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('settings.videoPrefsDesc') }}
-      </p>
-    </div>
+  <section v-else-if="domain === 'video'" class="md-card-outlined space-y-4 p-6">
+    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      {{ t('settings.videoPrefsTitle') }}
+    </h2>
 
     <div class="max-w-md">
       <AppSelect
@@ -385,48 +313,11 @@ async function removeBookmark(trackId: string): Promise<void> {
     />
   </section>
 
-  <!-- Open Protocols Client Guide (OPDS / PSE / OpenSubsonic) -->
-  <section v-if="protocolEndpoints.length > 0" class="md-card-outlined space-y-4 p-6">
-    <div>
-      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-        {{ t('settings.protocolsGuideTitle') }}
-      </h2>
-      <p class="md-body-small mt-1 leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
-        {{ t('settings.protocolsGuideDesc') }}
-      </p>
-    </div>
-
-    <div class="space-y-3">
-      <div v-for="ep in protocolEndpoints" :key="ep.key">
-        <label class="md-label-medium mb-1 block text-[var(--md-sys-color-on-surface-variant)]">
-          {{ ep.label }}
-        </label>
-        <div class="flex items-center gap-2">
-          <input
-            readonly
-            :value="ep.url"
-            class="md-input h-9 min-w-0 flex-1 font-mono text-xs"
-          />
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-filled shrink-0"
-            @click="copyText(ep.key, ep.url)"
-          >
-            <LuCheck v-if="copiedKey === ep.key" class="h-3.5 w-3.5" />
-            <LuCopy v-else class="h-3.5 w-3.5" />
-            <span>{{ copiedKey === ep.key ? t('common.copied') : t('common.copy') }}</span>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="md-card-filled px-3.5 py-2.5 text-xs">
-      <span class="font-semibold text-[var(--md-sys-color-on-surface)]">
-        {{ t('settings.subsonicAuthModes') }}：
-      </span>
-      <span class="text-[var(--md-sys-color-on-surface-variant)]">
-        {{ t('settings.subsonicAuthModesVal') }}
-      </span>
-    </div>
+  <!-- Domain Workspace Layout Customizer -->
+  <section class="md-card-outlined p-6">
+    <h2 class="md-title-small mb-4 text-[var(--md-sys-color-on-surface)]">
+      {{ t('layoutCustomizer.title') }}
+    </h2>
+    <LayoutCustomizerModal :domain="domain" inline hide-domain-tabs />
   </section>
 </template>

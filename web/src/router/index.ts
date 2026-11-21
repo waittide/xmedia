@@ -355,11 +355,16 @@ export const router = createRouter({
           meta: { domain: 'video' as MediaKind },
         },
 
-        // Unified Settings & Standalone Remote Protocol Hub
+        // Unified Settings (with legacy /remote alias redirected into Domain Protocols)
         {
           path: 'remote',
-          name: 'remote-sources',
-          component: () => import('@/views/RemoteSourcesView.vue'),
+          redirect: (to) => {
+            const query: Record<string, string> = { tab: 'domain-protocols' }
+            if (to.query.tab === 'subsonic') {
+              query.domain = 'music'
+            }
+            return { path: '/settings', query }
+          },
         },
         {
           path: 'settings',
@@ -430,10 +435,6 @@ router.beforeEach(async (to) => {
       return '/'
     }
   } else {
-    if (to.name === 'remote-sources') {
-      return '/'
-    }
-
     await auth.bootstrap()
 
     if (auth.needsSetup) {
@@ -467,7 +468,12 @@ router.beforeEach(async (to) => {
   if (routeDomain) {
     await ensureDomainLocale(routeDomain)
   } else if (to.name === 'settings') {
-    const domains = new Set<MediaKind>(['book', 'comic', domainStore.activeDomain])
+    const domains = new Set<MediaKind>([
+      'book',
+      'comic',
+      domainStore.activeDomain,
+      ...auth.enabledModules,
+    ])
     await Promise.all([...domains].map((d) => ensureDomainLocale(d)))
   }
 
