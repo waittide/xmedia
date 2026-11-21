@@ -93,7 +93,7 @@ impl VideoOnlineService {
         Ok(rec.runtime_state.variable)
     }
 
-    fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+    pub(super) fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
         get_or_insert_weak_lock(&self.source_state_locks, id)
     }
 

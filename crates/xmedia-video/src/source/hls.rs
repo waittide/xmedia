@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use regex::Regex;
 use tokio::sync::mpsc;
 use url::Url;
@@ -14,6 +14,8 @@ use xmedia_source::http::{
 };
 
 pub const MAX_M3U8_BYTES: usize = 8 * 1024 * 1024;
+pub const SNIFF_PREFIX_MAX_BYTES: usize = 4096;
+pub const SNIFF_MIN_NON_WS_BYTES: usize = 16;
 pub const STREAM_CONNECT_TIMEOUT_SECS: u64 = 10;
 pub const STREAM_READ_TIMEOUT_SECS: u64 = 30;
 const MAX_CACHED_STREAMING_CLIENTS: usize = 16;
@@ -85,6 +87,32 @@ pub fn get_or_build_streaming_async_client(
         guard.clear();
     }
     Ok(guard.entry(key).or_insert(client).clone())
+}
+
+/// Reads a bounded prefix from `resp` across one or more chunks so prefix sniffing
+/// (HTML/SVG detection and `#EXTM3U` playlist detection) is immune to chunk-boundary splits
+/// such as BOM/whitespace in chunk 1 and `#EXTM3U` or `<html>` in chunk 2.
+pub async fn read_sniff_prefix(
+    resp: &mut reqwest::Response,
+    max_sniff_bytes: usize,
+) -> DomainResult<Bytes> {
+    let mut buf = BytesMut::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| DomainError::Validation(format!("读取上游媒体响应失败: {e}")))?
+    {
+        if chunk.is_empty() {
+            continue;
+        }
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= max_sniff_bytes
+            || strip_bom_and_ascii_ws(&buf).len() >= SNIFF_MIN_NON_WS_BYTES
+        {
+            break;
+        }
+    }
+    Ok(buf.freeze())
 }
 
 pub fn spawn_chunk_stream(
@@ -175,19 +203,44 @@ pub fn is_hls_playlist_response(ct_lower: &str, final_url: &Url, first_chunk: &[
     ct_is_m3u8 || path_is_m3u8
 }
 
+fn is_generic_binary_ct(base: &str) -> bool {
+    matches!(
+        base,
+        "application/octet-stream"
+            | "binary/octet-stream"
+            | "application/force-download"
+            | "application/x-binary"
+            | "application/download"
+    )
+}
+
 pub fn infer_segment_content_type(upstream_ct: Option<&str>, final_url: &Url) -> String {
+    let path_lower = final_url.path().to_ascii_lowercase();
     if let Some(ct) = upstream_ct {
-        let base = ct
-            .split(';')
-            .next()
-            .unwrap_or(ct)
-            .trim()
-            .to_ascii_lowercase();
-        if !base.is_empty() && base != "text/plain" && !is_forbidden_media_ct(&base) {
-            return ct.trim().to_string();
+        let trimmed = ct.trim();
+        let (raw_base, params) = match trimmed.split_once(';') {
+            Some((b, p)) => (b.trim(), Some(p.trim()).filter(|s| !s.is_empty())),
+            None => (trimmed, None),
+        };
+        let base = raw_base.to_ascii_lowercase();
+        if base == "application/mp4" {
+            return if path_lower.ends_with(".m4a") {
+                "audio/mp4".to_string()
+            } else {
+                "video/mp4".to_string()
+            };
+        }
+        if !base.is_empty()
+            && base != "text/plain"
+            && !is_forbidden_media_ct(&base)
+            && !is_generic_binary_ct(&base)
+        {
+            return match params {
+                Some(p) => format!("{base}; {p}"),
+                None => base,
+            };
         }
     }
-    let path_lower = final_url.path().to_ascii_lowercase();
     if path_lower.ends_with(".ts") || path_lower.ends_with(".m2ts") {
         "video/mp2t".to_string()
     } else if path_lower.ends_with(".m4s")
@@ -295,7 +348,13 @@ pub fn rewrite_m3u8_playlist(
     source_id: Option<uuid::Uuid>,
     token: Option<&str>,
 ) -> String {
-    let clean_text = playlist_text.trim_start_matches('\u{feff}');
+    let trimmed_start =
+        playlist_text.trim_start_matches(|c: char| c == '\u{feff}' || c.is_ascii_whitespace());
+    let clean_text = if trimmed_start.starts_with("#EXTM3U") {
+        trimmed_start
+    } else {
+        playlist_text.trim_start_matches('\u{feff}')
+    };
     let mut out = String::with_capacity(clean_text.len() + 256);
 
     for line in clean_text.lines() {

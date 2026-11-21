@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use bytes::Bytes;
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_TYPE, HeaderValue, RANGE, USER_AGENT};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -17,9 +16,10 @@ use xmedia_source::proxy::{
 };
 
 use crate::source::hls::{
-    MAX_M3U8_BYTES, build_hls_proxy_url, build_poster_proxy_url, build_stream_proxy_url,
-    get_or_build_streaming_async_client, infer_segment_content_type, is_forbidden_media_ct,
-    is_hls_playlist_response, looks_like_html_bytes, rewrite_m3u8_playlist, spawn_chunk_stream,
+    MAX_M3U8_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url, build_poster_proxy_url,
+    build_stream_proxy_url, get_or_build_streaming_async_client, infer_segment_content_type,
+    is_forbidden_media_ct, is_hls_playlist_response, looks_like_html_bytes, read_sniff_prefix,
+    rewrite_m3u8_playlist, spawn_chunk_stream,
 };
 use crate::source::model::VideoSourceSpec;
 
@@ -472,7 +472,7 @@ impl VideoOnlineService {
             self.allow_private_ips,
             self.http_config.proxy_url.as_deref(),
         )?;
-        let resp = client
+        let mut resp = client
             .get(validated)
             .headers(header_map)
             .send()
@@ -523,13 +523,21 @@ impl VideoOnlineService {
             .unwrap_or("bytes")
             .to_string();
 
+        let prefix = read_sniff_prefix(&mut resp, SNIFF_PREFIX_MAX_BYTES).await?;
+        if looks_like_html_bytes(&prefix) {
+            return Err(DomainError::Validation(
+                "拒绝转发伪装为媒体的 HTML/SVG 内容".into(),
+            ));
+        }
+        let initial = (!prefix.is_empty()).then_some(prefix);
+
         Ok(ProxyStreamOutcome::Stream(ProxyStreamPayload {
             status: status.as_u16(),
             content_type,
             content_length,
             content_range,
             accept_ranges,
-            stream: spawn_chunk_stream(resp, None),
+            stream: spawn_chunk_stream(resp, initial),
         }))
     }
 
@@ -614,27 +622,17 @@ impl VideoOnlineService {
             .unwrap_or("bytes")
             .to_string();
 
-        // Read first non-empty chunk to sniff `#EXTM3U` safely even when URL lacks `.m3u8`
-        // or after upstream redirects.
-        let mut first_chunk = Bytes::new();
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| DomainError::Validation(format!("读取 HLS 响应失败: {e}")))?
-        {
-            if !chunk.is_empty() {
-                first_chunk = chunk;
-                break;
-            }
-        }
+        // Read bounded multi-chunk prefix so BOM/whitespace or opening tags split across
+        // HTTP chunks still reliably trigger HTML/SVG rejection and `#EXTM3U` sniffing.
+        let prefix = read_sniff_prefix(&mut resp, SNIFF_PREFIX_MAX_BYTES).await?;
 
-        if looks_like_html_bytes(&first_chunk) {
+        if looks_like_html_bytes(&prefix) {
             return Err(DomainError::Validation(
                 "拒绝转发伪装为媒体的 HTML/SVG 内容".into(),
             ));
         }
 
-        if is_hls_playlist_response(&ct_lower, &final_url, &first_chunk) {
+        if is_hls_playlist_response(&ct_lower, &final_url, &prefix) {
             if let Some(len) = content_length
                 && len > MAX_M3U8_BYTES as u64
             {
@@ -643,15 +641,15 @@ impl VideoOnlineService {
                     MAX_M3U8_BYTES
                 )));
             }
-            if first_chunk.len() > MAX_M3U8_BYTES {
+            if prefix.len() > MAX_M3U8_BYTES {
                 return Err(DomainError::Validation(format!(
                     "HLS 播放列表体积超过 {} 字节限制",
                     MAX_M3U8_BYTES
                 )));
             }
 
-            let mut buf = Vec::with_capacity(first_chunk.len().min(64 * 1024));
-            buf.extend_from_slice(&first_chunk);
+            let mut buf = Vec::with_capacity(prefix.len().min(64 * 1024));
+            buf.extend_from_slice(&prefix);
 
             while let Some(chunk) = resp
                 .chunk()
@@ -679,7 +677,7 @@ impl VideoOnlineService {
         }
 
         let content_type = infer_segment_content_type(header_ct.as_deref(), &final_url);
-        let initial = (!first_chunk.is_empty()).then_some(first_chunk);
+        let initial = (!prefix.is_empty()).then_some(prefix);
 
         Ok(HlsProxyOutcome::Segment(ProxyStreamPayload {
             status: status.as_u16(),

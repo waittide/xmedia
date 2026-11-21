@@ -1413,3 +1413,224 @@ async fn ssrf_blocks_loopback_and_redirects_when_allow_private_ips_is_false() {
 fn urlencoding_param(s: &str) -> String {
     form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
+
+fn delayed_chunked_response(content_type: &'static str, chunks: Vec<(Vec<u8>, u64)>) -> Response {
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<xmedia_core::domain::error::DomainResult<bytes::Bytes>>(8);
+    tokio::spawn(async move {
+        for (data, delay_ms) in chunks {
+            if delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            }
+            if tx.send(Ok(bytes::Bytes::from(data))).await.is_err() {
+                break;
+            }
+        }
+    });
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", content_type)
+        .body(Body::from_stream(
+            xmedia_core::infra::stream::MpscByteStream::into_boxed(rx),
+        ))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn proxy_prefix_sniffing_and_segment_ct_normalization_e2e() {
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+
+    let origin_app = Router::new()
+        .route(
+            "/stream/chunked-bom",
+            get(|| async {
+                delayed_chunked_response(
+                    "application/octet-stream",
+                    vec![
+                        (b"\xEF\xBB\xBF  \r\n".to_vec(), 0),
+                        (
+                            b"#EXTM3U\n#EXTINF:5.0,\nseg_chunked.ts\n#EXT-X-ENDLIST\n".to_vec(),
+                            15,
+                        ),
+                    ],
+                )
+            }),
+        )
+        .route(
+            "/stream/chunked-html",
+            get(|| async {
+                delayed_chunked_response(
+                    "application/octet-stream",
+                    vec![
+                        (b"<ht".to_vec(), 0),
+                        (b"ml><script>alert(1)</script></html>".to_vec(), 15),
+                    ],
+                )
+            }),
+        )
+        .route(
+            "/media/disguised-html.mp4",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "video/mp4")
+                    .body(Body::from(
+                        "<!DOCTYPE html><html><script>alert(1)</script></html>",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/media/disguised-svg.bin",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(
+                        "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/media/chunked-mp4.mp4",
+            get(|| async {
+                delayed_chunked_response(
+                    "Video/MP4",
+                    vec![
+                        (b"\x00\x00\x00\x18ftyp".to_vec(), 0),
+                        (b"isom\x00\x00\x02\x00isomiso2".to_vec(), 10),
+                    ],
+                )
+            }),
+        )
+        .route(
+            "/stream/chunked-ts.ts",
+            get(|| async {
+                let mut rest = vec![0xAAu8; 184];
+                rest[0] = 0x11;
+                delayed_chunked_response(
+                    "binary/octet-stream",
+                    vec![(vec![0x47, 0x40, 0x00, 0x10], 0), (rest, 10)],
+                )
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    // 1. hls-proxy multi-chunk split BOM+whitespace before #EXTM3U on extensionless URL
+    let (st, hdrs, body) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/hls-proxy?url={}",
+            urlencoding_param(&format!("{origin}/stream/chunked-bom"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        hdrs.get(header::CONTENT_TYPE).unwrap(),
+        "application/vnd.apple.mpegurl; charset=utf-8"
+    );
+    let playlist = String::from_utf8(body).unwrap();
+    assert!(
+        playlist.starts_with("#EXTM3U\n"),
+        "expected rewritten playlist to start on line 1 with #EXTM3U, got: {playlist:?}"
+    );
+    assert!(playlist.contains(&format!(
+        "/api/v1/video/online/hls-proxy?url={}",
+        urlencoding_param(&format!("{origin}/stream/seg_chunked.ts"))
+    )));
+
+    // 2. hls-proxy & stream-proxy multi-chunk split `<ht` + `ml>...` HTML -> 400 Bad Request
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/hls-proxy?url={}",
+            urlencoding_param(&format!("{origin}/stream/chunked-html"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/stream-proxy?url={}",
+            urlencoding_param(&format!("{origin}/stream/chunked-html"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // 3. stream-proxy disguised HTML (video/mp4) & SVG (application/octet-stream) -> 400 Bad Request
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/stream-proxy?url={}",
+            urlencoding_param(&format!("{origin}/media/disguised-html.mp4"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/stream-proxy?url={}",
+            urlencoding_param(&format!("{origin}/media/disguised-svg.bin"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    // 4. Multi-chunk binary streams preserve all bytes & normalize Content-Type for CompressionLayer
+    let (st, hdrs, mp4_bytes) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/stream-proxy?url={}",
+            urlencoding_param(&format!("{origin}/media/chunked-mp4.mp4"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get(header::CONTENT_TYPE).unwrap(), "video/mp4");
+    assert_eq!(
+        mp4_bytes,
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+    );
+
+    let (st, hdrs, ts_bytes) = get_bytes_with_auth(
+        &app,
+        &format!(
+            "/api/v1/video/online/hls-proxy?url={}",
+            urlencoding_param(&format!("{origin}/stream/chunked-ts.ts"))
+        ),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(hdrs.get(header::CONTENT_TYPE).unwrap(), "video/mp2t");
+    assert_eq!(ts_bytes.len(), 188);
+    assert_eq!(&ts_bytes[..5], &[0x47, 0x40, 0x00, 0x10, 0x11]);
+
+    srv.abort();
+}

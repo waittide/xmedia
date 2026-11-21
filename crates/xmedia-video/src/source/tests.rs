@@ -277,3 +277,112 @@ async fn applecms_guards_against_plain_text_and_403_search_errors() {
     assert!(res_txt.1.contains("403"));
     srv.abort();
 }
+
+#[test]
+fn rewrite_m3u8_playlist_strips_leading_bom_and_whitespace_before_extm3u() {
+    let base_url = Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
+    let playlist = "\u{feff}  \r\n\t#EXTM3U\n#EXTINF:5.0,\nseg0.ts\n#EXT-X-ENDLIST\n";
+    let rewritten = rewrite_m3u8_playlist(playlist, &base_url, None, None);
+    assert!(
+        rewritten.starts_with("#EXTM3U\n"),
+        "expected line 1 to start with #EXTM3U, got: {rewritten:?}"
+    );
+    assert!(rewritten.contains(
+        "/api/v1/video/online/hls-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhls%2Fseg0.ts"
+    ));
+}
+
+#[test]
+fn infer_segment_content_type_normalizes_case_and_generic_binary_for_compression_safety() {
+    assert_eq!(
+        infer_segment_content_type(
+            Some("Video/MP4"),
+            &Url::parse("https://cdn.example.com/media/stream").unwrap()
+        ),
+        "video/mp4"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("  VIDEO/MP2T ; codecs=\"mp2t\" "),
+            &Url::parse("https://cdn.example.com/seg").unwrap()
+        ),
+        "video/mp2t; codecs=\"mp2t\""
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("Audio/AAC"),
+            &Url::parse("https://cdn.example.com/audio").unwrap()
+        ),
+        "audio/aac"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("binary/octet-stream"),
+            &Url::parse("https://cdn.example.com/seg0.ts").unwrap()
+        ),
+        "video/mp2t"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("binary/octet-stream"),
+            &Url::parse("https://cdn.example.com/blob").unwrap()
+        ),
+        "application/octet-stream"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/force-download"),
+            &Url::parse("https://cdn.example.com/movie.mp4").unwrap()
+        ),
+        "video/mp4"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/x-binary"),
+            &Url::parse("https://cdn.example.com/init.m4s").unwrap()
+        ),
+        "video/mp4"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/octet-stream"),
+            &Url::parse("https://cdn.example.com/seg0.ts").unwrap()
+        ),
+        "video/mp2t"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/octet-stream"),
+            &Url::parse("https://cdn.example.com/init.m4s").unwrap()
+        ),
+        "video/mp4"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/octet-stream"),
+            &Url::parse("https://cdn.example.com/movie.mp4").unwrap()
+        ),
+        "video/mp4"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/octet-stream"),
+            &Url::parse("https://cdn.example.com/audio.aac").unwrap()
+        ),
+        "audio/aac"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/octet-stream"),
+            &Url::parse("https://cdn.example.com/enc.key").unwrap()
+        ),
+        "application/octet-stream"
+    );
+    assert_eq!(
+        infer_segment_content_type(
+            Some("application/mp4"),
+            &Url::parse("https://cdn.example.com/video").unwrap()
+        ),
+        "video/mp4"
+    );
+}

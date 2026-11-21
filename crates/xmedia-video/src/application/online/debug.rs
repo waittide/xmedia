@@ -7,7 +7,8 @@ use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
-    format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
+    format_test_failure_summary, format_timeout_step, merge_diagnostics, merge_runtime_state,
+    summarize_steps_outcome,
 };
 
 use crate::source::hls::{build_hls_proxy_url, build_poster_proxy_url, build_stream_proxy_url};
@@ -623,9 +624,14 @@ impl VideoOnlineService {
             format_test_failure_summary(&report.steps)
         };
 
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
+        let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
+        let merged_state = merge_runtime_state(current, final_state);
+
         let _ = self
             .sources
-            .update_test_result(id, final_state, report.ok, Some(last_msg), now)
+            .update_test_result(id, merged_state, report.ok, Some(last_msg), now)
             .await?;
 
         Ok(report)
