@@ -132,15 +132,15 @@
       "title": "$.metadata.title[*]||$.metadata.title",
       "artist": "$.metadata.creator[*]||$.metadata.creator",
       "album": "$.metadata.album[*]||$.metadata.album",
-      "duration": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true';});f&&f.length?String(f.length):'';",
+      "duration": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true'&&x.private!==true;})||fs.find(function(x){return x&&x.name&&/\\.(ogg|flac|m4a)$/i.test(x.name)&&x.private!=='true'&&x.private!==true;});f&&f.length?String(f.length):'';",
       "durationUnit": "s",
       "coverUrl": "https://archive.org/services/img/{{$.metadata.identifier}}",
       "urlId": "$.metadata.identifier"
     },
     "ruleStream": {
       "requestUrl": "https://archive.org/metadata/{{urlId}}",
-      "streamUrl": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true';})||fs.find(function(x){return x&&x.name&&/\\.(ogg|flac|m4a)$/i.test(x.name)&&x.private!=='true';});var id=(result&&result.metadata&&result.metadata.identifier)||'';f&&id?('https://archive.org/download/'+id+'/'+f.name.split('/').map(function(p){return encodeURIComponent(p);}).join('/')):'';",
-      "bitrate": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true';});f&&f.bitrate?String(Math.round(Number(f.bitrate))):'128';"
+      "streamUrl": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true'&&x.private!==true;})||fs.find(function(x){return x&&x.name&&/\\.(ogg|flac|m4a)$/i.test(x.name)&&x.private!=='true'&&x.private!==true;});var id=(result&&result.metadata&&result.metadata.identifier)||'';f&&id?('https://archive.org/download/'+id+'/'+f.name.split('/').map(function(p){return encodeURIComponent(p);}).join('/')):'';",
+      "bitrate": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true'&&x.private!==true;})||fs.find(function(x){return x&&x.name&&/\\.(ogg|flac|m4a)$/i.test(x.name)&&x.private!=='true'&&x.private!==true;});f&&f.bitrate?String(Math.round(Number(f.bitrate))):'128';"
     }
   },
   {
