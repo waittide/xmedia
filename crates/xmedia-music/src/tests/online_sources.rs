@@ -2556,3 +2556,350 @@ async fn regression_raw_json_source_group_sync_and_concurrent_test_source_state_
 
     server.abort();
 }
+
+#[tokio::test]
+async fn regression_explore_categories_preserve_js_pipelines() {
+    use crate::source::MusicSearchRule;
+    use crate::source::engine::parse_explore_categories;
+
+    #[derive(Deserialize)]
+    struct ExploreHitQuery {
+        tag: Option<String>,
+        p: Option<String>,
+        l: Option<String>,
+        extra: Option<String>,
+    }
+
+    let seen_hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_hits_srv = seen_hits.clone();
+
+    let mock_app = Router::new().route(
+        "/cat-js",
+        get(move |Query(q): Query<ExploreHitQuery>| {
+            let hits = seen_hits_srv.clone();
+            async move {
+                let tag = q.tag.unwrap_or_default();
+                let p = q.p.unwrap_or_default();
+                let l = q.l.unwrap_or_default();
+                let extra = q.extra.unwrap_or_default();
+                hits.lock()
+                    .unwrap()
+                    .push(format!("{tag}:p={p}:l={l}:extra={extra}"));
+                axum::Json(serde_json::json!([
+                    { "id": format!("id-{tag}"), "name": format!("Track {tag}"), "artist": "JS Artist" }
+                ]))
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = MusicSourceEngine::new(
+        HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: true,
+            proxy_url: None,
+        },
+        Duration::from_secs(10),
+    );
+
+    let title_url_raw = format!(
+        "AtJsFirst::@js:if (page > 0 && limit > 0) {{ java.toast('AT_JS_TITLE'); '{base}/cat-js?tag=atjs_title&p=' + page + '&l=' + limit + '&extra=' + encodeURIComponent('a::b'); }}\n\
+         TagJsSecond::<JS>\njava.toast('TAG_JS_TITLE');\n'/cat-js?tag=tagjs_title&p=' + page + '&l=' + limit;\n</JS>&&PrefixTag::/cat-js?tag=prefix_tag&p={{{{page}}}}&l={{{{limit}}}}<js>result + '&extra=from_prefix'</js>"
+    );
+    let parsed_title_cats = parse_explore_categories(&title_url_raw, &base);
+    assert_eq!(parsed_title_cats.len(), 3);
+    assert!(parsed_title_cats[0].url.starts_with("@js:"));
+    assert!(parsed_title_cats[1].url.starts_with("<JS>"));
+    assert!(
+        parsed_title_cats[2]
+            .url
+            .starts_with("/cat-js?tag=prefix_tag")
+    );
+
+    // Bare @js: containing '::' is also preserved as default category without splitting on '::'
+    let bare_cats = parse_explore_categories(
+        "@js:'http://example.test/?x=' + encodeURIComponent('a::b')",
+        &base,
+    );
+    assert_eq!(bare_cats.len(), 1);
+    assert!(bare_cats[0].url.starts_with("@js:"));
+
+    let json_arr_atjs_raw = serde_json::json!([
+        {
+            "title": "JsonAtJs",
+            "url": "@JS:java.toast('JSON_AT_JS'); '/cat-js?tag=json_atjs&p=' + page + '&l=' + limit"
+        },
+        {
+            "title": "JsonTagJs",
+            "url": "<js>java.toast('JSON_TAG_JS'); '/cat-js?tag=json_tagjs&p=' + page + '&l=' + limit</js>"
+        },
+        {
+            "title": "JsonPrefixTag",
+            "url": "/cat-js?tag=json_prefix&p={{page}}&l={{limit}}<js>result + '&extra=json_px'</js>"
+        }
+    ])
+    .to_string();
+
+    let json_arr_tagjs_first_raw = serde_json::json!([
+        {
+            "title": "JsonTagFirst",
+            "url": "<js>java.toast('JSON_TAG_FIRST'); '/cat-js?tag=json_tag_first&p=' + page + '&l=' + limit</js>"
+        }
+    ])
+    .to_string();
+
+    let base_clone = base.clone();
+    let title_url_raw_clone = title_url_raw.clone();
+    let json_arr_atjs_clone = json_arr_atjs_raw.clone();
+    let json_arr_tagjs_first_clone = json_arr_tagjs_first_raw.clone();
+    tokio::task::spawn_blocking(move || {
+        let search_rule = MusicSearchRule {
+            track_list: Some("$".into()),
+            track_id: Some("$.id".into()),
+            title: Some("$.name".into()),
+            artist: Some("$.artist".into()),
+            ..Default::default()
+        };
+
+        // 1. Title::url syntax: explore_url = None (categories[0] = @js:) and Some(cat.url) for all 3
+        let spec_title = MusicSourceSpec {
+            source_name: "Title JS Explore".into(),
+            source_url: base_clone.clone(),
+            explore_url: Some(title_url_raw_clone),
+            rule_search: Some(search_rule.clone()),
+            ..Default::default()
+        };
+
+        let out_none = engine
+            .explore_sync(&spec_title, SourceRuntimeState::default(), None, 2, 11)
+            .unwrap();
+        assert_eq!(out_none.data.tracks[0].title, "Track atjs_title");
+        assert_eq!(out_none.diagnostics.toasts, vec!["AT_JS_TITLE"]);
+        assert_eq!(out_none.data.categories.len(), 3);
+
+        for (idx, expected_title, expected_toast) in [
+            (0usize, "Track atjs_title", "AT_JS_TITLE"),
+            (1usize, "Track tagjs_title", "TAG_JS_TITLE"),
+        ] {
+            let cat_url = out_none.data.categories[idx].url.clone();
+            let out_cat = engine
+                .explore_sync(
+                    &spec_title,
+                    SourceRuntimeState::default(),
+                    Some(&cat_url),
+                    3,
+                    12,
+                )
+                .unwrap();
+            assert_eq!(out_cat.data.tracks[0].title, expected_title);
+            assert_eq!(out_cat.diagnostics.toasts, vec![expected_toast]);
+        }
+        let cat2_url = out_none.data.categories[2].url.clone();
+        let out_cat2 = engine
+            .explore_sync(
+                &spec_title,
+                SourceRuntimeState::default(),
+                Some(&cat2_url),
+                4,
+                13,
+            )
+            .unwrap();
+        assert_eq!(out_cat2.data.tracks[0].title, "Track prefix_tag");
+
+        // 2. JSON array syntax with @JS: as categories[0]
+        let spec_json_at = MusicSourceSpec {
+            source_name: "JSON AtJS Explore".into(),
+            source_url: base_clone.clone(),
+            explore_url: Some(json_arr_atjs_clone),
+            rule_search: Some(search_rule.clone()),
+            ..Default::default()
+        };
+        let out_json_none = engine
+            .explore_sync(&spec_json_at, SourceRuntimeState::default(), None, 5, 14)
+            .unwrap();
+        assert_eq!(out_json_none.data.tracks[0].title, "Track json_atjs");
+        assert_eq!(out_json_none.diagnostics.toasts, vec!["JSON_AT_JS"]);
+        assert_eq!(out_json_none.data.categories.len(), 3);
+
+        let json_tag_url = out_json_none.data.categories[1].url.clone();
+        let out_json_tag = engine
+            .explore_sync(
+                &spec_json_at,
+                SourceRuntimeState::default(),
+                Some(&json_tag_url),
+                6,
+                15,
+            )
+            .unwrap();
+        assert_eq!(out_json_tag.data.tracks[0].title, "Track json_tagjs");
+        assert_eq!(out_json_tag.diagnostics.toasts, vec!["JSON_TAG_JS"]);
+
+        let json_px_url = out_json_none.data.categories[2].url.clone();
+        let out_json_px = engine
+            .explore_sync(
+                &spec_json_at,
+                SourceRuntimeState::default(),
+                Some(&json_px_url),
+                7,
+                16,
+            )
+            .unwrap();
+        assert_eq!(out_json_px.data.tracks[0].title, "Track json_prefix");
+
+        // 3. JSON array syntax with <js>...</js> as categories[0] and explore_url = None
+        let spec_json_tag = MusicSourceSpec {
+            source_name: "JSON TagJS First".into(),
+            source_url: base_clone,
+            explore_url: Some(json_arr_tagjs_first_clone),
+            rule_search: Some(search_rule),
+            ..Default::default()
+        };
+        let out_tag_first = engine
+            .explore_sync(&spec_json_tag, SourceRuntimeState::default(), None, 8, 17)
+            .unwrap();
+        assert_eq!(out_tag_first.data.tracks[0].title, "Track json_tag_first");
+        assert_eq!(out_tag_first.diagnostics.toasts, vec!["JSON_TAG_FIRST"]);
+    })
+    .await
+    .unwrap();
+
+    // 4. HTTP POST /api/v1/music/online/explore with Title::url & JSON array JS categories + rejection guard
+    let h = setup_online_test_harness(true).await;
+    let source_json = serde_json::json!({
+        "sourceName": "HTTP JS Explore Categories",
+        "sourceUrl": base,
+        "enabled": true,
+        "exploreUrl": json_arr_atjs_raw,
+        "loginUrl": "function login() { source.setVariable('HTTP_ADMIN_SECRET'); return 'ok'; }",
+        "ruleSearch": {
+            "trackList": "$",
+            "trackId": "$.id",
+            "title": "$.name",
+            "artist": "$.artist"
+        }
+    });
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": source_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let imp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let sid = imp["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st, _, _) = send_json(
+        &h.app,
+        "POST",
+        &format!("/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({ "login_info": {}, "action": "login()" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // 4a. Non-admin explore_url = None executes categories[0] (@JS:) and returns raw JS category URLs
+    let (st, _, body) = send_json(
+        &h.app,
+        "POST",
+        "/online/explore",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "page": 9,
+            "limit": 18
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let resp_none: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(resp_none["results"][0]["title"], "Track json_atjs");
+    let cats = resp_none["categories"].as_array().unwrap();
+    assert_eq!(cats.len(), 3);
+    assert!(cats[0]["url"].as_str().unwrap().starts_with("@JS:"));
+    assert!(cats[1]["url"].as_str().unwrap().starts_with("<js>"));
+
+    // 4b. Non-admin selects categories[1].url (<js>...</js>) and categories[2].url (prefix+<js>)
+    for (cat_idx, expected_title) in [(1usize, "Track json_tagjs"), (2usize, "Track json_prefix")] {
+        let chosen_url = cats[cat_idx]["url"].as_str().unwrap();
+        let (st, _, body) = send_json(
+            &h.app,
+            "POST",
+            "/online/explore",
+            &h.member_token,
+            Some(serde_json::json!({
+                "source_id": sid,
+                "explore_url": chosen_url,
+                "page": 10,
+                "limit": 19
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let resp_cat: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(resp_cat["results"][0]["title"], expected_title);
+    }
+
+    // 4c. Non-matching malicious @js: and <js>/<JS> overrides remain rejected with 400 Bad Request
+    for malicious in [
+        format!("@js:java.toast('PWN'); source.setVariable('PWNED'); '{base}/cat-js?tag=pwn'"),
+        format!("<js>java.toast('PWN'); source.setVariable('PWNED'); '{base}/cat-js?tag=pwn'</js>"),
+        format!("<JS>java.toast('PWN'); source.setVariable('PWNED'); '{base}/cat-js?tag=pwn'</JS>"),
+    ] {
+        let (st, _, _) = send_json(
+            &h.app,
+            "POST",
+            "/online/explore",
+            &h.member_token,
+            Some(serde_json::json!({
+                "source_id": sid,
+                "explore_url": malicious
+            })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+    }
+
+    // Admin variable must remain intact
+    let (st, _, body) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{sid}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let var_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(var_resp["variable"], "HTTP_ADMIN_SECRET");
+
+    {
+        let hits = seen_hits.lock().unwrap();
+        assert_eq!(
+            hits.as_slice(),
+            &[
+                "atjs_title:p=2:l=11:extra=a::b",
+                "atjs_title:p=3:l=12:extra=a::b",
+                "tagjs_title:p=3:l=12:extra=",
+                "prefix_tag:p=4:l=13:extra=from_prefix",
+                "json_atjs:p=5:l=14:extra=",
+                "json_tagjs:p=6:l=15:extra=",
+                "json_prefix:p=7:l=16:extra=json_px",
+                "json_tag_first:p=8:l=17:extra=",
+                "json_atjs:p=9:l=18:extra=",
+                "json_tagjs:p=10:l=19:extra=",
+                "json_prefix:p=10:l=19:extra=json_px",
+            ]
+        );
+    }
+
+    server.abort();
+}

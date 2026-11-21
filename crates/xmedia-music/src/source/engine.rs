@@ -477,6 +477,93 @@ fn apply_stream_headers(
     }
 }
 
+fn normalize_explore_category_url(raw_url: &str, base_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if split_js_pipeline(trimmed).is_some() || trimmed.contains("{{") || trimmed.contains("}}") {
+        return trimmed.to_string();
+    }
+    resolve_relative_url(trimmed, base_url)
+}
+
+fn split_explore_entries_outside_js(raw: &str) -> Vec<&str> {
+    let bytes = raw.as_bytes();
+    let mut entries = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut in_tag_js = false;
+    let mut in_at_js = false;
+
+    while i < bytes.len() {
+        if !in_tag_js
+            && bytes
+                .get(i..i + 4)
+                .is_some_and(|s| s.eq_ignore_ascii_case(b"<js>"))
+        {
+            in_tag_js = true;
+            in_at_js = false;
+            i += 4;
+            continue;
+        }
+        if in_tag_js
+            && bytes
+                .get(i..i + 5)
+                .is_some_and(|s| s.eq_ignore_ascii_case(b"</js>"))
+        {
+            in_tag_js = false;
+            i += 5;
+            continue;
+        }
+        if !in_tag_js
+            && !in_at_js
+            && bytes
+                .get(i..i + 4)
+                .is_some_and(|s| s.eq_ignore_ascii_case(b"@js:"))
+        {
+            in_at_js = true;
+            i += 4;
+            continue;
+        }
+        if !in_tag_js {
+            if bytes[i] == b'\n' || bytes[i] == b'\r' {
+                entries.push(&raw[start..i]);
+                in_at_js = false;
+                i += 1;
+                start = i;
+                continue;
+            }
+            if !in_at_js && bytes.get(i..i + 2) == Some(b"&&") {
+                entries.push(&raw[start..i]);
+                i += 2;
+                start = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    if start < bytes.len() {
+        entries.push(&raw[start..]);
+    }
+    entries
+}
+
+fn split_title_and_explore_url(entry: &str) -> Option<(&str, &str)> {
+    let lower = entry.to_ascii_lowercase();
+    let js_offset = [lower.find("@js:"), lower.find("<js>")]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(entry.len());
+    let (title, url) = entry.split_once("::")?;
+    if title.len() < js_offset {
+        Some((title, url))
+    } else {
+        None
+    }
+}
+
 pub fn parse_explore_categories(raw: &str, base_url: &str) -> Vec<OnlineMusicExploreCategory> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -502,7 +589,7 @@ pub fn parse_explore_categories(raw: &str, base_url: &str) -> Vec<OnlineMusicExp
             if !title.is_empty() && !url.is_empty() {
                 out.push(OnlineMusicExploreCategory {
                     title: title.to_string(),
-                    url: resolve_relative_url(url, base_url),
+                    url: normalize_explore_category_url(url, base_url),
                 });
             }
         }
@@ -512,30 +599,29 @@ pub fn parse_explore_categories(raw: &str, base_url: &str) -> Vec<OnlineMusicExp
     }
 
     let mut out = Vec::new();
-    for segment in trimmed.split(['\n', '\r']) {
-        for sub in segment.split("&&") {
-            let entry = sub.trim();
-            if entry.is_empty() {
-                continue;
-            }
-            if let Some((title, url)) = entry.split_once("::") {
-                let t = title.trim();
-                let u = url.trim();
-                if !t.is_empty() && !u.is_empty() {
-                    out.push(OnlineMusicExploreCategory {
-                        title: t.to_string(),
-                        url: resolve_relative_url(u, base_url),
-                    });
-                }
-            } else if entry.starts_with("http://")
-                || entry.starts_with("https://")
-                || entry.starts_with('/')
-            {
+    for raw_entry in split_explore_entries_outside_js(trimmed) {
+        let entry = raw_entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if let Some((title, url)) = split_title_and_explore_url(entry) {
+            let t = title.trim();
+            let u = url.trim();
+            if !t.is_empty() && !u.is_empty() {
                 out.push(OnlineMusicExploreCategory {
-                    title: "默认榜单".to_string(),
-                    url: resolve_relative_url(entry, base_url),
+                    title: t.to_string(),
+                    url: normalize_explore_category_url(u, base_url),
                 });
             }
+        } else if entry.starts_with("http://")
+            || entry.starts_with("https://")
+            || entry.starts_with('/')
+            || split_js_pipeline(entry).is_some()
+        {
+            out.push(OnlineMusicExploreCategory {
+                title: "默认榜单".to_string(),
+                url: normalize_explore_category_url(entry, base_url),
+            });
         }
     }
     out
