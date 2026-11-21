@@ -9,6 +9,7 @@ mod tests;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use toasty::Db;
 use xmedia_core::application::library::LibraryService;
@@ -16,19 +17,22 @@ use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_source::http::HttpClientConfig;
 
 use application::MusicServices;
 use application::catalog::MusicCatalogService;
 use application::collection::MusicCollectionService;
 use application::ingest::MusicIngestService;
+use application::online::MusicOnlineService;
 use application::streaming::MusicStreamingService;
 use infra::audio_probe::LoftyAudioProbe;
 use infra::lyrics::HybridLyricsResolver;
 use infra::persistence::repositories::{
-    ToastyMusicCatalogRepository, ToastyMusicCollectionRepository,
+    ToastyMusicCatalogRepository, ToastyMusicCollectionRepository, ToastyMusicSourceRepository,
 };
 use infra::storage::{LocalMusicScanner, LocalMusicStorage};
 use infra::transcoder::FfmpegAudioTranscoder;
+use source::MusicSourceEngine;
 
 pub use infra::persistence::{ensure_music_schema, register_music_models};
 
@@ -40,8 +44,29 @@ pub fn init_music_module(
     library_service: &LibraryService,
     events: Arc<dyn RealtimeEventPort>,
 ) -> DomainResult<MusicServices> {
+    init_music_module_with_allow_private_ips(
+        db,
+        data_dir,
+        ffmpeg,
+        libraries_repo,
+        library_service,
+        events,
+        false,
+    )
+}
+
+pub fn init_music_module_with_allow_private_ips(
+    db: Db,
+    data_dir: &Path,
+    ffmpeg: FfmpegToolkit,
+    libraries_repo: Arc<dyn LibraryRepository>,
+    library_service: &LibraryService,
+    events: Arc<dyn RealtimeEventPort>,
+    allow_private_ips: bool,
+) -> DomainResult<MusicServices> {
     let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(db.clone()));
-    let collections_repo = Arc::new(ToastyMusicCollectionRepository::new(db));
+    let collections_repo = Arc::new(ToastyMusicCollectionRepository::new(db.clone()));
+    let sources_repo = Arc::new(ToastyMusicSourceRepository::new(db));
 
     let storage = Arc::new(LocalMusicStorage::new(data_dir)?);
     let scanner = Arc::new(LocalMusicScanner);
@@ -80,10 +105,24 @@ pub fn init_music_module(
         transcoder,
     ));
 
+    let engine = MusicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips,
+            ..Default::default()
+        },
+        Duration::from_secs(45),
+    );
+    let online = Arc::new(MusicOnlineService::with_engine(
+        sources_repo,
+        engine,
+        allow_private_ips,
+    ));
+
     Ok(MusicServices::new(
         Arc::new(catalog),
         collection,
         ingest,
         streaming,
+        online,
     ))
 }

@@ -1,3 +1,4 @@
+pub mod online;
 pub mod rest;
 pub mod state;
 pub mod subsonic;
@@ -12,7 +13,7 @@ use crate::application::streaming::ResolvedAudioStream;
 use state::MusicHttpState;
 
 pub fn rest_router(state: MusicHttpState) -> Router {
-    rest::router().with_state(state)
+    rest::router().merge(online::router()).with_state(state)
 }
 
 pub fn subsonic_router(state: MusicHttpState) -> Router {
