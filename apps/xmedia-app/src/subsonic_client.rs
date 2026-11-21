@@ -1,5 +1,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
@@ -14,13 +15,15 @@ use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 use url::Url;
 use uuid::Uuid;
 
 use crate::opds_client::{
     LimitedByteStream, MAX_IMAGE_BYTES, MAX_METADATA_BYTES, ReadLimitError, RemoteImportResultDto,
     apply_proxy_security_headers, is_safe_raster_image_content_type,
-    parse_filename_from_content_disposition, read_response_text_limited, tokio_util_file_stream,
+    parse_filename_from_content_disposition, read_response_text_limited,
+    sanitize_filename_component, tokio_util_file_stream,
 };
 use crate::remote_sources::{RemoteSource, normalize_remote_url};
 
@@ -28,7 +31,8 @@ const SUBSONIC_API_VERSION: &str = "1.16.1";
 const SUBSONIC_CLIENT_NAME: &str = "XMedia";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_IMPORT_BYTES: u64 = 512 * 1024 * 1024;
+/// Leave 1 MiB headroom for multipart framing under the 512 MiB local upload limit.
+const MAX_IMPORT_BYTES: u64 = 511 * 1024 * 1024;
 const MAX_STREAM_ERROR_SNIFF_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,14 +146,24 @@ impl std::error::Error for SubsonicError {}
 pub struct SubsonicClient {
     secure: reqwest::Client,
     insecure: reqwest::Client,
+    local_upload: reqwest::Client,
+    import_semaphore: Arc<Semaphore>,
     temp_dir: PathBuf,
 }
 
 impl SubsonicClient {
-    pub fn new(secure: reqwest::Client, insecure: reqwest::Client, temp_dir: PathBuf) -> Self {
+    pub fn new(
+        secure: reqwest::Client,
+        insecure: reqwest::Client,
+        local_upload: reqwest::Client,
+        import_semaphore: Arc<Semaphore>,
+        temp_dir: PathBuf,
+    ) -> Self {
         Self {
             secure,
             insecure,
+            local_upload,
+            import_semaphore,
             temp_dir,
         }
     }
@@ -366,10 +380,10 @@ impl SubsonicClient {
 
         let albums = inner
             .pointer("/albumList2/album")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| parse_album_dto(&source.id, v))
+            .map(|v| {
+                json_value_items(v)
+                    .into_iter()
+                    .filter_map(|item| parse_album_dto(&source.id, item))
                     .collect()
             })
             .unwrap_or_default();
@@ -393,10 +407,10 @@ impl SubsonicClient {
             .ok_or_else(|| SubsonicError::Upstream("Invalid Subsonic album payload".into()))?;
         let songs = album_val
             .get("song")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| parse_song_dto(&source.id, v))
+            .map(|v| {
+                json_value_items(v)
+                    .into_iter()
+                    .filter_map(|item| parse_song_dto(&source.id, item))
                     .collect()
             })
             .unwrap_or_default();
@@ -425,19 +439,19 @@ impl SubsonicClient {
         let sr = inner.get("searchResult3");
         let albums = sr
             .and_then(|v| v.get("album"))
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| parse_album_dto(&source.id, v))
+            .map(|v| {
+                json_value_items(v)
+                    .into_iter()
+                    .filter_map(|item| parse_album_dto(&source.id, item))
                     .collect()
             })
             .unwrap_or_default();
         let songs = sr
             .and_then(|v| v.get("song"))
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| parse_song_dto(&source.id, v))
+            .map(|v| {
+                json_value_items(v)
+                    .into_iter()
+                    .filter_map(|item| parse_song_dto(&source.id, item))
                     .collect()
             })
             .unwrap_or_default();
@@ -619,11 +633,9 @@ impl SubsonicClient {
                 out_headers.insert(hdr, axum_val);
             }
         }
-        // Only advertise Accept-Ranges: bytes when upstream supports Range or provides Content-Length.
+        // Only advertise Accept-Ranges: bytes when upstream confirms Range support.
         if !out_headers.contains_key(ACCEPT_RANGES)
-            && (status == StatusCode::PARTIAL_CONTENT
-                || out_headers.contains_key(CONTENT_RANGE)
-                || out_headers.contains_key(CONTENT_LENGTH))
+            && (status == StatusCode::PARTIAL_CONTENT || out_headers.contains_key(CONTENT_RANGE))
         {
             out_headers.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
         }
@@ -648,6 +660,12 @@ impl SubsonicClient {
         local_gateway_url: &str,
         local_token: &str,
     ) -> Result<RemoteImportResultDto, SubsonicError> {
+        let _import_permit = self
+            .import_semaphore
+            .acquire()
+            .await
+            .map_err(|_| SubsonicError::Internal("Import concurrency limiter closed".into()))?;
+
         let mut resp = self
             .fetch_song_binary(source, "download.view", song_id)
             .await;
@@ -738,7 +756,7 @@ impl SubsonicClient {
 
         let upload_url = format!("{local_gateway_url}/api/v1/music/tracks/upload");
         let upload_resp = self
-            .secure
+            .local_upload
             .post(&upload_url)
             .bearer_auth(local_token)
             .multipart(form)
@@ -852,6 +870,16 @@ impl Drop for TempAudioFile {
     }
 }
 
+async fn create_private_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        opts.mode(0o600);
+    }
+    opts.open(path).await
+}
+
 async fn stream_audio_to_temp_file(
     resp: reqwest::Response,
     max_bytes: u64,
@@ -861,7 +889,7 @@ async fn stream_audio_to_temp_file(
         && len > max_bytes
     {
         return Err(SubsonicError::TooLarge(format!(
-            "Remote audio exceeds 512MB import limit ({len} bytes)"
+            "Remote audio exceeds 511MB import limit ({len} bytes)"
         )));
     }
 
@@ -869,11 +897,14 @@ async fn stream_audio_to_temp_file(
         .await
         .map_err(|e| SubsonicError::Internal(format!("Failed to prepare temp directory: {e}")))?;
     let path = temp_dir.join(format!("xmedia-subsonic-import-{}.tmp", Uuid::new_v4()));
-    let mut file = tokio::fs::File::create(&path)
+    // Declare RAII guard BEFORE opening the file handle so `file` drops first (Windows unlink safety).
+    let mut guard = TempAudioFile {
+        path: path.clone(),
+        size: 0,
+    };
+    let mut file = create_private_temp_file(&path)
         .await
         .map_err(|e| SubsonicError::Internal(format!("Failed to create temp audio file: {e}")))?;
-    // Immediately attach RAII guard so stream errors, flush failures, or task cancellation clean up.
-    let mut guard = TempAudioFile { path, size: 0 };
 
     let mut stream = resp.bytes_stream();
     while let Some(chunk_res) = stream.next().await {
@@ -884,7 +915,7 @@ async fn stream_audio_to_temp_file(
         if guard.size > max_bytes {
             drop(file);
             return Err(SubsonicError::TooLarge(
-                "Remote audio exceeded 512MB import limit".to_string(),
+                "Remote audio exceeded 511MB import limit".to_string(),
             ));
         }
         file.write_all(&chunk).await.map_err(|err| {
@@ -894,6 +925,13 @@ async fn stream_audio_to_temp_file(
     file.flush()
         .await
         .map_err(|e| SubsonicError::Internal(format!("Failed flushing audio temp file: {e}")))?;
+
+    if guard.size == 0 {
+        drop(file);
+        return Err(SubsonicError::Upstream(
+            "Remote Subsonic server returned an empty audio payload".to_string(),
+        ));
+    }
 
     Ok(guard)
 }
@@ -933,6 +971,12 @@ pub fn build_subsonic_url(
             parsed.scheme()
         )));
     }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(SubsonicError::BadRequest(
+            "Subsonic base URL must not contain embedded credentials".to_string(),
+        ));
+    }
+    parsed.set_fragment(None);
 
     let endpoint_clean = endpoint.trim_start_matches('/');
     {
@@ -958,8 +1002,23 @@ pub fn build_subsonic_url(
         }
     }
 
-    let salt = Uuid::new_v4().simple().to_string()[..12].to_string();
+    let preserved_query: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(k, _)| {
+            !matches!(
+                k.as_ref(),
+                "u" | "t" | "s" | "p" | "apiKey" | "v" | "c" | "f"
+            ) && !extra_params.iter().any(|(ek, _)| ek == k)
+        })
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+
+    let salt = Uuid::new_v4().simple().to_string();
     let mut pairs = parsed.query_pairs_mut();
+    pairs.clear();
+    for (k, v) in preserved_query {
+        pairs.append_pair(&k, &v);
+    }
 
     let user = username.trim();
     if !user.is_empty() {
@@ -983,6 +1042,14 @@ pub fn build_subsonic_url(
     drop(pairs);
 
     Ok(parsed.to_string())
+}
+
+fn json_value_items(value: &Value) -> Vec<&Value> {
+    match value {
+        Value::Array(arr) => arr.iter().collect(),
+        Value::Object(_) => vec![value],
+        _ => Vec::new(),
+    }
 }
 
 fn extract_subsonic_ok(root: &Value) -> Result<&Value, SubsonicError> {
@@ -1146,11 +1213,7 @@ fn is_supported_audio_ext(ext: &str) -> bool {
 }
 
 fn sanitize_base_name(raw: &str) -> String {
-    raw.rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(raw)
-        .trim()
-        .replace(['\0', '\r', '\n', ':', '*', '?', '"', '<', '>', '|'], "_")
+    sanitize_filename_component(raw)
 }
 
 fn resolve_audio_filename(
@@ -1164,20 +1227,22 @@ fn resolve_audio_filename(
     let cd_name = content_disposition.and_then(parse_filename_from_content_disposition);
 
     let base = filename_hint
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
         .map(sanitize_base_name)
+        .filter(|s| !s.is_empty())
         .or_else(|| {
             cd_name
-                .filter(|s| !s.is_empty())
                 .map(|s| sanitize_base_name(&s))
+                .filter(|s| !s.is_empty())
         })
-        .or_else(|| {
-            meta_title
-                .filter(|s| !s.trim().is_empty())
-                .map(sanitize_base_name)
-        })
-        .unwrap_or_else(|| format!("track-{song_id}"));
+        .or_else(|| meta_title.map(sanitize_base_name).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| {
+            let safe_id = sanitize_base_name(song_id);
+            if safe_id.is_empty() {
+                "track".to_string()
+            } else {
+                format!("track-{safe_id}")
+            }
+        });
 
     if let Some(ext) = std::path::Path::new(&base)
         .extension()

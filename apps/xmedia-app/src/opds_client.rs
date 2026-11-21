@@ -1,6 +1,7 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,7 @@ use quick_xml::events::{BytesStart, Event};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Semaphore;
 use url::Url;
 use uuid::Uuid;
 
@@ -26,8 +28,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 12 * 1024 * 1024;
-const MAX_IMPORT_BYTES: u64 = 512 * 1024 * 1024;
+/// Leave 1 MiB headroom for multipart framing under the 512 MiB local upload limit.
+const MAX_IMPORT_BYTES: u64 = 511 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 10;
+const MAX_XML_DEPTH: usize = 64;
+const MAX_SANITIZED_FILENAME_CHARS: usize = 120;
 
 pub(crate) fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
@@ -214,14 +219,24 @@ impl std::error::Error for OpdsError {}
 pub struct OpdsClient {
     secure: reqwest::Client,
     insecure: reqwest::Client,
+    local_upload: reqwest::Client,
+    import_semaphore: Arc<Semaphore>,
     temp_dir: PathBuf,
 }
 
 impl OpdsClient {
-    pub fn new(secure: reqwest::Client, insecure: reqwest::Client, temp_dir: PathBuf) -> Self {
+    pub fn new(
+        secure: reqwest::Client,
+        insecure: reqwest::Client,
+        local_upload: reqwest::Client,
+        import_semaphore: Arc<Semaphore>,
+        temp_dir: PathBuf,
+    ) -> Self {
         Self {
             secure,
             insecure,
+            local_upload,
+            import_semaphore,
             temp_dir,
         }
     }
@@ -578,6 +593,12 @@ impl OpdsClient {
         local_gateway_url: &str,
         local_token: &str,
     ) -> Result<RemoteImportResultDto, OpdsError> {
+        let _import_permit = self
+            .import_semaphore
+            .acquire()
+            .await
+            .map_err(|_| OpdsError::Internal("Import concurrency limiter closed".into()))?;
+
         let target_url = resolve_target_url(&source.url, Some(download_url))?;
         let req = self.client_for(source.allow_insecure_tls).get(&target_url);
         let req = self.apply_auth(req, &source.username, &source.password);
@@ -600,7 +621,7 @@ impl OpdsClient {
             && len > MAX_IMPORT_BYTES
         {
             return Err(OpdsError::TooLarge(format!(
-                "Remote file exceeds 512MB import limit ({len} bytes)"
+                "Remote file exceeds 511MB import limit ({len} bytes)"
             )));
         }
 
@@ -611,14 +632,18 @@ impl OpdsClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
+        if is_disallowed_import_content_type(&content_type) {
+            return Err(OpdsError::Unsupported(format!(
+                "Remote OPDS download returned disallowed Content-Type '{content_type}'"
+            )));
+        }
         let content_disposition = resp
             .headers()
             .get(reqwest::header::CONTENT_DISPOSITION)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
 
-        let temp_guard =
-            stream_response_to_temp_file(resp, MAX_IMPORT_BYTES, &self.temp_dir).await?;
+        // Validate format and destination route before streaming potentially large payloads to disk.
         let (filename, format) = resolve_import_filename_and_format(
             filename_hint,
             content_disposition.as_deref(),
@@ -639,6 +664,14 @@ impl OpdsClient {
             }
         };
 
+        let temp_guard =
+            stream_response_to_temp_file(resp, MAX_IMPORT_BYTES, &self.temp_dir).await?;
+        if temp_guard.size == 0 {
+            return Err(OpdsError::Upstream(
+                "Remote OPDS download returned an empty file".into(),
+            ));
+        }
+
         let file = tokio::fs::File::open(&temp_guard.path).await.map_err(|e| {
             OpdsError::Internal(format!("Failed to open downloaded temp file: {e}"))
         })?;
@@ -652,7 +685,7 @@ impl OpdsClient {
         let form = reqwest::multipart::Form::new().part("file", part);
 
         let upload_resp = self
-            .secure
+            .local_upload
             .post(&upload_endpoint)
             .bearer_auth(local_token)
             .multipart(form)
@@ -760,6 +793,29 @@ impl Drop for TempDownloadFile {
     }
 }
 
+fn is_disallowed_import_content_type(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        essence.as_str(),
+        "text/html" | "application/xhtml+xml" | "image/svg+xml"
+    )
+}
+
+async fn create_private_temp_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let mut opts = tokio::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        opts.mode(0o600);
+    }
+    opts.open(path).await
+}
+
 async fn stream_response_to_temp_file(
     resp: reqwest::Response,
     max_bytes: u64,
@@ -769,11 +825,14 @@ async fn stream_response_to_temp_file(
         .await
         .map_err(|e| OpdsError::Internal(format!("Failed to prepare temp directory: {e}")))?;
     let path = temp_dir.join(format!("xmedia-opds-import-{}.tmp", Uuid::new_v4()));
-    let mut file = tokio::fs::File::create(&path)
+    // Declare RAII guard BEFORE opening the file handle so `file` drops first (Windows unlink safety).
+    let mut guard = TempDownloadFile {
+        path: path.clone(),
+        size: 0,
+    };
+    let mut file = create_private_temp_file(&path)
         .await
         .map_err(|e| OpdsError::Internal(format!("Failed to create temp file: {e}")))?;
-    // Immediately attach RAII guard so stream errors, flush failures, or task cancellation clean up.
-    let mut guard = TempDownloadFile { path, size: 0 };
 
     let mut stream = resp.bytes_stream();
     while let Some(chunk_res) = stream.next().await {
@@ -870,6 +929,11 @@ fn resolve_target_url(source_base: &str, target_opt: Option<&str>) -> Result<Str
             base.scheme()
         )));
     }
+    if !base.username().is_empty() || base.password().is_some() {
+        return Err(OpdsError::BadRequest(
+            "Source URL must not contain embedded credentials".to_string(),
+        ));
+    }
 
     let resolved = match target_opt.map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => {
@@ -895,6 +959,11 @@ fn resolve_target_url(source_base: &str, target_opt: Option<&str>) -> Result<Str
                     "Unsupported URL scheme '{}'",
                     parsed.scheme()
                 )));
+            }
+            if !parsed.username().is_empty() || parsed.password().is_some() {
+                return Err(OpdsError::BadRequest(
+                    "Target URL must not contain embedded credentials".to_string(),
+                ));
             }
             if !is_same_origin(&base, &parsed) {
                 return Err(OpdsError::BadRequest(
@@ -949,8 +1018,9 @@ fn strip_optional_template_params(raw: &str) -> String {
         {
             let token = &raw[i + 1..i + rel_end];
             if token.ends_with('?') {
-                // If preceded by "&key=" or "?key=", trim the dangling empty parameter.
-                if let Some(eq_idx) = out.rfind('=') {
+                // Only trim a dangling "&key=" or "?key=" immediately preceding the optional token.
+                if out.ends_with('=') {
+                    let eq_idx = out.len() - 1;
                     let prefix = &out[..eq_idx];
                     let sep_idx = prefix.rfind(['&', '?']);
                     let key_start = sep_idx.map(|idx| idx + 1).unwrap_or(0);
@@ -1141,17 +1211,98 @@ pub(crate) fn parse_filename_from_content_disposition(header: &str) -> Option<St
     fallback
 }
 
+pub(crate) fn is_windows_reserved_stem(stem: &str) -> bool {
+    let upper = stem.trim().to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+pub(crate) fn sanitize_filename_component(raw: &str) -> String {
+    let leaf = raw.rsplit(['/', '\\']).next().unwrap_or(raw);
+    let mut cleaned = String::with_capacity(leaf.len());
+    for ch in leaf.chars() {
+        if ch.is_control() {
+            continue;
+        }
+        if matches!(ch, ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+            cleaned.push('_');
+        } else {
+            cleaned.push(ch);
+        }
+    }
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return String::new();
+    }
+
+    let mut result = trimmed.to_string();
+    let stem = std::path::Path::new(&result)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(&result);
+    if is_windows_reserved_stem(stem) {
+        result = format!("_{result}");
+    }
+
+    if result.chars().count() > MAX_SANITIZED_FILENAME_CHARS {
+        let ext = std::path::Path::new(&result)
+            .extension()
+            .and_then(|s| s.to_str())
+            .filter(|e| e.len() <= 16)
+            .map(str::to_string);
+        if let Some(ext) = ext {
+            let suffix = format!(".{ext}");
+            let max_stem_chars =
+                MAX_SANITIZED_FILENAME_CHARS.saturating_sub(suffix.chars().count());
+            let stem_trunc: String = result
+                .strip_suffix(&suffix)
+                .unwrap_or(&result)
+                .chars()
+                .take(max_stem_chars)
+                .collect();
+            result = format!("{}{}", stem_trunc.trim_end_matches([' ', '.']), suffix);
+        } else {
+            result = result
+                .chars()
+                .take(MAX_SANITIZED_FILENAME_CHARS)
+                .collect::<String>()
+                .trim_end_matches([' ', '.'])
+                .to_string();
+        }
+    }
+
+    result
+}
+
 fn sanitize_filename(raw: &str) -> String {
-    let base = raw
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(raw)
-        .trim()
-        .replace(['\0', '\r', '\n'], "");
-    if base.is_empty() {
+    let cleaned = sanitize_filename_component(raw);
+    if cleaned.is_empty() {
         "import".to_string()
     } else {
-        base
+        cleaned
     }
 }
 
@@ -1162,13 +1313,13 @@ fn resolve_import_filename_and_format(
     final_url: &Url,
 ) -> Result<(String, String), OpdsError> {
     let candidate = filename_hint
-        .map(str::trim)
+        .map(sanitize_filename_component)
         .filter(|s| !s.is_empty())
-        .map(sanitize_filename)
         .or_else(|| {
             content_disposition
                 .and_then(parse_filename_from_content_disposition)
-                .map(|s| sanitize_filename(&s))
+                .map(|s| sanitize_filename_component(&s))
+                .filter(|s| !s.is_empty())
         })
         .or_else(|| {
             final_url
@@ -1176,9 +1327,10 @@ fn resolve_import_filename_and_format(
                 .and_then(|mut segs| segs.next_back())
                 .filter(|s| !s.is_empty() && *s != "download")
                 .map(percent_decode_utf8)
-                .map(|s| sanitize_filename(&s))
+                .map(|s| sanitize_filename_component(&s))
+                .filter(|s| !s.is_empty())
         })
-        .unwrap_or_else(|| "remote-import".to_string());
+        .unwrap_or_else(|| sanitize_filename("remote-import"));
 
     let ext_from_name = std::path::Path::new(&candidate)
         .extension()
@@ -1405,6 +1557,11 @@ fn parse_opds1_atom(
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e)) => {
+                if tag_stack.len() >= MAX_XML_DEPTH {
+                    return Err(OpdsError::Upstream(
+                        "OPDS XML nesting depth exceeds limit".to_string(),
+                    ));
+                }
                 let tag = e.local_name().as_ref().to_ascii_lowercase();
                 tag_stack.push(tag);
 

@@ -39,7 +39,7 @@ impl LocalIdentity {
                         if parsed.username.trim().is_empty() {
                             parsed.username = LOCAL_ADMIN_USERNAME.to_string();
                         }
-                        if !parsed.jwt_secret.trim().is_empty() {
+                        if parsed.jwt_secret.trim().len() >= 32 {
                             return Ok(parsed);
                         }
                     }
@@ -85,6 +85,17 @@ impl LocalEngine {
                 data_dir.display()
             )
         })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(err) = fs::set_permissions(&data_dir, fs::Permissions::from_mode(0o700)) {
+                tracing::warn!(
+                    path = %data_dir.display(),
+                    error = %err,
+                    "failed to tighten permissions on standalone data directory"
+                );
+            }
+        }
 
         let temp_dir = configure_temp_dir(data_dir.join("tmp")).with_context(|| {
             format!(

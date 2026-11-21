@@ -15,7 +15,7 @@ use axum::routing::{any, get, post, put};
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex, Semaphore, oneshot};
 use tokio::task::JoinHandle;
 use url::Url;
 use xmedia_core::domain::library::MediaKind;
@@ -34,11 +34,14 @@ pub const APP_HEADER_VALUE: &str = "standalone";
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(45);
+const LOCAL_UPLOAD_READ_TIMEOUT: Duration = Duration::from_secs(600);
+const MAX_CONCURRENT_IMPORTS: usize = 4;
 
 #[derive(Clone)]
 pub struct StandaloneGatewayState {
     pub local_engine: LocalEngine,
     pub sources: SharedRemoteSourceStore,
+    pub sources_write_lock: Arc<Mutex<()>>,
     pub opds: OpdsClient,
     pub subsonic: SubsonicClient,
     pub local_gateway_url: String,
@@ -54,15 +57,26 @@ impl StandaloneGatewayState {
     ) -> anyhow::Result<Self> {
         let secure = build_remote_http_client(false)?;
         let insecure = build_remote_http_client(true)?;
+        let local_upload = build_local_upload_http_client()?;
+        let import_semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_IMPORTS));
         let opds = OpdsClient::new(
             secure.clone(),
             insecure.clone(),
+            local_upload.clone(),
+            import_semaphore.clone(),
             local_engine.temp_dir.clone(),
         );
-        let subsonic = SubsonicClient::new(secure, insecure, local_engine.temp_dir.clone());
+        let subsonic = SubsonicClient::new(
+            secure,
+            insecure,
+            local_upload,
+            import_semaphore,
+            local_engine.temp_dir.clone(),
+        );
         Ok(Self {
             local_engine,
             sources,
+            sources_write_lock: Arc::new(Mutex::new(())),
             opds,
             subsonic,
             local_gateway_url,
@@ -163,6 +177,16 @@ fn build_remote_http_client(allow_insecure_tls: bool) -> anyhow::Result<reqwest:
         .dns_resolver(Arc::new(NoMetadataResolver))
         .redirect(same_origin_redirect_policy())
         .danger_accept_invalid_certs(allow_insecure_tls)
+        .build()?;
+    Ok(client)
+}
+
+fn build_local_upload_http_client() -> anyhow::Result<reqwest::Client> {
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(LOCAL_UPLOAD_READ_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()?;
     Ok(client)
 }
@@ -557,17 +581,42 @@ fn store_error_response(err: SourceStoreError) -> Response {
         SourceStoreError::InvalidUrl(msg) => app_error(StatusCode::BAD_REQUEST, "invalid_url", msg),
         SourceStoreError::NotFound(msg) => app_error(StatusCode::NOT_FOUND, "not_found", msg),
         SourceStoreError::Io(msg) => {
-            app_error(StatusCode::INTERNAL_SERVER_ERROR, "storage_error", msg)
+            tracing::error!(error = %msg, "remote source store I/O error");
+            app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                "Failed to persist remote sources",
+            )
         }
     }
 }
 
 fn opds_error_response(err: OpdsError) -> Response {
-    app_error(err.status_code(), err.code(), err.to_string())
+    match err {
+        OpdsError::Internal(msg) => {
+            tracing::error!(error = %msg, "internal OPDS gateway error");
+            app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Internal OPDS processing error",
+            )
+        }
+        other => app_error(other.status_code(), other.code(), other.to_string()),
+    }
 }
 
 fn subsonic_error_response(err: SubsonicError) -> Response {
-    app_error(err.status_code(), err.code(), err.to_string())
+    match err {
+        SubsonicError::Internal(msg) => {
+            tracing::error!(error = %msg, "internal Subsonic gateway error");
+            app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "Internal Subsonic processing error",
+            )
+        }
+        other => app_error(other.status_code(), other.code(), other.to_string()),
+    }
 }
 
 struct AppApiError {
@@ -672,11 +721,14 @@ async fn app_auto_session(
             res.headers_mut().append(SET_COOKIE, cookie);
             res
         }
-        Err(err) => app_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "auto_session_failed",
-            err.to_string(),
-        ),
+        Err(err) => {
+            tracing::error!(error = %err, "failed to issue standalone auto-session");
+            app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auto_session_failed",
+                "Failed to issue local session",
+            )
+        }
     }
 }
 
@@ -698,8 +750,12 @@ async fn create_remote_source(
     State(state): State<StandaloneGatewayState>,
     Json(input): Json<CreateRemoteSourceInput>,
 ) -> Response {
-    let outcome = match state.sources.write() {
-        Ok(mut guard) => guard.create(input),
+    let _write_guard = state.sources_write_lock.lock().await;
+    let pending = match state.sources.read() {
+        Ok(guard) => match guard.prepare_create(input) {
+            Ok(p) => p,
+            Err(err) => return store_error_response(err),
+        },
         Err(_) => {
             return app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -708,16 +764,42 @@ async fn create_remote_source(
             );
         }
     };
-    match outcome {
-        Ok((source, sources)) => with_app_headers(
-            (
-                StatusCode::CREATED,
-                Json(MutatedRemoteSourceResponse { source, sources }),
-            )
-                .into_response(),
-        ),
-        Err(err) => store_error_response(err),
-    }
+    let persisted = match tokio::task::spawn_blocking(move || pending.persist()).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(err)) => return store_error_response(err),
+        Err(err) => {
+            tracing::error!(error = %err, "remote source create persist task failed");
+            return app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                "Failed to persist remote sources",
+            );
+        }
+    };
+    let (source, sources) = match state.sources.write() {
+        Ok(mut guard) => guard.commit_mutation(persisted),
+        Err(_) => {
+            return app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_poisoned",
+                "Remote source store lock poisoned",
+            );
+        }
+    };
+    let Some(source) = source else {
+        return app_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_error",
+            "Failed to persist remote sources",
+        );
+    };
+    with_app_headers(
+        (
+            StatusCode::CREATED,
+            Json(MutatedRemoteSourceResponse { source, sources }),
+        )
+            .into_response(),
+    )
 }
 
 async fn update_remote_source(
@@ -725,8 +807,12 @@ async fn update_remote_source(
     AxumPath(id): AxumPath<String>,
     Json(input): Json<UpdateRemoteSourceInput>,
 ) -> Response {
-    let outcome = match state.sources.write() {
-        Ok(mut guard) => guard.update(&id, input),
+    let _write_guard = state.sources_write_lock.lock().await;
+    let pending = match state.sources.read() {
+        Ok(guard) => match guard.prepare_update(&id, input) {
+            Ok(p) => p,
+            Err(err) => return store_error_response(err),
+        },
         Err(_) => {
             return app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -735,20 +821,48 @@ async fn update_remote_source(
             );
         }
     };
-    match outcome {
-        Ok((source, sources)) => {
-            with_app_headers(Json(MutatedRemoteSourceResponse { source, sources }).into_response())
+    let persisted = match tokio::task::spawn_blocking(move || pending.persist()).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(err)) => return store_error_response(err),
+        Err(err) => {
+            tracing::error!(error = %err, "remote source update persist task failed");
+            return app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                "Failed to persist remote sources",
+            );
         }
-        Err(err) => store_error_response(err),
-    }
+    };
+    let (source, sources) = match state.sources.write() {
+        Ok(mut guard) => guard.commit_mutation(persisted),
+        Err(_) => {
+            return app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_poisoned",
+                "Remote source store lock poisoned",
+            );
+        }
+    };
+    let Some(source) = source else {
+        return app_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_error",
+            "Failed to persist remote sources",
+        );
+    };
+    with_app_headers(Json(MutatedRemoteSourceResponse { source, sources }).into_response())
 }
 
 async fn delete_remote_source(
     State(state): State<StandaloneGatewayState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    let outcome = match state.sources.write() {
-        Ok(mut guard) => guard.delete(&id),
+    let _write_guard = state.sources_write_lock.lock().await;
+    let pending = match state.sources.read() {
+        Ok(guard) => match guard.prepare_delete(&id) {
+            Ok(p) => p,
+            Err(err) => return store_error_response(err),
+        },
         Err(_) => {
             return app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -757,12 +871,29 @@ async fn delete_remote_source(
             );
         }
     };
-    match outcome {
-        Ok(sources) => {
-            with_app_headers(Json(RemoteSourcesListResponse { sources }).into_response())
+    let persisted = match tokio::task::spawn_blocking(move || pending.persist()).await {
+        Ok(Ok(p)) => p,
+        Ok(Err(err)) => return store_error_response(err),
+        Err(err) => {
+            tracing::error!(error = %err, "remote source delete persist task failed");
+            return app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "storage_error",
+                "Failed to persist remote sources",
+            );
         }
-        Err(err) => store_error_response(err),
-    }
+    };
+    let (_, sources) = match state.sources.write() {
+        Ok(mut guard) => guard.commit_mutation(persisted),
+        Err(_) => {
+            return app_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_poisoned",
+                "Remote source store lock poisoned",
+            );
+        }
+    };
+    with_app_headers(Json(RemoteSourcesListResponse { sources }).into_response())
 }
 
 async fn test_remote_source(
@@ -911,10 +1042,11 @@ async fn opds_import(
     let session = match state.local_engine.issue_auto_session().await {
         Ok(s) => s,
         Err(err) => {
+            tracing::error!(error = %err, "failed to issue local session for import");
             return app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "auto_session_failed",
-                err.to_string(),
+                "Failed to issue local session",
             );
         }
     };
@@ -1072,10 +1204,11 @@ async fn subsonic_import_song(
     let session = match state.local_engine.issue_auto_session().await {
         Ok(s) => s,
         Err(err) => {
+            tracing::error!(error = %err, "failed to issue local session for import");
             return app_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "auto_session_failed",
-                err.to_string(),
+                "Failed to issue local session",
             );
         }
     };

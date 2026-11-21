@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
@@ -29,7 +30,7 @@ impl RemoteProtocol {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteSource {
     pub id: String,
     pub name: String,
@@ -43,6 +44,26 @@ pub struct RemoteSource {
     pub allow_insecure_tls: bool,
     #[serde(default)]
     pub last_ok_at: Option<u64>,
+}
+
+impl fmt::Debug for RemoteSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted_password = if self.password.is_empty() {
+            ""
+        } else {
+            "[REDACTED]"
+        };
+        f.debug_struct("RemoteSource")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("protocol", &self.protocol)
+            .field("url", &self.url)
+            .field("username", &self.username)
+            .field("password", &redacted_password)
+            .field("allow_insecure_tls", &self.allow_insecure_tls)
+            .field("last_ok_at", &self.last_ok_at)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -153,6 +174,41 @@ impl PendingSourcePersist {
     }
 }
 
+pub struct PendingSourceMutation {
+    storage_path: PathBuf,
+    next: PersistedRemoteSources,
+    summary: Option<RemoteSourceSummaryDto>,
+    removed_id: Option<String>,
+    revision: u64,
+    persist_lock: Arc<Mutex<()>>,
+    persisted_revision: Arc<AtomicU64>,
+}
+
+impl PendingSourceMutation {
+    pub fn persist(self) -> Result<PersistedSourceMutation, SourceStoreError> {
+        let _guard = self
+            .persist_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        persist_atomic(&self.storage_path, &self.next)?;
+        self.persisted_revision
+            .fetch_max(self.revision, Ordering::AcqRel);
+        Ok(PersistedSourceMutation {
+            next: self.next,
+            summary: self.summary,
+            removed_id: self.removed_id,
+            revision: self.revision,
+        })
+    }
+}
+
+pub struct PersistedSourceMutation {
+    next: PersistedRemoteSources,
+    summary: Option<RemoteSourceSummaryDto>,
+    removed_id: Option<String>,
+    revision: u64,
+}
+
 #[derive(Debug)]
 pub struct RemoteSourceStore {
     storage_path: PathBuf,
@@ -165,25 +221,28 @@ pub struct RemoteSourceStore {
 
 impl RemoteSourceStore {
     pub fn load(storage_path: PathBuf) -> anyhow::Result<Self> {
-        let mut data = if storage_path.exists() {
-            match fs::read(&storage_path) {
-                Ok(raw) if raw.iter().all(|b| b.is_ascii_whitespace()) => {
-                    PersistedRemoteSources::default()
-                }
-                Ok(raw) => match serde_json::from_slice::<PersistedRemoteSources>(&raw) {
-                    Ok(parsed) => parsed,
-                    Err(err) => {
-                        backup_corrupt_file(&storage_path, &err.to_string());
-                        PersistedRemoteSources::default()
-                    }
-                },
+        let mut data = match fs::read(&storage_path) {
+            Ok(raw) if raw.iter().all(|b| b.is_ascii_whitespace()) => {
+                PersistedRemoteSources::default()
+            }
+            Ok(raw) => match serde_json::from_slice::<PersistedRemoteSources>(&raw) {
+                Ok(parsed) => parsed,
                 Err(err) => {
                     backup_corrupt_file(&storage_path, &err.to_string());
                     PersistedRemoteSources::default()
                 }
+            },
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                PersistedRemoteSources::default()
             }
-        } else {
-            PersistedRemoteSources::default()
+            Err(err) => {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to read remote sources file {}",
+                        storage_path.display()
+                    )
+                });
+            }
         };
 
         let mut last_ok_persisted = HashMap::new();
@@ -230,23 +289,27 @@ impl RemoteSourceStore {
         self.data.sources.iter().find(|s| s.id == id).cloned()
     }
 
-    fn persist_sync(&mut self, next: &PersistedRemoteSources) -> Result<(), SourceStoreError> {
-        let next_rev = self.revision.saturating_add(1);
-        let _guard = self
-            .persist_lock
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        persist_atomic(&self.storage_path, next)?;
-        self.revision = next_rev;
-        self.persisted_revision
-            .fetch_max(next_rev, Ordering::AcqRel);
-        Ok(())
+    fn make_pending_mutation(
+        &self,
+        next: PersistedRemoteSources,
+        summary: Option<RemoteSourceSummaryDto>,
+        removed_id: Option<String>,
+    ) -> PendingSourceMutation {
+        PendingSourceMutation {
+            storage_path: self.storage_path.clone(),
+            next,
+            summary,
+            removed_id,
+            revision: self.revision.saturating_add(1),
+            persist_lock: self.persist_lock.clone(),
+            persisted_revision: self.persisted_revision.clone(),
+        }
     }
 
-    pub fn create(
-        &mut self,
+    pub fn prepare_create(
+        &self,
         input: CreateRemoteSourceInput,
-    ) -> Result<(RemoteSourceSummaryDto, Vec<RemoteSourceSummaryDto>), SourceStoreError> {
+    ) -> Result<PendingSourceMutation, SourceStoreError> {
         let normalized_url = normalize_remote_url(&input.url)?;
         let name = {
             let trimmed = input.name.trim();
@@ -268,19 +331,17 @@ impl RemoteSourceStore {
             last_ok_at: None,
         };
 
+        let summary = RemoteSourceSummaryDto::from(&source);
         let mut next = self.data.clone();
-        next.sources.push(source.clone());
-        self.persist_sync(&next)?;
-        self.data = next;
-
-        Ok((RemoteSourceSummaryDto::from(&source), self.list_summaries()))
+        next.sources.push(source);
+        Ok(self.make_pending_mutation(next, Some(summary), None))
     }
 
-    pub fn update(
-        &mut self,
+    pub fn prepare_update(
+        &self,
         id: &str,
         input: UpdateRemoteSourceInput,
-    ) -> Result<(RemoteSourceSummaryDto, Vec<RemoteSourceSummaryDto>), SourceStoreError> {
+    ) -> Result<PendingSourceMutation, SourceStoreError> {
         let mut next = self.data.clone();
         let Some(existing) = next.sources.iter_mut().find(|s| s.id == id) else {
             return Err(SourceStoreError::NotFound(format!(
@@ -318,13 +379,10 @@ impl RemoteSourceStore {
         }
 
         let summary = RemoteSourceSummaryDto::from(&*existing);
-        self.persist_sync(&next)?;
-        self.data = next;
-
-        Ok((summary, self.list_summaries()))
+        Ok(self.make_pending_mutation(next, Some(summary), None))
     }
 
-    pub fn delete(&mut self, id: &str) -> Result<Vec<RemoteSourceSummaryDto>, SourceStoreError> {
+    pub fn prepare_delete(&self, id: &str) -> Result<PendingSourceMutation, SourceStoreError> {
         let mut next = self.data.clone();
         let before = next.sources.len();
         next.sources.retain(|s| s.id != id);
@@ -333,10 +391,68 @@ impl RemoteSourceStore {
                 "Remote source '{id}' not found"
             )));
         }
-        self.persist_sync(&next)?;
-        self.data = next;
-        self.last_ok_persisted.remove(id);
-        Ok(self.list_summaries())
+        Ok(self.make_pending_mutation(next, None, Some(id.to_string())))
+    }
+
+    pub fn commit_mutation(
+        &mut self,
+        mut persisted: PersistedSourceMutation,
+    ) -> (Option<RemoteSourceSummaryDto>, Vec<RemoteSourceSummaryDto>) {
+        // Preserve any concurrent in-memory `last_ok_at` updates that arrived while persisting.
+        let latest_ok: HashMap<&str, u64> = self
+            .data
+            .sources
+            .iter()
+            .filter_map(|s| s.last_ok_at.map(|ts| (s.id.as_str(), ts)))
+            .collect();
+        for src in &mut persisted.next.sources {
+            if let Some(&ts) = latest_ok.get(src.id.as_str()) {
+                src.last_ok_at = Some(src.last_ok_at.map_or(ts, |prev| prev.max(ts)));
+            }
+        }
+        let mut summary = persisted.summary;
+        if let Some(ref mut sum) = summary
+            && let Some(updated) = persisted.next.sources.iter().find(|s| s.id == sum.id)
+        {
+            sum.last_ok_at = updated.last_ok_at;
+        }
+        if let Some(ref removed_id) = persisted.removed_id {
+            self.last_ok_persisted.remove(removed_id);
+        }
+        self.data = persisted.next;
+        self.revision = self.revision.max(persisted.revision);
+        (summary, self.list_summaries())
+    }
+
+    pub fn create(
+        &mut self,
+        input: CreateRemoteSourceInput,
+    ) -> Result<(RemoteSourceSummaryDto, Vec<RemoteSourceSummaryDto>), SourceStoreError> {
+        let persisted = self.prepare_create(input)?.persist()?;
+        let (summary, list) = self.commit_mutation(persisted);
+        Ok((
+            summary.expect("create mutation always produces a summary"),
+            list,
+        ))
+    }
+
+    pub fn update(
+        &mut self,
+        id: &str,
+        input: UpdateRemoteSourceInput,
+    ) -> Result<(RemoteSourceSummaryDto, Vec<RemoteSourceSummaryDto>), SourceStoreError> {
+        let persisted = self.prepare_update(id, input)?.persist()?;
+        let (summary, list) = self.commit_mutation(persisted);
+        Ok((
+            summary.expect("update mutation always produces a summary"),
+            list,
+        ))
+    }
+
+    pub fn delete(&mut self, id: &str) -> Result<Vec<RemoteSourceSummaryDto>, SourceStoreError> {
+        let persisted = self.prepare_delete(id)?.persist()?;
+        let (_, list) = self.commit_mutation(persisted);
+        Ok(list)
     }
 
     /// Updates `last_ok_at` in memory and returns an optional throttled persistence task
