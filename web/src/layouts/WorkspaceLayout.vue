@@ -504,6 +504,7 @@ function handleOutsideClick(ev: MouseEvent): void {
 }
 
 function handleGlobalKeydown(ev: KeyboardEvent): void {
+  if (playerStore.lyricsOpen) return
   if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
     ev.preventDefault()
     commandPaletteOpen.value = !commandPaletteOpen.value

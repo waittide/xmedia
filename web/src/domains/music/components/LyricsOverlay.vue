@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   LuChevronDown,
@@ -34,28 +34,6 @@ const lineRefs = ref<(HTMLButtonElement | null)[]>([])
 function setLineRef(el: unknown, idx: number): void {
   lineRefs.value[idx] = el as HTMLButtonElement | null
 }
-
-function onKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Escape' && playerStore.lyricsOpen) {
-    playerStore.lyricsOpen = false
-  }
-}
-
-watch(
-  () => playerStore.lyricsOpen,
-  (isOpen) => {
-    if (isOpen) {
-      window.addEventListener('keydown', onKeydown)
-    } else {
-      window.removeEventListener('keydown', onKeydown)
-    }
-  },
-  { immediate: true },
-)
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
-})
 
 const backdropCoverUrl = computed(() => {
   const tr = playerStore.currentTrack

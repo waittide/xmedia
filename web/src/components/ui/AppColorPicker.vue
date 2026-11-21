@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 import { normalizeHex, parseHexRgb, rgbToHex } from '@/theme/catppuccin'
 
 const props = defineProps<{
@@ -12,9 +13,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const escapeStack = useEscapeStack()
 
 const open = ref(false)
 const triggerRef = ref<HTMLButtonElement | null>(null)
+
+escapeStack.register(
+  () => open.value,
+  () => {
+    open.value = false
+    triggerRef.value?.focus()
+  },
+)
 const panelRef = ref<HTMLDivElement | null>(null)
 const svBoxRef = ref<HTMLDivElement | null>(null)
 const hueBarRef = ref<HTMLDivElement | null>(null)

@@ -131,8 +131,9 @@ const onlineBookSearchItem = computed<QuickResultItem | null>(() => {
 
 const flatItems = computed<QuickResultItem[]>(() => {
   if (!hasQuery.value) return quickNavItems.value
+  if (loading.value && domainSections.value.length === 0) return []
   const items = domainSections.value.flatMap((sec) => sec.items)
-  if (onlineBookSearchItem.value) {
+  if (onlineBookSearchItem.value && !loading.value) {
     items.push(onlineBookSearchItem.value)
   }
   return items
@@ -373,6 +374,7 @@ function scrollActiveIntoView(): void {
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
+  if (ev.isComposing) return
   const list = flatItems.value
   if (ev.key === 'ArrowDown') {
     ev.preventDefault()
@@ -460,23 +462,23 @@ function handleKeydown(ev: KeyboardEvent): void {
             <div ref="listRef" class="max-h-[60vh] overflow-y-auto p-3">
               <!-- Initial loading state -->
               <div
-                v-if="loading && hasQuery && flatItems.length === 0"
+                v-if="loading && hasQuery && domainSections.length === 0"
                 class="flex items-center justify-center gap-2 py-12 text-xs text-[var(--md-sys-color-on-surface-variant)]"
               >
                 <LuLoader2 class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
                 <span>{{ t('common.loading') }}</span>
               </div>
 
-              <!-- Empty search state -->
-              <div
-                v-else-if="!loading && hasQuery && flatItems.length === 0"
-                class="py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ t('common.noResults') }}
-              </div>
-
               <!-- Grouped cross-domain results -->
               <div v-else-if="hasQuery" class="space-y-4">
+                <!-- Empty local search results state -->
+                <div
+                  v-if="!loading && domainSections.length === 0"
+                  class="py-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+                >
+                  {{ t('common.noResults') }}
+                </div>
+
                 <section
                   v-for="section in domainSections"
                   :key="section.domain"
@@ -546,7 +548,7 @@ function handleKeydown(ev: KeyboardEvent): void {
                 </section>
 
                 <!-- Online Book Source Search Quick Action -->
-                <section v-if="onlineBookSearchItem" class="space-y-1">
+                <section v-if="onlineBookSearchItem && !loading" class="space-y-1">
                   <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase">
                     <LuGlobe class="h-3.5 w-3.5" />
                     <span>{{ isZh ? '在线书源' : 'Online Book Sources' }}</span>

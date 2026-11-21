@@ -11,6 +11,7 @@ import {
   type CatppuccinAccent,
   type ThemeMode,
 } from '@/theme/catppuccin'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useThemeStore } from '@/stores/theme'
 import type { LocaleCode } from '@/types/api'
 
@@ -20,9 +21,23 @@ defineProps<{
 
 const { t } = useI18n()
 const themeStore = useThemeStore()
+const escapeStack = useEscapeStack()
 const open = ref(false)
 const langOpen = ref(false)
 const containerRef = ref<HTMLElement | null>(null)
+
+escapeStack.register(
+  () => open.value,
+  () => {
+    open.value = false
+  },
+)
+escapeStack.register(
+  () => langOpen.value,
+  () => {
+    langOpen.value = false
+  },
+)
 
 function handleOutside(ev: MouseEvent): void {
   if (containerRef.value && !containerRef.value.contains(ev.target as Node)) {

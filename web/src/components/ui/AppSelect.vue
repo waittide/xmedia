@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuChevronDown, LuSearch } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 
 export interface SelectOption<T extends string = string> {
   value: T
@@ -36,6 +37,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const escapeStack = useEscapeStack()
 const open = ref(false)
 const query = ref('')
 const highlightedIdx = ref(0)
@@ -102,6 +104,14 @@ function closeMenu(): void {
   open.value = false
 }
 
+escapeStack.register(
+  () => open.value,
+  () => {
+    closeMenu()
+    triggerRef.value?.focus()
+  },
+)
+
 function toggleMenu(): void {
   if (open.value) {
     closeMenu()
@@ -132,11 +142,7 @@ function onTriggerKeydown(ev: KeyboardEvent): void {
 function onMenuKeydown(ev: KeyboardEvent): void {
   if (!open.value) return
   const len = filteredOptions.value.length
-  if (ev.key === 'Escape') {
-    ev.preventDefault()
-    closeMenu()
-    triggerRef.value?.focus()
-  } else if (ev.key === 'ArrowDown' && len > 0) {
+  if (ev.key === 'ArrowDown' && len > 0) {
     ev.preventDefault()
     highlightedIdx.value = (highlightedIdx.value + 1) % len
   } else if (ev.key === 'ArrowUp' && len > 0) {

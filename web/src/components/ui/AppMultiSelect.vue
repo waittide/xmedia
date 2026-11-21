@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuChevronDown, LuSearch, LuX } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 
 export interface MultiSelectOption<T extends string = string> {
   value: T
@@ -178,13 +179,15 @@ function handleOutsideMouseDown(ev: MouseEvent): void {
   closeMenu()
 }
 
-function handleKeydown(ev: KeyboardEvent): void {
-  if (open.value && ev.key === 'Escape') {
-    ev.preventDefault()
+const escapeStack = useEscapeStack()
+
+escapeStack.register(
+  () => open.value,
+  () => {
     closeMenu()
     triggerRef.value?.focus()
-  }
-}
+  },
+)
 
 function handleViewportChange(): void {
   if (open.value) updatePosition()
@@ -196,14 +199,12 @@ watch(renderedOptions, () => {
 
 function bindGlobalListeners(): void {
   document.addEventListener('mousedown', handleOutsideMouseDown)
-  window.addEventListener('keydown', handleKeydown)
   window.addEventListener('resize', handleViewportChange)
   window.addEventListener('scroll', handleViewportChange, true)
 }
 
 function unbindGlobalListeners(): void {
   document.removeEventListener('mousedown', handleOutsideMouseDown)
-  window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('resize', handleViewportChange)
   window.removeEventListener('scroll', handleViewportChange, true)
 }
