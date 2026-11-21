@@ -163,6 +163,18 @@ pub struct SaveWatchProgressInput {
     pub selected_subtitle: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoTaxonomyItemDto {
+    pub name: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoTaxonomyDto {
+    pub genres: Vec<VideoTaxonomyItemDto>,
+    pub tags: Vec<VideoTaxonomyItemDto>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpsertVideoShelfInput {
     pub name: String,

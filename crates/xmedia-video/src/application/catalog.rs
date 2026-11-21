@@ -12,7 +12,8 @@ use xmedia_core::domain::user::{User, UserId, require_admin};
 
 use crate::application::dto::{
     SeasonGroupDto, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, VideoDetailDto,
-    VideoHomeOverviewDto, VideoSummaryDto, VideoSystemStatusDto,
+    VideoHomeOverviewDto, VideoSummaryDto, VideoSystemStatusDto, VideoTaxonomyDto,
+    VideoTaxonomyItemDto,
 };
 use crate::application::ports::{VideoMediaEnginePort, VideoStoragePort};
 use crate::domain::id::{ShowId, VideoId};
@@ -459,6 +460,21 @@ impl VideoCatalogService {
             let stream_index = raw_idx
                 .parse::<u32>()
                 .map_err(|_| DomainError::Validation("invalid embedded subtitle id".into()))?;
+            let sub_stream = video
+                .subtitle_streams
+                .iter()
+                .find(|s| s.stream_index == stream_index)
+                .ok_or_else(|| {
+                    DomainError::NotFound(format!(
+                        "embedded subtitle stream {stream_index} not found"
+                    ))
+                })?;
+            if !sub_stream.is_text_based {
+                return Err(DomainError::Validation(format!(
+                    "embedded subtitle stream {stream_index} ({}) is not text-based",
+                    sub_stream.codec
+                )));
+            }
             let fs_path = self.storage.resolve_video_fs_path(&library, &video).await?;
             self.engine
                 .extract_embedded_subtitle_vtt(Path::new(&fs_path), stream_index)
@@ -477,6 +493,60 @@ impl VideoCatalogService {
         } else {
             Ok(vtt)
         }
+    }
+
+    pub async fn get_taxonomy(&self) -> DomainResult<VideoTaxonomyDto> {
+        let videos = self
+            .catalog
+            .list_videos(&VideoQueryFilter::default())
+            .await?;
+        let shows = self.catalog.list_shows(&ShowQueryFilter::default()).await?;
+
+        let mut genre_counts: HashMap<String, usize> = HashMap::new();
+        let mut tag_counts: HashMap<String, usize> = HashMap::new();
+
+        for v in videos {
+            for g in v.genres {
+                let clean = g.trim();
+                if !clean.is_empty() {
+                    *genre_counts.entry(clean.to_string()).or_insert(0) += 1;
+                }
+            }
+            for t in v.tags {
+                let clean = t.trim();
+                if !clean.is_empty() {
+                    *tag_counts.entry(clean.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+        for s in shows {
+            for g in s.genres {
+                let clean = g.trim();
+                if !clean.is_empty() {
+                    genre_counts.entry(clean.to_string()).or_insert(1);
+                }
+            }
+            for t in s.tags {
+                let clean = t.trim();
+                if !clean.is_empty() {
+                    tag_counts.entry(clean.to_string()).or_insert(1);
+                }
+            }
+        }
+
+        let mut genres: Vec<VideoTaxonomyItemDto> = genre_counts
+            .into_iter()
+            .map(|(name, count)| VideoTaxonomyItemDto { name, count })
+            .collect();
+        genres.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+
+        let mut tags: Vec<VideoTaxonomyItemDto> = tag_counts
+            .into_iter()
+            .map(|(name, count)| VideoTaxonomyItemDto { name, count })
+            .collect();
+        tags.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+
+        Ok(VideoTaxonomyDto { genres, tags })
     }
 
     pub async fn update_video_metadata(

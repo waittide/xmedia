@@ -89,6 +89,13 @@ impl VideoDomainLifecycle {
             }
         }
 
+        if video_items.is_empty() {
+            return Err(DomainError::Validation(
+                "at least one video file is required (subtitle-only uploads are not supported)"
+                    .into(),
+            ));
+        }
+
         let mut created_videos = Vec::new();
         let mut attached_subtitles_count = 0usize;
         let video_count = video_items.len();
@@ -214,6 +221,13 @@ impl VideoDomainLifecycle {
                     "unsupported file extension '.{ext}' (stem '{stem}')"
                 )));
             }
+        }
+
+        if video_items.is_empty() {
+            return Err(DomainError::Validation(
+                "at least one video file is required (subtitle-only uploads are not supported)"
+                    .into(),
+            ));
         }
 
         let mut created_videos = Vec::new();

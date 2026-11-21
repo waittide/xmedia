@@ -79,6 +79,16 @@ impl VideoStreamingService {
         spec: ByteRangeSpec,
     ) -> DomainResult<ResolvedVideoStream> {
         let (video, library) = self.load_video_and_library(video_id).await?;
+        if let Some(requested_audio) = audio_stream_index
+            && !video
+                .audio_streams
+                .iter()
+                .any(|a| a.stream_index == requested_audio)
+        {
+            return Err(DomainError::Validation(format!(
+                "invalid audio_stream index {requested_audio} for this video"
+            )));
+        }
         let offset = start_secs.filter(|&s| s > 0);
         let default_audio_idx = video.audio_streams.first().map(|a| a.stream_index);
         let custom_audio = audio_stream_index.filter(|&idx| Some(idx) != default_audio_idx);

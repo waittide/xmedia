@@ -95,18 +95,26 @@ pub fn parse_video_path(relative_or_filename: &str) -> ParsedVideoFilename {
                     year: None,
                 };
             }
-        } else {
-            let (ep, ep_title) = extract_leading_episode(stem);
-            if let Some(ep_num) = ep {
-                let show = clean_dots_and_underscores(parent_dir);
-                if !show.is_empty() {
-                    return ParsedVideoFilename {
-                        title: ep_title.unwrap_or_else(|| format!("Episode {ep_num}")),
-                        show_title: Some(show),
-                        season_number: Some(1),
-                        episode_number: Some(ep_num),
-                        year: None,
-                    };
+        } else if !RE_YEAR_SUFFIX.is_match(stem) {
+            let trimmed_stem = stem.trim();
+            let has_explicit_ep_sep = trimmed_stem.chars().all(|c| c.is_ascii_digit())
+                || trimmed_stem
+                    .trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim_start()
+                    .starts_with(['-', '–', '_']);
+            if has_explicit_ep_sep {
+                let (ep, ep_title) = extract_leading_episode(stem);
+                if let Some(ep_num) = ep {
+                    let show = clean_dots_and_underscores(parent_dir);
+                    if !show.is_empty() {
+                        return ParsedVideoFilename {
+                            title: ep_title.unwrap_or_else(|| format!("Episode {ep_num}")),
+                            show_title: Some(show),
+                            season_number: Some(1),
+                            episode_number: Some(ep_num),
+                            year: None,
+                        };
+                    }
                 }
             }
         }

@@ -16,7 +16,8 @@ use xmedia_core::http::{
 use crate::application::dto::{
     SaveWatchProgressInput, ShowDetailDto, ShowSummaryDto, SubtitleTrackDto, UpsertVideoShelfInput,
     VideoDetailDto, VideoFavoritesDto, VideoHomeOverviewDto, VideoShelfDetailDto, VideoShelfDto,
-    VideoSummaryDto, VideoSystemStatusDto, VideoUploadPathItem, VideoUploadResultDto,
+    VideoSummaryDto, VideoSystemStatusDto, VideoTaxonomyDto, VideoUploadPathItem,
+    VideoUploadResultDto,
 };
 use crate::application::ports::parse_quality_param;
 use crate::domain::id::{ShowId, VideoId, VideoShelfId};
@@ -32,6 +33,7 @@ pub fn router() -> Router<VideoHttpState> {
     Router::new()
         .route("/status", get(video_status))
         .route("/home", get(home_overview))
+        .route("/taxonomy", get(video_taxonomy))
         .route(
             "/upload",
             post(upload_videos).layer(DefaultBodyLimit::max(4 * 1024 * 1024 * 1024)),
@@ -116,6 +118,13 @@ async fn home_overview(
     WebAuth(user): WebAuth,
 ) -> ApiResult<Json<VideoHomeOverviewDto>> {
     Ok(Json(state.services.catalog.home_overview(&user).await?))
+}
+
+async fn video_taxonomy(
+    State(state): State<VideoHttpState>,
+    WebAuth(_user): WebAuth,
+) -> ApiResult<Json<VideoTaxonomyDto>> {
+    Ok(Json(state.services.catalog.get_taxonomy().await?))
 }
 
 const MAX_VIDEO_UPLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;

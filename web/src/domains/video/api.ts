@@ -17,6 +17,7 @@ import type {
   VideoSortBy,
   VideoSummaryDto,
   VideoSystemStatusDto,
+  VideoTagStat,
   WatchProgressDto,
 } from './types'
 
@@ -90,6 +91,8 @@ export const api = {
     mapVideoLibrary(await coreApi.scanLibrary(id)),
 
   homeOverview: () => requestJson<VideoHomeOverviewDto>('/video/home'),
+  getTaxonomy: () =>
+    requestJson<{ genres: VideoTagStat[]; tags: VideoTagStat[] }>('/video/taxonomy'),
   listVideos: (params: {
     library_id?: string
     show_id?: string

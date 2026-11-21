@@ -29,49 +29,20 @@ export const useVideoStore = defineStore('video', () => {
   let sidebarEpoch = 0
 
   async function runSidebarFetch(epoch: number): Promise<void> {
-    const [libsRes, shelvesRes, videosRes, showsRes] = await Promise.allSettled([
+    const [libsRes, shelvesRes, taxonomyRes, showsRes] = await Promise.allSettled([
       api.listLibraries(),
       api.listShelves(),
-      api.listVideos(),
+      api.getTaxonomy(),
       api.listShows(),
     ])
     if (epoch !== sidebarEpoch) return
     if (libsRes.status === 'fulfilled') libraries.value = libsRes.value
     if (shelvesRes.status === 'fulfilled') shelves.value = shelvesRes.value
     if (showsRes.status === 'fulfilled') shows.value = showsRes.value
-
-    const genreCounts = new Map<string, number>()
-    const tagCounts = new Map<string, number>()
-    if (videosRes.status === 'fulfilled') {
-      for (const v of videosRes.value) {
-        for (const g of v.genres) {
-          const clean = g.trim()
-          if (clean) genreCounts.set(clean, (genreCounts.get(clean) ?? 0) + 1)
-        }
-        for (const t of v.tags) {
-          const clean = t.trim()
-          if (clean) tagCounts.set(clean, (tagCounts.get(clean) ?? 0) + 1)
-        }
-      }
+    if (taxonomyRes.status === 'fulfilled') {
+      genres.value = taxonomyRes.value.genres
+      tags.value = taxonomyRes.value.tags
     }
-    if (showsRes.status === 'fulfilled') {
-      for (const s of showsRes.value) {
-        for (const g of s.genres) {
-          const clean = g.trim()
-          if (clean && !genreCounts.has(clean)) genreCounts.set(clean, 1)
-        }
-        for (const t of s.tags) {
-          const clean = t.trim()
-          if (clean && !tagCounts.has(clean)) tagCounts.set(clean, 1)
-        }
-      }
-    }
-    genres.value = Array.from(genreCounts.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-    tags.value = Array.from(tagCounts.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
     lastSidebarLoadedAt = Date.now()
   }
 
