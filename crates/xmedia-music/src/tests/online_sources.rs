@@ -878,7 +878,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let source_one = serde_json::json!({
         "sourceName": "Mock Music A",
         "sourceUrl": base,
-        "sourceGroup": "测试分组",
+        "sourceGroup": "  测试分组  ",
         "sourceComment": "mock source",
         "enabled": true,
         "weight": 50,
@@ -962,6 +962,7 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     assert_eq!(st, StatusCode::OK);
     let import_rep: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(import_rep["imported_count"], 2);
+    assert_eq!(import_rep["sources"][0]["group_name"], "测试分组");
     let id_a = import_rep["sources"][0]["id"].as_str().unwrap().to_string();
     let id_b = import_rep["sources"][1]["id"].as_str().unwrap().to_string();
 
@@ -1432,19 +1433,21 @@ async fn music_online_crud_masking_rbac_and_proxy_streaming_e2e() {
     let exported_arr: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
     assert_eq!(exported_arr.len(), 1);
 
-    let (st, _, _) = send_json(
+    let (st, _, body) = send_json(
         &h.app,
         "PATCH",
         &format!("/sources/{id_a}"),
         &h.admin_token,
         Some(serde_json::json!({
-            "group_name": "新分组",
+            "group_name": "  新分组  ",
             "weight": 88,
             "variable": "updated_var"
         })),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
+    let patched_dto: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(patched_dto["group_name"], "新分组");
 
     let (st, _, body) = send_json(
         &h.app,
@@ -1523,4 +1526,344 @@ async fn ssrf_hardened_default_rejects_loopback_and_metadata_urls() {
             "cover-proxy must reject SSRF target {target}"
         );
     }
+}
+
+#[tokio::test]
+async fn engine_blocks_template_js_injection_and_fixes_short_circuit_headers_ia_login_cover() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::source::model::{MusicCoverRule, MusicSearchRule, MusicStreamRule};
+
+    let lookup_hits = Arc::new(AtomicUsize::new(0));
+    let lookup_hits_srv = lookup_hits.clone();
+    let seen_queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_queries_srv = seen_queries.clone();
+
+    #[derive(Deserialize)]
+    struct LookupQuery {
+        id: Option<String>,
+        q: Option<String>,
+    }
+
+    let app = Router::new()
+        .route(
+            "/echo-search",
+            get(move |axum::extract::RawQuery(raw_q): axum::extract::RawQuery| {
+                let sq = seen_queries_srv.clone();
+                async move {
+                    if let Some(q) = raw_q {
+                        sq.lock().unwrap().push(q);
+                    }
+                    axum::Json(serde_json::json!([
+                        { "id": "t1", "name": "Safe Song", "artist": "Safe Artist" }
+                    ]))
+                }
+            }),
+        )
+        .route(
+            "/stream-lookup",
+            get(move |Query(q): Query<LookupQuery>| {
+                let hits = lookup_hits_srv.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({
+                        "url": format!(
+                            "https://cdn.example.test/audio/{}/{}.m4a",
+                            q.id.as_deref().unwrap_or("none"),
+                            q.q.as_deref().unwrap_or("default")
+                        ),
+                        "fmt": "flac",
+                        "br": 999,
+                        "ttl": 600,
+                        "dynHeaders": { "X-Dyn": "from-jsonpath", "Referer": "https://dyn.test/" }
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/metadata/ia-bool-priv",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "metadata": {
+                        "identifier": "ia-bool-priv",
+                        "title": "Public OGG Item",
+                        "creator": "Archivist"
+                    },
+                    "files": [
+                        { "name": "secret_bool.mp3", "private": true, "length": "01:00", "bitrate": "320" },
+                        { "name": "secret_str.mp3", "private": "true", "length": "02:00", "bitrate": "256" },
+                        { "name": "public_track.ogg", "length": "03:30", "bitrate": "192.4" }
+                    ]
+                }))
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = MusicSourceEngine::new(
+        HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: true,
+            proxy_url: None,
+        },
+        Duration::from_secs(10),
+    );
+
+    let seeds: Vec<MusicSourceSpec> = MusicSourceSpec::parse_json_batch(SEEDS_MUSIC_JSON)
+        .unwrap()
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+
+    tokio::task::spawn_blocking(move || {
+        // 1. Template / JS code injection prevention across placeholders and @js: rules
+        let inj_spec = MusicSourceSpec {
+            source_name: "Injection Guard".into(),
+            source_url: base.clone(),
+            search_url: Some(format!(
+                "{base}/echo-search?k={{{{key}}}}&extra={{{{1+1}}}}"
+            )),
+            rule_search: Some(MusicSearchRule {
+                track_list: Some("$".into()),
+                track_id: Some("$.id".into()),
+                title: Some("$.name".into()),
+                artist: Some("$.artist".into()),
+                ..Default::default()
+            }),
+            rule_stream: Some(MusicStreamRule {
+                stream_url: Some(
+                    "{{playUrl}}||https://cdn.example.test/tracks/{{urlId}}/{{trackId}}.mp3?q={{1+1}}"
+                        .into(),
+                ),
+                format: Some("mp3".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // 1a. Untrusted keyword containing {{java.toast(...)}} must NOT execute JS
+        let search_out = engine
+            .search_sync(
+                &inj_spec,
+                SourceRuntimeState::default(),
+                "{{java.toast('INJECTED_KEY')}}",
+                1,
+                10,
+            )
+            .unwrap();
+        assert!(search_out.diagnostics.toasts.is_empty());
+        {
+            let qs = seen_queries.lock().unwrap();
+            assert!(qs[0].contains("extra=2"));
+            assert!(!qs[0].contains("INJECTED_KEY") || qs[0].contains("%7B%7B"));
+        }
+
+        // 1b. Untrusted playUrl containing {{java.toast(...)}} in || combinator must NOT execute JS
+        let mut ctx_play = MusicTrackContext {
+            track_id: "{{1+1}}".into(),
+            url_id: Some("{{java.toast('INJECTED_URLID')}}".into()),
+            play_url: Some("https://cdn.example.test/{{java.toast('INJECTED_PLAY')}}.mp3".into()),
+            ..Default::default()
+        };
+        let play_out = engine
+            .resolve_stream_sync(&inj_spec, SourceRuntimeState::default(), &ctx_play, None)
+            .unwrap();
+        assert!(play_out.diagnostics.toasts.is_empty());
+        assert_eq!(
+            play_out.data.stream_url,
+            "https://cdn.example.test/{{java.toast('INJECTED_PLAY')}}.mp3"
+        );
+
+        // 1c. Fallback branch with urlId="{{java.toast(...)}}" & trackId="{{1+1}}" does NOT execute JS,
+        // while the template's own {{1+1}} token DOES evaluate to 2.
+        ctx_play.play_url = None;
+        let stream_out = engine
+            .resolve_stream_sync(&inj_spec, SourceRuntimeState::default(), &ctx_play, None)
+            .unwrap();
+        assert!(stream_out.diagnostics.toasts.is_empty());
+        assert_eq!(
+            stream_out.data.stream_url,
+            "https://cdn.example.test/tracks/{{java.toast('INJECTED_URLID')}}/{{1+1}}.mp3?q=2"
+        );
+
+        // 1d. @js: rule reads track/key/quality via JS globals without placeholder interpolation
+        let js_spec = MusicSourceSpec {
+            source_name: "JS Global Guard".into(),
+            source_url: base.clone(),
+            rule_stream: Some(MusicStreamRule {
+                stream_url: Some(
+                    "@js:'https://cdn.example.test/' + encodeURIComponent(track.urlId) + '?q=' + quality"
+                        .into(),
+                ),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let js_ctx = MusicTrackContext {
+            track_id: "1".into(),
+            url_id: Some("';java.toast('PWN');'".into()),
+            ..Default::default()
+        };
+        let js_out = engine
+            .resolve_stream_sync(&js_spec, SourceRuntimeState::default(), &js_ctx, Some("320"))
+            .unwrap();
+        assert!(js_out.diagnostics.toasts.is_empty());
+        assert_eq!(
+            js_out.data.stream_url,
+            "https://cdn.example.test/'%3Bjava.toast('PWN')%3B'?q=320"
+        );
+
+        // 2. resolve_stream_sync short-circuit behavior + {{ quality }} + headers (JSONPath & static JSON)
+        let mut sc_spec = MusicSourceSpec {
+            source_name: "ShortCircuit Spec".into(),
+            source_url: base.clone(),
+            supported_qualities: vec!["256".into()],
+            rule_stream: Some(MusicStreamRule {
+                request_url: Some(format!("{base}/stream-lookup?id={{{{trackId}}}}&q={{{{ quality }}}}")),
+                stream_url: Some("$.url".into()),
+                format: Some("m4a".into()),
+                bitrate: Some("256".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let sc_ctx = MusicTrackContext {
+            track_id: "trk1".into(),
+            play_url: Some("https://cdn.example.test/preview.m4a".into()),
+            ..Default::default()
+        };
+        // 2a. Whitespace {{ quality }} MUST bypass short-circuit and hit /stream-lookup
+        let out_q = engine
+            .resolve_stream_sync(&sc_spec, SourceRuntimeState::default(), &sc_ctx, Some("256"))
+            .unwrap();
+        assert_eq!(lookup_hits.load(Ordering::SeqCst), 1);
+        assert!(out_q.data.stream_url.ends_with("/trk1/256.m4a"));
+
+        // 2b. Static JSON object ruleStream.headers MUST bypass short-circuit and apply header
+        sc_spec.rule_stream.as_mut().unwrap().request_url =
+            Some(format!("{base}/stream-lookup?id={{{{trackId}}}}"));
+        sc_spec.rule_stream.as_mut().unwrap().headers = Some(r#"{"X-Static":"1"}"#.into());
+        let out_static_hdr = engine
+            .resolve_stream_sync(&sc_spec, SourceRuntimeState::default(), &sc_ctx, None)
+            .unwrap();
+        assert_eq!(lookup_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            out_static_hdr.data.headers.get("X-Static").map(String::as_str),
+            Some("1")
+        );
+
+        // 2c. JSONPath ruleStream.headers + dynamic format/bitrate/expiresInSecs MUST bypass short-circuit
+        sc_spec.rule_stream.as_mut().unwrap().headers = Some("$.dynHeaders".into());
+        sc_spec.rule_stream.as_mut().unwrap().format = Some("$.fmt".into());
+        sc_spec.rule_stream.as_mut().unwrap().bitrate = Some("$.br".into());
+        sc_spec.rule_stream.as_mut().unwrap().expires_in_secs = Some("$.ttl".into());
+        let out_dyn = engine
+            .resolve_stream_sync(&sc_spec, SourceRuntimeState::default(), &sc_ctx, None)
+            .unwrap();
+        assert_eq!(lookup_hits.load(Ordering::SeqCst), 3);
+        assert_eq!(out_dyn.data.format, "flac");
+        assert_eq!(out_dyn.data.bitrate, Some(999));
+        assert_eq!(out_dyn.data.expires_in_secs, Some(600));
+        assert_eq!(
+            out_dyn.data.headers.get("X-Dyn").map(String::as_str),
+            Some("from-jsonpath")
+        );
+
+        // 2d. When headers is None, format/bitrate/expires static, no quality in req_tpl, and quality matches sole supported_quality -> short-circuits!
+        sc_spec.rule_stream.as_mut().unwrap().headers = None;
+        sc_spec.rule_stream.as_mut().unwrap().format = Some("m4a".into());
+        sc_spec.rule_stream.as_mut().unwrap().bitrate = Some("256".into());
+        sc_spec.rule_stream.as_mut().unwrap().expires_in_secs = None;
+        let out_fast = engine
+            .resolve_stream_sync(&sc_spec, SourceRuntimeState::default(), &sc_ctx, Some("256"))
+            .unwrap();
+        assert_eq!(lookup_hits.load(Ordering::SeqCst), 3);
+        assert_eq!(out_fast.data.stream_url, "https://cdn.example.test/preview.m4a");
+
+        // 3. Internet Archive boolean private:true exclusion & .ogg fallback for duration/bitrate
+        let mut ia = seeds[2].clone();
+        ia.source_url = base.clone();
+        ia.rule_track_detail.as_mut().unwrap().request_url =
+            Some(format!("{base}/metadata/{{{{trackId}}}}"));
+        ia.rule_stream.as_mut().unwrap().request_url =
+            Some(format!("{base}/metadata/{{{{urlId}}}}"));
+        let ia_ctx = MusicTrackContext {
+            track_id: "ia-bool-priv".into(),
+            url_id: Some("ia-bool-priv".into()),
+            ..Default::default()
+        };
+        let ia_detail = engine
+            .fetch_track_detail_sync(&ia, SourceRuntimeState::default(), &ia_ctx)
+            .unwrap();
+        assert_eq!(ia_detail.data.duration_secs, Some(210));
+        let ia_stream = engine
+            .resolve_stream_sync(&ia, SourceRuntimeState::default(), &ia_ctx, None)
+            .unwrap();
+        assert_eq!(
+            ia_stream.data.stream_url,
+            "https://archive.org/download/ia-bool-priv/public_track.ogg"
+        );
+        assert_eq!(ia_stream.data.format, "ogg");
+        assert_eq!(ia_stream.data.bitrate, Some(192));
+
+        // 4. Case-insensitive @JS: login prefix + merge_login_info_preserving_masked in run_login_action_sync
+        let login_spec = MusicSourceSpec {
+            source_name: "Case-insensitive Login".into(),
+            source_url: base.clone(),
+            login_url: Some("@JS: function login() { return result.password; }".into()),
+            ..Default::default()
+        };
+        let mut init_rt = SourceRuntimeState::default();
+        init_rt
+            .login_info
+            .insert("password".into(), "real_secret_pw".into());
+        let login_out = engine
+            .run_login_action_sync(
+                &login_spec,
+                init_rt,
+                HashMap::from([(
+                    "password".into(),
+                    MASKED_SECRET_PLACEHOLDER.to_string(),
+                )]),
+                Some("login()"),
+            )
+            .unwrap();
+        assert_eq!(login_out.data, "real_secret_pw");
+        assert_eq!(
+            login_out.state.login_info.get("password").map(String::as_str),
+            Some("real_secret_pw")
+        );
+
+        // 5. resolve_cover preserves ctx.cover_url when ruleCover.requestUrl is whitespace-empty
+        let cover_spec = MusicSourceSpec {
+            source_name: "Whitespace Cover Req".into(),
+            source_url: base,
+            rule_cover: Some(MusicCoverRule {
+                request_url: Some("   ".into()),
+                cover_url: Some("https://override.test/wrong.jpg".into()),
+            }),
+            ..Default::default()
+        };
+        let cover_ctx = MusicTrackContext {
+            track_id: "c1".into(),
+            cover_url: Some("https://cdn.example.test/existing.jpg".into()),
+            ..Default::default()
+        };
+        let cover_out = engine
+            .resolve_cover_sync(&cover_spec, SourceRuntimeState::default(), &cover_ctx)
+            .unwrap();
+        assert_eq!(
+            cover_out.data.as_deref(),
+            Some("https://cdn.example.test/existing.jpg")
+        );
+    })
+    .await
+    .unwrap();
+
+    server.abort();
 }

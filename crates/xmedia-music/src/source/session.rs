@@ -29,6 +29,7 @@ globalThis.track = {
     getVariable: function(k) { return this._vars[String(k)] || ''; },
     putVariable: function(k, v) { this._vars[String(k)] = v == null ? '' : String(v); }
 };
+globalThis.quality = '';
 "#;
 
 pub struct MusicSourceSession {
@@ -98,12 +99,11 @@ impl MusicSourceSession {
             "quality": ctx.quality.as_deref().unwrap_or(""),
         });
         self.inner.set_domain_global("track", payload, true)?;
-        if let Some(ref q) = ctx.quality
-            && !q.trim().is_empty()
-        {
-            self.inner
-                .set_domain_global("quality", serde_json::json!(q), false)?;
-        }
+        self.inner.set_domain_global(
+            "quality",
+            serde_json::json!(ctx.quality.as_deref().unwrap_or("")),
+            false,
+        )?;
         Ok(())
     }
 

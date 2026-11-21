@@ -95,7 +95,7 @@ impl MusicOnlineService {
         Ok(rec.runtime_state.variable)
     }
 
-    fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+    pub(super) fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
         get_or_insert_weak_lock(&self.source_state_locks, id)
     }
 
@@ -179,7 +179,12 @@ impl MusicOnlineService {
         let now = Timestamp::now();
 
         for (src, item_raw) in parsed_batch {
-            let group_name = src.source_group.clone().unwrap_or_default();
+            let group_name = src
+                .source_group
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
             let key = (src.source_url.clone(), src.source_name.clone());
 
             if let Some(mut rec) = existing_by_key.remove(&key) {
@@ -253,7 +258,12 @@ impl MusicOnlineService {
             let (parsed, clean_raw) = batch.remove(0);
             rec.name = parsed.source_name;
             rec.source_url = parsed.source_url;
-            rec.group_name = parsed.source_group.unwrap_or_default();
+            rec.group_name = parsed
+                .source_group
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .to_string();
             rec.enabled = parsed.enabled;
             rec.weight = parsed.weight;
             rec.raw_json = clean_raw;

@@ -197,6 +197,25 @@ fn is_known_template_placeholder(expr: &str) -> bool {
     )
 }
 
+fn resolve_static_placeholder(expr: &str, vars: &MusicTemplateVars<'_>) -> Option<String> {
+    match expr {
+        "key" => Some(url_encode_component(vars.key)),
+        "title" => Some(url_encode_component(vars.title)),
+        "artist" => Some(url_encode_component(vars.artist)),
+        "album" => Some(url_encode_component(vars.album)),
+        "page" => Some(vars.page.to_string()),
+        "limit" => Some(vars.limit.to_string()),
+        "quality" => Some(vars.quality.to_string()),
+        "urlId" => Some(vars.url_id.to_string()),
+        "trackId" => Some(vars.track_id.to_string()),
+        "coverId" => Some(vars.cover_id.to_string()),
+        "lyricId" => Some(vars.lyric_id.to_string()),
+        "playUrl" => Some(vars.play_url.to_string()),
+        "detailUrl" => Some(vars.detail_url.to_string()),
+        _ => None,
+    }
+}
+
 fn template_needs_js(raw_tpl: &str) -> bool {
     if split_js_pipeline(raw_tpl).is_some() {
         return true;
@@ -212,6 +231,7 @@ fn template_needs_js(raw_tpl: &str) -> bool {
             || expr.starts_with("$.")
             || expr.starts_with("$[")
             || expr.starts_with("@css:")
+            || expr.starts_with("@CSS:")
             || expr.starts_with("@Json:")
             || expr.starts_with("@json:");
         if !is_non_js_rule {
@@ -222,43 +242,23 @@ fn template_needs_js(raw_tpl: &str) -> bool {
     false
 }
 
-fn substitute_template(raw_tpl: &str, vars: &MusicTemplateVars<'_>) -> String {
-    let page_str = vars.page.to_string();
-    let limit_str = vars.limit.to_string();
-    let mut out = String::with_capacity(raw_tpl.len() + 32);
+fn template_references_quality(raw_tpl: &str) -> bool {
+    if template_needs_js(raw_tpl) {
+        return true;
+    }
     let mut rest = raw_tpl;
     while let Some(open) = rest.find("{{") {
-        out.push_str(&rest[..open]);
         let after_open = &rest[open + 2..];
         let Some(close) = after_open.find("}}") else {
-            out.push_str(&rest[open..]);
-            return out;
+            break;
         };
         let expr = after_open[..close].trim();
-        match expr {
-            "key" => out.push_str(&url_encode_component(vars.key)),
-            "title" => out.push_str(&url_encode_component(vars.title)),
-            "artist" => out.push_str(&url_encode_component(vars.artist)),
-            "album" => out.push_str(&url_encode_component(vars.album)),
-            "page" => out.push_str(&page_str),
-            "limit" => out.push_str(&limit_str),
-            "quality" => out.push_str(vars.quality),
-            "urlId" => out.push_str(vars.url_id),
-            "trackId" => out.push_str(vars.track_id),
-            "coverId" => out.push_str(vars.cover_id),
-            "lyricId" => out.push_str(vars.lyric_id),
-            "playUrl" => out.push_str(vars.play_url),
-            "detailUrl" => out.push_str(vars.detail_url),
-            other => {
-                out.push_str("{{");
-                out.push_str(other);
-                out.push_str("}}");
-            }
+        if expr.eq_ignore_ascii_case("quality") {
+            return true;
         }
         rest = &after_open[close + 2..];
     }
-    out.push_str(rest);
-    out
+    false
 }
 
 fn split_top_level_or(input: &str) -> Vec<&str> {
@@ -312,6 +312,20 @@ fn is_bare_literal_token(rule: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
 
+fn is_static_rule_literal(rule_opt: Option<&str>) -> bool {
+    let Some(t) = rule_opt.map(str::trim).filter(|s| !s.is_empty()) else {
+        return true;
+    };
+    if t.starts_with('$')
+        || t.starts_with('@')
+        || t.contains("{{")
+        || split_js_pipeline(t).is_some()
+    {
+        return false;
+    }
+    is_bare_literal_token(t)
+}
+
 fn eval_rule_or_literal(
     session: &mut MusicSourceSession,
     input: &RuleValue,
@@ -329,6 +343,48 @@ fn eval_rule_or_literal(
     None
 }
 
+fn eval_template_branch_single_pass(
+    session: &mut MusicSourceSession,
+    branch: &str,
+    vars: &MusicTemplateVars<'_>,
+    input: &RuleValue,
+    base_url: &str,
+) -> Result<String, String> {
+    if !branch.contains("{{") || !branch.contains("}}") {
+        if branch.starts_with("$.")
+            || branch.starts_with("$[")
+            || branch == "$"
+            || branch.starts_with('@')
+        {
+            return Ok(session.eval_opt(input, Some(branch), base_url));
+        }
+        return Ok(branch.to_string());
+    }
+
+    let mut out = String::with_capacity(branch.len() + 32);
+    let mut rest = branch;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let expr = after_open[..close].trim();
+        if let Some(static_val) = resolve_static_placeholder(expr, vars) {
+            out.push_str(&static_val);
+        } else {
+            let token_tpl = format!("{{{{{expr}}}}}");
+            let evaluated = session.eval_string(input, &token_tpl, base_url)?;
+            out.push_str(&evaluated);
+        }
+        rest = &after_open[close + 2..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
 fn eval_template_expression(
     session: &mut MusicSourceSession,
     raw_tpl: &str,
@@ -337,34 +393,44 @@ fn eval_template_expression(
     base_url: &str,
 ) -> Result<String, String> {
     if split_js_pipeline(raw_tpl).is_some() {
-        let pre_sub = substitute_template(raw_tpl, vars);
-        return session.eval_string(input, &pre_sub, base_url);
+        return session.eval_string(input, raw_tpl, base_url);
     }
 
     for branch in split_top_level_or(raw_tpl) {
         if branch.is_empty() {
             continue;
         }
-        let substituted = substitute_template(branch, vars);
-        let evaluated = if template_needs_js(&substituted)
-            || (substituted.contains("{{") && substituted.contains("}}"))
-        {
-            session.eval_string(input, &substituted, base_url)?
-        } else if substituted.starts_with("$.")
-            || substituted.starts_with("$[")
-            || substituted == "$"
-            || substituted.starts_with("@")
-        {
-            session.eval_opt(input, Some(&substituted), base_url)
-        } else {
-            substituted
-        };
+        let evaluated = eval_template_branch_single_pass(session, branch, vars, input, base_url)?;
         let trimmed = evaluated.trim();
         if !trimmed.is_empty() {
             return Ok(trimmed.to_string());
         }
     }
     Ok(String::new())
+}
+
+fn apply_stream_headers(
+    session: &mut MusicSourceSession,
+    input: &RuleValue,
+    hdr_rule_opt: Option<&str>,
+    base_url: &str,
+    headers: &mut HashMap<String, String>,
+) {
+    let Some(hdr_rule) = hdr_rule_opt.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let hdr_raw = if hdr_rule.starts_with('{')
+        && !hdr_rule.contains("{{")
+        && split_js_pipeline(hdr_rule).is_none()
+    {
+        hdr_rule.to_string()
+    } else {
+        session.eval_opt(input, Some(hdr_rule), base_url)
+    };
+    for (k, v) in MusicSourceSpec::parse_header_map(Some(&hdr_raw)) {
+        headers.retain(|existing_k, _| !existing_k.eq_ignore_ascii_case(&k));
+        headers.insert(k, v);
+    }
 }
 
 pub fn parse_explore_categories(raw: &str, base_url: &str) -> Vec<OnlineMusicExploreCategory> {
@@ -936,15 +1002,17 @@ impl MusicSourceEngine {
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
         let mut run = || -> Result<OnlineMusicStreamResult, String> {
-            let effective_quality = quality
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .or_else(|| {
-                    ctx.quality
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                })
+            let requested_quality =
+                quality
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        ctx.quality
+                            .as_deref()
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                    });
+            let effective_quality = requested_quality
                 .or_else(|| source.supported_qualities.first().map(String::as_str))
                 .unwrap_or("320");
 
@@ -980,31 +1048,49 @@ impl MusicSourceEngine {
             let vars = MusicTemplateVars::from_track(&ctx_with_q, effective_quality);
             let empty_input = RuleValue::Text(String::new());
 
+            let direct_play_url = ctx
+                .play_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| s.starts_with("http://") || s.starts_with("https://"));
+            let has_rule_headers = rule
+                .headers
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty());
+            let static_metadata_only = is_static_rule_literal(rule.format.as_deref())
+                && is_static_rule_literal(rule.bitrate.as_deref())
+                && is_static_rule_literal(rule.expires_in_secs.as_deref());
+            let quality_matches_or_absent = requested_quality.is_none_or(|q| {
+                source.supported_qualities.len() == 1
+                    && source.supported_qualities[0].eq_ignore_ascii_case(q)
+            });
+
             if let Some(req_tpl) = rule
                 .request_url
                 .as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
             {
-                // Short-circuit if caller already has a concrete play_url and request_url doesn't depend on quality.
-                if !req_tpl.contains("{{quality}}")
-                    && let Some(direct) = ctx
-                        .play_url
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+                // Short-circuit only when all metadata/headers are static and request_url doesn't depend on quality or JS.
+                if !has_rule_headers
+                    && static_metadata_only
+                    && quality_matches_or_absent
+                    && !template_references_quality(req_tpl)
+                    && let Some(direct) = direct_play_url
                 {
                     let format = rule
                         .format
                         .as_deref()
-                        .filter(|s| is_bare_literal_token(s))
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
                         .map(str::to_string)
                         .or_else(|| infer_audio_format(direct))
                         .unwrap_or_else(|| "mp3".into());
                     let bitrate = rule
                         .bitrate
                         .as_deref()
-                        .filter(|s| is_bare_literal_token(s))
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
                         .and_then(|s| s.parse::<u32>().ok());
                     return Ok(OnlineMusicStreamResult {
                         stream_url: direct.to_string(),
@@ -1014,7 +1100,8 @@ impl MusicSourceEngine {
                         expires_in_secs: rule
                             .expires_in_secs
                             .as_deref()
-                            .filter(|s| is_bare_literal_token(s))
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
                             .and_then(|s| s.parse::<u64>().ok()),
                     });
                 }
@@ -1073,15 +1160,13 @@ impl MusicSourceEngine {
                 )
                 .and_then(|s| s.trim().parse::<u64>().ok());
 
-                if let Some(ref hdr_rule) = rule.headers
-                    && !hdr_rule.trim().is_empty()
-                {
-                    let hdr_raw = session.eval_opt(&input, Some(hdr_rule), &fetched.final_url);
-                    for (k, v) in MusicSourceSpec::parse_header_map(Some(&hdr_raw)) {
-                        headers.retain(|existing_k, _| !existing_k.eq_ignore_ascii_case(&k));
-                        headers.insert(k, v);
-                    }
-                }
+                apply_stream_headers(
+                    &mut session,
+                    &input,
+                    rule.headers.as_deref(),
+                    &fetched.final_url,
+                    &mut headers,
+                );
 
                 Ok(OnlineMusicStreamResult {
                     stream_url: resolved_stream,
@@ -1138,6 +1223,14 @@ impl MusicSourceEngine {
                     &source.source_url,
                 )
                 .and_then(|s| s.trim().parse::<u64>().ok());
+
+                apply_stream_headers(
+                    &mut session,
+                    &empty_input,
+                    rule.headers.as_deref(),
+                    &source.source_url,
+                    &mut headers,
+                );
 
                 Ok(OnlineMusicStreamResult {
                     stream_url: final_url,
@@ -1197,7 +1290,8 @@ impl MusicSourceEngine {
                     .rule_cover
                     .as_ref()
                     .and_then(|r| r.request_url.as_deref())
-                    .is_none()
+                    .map(str::trim)
+                    .is_none_or(str::is_empty)
             {
                 return Ok(Some(resolve_relative_url(existing, &source.source_url)));
             }
@@ -1434,10 +1528,11 @@ impl MusicSourceEngine {
         login_info: HashMap<String, String>,
         action_js: Option<&str>,
     ) -> Result<SourceCallOutput<String>, SourceCallError> {
-        for (k, v) in login_info {
-            initial_state.login_info.insert(k, v);
-        }
-        let merged_login = initial_state.login_info.clone();
+        let merged_login = xmedia_source::crud::merge_login_info_preserving_masked(
+            &initial_state.login_info,
+            login_info,
+        );
+        initial_state.login_info = merged_login.clone();
 
         let mut session = self
             .build_session(
@@ -1448,11 +1543,15 @@ impl MusicSourceEngine {
             )
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
-        let login_url_raw = source.login_url.as_deref().unwrap_or("");
-        let login_url = login_url_raw
-            .trim()
-            .strip_prefix("@js:")
-            .unwrap_or(login_url_raw);
+        let login_url_trimmed = source.login_url.as_deref().unwrap_or("").trim();
+        let login_url = if login_url_trimmed
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@js:"))
+        {
+            login_url_trimmed[4..].trim()
+        } else {
+            login_url_trimmed
+        };
         if login_url.trim().is_empty() && action_js.is_none_or(|a| a.trim().is_empty()) {
             return Err(SourceCallError::new(
                 "当前音源未配置 loginUrl 或可执行的登录脚本",
