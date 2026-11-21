@@ -57,22 +57,10 @@ fn keyword_may_affect_options(keyword: &str) -> bool {
 }
 
 fn count_comma_open_brace(s: &str) -> usize {
-    let bytes = s.as_bytes();
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        if bytes[i] == b',' {
-            let mut j = i + 1;
-            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
-                j += 1;
-            }
-            if j < bytes.len() && bytes[j] == b'{' {
-                count += 1;
-            }
-        }
-        i += 1;
-    }
-    count
+    s.bytes()
+        .enumerate()
+        .filter(|&(i, b)| b == b',' && s[i + 1..].trim_start().starts_with('{'))
+        .count()
 }
 
 fn json_escape_str_inner(s: &str) -> String {

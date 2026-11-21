@@ -2376,6 +2376,12 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
     let src_js_concat_opts = make_src(format!(
         "@js:'{base}/search,{{\"method\":\"POST\",\"body\":\"q=' + key + '\"}}'"
     ));
+    let src_js_nbsp_concat_opts = make_src(format!(
+        "@js:'{base}/search?v=1,\u{00A0}{{\"method\":\"POST\",\"body\":\"q=' + key + '\"}}'"
+    ));
+    let src_tag_js_nbsp_concat_opts = make_src(format!(
+        "<js>'{base}/search?v=1,\u{00A0}{{\"method\":\"POST\",\"body\":\"q=' + key + '\"}}'</js>"
+    ));
     let src_js_unquoted_body = make_src(format!(
         "@js:'{base}/search,{{\"method\":\"POST\",\"body\":' + key + '}}'"
     ));
@@ -2400,6 +2406,8 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
         let replacement_opts_payload = r#"x"},{"method":"DELETE","body":"evil"#;
         let replacement_junk_payload = r#"x"},junk,{"method":"DELETE","body":"evil"#;
         let replacement_comma_brace_payload = r#"x","k":"v,{"method":"DELETE","body":"evil"#;
+        let replacement_nbsp_junk_payload =
+            "x\"},junk,\u{00A0}{\"method\":\"DELETE\",\"body\":\"evil";
 
         // Bypass A: Mustache arithmetic + {{key}}, {{String(key)}}, and @js: without options must reject
         for src in [&src_mustache_arith, &src_mustache_str, &src_js_plain] {
@@ -2425,6 +2433,23 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
                     1,
                 )
                 .expect_err("JS JSON breakout must be rejected");
+            assert!(
+                err.contains("选项") || err.contains("结构"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // @js: / <js> templates with Unicode whitespace (\u{00A0}) between ',' and '{' must
+        // equally reject replacement options smuggling payloads.
+        for src in [&src_js_nbsp_concat_opts, &src_tag_js_nbsp_concat_opts] {
+            let err = engine
+                .search_sync(
+                    src,
+                    SourceRuntimeState::default(),
+                    replacement_nbsp_junk_payload,
+                    1,
+                )
+                .expect_err("Unicode whitespace replacement ,{options} smuggling must be rejected");
             assert!(
                 err.contains("选项") || err.contains("结构"),
                 "unexpected error: {err}"
@@ -2980,6 +3005,133 @@ async fn pagination_cycle_guard_handles_302_alias_to_post_target_and_clamped_307
     assert_eq!(t_2e, vec!["2e-Ch1", "2e-Ch2"]);
     // p=1 (2e-Ch1), p=2 (2e-Ch2), p=3 (clamped identical 2e-Ch2 -> stopped by guard; p=4 never fetched).
     assert_eq!(shared_2e_hits.load(Ordering::SeqCst), 3);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn pagination_cycle_guard_stops_clamped_direct_post_200_pages() {
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let direct_2e_hits = Arc::new(AtomicUsize::new(0));
+    let direct_2e_hits_c = direct_2e_hits.clone();
+
+    let app = Router::new()
+        .route(
+            "/toc/2e-direct",
+            post(move |body: String| {
+                let hits = direct_2e_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    let resp_body = if body.trim() == "p=1" {
+                        r#"{"items":[{"t":"2eDir-Ch1","u":"/ch/2ed1"}]}"#
+                    } else {
+                        r#"{"items":[{"t":"2eDir-Ch2","u":"/ch/2ed2"}]}"#
+                    };
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(resp_body))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/toc/post-then-get-distinct",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"items":[{"t":"PostCh1","u":"/ch/p1"}],"next":"/toc/post-then-get-distinct"}"#,
+                    ))
+                    .unwrap()
+            })
+            .get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"items":[{"t":"GetCh2","u":"/ch/g2"}]}"#,
+                    ))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source_direct: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Guard2eDirect",
+        "sourceUrl": base,
+        "ruleToc": {
+            "chapterList": "$.items[*]",
+            "chapterName": "$.t",
+            "chapterUrl": "$.u",
+            "nextTocUrl": "@js: var c = Number(java.get('p2ed') || 1); var n = c + 1; java.put('p2ed', String(n)); n <= 4 ? baseUrl + ',{\"method\":\"POST\",\"body\":\"p=' + n + '\"}' : ''"
+        }
+    }))
+    .unwrap();
+
+    let source_post_get: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "GuardPostThenGet",
+        "sourceUrl": base,
+        "ruleToc": {
+            "chapterList": "$.items[*]",
+            "chapterName": "$.t",
+            "chapterUrl": "$.u",
+            "nextTocUrl": "$.next"
+        }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_c = base.clone();
+    let (ch_direct, ch_post_get) = tokio::task::spawn_blocking(move || {
+        let ch_direct = engine
+            .fetch_chapters_sync(
+                &source_direct,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc/2e-direct,{{\"method\":\"POST\",\"body\":\"p=1\"}}"),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let ch_post_get = engine
+            .fetch_chapters_sync(
+                &source_post_get,
+                SourceRuntimeState::default(),
+                &format!(
+                    "{base_c}/toc/post-then-get-distinct,{{\"method\":\"POST\",\"body\":\"p=1\"}}"
+                ),
+                &ComicJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        (ch_direct, ch_post_get)
+    })
+    .await
+    .unwrap();
+
+    let t_direct: Vec<&str> = ch_direct.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_direct, vec!["2eDir-Ch1", "2eDir-Ch2"]);
+    // p=1 (2eDir-Ch1), p=2 (2eDir-Ch2), p=3 (clamped identical 2eDir-Ch2 -> stopped by guard; p=4 never fetched).
+    assert_eq!(direct_2e_hits.load(Ordering::SeqCst), 3);
+
+    let t_post_get: Vec<&str> = ch_post_get.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(t_post_get, vec!["PostCh1", "GetCh2"]);
 
     server.abort();
 }
