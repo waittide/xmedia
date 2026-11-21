@@ -30,30 +30,13 @@ impl BookSourceRecord {
         weight: Option<i64>,
         group_name: Option<&str>,
     ) -> String {
-        let Ok(mut val) = serde_json::from_str::<serde_json::Value>(raw_json) else {
-            return raw_json.to_string();
-        };
-        let Some(obj) = val.as_object_mut() else {
-            return raw_json.to_string();
-        };
-        if let Some(en) = enabled {
-            obj.insert("enabled".into(), serde_json::Value::Bool(en));
-        }
-        if let Some(w) = weight {
-            obj.insert("weight".into(), serde_json::Value::from(w));
-        }
-        if let Some(g) = group_name {
-            let trimmed = g.trim();
-            if trimmed.is_empty() {
-                obj.remove("bookSourceGroup");
-            } else {
-                obj.insert(
-                    "bookSourceGroup".into(),
-                    serde_json::Value::String(trimmed.to_string()),
-                );
-            }
-        }
-        serde_json::to_string(&val).unwrap_or_else(|_| raw_json.to_string())
+        xmedia_source::crud::sync_raw_json_fields(
+            raw_json,
+            enabled,
+            weight,
+            group_name,
+            "bookSourceGroup",
+        )
     }
 }
 

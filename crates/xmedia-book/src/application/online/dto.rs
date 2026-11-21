@@ -1,82 +1,23 @@
-use std::collections::HashMap;
-
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::domain::book::BookId;
 use crate::source::model::{
-    ExecutionDiagnostics, LoginUiItem, OnlineBookDetail, OnlineChapterContent, OnlineChapterItem,
+    ExecutionDiagnostics, OnlineBookDetail, OnlineChapterContent, OnlineChapterItem,
     SearchBookResult,
 };
 use crate::source::tracked_store::TrackedChapterMeta;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BookSourceSummaryDto {
-    pub id: Uuid,
-    pub name: String,
-    pub source_url: String,
-    pub group_name: String,
-    pub comment: Option<String>,
-    pub check_keyword: Option<String>,
-    pub enabled: bool,
-    pub weight: i64,
-    pub source_type: i64,
-    pub has_login_url: bool,
-    pub login_ui: Vec<LoginUiItem>,
-    pub login_info: HashMap<String, String>,
-    pub has_variable: bool,
-    pub variable_preview: String,
-    pub cookie_hosts: Vec<String>,
-    pub last_test_ok: Option<bool>,
-    pub last_test_msg: Option<String>,
-    pub updated_at: Timestamp,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ImportBookSourcesReportDto {
-    pub imported_count: usize,
-    pub updated_count: usize,
-    pub sources: Vec<BookSourceSummaryDto>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct UpdateBookSourceInput {
-    pub enabled: Option<bool>,
-    pub weight: Option<i64>,
-    pub group_name: Option<String>,
-    pub raw_json: Option<String>,
-    pub variable: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum BatchBookSourceAction {
-    Enable,
-    Disable,
-    SetGroup { group_name: String },
-    Delete,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct BatchBookSourcesInput {
-    pub ids: Vec<Uuid>,
-    #[serde(flatten)]
-    pub action: BatchBookSourceAction,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchBookSourcesReportDto {
-    pub affected_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LoginActionResponseDto {
-    pub result: String,
-    pub diagnostics: ExecutionDiagnostics,
-    pub source: BookSourceSummaryDto,
-}
+pub type BookSourceSummaryDto = xmedia_source::crud::SourceSummaryDto;
+pub type ImportBookSourcesReportDto =
+    xmedia_source::crud::ImportSourcesReportDto<BookSourceSummaryDto>;
+pub type UpdateBookSourceInput = xmedia_source::crud::UpdateSourceInput;
+pub type BatchBookSourceAction = xmedia_source::crud::BatchSourceAction;
+pub type BatchBookSourcesInput = xmedia_source::crud::BatchSourcesInput;
+pub type BatchBookSourcesReportDto = xmedia_source::crud::BatchSourcesReportDto;
+pub type LoginActionResponseDto = xmedia_source::crud::LoginActionResponseDto<BookSourceSummaryDto>;
+pub type SourceDebugStepDto = xmedia_source::crud::SourceTestStepDto;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -99,17 +40,6 @@ pub struct SourceTestInput {
     pub chapter_url: Option<String>,
     pub chapter_index: Option<usize>,
     pub chapter_title: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SourceDebugStepDto {
-    pub stage: String,
-    pub label: String,
-    pub ok: bool,
-    pub elapsed_ms: u64,
-    pub summary: String,
-    pub error: Option<String>,
-    pub diagnostics: ExecutionDiagnostics,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

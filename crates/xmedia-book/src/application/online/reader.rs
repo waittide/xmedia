@@ -7,7 +7,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 
 use crate::domain::online::BookSourceRecord;
-use crate::source::http::{get_or_build_async_client, validate_target_url_static};
+use crate::source::http::HttpClientConfig;
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource,
 };
@@ -16,10 +16,7 @@ use super::dto::{
     AggregatedSearchItemDto, AggregatedSearchResponseDto, OnlineBookDetailResponseDto,
     OnlineContentResponseDto, OnlineTocResponseDto, SourceSearchErrorDto,
 };
-use super::helpers::{
-    ChapterFetchOptions, read_cached_chapter_at, validate_cover_header_mime,
-    validate_safe_cover_image, write_cached_chapter_at,
-};
+use super::helpers::{ChapterFetchOptions, read_cached_chapter_at, write_cached_chapter_at};
 use super::{BookOnlineService, SEARCH_MAX_CONCURRENCY, SEARCH_PER_SOURCE_TIMEOUT};
 
 impl BookOnlineService {
@@ -368,54 +365,18 @@ impl BookOnlineService {
     }
 
     pub async fn fetch_cover_proxy(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
-        const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
-        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
-            .map_err(DomainError::Validation)?;
-        let client = get_or_build_async_client(12, self.allow_private_ips, None)
-            .map_err(DomainError::Storage)?;
-
-        let mut resp = client
-            .get(validated)
-            .send()
-            .await
-            .map_err(|e| DomainError::Validation(format!("拉取封面失败: {e}")))?;
-
-        if !resp.status().is_success() {
-            return Err(DomainError::Validation(format!(
-                "封面响应状态异常: {}",
-                resp.status()
-            )));
-        }
-
-        let header_ct = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase());
-
-        if let Some(ref ct) = header_ct {
-            validate_cover_header_mime(ct)?;
-        }
-
-        if let Some(content_len) = resp.content_length()
-            && content_len > MAX_COVER_BYTES as u64
-        {
-            return Err(DomainError::Validation("封面图片体积超过 8MB 限制".into()));
-        }
-
-        let mut bytes = Vec::new();
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| DomainError::Validation(format!("读取封面失败: {e}")))?
-        {
-            if bytes.len().saturating_add(chunk.len()) > MAX_COVER_BYTES {
-                return Err(DomainError::Validation("封面图片体积超过 8MB 限制".into()));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
-
-        let safe_mime = validate_safe_cover_image(header_ct.as_deref(), &bytes)?;
-        Ok((bytes, safe_mime))
+        let cfg = HttpClientConfig {
+            timeout_secs: xmedia_source::proxy::DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
+            allow_private_ips: self.allow_private_ips,
+            proxy_url: None,
+        };
+        let (bytes, mime) = xmedia_source::proxy::fetch_validated_image_bytes_with_config(
+            raw_url,
+            None,
+            xmedia_source::proxy::DEFAULT_IMAGE_PROXY_MAX_BYTES,
+            &cfg,
+        )
+        .await?;
+        Ok((bytes, mime.to_string()))
     }
 }

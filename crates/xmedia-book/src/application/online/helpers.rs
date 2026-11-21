@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use md5::{Digest, Md5};
 use tokio::sync::Notify;
 use uuid::Uuid;
-use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::error::DomainResult;
 
 use crate::source::model::{ConcurrentRateSpec, OnlineChapterContent};
 use crate::source::packager::PackChapterInput;
@@ -177,63 +177,11 @@ pub(super) fn get_or_insert_weak_lock<K: Eq + std::hash::Hash>(
     lock
 }
 
-pub(super) fn validate_cover_header_mime(ct_lower: &str) -> DomainResult<()> {
-    if ct_lower.is_empty()
-        || ct_lower == "application/octet-stream"
-        || ct_lower == "binary/octet-stream"
-    {
-        return Ok(());
-    }
-    if !ct_lower.starts_with("image/") || ct_lower.contains("svg") {
-        return Err(DomainError::Validation(format!(
-            "不支持的封面内容类型: {ct_lower}"
-        )));
-    }
-    Ok(())
-}
-
-fn detect_safe_raster_image_mime(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        Some("image/jpeg")
-    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 14 && bytes.starts_with(b"BM") {
-        Some("image/bmp")
-    } else if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) {
-        Some("image/x-icon")
-    } else if bytes.len() >= 12
-        && &bytes[4..8] == b"ftyp"
-        && matches!(
-            &bytes[8..12],
-            b"avif" | b"avis" | b"heic" | b"heix" | b"mif1"
-        )
-    {
-        Some("image/avif")
-    } else {
-        None
-    }
-}
-
 pub(crate) fn validate_safe_cover_image(
     header_ct: Option<&str>,
     bytes: &[u8],
 ) -> DomainResult<String> {
-    if let Some(ct) = header_ct {
-        let normalized = ct
-            .split(';')
-            .next()
-            .unwrap_or(ct)
-            .trim()
-            .to_ascii_lowercase();
-        validate_cover_header_mime(&normalized)?;
-    }
-    let sniffed = detect_safe_raster_image_mime(bytes)
-        .ok_or_else(|| DomainError::Validation("封面内容不是受支持的安全图片格式".into()))?;
-    Ok(sniffed.to_string())
+    xmedia_source::proxy::validate_safe_raster_image(header_ct, bytes).map(str::to_string)
 }
 
 fn chapter_cache_path_at(cache_dir: &Path, source_id: Uuid, chapter_url: &str) -> PathBuf {

@@ -1,13 +1,18 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
+use xmedia_source::crud::{
+    ParsedSourceSummaryMeta, SourceRecordSnapshot, build_source_summary, compute_reorder_targets,
+    dedup_preserve_order_uuids, format_export_batch_json, merge_login_info_preserving_masked,
+    merge_runtime_state,
+};
 
 use crate::domain::online::BookSourceRecord;
-use crate::source::model::{LegadoBookSource, LoginUiItem, SourceRuntimeState};
+use crate::source::model::{LegadoBookSource, SourceRuntimeState};
 
 use super::BookOnlineService;
 use super::dto::{
@@ -17,28 +22,6 @@ use super::dto::{
 use super::helpers::get_or_insert_weak_lock;
 
 impl BookOnlineService {
-    fn is_sensitive_login_field(key: &str, login_ui: &[LoginUiItem]) -> bool {
-        if login_ui
-            .iter()
-            .any(|item| item.name == key && item.item_type.eq_ignore_ascii_case("password"))
-        {
-            return true;
-        }
-        let lower = key.to_ascii_lowercase();
-        lower.contains("password")
-            || lower.contains("passwd")
-            || lower.contains("pwd")
-            || lower.contains("token")
-            || lower.contains("secret")
-            || lower.contains("cookie")
-            || lower.contains("key")
-            || key.contains("密码")
-            || key.contains("口令")
-            || key.contains("密钥")
-            || key.contains("授权码")
-            || key.contains("凭证")
-    }
-
     fn record_to_summary(m: &BookSourceRecord, is_admin: bool) -> BookSourceSummaryDto {
         let parsed = serde_json::from_str::<LegadoBookSource>(&m.raw_json).ok();
         let login_ui = parsed
@@ -59,47 +42,28 @@ impl BookOnlineService {
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
 
-        let (login_info, variable_preview, cookie_hosts) = if is_admin {
-            let mut masked = HashMap::new();
-            for (k, v) in &m.runtime_state.login_info {
-                let is_sensitive = Self::is_sensitive_login_field(k, &login_ui);
-                masked.insert(
-                    k.clone(),
-                    if is_sensitive && !v.is_empty() {
-                        "••••••••".to_string()
-                    } else {
-                        v.clone()
-                    },
-                );
-            }
-            let preview: String = m.runtime_state.variable.chars().take(240).collect();
-            let mut hosts: Vec<String> = m.runtime_state.cookies.keys().cloned().collect();
-            hosts.sort();
-            (masked, preview, hosts)
-        } else {
-            (HashMap::new(), String::new(), Vec::new())
-        };
-
-        BookSourceSummaryDto {
-            id: m.id,
-            name: m.name.clone(),
-            source_url: m.source_url.clone(),
-            group_name: m.group_name.clone(),
-            comment,
-            check_keyword,
-            enabled: m.enabled,
-            weight: m.weight,
-            source_type: m.source_type,
-            has_login_url,
-            login_ui: if is_admin { login_ui } else { Vec::new() },
-            login_info,
-            has_variable: !m.runtime_state.variable.trim().is_empty(),
-            variable_preview,
-            cookie_hosts,
-            last_test_ok: m.last_test_ok,
-            last_test_msg: m.last_test_msg.clone(),
-            updated_at: m.updated_at,
-        }
+        build_source_summary(
+            SourceRecordSnapshot {
+                id: m.id,
+                name: &m.name,
+                source_url: &m.source_url,
+                group_name: &m.group_name,
+                enabled: m.enabled,
+                weight: m.weight,
+                source_type: m.source_type,
+                runtime_state: &m.runtime_state,
+                last_test_ok: m.last_test_ok,
+                last_test_msg: m.last_test_msg.as_deref(),
+                updated_at: m.updated_at,
+            },
+            ParsedSourceSummaryMeta {
+                comment,
+                check_keyword,
+                has_login_url,
+                login_ui,
+            },
+            is_admin,
+        )
     }
 
     pub(super) async fn load_source(&self, id: Uuid) -> DomainResult<BookSourceRecord> {
@@ -139,21 +103,8 @@ impl BookOnlineService {
     ) -> DomainResult<()> {
         let lock = self.source_state_lock_for(id);
         let _guard = lock.lock().await;
-        let merged = if let Some(current_rec) = self.sources.find_by_id(id).await? {
-            let mut merged = current_rec.runtime_state;
-            merged.cookies.extend(new_state.cookies);
-            merged.cache.extend(new_state.cache);
-            merged.login_info.extend(new_state.login_info);
-            if !new_state.variable.is_empty() {
-                merged.variable = new_state.variable;
-            }
-            if !new_state.android_id.is_empty() {
-                merged.android_id = new_state.android_id;
-            }
-            merged
-        } else {
-            new_state
-        };
+        let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
+        let merged = merge_runtime_state(current, new_state);
         self.sources
             .update_runtime_state(id, merged, Timestamp::now())
             .await
@@ -177,30 +128,13 @@ impl BookOnlineService {
         ordered_ids: Vec<Uuid>,
     ) -> DomainResult<Vec<BookSourceSummaryDto>> {
         require_admin(actor)?;
-        let mut rows = self.sources.list_all().await?;
-        rows.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+        let rows = self.sources.list_all().await?;
+        let targets =
+            compute_reorder_targets(rows, &ordered_ids, |r| r.id, |r| r.weight, |r| &r.name);
 
-        let mut by_id: HashMap<Uuid, BookSourceRecord> =
-            rows.into_iter().map(|r| (r.id, r)).collect();
-
-        let mut final_order: Vec<BookSourceRecord> = Vec::with_capacity(by_id.len());
-        for id in ordered_ids {
-            if let Some(rec) = by_id.remove(&id) {
-                final_order.push(rec);
-            }
-        }
-        // Preserve relative order of any sources not included in `ordered_ids`
-        if !by_id.is_empty() {
-            let mut rest: Vec<BookSourceRecord> = by_id.into_values().collect();
-            rest.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
-            final_order.extend(rest);
-        }
-
-        let total = final_order.len() as i64;
         let now = Timestamp::now();
-        let mut persisted = Vec::with_capacity(final_order.len());
-        for (idx, rec) in final_order.into_iter().enumerate() {
-            let target_weight = (total - idx as i64) * 10;
+        let mut persisted = Vec::with_capacity(targets.len());
+        for (rec, target_weight) in targets {
             if rec.weight != target_weight {
                 if let Some(updated) = self
                     .sources
@@ -380,21 +314,15 @@ impl BookOnlineService {
             return Err(DomainError::Validation("请至少选择一条书源".into()));
         }
         let all = self.sources.list_all().await?;
-        let mut by_id: HashMap<Uuid, BookSourceRecord> =
-            all.into_iter().map(|r| (r.id, r)).collect();
-        let mut arr: Vec<serde_json::Value> = Vec::new();
-        for id in ids {
-            if let Some(rec) = by_id.remove(&id)
-                && let Ok(val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
-            {
-                arr.push(val);
+        let mut by_id: HashMap<Uuid, &str> =
+            all.iter().map(|r| (r.id, r.raw_json.as_str())).collect();
+        format_export_batch_json(&ids, &mut by_id).map_err(|msg| {
+            if msg.contains("未找到") {
+                DomainError::NotFound("未找到可导出的书源".into())
+            } else {
+                DomainError::Storage(msg)
             }
-        }
-        if arr.is_empty() {
-            return Err(DomainError::NotFound("未找到可导出的书源".into()));
-        }
-        serde_json::to_string_pretty(&arr)
-            .map_err(|e| DomainError::Storage(format!("序列化书源导出 JSON 失败: {e}")))
+        })
     }
 
     pub async fn batch_sources(
@@ -407,13 +335,7 @@ impl BookOnlineService {
             return Err(DomainError::Validation("请至少选择一条书源".into()));
         }
 
-        let mut seen = HashSet::with_capacity(input.ids.len());
-        let unique_ids: Vec<Uuid> = input
-            .ids
-            .into_iter()
-            .filter(|id| seen.insert(*id))
-            .collect();
-
+        let unique_ids = dedup_preserve_order_uuids(input.ids);
         let now = Timestamp::now();
         let mut affected_count = 0usize;
 
@@ -476,15 +398,8 @@ impl BookOnlineService {
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
-        // Merge submitted fields onto persisted login_info so omitted keys are never wiped,
-        // and preserve real secrets when the frontend echoes back the masked placeholder.
-        let mut merged_login = rec.runtime_state.login_info.clone();
-        for (k, v) in login_info {
-            if v == "••••••••" && merged_login.contains_key(&k) {
-                continue;
-            }
-            merged_login.insert(k, v);
-        }
+        let merged_login =
+            merge_login_info_preserving_masked(&rec.runtime_state.login_info, login_info);
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();

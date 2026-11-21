@@ -6,6 +6,9 @@ use jiff::Timestamp;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
+use xmedia_source::crud::{
+    format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
+};
 
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
@@ -129,12 +132,6 @@ impl BookOnlineService {
         let timed_res = tokio::time::timeout(
             SOURCE_TEST_TOTAL_TIMEOUT,
             tokio::task::spawn_blocking(move || {
-                fn merge_diag(acc: &mut ExecutionDiagnostics, d: &ExecutionDiagnostics) {
-                    acc.logs.extend(d.logs.iter().cloned());
-                    acc.toasts.extend(d.toasts.iter().cloned());
-                    acc.browser_urls.extend(d.browser_urls.iter().cloned());
-                }
-
                 let total_start = Instant::now();
                 let remaining_budget = || {
                     SOURCE_TEST_TOTAL_TIMEOUT
@@ -186,7 +183,7 @@ impl BookOnlineService {
                         Ok(out) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
                             state = out.state;
-                            merge_diag(&mut all_diag, &out.diagnostics);
+                            merge_diagnostics(&mut all_diag, &out.diagnostics);
                             search_total_count = out.data.len();
                             let ok = search_total_count > 0;
                             let summary = if ok {
@@ -226,7 +223,7 @@ impl BookOnlineService {
                         }
                         Err(err) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diag(&mut all_diag, &err.diagnostics);
+                            merge_diagnostics(&mut all_diag, &err.diagnostics);
                             steps.push(SourceDebugStepDto {
                                 stage: "search".into(),
                                 label: "搜索规则 (ruleSearch)".into(),
@@ -265,7 +262,7 @@ impl BookOnlineService {
                         Ok(out) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
                             state = out.state;
-                            merge_diag(&mut all_diag, &out.diagnostics);
+                            merge_diagnostics(&mut all_diag, &out.diagnostics);
                             let detail = out.data;
                             let ok = !detail.name.is_empty() || !detail.toc_url.is_empty();
                             let summary = if ok {
@@ -303,7 +300,7 @@ impl BookOnlineService {
                         }
                         Err(err) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diag(&mut all_diag, &err.diagnostics);
+                            merge_diagnostics(&mut all_diag, &err.diagnostics);
                             steps.push(SourceDebugStepDto {
                                 stage: "book_info".into(),
                                 label: "详情规则 (ruleBookInfo)".into(),
@@ -369,7 +366,7 @@ impl BookOnlineService {
                         Ok(out) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
                             state = out.state;
-                            merge_diag(&mut all_diag, &out.diagnostics);
+                            merge_diagnostics(&mut all_diag, &out.diagnostics);
                             let full_toc = out.data;
                             toc_total_count = full_toc.len();
                             let ok = toc_total_count > 0;
@@ -417,7 +414,7 @@ impl BookOnlineService {
                         }
                         Err(err) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diag(&mut all_diag, &err.diagnostics);
+                            merge_diagnostics(&mut all_diag, &err.diagnostics);
                             steps.push(SourceDebugStepDto {
                                 stage: "toc".into(),
                                 label: "目录规则 (ruleToc)".into(),
@@ -471,7 +468,7 @@ impl BookOnlineService {
                         Ok(out) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
                             state = out.state;
-                            merge_diag(&mut all_diag, &out.diagnostics);
+                            merge_diagnostics(&mut all_diag, &out.diagnostics);
                             let char_count = out.data.content.chars().count();
                             let resolved_title = if !out.data.title.trim().is_empty() {
                                 out.data.title.clone()
@@ -508,7 +505,7 @@ impl BookOnlineService {
                         }
                         Err(err) => {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
-                            merge_diag(&mut all_diag, &err.diagnostics);
+                            merge_diagnostics(&mut all_diag, &err.diagnostics);
                             content_chapter_index = Some(next_chapter_idx);
                             content_chapter_title = (!next_chapter_title.is_empty())
                                 .then_some(next_chapter_title.clone());
@@ -537,8 +534,7 @@ impl BookOnlineService {
                 }
 
                 let total_elapsed_ms = total_start.elapsed().as_millis() as u64;
-                let overall_ok = !steps.is_empty() && steps.iter().all(|s| s.ok);
-                let first_error = steps.iter().find_map(|s| s.error.clone());
+                let (overall_ok, first_error) = summarize_steps_outcome(&steps);
                 let sample_titles: Vec<String> = search_items
                     .iter()
                     .take(5)
@@ -590,15 +586,10 @@ impl BookOnlineService {
                     sample_titles: Vec::new(),
                     error: Some(timeout_msg.clone()),
                     diagnostics: ExecutionDiagnostics::default(),
-                    steps: vec![SourceDebugStepDto {
-                        stage: "timeout".into(),
-                        label: "总超时控制".into(),
-                        ok: false,
-                        elapsed_ms: SOURCE_TEST_TOTAL_TIMEOUT.as_millis() as u64,
-                        summary: timeout_msg.clone(),
-                        error: Some(timeout_msg),
-                        diagnostics: ExecutionDiagnostics::default(),
-                    }],
+                    steps: vec![format_timeout_step(
+                        SOURCE_TEST_TOTAL_TIMEOUT.as_millis() as u64,
+                        timeout_msg,
+                    )],
                     search_items: Vec::new(),
                     book_detail: None,
                     toc_chapters: Vec::new(),
@@ -635,17 +626,8 @@ impl BookOnlineService {
                     .map(|s| s.summary.clone())
                     .unwrap_or_else(|| "测试通过".into()),
             }
-        } else if let Some(failed) = report.steps.iter().find(|s| !s.ok) {
-            let reason = failed
-                .error
-                .as_deref()
-                .unwrap_or(&failed.summary)
-                .chars()
-                .take(120)
-                .collect::<String>();
-            format!("{} 失败：{reason}", failed.label)
         } else {
-            "测试失败".into()
+            format_test_failure_summary(&report.steps)
         };
 
         let _ = self

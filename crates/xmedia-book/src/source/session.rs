@@ -1,16 +1,46 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::engine::{apply_content_replace_regex, clean_chapter_html_to_text};
 use crate::source::http::{LegadoHttpClient, resolve_relative_url};
-use crate::source::js_runtime::{LegadoJsSession, now_mono_ms};
+use crate::source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineChapterContent,
-    OnlineChapterItem, SourceRuntimeState,
+    OnlineChapterItem, SourceMetadata, SourceRuntimeState,
 };
-use crate::source::rule::{RuleValue, eval_rule_list, eval_rule_string, rule_needs_js};
+use crate::source::rule::RuleValue;
+
+pub(super) const BOOK_JS_BOOTSTRAP: &str = r#"
+globalThis.book = {
+    name: '',
+    author: '',
+    bookUrl: '',
+    tocUrl: '',
+    coverUrl: '',
+    abstract: '',
+    durChapterIndex: 0,
+    durChapterTitle: '',
+    order: 0,
+    type: 8,
+    readConfig: { useReplaceRule: false },
+    _vars: {},
+    getVariable: function(k) { return this._vars[String(k)] || ''; },
+    putVariable: function(k, v) { this._vars[String(k)] = v == null ? '' : String(v); },
+    setUseReplaceRule: function(v) { this.readConfig.useReplaceRule = Boolean(v); }
+};
+Object.defineProperty(globalThis.book, '_customVariable', {
+    set: function(v) { this._vars.custom = v == null ? '' : String(v); },
+    enumerable: false,
+    configurable: true
+});
+globalThis.chapter = {
+    index: 0,
+    title: '',
+    url: ''
+};
+"#;
 
 /// Shared per-source context for batch operations (e.g. multi-chapter downloads).
 /// Reuses parsed `LegadoBookSource`, pooled `LegadoHttpClient`, cookies, and runtime state.
@@ -45,21 +75,41 @@ impl ReusableSourceContext {
 
     /// Creates a thread-local worker session that lazily initializes QuickJS at most once per worker.
     pub fn create_worker_session(&self) -> ReusableWorkerSession {
-        let op_deadline_ms = Arc::new(AtomicU64::new(
-            now_mono_ms().saturating_add(self.js_timeout.as_millis() as u64),
-        ));
+        Self::new_worker_session(
+            Arc::clone(&self.source),
+            self.http.clone(),
+            self.state_arc.clone(),
+            self.cookies_arc.clone(),
+            self.js_timeout,
+            self.js_timeout,
+            self.cancel_flag.clone(),
+        )
+    }
+
+    pub(super) fn new_worker_session(
+        source: Arc<LegadoBookSource>,
+        http: LegadoHttpClient,
+        state_arc: Arc<Mutex<SourceRuntimeState>>,
+        cookies_arc: Arc<Mutex<HashMap<String, String>>>,
+        js_timeout: Duration,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> ReusableWorkerSession {
+        let metadata = SourceMetadata::from(source.as_ref());
+        let mut inner = ReusableSourceSession::new(
+            metadata,
+            http,
+            state_arc,
+            cookies_arc,
+            JsSandboxConfig::with_timeout(js_timeout),
+            op_timeout,
+            cancel_flag,
+        );
+        inner.add_bootstrap_snippet(BOOK_JS_BOOTSTRAP);
         ReusableWorkerSession {
-            source: Arc::clone(&self.source),
-            http: self.http.clone(),
-            state_arc: self.state_arc.clone(),
-            diag_arc: Arc::new(Mutex::new(ExecutionDiagnostics::default())),
-            js_timeout: self.js_timeout,
-            op_deadline_ms,
-            cancel_flag: self.cancel_flag.clone(),
-            js: None,
-            pending_search: None,
-            pending_book: None,
-            pending_chapter: None,
+            source,
+            inner,
+            js_timeout,
         }
     }
 
@@ -76,96 +126,55 @@ impl ReusableSourceContext {
 /// Thread-confined worker session (owns lazy QuickJS VM if any rule requires JS).
 pub struct ReusableWorkerSession {
     pub(super) source: Arc<LegadoBookSource>,
-    pub(super) http: LegadoHttpClient,
-    pub(super) state_arc: Arc<Mutex<SourceRuntimeState>>,
-    pub(super) diag_arc: Arc<Mutex<ExecutionDiagnostics>>,
+    pub(super) inner: ReusableSourceSession,
     pub(super) js_timeout: Duration,
-    pub(super) op_deadline_ms: Arc<AtomicU64>,
-    pub(super) cancel_flag: Arc<AtomicBool>,
-    pub(super) js: Option<LegadoJsSession>,
-    pub(super) pending_search: Option<(String, u32)>,
-    pub(super) pending_book: Option<BookJsContext>,
-    pub(super) pending_chapter: Option<ChapterJsContext>,
 }
 
 impl ReusableWorkerSession {
     /// Resets per-chapter deadline and JS HTTP request quota when a download worker
     /// starts processing the next independent chapter.
     pub fn reset_chapter_budget(&mut self) {
-        self.op_deadline_ms.store(
-            now_mono_ms().saturating_add(self.js_timeout.as_millis() as u64),
-            Ordering::Relaxed,
-        );
-        if let Some(ref js) = self.js {
-            js.reset_operation_budget(self.js_timeout);
-        }
+        self.inner.reset_operation_budget(self.js_timeout);
     }
 
     pub(super) fn check_active(&self) -> Result<(), String> {
-        if self.cancel_flag.load(Ordering::Relaxed) {
-            return Err("执行已取消 (interrupted)".into());
-        }
-        if now_mono_ms() > self.op_deadline_ms.load(Ordering::Relaxed) {
-            return Err("执行超过单次操作总超时上限 (interrupted)".into());
-        }
-        Ok(())
+        self.inner.check_active()
     }
 
     pub(super) fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {
-        self.diag_arc
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.inner.snapshot_diagnostics()
+    }
+
+    pub(super) fn finalize_state(&self) -> (SourceRuntimeState, ExecutionDiagnostics) {
+        self.inner.finalize_state()
     }
 
     pub(super) fn set_search_vars(&mut self, keyword: &str, page: u32) -> Result<(), String> {
-        self.pending_search = Some((keyword.to_string(), page));
-        if let Some(ref mut js) = self.js {
-            js.set_search_vars(keyword, page)?;
-        }
-        Ok(())
+        self.inner.set_search_vars(keyword, page)
     }
 
     pub(super) fn set_book_context(&mut self, book: &BookJsContext) -> Result<(), String> {
-        self.pending_book = Some(book.clone());
-        if let Some(ref mut js) = self.js {
-            js.set_book_context(book)?;
-        }
-        Ok(())
+        let payload = serde_json::json!({
+            "name": book.name,
+            "author": book.author,
+            "bookUrl": book.book_url,
+            "tocUrl": book.toc_url,
+            "coverUrl": book.cover_url.as_deref().unwrap_or(""),
+            "abstract": book.intro.as_deref().unwrap_or(""),
+            "durChapterIndex": book.dur_chapter_index,
+            "durChapterTitle": book.dur_chapter_title,
+            "_customVariable": book.custom_variable,
+        });
+        self.inner.set_domain_global("book", payload, true)
     }
 
     fn set_chapter_context(&mut self, chapter: &ChapterJsContext) -> Result<(), String> {
-        self.pending_chapter = Some(chapter.clone());
-        if let Some(ref mut js) = self.js {
-            js.set_chapter_context(chapter)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn ensure_js(&mut self) -> Result<&mut LegadoJsSession, String> {
-        self.check_active()?;
-        if self.js.is_none() {
-            let mut js = LegadoJsSession::new_with_control(
-                &self.source,
-                self.http.clone(),
-                self.state_arc.clone(),
-                self.diag_arc.clone(),
-                self.js_timeout,
-                self.op_deadline_ms.clone(),
-                self.cancel_flag.clone(),
-            )?;
-            if let Some((ref kw, page)) = self.pending_search {
-                js.set_search_vars(kw, page)?;
-            }
-            if let Some(ref book) = self.pending_book {
-                js.set_book_context(book)?;
-            }
-            if let Some(ref ch) = self.pending_chapter {
-                js.set_chapter_context(ch)?;
-            }
-            self.js = Some(js);
-        }
-        Ok(self.js.as_mut().expect("js session initialized"))
+        let payload = serde_json::json!({
+            "index": chapter.index,
+            "title": chapter.title,
+            "url": chapter.url,
+        });
+        self.inner.set_domain_global("chapter", payload, true)
     }
 
     pub(super) fn eval_string(
@@ -174,13 +183,7 @@ impl ReusableWorkerSession {
         rule: &str,
         base_url: &str,
     ) -> Result<String, String> {
-        self.check_active()?;
-        if rule_needs_js(rule) {
-            let js = self.ensure_js()?;
-            eval_rule_string(input, rule, base_url, Some(js))
-        } else {
-            eval_rule_string(input, rule, base_url, None)
-        }
+        self.inner.eval_string(input, rule, base_url)
     }
 
     pub(super) fn eval_list(
@@ -189,13 +192,7 @@ impl ReusableWorkerSession {
         rule: &str,
         base_url: &str,
     ) -> Result<Vec<RuleValue>, String> {
-        self.check_active()?;
-        if rule_needs_js(rule) {
-            let js = self.ensure_js()?;
-            eval_rule_list(input, rule, base_url, Some(js))
-        } else {
-            eval_rule_list(input, rule, base_url, None)
-        }
+        self.inner.eval_list(input, rule, base_url)
     }
 
     pub(super) fn eval_opt(
@@ -204,21 +201,7 @@ impl ReusableWorkerSession {
         rule_opt: Option<&str>,
         base_url: &str,
     ) -> String {
-        let Some(rule) = rule_opt.map(str::trim).filter(|s| !s.is_empty()) else {
-            return String::new();
-        };
-        match self.eval_string(input, rule, base_url) {
-            Ok(val) => val.trim().to_string(),
-            Err(err) => {
-                if rule_needs_js(rule) {
-                    let mut g = self.diag_arc.lock().unwrap_or_else(|e| e.into_inner());
-                    if g.logs.len() < 100 {
-                        g.logs.push(format!("字段规则求值失败: {err}"));
-                    }
-                }
-                String::new()
-            }
-        }
+        self.inner.eval_opt(input, rule_opt, base_url)
     }
 
     pub fn fetch_toc(
@@ -248,7 +231,10 @@ impl ReusableWorkerSession {
             if visited.len() >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
                 break;
             }
-            let fetched = self.http.fetch(&page_url, &self.source.book_source_url)?;
+            let fetched = self
+                .inner
+                .http()
+                .fetch(&page_url, &self.source.book_source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
 
             let items = self.eval_list(&raw_input, chapter_list_rule, &fetched.final_url)?;
@@ -331,7 +317,10 @@ impl ReusableWorkerSession {
             if visited.len() >= MAX_CONTENT_PAGES || !visited.insert(page_url.clone()) {
                 break;
             }
-            let fetched = self.http.fetch(&page_url, &self.source.book_source_url)?;
+            let fetched = self
+                .inner
+                .http()
+                .fetch(&page_url, &self.source.book_source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
 
             if pages_html.is_empty()

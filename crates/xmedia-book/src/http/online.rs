@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
@@ -10,10 +8,14 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
 use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename};
+use xmedia_source::crud::{
+    ExportSourcesBatchRequest, ImportSourcesRequest, LoginActionRequest, ReorderSourcesRequest,
+    SourceVariableResponse,
+};
 
 use crate::application::dto::BookSummaryDto;
 use crate::application::online::{
@@ -80,28 +82,6 @@ pub fn router() -> Router<BookHttpState> {
         )
         .route("/online/downloads/{id}/cancel", post(cancel_download))
         .route("/online/downloads/{id}/file", get(download_packaged_file))
-}
-
-#[derive(Debug, Deserialize)]
-struct ImportSourcesRequest {
-    raw_json: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReorderSourcesRequest {
-    ordered_ids: Vec<Uuid>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ExportSourcesBatchRequest {
-    ids: Vec<Uuid>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginActionRequest {
-    #[serde(default)]
-    login_info: HashMap<String, String>,
-    action: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,11 +169,6 @@ async fn batch_sources(
 ) -> ApiResult<Json<BatchBookSourcesReportDto>> {
     let report = state.services.online.batch_sources(&user, req).await?;
     Ok(Json(report))
-}
-
-#[derive(Debug, Serialize)]
-struct SourceVariableResponse {
-    variable: String,
 }
 
 async fn get_source_variable(

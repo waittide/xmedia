@@ -1,6 +1,5 @@
 use std::collections::HashMap;
-use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -8,11 +7,11 @@ use regex::Regex;
 
 use super::session::{ReusableSourceContext, ReusableWorkerSession};
 use crate::source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
-use crate::source::js_runtime::now_mono_ms;
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
     OnlineChapterContent, OnlineChapterItem, SearchBookResult, SourceRuntimeState,
 };
+pub use crate::source::model::{SourceCallError, SourceCallOutput};
 use crate::source::rule::{RuleValue, cached_regex, split_js_pipeline};
 
 static RE_COMMENT_IMG: LazyLock<Regex> = LazyLock::new(|| {
@@ -35,40 +34,6 @@ static RE_HTML_TAGS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)<[^>]+>").expect("valid html tags regex"));
 
 #[derive(Debug, Clone)]
-pub struct SourceCallOutput<T> {
-    pub data: T,
-    pub state: SourceRuntimeState,
-    pub diagnostics: ExecutionDiagnostics,
-}
-
-#[derive(Debug, Clone)]
-pub struct SourceCallError {
-    pub message: String,
-    pub diagnostics: ExecutionDiagnostics,
-}
-
-impl SourceCallError {
-    pub fn new(message: impl Into<String>, diagnostics: ExecutionDiagnostics) -> Self {
-        Self {
-            message: message.into(),
-            diagnostics,
-        }
-    }
-}
-
-impl fmt::Display for SourceCallError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl From<SourceCallError> for String {
-    fn from(value: SourceCallError) -> Self {
-        value.message
-    }
-}
-
-#[derive(Debug, Clone)]
 pub struct BookSourceEngine {
     http_config: HttpClientConfig,
     js_timeout: Duration,
@@ -82,8 +47,6 @@ impl Default for BookSourceEngine {
         }
     }
 }
-
-type LazySessionPair = (ReusableWorkerSession, Arc<Mutex<HashMap<String, String>>>);
 
 fn search_url_needs_js(raw_tpl: &str) -> bool {
     if split_js_pipeline(raw_tpl).is_some() {
@@ -181,11 +144,10 @@ impl BookSourceEngine {
         mut initial_state: SourceRuntimeState,
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
-    ) -> Result<LazySessionPair, String> {
+    ) -> Result<ReusableWorkerSession, String> {
         initial_state.ensure_android_id(&source.book_source_url);
         let cookies_arc = Arc::new(Mutex::new(initial_state.cookies.clone()));
         let state_arc = Arc::new(Mutex::new(initial_state));
-        let diag_arc = Arc::new(Mutex::new(ExecutionDiagnostics::default()));
 
         let http = LegadoHttpClient::new(
             self.http_config.clone(),
@@ -194,40 +156,15 @@ impl BookSourceEngine {
             source.enabled_cookie_jar,
         )?;
 
-        let op_deadline_ms = Arc::new(AtomicU64::new(
-            now_mono_ms().saturating_add(op_timeout.as_millis() as u64),
-        ));
-
-        Ok((
-            ReusableWorkerSession {
-                source: Arc::new(source.clone()),
-                http,
-                state_arc,
-                diag_arc,
-                js_timeout: self.js_timeout,
-                op_deadline_ms,
-                cancel_flag,
-                js: None,
-                pending_search: None,
-                pending_book: None,
-                pending_chapter: None,
-            },
+        Ok(ReusableSourceContext::new_worker_session(
+            Arc::new(source.clone()),
+            http,
+            state_arc,
             cookies_arc,
+            self.js_timeout,
+            op_timeout,
+            cancel_flag,
         ))
-    }
-
-    fn finalize_state(
-        state_arc: &Arc<Mutex<SourceRuntimeState>>,
-        cookies_arc: &Arc<Mutex<HashMap<String, String>>>,
-        diag_arc: &Arc<Mutex<ExecutionDiagnostics>>,
-    ) -> (SourceRuntimeState, ExecutionDiagnostics) {
-        let mut st = state_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        st.cookies = cookies_arc
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        let diag = diag_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        (st, diag)
     }
 
     fn build_search_url_lazy(
@@ -294,14 +231,17 @@ impl BookSourceEngine {
             )
         })?;
 
-        let (mut session, cookies_arc) = self
+        let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
         let res: Result<Vec<SearchBookResult>, String> = (|| {
             session.set_search_vars(keyword, page)?;
             let search_url = self.build_search_url_lazy(source, &mut session, keyword, page)?;
             session.check_active()?;
-            let fetched = session.http.fetch(&search_url, &source.book_source_url)?;
+            let fetched = session
+                .inner
+                .http()
+                .fetch(&search_url, &source.book_source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
 
             let book_list_rule = rule_search
@@ -354,8 +294,7 @@ impl BookSourceEngine {
 
         match res {
             Ok(results) => {
-                let (final_state, diagnostics) =
-                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                let (final_state, diagnostics) = session.finalize_state();
                 Ok(SourceCallOutput {
                     data: results,
                     state: final_state,
@@ -394,7 +333,7 @@ impl BookSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<OnlineBookDetail>, SourceCallError> {
-        let (mut session, cookies_arc) = self
+        let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
@@ -403,7 +342,10 @@ impl BookSourceEngine {
                 session.set_book_context(hint)?;
             }
             session.check_active()?;
-            let fetched = session.http.fetch(book_url, &source.book_source_url)?;
+            let fetched = session
+                .inner
+                .http()
+                .fetch(book_url, &source.book_source_url)?;
             let mut info_input = RuleValue::from_raw(fetched.body);
 
             let Some(rule_info) = source.rule_book_info.as_ref() else {
@@ -496,8 +438,7 @@ impl BookSourceEngine {
 
         match res {
             Ok(detail) => {
-                let (final_state, diagnostics) =
-                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                let (final_state, diagnostics) = session.finalize_state();
                 Ok(SourceCallOutput {
                     data: detail,
                     state: final_state,
@@ -536,13 +477,12 @@ impl BookSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<OnlineChapterItem>>, SourceCallError> {
-        let (mut session, cookies_arc) = self
+        let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
         match session.fetch_toc(toc_url, book_ctx) {
             Ok(chapters) => {
-                let (final_state, diagnostics) =
-                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                let (final_state, diagnostics) = session.finalize_state();
                 Ok(SourceCallOutput {
                     data: chapters,
                     state: final_state,
@@ -585,13 +525,12 @@ impl BookSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<OnlineChapterContent>, SourceCallError> {
-        let (mut session, cookies_arc) = self
+        let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
         match session.fetch_chapter_content(chapter_url, book_ctx, chapter_ctx) {
             Ok(data) => {
-                let (final_state, diagnostics) =
-                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                let (final_state, diagnostics) = session.finalize_state();
                 Ok(SourceCallOutput {
                     data,
                     state: final_state,
@@ -615,7 +554,7 @@ impl BookSourceEngine {
             state.login_info.insert(k, v);
         }
         let merged_login = state.login_info.clone();
-        let (mut session, cookies_arc) = self.build_lazy_session(
+        let mut session = self.build_lazy_session(
             source,
             state,
             self.js_timeout,
@@ -623,10 +562,9 @@ impl BookSourceEngine {
         )?;
         let login_url_js = source.login_url.as_deref().unwrap_or("");
         let out = session
-            .ensure_js()?
+            .inner
             .eval_login_script(login_url_js, action_js, &merged_login)?;
-        let (final_state, diagnostics) =
-            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+        let (final_state, diagnostics) = session.finalize_state();
         Ok(SourceCallOutput {
             data: out,
             state: final_state,
