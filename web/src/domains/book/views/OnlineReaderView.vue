@@ -16,6 +16,7 @@ import {
   LuSearch,
   LuSlidersHorizontal,
 } from 'vue-icons-plus/lu'
+import AppSlider from '@/components/ui/AppSlider.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
@@ -1035,14 +1036,12 @@ onBeforeUnmount(() => {
             <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">字号</span>
             <span class="font-mono">{{ fontSize }} px</span>
           </div>
-          <input
-            type="range"
-            min="13"
-            max="30"
-            step="1"
-            :value="fontSize"
-            class="w-full accent-[var(--md-sys-color-primary)]"
-            @input="fontSize = Number(($event.target as HTMLInputElement).value)"
+          <AppSlider
+            v-model="fontSize"
+            :min="13"
+            :max="30"
+            :step="1"
+            aria-label="字号"
           />
         </div>
 
@@ -1051,14 +1050,12 @@ onBeforeUnmount(() => {
             <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">行高</span>
             <span class="font-mono">{{ lineHeight.toFixed(2) }}</span>
           </div>
-          <input
-            type="range"
-            min="1.3"
-            max="2.4"
-            step="0.05"
-            :value="lineHeight"
-            class="w-full accent-[var(--md-sys-color-primary)]"
-            @input="lineHeight = Number(($event.target as HTMLInputElement).value)"
+          <AppSlider
+            v-model="lineHeight"
+            :min="1.3"
+            :max="2.4"
+            :step="0.05"
+            aria-label="行高"
           />
         </div>
       </div>

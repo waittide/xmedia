@@ -42,7 +42,7 @@ escapeStack.register(
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[var(--z-sheet)] flex justify-end bg-[var(--md-sys-color-scrim)]/32"
+        class="fixed inset-0 z-[var(--z-sheet)] flex items-end justify-center bg-[var(--md-sys-color-scrim)]/32 sm:items-stretch sm:justify-end"
         @mousedown.self="emit('close')"
       >
         <Transition name="md-sheet-right" appear>
@@ -53,11 +53,16 @@ escapeStack.register(
             tabindex="-1"
             :aria-labelledby="title ? titleId : undefined"
             :aria-describedby="subtitle ? subtitleId : undefined"
-            class="flex h-full flex-col overflow-hidden rounded-l-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-1)] outline-none"
+            class="safe-pb flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-[var(--md-sys-shape-corner-xl)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-1)] outline-none sm:h-full sm:max-h-none sm:rounded-t-none sm:rounded-l-[var(--md-sys-shape-corner-lg)] sm:pb-0"
             :class="widthClass"
           >
+            <!-- Compact (<600px) Bottom Sheet Drag Handle -->
+            <div class="flex justify-center pt-3 pb-1 sm:hidden" aria-hidden="true">
+              <span class="h-1 w-8 rounded-full bg-[var(--md-sys-color-on-surface-variant)]/40" />
+            </div>
+
             <!-- Side Sheet Header -->
-            <div class="flex items-start justify-between gap-3 px-6 pt-6 pb-4">
+            <div class="flex items-start justify-between gap-3 px-6 pt-3 pb-4 sm:pt-6">
               <div class="min-w-0">
                 <h3 :id="titleId" class="md-title-large">
                   {{ title }}

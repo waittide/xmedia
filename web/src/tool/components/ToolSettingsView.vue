@@ -15,7 +15,7 @@ import {
   LuSparkles,
 } from 'vue-icons-plus/lu'
 import AppearanceSettingsPanel from '@/components/AppearanceSettingsPanel.vue'
-import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdTabs from '@/components/ui/MdTabs.vue'
 import type { FfmpegStatusDto, MediaKind } from '@/types/api'
 import { useToolText } from '../i18n'
 import type { PublicSettingsDto } from '../types'
@@ -184,14 +184,14 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
         </div>
 
         <!-- Domain Isolation Sub-Tab Bar (for scrapers / roots / templates) -->
-        <div v-if="activeTab !== 'appearance'">
-          <MdSegmentedButton
-            :model-value="domainSubTab"
-            :options="domainTabItems"
-            size="md"
-            @update:model-value="selectDomainSubTab($event)"
-          />
-        </div>
+        <MdTabs
+          v-if="activeTab !== 'appearance'"
+          :model-value="domainSubTab"
+          :tabs="domainTabItems"
+          variant="primary"
+          aria-label="媒体领域"
+          @update:model-value="selectDomainSubTab($event)"
+        />
 
         <template v-if="activeTab === 'appearance'">
           <AppearanceSettingsPanel />

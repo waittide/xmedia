@@ -23,6 +23,7 @@ import { useSidebarStore } from '@/domains/comic/store'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import AppSlider from '@/components/ui/AppSlider.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import type { ComicBookmark, ReaderContextDto, ReaderFitMode, ReaderMode } from '@/domains/comic/types'
@@ -472,11 +473,11 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 
-function onScrubberInput(ev: Event): void {
-  const targetPage = Number((ev.target as HTMLInputElement).value)
-  currentPage.value = targetPage
+function onScrubberValue(targetPage: number): void {
+  const clamped = Math.max(1, Math.min(Math.max(1, totalPages.value), Math.round(targetPage)))
+  currentPage.value = clamped
   if (readerMode.value === 'webtoon') {
-    scrollToWebtoonPage(targetPage)
+    scrollToWebtoonPage(clamped)
   }
 }
 
@@ -730,13 +731,12 @@ async function togglePageBookmark(): Promise<void> {
         <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
           {{ t('reader.webtoonWidth') }} ({{ webtoonWidth }}px)
         </label>
-        <input
-          v-model.number="webtoonWidth"
-          type="range"
-          min="520"
-          max="1400"
-          step="20"
-          class="w-full accent-[var(--md-sys-color-primary)]"
+        <AppSlider
+          v-model="webtoonWidth"
+          :min="520"
+          :max="1400"
+          :step="20"
+          :aria-label="t('reader.webtoonWidth')"
           @change="persistSeriesReaderPref"
         />
       </div>
@@ -897,15 +897,17 @@ async function togglePageBookmark(): Promise<void> {
           }}
         </span>
 
-        <input
-          type="range"
-          min="1"
-          :max="Math.max(1, totalPages)"
-          :value="currentPage"
-          :dir="isRtl ? 'rtl' : 'ltr'"
-          class="h-1.5 flex-1 cursor-pointer accent-[var(--md-sys-color-primary)]"
-          @input="onScrubberInput"
-        />
+        <div class="min-w-0 flex-1">
+          <AppSlider
+            :model-value="currentPage"
+            :min="1"
+            :max="Math.max(1, totalPages)"
+            :step="1"
+            :rtl="isRtl"
+            :aria-label="t('reader.page')"
+            @update:model-value="onScrubberValue"
+          />
+        </div>
       </div>
 
       <button

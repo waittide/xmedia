@@ -45,8 +45,10 @@ import {
 } from '@/api/appHost'
 import RemoteSourceFormDialog from '@/components/remote/RemoteSourceFormDialog.vue'
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
+import AppSlider from '@/components/ui/AppSlider.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import MdTabs from '@/components/ui/MdTabs.vue'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { usePlayerStore } from '@/domains/music/player'
 import { useAppClientStore } from '@/stores/appServers'
@@ -602,9 +604,7 @@ function stepPreviewTrack(delta: -1 | 1): void {
   }
 }
 
-function seekPreview(ev: Event): void {
-  const input = ev.target as HTMLInputElement
-  const target = Number(input.value)
+function seekPreviewTo(target: number): void {
   if (!Number.isFinite(target) || !previewAudioRef.value) return
   previewAudioRef.value.currentTime = target
   previewCurrentTime.value = target
@@ -907,11 +907,11 @@ onBeforeUnmount(() => {
         <span>{{ embeddedHeaderTitle }}</span>
       </h2>
 
-      <MdSegmentedButton
+      <MdTabs
         v-model="activeTab"
-        :options="tabOptions"
-        size="sm"
-        :show-check="false"
+        :tabs="tabOptions"
+        variant="primary"
+        :aria-label="embeddedHeaderTitle"
       />
     </div>
 
@@ -1880,15 +1880,16 @@ onBeforeUnmount(() => {
           <span class="w-9 shrink-0 font-mono text-[10px] tabular-nums text-[var(--md-sys-color-on-surface-variant)]">
             {{ formatTime(previewCurrentTime) }}
           </span>
-          <input
-            type="range"
-            min="0"
-            :max="Math.max(1, previewDuration)"
-            step="0.5"
-            :value="previewCurrentTime"
-            class="h-1.5 flex-1 cursor-pointer accent-[var(--md-sys-color-primary)]"
-            @input="seekPreview"
-          />
+          <div class="min-w-0 flex-1">
+            <AppSlider
+              :model-value="previewCurrentTime"
+              :min="0"
+              :max="Math.max(1, previewDuration)"
+              :step="0.5"
+              :aria-label="previewSong?.title || t('remote.subsonicPreviewPlaying')"
+              @update:model-value="seekPreviewTo"
+            />
+          </div>
           <span class="w-9 shrink-0 text-right font-mono text-[10px] tabular-nums text-[var(--md-sys-color-on-surface-variant)]">
             {{ formatTime(previewDuration) }}
           </span>

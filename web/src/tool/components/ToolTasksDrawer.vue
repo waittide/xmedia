@@ -18,6 +18,7 @@ import {
   LuSparkles,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import type { MediaKind } from '@/types/api'
@@ -600,22 +601,18 @@ function formatElapsed(task: ToolTaskEntry): string {
           </div>
 
           <!-- Progress Bar -->
-          <div
-            class="h-2 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
-          >
-            <div
-              v-if="progressPct(task) !== null"
-              class="h-full rounded-full transition-all duration-200"
-              :class="
-                task.status === 'failed'
-                  ? 'bg-[var(--md-sys-color-error)]'
-                  : task.status === 'completed'
-                    ? 'bg-[var(--md-sys-color-success)]'
-                    : 'bg-[var(--md-sys-color-primary)]'
-              "
-              :style="{ width: `${progressPct(task)}%` }"
-            />
-          </div>
+          <MdLinearProgress
+            :value="progressPct(task)"
+            :indeterminate="(task.status === 'running' || task.status === 'queued') && progressPct(task) === null"
+            :tone="
+              task.status === 'failed'
+                ? 'error'
+                : task.status === 'completed'
+                  ? 'success'
+                  : 'primary'
+            "
+            :aria-label="task.title"
+          />
         </div>
 
         <!-- Expandable Sub-Items Panel with Status Filter & Per-Item Edit Controls -->

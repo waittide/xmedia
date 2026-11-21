@@ -16,6 +16,7 @@ import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
 import ThemePopover from '@/components/ThemePopover.vue'
+import AppSlider from '@/components/ui/AppSlider.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import TocTree from '@/domains/book/components/TocTree.vue'
 const EpubReader = defineAsyncComponent(() => import('@/domains/book/readers/EpubReader.vue'))
@@ -584,18 +585,13 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
               <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.fontSize') }}</span>
               <span>{{ themeStore.reader.font_size }} px</span>
             </div>
-            <input
-              type="range"
-              min="14"
-              max="30"
-              step="1"
-              :value="themeStore.reader.font_size"
-              class="w-full accent-[var(--md-sys-color-primary)]"
-              @input="
-                themeStore.updateReaderPreferences({
-                  font_size: Number(($event.target as HTMLInputElement).value),
-                })
-              "
+            <AppSlider
+              :model-value="themeStore.reader.font_size"
+              :min="14"
+              :max="30"
+              :step="1"
+              :aria-label="t('reader.fontSize')"
+              @update:model-value="(v) => themeStore.updateReaderPreferences({ font_size: v })"
             />
           </div>
 
@@ -604,18 +600,13 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
               <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.lineHeight') }}</span>
               <span>{{ themeStore.reader.line_height.toFixed(2) }}</span>
             </div>
-            <input
-              type="range"
-              min="1.3"
-              max="2.4"
-              step="0.05"
-              :value="themeStore.reader.line_height"
-              class="w-full accent-[var(--md-sys-color-primary)]"
-              @input="
-                themeStore.updateReaderPreferences({
-                  line_height: Number(($event.target as HTMLInputElement).value),
-                })
-              "
+            <AppSlider
+              :model-value="themeStore.reader.line_height"
+              :min="1.3"
+              :max="2.4"
+              :step="0.05"
+              :aria-label="t('reader.lineHeight')"
+              @update:model-value="(v) => themeStore.updateReaderPreferences({ line_height: v })"
             />
           </div>
 
@@ -624,18 +615,13 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
               <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.margin') }}</span>
               <span>{{ themeStore.reader.margin_px }} px</span>
             </div>
-            <input
-              type="range"
-              min="16"
-              max="120"
-              step="8"
-              :value="themeStore.reader.margin_px"
-              class="w-full accent-[var(--md-sys-color-primary)]"
-              @input="
-                themeStore.updateReaderPreferences({
-                  margin_px: Number(($event.target as HTMLInputElement).value),
-                })
-              "
+            <AppSlider
+              :model-value="themeStore.reader.margin_px"
+              :min="16"
+              :max="120"
+              :step="8"
+              :aria-label="t('reader.margin')"
+              @update:model-value="(v) => themeStore.updateReaderPreferences({ margin_px: v })"
             />
           </div>
         </div>

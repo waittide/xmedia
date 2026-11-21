@@ -12,7 +12,8 @@ import {
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
-import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdRadio from '@/components/ui/MdRadio.vue'
+import MdTabs from '@/components/ui/MdTabs.vue'
 import { toolApi } from '../api'
 import type {
   MediaFileDetail,
@@ -238,7 +239,7 @@ async function handleBatchRemap(): Promise<void> {
     </template>
 
     <div class="space-y-4 py-1 text-xs">
-      <MdSegmentedButton v-model="activeTab" :options="tabOptions" size="sm" />
+      <MdTabs v-model="activeTab" :tabs="tabOptions" variant="primary" aria-label="工具箱功能" />
 
       <!-- TAB 1: Subtitles -->
       <div v-if="activeTab === 'subtitles' && isSingleMode" class="space-y-4">
@@ -255,38 +256,24 @@ async function handleBatchRemap(): Promise<void> {
               当前视频目录下未发现伴随外挂字幕（.srt / .ass / .ssa / .vtt）。
             </div>
             <div v-else class="space-y-3">
-              <div role="radiogroup" class="space-y-1.5">
-                <button
+              <div role="radiogroup" aria-label="外挂字幕列表" class="space-y-1.5">
+                <div
                   v-for="sub in subtitles"
                   :key="sub.filename"
-                  type="button"
-                  role="radio"
-                  :aria-checked="selectedSubName === sub.filename"
-                  class="md-state flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left transition"
+                  class="flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 transition"
                   :class="
                     selectedSubName === sub.filename
                       ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/45'
                       : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)]'
                   "
-                  @click="selectedSubName = sub.filename"
                 >
-                  <div class="flex min-w-0 items-center gap-2.5">
-                    <span
-                      class="flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2 transition"
-                      :class="
-                        selectedSubName === sub.filename
-                          ? 'border-[var(--md-sys-color-primary)]'
-                          : 'border-[var(--md-sys-color-outline)]'
-                      "
-                    >
-                      <span
-                        v-if="selectedSubName === sub.filename"
-                        class="h-2 w-2 rounded-full bg-[var(--md-sys-color-primary)]"
-                      />
-                    </span>
-                    <span class="truncate font-medium">{{ sub.filename }}</span>
-                  </div>
-                  <div class="flex shrink-0 items-center gap-1.5 text-[10px]">
+                  <MdRadio
+                    :checked="selectedSubName === sub.filename"
+                    :label="sub.filename"
+                    class="min-w-0 flex-1"
+                    @select="selectedSubName = sub.filename"
+                  />
+                  <div class="flex shrink-0 items-center gap-1.5 text-[11px]">
                     <span
                       class="rounded-full px-2 py-0.5 font-medium"
                       :class="
@@ -304,7 +291,7 @@ async function handleBatchRemap(): Promise<void> {
                       {{ sub.language_tag }}
                     </span>
                   </div>
-                </button>
+                </div>
               </div>
 
               <div class="grid grid-cols-1 gap-3 pt-1 sm:grid-cols-2">

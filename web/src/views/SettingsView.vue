@@ -27,7 +27,7 @@ import SettingsDomainGeneralTab from '@/components/settings/SettingsDomainGenera
 import SettingsDomainProtocolsTab from '@/components/settings/SettingsDomainProtocolsTab.vue'
 import SettingsDomainDataSourcesTab from '@/components/settings/SettingsDomainDataSourcesTab.vue'
 import SettingsLibrariesTab from '@/components/settings/SettingsLibrariesTab.vue'
-import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
+import MdTabs, { type MdTabItem } from '@/components/ui/MdTabs.vue'
 
 type GlobalSettingsTab = 'appearance' | 'general' | 'account'
 type DomainSettingsTab =
@@ -83,7 +83,7 @@ const visibleDomainItems = computed(() =>
   DOMAIN_NAV_ITEMS.filter((item) => !item.adminOnly || authStore.isAdmin),
 )
 
-const enabledDomainOptions = computed<SegmentedOption<MediaKind>[]>(() =>
+const enabledDomainOptions = computed<MdTabItem<MediaKind>[]>(() =>
   authStore.enabledModules.map((kind) => ({
     value: kind,
     label: t(`app.domains.${kind}`),
@@ -284,15 +284,14 @@ function selectDomain(domain: MediaKind): void {
       <!-- Right Content Area -->
       <div class="min-w-0 space-y-6">
         <!-- Domain Switcher Tabs (shown for all lower domain-scoped categories) -->
-        <div v-if="showDomainTabs" class="no-scrollbar -m-1 overflow-x-auto p-1">
-          <MdSegmentedButton
-            :model-value="activeDomain"
-            :options="enabledDomainOptions"
-            size="sm"
-            :show-check="false"
-            @update:model-value="selectDomain($event)"
-          />
-        </div>
+        <MdTabs
+          v-if="showDomainTabs"
+          :model-value="activeDomain"
+          :tabs="enabledDomainOptions"
+          variant="primary"
+          :aria-label="t('settings.groupDomain')"
+          @update:model-value="selectDomain($event)"
+        />
 
         <div
           v-if="errorMsg"

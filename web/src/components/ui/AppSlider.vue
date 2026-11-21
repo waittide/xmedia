@@ -11,6 +11,7 @@ const props = withDefaults(
     commitOnRelease?: boolean
     alwaysShowThumb?: boolean
     disabled?: boolean
+    rtl?: boolean
     ariaLabel?: string
   }>(),
   {
@@ -21,6 +22,7 @@ const props = withDefaults(
     commitOnRelease: false,
     alwaysShowThumb: true,
     disabled: false,
+    rtl: false,
     ariaLabel: 'slider',
   },
 )
@@ -59,7 +61,8 @@ function computeValueFromClientX(clientX: number): number {
   if (!el) return props.modelValue
   const rect = el.getBoundingClientRect()
   if (rect.width <= 0) return props.modelValue
-  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  const rawRatio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  const ratio = props.rtl ? 1 - rawRatio : rawRatio
   const raw = props.min + ratio * (props.max - props.min)
   if (props.step > 0) {
     const stepped = Math.round((raw - props.min) / props.step) * props.step + props.min
@@ -107,9 +110,13 @@ function onKeydown(ev: KeyboardEvent): void {
   const delta = props.step > 0 ? props.step : (props.max - props.min) / 50
   let next: number | null = null
   if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') {
-    next = Math.min(props.max, props.modelValue + delta)
+    next = props.rtl
+      ? Math.max(props.min, props.modelValue - delta)
+      : Math.min(props.max, props.modelValue + delta)
   } else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') {
-    next = Math.max(props.min, props.modelValue - delta)
+    next = props.rtl
+      ? Math.min(props.max, props.modelValue + delta)
+      : Math.max(props.min, props.modelValue - delta)
   } else if (ev.key === 'Home') {
     next = props.min
   } else if (ev.key === 'End') {
@@ -147,16 +154,19 @@ function onKeydown(ev: KeyboardEvent): void {
     >
       <div
         v-if="bufferedPercent > 0"
-        class="absolute inset-y-0 left-0 rounded-full bg-[var(--md-sys-color-outline-variant)]"
+        class="absolute inset-y-0 rounded-full bg-[var(--md-sys-color-outline-variant)]"
+        :class="rtl ? 'right-0' : 'left-0'"
         :style="{ width: `${bufferedPercent}%` }"
       />
       <div
-        class="absolute inset-y-0 left-0 rounded-full bg-[var(--md-sys-color-primary)]"
+        class="absolute inset-y-0 rounded-full bg-[var(--md-sys-color-primary)]"
+        :class="rtl ? 'right-0' : 'left-0'"
         :style="{ width: `${fillPercent}%` }"
       />
       <span
         aria-hidden="true"
-        class="pointer-events-none absolute top-1/2 right-0.5 h-1 w-1 -translate-y-1/2 rounded-full bg-[var(--md-sys-color-primary)] opacity-60"
+        class="pointer-events-none absolute top-1/2 h-1 w-1 -translate-y-1/2 rounded-full bg-[var(--md-sys-color-primary)] opacity-60"
+        :class="rtl ? 'left-0.5' : 'right-0.5'"
       />
     </div>
 
@@ -169,7 +179,7 @@ function onKeydown(ev: KeyboardEvent): void {
             ? 'scale-100 group-hover:scale-105'
             : 'scale-0 group-hover:scale-100 group-focus-visible:scale-100'
       "
-      :style="{ left: `${fillPercent}%` }"
+      :style="{ left: `${rtl ? 100 - fillPercent : fillPercent}%` }"
     >
       <span
         v-if="!disabled"

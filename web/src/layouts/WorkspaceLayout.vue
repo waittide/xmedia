@@ -42,6 +42,8 @@ import { useVideoStore } from '@/domains/video/store'
 import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
 import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
+import MdBadge from '@/components/ui/MdBadge.vue'
+import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
 import { usePrimaryNavItems } from '@/layouts/useWorkspaceSidebar'
@@ -402,9 +404,6 @@ async function onDropFiles(ev: DragEvent): Promise<void> {
 }
 
 // Unified Global Background Task Metrics (Scans + Uploads + Online Downloads)
-const PROGRESS_RING_RADIUS = 18
-const PROGRESS_RING_CIRCUMFERENCE = 2 * Math.PI * PROGRESS_RING_RADIUS
-
 const globalActiveSummary = computed(() => {
   const progressValues: number[] = []
   let activeCount = 0
@@ -445,11 +444,6 @@ const globalActiveProgress = computed(() => globalActiveSummary.value.progress)
 const globalFailedTaskCount = computed(() => {
   const failedScans = eventsStore.scanTaskList.filter((sc) => sc.status === 'failed').length
   return failedScans + uploadStore.failedCount + onlineDownloadsStore.failedCount
-})
-
-const progressRingOffset = computed(() => {
-  if (globalActiveProgress.value === null) return PROGRESS_RING_CIRCUMFERENCE
-  return PROGRESS_RING_CIRCUMFERENCE * (1 - globalActiveProgress.value / 100)
 })
 
 const tasksButtonTooltip = computed(() => {
@@ -751,58 +745,27 @@ onBeforeUnmount(() => {
             <LuListChecks class="h-[18px] w-[18px]" />
           </button>
 
-          <svg
+          <MdCircularProgress
             v-if="globalActiveTaskCount > 0"
-            class="pointer-events-none absolute inset-0 h-10 w-10"
-            :class="globalActiveProgress === null ? 'animate-spin' : ''"
-            viewBox="0 0 40 40"
-            aria-hidden="true"
-          >
-            <circle
-              cx="20"
-              cy="20"
-              :r="PROGRESS_RING_RADIUS"
-              fill="none"
-              stroke="var(--md-sys-color-outline-variant)"
-              stroke-opacity="0.45"
-              stroke-width="2.25"
-            />
-            <circle
-              v-if="globalActiveProgress !== null"
-              cx="20"
-              cy="20"
-              :r="PROGRESS_RING_RADIUS"
-              fill="none"
-              stroke="var(--md-sys-color-primary)"
-              stroke-width="2.25"
-              stroke-linecap="round"
-              transform="rotate(-90 20 20)"
-              :stroke-dasharray="PROGRESS_RING_CIRCUMFERENCE"
-              :stroke-dashoffset="progressRingOffset"
-              class="transition-[stroke-dashoffset] duration-300"
-            />
-            <circle
-              v-else
-              cx="20"
-              cy="20"
-              :r="PROGRESS_RING_RADIUS"
-              fill="none"
-              stroke="var(--md-sys-color-primary)"
-              stroke-width="2.25"
-              stroke-linecap="round"
-              :stroke-dasharray="`${PROGRESS_RING_CIRCUMFERENCE * 0.28} ${PROGRESS_RING_CIRCUMFERENCE * 0.72}`"
-            />
-          </svg>
+            :value="globalActiveProgress"
+            :indeterminate="globalActiveProgress === null"
+            :size="40"
+            :stroke-width="2.5"
+            class="pointer-events-none absolute inset-0"
+          />
 
-          <span
+          <MdBadge
             v-if="globalActiveTaskCount > 0"
-            class="pointer-events-none absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] px-1 text-[10px] font-bold leading-none text-[var(--md-sys-color-on-primary)] ring-2 ring-[var(--md-sys-color-surface-container)]"
-          >
-            {{ globalActiveTaskCount > 99 ? '99+' : globalActiveTaskCount }}
-          </span>
-          <span
+            :value="globalActiveTaskCount"
+            :max="99"
+            tone="error"
+            class="pointer-events-none absolute -top-0.5 -right-0.5 ring-2 ring-[var(--md-sys-color-surface-container)]"
+          />
+          <MdBadge
             v-else-if="globalFailedTaskCount > 0"
-            class="pointer-events-none absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-[var(--md-sys-color-error)] ring-2 ring-[var(--md-sys-color-surface-container)]"
+            dot
+            tone="error"
+            class="pointer-events-none absolute top-1.5 right-1.5 ring-2 ring-[var(--md-sys-color-surface-container)]"
           />
         </div>
 

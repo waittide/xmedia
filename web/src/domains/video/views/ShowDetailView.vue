@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LuPlay, LuHeart, LuPencil } from 'vue-icons-plus/lu'
 import { useAuthStore } from '@/stores/auth'
+import MdTabs, { type MdTabItem } from '@/components/ui/MdTabs.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { api } from '../api'
 import PosterImage from '../components/PosterImage.vue'
@@ -36,6 +37,17 @@ async function loadShow(): Promise<void> {
     selectedSeason.value = res.seasons[0]!.season_number
   }
 }
+
+const seasonTabs = computed<MdTabItem<number>[]>(() =>
+  (detail.value?.seasons ?? []).map((sg) => ({
+    value: sg.season_number,
+    label:
+      sg.season_number === 0
+        ? t('catalog.specialsHeader')
+        : t('catalog.seasonHeader', { season: sg.season_number }),
+    badge: sg.episodes.length,
+  })),
+)
 
 const activeSeasonGroup = computed(() => {
   if (!detail.value) return null
@@ -131,6 +143,8 @@ watch(() => route.params.id, loadShow)
           <button
             type="button"
             class="md-icon-btn md-state bg-[var(--md-sys-color-surface-container-high)]"
+            :aria-label="detail.show.is_favorite ? t('common.unfavorite') : t('common.favorite')"
+            :aria-pressed="detail.show.is_favorite"
             @click="videoStore.toggleShowFavorite(detail.show)"
           >
             <LuHeart
@@ -160,30 +174,14 @@ watch(() => route.params.id, loadShow)
 
     <!-- Season Selector & Episodes -->
     <div v-if="detail.seasons.length > 0" class="space-y-4">
-      <div
-        v-if="detail.seasons.length > 1"
-        class="flex w-fit flex-wrap gap-1.5 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] p-1.5"
-      >
-        <button
-          v-for="sg in detail.seasons"
-          :key="sg.season_number"
-          type="button"
-          class="md-state rounded-xl px-4 py-1.5 text-xs font-semibold transition"
-          :class="
-            selectedSeason === sg.season_number
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-          "
-          @click="selectedSeason = sg.season_number"
-        >
-          {{
-            sg.season_number === 0
-              ? t('catalog.specialsHeader')
-              : t('catalog.seasonHeader', { season: sg.season_number })
-          }}
-          ({{ sg.episodes.length }})
-        </button>
-      </div>
+      <MdTabs
+        v-if="detail.seasons.length > 1 && selectedSeason !== null"
+        :model-value="selectedSeason"
+        :tabs="seasonTabs"
+        variant="secondary"
+        :aria-label="detail.show.title"
+        @update:model-value="(v) => (selectedSeason = v)"
+      />
 
       <div
         v-if="activeSeasonGroup"

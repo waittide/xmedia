@@ -17,6 +17,7 @@ import {
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
+import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import { buildOnlineDownloadFileUrl } from '@/domains/book/onlineApi'
@@ -580,18 +581,11 @@ async function handleClearFinished(): Promise<void> {
         </p>
 
         <!-- Linear Progress Bar -->
-        <div
-          v-if="item.isActive"
-          class="relative mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
-        >
-          <div
-            v-if="item.progress !== null"
-            class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all duration-200"
-            :style="{ width: `${item.progress}%` }"
-          />
-          <div
-            v-else
-            class="task-indeterminate-bar h-full w-2/5 rounded-full bg-[var(--md-sys-color-primary)]"
+        <div v-if="item.isActive" class="mt-2.5">
+          <MdLinearProgress
+            :value="item.progress"
+            :indeterminate="item.progress === null"
+            :aria-label="item.title"
           />
         </div>
 
@@ -662,18 +656,3 @@ async function handleClearFinished(): Promise<void> {
     </template>
   </MdSideSheet>
 </template>
-
-<style scoped>
-@keyframes task-drawer-indeterminate {
-  0% {
-    transform: translateX(-110%);
-  }
-  100% {
-    transform: translateX(260%);
-  }
-}
-
-.task-indeterminate-bar {
-  animation: task-drawer-indeterminate 1.25s ease-in-out infinite;
-}
-</style>

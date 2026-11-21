@@ -16,6 +16,7 @@ import {
   LuWrench,
   LuX,
 } from 'vue-icons-plus/lu'
+import MdBadge from '@/components/ui/MdBadge.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import { useThemeStore } from '@/stores/theme'
 import type { MediaKind } from '@/types/api'
@@ -247,9 +248,12 @@ defineExpose({ focusSearch })
         @click="emit('toggleTasks')"
       >
         <LuClock class="h-[18px] w-[18px]" />
-        <span
+        <MdBadge
           v-if="taskStore.unresolvedCount > 0"
-          class="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-[var(--md-sys-color-warning)] ring-2 ring-[var(--md-sys-color-surface-container)]"
+          :value="taskStore.unresolvedCount"
+          :max="99"
+          tone="error"
+          class="pointer-events-none absolute -top-0.5 -right-0.5 ring-2 ring-[var(--md-sys-color-surface-container)]"
         />
       </button>
 

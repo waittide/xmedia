@@ -10,6 +10,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
+import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
 import { useAuthStore } from '@/stores/auth'
 import {
   formatDownloadSpeed,
@@ -324,19 +325,20 @@ function openImportedBook(): void {
           </span>
         </div>
 
-        <div class="h-2 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]">
-          <div
-            class="h-full rounded-full transition-all duration-300"
-            :class="
-              activeJob.status === 'cancelled'
-                ? 'bg-[var(--md-sys-color-outline)]'
-                : activeJob.status === 'failed'
-                  ? 'bg-[var(--md-sys-color-error)]'
-                  : 'bg-[var(--md-sys-color-primary)]'
-            "
-            :style="{ width: `${activeJob.status === 'completed' ? 100 : progressPct}%` }"
-          />
-        </div>
+        <MdLinearProgress
+          :value="activeJob.status === 'completed' ? 100 : activeJob.total_chapters > 0 ? progressPct : null"
+          :indeterminate="isJobActive(activeJob.status) && activeJob.total_chapters <= 0"
+          :tone="
+            activeJob.status === 'cancelled'
+              ? 'neutral'
+              : activeJob.status === 'failed'
+                ? 'error'
+                : activeJob.status === 'completed'
+                  ? 'success'
+                  : 'primary'
+          "
+          :aria-label="target.bookName"
+        />
 
         <p
           v-if="activeJob.current_chapter_title"
