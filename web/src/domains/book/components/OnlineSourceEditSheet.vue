@@ -20,7 +20,7 @@ import AppSwitch from '@/components/ui/AppSwitch.vue'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { onlineBookApi, type BookSourceSummaryDto } from '../onlineApi'
-import RuleFieldsSection, { type RuleFieldDef } from './RuleFieldsSection.vue'
+import RuleFieldsSection, { type RuleFieldDef } from '@/components/online-sources/RuleFieldsSection.vue'
 
 const props = defineProps<{
   open: boolean
