@@ -1,9 +1,18 @@
 use std::io::{Cursor, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use axum::Router;
+use axum::body::Body;
 use axum::http::StatusCode;
-use axum::http::header::{ACCEPT_RANGES, CONTENT_RANGE, RANGE};
+use axum::http::header::{
+    ACCEPT_RANGES, ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_LENGTH, CONTENT_RANGE,
+    CONTENT_SECURITY_POLICY, CONTENT_TYPE, HOST, LOCATION, ORIGIN, RANGE, X_CONTENT_TYPE_OPTIONS,
+};
+use axum::response::IntoResponse;
+use axum::routing::get;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -679,6 +688,666 @@ async fn e2e_standalone_local_engine_opds_and_subsonic_roundtrip() {
         .await
         .unwrap();
     assert_eq!(not_found.status(), StatusCode::NOT_FOUND);
+
+    for bare in ["/_app", "/_app/"] {
+        let resp = client
+            .get(format!("{}{bare}", gateway.url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // Protocol mismatch (calling Subsonic endpoint with OPDS source ID) returns 400
+    let mismatch = client
+        .get(format!("{}/_app/subsonic/{opds12_id}/albums", gateway.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(mismatch.status(), StatusCode::BAD_REQUEST);
+
+    // clear_password removes stored password
+    let cleared: MutatedRemoteSourceResponse = client
+        .put(format!("{}/_app/remote-sources/{opds12_id}", gateway.url))
+        .json(&json!({ "clear_password": true }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!cleared.source.has_password);
+
+    gateway.shutdown().await;
+}
+
+fn sample_cbz_bytes() -> Vec<u8> {
+    // Minimal 1x1 PNG inside a CBZ zip archive
+    let png_1x1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8,
+        0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut zw = ZipWriter::new(&mut cursor);
+        let opts = SimpleFileOptions::default();
+        zw.start_file("001.png", opts).unwrap();
+        zw.write_all(png_1x1).unwrap();
+        zw.finish().unwrap();
+    }
+    cursor.into_inner()
+}
+
+async fn spawn_mock_server(router: Router) -> (String, oneshot::Sender<()>) {
+    let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await;
+    });
+    (format!("http://127.0.0.1:{}", addr.port()), tx)
+}
+
+#[tokio::test]
+async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
+    // Attacker server counts every request it receives (should remain 0!)
+    let attacker_hits = Arc::new(AtomicUsize::new(0));
+    let hits_clone = attacker_hits.clone();
+    let attacker_router = Router::new().fallback(get(move || {
+        let hits = hits_clone.clone();
+        async move {
+            hits.fetch_add(1, Ordering::SeqCst);
+            (StatusCode::OK, "STOLEN")
+        }
+    }));
+    let (attacker_url, _attacker_tx) = spawn_mock_server(attacker_router).await;
+
+    // Mock upstream server serving OPDS + Subsonic edge cases
+    let attacker_redirect_target = format!("{attacker_url}/steal");
+    let png_bytes: Vec<u8> = vec![
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+        0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8,
+        0xCF, 0xC0, 0x00, 0x00, 0x03, 0x01, 0x01, 0x00, 0x18, 0xDD, 0x8D, 0xB0, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+    let cbz_bytes = sample_cbz_bytes();
+    let wav_bytes = sample_wav_bytes(800);
+
+    let png_for_opds = png_bytes.clone();
+    let png_for_sub = png_bytes.clone();
+    let cbz_for_dl = cbz_bytes.clone();
+    let wav_for_stream = wav_bytes.clone();
+
+    let upstream_router = Router::new()
+        .route(
+            "/opds",
+            get(|| async {
+                (
+                    [(CONTENT_TYPE, "application/atom+xml")],
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:pse="http://vaemendis.net/ns/opds-pse/ns">
+  <title>Mock Comic OPDS</title>
+  <entry>
+    <id>comic-1</id>
+    <title>Space Adventure</title>
+    <link rel="http://opds-spec.org/acquisition" href="/download/space.cbz" type="application/vnd.comicbook+zip"/>
+    <link rel="http://vaemendis.net/opds-pse/stream" href="/pse/{pageNumber}" type="image/jpeg" pse:count="10"/>
+  </entry>
+</feed>"#,
+                )
+            }),
+        )
+        .route(
+            "/redirect-cross-origin",
+            get(move || {
+                let target = attacker_redirect_target.clone();
+                async move { (StatusCode::FOUND, [(LOCATION, target)]) }
+            }),
+        )
+        .route(
+            "/img/good.png",
+            get(move || {
+                let body = png_for_opds.clone();
+                async move { ([(CONTENT_TYPE, "image/png")], body) }
+            }),
+        )
+        .route(
+            "/img/xss.svg",
+            get(|| async {
+                (
+                    [(CONTENT_TYPE, "image/svg+xml")],
+                    "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>",
+                )
+            }),
+        )
+        .route(
+            "/img/xss.html",
+            get(|| async { ([(CONTENT_TYPE, "text/html")], "<html><script>alert(1)</script></html>") }),
+        )
+        .route(
+            "/img/huge.png",
+            get(|| async {
+                let chunk = axum::body::Bytes::from(vec![0u8; 1024 * 1024]);
+                let stream = futures_util::stream::iter(
+                    (0..13).map(move |_| Ok::<axum::body::Bytes, std::io::Error>(chunk.clone())),
+                );
+                let mut res = (StatusCode::OK, Body::from_stream(stream)).into_response();
+                res.headers_mut()
+                    .insert(CONTENT_TYPE, "image/png".parse().unwrap());
+                res.headers_mut()
+                    .insert(CONTENT_LENGTH, (13 * 1024 * 1024).to_string().parse().unwrap());
+                res
+            }),
+        )
+        .route(
+            "/download/space.cbz",
+            get(move || {
+                let body = cbz_for_dl.clone();
+                async move { ([(CONTENT_TYPE, "application/vnd.comicbook+zip")], body) }
+            }),
+        )
+        .route(
+            "/download/aborted.epub",
+            get(|| async {
+                let stream = futures_util::stream::iter(vec![
+                    Ok::<axum::body::Bytes, std::io::Error>(axum::body::Bytes::from_static(
+                        b"partial-data",
+                    )),
+                    Err(std::io::Error::other("simulated upstream disconnect")),
+                ]);
+                let mut res = (StatusCode::OK, Body::from_stream(stream)).into_response();
+                res.headers_mut()
+                    .insert(CONTENT_TYPE, "application/epub+zip".parse().unwrap());
+                res
+            }),
+        )
+        .route(
+            "/rest/getCoverArt.view",
+            get(move |axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>| {
+                let png = png_for_sub.clone();
+                async move {
+                    match q.get("id").map(String::as_str) {
+                        Some("svg") => (
+                            [(CONTENT_TYPE, "image/svg+xml")],
+                            b"<svg/>".to_vec(),
+                        )
+                            .into_response(),
+                        Some("html") => (
+                            [(CONTENT_TYPE, "text/html")],
+                            b"<html>bad</html>".to_vec(),
+                        )
+                            .into_response(),
+                        _ => ([(CONTENT_TYPE, "image/png")], png).into_response(),
+                    }
+                }
+            }),
+        )
+        .route(
+            "/rest/download.view",
+            get(|| async { (StatusCode::NOT_FOUND, "download disabled") }),
+        )
+        .route(
+            "/rest/getSong.view",
+            get(|| async {
+                (
+                    [(CONTENT_TYPE, "application/json")],
+                    r#"{"subsonic-response":{"status":"ok","song":{"id":"song 1+2","title":"Live + Studio","suffix":"wav"}}}"#,
+                )
+            }),
+        )
+        .route(
+            "/rest/stream.view",
+            get(move |axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>| {
+                let wav = wav_for_stream.clone();
+                async move {
+                    match q.get("id").map(String::as_str) {
+                        Some("html") => (
+                            [(CONTENT_TYPE, "text/html")],
+                            "<html><body>not audio</body></html>",
+                        )
+                            .into_response(),
+                        Some("json-err") => (
+                            [(CONTENT_TYPE, "application/json")],
+                            r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"Track missing"}}}"#,
+                        )
+                            .into_response(),
+                        Some("live") => {
+                            let stream = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+                                axum::body::Bytes::from_static(b"RIFF0000WAVE"),
+                            )]);
+                            let mut res = (StatusCode::OK, Body::from_stream(stream)).into_response();
+                            res.headers_mut()
+                                .insert(CONTENT_TYPE, "audio/mpeg".parse().unwrap());
+                            res
+                        }
+                        _ => {
+                            let mut res = (StatusCode::OK, wav).into_response();
+                            res.headers_mut()
+                                .insert(CONTENT_TYPE, "audio/wav".parse().unwrap());
+                            res
+                        }
+                    }
+                }
+            }),
+        );
+
+    let (upstream_url, _upstream_tx) = spawn_mock_server(upstream_router).await;
+
+    let local_tmp = TempDir::new().unwrap();
+    let gateway = start_gateway(
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+        local_tmp.path().to_path_buf(),
+        None,
+    )
+    .await
+    .unwrap();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap();
+
+    // 1. Standalone gateway disables permissive CORS on /api/v1/*
+    let cors_probe = client
+        .get(format!("{}/api/v1/system/capabilities", gateway.url))
+        .header(ORIGIN, "https://evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cors_probe.status(), StatusCode::OK);
+    assert!(
+        cors_probe
+            .headers()
+            .get(ACCESS_CONTROL_ALLOW_ORIGIN)
+            .is_none()
+    );
+
+    // 2. /_app/* enforces Host, Origin, and Sec-Fetch-Site guards
+    let bad_host = client
+        .get(format!("{}/_app/health", gateway.url))
+        .header(HOST, format!("evil.example:{}", gateway.addr.port()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_host.status(), StatusCode::FORBIDDEN);
+
+    let bad_origin = client
+        .get(format!("{}/_app/auto-session", gateway.url))
+        .header(ORIGIN, "https://evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_origin.status(), StatusCode::FORBIDDEN);
+
+    let bad_port_origin = client
+        .get(format!("{}/_app/auto-session", gateway.url))
+        .header(ORIGIN, "http://127.0.0.1:1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad_port_origin.status(), StatusCode::FORBIDDEN);
+
+    let cross_site = client
+        .get(format!("{}/_app/auto-session", gateway.url))
+        .header("sec-fetch-site", "cross-site")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_site.status(), StatusCode::FORBIDDEN);
+
+    let same_origin_ok = client
+        .get(format!("{}/_app/health", gateway.url))
+        .header(ORIGIN, &gateway.url)
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_origin_ok.status(), StatusCode::OK);
+
+    // 3. Register OPDS & Subsonic mock sources with secrets
+    let opds_created: MutatedRemoteSourceResponse = client
+        .post(format!("{}/_app/remote-sources", gateway.url))
+        .json(&json!({
+            "name": "Mock OPDS",
+            "protocol": "opds",
+            "url": format!("{upstream_url}/opds"),
+            "username": "alice",
+            "password": "OPDS_TOP_SECRET_PASSWORD",
+            "allow_insecure_tls": false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let opds_id = opds_created.source.id;
+
+    let sub_created: MutatedRemoteSourceResponse = client
+        .post(format!("{}/_app/remote-sources", gateway.url))
+        .json(&json!({
+            "name": "Mock Subsonic",
+            "protocol": "subsonic",
+            "url": upstream_url,
+            "username": "",
+            "password": "SUBSONIC_API_KEY_SECRET",
+            "allow_insecure_tls": false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let sub_id = sub_created.source.id;
+
+    // 4. P0 #1: test_remote_source rejects cross-origin password reuse via source_id with 400
+    let steal_attempt = client
+        .post(format!("{}/_app/remote-sources/test", gateway.url))
+        .json(&json!({
+            "protocol": "opds",
+            "url": format!("{attacker_url}/steal"),
+            "username": "alice",
+            "password": "",
+            "allow_insecure_tls": false,
+            "source_id": opds_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(steal_attempt.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        attacker_hits.load(Ordering::SeqCst),
+        0,
+        "attacker must never receive stored credentials"
+    );
+
+    // Same-origin test_remote_source with source_id succeeds
+    let same_origin_test: TestRemoteSourceResponse = client
+        .post(format!("{}/_app/remote-sources/test", gateway.url))
+        .json(&json!({
+            "protocol": "opds",
+            "url": format!("{upstream_url}/opds"),
+            "username": "alice",
+            "password": "",
+            "allow_insecure_tls": false,
+            "source_id": opds_id
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(same_origin_test.ok);
+
+    // 5. P0 #2: OPDS SSRF, protocol-relative URL, and cross-origin redirect blocking
+    for bad_url in [
+        format!("{attacker_url}/steal"),
+        "//evil.example/steal".to_string(),
+        "file:///etc/passwd".to_string(),
+    ] {
+        let browse_res = client
+            .get(format!("{}/_app/opds/{opds_id}/browse", gateway.url))
+            .query(&[("url", bad_url.as_str())])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(browse_res.status(), StatusCode::BAD_REQUEST);
+
+        let img_res = client
+            .get(format!("{}/_app/opds/{opds_id}/proxy-image", gateway.url))
+            .query(&[("url", bad_url.as_str())])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(img_res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    let redirect_res = client
+        .get(format!("{}/_app/opds/{opds_id}/browse", gateway.url))
+        .query(&[("url", format!("{upstream_url}/redirect-cross-origin"))])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redirect_res.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        attacker_hits.load(Ordering::SeqCst),
+        0,
+        "cross-origin redirect must be blocked before contacting attacker"
+    );
+
+    // 6. P0 #3: Proxy image / cover / stream Content-Type whitelist & security headers
+    let good_img = client
+        .get(format!("{}/_app/opds/{opds_id}/proxy-image", gateway.url))
+        .query(&[("url", format!("{upstream_url}/img/good.png"))])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(good_img.status(), StatusCode::OK);
+    assert_eq!(
+        good_img
+            .headers()
+            .get(X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(
+        good_img
+            .headers()
+            .get(CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("sandbox")
+    );
+
+    for bad_img_path in ["/img/xss.svg", "/img/xss.html"] {
+        let resp = client
+            .get(format!("{}/_app/opds/{opds_id}/proxy-image", gateway.url))
+            .query(&[("url", format!("{upstream_url}{bad_img_path}"))])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    let huge_img = client
+        .get(format!("{}/_app/opds/{opds_id}/proxy-image", gateway.url))
+        .query(&[("url", format!("{upstream_url}/img/huge.png"))])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(huge_img.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let sub_cover_ok = client
+        .get(format!("{}/_app/subsonic/{sub_id}/cover/ok", gateway.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sub_cover_ok.status(), StatusCode::OK);
+    assert_eq!(
+        sub_cover_ok
+            .headers()
+            .get(X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(
+        sub_cover_ok
+            .headers()
+            .get(CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("sandbox")
+    );
+
+    for bad_cover in ["svg", "html"] {
+        let resp = client
+            .get(format!(
+                "{}/_app/subsonic/{sub_id}/cover/{bad_cover}",
+                gateway.url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    // Subsonic proxy_stream: rejects HTML, intercepts HTTP 200 JSON error, supports HEAD, no false Accept-Ranges
+    let html_stream = client
+        .get(format!(
+            "{}/_app/subsonic/{sub_id}/stream/html",
+            gateway.url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(html_stream.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let json_err_stream = client
+        .get(format!(
+            "{}/_app/subsonic/{sub_id}/stream/json-err",
+            gateway.url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(json_err_stream.status(), StatusCode::BAD_GATEWAY);
+    let err_text = json_err_stream.text().await.unwrap();
+    assert!(err_text.contains("Track missing"));
+
+    let live_stream = client
+        .get(format!(
+            "{}/_app/subsonic/{sub_id}/stream/live",
+            gateway.url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(live_stream.status(), StatusCode::OK);
+    assert!(
+        live_stream.headers().get(ACCEPT_RANGES).is_none(),
+        "chunked stream without Content-Length must not fabricate Accept-Ranges: bytes"
+    );
+    assert_eq!(
+        live_stream
+            .headers()
+            .get(X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(
+        live_stream
+            .headers()
+            .get(CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("sandbox")
+    );
+
+    let head_stream = client
+        .head(format!(
+            "{}/_app/subsonic/{sub_id}/stream/song%201%2B2",
+            gateway.url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(head_stream.status(), StatusCode::OK);
+    assert!(head_stream.bytes().await.unwrap().is_empty());
+
+    // 7. P1 #6: Subsonic connection error redacts apiKey via without_url()
+    let dead_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_port = dead_listener.local_addr().unwrap().port();
+    drop(dead_listener);
+    let redacted_probe: TestRemoteSourceResponse = client
+        .post(format!("{}/_app/remote-sources/test", gateway.url))
+        .json(&json!({
+            "protocol": "subsonic",
+            "url": format!("http://127.0.0.1:{dead_port}"),
+            "username": "",
+            "password": "SUPER_SECRET_API_KEY_999",
+            "allow_insecure_tls": false
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!redacted_probe.ok);
+    let probe_err = redacted_probe.error.unwrap_or_default();
+    assert!(
+        !probe_err.contains("SUPER_SECRET_API_KEY_999") && !probe_err.contains("apiKey="),
+        "reqwest error leaked secret apiKey: {probe_err}"
+    );
+
+    // 8. OPDS Comic PSE browse + CBZ import + aborted download temp file RAII cleanup
+    let comic_feed: OpdsFeedDto = client
+        .get(format!("{}/_app/opds/{opds_id}/browse", gateway.url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(comic_feed.entries.len(), 1);
+    assert_eq!(comic_feed.entries[0].page_count, Some(10));
+    assert!(comic_feed.entries[0].pse_stream_url.is_some());
+
+    let comic_import = client
+        .post(format!("{}/_app/opds/{opds_id}/import", gateway.url))
+        .json(&json!({
+            "url": format!("{upstream_url}/download/space.cbz"),
+            "filename": "space.cbz"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(comic_import.status(), StatusCode::CREATED);
+    let imported_comic: RemoteImportResultDto = comic_import.json().await.unwrap();
+    assert_eq!(imported_comic.media_kind, "comic");
+
+    // Aborted stream download must fail cleanly and leave ZERO .tmp files in data_dir/tmp
+    let aborted_import = client
+        .post(format!("{}/_app/opds/{opds_id}/import", gateway.url))
+        .json(&json!({
+            "url": format!("{upstream_url}/download/aborted.epub"),
+            "filename": "aborted.epub"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(aborted_import.status(), StatusCode::BAD_GATEWAY);
+    let leftover_tmps: Vec<_> = std::fs::read_dir(local_tmp.path().join("tmp"))
+        .unwrap()
+        .flatten()
+        .collect();
+    assert!(
+        leftover_tmps.is_empty(),
+        "expected RAII guard to clean up aborted download temp file, found: {:?}",
+        leftover_tmps
+    );
+
+    // 9. Subsonic download.view -> stream.view fallback with space/+ song ID
+    let fallback_import = client
+        .post(format!(
+            "{}/_app/subsonic/{sub_id}/import/song%201%2B2",
+            gateway.url
+        ))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fallback_import.status(), StatusCode::CREATED);
+    let imported_track: RemoteImportResultDto = fallback_import.json().await.unwrap();
+    assert_eq!(imported_track.media_kind, "music");
 
     gateway.shutdown().await;
 }
