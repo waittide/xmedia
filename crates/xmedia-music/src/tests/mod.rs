@@ -1,4 +1,5 @@
 mod collections_and_events;
+mod online_sources;
 mod rest_and_subsonic;
 
 use std::collections::HashMap;

@@ -431,6 +431,21 @@ pub fn parse_explore_categories(raw: &str, base_url: &str) -> Vec<OnlineMusicExp
     out
 }
 
+fn fetch_api(
+    session: &MusicSourceSession,
+    target_url: &str,
+    base_url: &str,
+) -> Result<xmedia_source::http::HttpFetchResult, String> {
+    let fetched = session.http().fetch(target_url, base_url)?;
+    if fetched.status >= 400 {
+        return Err(format!(
+            "上游接口返回异常状态 HTTP {} ({})",
+            fetched.status, fetched.final_url
+        ));
+    }
+    Ok(fetched)
+}
+
 fn non_empty_opt(s: String) -> Option<String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
@@ -606,7 +621,7 @@ impl MusicSourceEngine {
                 return Err("searchUrl 求值结果为空".into());
             }
             let target_url = resolve_relative_url(evaluated.trim(), &source.source_url);
-            let fetched = session.http().fetch(&target_url, &source.source_url)?;
+            let fetched = fetch_api(&session, &target_url, &source.source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
             extract_tracks_with_rule(&mut session, &raw_input, rule, &fetched.final_url)
         };
@@ -696,7 +711,7 @@ impl MusicSourceEngine {
                 &source.source_url,
             )?;
             let target_url = resolve_relative_url(evaluated.trim(), &source.source_url);
-            let fetched = session.http().fetch(&target_url, &source.source_url)?;
+            let fetched = fetch_api(&session, &target_url, &source.source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
             let tracks =
                 extract_tracks_with_rule(&mut session, &raw_input, rule, &fetched.final_url)?;
@@ -786,7 +801,7 @@ impl MusicSourceEngine {
                 &source.source_url,
             )?;
             let target_url = resolve_relative_url(evaluated_url.trim(), &source.source_url);
-            let fetched = session.http().fetch(&target_url, &source.source_url)?;
+            let fetched = fetch_api(&session, &target_url, &source.source_url)?;
             let mut input = RuleValue::from_raw(fetched.body);
 
             if let Some(ref init_rule) = rule.init
@@ -1015,7 +1030,7 @@ impl MusicSourceEngine {
                     return Err("ruleStream.requestUrl 求值结果为空".into());
                 }
                 let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
-                let fetched = session.http().fetch(&target_url, &source.source_url)?;
+                let fetched = fetch_api(&session, &target_url, &source.source_url)?;
                 let input = RuleValue::from_raw(fetched.body);
 
                 let stream_rule = rule
@@ -1224,7 +1239,7 @@ impl MusicSourceEngine {
                     return Ok(ctx.cover_url.clone());
                 }
                 let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
-                let fetched = session.http().fetch(&target_url, &source.source_url)?;
+                let fetched = fetch_api(&session, &target_url, &source.source_url)?;
                 let input = RuleValue::from_raw(fetched.body);
                 let cover_raw =
                     session.eval_opt(&input, rule.cover_url.as_deref(), &fetched.final_url);
@@ -1321,7 +1336,7 @@ impl MusicSourceEngine {
                         return Ok(None);
                     }
                     let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
-                    let fetched = session.http().fetch(&target_url, &source.source_url)?;
+                    let fetched = fetch_api(&session, &target_url, &source.source_url)?;
                     let input = RuleValue::from_raw(fetched.body);
 
                     let mut lrc =
@@ -1363,7 +1378,7 @@ impl MusicSourceEngine {
                     &source.source_url,
                 )?;
                 let target_url = resolve_relative_url(evaluated_req.trim(), &source.source_url);
-                let fetched = session.http().fetch(&target_url, &source.source_url)?;
+                let fetched = fetch_api(&session, &target_url, &source.source_url)?;
                 let input = RuleValue::from_raw(fetched.body);
                 let lrc = session.eval_opt(&input, Some(lyric_rule), &fetched.final_url);
                 (lrc, None)
@@ -1415,10 +1430,15 @@ impl MusicSourceEngine {
     pub fn run_login_action_sync(
         &self,
         source: &MusicSourceSpec,
-        initial_state: SourceRuntimeState,
+        mut initial_state: SourceRuntimeState,
         login_info: HashMap<String, String>,
         action_js: Option<&str>,
     ) -> Result<SourceCallOutput<String>, SourceCallError> {
+        for (k, v) in login_info {
+            initial_state.login_info.insert(k, v);
+        }
+        let merged_login = initial_state.login_info.clone();
+
         let mut session = self
             .build_session(
                 source,
@@ -1428,7 +1448,11 @@ impl MusicSourceEngine {
             )
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
-        let login_url = source.login_url.as_deref().unwrap_or("");
+        let login_url_raw = source.login_url.as_deref().unwrap_or("");
+        let login_url = login_url_raw
+            .trim()
+            .strip_prefix("@js:")
+            .unwrap_or(login_url_raw);
         if login_url.trim().is_empty() && action_js.is_none_or(|a| a.trim().is_empty()) {
             return Err(SourceCallError::new(
                 "当前音源未配置 loginUrl 或可执行的登录脚本",
@@ -1436,7 +1460,7 @@ impl MusicSourceEngine {
             ));
         }
 
-        match session.eval_login_script(login_url, action_js, &login_info) {
+        match session.eval_login_script(login_url, action_js, &merged_login) {
             Ok(result) => {
                 let (state, diagnostics) = session.finalize_state();
                 Ok(SourceCallOutput {

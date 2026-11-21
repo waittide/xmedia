@@ -1,0 +1,201 @@
+[
+  {
+    "sourceName": "GDStudio Music API (网易云)",
+    "sourceUrl": "https://music-api.gdstudio.xyz",
+    "sourceGroup": "综合音乐",
+    "sourceComment": "GDStudio 公开聚合音乐接口 (netease 通道)，支持搜索、最高 320k/FLAC 流地址、500px 封面与双语 LRC 歌词",
+    "enabled": true,
+    "weight": 100,
+    "customOrder": 1,
+    "header": {
+      "User-Agent": "xmedia/0.1.0"
+    },
+    "mediaHeader": {
+      "User-Agent": "xmedia/0.1.0",
+      "Referer": "https://music.163.com/"
+    },
+    "concurrentRate": "5/1000",
+    "searchUrl": "https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name={{key}}&count={{limit}}&pages={{page}}",
+    "exploreUrl": "热歌榜::https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=%E7%83%AD%E6%AD%8C&count={{limit}}&pages={{page}}\n华语经典::https://music-api.gdstudio.xyz/api.php?types=search&source=netease&name=%E5%91%A8%E6%9D%B0%E4%BC%A6&count={{limit}}&pages={{page}}",
+    "supportedQualities": ["128", "192", "320", "740", "999"],
+    "enabledCookieJar": false,
+    "ruleSearch": {
+      "trackList": "$",
+      "trackId": "$.id",
+      "title": "$.name",
+      "artist": "$.artist[*]||$.artist",
+      "album": "$.album",
+      "coverId": "$.pic_id",
+      "urlId": "$.url_id",
+      "lyricId": "$.lyric_id",
+      "checkKeyWord": "Mojito"
+    },
+    "ruleStream": {
+      "requestUrl": "https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id={{urlId}}&br={{quality}}",
+      "streamUrl": "$.url",
+      "bitrate": "$.br",
+      "expiresInSecs": "1200"
+    },
+    "ruleCover": {
+      "requestUrl": "https://music-api.gdstudio.xyz/api.php?types=pic&source=netease&id={{coverId}}&size=500",
+      "coverUrl": "$.url"
+    },
+    "ruleLyric": {
+      "requestUrl": "https://music-api.gdstudio.xyz/api.php?types=lyric&source=netease&id={{lyricId}}",
+      "lyric": "$.lyric",
+      "translatedLyric": "$.tlyric"
+    }
+  },
+  {
+    "sourceName": "Audius Public API",
+    "sourceUrl": "https://api.audius.co",
+    "sourceGroup": "独立 / 电子",
+    "sourceComment": "Audius 去中心化公开音乐 REST API，免密钥支持热门榜、搜索、高清封面与完整 MP3 音频流",
+    "enabled": true,
+    "weight": 90,
+    "customOrder": 2,
+    "header": {
+      "User-Agent": "xmedia/0.1.0"
+    },
+    "mediaHeader": {
+      "User-Agent": "xmedia/0.1.0"
+    },
+    "concurrentRate": "10/1000",
+    "searchUrl": "https://api.audius.co/v1/tracks/search?query={{key}}&app_name=xmedia&limit={{limit}}",
+    "exploreUrl": "热门趋势::https://api.audius.co/v1/tracks/trending?app_name=xmedia&limit={{limit}}\n电子舞曲::https://api.audius.co/v1/tracks/trending?genre=Electronic&app_name=xmedia&limit={{limit}}",
+    "supportedQualities": ["320"],
+    "enabledCookieJar": false,
+    "ruleSearch": {
+      "trackList": "$.data[*]",
+      "trackId": "$.id",
+      "title": "$.title",
+      "artist": "$.user.name",
+      "album": "$.genre",
+      "duration": "$.duration",
+      "durationUnit": "s",
+      "coverUrl": "$.artwork['480x480']||$.artwork['150x150']||$.artwork['1000x1000']",
+      "urlId": "$.id",
+      "playUrl": "https://api.audius.co/v1/tracks/{{$.id}}/stream?app_name=xmedia",
+      "detailUrl": "https://api.audius.co/v1/tracks/{{$.id}}?app_name=xmedia",
+      "checkKeyWord": "fragments"
+    },
+    "ruleTrackDetail": {
+      "requestUrl": "https://api.audius.co/v1/tracks/{{trackId}}?app_name=xmedia",
+      "trackId": "$.data.id",
+      "title": "$.data.title",
+      "artist": "$.data.user.name",
+      "album": "$.data.genre",
+      "duration": "$.data.duration",
+      "durationUnit": "s",
+      "coverUrl": "$.data.artwork['480x480']||$.data.artwork['150x150']||$.data.artwork['1000x1000']",
+      "urlId": "$.data.id",
+      "playUrl": "https://api.audius.co/v1/tracks/{{$.data.id}}/stream?app_name=xmedia"
+    },
+    "ruleStream": {
+      "streamUrl": "{{playUrl}}||https://api.audius.co/v1/tracks/{{urlId}}/stream?app_name=xmedia",
+      "format": "mp3",
+      "bitrate": "320"
+    }
+  },
+  {
+    "sourceName": "Internet Archive Audio",
+    "sourceUrl": "https://archive.org",
+    "sourceGroup": "公版 / 古典",
+    "sourceComment": "Internet Archive 公开音频库（自动过滤 stream_only 与 private 文件），支持搜索、详情与完整 MP3 下载流",
+    "enabled": true,
+    "weight": 80,
+    "customOrder": 3,
+    "header": {
+      "User-Agent": "xmedia/0.1.0"
+    },
+    "mediaHeader": {
+      "User-Agent": "xmedia/0.1.0"
+    },
+    "concurrentRate": "4/1000",
+    "searchUrl": "https://archive.org/advancedsearch.php?q=mediatype%3Aaudio+AND+format%3A%22VBR+MP3%22+AND+-collection%3Astream_only+AND+({{key}})&fl[]=identifier&fl[]=title&fl[]=creator&rows={{limit}}&page={{page}}&output=json",
+    "exploreUrl": "古典精选::https://archive.org/advancedsearch.php?q=mediatype%3Aaudio+AND+subject%3Aclassical+AND+format%3A%22VBR+MP3%22+AND+-collection%3Astream_only&sort[]=downloads+desc&fl[]=identifier&fl[]=title&fl[]=creator&rows={{limit}}&page={{page}}&output=json",
+    "supportedQualities": ["128", "320"],
+    "enabledCookieJar": false,
+    "ruleSearch": {
+      "trackList": "$.response.docs[*]",
+      "trackId": "$.identifier",
+      "title": "$.title[*]||$.title",
+      "artist": "$.creator[*]||$.creator",
+      "coverUrl": "https://archive.org/services/img/{{$.identifier}}",
+      "urlId": "$.identifier",
+      "detailUrl": "https://archive.org/metadata/{{$.identifier}}",
+      "checkKeyWord": "beethoven"
+    },
+    "ruleTrackDetail": {
+      "requestUrl": "https://archive.org/metadata/{{trackId}}",
+      "trackId": "$.metadata.identifier",
+      "title": "$.metadata.title[*]||$.metadata.title",
+      "artist": "$.metadata.creator[*]||$.metadata.creator",
+      "album": "$.metadata.album[*]||$.metadata.album",
+      "duration": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true';});f&&f.length?String(f.length):'';",
+      "durationUnit": "s",
+      "coverUrl": "https://archive.org/services/img/{{$.metadata.identifier}}",
+      "urlId": "$.metadata.identifier"
+    },
+    "ruleStream": {
+      "requestUrl": "https://archive.org/metadata/{{urlId}}",
+      "streamUrl": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true';})||fs.find(function(x){return x&&x.name&&/\\.(ogg|flac|m4a)$/i.test(x.name)&&x.private!=='true';});var id=(result&&result.metadata&&result.metadata.identifier)||'';f&&id?('https://archive.org/download/'+id+'/'+f.name.split('/').map(function(p){return encodeURIComponent(p);}).join('/')):'';",
+      "bitrate": "@js:var fs=(result&&result.files)||[];var f=fs.find(function(x){return x&&x.name&&/\\.mp3$/i.test(x.name)&&x.private!=='true';});f&&f.bitrate?String(Math.round(Number(f.bitrate))):'128';"
+    }
+  },
+  {
+    "sourceName": "iTunes Search + LRCLIB",
+    "sourceUrl": "https://itunes.apple.com",
+    "sourceGroup": "国际曲库 / 歌词",
+    "sourceComment": "Apple iTunes 官方搜索（600px 封面 + 30s M4A 试听流）配合 LRCLIB 同步 LRC 歌词",
+    "enabled": true,
+    "weight": 70,
+    "customOrder": 4,
+    "header": {
+      "User-Agent": "xmedia/0.1.0"
+    },
+    "mediaHeader": {
+      "User-Agent": "xmedia/0.1.0"
+    },
+    "concurrentRate": "10/1000",
+    "searchUrl": "https://itunes.apple.com/search?term={{key}}&media=music&entity=song&limit={{limit}}",
+    "exploreUrl": "流行热门::https://itunes.apple.com/search?term=taylor+swift&media=music&entity=song&limit={{limit}}",
+    "supportedQualities": ["256"],
+    "enabledCookieJar": false,
+    "ruleSearch": {
+      "trackList": "$.results[*]",
+      "trackId": "$.trackId",
+      "title": "$.trackName",
+      "artist": "$.artistName",
+      "album": "$.collectionName",
+      "duration": "$.trackTimeMillis",
+      "durationUnit": "ms",
+      "coverUrl": "$.artworkUrl100##100x100bb##600x600bb",
+      "playUrl": "$.previewUrl",
+      "detailUrl": "https://itunes.apple.com/lookup?id={{$.trackId}}",
+      "checkKeyWord": "Shake It Off"
+    },
+    "ruleTrackDetail": {
+      "requestUrl": "https://itunes.apple.com/lookup?id={{trackId}}",
+      "trackId": "$.results[0].trackId",
+      "title": "$.results[0].trackName",
+      "artist": "$.results[0].artistName",
+      "album": "$.results[0].collectionName",
+      "duration": "$.results[0].trackTimeMillis",
+      "durationUnit": "ms",
+      "coverUrl": "$.results[0].artworkUrl100##100x100bb##600x600bb",
+      "playUrl": "$.results[0].previewUrl"
+    },
+    "ruleStream": {
+      "requestUrl": "https://itunes.apple.com/lookup?id={{trackId}}",
+      "streamUrl": "$.results[0].previewUrl",
+      "format": "m4a",
+      "bitrate": "256"
+    },
+    "ruleLyric": {
+      "requestUrl": "https://lrclib.net/api/search?q={{title}} {{artist}}",
+      "lyric": "$[0].syncedLyrics||$[1].syncedLyrics||$[2].syncedLyrics||$[0].plainLyrics",
+      "plainLyric": "$[0].plainLyrics"
+    }
+  }
+]
