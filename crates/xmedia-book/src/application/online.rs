@@ -1644,7 +1644,7 @@ impl BookOnlineService {
         }
 
         self.update_job(job_id, |j| {
-            j.current_chapter_title = Some("正在封装电子书文件…".into());
+            j.current_chapter_title = Some("正在封装书籍文件…".into());
             j.elapsed_ms = started_at.elapsed().as_millis() as u64;
             j.chapters_per_sec = compute_chapters_per_sec(j.processed_chapters, j.elapsed_ms);
         })

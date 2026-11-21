@@ -93,7 +93,7 @@ function formatUnix(secs: number): string {
 function domainBadge(kind: string): string {
   switch (kind) {
     case 'book':
-      return '电子书'
+      return '书籍'
     case 'comic':
       return '漫画'
     case 'music':

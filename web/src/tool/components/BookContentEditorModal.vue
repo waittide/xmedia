@@ -1496,7 +1496,7 @@ onBeforeUnmount(() => {
         class="flex flex-1 flex-col items-center justify-center gap-2.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
       >
         <LuLoader2 class="h-6 w-6 animate-spin text-[var(--md-sys-color-primary)]" />
-        <span>正在加载电子书目录结构与样式…</span>
+        <span>正在加载书籍目录结构与样式…</span>
       </div>
 
       <!-- ==================== 3-COLUMN WORKBENCH BODY ==================== -->

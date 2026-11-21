@@ -78,7 +78,7 @@ const domainFieldLabels = computed(() => {
   switch (props.domain) {
     case 'book':
       return {
-        domainName: '电子书',
+        domainName: '书籍',
         creator: '作者',
         creatorPlaceholder: '多个作者可用逗号分隔（留空保持原值）',
         series: '所属系列',

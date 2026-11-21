@@ -133,7 +133,7 @@ const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>((
       { value: 'book', label: '图书 / 轻小说源' },
     ]
   }
-  return [{ value: 'book', label: '电子书' }]
+  return [{ value: 'book', label: '书籍' }]
 })
 
 const canSearch = computed<boolean>(() =>
