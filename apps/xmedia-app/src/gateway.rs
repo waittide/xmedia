@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Json;
@@ -11,6 +12,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post, put};
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -91,11 +93,74 @@ pub fn format_gateway_url(addr: SocketAddr) -> String {
     }
 }
 
+fn is_blocked_metadata_or_link_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_link_local() // 169.254.0.0/16 (cloud metadata)
+                || v4.is_unspecified()
+                || v4.octets()[0] == 0
+                || v4.is_multicast()
+                || v4.is_broadcast()
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_blocked_metadata_or_link_local(IpAddr::V4(mapped));
+            }
+            let s = v6.segments();
+            v6.is_unspecified() || v6.is_multicast() || (s[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
+    }
+}
+
+/// DNS resolver for remote OPDS/Subsonic sources: allows LAN & loopback self-hosted servers while
+/// pinning DNS results and blocking link-local / cloud metadata endpoints against DNS rebinding.
+#[derive(Debug, Default)]
+struct NoMetadataResolver;
+
+impl Resolve for NoMetadataResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::AddrNotAvailable,
+                        format!("DNS resolution failed for '{host}': {e}"),
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                })?
+                .collect();
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::AddrNotAvailable,
+                    format!("DNS resolution returned no addresses for '{host}'"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            for addr in &addrs {
+                if is_blocked_metadata_or_link_local(addr.ip()) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "blocked link-local or metadata address '{}' for host '{host}'",
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+            let boxed: Addrs = Box::new(addrs.into_iter());
+            Ok(boxed)
+        })
+    }
+}
+
 fn build_remote_http_client(allow_insecure_tls: bool) -> anyhow::Result<reqwest::Client> {
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
+        .dns_resolver(Arc::new(NoMetadataResolver))
         .redirect(same_origin_redirect_policy())
         .danger_accept_invalid_certs(allow_insecure_tls)
         .build()?;
@@ -206,13 +271,16 @@ async fn guard_app_loopback_request(
         .headers()
         .get("sec-fetch-site")
         .and_then(|v| v.to_str().ok())
-        && sec_fetch_site.trim().eq_ignore_ascii_case("cross-site")
     {
-        return app_error(
-            StatusCode::FORBIDDEN,
-            "cross_site_blocked",
-            "Cross-site requests to local gateway endpoints are forbidden",
-        );
+        let sfs = sec_fetch_site.trim();
+        // Block both `cross-site` AND `same-site` (cross-port localhost CSRF).
+        if !sfs.eq_ignore_ascii_case("same-origin") && !sfs.eq_ignore_ascii_case("none") {
+            return app_error(
+                StatusCode::FORBIDDEN,
+                "cross_site_blocked",
+                "Cross-site or cross-port requests to local gateway endpoints are forbidden",
+            );
+        }
     }
 
     if let Some(origin_val) = req.headers().get(ORIGIN) {
@@ -237,7 +305,7 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
         .route("/_app", any(app_not_found))
         .route("/_app/", any(app_not_found))
         .route("/_app/health", get(app_health))
-        .route("/_app/auto-session", get(app_auto_session))
+        .route("/_app/auto-session", post(app_auto_session))
         .route(
             "/_app/remote-sources",
             get(list_remote_sources).post(create_remote_source),
@@ -269,13 +337,14 @@ pub fn build_gateway_router(state: StandaloneGatewayState, xmedia_router: Router
             post(subsonic_import_song),
         )
         .route("/_app/{*path}", any(app_not_found))
+        .with_state(state.clone());
+
+    app_router
+        .merge(xmedia_router)
         .layer(middleware::from_fn_with_state(
-            state.clone(),
+            state,
             guard_app_loopback_request,
         ))
-        .with_state(state);
-
-    app_router.merge(xmedia_router)
 }
 
 pub async fn start_gateway(
@@ -581,7 +650,21 @@ async fn app_health(State(state): State<StandaloneGatewayState>) -> Response {
     )
 }
 
-async fn app_auto_session(State(state): State<StandaloneGatewayState>) -> Response {
+async fn app_auto_session(
+    State(state): State<StandaloneGatewayState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let valid_app_header = headers
+        .get(APP_HEADER_NAME)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case(APP_HEADER_VALUE));
+    if !valid_app_header {
+        return app_error(
+            StatusCode::FORBIDDEN,
+            "missing_app_header",
+            "Auto-session requires the X-XMedia-App: standalone header",
+        );
+    }
     match state.local_engine.issue_auto_session().await {
         Ok(session) => {
             let cookie = state.local_engine.session_cookie_header(&session.token);

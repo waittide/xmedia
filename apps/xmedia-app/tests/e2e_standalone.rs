@@ -258,9 +258,17 @@ async fn e2e_standalone_local_engine_opds_and_subsonic_roundtrip() {
     assert_eq!(health.remote_source_count, 0);
     assert_eq!(health.enabled_modules.len(), 4);
 
-    // 2. Zero-login auto-session works immediately with no remote sources configured
-    let session_resp = client
+    // 2. Zero-login auto-session works via POST (and rejects GET)
+    let get_rejected = client
         .get(format!("{}/_app/auto-session", gateway.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_rejected.status(), StatusCode::METHOD_NOT_ALLOWED);
+
+    let session_resp = client
+        .post(format!("{}/_app/auto-session", gateway.url))
+        .header(APP_HEADER_NAME, APP_HEADER_VALUE)
         .send()
         .await
         .unwrap();
@@ -956,20 +964,28 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
         .build()
         .unwrap();
 
-    // 1. Standalone gateway disables permissive CORS on /api/v1/*
+    // 1. Standalone gateway disables permissive CORS and rejects cross-origin requests on /api/v1/*
     let cors_probe = client
         .get(format!("{}/api/v1/system/capabilities", gateway.url))
         .header(ORIGIN, "https://evil.example")
         .send()
         .await
         .unwrap();
-    assert_eq!(cors_probe.status(), StatusCode::OK);
+    assert_eq!(cors_probe.status(), StatusCode::FORBIDDEN);
     assert!(
         cors_probe
             .headers()
             .get(ACCESS_CONTROL_ALLOW_ORIGIN)
             .is_none()
     );
+
+    // 1b. POST /_app/auto-session without X-XMedia-App: standalone header is rejected
+    let missing_header_session = client
+        .post(format!("{}/_app/auto-session", gateway.url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing_header_session.status(), StatusCode::FORBIDDEN);
 
     // 2. /_app/* enforces Host, Origin, and Sec-Fetch-Site guards
     let bad_host = client
@@ -981,7 +997,7 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
     assert_eq!(bad_host.status(), StatusCode::FORBIDDEN);
 
     let bad_origin = client
-        .get(format!("{}/_app/auto-session", gateway.url))
+        .post(format!("{}/_app/auto-session", gateway.url))
         .header(ORIGIN, "https://evil.example")
         .send()
         .await
@@ -989,7 +1005,7 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
     assert_eq!(bad_origin.status(), StatusCode::FORBIDDEN);
 
     let bad_port_origin = client
-        .get(format!("{}/_app/auto-session", gateway.url))
+        .post(format!("{}/_app/auto-session", gateway.url))
         .header(ORIGIN, "http://127.0.0.1:1")
         .send()
         .await
@@ -997,12 +1013,28 @@ async fn e2e_security_guards_ssrf_proxy_xss_redirect_and_error_redaction() {
     assert_eq!(bad_port_origin.status(), StatusCode::FORBIDDEN);
 
     let cross_site = client
-        .get(format!("{}/_app/auto-session", gateway.url))
+        .post(format!("{}/_app/auto-session", gateway.url))
         .header("sec-fetch-site", "cross-site")
         .send()
         .await
         .unwrap();
     assert_eq!(cross_site.status(), StatusCode::FORBIDDEN);
+
+    let same_site_cross_port = client
+        .post(format!("{}/_app/auto-session", gateway.url))
+        .header("sec-fetch-site", "same-site")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_site_cross_port.status(), StatusCode::FORBIDDEN);
+
+    let same_site_api = client
+        .get(format!("{}/api/v1/system/capabilities", gateway.url))
+        .header("sec-fetch-site", "same-site")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same_site_api.status(), StatusCode::FORBIDDEN);
 
     let same_origin_ok = client
         .get(format!("{}/_app/health", gateway.url))

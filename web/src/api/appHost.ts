@@ -162,14 +162,44 @@ function isJsonResponse(res: Response): boolean {
   return contentType.toLowerCase().includes('application/json')
 }
 
+const APP_HOST_TIMEOUT_MS = 15_000
+
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit = {},
+  timeoutMs = APP_HOST_TIMEOUT_MS,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const upstreamSignal = init.signal
+  const onUpstreamAbort = () => controller.abort()
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      controller.abort()
+    } else {
+      upstreamSignal.addEventListener('abort', onUpstreamAbort, { once: true })
+    }
+  }
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    })
+  } finally {
+    clearTimeout(timer)
+    upstreamSignal?.removeEventListener('abort', onUpstreamAbort)
+  }
+}
+
 async function requestAppJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
+  headers.set('X-XMedia-App', 'standalone')
   if (init.body && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
-  const res = await fetch(`/_app${path}`, {
+  const res = await fetchWithTimeout(`/_app${path}`, {
     ...init,
     headers,
     cache: 'no-store',
@@ -197,6 +227,10 @@ async function requestAppJson<T>(path: string, init: RequestInit = {}): Promise<
     throw new Error(message)
   }
 
+  if (res.status === 204) {
+    return undefined as T
+  }
+
   if (!isJsonResponse(res)) {
     throw new Error('Unexpected non-JSON response from standalone host')
   }
@@ -206,11 +240,15 @@ async function requestAppJson<T>(path: string, init: RequestInit = {}): Promise<
 
 export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
   try {
-    const res = await fetch('/_app/health', {
-      method: 'GET',
-      headers: { Accept: 'application/json' },
-      cache: 'no-store',
-    })
+    const res = await fetchWithTimeout(
+      '/_app/health',
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json', 'X-XMedia-App': 'standalone' },
+        cache: 'no-store',
+      },
+      5_000,
+    )
     if (!res.ok || !isJsonResponse(res)) {
       return null
     }
@@ -235,7 +273,7 @@ export async function probeAppHost(): Promise<StandaloneHealthResponse | null> {
 export const appHostApi = {
   probe: probeAppHost,
 
-  fetchAutoSession: () => requestAppJson<AuthSessionDto>('/auto-session', { method: 'GET' }),
+  fetchAutoSession: () => requestAppJson<AuthSessionDto>('/auto-session', { method: 'POST' }),
 
   listRemoteSources: () =>
     requestAppJson<RemoteSourcesListResponse>('/remote-sources', { method: 'GET' }),
