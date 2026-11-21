@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 #[cfg(feature = "server")]
 use std::sync::Arc;
+use std::sync::RwLock;
 
 use axum::Json;
 use axum::body::Body;
@@ -547,12 +548,66 @@ impl Drop for TempUploadFile {
     }
 }
 
+static CONFIGURED_TEMP_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+/// Ensures `dir` exists and removes any leftover `*.tmp` files from previous interrupted runs.
+pub fn prepare_temp_dir(dir: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+    Ok(dir.to_path_buf())
+}
+
+/// Configures the process-wide writable temporary directory used for multipart uploads
+/// (e.g. `<data_dir>/tmp`), creating it and cleaning up stale `*.tmp` files.
+pub fn configure_temp_dir(dir: PathBuf) -> std::io::Result<PathBuf> {
+    let prepared = prepare_temp_dir(&dir)?;
+    if let Ok(mut guard) = CONFIGURED_TEMP_DIR.write() {
+        *guard = Some(prepared.clone());
+    }
+    Ok(prepared)
+}
+
+/// Returns the configured application temporary directory if available and existing,
+/// otherwise falls back to `std::env::temp_dir()`.
+pub fn resolve_temp_dir() -> PathBuf {
+    if let Ok(guard) = CONFIGURED_TEMP_DIR.read()
+        && let Some(ref dir) = *guard
+        && dir.is_dir()
+    {
+        return dir.clone();
+    }
+    std::env::temp_dir()
+}
+
 /// Streams an Axum multipart `Field` directly into a temporary file chunk-by-chunk,
 /// enforcing `max_bytes` incrementally so large uploads never buffer in RAM.
 pub async fn stream_multipart_field_to_temp_file(
     field: &mut Field<'_>,
     max_bytes: u64,
     ext_hint: Option<&str>,
+) -> ApiResult<TempUploadFile> {
+    let dir = resolve_temp_dir();
+    stream_multipart_field_to_temp_file_in_dir(field, max_bytes, ext_hint, &dir).await
+}
+
+/// Streams an Axum multipart `Field` directly into a temporary file inside `temp_dir`.
+pub async fn stream_multipart_field_to_temp_file_in_dir(
+    field: &mut Field<'_>,
+    max_bytes: u64,
+    ext_hint: Option<&str>,
+    temp_dir: &Path,
 ) -> ApiResult<TempUploadFile> {
     let clean_ext = ext_hint
         .map(|e| {
@@ -568,7 +623,12 @@ pub async fn stream_multipart_field_to_temp_file(
         Some(ext) => format!("xmedia_upload_{}.{ext}.tmp", Uuid::now_v7()),
         None => format!("xmedia_upload_{}.tmp", Uuid::now_v7()),
     };
-    let path = std::env::temp_dir().join(file_name);
+    tokio::fs::create_dir_all(temp_dir).await.map_err(|e| {
+        ApiError(DomainError::Storage(format!(
+            "failed to prepare temp upload directory: {e}"
+        )))
+    })?;
+    let path = temp_dir.join(file_name);
     let mut file = tokio::fs::File::create(&path).await.map_err(|e| {
         ApiError(DomainError::Storage(format!(
             "failed to create temp upload file: {e}"
@@ -673,5 +733,22 @@ mod tests {
             assert!(!guard.is_empty());
         }
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn prepare_and_configure_temp_dir_cleans_stale_tmp_only() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tmp_sub = dir.path().join("tmp");
+        std::fs::create_dir_all(&tmp_sub).unwrap();
+        let stale = tmp_sub.join("leftover.tmp");
+        let keep = tmp_sub.join("keep.txt");
+        std::fs::write(&stale, b"stale").unwrap();
+        std::fs::write(&keep, b"keep").unwrap();
+
+        let prepared = configure_temp_dir(tmp_sub.clone()).unwrap();
+        assert_eq!(prepared, tmp_sub);
+        assert!(!stale.exists(), "stale .tmp files should be removed");
+        assert!(keep.exists(), "non-.tmp files should be preserved");
+        assert_eq!(resolve_temp_dir(), tmp_sub);
     }
 }

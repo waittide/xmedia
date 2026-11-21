@@ -901,8 +901,10 @@ mod tests {
 
     #[test]
     fn user_preferences_normalize_clamps_numeric_and_layout_bounds() {
-        let mut prefs = UserPreferences::default();
-        prefs.light_preset = "   ".into();
+        let mut prefs = UserPreferences {
+            light_preset: "   ".into(),
+            ..Default::default()
+        };
         prefs.book.font_family = " ".into();
         prefs.book.font_size = 200;
         prefs.book.line_height = f32::NAN;

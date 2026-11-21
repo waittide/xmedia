@@ -150,6 +150,18 @@ mod tests {
         let jwt_user = auth.authenticate_jwt(&session.token).await.unwrap();
         assert_eq!(jwt_user.username, "admin");
 
+        // Local admin session issuance works without password and survives password changes
+        let local_session = auth.issue_local_admin_session(Some("admin")).await.unwrap();
+        assert_eq!(local_session.user.username, "admin");
+        let verified_local = auth.authenticate_jwt(&local_session.token).await.unwrap();
+        assert_eq!(verified_local.id, jwt_user.id);
+
+        let fallback_session = auth
+            .issue_local_admin_session(Some("missing-username"))
+            .await
+            .unwrap();
+        assert_eq!(fallback_session.user.id, jwt_user.id);
+
         let basic_user = auth
             .verify_basic_credentials("admin", "password123")
             .await

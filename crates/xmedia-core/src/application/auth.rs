@@ -108,6 +108,35 @@ impl AuthService {
         self.issue_session(user)
     }
 
+    /// Issues a session directly for an active local administrator without password verification.
+    /// Intended strictly for the in-process standalone loopback client gateway so local
+    /// password changes or identity file recovery never break auto-login and repeated
+    /// imports avoid redundant Argon2 hashing.
+    pub async fn issue_local_admin_session(
+        &self,
+        preferred_username: Option<&str>,
+    ) -> DomainResult<AuthSessionDto> {
+        if let Some(username) = preferred_username.map(str::trim).filter(|u| !u.is_empty())
+            && let Some(user) = self.users.find_by_username(username).await?
+            && user.is_active
+            && user.role.is_admin()
+        {
+            return self.issue_session(user);
+        }
+
+        let admin = self
+            .users
+            .list_all()
+            .await?
+            .into_iter()
+            .find(|u| u.is_active && u.role.is_admin())
+            .ok_or_else(|| {
+                DomainError::NotFound("no active local administrator account found".into())
+            })?;
+
+        self.issue_session(admin)
+    }
+
     pub async fn authenticate_jwt(&self, raw_token: &str) -> DomainResult<User> {
         let claims = self.tokens.verify_token(raw_token)?;
         let user = self
