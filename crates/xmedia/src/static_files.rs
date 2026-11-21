@@ -50,6 +50,8 @@ pub async fn serve_spa(State(state): State<GatewayState>, uri: Uri) -> Response 
         || req_path.starts_with("/opds/")
         || req_path.starts_with("/rest/")
         || req_path == "/rest"
+        || req_path.starts_with("/_app/")
+        || req_path == "/_app"
     {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
     }

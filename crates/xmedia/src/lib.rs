@@ -50,6 +50,13 @@ pub struct XMediaApp {
 
 impl XMediaApp {
     pub async fn connect_and_init(cfg: XMediaConfig) -> anyhow::Result<Self> {
+        Self::connect_and_init_with_cors(cfg, true).await
+    }
+
+    pub async fn connect_and_init_with_cors(
+        cfg: XMediaConfig,
+        allow_permissive_cors: bool,
+    ) -> anyhow::Result<Self> {
         if cfg.secret == DEFAULT_DEV_SECRET || cfg.secret.trim().is_empty() {
             tracing::warn!(
                 "XMEDIA_SECRET is set to the default development value; please configure a strong unique XMEDIA_SECRET in production"
@@ -59,6 +66,9 @@ impl XMediaApp {
         std::fs::create_dir_all(&cfg.data_dir).with_context(|| {
             format!("failed to create data directory {}", cfg.data_dir.display())
         })?;
+        if let Err(err) = xmedia_core::http::configure_temp_dir(cfg.data_dir.join("tmp")) {
+            tracing::warn!(error = %err, "failed to prepare application temp directory");
+        }
         ensure_sqlite_parent_dir(&cfg.database_url).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
         let mut models = ModelSet::new();
@@ -275,11 +285,14 @@ impl XMediaApp {
 
         let spa_service = axum::routing::get(static_files::serve_spa).with_state(gateway_state);
 
-        let router = Router::new()
+        let mut router = Router::new()
             .nest("/api/v1", merged_api_v1)
             .merge(root_protocols)
-            .fallback_service(spa_service)
-            .layer(CorsLayer::permissive())
+            .fallback_service(spa_service);
+        if allow_permissive_cors {
+            router = router.layer(CorsLayer::permissive());
+        }
+        let router = router
             .layer(CompressionLayer::new().compress_when(compression_predicate))
             .layer(TraceLayer::new_for_http());
 
@@ -523,5 +536,59 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(data_line).unwrap();
         assert_eq!(parsed["event"], "media_changed");
         assert_eq!(parsed["media_kind"], "book");
+    }
+
+    #[tokio::test]
+    async fn disabled_permissive_cors_and_app_path_spa_exclusion() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("xmedia_nocors.db");
+        let app_instance = XMediaApp::connect_and_init_with_cors(
+            XMediaConfig {
+                data_dir: tmp.path().to_path_buf(),
+                database_url: format!("sqlite:{}", db_path.display()),
+                secret: "no-cors-test-secret".into(),
+                jwt_ttl_secs: 3600,
+                ffmpeg_bin: "__missing_ffmpeg__".into(),
+                external_web_dir: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+
+        let app = app_instance.router;
+
+        let cors_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/system/capabilities")
+                    .header(header::ORIGIN, "https://evil.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cors_res.status(), StatusCode::OK);
+        assert!(
+            cors_res
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .is_none(),
+            "Access-Control-Allow-Origin must not be set when permissive CORS is disabled"
+        );
+
+        for path in ["/_app", "/_app/", "/_app/unknown"] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "SPA fallback must not serve HTML for {path}"
+            );
+        }
     }
 }
