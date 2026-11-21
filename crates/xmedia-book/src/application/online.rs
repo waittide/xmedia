@@ -661,15 +661,52 @@ impl BookOnlineService {
         if !actor.role.is_admin() {
             rows.retain(|r| r.enabled);
         }
-        rows.sort_by(|a, b| {
-            b.enabled
-                .cmp(&a.enabled)
-                .then_with(|| b.weight.cmp(&a.weight))
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        rows.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
         Ok(rows
             .iter()
             .map(|r| Self::record_to_summary(r, actor.role.is_admin()))
+            .collect())
+    }
+
+    pub async fn reorder_sources(
+        &self,
+        actor: &User,
+        ordered_ids: Vec<Uuid>,
+    ) -> DomainResult<Vec<BookSourceSummaryDto>> {
+        require_admin(actor)?;
+        let mut rows = self.sources.list_all().await?;
+        rows.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+
+        let mut by_id: HashMap<Uuid, BookSourceRecord> =
+            rows.into_iter().map(|r| (r.id, r)).collect();
+
+        let mut final_order: Vec<BookSourceRecord> = Vec::with_capacity(by_id.len());
+        for id in ordered_ids {
+            if let Some(rec) = by_id.remove(&id) {
+                final_order.push(rec);
+            }
+        }
+        // Preserve relative order of any sources not included in `ordered_ids`
+        if !by_id.is_empty() {
+            let mut rest: Vec<BookSourceRecord> = by_id.into_values().collect();
+            rest.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
+            final_order.extend(rest);
+        }
+
+        let total = final_order.len() as i64;
+        let now = Timestamp::now();
+        for (idx, rec) in final_order.iter_mut().enumerate() {
+            let target_weight = (total - idx as i64) * 10;
+            if rec.weight != target_weight {
+                rec.weight = target_weight;
+                rec.updated_at = now;
+                self.sources.save(rec).await?;
+            }
+        }
+
+        Ok(final_order
+            .iter()
+            .map(|r| Self::record_to_summary(r, true))
             .collect())
     }
 
@@ -4227,5 +4264,33 @@ mod tests {
         );
 
         server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn reorder_sources_persists_custom_order_across_enabled_and_disabled() {
+        let (_tmp, admin, online_svc) = setup_test_online_service().await;
+        let batch = serde_json::json!([
+            { "bookSourceName": "书源A", "bookSourceUrl": "https://a.example", "enabled": true },
+            { "bookSourceName": "书源B", "bookSourceUrl": "https://b.example", "enabled": false },
+            { "bookSourceName": "书源C", "bookSourceUrl": "https://c.example", "enabled": true }
+        ])
+        .to_string();
+        let imported = online_svc.import_sources(&admin, &batch).await.unwrap();
+        let id_a = imported.sources[0].id;
+        let id_b = imported.sources[1].id;
+        let id_c = imported.sources[2].id;
+
+        // Place disabled source B at the top, followed by C, then A
+        let reordered = online_svc
+            .reorder_sources(&admin, vec![id_b, id_c, id_a])
+            .await
+            .unwrap();
+        let names: Vec<&str> = reordered.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["书源B", "书源C", "书源A"]);
+
+        // Subsequent list_sources must return the exact persisted order
+        let listed = online_svc.list_sources(&admin).await.unwrap();
+        let listed_names: Vec<&str> = listed.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(listed_names, vec!["书源B", "书源C", "书源A"]);
     }
 }

@@ -293,6 +293,12 @@ export const onlineBookApi = {
       body: JSON.stringify({ raw_json: rawJson }),
     }),
 
+  reorderSources: (orderedIds: string[]): Promise<BookSourceSummaryDto[]> =>
+    requestJson('/book/sources/reorder', {
+      method: 'POST',
+      body: JSON.stringify({ ordered_ids: orderedIds }),
+    }),
+
   updateSource: (
     id: string,
     patch: {

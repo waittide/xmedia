@@ -30,6 +30,7 @@ pub fn router() -> Router<BookHttpState> {
     Router::new()
         // Book source management
         .route("/sources", get(list_sources))
+        .route("/sources/reorder", post(reorder_sources))
         .route(
             "/sources/import",
             post(import_sources).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
@@ -78,6 +79,11 @@ pub fn router() -> Router<BookHttpState> {
 #[derive(Debug, Deserialize)]
 struct ImportSourcesRequest {
     raw_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReorderSourcesRequest {
+    ordered_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -150,6 +156,19 @@ async fn import_sources(
         .import_sources(&user, &req.raw_json)
         .await?;
     Ok(Json(report))
+}
+
+async fn reorder_sources(
+    State(state): State<BookHttpState>,
+    WebAuth(user): WebAuth,
+    Json(req): Json<ReorderSourcesRequest>,
+) -> ApiResult<Json<Vec<BookSourceSummaryDto>>> {
+    let list = state
+        .services
+        .online
+        .reorder_sources(&user, req.ordered_ids)
+        .await?;
+    Ok(Json(list))
 }
 
 async fn update_source(

@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   LuArrowDownToLine,
   LuArrowUpToLine,
   LuDownload,
   LuFlaskConical,
+  LuGripVertical,
   LuKeyRound,
   LuLoader2,
   LuMoreVertical,
@@ -47,21 +48,46 @@ const statusFilter = ref<'all' | 'enabled' | 'disabled'>('all')
 const groupFilter = ref<string>('__all__')
 
 const busyId = ref<string | null>(null)
+const reordering = ref(false)
 const loginModalSource = ref<BookSourceSummaryDto | null>(null)
 const editSheetSource = ref<BookSourceSummaryDto | null>(null)
 const debugSheetSource = ref<BookSourceSummaryDto | null>(null)
+
+// Local optimistic list so drag-and-drop updates immediately without visual flicker
+const localSources = ref<BookSourceSummaryDto[]>([...props.sources])
+watch(
+  () => props.sources,
+  (next) => {
+    localSources.value = [...next]
+  },
+  { deep: false },
+)
+
+// Drag-and-drop state
+const draggingId = ref<string | null>(null)
+const dropTargetId = ref<string | null>(null)
+const dropPosition = ref<'before' | 'after'>('before')
+
+const canReorder = computed(
+  () =>
+    !searchQuery.value.trim() &&
+    statusFilter.value === 'all' &&
+    groupFilter.value === '__all__' &&
+    localSources.value.length > 1 &&
+    !reordering.value,
+)
 
 // Floating MD3 overflow menu state
 const openMenuSourceId = ref<string | null>(null)
 const menuPos = ref<{ top: number; left: number }>({ top: 0, left: 0 })
 
 const openMenuSource = computed(
-  () => props.sources.find((s) => s.id === openMenuSourceId.value) ?? null,
+  () => localSources.value.find((s) => s.id === openMenuSourceId.value) ?? null,
 )
 
 const availableGroups = computed(() => {
   const set = new Set<string>()
-  for (const s of props.sources) {
+  for (const s of localSources.value) {
     const g = s.group_name.trim()
     if (g) set.add(g)
   }
@@ -70,7 +96,7 @@ const availableGroups = computed(() => {
 
 const filteredSources = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
-  return props.sources.filter((s) => {
+  return localSources.value.filter((s) => {
     if (statusFilter.value === 'enabled' && !s.enabled) return false
     if (statusFilter.value === 'disabled' && s.enabled) return false
     if (groupFilter.value !== '__all__' && s.group_name.trim() !== groupFilter.value) return false
@@ -131,6 +157,93 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', onGlobalScrollOrResize)
   window.removeEventListener('scroll', onGlobalScrollOrResize, true)
 })
+
+async function persistOrder(nextList: BookSourceSummaryDto[], toastMsg?: string): Promise<void> {
+  const prev = [...localSources.value]
+  localSources.value = nextList
+  reordering.value = true
+  try {
+    const saved = await onlineBookApi.reorderSources(nextList.map((s) => s.id))
+    localSources.value = saved
+    if (toastMsg) snackbar.show({ message: toastMsg })
+    emit('refresh')
+  } catch (err) {
+    localSources.value = prev
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    reordering.value = false
+  }
+}
+
+function handleDragStart(src: BookSourceSummaryDto, ev: DragEvent): void {
+  if (!canReorder.value) {
+    ev.preventDefault()
+    return
+  }
+  closeMenu()
+  draggingId.value = src.id
+  dropTargetId.value = null
+  if (ev.dataTransfer) {
+    ev.dataTransfer.effectAllowed = 'move'
+    ev.dataTransfer.setData('text/plain', src.id)
+  }
+}
+
+function handleDragOver(src: BookSourceSummaryDto, ev: DragEvent): void {
+  if (!draggingId.value || draggingId.value === src.id || !canReorder.value) return
+  ev.preventDefault()
+  if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move'
+  const el = ev.currentTarget as HTMLElement | null
+  if (el) {
+    const rect = el.getBoundingClientRect()
+    const midY = rect.top + rect.height / 2
+    dropPosition.value = ev.clientY < midY ? 'before' : 'after'
+  }
+  dropTargetId.value = src.id
+}
+
+function handleDragLeave(src: BookSourceSummaryDto, ev: DragEvent): void {
+  const el = ev.currentTarget as HTMLElement | null
+  if (el && ev.relatedTarget instanceof Node && el.contains(ev.relatedTarget)) {
+    return
+  }
+  if (dropTargetId.value === src.id) {
+    dropTargetId.value = null
+  }
+}
+
+async function handleDrop(targetSrc: BookSourceSummaryDto, ev: DragEvent): Promise<void> {
+  ev.preventDefault()
+  const fromId = draggingId.value || ev.dataTransfer?.getData('text/plain') || null
+  const pos = dropPosition.value
+  draggingId.value = null
+  dropTargetId.value = null
+
+  if (!fromId || fromId === targetSrc.id || !canReorder.value) return
+  const list = [...localSources.value]
+  const fromIdx = list.findIndex((s) => s.id === fromId)
+  if (fromIdx < 0) return
+
+  const [moved] = list.splice(fromIdx, 1)
+  if (!moved) return
+  let targetIdx = list.findIndex((s) => s.id === targetSrc.id)
+  if (targetIdx < 0) return
+  if (pos === 'after') targetIdx += 1
+  list.splice(targetIdx, 0, moved)
+
+  const unchanged = list.every((s, idx) => s.id === localSources.value[idx]?.id)
+  if (unchanged) return
+
+  await persistOrder(list)
+}
+
+function handleDragEnd(): void {
+  draggingId.value = null
+  dropTargetId.value = null
+}
 
 function formatSourceHost(rawUrl: string): string {
   try {
@@ -208,27 +321,12 @@ async function handleToggleEnabled(src: BookSourceSummaryDto, nextVal: boolean):
 
 async function handlePinSource(src: BookSourceSummaryDto, position: 'top' | 'bottom'): Promise<void> {
   closeMenu()
-  const weights = props.sources.map((s) => s.weight)
-  const targetWeight =
-    position === 'top'
-      ? (weights.length > 0 ? Math.max(...weights) : 0) + 10
-      : (weights.length > 0 ? Math.min(...weights) : 0) - 10
-
-  busyId.value = src.id
-  try {
-    await onlineBookApi.updateSource(src.id, { weight: targetWeight })
-    snackbar.show({
-      message: position === 'top' ? `已置顶「${src.name}」` : `已置底「${src.name}」`,
-    })
-    emit('refresh')
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    busyId.value = null
-  }
+  const rest = localSources.value.filter((s) => s.id !== src.id)
+  const nextList = position === 'top' ? [src, ...rest] : [...rest, src]
+  await persistOrder(
+    nextList,
+    position === 'top' ? `已置顶「${src.name}」` : `已置底「${src.name}」`,
+  )
 }
 
 function handleOpenLogin(src: BookSourceSummaryDto): void {
@@ -276,6 +374,12 @@ async function handleDeleteSource(src: BookSourceSummaryDto): Promise<void> {
 
 function handleSourceUpdated(updated: BookSourceSummaryDto): void {
   loginModalSource.value = updated
+  emit('refresh')
+}
+
+function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
+  editSheetSource.value = null
+  debugSheetSource.value = updated
   emit('refresh')
 }
 </script>
@@ -331,51 +435,60 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
       </div>
     </div>
 
-    <!-- Filter Chips (Status + Groups) -->
-    <div v-if="props.sources.length > 0" class="flex flex-wrap items-center gap-1.5">
-      <button
-        type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
-        @click="
-          statusFilter = 'all';
-          groupFilter = '__all__'
-        "
-      >
-        全部 ({{ props.sources.length }})
-      </button>
-      <button
-        type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
-        @click="statusFilter = statusFilter === 'enabled' ? 'all' : 'enabled'"
-      >
-        已启用 ({{ props.sources.filter((s) => s.enabled).length }})
-      </button>
-      <button
-        type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
-        @click="statusFilter = statusFilter === 'disabled' ? 'all' : 'disabled'"
-      >
-        已禁用 ({{ props.sources.filter((s) => !s.enabled).length }})
-      </button>
+    <!-- Filter Chips (Status + Groups + Reorder Hint) -->
+    <div v-if="localSources.length > 0" class="flex flex-wrap items-center justify-between gap-2">
+      <div class="flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+          :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
+          @click="
+            statusFilter = 'all';
+            groupFilter = '__all__'
+          "
+        >
+          全部 ({{ localSources.length }})
+        </button>
+        <button
+          type="button"
+          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+          :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
+          @click="statusFilter = statusFilter === 'enabled' ? 'all' : 'enabled'"
+        >
+          已启用 ({{ localSources.filter((s) => s.enabled).length }})
+        </button>
+        <button
+          type="button"
+          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+          :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
+          @click="statusFilter = statusFilter === 'disabled' ? 'all' : 'disabled'"
+        >
+          已禁用 ({{ localSources.filter((s) => !s.enabled).length }})
+        </button>
+
+        <span
+          v-if="availableGroups.length > 0"
+          class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
+        />
+
+        <button
+          v-for="grp in availableGroups"
+          :key="grp"
+          type="button"
+          class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+          :class="groupFilter === grp ? 'md-chip-selected' : ''"
+          @click="groupFilter = groupFilter === grp ? '__all__' : grp"
+        >
+          {{ grp }}
+        </button>
+      </div>
 
       <span
-        v-if="availableGroups.length > 0"
-        class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
-      />
-
-      <button
-        v-for="grp in availableGroups"
-        :key="grp"
-        type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
-        :class="groupFilter === grp ? 'md-chip-selected' : ''"
-        @click="groupFilter = groupFilter === grp ? '__all__' : grp"
+        v-if="localSources.length > 1"
+        class="text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
       >
-        {{ grp }}
-      </button>
+        {{ canReorder ? '拖动左侧手柄可调整顺序' : '清除筛选后可拖动排序' }}
+      </span>
     </div>
 
     <!-- Paste Import Box -->
@@ -417,7 +530,7 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
 
     <!-- Empty State -->
     <div
-      v-if="props.sources.length === 0"
+      v-if="localSources.length === 0"
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center"
     >
       <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">尚未导入任何书源</p>
@@ -445,48 +558,82 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
       </button>
     </div>
 
-    <!-- Minimal MD3 Source Cards (inspired by legado-with-MD3) -->
+    <!-- Minimal MD3 Draggable Source Cards -->
     <div v-else class="space-y-2">
       <div
         v-for="src in filteredSources"
         :key="src.id"
-        class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-4 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]/75"
-        :class="!src.enabled ? 'opacity-65' : ''"
+        :draggable="canReorder"
+        class="relative flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-3.5 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]/75"
+        :class="[
+          !src.enabled ? 'opacity-65' : '',
+          draggingId === src.id ? 'opacity-40 ring-1 ring-[var(--md-sys-color-primary)]/50' : '',
+        ]"
+        @dragstart="handleDragStart(src, $event)"
+        @dragover="handleDragOver(src, $event)"
+        @dragleave="handleDragLeave(src, $event)"
+        @drop="handleDrop(src, $event)"
+        @dragend="handleDragEnd"
       >
-        <!-- Left: Source Name + Status Dot & Compact Meta -->
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-              {{ src.name }}
-            </span>
-            <span
-              v-if="src.group_name"
-              class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ src.group_name }}
-            </span>
+        <!-- Drop Insertion Indicator -->
+        <div
+          v-if="dropTargetId === src.id && dropPosition === 'before'"
+          class="pointer-events-none absolute -top-1.5 right-3 left-3 h-0.5 rounded-full bg-[var(--md-sys-color-primary)]"
+        />
+        <div
+          v-if="dropTargetId === src.id && dropPosition === 'after'"
+          class="pointer-events-none absolute right-3 -bottom-1.5 left-3 h-0.5 rounded-full bg-[var(--md-sys-color-primary)]"
+        />
+
+        <!-- Left: Drag Handle + Source Name + Status Dot & Compact Meta -->
+        <div class="flex min-w-0 flex-1 items-center gap-2.5">
+          <div
+            v-if="localSources.length > 1"
+            class="flex h-7 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)]/60 transition"
+            :class="
+              canReorder
+                ? 'cursor-grab hover:text-[var(--md-sys-color-on-surface)] active:cursor-grabbing'
+                : 'cursor-not-allowed opacity-35'
+            "
+            :title="canReorder ? '拖动调整书源顺序' : '清除筛选后可拖动排序'"
+          >
+            <LuGripVertical class="h-4 w-4" />
           </div>
 
-          <div class="mt-1.5 flex items-center gap-2">
-            <span
-              class="h-2.5 w-2.5 shrink-0 rounded-full"
-              :class="statusDotClass(src)"
-              :title="statusDotTitle(src)"
-            />
-            <span class="truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              {{ formatSourceHost(src.source_url) }}
-            </span>
-            <span
-              v-if="src.cookie_hosts.length > 0"
-              class="shrink-0 text-[10px] text-[var(--md-sys-color-on-surface-variant)]/85"
-            >
-              · Cookie({{ src.cookie_hosts.length }})
-            </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <span class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+                {{ src.name }}
+              </span>
+              <span
+                v-if="src.group_name"
+                class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+              >
+                {{ src.group_name }}
+              </span>
+            </div>
+
+            <div class="mt-1.5 flex items-center gap-2">
+              <span
+                class="h-2.5 w-2.5 shrink-0 rounded-full"
+                :class="statusDotClass(src)"
+                :title="statusDotTitle(src)"
+              />
+              <span class="truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                {{ formatSourceHost(src.source_url) }}
+              </span>
+              <span
+                v-if="src.cookie_hosts.length > 0"
+                class="shrink-0 text-[10px] text-[var(--md-sys-color-on-surface-variant)]/85"
+              >
+                · Cookie({{ src.cookie_hosts.length }})
+              </span>
+            </div>
           </div>
         </div>
 
         <!-- Right: Switch + Edit + Overflow Menu -->
-        <div class="flex shrink-0 items-center gap-1.5">
+        <div class="flex shrink-0 items-center gap-1.5" @mousedown.stop>
           <AppSwitch
             :model-value="src.enabled"
             :disabled="busyId === src.id"
@@ -619,6 +766,7 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
       :source="editSheetSource"
       @close="editSheetSource = null"
       @saved="emit('refresh')"
+      @saved-and-debug="handleSavedAndDebug"
     />
 
     <OnlineSourceDebugSheet
