@@ -135,10 +135,16 @@ export const usePlayerStore = defineStore('player', () => {
 
   audio.addEventListener('ended', () => {
     if (playMode.value === 'loop_one' && currentTrack.value) {
+      scrobbledCurrent = false
       void loadAndPlayCurrent(0, true)
       return
     }
     playNext()
+  })
+
+  audio.addEventListener('error', () => {
+    if (!audio.src || !currentTrack.value) return
+    isPlaying.value = false
   })
 
   function updateMediaSession(track: TrackDto | null): void {
@@ -146,6 +152,10 @@ export const usePlayerStore = defineStore('player', () => {
     try {
       if (!track) {
         navigator.mediaSession.metadata = null
+        navigator.mediaSession.setActionHandler('play', null)
+        navigator.mediaSession.setActionHandler('pause', null)
+        navigator.mediaSession.setActionHandler('previoustrack', null)
+        navigator.mediaSession.setActionHandler('nexttrack', null)
         return
       }
       const relCover = track.cover_key ? buildCoverUrl(track.id, 512) : null
@@ -218,6 +228,10 @@ export const usePlayerStore = defineStore('player', () => {
     shufflePool = indices
   }
 
+  let loadSeq = 0
+  let queueEpoch = 0
+  let queueDirty = false
+
   async function loadAndPlayCurrent(
     startAtSecs = 0,
     autoPlay = true,
@@ -225,6 +239,7 @@ export const usePlayerStore = defineStore('player', () => {
   ): Promise<void> {
     const track = currentTrack.value
     if (!track) return
+    const seq = ++loadSeq
 
     syncAudioGain()
     const requestedProfile = overrideProfile ?? transcodeProfile.value
@@ -239,6 +254,7 @@ export const usePlayerStore = defineStore('player', () => {
     const useServerOffset = needsTranscode && startAtSecs > 0
     streamOffsetSecs.value = useServerOffset ? Math.floor(startAtSecs) : 0
     currentTimeSecs.value = startAtSecs
+    rawAudioDuration.value = 0
     bufferedRatio.value = 0
 
     clearPendingSeek()
@@ -249,7 +265,7 @@ export const usePlayerStore = defineStore('player', () => {
       const targetTrackId = track.id
       const handler = (): void => {
         clearPendingSeek()
-        if (currentTrack.value?.id === targetTrackId) {
+        if (seq === loadSeq && currentTrack.value?.id === targetTrackId) {
           audio.currentTime = startAtSecs
         }
       }
@@ -270,8 +286,11 @@ export const usePlayerStore = defineStore('player', () => {
     if (autoPlay) {
       try {
         await audio.play()
+        if (seq !== loadSeq) return
         void api.scrobble(track.id, false).catch(() => {})
       } catch (err) {
+        if (seq !== loadSeq) return
+        if (err instanceof DOMException && err.name === 'AbortError') return
         if (!overrideProfile && err instanceof DOMException && err.name === 'NotSupportedError') {
           fallbackFormats.value.add(formatKey)
           await loadAndPlayCurrent(startAtSecs, true, 'mp3320')
@@ -280,11 +299,14 @@ export const usePlayerStore = defineStore('player', () => {
         isPlaying.value = false
       }
     }
-    scheduleQueueSync()
+    if (seq === loadSeq) {
+      scheduleQueueSync()
+    }
   }
 
   function playQueue(tracks: TrackDto[], startIndex = 0): void {
     if (tracks.length === 0) return
+    queueEpoch += 1
     queue.value = [...tracks]
     currentIndex.value = Math.max(0, Math.min(tracks.length - 1, startIndex))
     scrobbledCurrent = false
@@ -386,13 +408,18 @@ export const usePlayerStore = defineStore('player', () => {
     if (isPlaying.value) {
       audio.pause()
     } else {
-      if (!audio.src) {
+      if (!audio.src || audio.error) {
         await loadAndPlayCurrent(currentTimeSecs.value, true)
       } else {
         try {
           await audio.play()
-        } catch {
-          await loadAndPlayCurrent(currentTimeSecs.value, true)
+        } catch (err) {
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          if (audio.error) {
+            await loadAndPlayCurrent(currentTimeSecs.value, true)
+          } else {
+            isPlaying.value = false
+          }
         }
       }
     }
@@ -534,6 +561,9 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function resetForLogout(): void {
+    loadSeq += 1
+    queueEpoch += 1
+    queueDirty = false
     if (queueSyncTimer) {
       clearTimeout(queueSyncTimer)
       queueSyncTimer = null
@@ -564,10 +594,13 @@ export const usePlayerStore = defineStore('player', () => {
 
   function scheduleQueueSync(): void {
     if (!useAuthStore().isAuthenticated) return
+    queueDirty = true
     if (queueSyncTimer) clearTimeout(queueSyncTimer)
+    const epoch = queueEpoch
     queueSyncTimer = setTimeout(() => {
       queueSyncTimer = null
-      if (!useAuthStore().isAuthenticated) return
+      if (!useAuthStore().isAuthenticated || epoch !== queueEpoch) return
+      queueDirty = false
       void api
         .savePlayQueue({
           track_ids: queue.value.map((t) => t.id),
@@ -579,7 +612,9 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function flushQueueOnPageHide(): void {
-    if (!useAuthStore().isAuthenticated || queue.value.length === 0) return
+    if (!useAuthStore().isAuthenticated) return
+    if (!queueDirty && queue.value.length === 0) return
+    queueDirty = false
     if (queueSyncTimer) {
       clearTimeout(queueSyncTimer)
       queueSyncTimer = null
@@ -609,8 +644,11 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function restoreRemoteQueue(force = false): Promise<void> {
     if (!force && queue.value.length > 0) return
+    const epoch = queueEpoch
     try {
       const saved = await api.getPlayQueue()
+      if (epoch !== queueEpoch) return
+      if (!force && queue.value.length > 0) return
       if (!saved || saved.tracks.length === 0) return
       queue.value = saved.tracks
       const foundIdx = saved.current_track_id

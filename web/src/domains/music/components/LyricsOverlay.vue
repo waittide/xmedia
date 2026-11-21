@@ -15,6 +15,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 import { formatTime } from '@/utils/format'
 import { buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
@@ -27,6 +28,14 @@ const { t } = useI18n()
 const router = useRouter()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
+const escapeStack = useEscapeStack()
+
+escapeStack.register(
+  () => playerStore.lyricsOpen && Boolean(playerStore.currentTrack),
+  () => {
+    playerStore.lyricsOpen = false
+  },
+)
 
 const lyricsContainerRef = ref<HTMLDivElement | null>(null)
 const lineRefs = ref<(HTMLButtonElement | null)[]>([])
@@ -35,10 +44,26 @@ function setLineRef(el: unknown, idx: number): void {
   lineRefs.value[idx] = el as HTMLButtonElement | null
 }
 
+watch(
+  () => [playerStore.currentTrack?.id, playerStore.lyrics] as const,
+  () => {
+    lineRefs.value = []
+    if (lyricsContainerRef.value) {
+      lyricsContainerRef.value.scrollTop = 0
+    }
+  },
+)
+
 const backdropCoverUrl = computed(() => {
   const tr = playerStore.currentTrack
   if (!tr || !tr.cover_key) return null
   return buildCoverUrl(tr.id, 512)
+})
+
+const backdropStyle = computed<Record<string, string>>(() => {
+  if (!backdropCoverUrl.value) return {} as Record<string, string>
+  const escaped = backdropCoverUrl.value.replace(/["\\]/g, '\\$&')
+  return { backgroundImage: `url("${escaped}")` }
 })
 
 const qualityOptions = computed(() => [
@@ -50,7 +75,7 @@ const qualityOptions = computed(() => [
 ])
 
 watch(
-  () => [playerStore.activeLyricIndex, playerStore.lyricsOpen] as const,
+  () => [playerStore.activeLyricIndex, playerStore.lyricsOpen, playerStore.lyrics] as const,
   async ([activeIdx, isOpen]) => {
     if (!isOpen || activeIdx < 0) return
     await nextTick()
@@ -91,7 +116,7 @@ function navigateAndClose(path: string): void {
         <div
           v-if="backdropCoverUrl"
           class="pointer-events-none absolute inset-0 scale-125 bg-cover bg-center opacity-22 blur-3xl"
-          :style="{ backgroundImage: `url(${backdropCoverUrl})` }"
+          :style="backdropStyle"
         />
         <div
           class="pointer-events-none absolute inset-0 bg-gradient-to-b from-[var(--md-sys-color-surface)]/65 via-[var(--md-sys-color-surface)]/80 to-[var(--md-sys-color-surface)]/95"

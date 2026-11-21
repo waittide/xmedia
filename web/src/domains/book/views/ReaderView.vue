@@ -75,6 +75,17 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 let pendingProgress: { bookId: string; payload: PendingProgressPayload } | null = null
 let disposed = false
 let loadSeq = 0
+let lastSaveErrorToastAt = 0
+
+function reportProgressSaveError(err: unknown): void {
+  const now = Date.now()
+  if (now - lastSaveErrorToastAt < 8000) return
+  lastSaveErrorToastAt = now
+  snackbarStore.show({
+    message: err instanceof Error ? err.message : String(err),
+    tone: 'error',
+  })
+}
 
 function parseFiniteQueryNumber(raw: unknown): number | null {
   if (typeof raw !== 'string' || !raw.trim()) return null
@@ -82,7 +93,7 @@ function parseFiniteQueryNumber(raw: unknown): number | null {
   return Number.isFinite(num) ? num : null
 }
 
-async function flushPendingProgress(): Promise<void> {
+async function flushPendingProgress(useKeepalive = false): Promise<void> {
   if (saveTimer) {
     clearTimeout(saveTimer)
     saveTimer = null
@@ -91,7 +102,27 @@ async function flushPendingProgress(): Promise<void> {
   const { bookId: targetBookId, payload } = pendingProgress
   pendingProgress = null
   if (!targetBookId) return
-  await api.saveProgress(targetBookId, payload).catch(() => {})
+  if (useKeepalive) {
+    try {
+      void fetch(`/api/v1/book/books/${encodeURIComponent(targetBookId)}/progress`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true,
+      })
+    } catch {
+      // ignore unload error
+    }
+    return
+  }
+  await api.saveProgress(targetBookId, payload).catch((err) => {
+    reportProgressSaveError(err)
+  })
+}
+
+function handlePageHide(): void {
+  void flushPendingProgress(true)
 }
 
 async function loadBook(id: string): Promise<void> {
@@ -153,6 +184,7 @@ async function loadBook(id: string): Promise<void> {
 onMounted(() => {
   disposed = false
   window.addEventListener('keydown', handleReaderKeydown)
+  window.addEventListener('pagehide', handlePageHide)
   void loadBook(bookId.value)
 })
 
@@ -169,6 +201,7 @@ onBeforeUnmount(() => {
   disposed = true
   loadSeq += 1
   window.removeEventListener('keydown', handleReaderKeydown)
+  window.removeEventListener('pagehide', handlePageHide)
   void flushPendingProgress()
 })
 
@@ -241,7 +274,9 @@ function handleProgressUpdate(payload: {
     const toSave = pendingProgress
     pendingProgress = null
     if (toSave) {
-      void api.saveProgress(toSave.bookId, toSave.payload).catch(() => {})
+      void api.saveProgress(toSave.bookId, toSave.payload).catch((err) => {
+        reportProgressSaveError(err)
+      })
     }
   }, 600)
 }

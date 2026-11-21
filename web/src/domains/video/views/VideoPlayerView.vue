@@ -18,6 +18,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
+import { useEscapeStack } from '@/composables/useEscapeStack'
 import { usePlayerStore } from '@/domains/music/player'
 import { useThemeStore } from '@/stores/theme'
 import { formatTime } from '@/utils/format'
@@ -299,6 +300,19 @@ function clearMediaSession(): void {
   setMediaSessionPlaybackState('none')
 }
 
+function stopAndClearVideoElement(): void {
+  clearPendingSeekHandler()
+  const el = videoEl.value
+  if (!el) return
+  try {
+    el.pause()
+    el.removeAttribute('src')
+    el.load()
+  } catch {
+    // ignore cleanup errors
+  }
+}
+
 function loadStreamAt(startSecs: number, autoPlay = true): void {
   const el = videoEl.value
   const d = detail.value
@@ -320,18 +334,20 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
     streamOffsetSecs.value,
   )
   el.load()
-  el.playbackRate = playbackRate.value
   el.volume = volume.value
   el.muted = muted.value
 
-  if (!useServerOffset && startSecs > 0) {
-    const handler = (): void => {
-      clearPendingSeekHandler()
+  const targetRate = playbackRate.value
+  const handler = (): void => {
+    clearPendingSeekHandler()
+    el.playbackRate = targetRate
+    if (!useServerOffset && startSecs > 0) {
       el.currentTime = startSecs
     }
-    pendingLoadedMetadataHandler = handler
-    el.addEventListener('loadedmetadata', handler, { once: true })
   }
+  pendingLoadedMetadataHandler = handler
+  el.addEventListener('loadedmetadata', handler, { once: true })
+  el.playbackRate = targetRate
 
   if (autoPlay) {
     void el.play().catch(() => {
@@ -344,11 +360,12 @@ function loadStreamAt(startSecs: number, autoPlay = true): void {
 async function initVideo(): Promise<void> {
   const reqSeq = ++initRequestSeq
   exitPersisted = false
+  stopAndClearVideoElement()
+  isPlaying.value = false
   loadingVideo.value = true
   isBuffering.value = false
   loadError.value = null
   hudVisible.value = true
-  clearPendingSeekHandler()
   musicPlayerStore.pause()
 
   const id = String(route.params.id || '')
@@ -606,6 +623,9 @@ function onVideoError(): void {
 }
 
 function goBack(): void {
+  if (document.fullscreenElement) {
+    void document.exitFullscreen().catch(() => {})
+  }
   if (!exitPersisted) {
     exitPersisted = true
     void persistProgress(undefined, { bumpCatalog: true })
@@ -619,6 +639,37 @@ function goBack(): void {
   }
 }
 
+function flushVideoProgressOnPageHide(): void {
+  const d = detail.value
+  if (!d || exitPersisted) return
+  exitPersisted = true
+  const roundedDur = Math.round(totalDurationSecs.value)
+  try {
+    void fetch(`/api/v1/video/videos/${encodeURIComponent(d.video.id)}/progress`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        position_secs: currentTimeSecs.value,
+        duration_secs: roundedDur > 0 ? roundedDur : undefined,
+        selected_audio_stream: selectedAudioStream.value,
+        selected_subtitle: selectedSubtitleId.value === 'off' ? null : selectedSubtitleId.value,
+      }),
+      keepalive: true,
+    })
+  } catch {
+    // ignore unload errors
+  }
+}
+
+const escapeStack = useEscapeStack()
+escapeStack.register(
+  () => !document.fullscreenElement,
+  () => {
+    goBack()
+  },
+)
+
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false
   if (target.isContentEditable) return true
@@ -626,8 +677,19 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
 }
 
+function isDropdownOrDialogOpen(target: EventTarget | null): boolean {
+  if (typeof document !== 'undefined') {
+    if (document.querySelector('[role="listbox"], [aria-modal="true"]')) return true
+  }
+  if (target instanceof HTMLElement) {
+    const role = target.getAttribute('role')
+    if (role === 'combobox' || role === 'listbox' || role === 'option') return true
+  }
+  return false
+}
+
 function onKeydown(ev: KeyboardEvent): void {
-  if (isEditableTarget(ev.target)) return
+  if (isEditableTarget(ev.target) || isDropdownOrDialogOpen(ev.target)) return
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return
 
   if (ev.code === 'Space') {
@@ -662,8 +724,6 @@ function onKeydown(ev: KeyboardEvent): void {
   } else if ((ev.key === 'n' || ev.key === 'N') && detail.value?.next_episode_id) {
     ev.preventDefault()
     goToNextEpisode()
-  } else if (ev.key === 'Escape' && !document.fullscreenElement) {
-    goBack()
   }
 }
 
@@ -675,6 +735,7 @@ onMounted(() => {
   }
   void initVideo()
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('pagehide', flushVideoProgressOnPageHide)
   progressSaveTimer = setInterval(() => {
     if (isPlaying.value) {
       void persistProgress()
@@ -688,11 +749,12 @@ onBeforeUnmount(() => {
     exitPersisted = true
     void persistProgress(undefined, { bumpCatalog: true })
   }
-  clearPendingSeekHandler()
+  stopAndClearVideoElement()
   clearMediaSession()
   if (hudHideTimer) clearTimeout(hudHideTimer)
   if (progressSaveTimer) clearInterval(progressSaveTimer)
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('pagehide', flushVideoProgressOnPageHide)
 })
 
 watch(
@@ -826,6 +888,7 @@ watch(
             :model-value="String(selectedAudioStream ?? detail.audio_streams[0]?.stream_index ?? 0)"
             :options="audioOptions"
             variant="compact"
+            :teleport-to="stageRef"
             @change="onAudioStreamChange"
           />
         </div>
@@ -835,6 +898,7 @@ watch(
             :model-value="selectedSubtitleId"
             :options="subtitleOptions"
             variant="compact"
+            :teleport-to="stageRef"
             @change="onSubtitleChange"
           />
         </div>
@@ -844,6 +908,7 @@ watch(
             :model-value="quality"
             :options="qualityOptions"
             variant="compact"
+            :teleport-to="stageRef"
             @change="onQualityChange"
           />
         </div>
@@ -853,6 +918,7 @@ watch(
             :model-value="String(playbackRate)"
             :options="speedOptions"
             variant="compact"
+            :teleport-to="stageRef"
             @change="onSpeedChange"
           />
         </div>

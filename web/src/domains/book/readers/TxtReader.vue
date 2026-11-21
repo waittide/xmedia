@@ -106,6 +106,8 @@ const paragraphs = computed(() => {
 
 const fontFamilyStyle = computed(() => resolveFontStack(themeStore.reader.font_family))
 
+let unmounted = false
+
 async function loadChapter(index: number, restoreScrollRatio = 0): Promise<void> {
   clearScrollTimer()
   const seq = ++loadSeq
@@ -116,10 +118,11 @@ async function loadChapter(index: number, restoreScrollRatio = 0): Promise<void>
   errorMsg.value = ''
   try {
     const data = await fetchChapterWithCache(index)
-    if (seq !== loadSeq) return
+    if (unmounted || seq !== loadSeq) return
     chapter.value = data
     loading.value = false
     await nextTick()
+    if (unmounted || seq !== loadSeq) return
     if (scrollContainer.value) {
       const maxScroll =
         scrollContainer.value.scrollHeight - scrollContainer.value.clientHeight
@@ -128,7 +131,7 @@ async function loadChapter(index: number, restoreScrollRatio = 0): Promise<void>
     reportCurrentProgress(restoreScrollRatio)
     prefetchAdjacentChapter(data.index, data.total_chapters)
   } catch (err) {
-    if (seq !== loadSeq) return
+    if (unmounted || seq !== loadSeq) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
   }
@@ -194,15 +197,25 @@ function handleKeydown(ev: KeyboardEvent): void {
 
 watch(
   () => props.bookId,
-  () => {
+  (nextId, prevId) => {
+    if (nextId === prevId) return
+    if (scrollTimer) {
+      clearScrollTimer()
+      reportCurrentProgress()
+    }
     chapterCache.clear()
     inflightFetches.clear()
+    chapter.value = null
+    const initIdx = props.initialLocation?.chapter_index ?? 0
+    const initRatio = props.initialLocation?.scroll_ratio ?? 0
+    void loadChapter(initIdx, initRatio)
   },
 )
 
 defineExpose({ navigateTo })
 
 onMounted(async () => {
+  unmounted = false
   window.addEventListener('keydown', handleKeydown)
   const initIdx = props.initialLocation?.chapter_index ?? 0
   const initRatio = props.initialLocation?.scroll_ratio ?? 0
@@ -210,8 +223,13 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (scrollTimer) {
+    clearScrollTimer()
+    reportCurrentProgress()
+  }
+  unmounted = true
+  loadSeq += 1
   window.removeEventListener('keydown', handleKeydown)
-  clearScrollTimer()
   chapterCache.clear()
   inflightFetches.clear()
 })

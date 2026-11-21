@@ -20,6 +20,7 @@ const props = withDefaults(
     searchable?: boolean
     searchPlaceholder?: string
     disabled?: boolean
+    teleportTo?: string | HTMLElement | null
   }>(),
   {
     placeholder: '',
@@ -28,6 +29,7 @@ const props = withDefaults(
     searchable: false,
     searchPlaceholder: '',
     disabled: false,
+    teleportTo: null,
   },
 )
 
@@ -45,6 +47,14 @@ const triggerRef = ref<HTMLButtonElement | null>(null)
 const menuRef = ref<HTMLDivElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const menuStyle = ref<Record<string, string>>({})
+
+const resolvedTeleportTarget = computed<string | HTMLElement>(() => {
+  if (props.teleportTo) return props.teleportTo
+  if (typeof document !== 'undefined' && document.fullscreenElement instanceof HTMLElement) {
+    return document.fullscreenElement
+  }
+  return 'body'
+})
 
 const selectedOption = computed(
   () => props.options.find((opt) => opt.value === props.modelValue) ?? null,
@@ -140,18 +150,25 @@ function onTriggerKeydown(ev: KeyboardEvent): void {
 }
 
 function onMenuKeydown(ev: KeyboardEvent): void {
-  if (!open.value) return
+  if (!open.value || ev.isComposing) return
   const len = filteredOptions.value.length
   if (ev.key === 'ArrowDown' && len > 0) {
     ev.preventDefault()
+    ev.stopPropagation()
     highlightedIdx.value = (highlightedIdx.value + 1) % len
   } else if (ev.key === 'ArrowUp' && len > 0) {
     ev.preventDefault()
+    ev.stopPropagation()
     highlightedIdx.value = (highlightedIdx.value - 1 + len) % len
   } else if (ev.key === 'Enter' && len > 0) {
     ev.preventDefault()
+    ev.stopPropagation()
     const picked = filteredOptions.value[highlightedIdx.value]
     if (picked) selectValue(picked.value)
+  } else if (ev.key === ' ') {
+    if (document.activeElement !== searchInputRef.value) {
+      ev.stopPropagation()
+    }
   }
 }
 
@@ -226,7 +243,7 @@ onBeforeUnmount(unbindGlobalListeners)
     />
   </button>
 
-  <Teleport to="body">
+  <Teleport :to="resolvedTeleportTarget">
     <div
       v-if="open"
       ref="menuRef"

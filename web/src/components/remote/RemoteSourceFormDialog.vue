@@ -83,6 +83,21 @@ function normalizeUrlInput(raw: string): string {
   return `http://${trimmed}`
 }
 
+function validateHttpUrl(normalized: string): string | null {
+  try {
+    const parsed = new URL(normalized)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return 'URL must start with http:// or https://'
+    }
+    if (!parsed.hostname) {
+      return 'URL must contain a valid hostname'
+    }
+    return null
+  } catch {
+    return 'Invalid URL format'
+  }
+}
+
 function extractDefaultName(raw: string): string {
   const normalized = normalizeUrlInput(raw)
   if (!normalized) return ''
@@ -130,6 +145,11 @@ async function handleTest(): Promise<void> {
     errorMsg.value = t('remote.urlRequired')
     return
   }
+  const urlErr = validateHttpUrl(normalized)
+  if (urlErr) {
+    errorMsg.value = urlErr
+    return
+  }
 
   const effectiveProtocol = props.lockedProtocol ?? protocol.value
   errorMsg.value = ''
@@ -161,6 +181,11 @@ async function handleSubmit(): Promise<void> {
   const normalized = normalizeUrlInput(url.value)
   if (!normalized) {
     errorMsg.value = t('remote.urlRequired')
+    return
+  }
+  const urlErr = validateHttpUrl(normalized)
+  if (urlErr) {
+    errorMsg.value = urlErr
     return
   }
 

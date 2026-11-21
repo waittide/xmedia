@@ -73,6 +73,7 @@ const listRef = ref<HTMLElement | null>(null)
 const query = ref('')
 const loading = ref(false)
 const domainSections = ref<DomainResultSection[]>([])
+const searchError = ref<string | null>(null)
 const activeIndex = ref(0)
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
@@ -202,6 +203,19 @@ async function runCrossDomainSearch(q: string): Promise<void> {
   activeController = controller
   const { signal } = controller
   const enabled = authStore.enabledModules
+  searchError.value = null
+  let failedCount = 0
+  let lastErrorMsg = ''
+  const recordError = (err: unknown): null => {
+    if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
+      return null
+    }
+    failedCount += 1
+    if (!lastErrorMsg) {
+      lastErrorMsg = err instanceof Error ? err.message : String(err)
+    }
+    return null
+  }
   const tasks: Array<Promise<DomainResultSection | null>> = []
 
   if (enabled.includes('book')) {
@@ -231,7 +245,7 @@ async function runCrossDomainSearch(q: string): Promise<void> {
             viewAllTo: buildDomainSearchRoute('book', q),
           }
         })
-        .catch(() => null),
+        .catch(recordError),
     )
   }
 
@@ -261,7 +275,7 @@ async function runCrossDomainSearch(q: string): Promise<void> {
             viewAllTo: buildDomainSearchRoute('comic', q),
           }
         })
-        .catch(() => null),
+        .catch(recordError),
     )
   }
 
@@ -307,7 +321,7 @@ async function runCrossDomainSearch(q: string): Promise<void> {
             viewAllTo: buildDomainSearchRoute('music', q),
           }
         })
-        .catch(() => null),
+        .catch(recordError),
     )
   }
 
@@ -337,7 +351,7 @@ async function runCrossDomainSearch(q: string): Promise<void> {
             viewAllTo: buildDomainSearchRoute('video', q),
           }
         })
-        .catch(() => null),
+        .catch(recordError),
     )
   }
 
@@ -347,6 +361,7 @@ async function runCrossDomainSearch(q: string): Promise<void> {
     activeController = null
   }
   domainSections.value = settled.filter((sec): sec is DomainResultSection => sec !== null)
+  searchError.value = failedCount > 0 ? lastErrorMsg || t('common.error') : null
   activeIndex.value = 0
   loading.value = false
 }
@@ -470,9 +485,24 @@ function handleKeydown(ev: KeyboardEvent): void {
 
               <!-- Grouped cross-domain results -->
               <div v-else-if="hasQuery" class="space-y-4">
+                <div
+                  v-if="searchError"
+                  role="alert"
+                  class="flex items-center justify-between gap-3 rounded-xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
+                >
+                  <span class="min-w-0 truncate">{{ searchError }}</span>
+                  <button
+                    type="button"
+                    class="md-btn md-btn-text md-btn-sm md-state shrink-0 !text-[var(--md-sys-color-on-error-container)]"
+                    @click="runCrossDomainSearch(query.trim())"
+                  >
+                    {{ t('common.refresh') }}
+                  </button>
+                </div>
+
                 <!-- Empty local search results state -->
                 <div
-                  v-if="!loading && domainSections.length === 0"
+                  v-if="!loading && !searchError && domainSections.length === 0"
                   class="py-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   {{ t('common.noResults') }}

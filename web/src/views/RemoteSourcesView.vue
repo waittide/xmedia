@@ -520,8 +520,17 @@ async function handleImportSong(song: SubsonicSongDto): Promise<void> {
 }
 
 // ---------------- Audio Preview Bar Controls ----------------
+let previewSeq = 0
+
 function isPreviewingSong(song: SubsonicSongDto): boolean {
   return previewSong.value?.id === song.id && previewPlaying.value
+}
+
+function onPreviewAudioError(): void {
+  if (!previewSong.value) return
+  previewPlaying.value = false
+  previewBuffering.value = false
+  snackbarStore.show({ message: t('remote.subsonicPreviewFailed'), tone: 'error' })
 }
 
 async function playPreviewTrack(song: SubsonicSongDto, queue: SubsonicSongDto[]): Promise<void> {
@@ -529,14 +538,22 @@ async function playPreviewTrack(song: SubsonicSongDto, queue: SubsonicSongDto[])
     if (previewPlaying.value) {
       previewAudioRef.value.pause()
     } else {
+      const seq = ++previewSeq
       playerStore.pause()
-      await previewAudioRef.value.play().catch(() => {
+      try {
+        await previewAudioRef.value.play()
+      } catch (err) {
+        if (seq !== previewSeq) return
+        if (err instanceof DOMException && err.name === 'AbortError') return
+        previewPlaying.value = false
+        previewBuffering.value = false
         snackbarStore.show({ message: t('remote.subsonicPreviewFailed'), tone: 'error' })
-      })
+      }
     }
     return
   }
 
+  const seq = ++previewSeq
   playerStore.pause()
   const idx = queue.findIndex((item) => item.id === song.id)
   previewQueue.value = queue
@@ -546,13 +563,16 @@ async function playPreviewTrack(song: SubsonicSongDto, queue: SubsonicSongDto[])
   previewBuffering.value = true
 
   await nextTick()
+  if (seq !== previewSeq) return
   const audio = previewAudioRef.value
   if (!audio) return
   audio.src = song.stream_url
   audio.currentTime = 0
   try {
     await audio.play()
-  } catch {
+  } catch (err) {
+    if (seq !== previewSeq) return
+    if (err instanceof DOMException && err.name === 'AbortError') return
     previewPlaying.value = false
     previewBuffering.value = false
     snackbarStore.show({ message: t('remote.subsonicPreviewFailed'), tone: 'error' })
@@ -591,6 +611,7 @@ function seekPreview(ev: Event): void {
 }
 
 function closePreviewBar(): void {
+  previewSeq += 1
   const audio = previewAudioRef.value
   if (audio) {
     audio.pause()
@@ -651,15 +672,24 @@ function handleSourceSaved(source: RemoteSourceSummaryDto): void {
     closePreviewBar()
   }
 
-  if (source.protocol === 'opds' && !selectedOpdsId.value) {
-    selectedOpdsId.value = source.id
-    if (activeTab.value === 'opds') {
-      void fetchOpdsFeed()
+  if (source.protocol === 'opds') {
+    if (!selectedOpdsId.value || selectedOpdsId.value === source.id) {
+      selectedOpdsId.value = source.id
+      opdsHistory.value = []
+      if (activeTab.value === 'opds') {
+        void fetchOpdsFeed()
+      } else {
+        opdsFeed.value = null
+      }
     }
-  } else if (source.protocol === 'subsonic' && !selectedSubsonicId.value) {
-    selectedSubsonicId.value = source.id
-    if (activeTab.value === 'subsonic') {
-      void fetchSubsonicAlbums(true)
+  } else if (source.protocol === 'subsonic') {
+    if (!selectedSubsonicId.value || selectedSubsonicId.value === source.id) {
+      selectedSubsonicId.value = source.id
+      if (activeTab.value === 'subsonic') {
+        void fetchSubsonicAlbums(true)
+      } else {
+        subsonicAlbums.value = []
+      }
     }
   }
 }
@@ -758,6 +788,7 @@ async function handleDeleteSource(source: RemoteSourceSummaryDto): Promise<void>
       selectedSubsonicId.value = appClientStore.subsonicSources[0]?.id ?? ''
       subsonicAlbums.value = []
       albumSheetOpen.value = false
+      closePreviewBar()
       if (selectedSubsonicId.value && activeTab.value === 'subsonic') {
         void fetchSubsonicAlbums(true)
       }
@@ -1737,6 +1768,7 @@ onBeforeUnmount(() => {
       @timeupdate="onPreviewTimeUpdate"
       @loadedmetadata="onPreviewTimeUpdate"
       @ended="onPreviewEnded"
+      @error="onPreviewAudioError"
     />
 
     <Transition name="md-dialog">

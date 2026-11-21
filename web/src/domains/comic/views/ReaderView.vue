@@ -38,6 +38,7 @@ const snackbar = useSnackbarStore()
 const ctx = ref<ReaderContextDto | null>(null)
 const chapterBookmarks = ref<ComicBookmark[]>([])
 const loading = ref(true)
+const loadError = ref<string | null>(null)
 const hudVisible = ref(true)
 const settingsDrawerOpen = ref(false)
 const chaptersDrawerOpen = ref(false)
@@ -57,6 +58,9 @@ let progressTimer: ReturnType<typeof setTimeout> | null = null
 let pendingProgress: { chapterId: string; page: number; completed?: boolean } | null = null
 let webtoonObserver: IntersectionObserver | null = null
 const visibleWebtoonPages = new Set<number>()
+let chapterLoadSeq = 0
+let suppressWebtoonObserverUntil = 0
+let bookmarkBusy = false
 
 const webtoonContainerRef = ref<HTMLDivElement | null>(null)
 
@@ -150,9 +154,11 @@ const fitOptions = computed(() => [
 ])
 
 async function loadChapter(chapterId: string, queryPage?: number, seamlessToast = false): Promise<void> {
+  const seq = ++chapterLoadSeq
   flushPendingProgress()
   teardownWebtoonObserver()
   loading.value = true
+  loadError.value = null
   pendingNextChapterTap.value = false
   preloadedSet.clear()
   Object.keys(widePages).forEach((k) => delete widePages[Number(k)])
@@ -162,6 +168,7 @@ async function loadChapter(chapterId: string, queryPage?: number, seamlessToast 
       api.getReaderContext(chapterId),
       api.listChapterBookmarks(chapterId).catch(() => []),
     ])
+    if (seq !== chapterLoadSeq) return
     ctx.value = data
     chapterBookmarks.value = bms
 
@@ -183,23 +190,37 @@ async function loadChapter(chapterId: string, queryPage?: number, seamlessToast 
       )
     }
 
+    // Mount stage first (`loading = false`) so `webtoonContainerRef` exists before scrolling.
+    suppressWebtoonObserverUntil = Date.now() + 600
+    loading.value = false
     if (readerMode.value === 'webtoon') {
       await nextTick()
+      if (seq !== chapterLoadSeq) return
       scrollToWebtoonPage(currentPage.value)
+      setupWebtoonObserver()
     }
-  } finally {
+  } catch (err) {
+    if (seq !== chapterLoadSeq) return
+    loadError.value = err instanceof Error ? err.message : String(err)
     loading.value = false
   }
+}
+
+function handleComicPageHide(): void {
+  flushPendingProgress(true)
 }
 
 onMounted(() => {
   const qPage = route.query.page ? Number(route.query.page) : undefined
   void loadChapter(String(route.params.chapterId), qPage, false)
   window.addEventListener('keydown', onKeydown)
+  window.addEventListener('pagehide', handleComicPageHide)
 })
 
 onBeforeUnmount(() => {
+  chapterLoadSeq += 1
   window.removeEventListener('keydown', onKeydown)
+  window.removeEventListener('pagehide', handleComicPageHide)
   flushPendingProgress()
   teardownWebtoonObserver()
   preloadedSet.clear()
@@ -248,7 +269,7 @@ function preloadAround(centerPage: number): void {
   }
 }
 
-function flushPendingProgress(): void {
+function flushPendingProgress(useKeepalive = false): void {
   if (progressTimer) {
     clearTimeout(progressTimer)
     progressTimer = null
@@ -256,6 +277,23 @@ function flushPendingProgress(): void {
   if (!pendingProgress) return
   const payload = pendingProgress
   pendingProgress = null
+  if (useKeepalive) {
+    try {
+      void fetch(`/api/v1/comic/chapters/${encodeURIComponent(payload.chapterId)}/progress`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_page: payload.page,
+          completed: payload.completed,
+        }),
+        keepalive: true,
+      })
+    } catch {
+      // ignore unload errors
+    }
+    return
+  }
   void api.updateProgress(payload.chapterId, payload.page, payload.completed).catch(() => {})
 }
 
@@ -445,6 +483,7 @@ function onScrubberInput(ev: Event): void {
 function scrollToWebtoonPage(pageNum: number): void {
   const container = webtoonContainerRef.value
   if (!container) return
+  suppressWebtoonObserverUntil = Date.now() + 450
   const el = container.querySelector(`[data-page="${pageNum}"]`) as HTMLElement | null
   if (el) {
     el.scrollIntoView({ behavior: 'instant', block: 'start' })
@@ -471,6 +510,7 @@ function setupWebtoonObserver(): void {
         if (entry.isIntersecting) visibleWebtoonPages.add(p)
         else visibleWebtoonPages.delete(p)
       }
+      if (Date.now() < suppressWebtoonObserverUntil) return
       if (visibleWebtoonPages.size > 0) {
         const minVisible = Math.min(...visibleWebtoonPages)
         if (minVisible !== currentPage.value) {
@@ -496,6 +536,7 @@ watch(
     teardownWebtoonObserver()
     if (mode !== 'webtoon' || !chapterId || isLoading) return
     await nextTick()
+    scrollToWebtoonPage(currentPage.value)
     setupWebtoonObserver()
   },
 )
@@ -505,22 +546,32 @@ const currentPageBookmark = computed<ComicBookmark | null>(
 )
 
 async function togglePageBookmark(): Promise<void> {
-  if (!ctx.value) return
-  const page = currentPage.value
-  const existing = currentPageBookmark.value
-  if (existing) {
-    await api.deleteBookmark(existing.id)
-    chapterBookmarks.value = chapterBookmarks.value.filter((b) => b.id !== existing.id)
-    snackbar.show(globalT('bookmarksPage.removedBookmark', { page }))
-  } else {
-    const created = await api.createBookmark(ctx.value.chapter.id, {
-      page_number: page,
-      title: `#${ctx.value.chapter.number_label} · ${globalT('bookmarksPage.pageLabel', { page })}`,
+  if (!ctx.value || bookmarkBusy) return
+  bookmarkBusy = true
+  try {
+    const page = currentPage.value
+    const existing = currentPageBookmark.value
+    if (existing) {
+      await api.deleteBookmark(existing.id)
+      chapterBookmarks.value = chapterBookmarks.value.filter((b) => b.id !== existing.id)
+      snackbar.show(globalT('bookmarksPage.removedBookmark', { page }))
+    } else {
+      const created = await api.createBookmark(ctx.value.chapter.id, {
+        page_number: page,
+        title: `#${ctx.value.chapter.number_label} · ${globalT('bookmarksPage.pageLabel', { page })}`,
+      })
+      chapterBookmarks.value = [...chapterBookmarks.value, created]
+      snackbar.show(globalT('bookmarksPage.addedBookmark', { page }))
+    }
+    void sidebarStore.refresh()
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
     })
-    chapterBookmarks.value = [...chapterBookmarks.value, created]
-    snackbar.show(globalT('bookmarksPage.addedBookmark', { page }))
+  } finally {
+    bookmarkBusy = false
   }
-  void sidebarStore.refresh()
 }
 </script>
 
@@ -731,7 +782,21 @@ async function togglePageBookmark(): Promise<void> {
 
     <!-- Main Comic Stage -->
     <div
-      v-if="ctx && !loading"
+      v-if="loadError && !loading"
+      class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+    >
+      <p class="text-sm text-[var(--md-sys-color-error)]">{{ loadError }}</p>
+      <button
+        type="button"
+        class="md-btn md-btn-tonal md-state"
+        @click="loadChapter(String(route.params.chapterId), undefined, false)"
+      >
+        {{ globalT('common.refresh') }}
+      </button>
+    </div>
+
+    <div
+      v-else-if="ctx && !loading"
       class="flex-1 overflow-hidden"
       @click="onStageClick"
     >
@@ -755,7 +820,7 @@ async function togglePageBookmark(): Promise<void> {
             :src="chapterPageUrl(ctx.chapter.id, p)"
             :alt="'Page ' + p"
             loading="lazy"
-            class="m-0 block w-full p-0"
+            class="m-0 block min-h-[40vh] w-full bg-[var(--md-sys-color-surface-container-low)]/40 p-0"
             :class="eyeCareClass"
           />
 

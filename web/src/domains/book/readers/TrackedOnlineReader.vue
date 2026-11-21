@@ -325,7 +325,10 @@ watch(
   () => props.bookId,
   (nextId, prevId) => {
     if (nextId === prevId) return
-    clearScrollTimer()
+    if (scrollTimer) {
+      clearScrollTimer()
+      emitCurrentProgress()
+    }
     preloadedSet.clear()
     chapters.value = []
     paragraphs.value = []
@@ -342,10 +345,13 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (scrollTimer) {
+    clearScrollTimer()
+    emitCurrentProgress()
+  }
   unmounted = true
   loadSeq += 1
   window.removeEventListener('keydown', handleKeydown)
-  clearScrollTimer()
 })
 </script>
 

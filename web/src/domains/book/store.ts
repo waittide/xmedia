@@ -1,6 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from './api'
+import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
 import type {
   BookBookmarkItemDto,
@@ -41,6 +42,7 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
   const pageSize = ref<number>(24)
   const loading = ref<boolean>(false)
   let fetchSeq = 0
+  let sidebarSeq = 0
 
   const viewMode = ref<'list' | 'grid'>(readStoredViewMode())
   const activeSection = ref<NavSection>('all')
@@ -81,6 +83,7 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
   }
 
   async function refreshSidebarData(): Promise<void> {
+    const seq = ++sidebarSeq
     const [libs, sh, au, tg, bms] = await Promise.all([
       api.listLibraries(),
       api.listShelves(),
@@ -88,6 +91,7 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
       api.listTags(),
       api.listAllBookmarks().catch(() => []),
     ])
+    if (seq !== sidebarSeq) return
     libraries.value = libs
     shelves.value = sh
     authors.value = au
@@ -212,10 +216,14 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
   }
 
   watch(scanRefreshVersion, () => {
+    if (!useAuthStore().isAuthenticated) return
     void Promise.all([refreshSidebarData(), fetchBooks()]).catch(() => {})
   })
 
   function resetState(): void {
+    fetchSeq += 1
+    sidebarSeq += 1
+    loading.value = false
     libraries.value = []
     shelves.value = []
     authors.value = []
@@ -224,6 +232,9 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
     books.value = []
     total.value = 0
     page.value = 1
+    pageSize.value = 24
+    sortBy.value = 'created_at'
+    sortOrder.value = 'desc'
     activeSection.value = 'all'
     activeLibraryId.value = ''
     activeShelfId.value = ''

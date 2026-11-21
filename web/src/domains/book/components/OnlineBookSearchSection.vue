@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   LuBookOpen,
@@ -61,6 +61,8 @@ const openingKeys = ref<Set<string>>(new Set())
 const downloadTarget = ref<OnlineDownloadTarget | null>(null)
 const modalTrackedJobId = ref<string | null>(null)
 let searchSeq = 0
+let initSeq = 0
+let unmounted = false
 
 const enabledSources = computed(() => sources.value.filter((s) => s.enabled))
 
@@ -101,36 +103,58 @@ watch(
   },
 )
 
+async function loadAllTrackedBookMap(seq: number): Promise<Record<string, string>> {
+  const map: Record<string, string> = {}
+  const pageSize = 200
+  const maxPages = 50
+  for (let page = 1; page <= maxPages; page += 1) {
+    const res = await bookApi.searchBooks({ page, page_size: pageSize }).catch(() => null)
+    if (unmounted || seq !== initSeq || !res) break
+    for (const b of res.items) {
+      if (b.online_tracking) {
+        map[`${b.online_tracking.source_id}:${b.online_tracking.book_url}`] = b.id
+      }
+    }
+    if (res.items.length < pageSize || page * pageSize >= res.total) {
+      break
+    }
+  }
+  return map
+}
+
 async function initData(): Promise<void> {
+  const seq = ++initSeq
   loadingInit.value = true
   try {
-    const [srcList, existingPage] = await Promise.all([
+    const [srcList, trackedMap] = await Promise.all([
       onlineBookApi.listSources().catch(() => []),
-      bookApi.searchBooks({ page: 1, page_size: 200 }).catch(() => null),
+      loadAllTrackedBookMap(seq),
     ])
+    if (unmounted || seq !== initSeq) return
     sources.value = srcList
     if (props.initialSourceId && enabledSources.value.some((s) => s.id === props.initialSourceId)) {
       selectedSourceIds.value = [props.initialSourceId]
     }
-    if (existingPage) {
-      const map: Record<string, string> = {}
-      for (const b of existingPage.items) {
-        if (b.online_tracking) {
-          map[`${b.online_tracking.source_id}:${b.online_tracking.book_url}`] = b.id
-        }
-      }
-      trackedBookIdByKey.value = map
-    }
+    trackedBookIdByKey.value = trackedMap
   } finally {
-    loadingInit.value = false
+    if (!unmounted && seq === initSeq) {
+      loadingInit.value = false
+    }
   }
-  if (searchKeyword.value.trim() && enabledSources.value.length > 0) {
+  if (!unmounted && seq === initSeq && searchKeyword.value.trim() && enabledSources.value.length > 0) {
     void runSearch(1, 'replace')
   }
 }
 
 onMounted(() => {
+  unmounted = false
   void initData()
+})
+
+onBeforeUnmount(() => {
+  unmounted = true
+  initSeq += 1
+  searchSeq += 1
 })
 
 function toggleSourceFilter(id: string): void {
