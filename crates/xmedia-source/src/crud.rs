@@ -90,7 +90,7 @@ pub struct ExportSourcesBatchRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoginActionRequest {
-    #[serde(default)]
+    #[serde(default, alias = "form_data")]
     pub login_info: HashMap<String, String>,
     pub action: Option<String>,
 }
@@ -195,7 +195,7 @@ where
     T: serde::de::DeserializeOwned,
     F: Fn(&T) -> bool,
 {
-    let trimmed = raw.trim().trim_start_matches('\u{feff}');
+    let trimmed = raw.trim().trim_start_matches('\u{feff}').trim();
     if trimmed.is_empty() {
         return Err(format!("{entity_label} JSON 内容为空"));
     }
@@ -504,6 +504,10 @@ mod tests {
         assert_eq!(res_arr[0].0.name, "B");
 
         assert!(parse_json_batch::<SampleSpec, _>("  ", "数据源", "为空", |_| false).is_err());
+        let bom_ws_err =
+            parse_json_batch::<SampleSpec, _>("\u{feff}   ", "数据源", "为空", |_| false)
+                .unwrap_err();
+        assert_eq!(bom_ws_err, "数据源 JSON 内容为空");
         assert!(parse_json_batch::<SampleSpec, _>("123", "数据源", "为空", |_| false).is_err());
         assert!(parse_json_batch::<SampleSpec, _>("{bad", "数据源", "为空", |_| false).is_err());
         assert!(
@@ -735,5 +739,21 @@ mod tests {
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["name"], "Two");
         assert_eq!(arr[1]["name"], "One");
+    }
+
+    #[test]
+    fn login_action_request_accepts_login_info_and_form_data_alias() {
+        let req1: LoginActionRequest =
+            serde_json::from_str(r#"{"login_info":{"user":"alice"},"action":"login()"}"#).unwrap();
+        assert_eq!(
+            req1.login_info.get("user").map(String::as_str),
+            Some("alice")
+        );
+        assert_eq!(req1.action.as_deref(), Some("login()"));
+
+        let req2: LoginActionRequest =
+            serde_json::from_str(r#"{"form_data":{"user":"bob"},"action":"doAuth()"}"#).unwrap();
+        assert_eq!(req2.login_info.get("user").map(String::as_str), Some("bob"));
+        assert_eq!(req2.action.as_deref(), Some("doAuth()"));
     }
 }

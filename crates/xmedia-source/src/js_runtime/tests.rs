@@ -374,3 +374,139 @@ fn bridge_java_cookie_cache_source_methods() {
     assert!(d.toasts.contains(&"toast-msg".to_string()));
     assert!(d.logs.contains(&"log-msg".to_string()));
 }
+
+#[test]
+fn mustache_template_propagates_sandbox_errors_and_allows_css_fallback() {
+    let meta = sample_metadata();
+    let (http, cookies) = make_test_http(true);
+
+    // (a) Infinite loop inside {{ ... }} fails with timeout error (never swallowed as Ok)
+    let mut timeout_session = ReusableSourceSession::new(
+        meta.clone(),
+        http.clone(),
+        Arc::new(Mutex::new(SourceRuntimeState::default())),
+        cookies.clone(),
+        JsSandboxConfig::with_timeout(Duration::from_millis(80)),
+        Duration::from_secs(5),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let timeout_err = timeout_session
+        .eval_string(
+            &RuleValue::Text(String::new()),
+            "https://example.com/{{ while(true){} }}/path",
+            "",
+        )
+        .unwrap_err();
+    assert!(
+        timeout_err.contains("interrupted") || timeout_err.contains("超时"),
+        "expected timeout error, got: {timeout_err}"
+    );
+
+    // (b) cancel_flag inside {{ ... }} fails with cancel error and preserves prior java.log(...)
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_bg = cancel.clone();
+    let mut cancel_session = ReusableSourceSession::new(
+        meta.clone(),
+        http.clone(),
+        Arc::new(Mutex::new(SourceRuntimeState::default())),
+        cookies.clone(),
+        JsSandboxConfig::with_timeout(Duration::from_secs(10)),
+        Duration::from_secs(10),
+        cancel.clone(),
+    );
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(60));
+        cancel_bg.store(true, Ordering::Relaxed);
+    });
+    let cancel_err = cancel_session
+        .eval_string(
+            &RuleValue::Text(String::new()),
+            "prefix/{{ java.log('kept-mustache'); while(true){} }}/suffix",
+            "",
+        )
+        .unwrap_err();
+    assert!(
+        cancel_err.contains("取消") || cancel_err.contains("interrupted"),
+        "expected cancel error, got: {cancel_err}"
+    );
+    let logs = cancel_session.snapshot_diagnostics().logs;
+    assert!(
+        logs.iter().any(|l| l == "kept-mustache"),
+        "expected java.log preserved across cancel, got: {logs:?}"
+    );
+
+    // Multiple {{ ... }} blocks fail fast once cancel_flag is set
+    let multi_err = cancel_session
+        .eval_string(
+            &RuleValue::Json(serde_json::json!({"a": "1", "b": "2"})),
+            "{{$.a}}-{{$.b}}",
+            "",
+        )
+        .unwrap_err();
+    assert!(
+        multi_err.contains("取消") || multi_err.contains("interrupted"),
+        "expected pre-cancelled error on multi-block template, got: {multi_err}"
+    );
+
+    // (c) Stack overflow & OOM inside {{ ... }} return Err(...)
+    let mut limit_session = ReusableSourceSession::new(
+        meta.clone(),
+        http.clone(),
+        Arc::new(Mutex::new(SourceRuntimeState::default())),
+        cookies.clone(),
+        JsSandboxConfig {
+            memory_limit_bytes: 2 * 1024 * 1024,
+            max_stack_bytes: 128 * 1024,
+            eval_timeout: Duration::from_secs(5),
+            ..Default::default()
+        },
+        Duration::from_secs(5),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let stack_err = limit_session
+        .eval_string(
+            &RuleValue::Text(String::new()),
+            "v={{ (function rec(n){ return rec(n+1)+1; })(0) }}",
+            "",
+        )
+        .unwrap_err();
+    assert!(
+        !stack_err.is_empty(),
+        "expected stack overflow error, got Ok"
+    );
+
+    let oom_err = limit_session
+        .eval_string(
+            &RuleValue::Text(String::new()),
+            "v={{ (function(){ var a=[]; for(var i=0;i<100000;i++) a.push('x'.repeat(1024)); return a.length; })() }}",
+            "",
+        )
+        .unwrap_err();
+    assert!(!oom_err.is_empty(), "expected OOM error, got Ok");
+
+    // (d) Legitimate CSS shorthand inside {{class.title@text}} when js is Some(...) still resolves cleanly
+    let mut ok_session = ReusableSourceSession::new(
+        meta,
+        http,
+        Arc::new(Mutex::new(SourceRuntimeState::default())),
+        cookies,
+        JsSandboxConfig::with_timeout(Duration::from_secs(5)),
+        Duration::from_secs(5),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let html = RuleValue::Text(
+        r#"<div><span class="title">Rust 书源</span><div class="name">作者<span>忽略</span></div><img data-url="https://cdn.example.com/cover.jpg"/></div>"#
+            .into(),
+    );
+    let css_out = ok_session
+        .eval_string(
+            &html,
+            "{{class.title@text}} / {{div.name@ownText}} / {{span.title}} / {{img[data-url^=\"https://\"]@data-url}} / {{helperFn('ok')}}",
+            "",
+        )
+        .unwrap();
+    assert_eq!(
+        css_out,
+        "Rust 书源 / 作者 / Rust 书源 / https://cdn.example.com/cover.jpg / lib:ok"
+    );
+}

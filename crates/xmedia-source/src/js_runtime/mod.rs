@@ -108,6 +108,28 @@ pub(super) struct SharedBridgeState {
     pub(super) sandbox: JsSandboxConfig,
 }
 
+fn format_caught_js_error(prefix: &str, err: rquickjs::CaughtError<'_>) -> String {
+    match err {
+        rquickjs::CaughtError::Exception(ex) => {
+            let name = ex
+                .as_object()
+                .get::<_, Option<String>>("name")
+                .ok()
+                .flatten()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "Error".to_string());
+            let msg = ex.message().unwrap_or_default();
+            let stack = ex.stack().unwrap_or_default();
+            if stack.trim().is_empty() {
+                format!("{prefix}: {name}: {msg}")
+            } else {
+                format!("{prefix}: {name}: {msg}\n{stack}")
+            }
+        }
+        other => format!("{prefix}: {other}"),
+    }
+}
+
 /// Reusable QuickJS sandbox session for one source operation (compiles `jsLib` once).
 pub struct JsExecutionContext {
     _runtime: Runtime,
@@ -218,7 +240,7 @@ impl JsExecutionContext {
             session.context.with(|ctx| {
                 ctx.eval_with_options::<(), _>(js_lib.as_str(), sloppy_eval_options())
                     .catch(&ctx)
-                    .map_err(|e| format!("加载数据源 jsLib 失败: {e}"))
+                    .map_err(|e| format_caught_js_error("加载数据源 jsLib 失败", e))
             })?;
         }
 
@@ -335,7 +357,7 @@ impl JsExecutionContext {
         self.context.with(|ctx| {
             ctx.eval_with_options::<(), _>(code, sloppy_eval_options())
                 .catch(&ctx)
-                .map_err(|e| format!("执行域 JS 初始化脚本失败: {e}"))
+                .map_err(|e| format_caught_js_error("执行域 JS 初始化脚本失败", e))
         })
     }
 
@@ -383,7 +405,7 @@ impl JsExecutionContext {
             let val: Value<'_> = runner
                 .call((code,))
                 .catch(&ctx)
-                .map_err(|e| format!("执行数据源 JS 规则失败: {e}"))?;
+                .map_err(|e| format_caught_js_error("执行数据源 JS 规则失败", e))?;
 
             js_value_to_rule_value(&ctx, val)
         })
@@ -409,7 +431,7 @@ impl JsExecutionContext {
             if !login_url_js.trim().is_empty() {
                 ctx.eval_with_options::<(), _>(login_url_js, sloppy_eval_options())
                     .catch(&ctx)
-                    .map_err(|e| format!("加载数据源 loginUrl 脚本失败: {e}"))?;
+                    .map_err(|e| format_caught_js_error("加载数据源 loginUrl 脚本失败", e))?;
             }
 
             if let Some(act) = action_js
@@ -418,7 +440,9 @@ impl JsExecutionContext {
                 let val: Value<'_> = ctx
                     .eval_with_options(act, sloppy_eval_options())
                     .catch(&ctx)
-                    .map_err(|e| format!("执行登录动作 '{act}' 失败: {e}"))?;
+                    .map_err(|e| {
+                        format_caught_js_error(&format!("执行登录动作 '{act}' 失败"), e)
+                    })?;
                 return js_value_to_rule_value(&ctx, val).map(|rv| rv.as_text());
             }
 
@@ -435,6 +459,10 @@ impl JsRuleEvaluator for JsExecutionContext {
         base_url: &str,
     ) -> Result<RuleValue, String> {
         JsExecutionContext::eval_rule_js(self, code, input, base_url)
+    }
+
+    fn check_active(&self) -> Result<(), String> {
+        JsExecutionContext::check_active(self)
     }
 }
 

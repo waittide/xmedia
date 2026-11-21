@@ -77,40 +77,32 @@ fn split_url_and_options(input: &str) -> Option<(&str, &str)> {
     let bytes = input.as_bytes();
     let mut depth = 0i32;
     let mut in_string = false;
-    let mut escape = false;
-    let mut brace_start = None;
 
-    for (idx, &b) in bytes.iter().enumerate() {
-        if in_string {
-            if escape {
-                escape = false;
-            } else if b == b'\\' {
-                escape = true;
-            } else if b == b'"' {
-                in_string = false;
+    for idx in (0..bytes.len()).rev() {
+        let b = bytes[idx];
+        if b == b'"' {
+            // A quote is escaped iff preceded by an odd number of consecutive backslashes.
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes.is_multiple_of(2) {
+                in_string = !in_string;
             }
             continue;
         }
+        if in_string {
+            continue;
+        }
         match b {
-            b'"' => in_string = true,
+            b'}' => depth += 1,
             b'{' => {
-                if depth == 0 {
-                    // Check if preceded by `,` (ignoring whitespace)
-                    let before = input[..idx].trim_end();
-                    if before.ends_with(',') {
-                        brace_start = Some(idx);
-                    }
-                }
-                depth += 1;
-            }
-            b'}' if depth > 0 => {
                 depth -= 1;
-                if depth == 0
-                    && idx == bytes.len() - 1
-                    && let Some(start) = brace_start
-                {
-                    let url_part = input[..start].trim_end().strip_suffix(',')?;
-                    return Some((url_part, &input[start..]));
+                if depth == 0 {
+                    let url_part = input[..idx].trim_end().strip_suffix(',')?;
+                    return Some((url_part, &input[idx..]));
                 }
             }
             _ => {}

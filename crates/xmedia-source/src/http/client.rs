@@ -4,6 +4,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use encoding_rs::Encoding;
+use regex::Regex;
 use reqwest::header::{COOKIE, HeaderMap, HeaderName, HeaderValue, SET_COOKIE, USER_AGENT};
 
 use super::ssrf::{SsrfSafeResolver, ssrf_redirect_policy, validate_target_url_static};
@@ -66,14 +67,16 @@ pub fn decode_response_bytes(
         return cow.into_owned();
     }
 
-    // Sniff HTML <meta charset="..."> in first 2 KiB
-    let sniff_len = bytes.len().min(2048);
-    let head_ascii = String::from_utf8_lossy(&bytes[..sniff_len]).to_ascii_lowercase();
-    if let Some(meta_cs) = extract_meta_charset(&head_ascii)
-        && let Some(enc) = Encoding::for_label(meta_cs.as_bytes())
-    {
-        let (cow, _, _) = enc.decode(bytes);
-        return cow.into_owned();
+    // Sniff HTML <meta ... charset=...> in first 2 KiB only for absent or HTML/XML Content-Type
+    if should_sniff_html_meta(content_type_header) {
+        let sniff_len = bytes.len().min(2048);
+        let head_ascii = String::from_utf8_lossy(&bytes[..sniff_len]).to_ascii_lowercase();
+        if let Some(meta_cs) = extract_meta_charset(&head_ascii)
+            && let Some(enc) = Encoding::for_label(meta_cs.as_bytes())
+        {
+            let (cow, _, _) = enc.decode(bytes);
+            return cow.into_owned();
+        }
     }
 
     if let Ok(utf8) = std::str::from_utf8(bytes) {
@@ -102,16 +105,37 @@ fn extract_charset_from_content_type(ct: &str) -> Option<String> {
     None
 }
 
+static META_CHARSET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?is)<meta(?:\s[^>]*?)?[\s;]charset\s*=\s*['"]?\s*([a-z0-9_-]+)"#)
+        .expect("valid meta charset regex")
+});
+
+fn should_sniff_html_meta(content_type_header: Option<&str>) -> bool {
+    let Some(ct) = content_type_header else {
+        return true;
+    };
+    let mime = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if mime.is_empty() {
+        return true;
+    }
+    matches!(
+        mime.as_str(),
+        "text/html" | "application/xhtml+xml" | "application/xml" | "text/xml"
+    )
+}
+
 fn extract_meta_charset(head_lower: &str) -> Option<String> {
-    if let Some(idx) = head_lower.find("charset=") {
-        let rest = &head_lower[idx + 8..];
-        let rest = rest.trim_start_matches(['"', '\'', ' ']);
-        let end = rest
-            .find(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-            .unwrap_or(rest.len());
-        let label = &rest[..end];
-        if !label.is_empty() {
-            return Some(label.to_string());
+    for caps in META_CHARSET_RE.captures_iter(head_lower) {
+        if let Some(m) = caps.get(1) {
+            let label = m.as_str().trim();
+            if !label.is_empty() && Encoding::for_label(label.as_bytes()).is_some() {
+                return Some(label.to_string());
+            }
         }
     }
     None

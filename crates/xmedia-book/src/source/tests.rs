@@ -60,6 +60,21 @@ fn js_sandbox_interrupts_infinite_loop_within_timeout() {
         err.contains("interrupted") || err.contains("失败"),
         "unexpected error: {err}"
     );
+
+    let mustache_src = LegadoBookSource {
+        book_source_name: "MustacheLoopTest".into(),
+        book_source_url: "https://example.com".into(),
+        search_url: Some("https://example.com/{{ while(true){} }}/search".into()),
+        rule_search: Some(Default::default()),
+        ..Default::default()
+    };
+    let mustache_err = engine
+        .search_sync(&mustache_src, SourceRuntimeState::default(), "test", 1)
+        .unwrap_err();
+    assert!(
+        mustache_err.contains("interrupted") || mustache_err.contains("失败"),
+        "mustache loop must fail with sandbox error, got: {mustache_err}"
+    );
 }
 
 #[tokio::test]

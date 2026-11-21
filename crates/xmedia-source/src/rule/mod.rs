@@ -119,6 +119,10 @@ pub trait JsRuleEvaluator {
         input: &RuleValue,
         base_url: &str,
     ) -> Result<RuleValue, String>;
+
+    fn check_active(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Evaluates a Legado rule to a single string (supports `<js>`, `@js:`, `{{...}}`, `##regex##rep`, `||`, `&&`, JSONPath, CSS/Legado shorthand).
@@ -423,6 +427,22 @@ pub fn split_js_pipeline(rule: &str) -> Option<(&str, &str, &str)> {
     None
 }
 
+fn is_benign_mustache_js_miss(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    if err.contains("InternalError:")
+        || err.contains("执行已取消")
+        || err.contains("执行超过单次操作总超时上限")
+        || err.contains("(interrupted)")
+        || lower.contains("out of memory")
+        || lower.contains("allocation failed")
+        || lower.contains("maximum call stack")
+        || lower.contains("stack overflow")
+    {
+        return false;
+    }
+    err.contains("SyntaxError:") || err.contains("ReferenceError:")
+}
+
 fn eval_mustache_template(
     template: &str,
     input: &RuleValue,
@@ -432,6 +452,9 @@ fn eval_mustache_template(
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(open) = rest.find("{{") {
+        if let Some(js_session) = js.as_deref() {
+            js_session.check_active()?;
+        }
         out.push_str(&rest[..open]);
         let after_open = &rest[open + 2..];
         let Some(close) = after_open.find("}}") else {
@@ -447,15 +470,23 @@ fn eval_mustache_template(
         {
             eval_non_js_single(input, expr, base_url)
         } else if let Some(js_session) = js.as_deref_mut() {
-            js_session
-                .eval_rule_js(expr, input, base_url)
-                .map(|v| v.as_text())
-                .unwrap_or_else(|_| eval_non_js_single(input, expr, base_url))
+            let eval_res = js_session.eval_rule_js(expr, input, base_url);
+            js_session.check_active()?;
+            match eval_res {
+                Ok(v) => v.as_text(),
+                Err(err) if is_benign_mustache_js_miss(&err) => {
+                    eval_non_js_single(input, expr, base_url)
+                }
+                Err(err) => return Err(err),
+            }
         } else {
             eval_non_js_single(input, expr, base_url)
         };
         out.push_str(&val);
         rest = &after_open[close + 2..];
+    }
+    if let Some(js_session) = js.as_deref() {
+        js_session.check_active()?;
     }
     out.push_str(rest);
     Ok(out)

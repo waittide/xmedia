@@ -261,3 +261,37 @@ fn js_rule_evaluator_trait_pipeline() {
         vec!["alpha", "beta"]
     );
 }
+
+#[test]
+fn css_attribute_selectors_with_colons_are_not_stripped_as_slice_filters() {
+    let html = RuleValue::Text(
+        r#"
+        <div>
+            <img data-url="http://bad.example/1.jpg"/>
+            <img data-url="https://good.example/2.jpg"/>
+            <img data-url="https://good.example/3.jpg"/>
+            <a href="/relative">Rel</a>
+            <a href="https://example.com/abs">Abs</a>
+        </div>
+        "#
+        .into(),
+    );
+
+    assert_eq!(
+        eval_rule_string(&html, r#"img[data-url^="https://"]@data-url"#, "", None).unwrap(),
+        "https://good.example/2.jpg\nhttps://good.example/3.jpg"
+    );
+    assert_eq!(
+        eval_rule_string(&html, r#"a[href*="://"]@href"#, "", None).unwrap(),
+        "https://example.com/abs"
+    );
+    assert_eq!(
+        eval_rule_string(&html, r#"img[data-url^="https://"][0]@data-url"#, "", None).unwrap(),
+        "https://good.example/2.jpg"
+    );
+    // Exclusion with comma-separated indices still works
+    assert_eq!(
+        eval_rule_string(&html, r#"img[!0,2]@data-url"#, "", None).unwrap(),
+        "https://good.example/2.jpg"
+    );
+}

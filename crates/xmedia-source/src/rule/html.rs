@@ -181,23 +181,30 @@ fn parse_legado_html_segment(seg: &str) -> (String, IndexFilter) {
         && s.ends_with(']')
     {
         let inside = s[open + 1..s.len() - 1].trim();
-        let is_index_bracket =
-            inside.starts_with('!') || inside.contains(':') || inside.parse::<isize>().is_ok();
-        if is_index_bracket {
-            if let Some(excl) = inside.strip_prefix('!') {
-                let ids: Vec<isize> = excl
-                    .split([',', ':'])
-                    .filter_map(|p| p.trim().parse::<isize>().ok())
-                    .collect();
-                filter = IndexFilter::Exclude(ids);
-            } else if let Some((a, b)) = inside.split_once(':') {
-                filter = IndexFilter::Slice(
-                    a.trim().parse::<isize>().ok(),
-                    b.trim().parse::<isize>().ok(),
-                );
-            } else if let Ok(idx) = inside.parse::<isize>() {
-                filter = IndexFilter::Single(idx);
-            }
+        if let Ok(idx) = inside.parse::<isize>() {
+            filter = IndexFilter::Single(idx);
+            s = s[..open].trim();
+        } else if let Some(excl) = inside.strip_prefix('!')
+            && !excl.trim().is_empty()
+            && excl.split(',').all(|p| p.trim().parse::<isize>().is_ok())
+        {
+            let ids = excl
+                .split(',')
+                .filter_map(|p| p.trim().parse::<isize>().ok())
+                .collect();
+            filter = IndexFilter::Exclude(ids);
+            s = s[..open].trim();
+        } else if !inside.contains('=')
+            && !inside.contains('"')
+            && !inside.contains('\'')
+            && let Some((a, b)) = inside.split_once(':')
+            && (a.trim().is_empty() || a.trim().parse::<isize>().is_ok())
+            && (b.trim().is_empty() || b.trim().parse::<isize>().is_ok())
+        {
+            filter = IndexFilter::Slice(
+                a.trim().parse::<isize>().ok(),
+                b.trim().parse::<isize>().ok(),
+            );
             s = s[..open].trim();
         }
     }

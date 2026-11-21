@@ -281,6 +281,44 @@ fn parse_legado_url_handles_commas_in_url_and_nested_braces() {
     let fallback = parse_legado_url(unclosed);
     assert_eq!(fallback.url, unclosed);
     assert!(fallback.options.method.is_none());
+
+    // Unbalanced `{` or `"` in URL before `,{...}` must not poison backwards scanner
+    let unbalanced_url = r#"https://api.example.com/search?q={"bad,{"method":"POST"}"#;
+    let parsed_unbalanced = parse_legado_url(unbalanced_url);
+    assert_eq!(
+        parsed_unbalanced.url,
+        r#"https://api.example.com/search?q={"bad"#
+    );
+    assert_eq!(parsed_unbalanced.options.method.as_deref(), Some("POST"));
+
+    // Braces in URL path + commas in query + `}` inside JSON string value
+    let brace_in_str = r#"https://api.example.com/v1/{id}/items?a=1,2,{"method":"POST","headers":{"X-Test":"a}b"}}"#;
+    let parsed_brace_str = parse_legado_url(brace_in_str);
+    assert_eq!(
+        parsed_brace_str.url,
+        "https://api.example.com/v1/{id}/items?a=1,2"
+    );
+    assert_eq!(parsed_brace_str.options.method.as_deref(), Some("POST"));
+    assert_eq!(
+        parsed_brace_str.options.headers.as_ref().unwrap()["X-Test"].as_str(),
+        Some("a}b")
+    );
+
+    // Escaped quotes & braces inside JSON string value
+    let escaped_quote = r#"https://api.example.com/x,{"method":"POST","body":"a\"b}c\\"}"#;
+    let parsed_escaped = parse_legado_url(escaped_quote);
+    assert_eq!(parsed_escaped.url, "https://api.example.com/x");
+    assert_eq!(parsed_escaped.options.method.as_deref(), Some("POST"));
+    assert_eq!(
+        parsed_escaped.options.body.as_ref().unwrap().as_str(),
+        Some(r#"a"b}c\"#)
+    );
+
+    // Malformed trailing `,{not_json}` falls back to raw URL
+    let malformed = "https://api.example.com/search?q=1,{not_json}";
+    let parsed_malformed = parse_legado_url(malformed);
+    assert_eq!(parsed_malformed.url, malformed);
+    assert!(parsed_malformed.options.method.is_none());
 }
 
 #[test]
@@ -331,6 +369,56 @@ fn decode_response_bytes_priority_order() {
     let (sjis_bytes, _, _) = encoding_rs::SHIFT_JIS.encode("日本語のテスト文字列です");
     let decoded_sjis = decode_response_bytes(&sjis_bytes, None, None);
     assert_eq!(decoded_sjis, "日本語のテスト文字列です");
+}
+
+#[test]
+fn decode_response_bytes_preserves_utf8_json_with_charset_literal_and_decodes_gbk_meta() {
+    let expected = r#"{"note":"legacy page had charset=gbk","title":"中文标题"}"#;
+    let utf8_json = expected.as_bytes();
+
+    for ct in [
+        Some("application/json"),
+        Some("application/javascript"),
+        Some("text/javascript"),
+        Some("text/plain"),
+        None,
+    ] {
+        assert_eq!(
+            decode_response_bytes(utf8_json, None, ct),
+            expected,
+            "UTF-8 JSON corrupted for Content-Type={ct:?}"
+        );
+    }
+
+    // Even if JSON embeds an HTML `<meta charset="gbk">` string, non-HTML Content-Type skips sniffing
+    let expected_with_meta = r#"{"html":"<meta charset=\"gbk\">","title":"中文标题"}"#;
+    assert_eq!(
+        decode_response_bytes(
+            expected_with_meta.as_bytes(),
+            None,
+            Some("application/json")
+        ),
+        expected_with_meta
+    );
+
+    // Actual GBK HTML with `<meta charset="gbk">` still decodes
+    let (gbk_body, _, _) = encoding_rs::GBK.encode("第一章 诡秘");
+    let mut gbk_html = br#"<html><head><meta charset="gbk"></head><body>"#.to_vec();
+    gbk_html.extend_from_slice(&gbk_body);
+    let decoded_gbk = decode_response_bytes(&gbk_html, None, Some("text/html"));
+    assert!(decoded_gbk.contains("第一章 诡秘"), "got: {decoded_gbk}");
+
+    // Legacy `<meta http-equiv="Content-Type" content="text/html; charset=gb18030">` decodes too
+    let (gb18030_body, _, _) = encoding_rs::GB18030.encode("第二章 非凡");
+    let mut gb18030_html =
+        br#"<html><head><meta http-equiv="Content-Type" content="text/html; charset=gb18030"></head>"#
+            .to_vec();
+    gb18030_html.extend_from_slice(&gb18030_body);
+    let decoded_gb18030 = decode_response_bytes(&gb18030_html, None, None);
+    assert!(
+        decoded_gb18030.contains("第二章 非凡"),
+        "got: {decoded_gb18030}"
+    );
 }
 
 #[tokio::test]
