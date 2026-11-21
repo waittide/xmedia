@@ -39,6 +39,7 @@ let rendition: Rendition | null = null
 let locationsReady = false
 let lastKnownCfi = ''
 let unmounted = false
+let renderSeq = 0
 
 interface EpubLocationsWithCache {
   generate(chars?: number): Promise<string[]>
@@ -121,6 +122,7 @@ function applyRenditionTheme(): void {
   if (!rendition) return
   const palette = themeStore.activePalette
   const r = themeStore.reader
+  const verticalPad = r.flow === 'scrolled' ? 16 : 0
   rendition.themes.default({
     body: {
       background: `${palette.canvas} !important`,
@@ -128,12 +130,59 @@ function applyRenditionTheme(): void {
       'font-family': `${resolveFontStack(r.font_family)} !important`,
       'font-size': `${r.font_size}px !important`,
       'line-height': `${r.line_height} !important`,
-      padding: `0 ${r.margin_px}px !important`,
+      padding: `${verticalPad}px ${r.margin_px}px !important`,
     },
     a: {
       color: `${palette.accent} !important`,
     },
   })
+}
+
+function destroyRendition(): void {
+  const r = rendition as EpubRenditionWithOff | null
+  if (r && typeof r.off === 'function') {
+    r.off('keydown', handleRenditionKeydown)
+    r.off('relocated', handleRelocated)
+  }
+  rendition?.destroy()
+  rendition = null
+}
+
+async function mountRendition(target?: string): Promise<void> {
+  if (!book || !mountEl.value || unmounted) return
+  const seq = ++renderSeq
+  destroyRendition()
+
+  const isScrolled = themeStore.reader.flow === 'scrolled'
+  const localRendition = book.renderTo(mountEl.value, {
+    width: '100%',
+    height: '100%',
+    manager: isScrolled ? 'continuous' : 'default',
+    flow: isScrolled ? 'scrolled' : 'paginated',
+    spread: 'none',
+    allowScriptedContent: false,
+  })
+  rendition = localRendition
+
+  // Ensure arrow-key paging still works after clicking inside the epub iframe
+  localRendition.on('keydown', handleRenditionKeydown)
+  applyRenditionTheme()
+
+  await localRendition.display(target || undefined)
+  if (unmounted || seq !== renderSeq) {
+    if (rendition === localRendition) {
+      destroyRendition()
+    } else {
+      const r = localRendition as EpubRenditionWithOff
+      if (typeof r.off === 'function') {
+        r.off('keydown', handleRenditionKeydown)
+      }
+      localRendition.destroy()
+    }
+    return
+  }
+
+  localRendition.on('relocated', handleRelocated)
 }
 
 async function navigateTo(hrefOrCfi: string): Promise<void> {
@@ -221,21 +270,6 @@ onMounted(async () => {
     }
     book = localBook
 
-    const flowMode = themeStore.reader.flow === 'scrolled' ? 'scrolled-doc' : 'paginated'
-    const localRendition = localBook.renderTo(mountEl.value, {
-      width: '100%',
-      height: '100%',
-      flow: flowMode,
-      spread: 'none',
-      allowScriptedContent: false,
-    })
-    rendition = localRendition
-
-    // Ensure arrow-key paging still works after clicking inside the epub iframe
-    localRendition.on('keydown', handleRenditionKeydown)
-
-    applyRenditionTheme()
-
     const cacheKey = buildLocationsCacheKey(props.bookId, buffer.byteLength)
     const cachedLocations = readCachedLocations(cacheKey)
     const locationsApi = localBook.locations as unknown as EpubLocationsWithCache
@@ -249,21 +283,14 @@ onMounted(async () => {
     }
 
     const startTarget = props.initialLocation?.locator || undefined
-    await localRendition.display(startTarget)
+    await mountRendition(startTarget)
     if (unmounted) {
-      const r = localRendition as EpubRenditionWithOff
-      if (typeof r.off === 'function') {
-        r.off('keydown', handleRenditionKeydown)
-      }
-      localRendition.destroy()
+      destroyRendition()
       localBook.destroy()
-      if (rendition === localRendition) rendition = null
       if (book === localBook) book = null
       return
     }
     loading.value = false
-
-    localRendition.on('relocated', handleRelocated)
 
     if (!locationsReady) {
       const currentBook = localBook
@@ -327,24 +354,21 @@ watch(
 
 watch(
   () => themeStore.reader.flow,
-  (nextFlow) => {
-    if (!rendition) return
-    rendition.flow(nextFlow === 'scrolled' ? 'scrolled-doc' : 'paginated')
-    applyRenditionTheme()
+  () => {
+    if (!book || !mountEl.value || loading.value) return
+    const resumeTarget = lastKnownCfi || props.initialLocation?.locator || undefined
+    void mountRendition(resumeTarget).catch(() => {
+      // ignore interrupted re-render when rapidly toggling flow mode
+    })
   },
 )
 
 onBeforeUnmount(() => {
   unmounted = true
+  renderSeq += 1
   window.removeEventListener('keydown', handleKeydown)
-  const r = rendition as EpubRenditionWithOff | null
-  if (r && typeof r.off === 'function') {
-    r.off('keydown', handleRenditionKeydown)
-    r.off('relocated', handleRelocated)
-  }
-  rendition?.destroy()
+  destroyRendition()
   book?.destroy()
-  rendition = null
   book = null
 })
 </script>

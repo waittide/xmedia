@@ -16,12 +16,14 @@ const props = withDefaults(
     options: readonly SegmentedOption<T>[]
     size?: 'sm' | 'md'
     showCheck?: boolean
+    fullWidth?: boolean
     disabled?: boolean
     ariaLabel?: string
   }>(),
   {
     size: 'md',
     showCheck: true,
+    fullWidth: false,
     disabled: false,
     ariaLabel: '',
   },
@@ -93,8 +95,8 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
   <div
     role="radiogroup"
     :aria-label="ariaLabel || undefined"
-    class="inline-flex items-center overflow-hidden rounded-full border border-[var(--md-sys-color-outline)] bg-transparent"
-    :class="disabled ? 'opacity-38' : ''"
+    class="max-w-full items-center overflow-hidden rounded-full border border-[var(--md-sys-color-outline)] bg-transparent"
+    :class="[fullWidth ? 'flex w-full' : 'inline-flex', disabled ? 'opacity-38' : '']"
   >
     <button
       v-for="(opt, idx) in options"
@@ -106,9 +108,16 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
       :tabindex="modelValue === opt.value ? 0 : -1"
       :disabled="isOptionDisabled(opt)"
       :title="opt.title || opt.label"
-      class="md-state md-touch-target inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap font-medium transition focus-visible:z-10 disabled:cursor-not-allowed disabled:opacity-38"
+      class="md-state md-touch-target inline-flex cursor-pointer items-center justify-center whitespace-nowrap font-medium transition focus-visible:z-10 disabled:cursor-not-allowed disabled:opacity-38"
       :class="[
-        size === 'sm' ? 'h-9 px-3.5 text-xs' : 'md-label-large h-10 px-4',
+        fullWidth ? 'min-w-0 flex-1' : '',
+        size === 'sm'
+          ? fullWidth
+            ? 'h-9 gap-1 px-1.5 text-xs'
+            : 'h-9 gap-1.5 px-3.5 text-xs'
+          : fullWidth
+            ? 'md-label-large h-10 gap-1.5 px-2.5'
+            : 'md-label-large h-10 gap-1.5 px-4',
         idx > 0 ? 'border-l border-[var(--md-sys-color-outline)]' : '',
         modelValue === opt.value
           ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
@@ -119,10 +128,14 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
     >
       <LuCheck
         v-if="showCheck && modelValue === opt.value"
-        class="h-4 w-4 shrink-0"
+        :class="size === 'sm' ? 'h-3.5 w-3.5 shrink-0' : 'h-4 w-4 shrink-0'"
       />
-      <component :is="opt.icon" v-else-if="opt.icon" class="h-4 w-4 shrink-0" />
-      <span>{{ opt.label }}</span>
+      <component
+        :is="opt.icon"
+        v-else-if="opt.icon"
+        :class="size === 'sm' ? 'h-3.5 w-3.5 shrink-0' : 'h-4 w-4 shrink-0'"
+      />
+      <span class="truncate">{{ opt.label }}</span>
     </button>
   </div>
 </template>

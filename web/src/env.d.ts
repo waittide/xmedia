@@ -59,6 +59,7 @@ declare module 'epubjs' {
       options?: {
         width?: string | number
         height?: string | number
+        manager?: 'default' | 'continuous'
         flow?: 'paginated' | 'scrolled' | 'scrolled-doc'
         spread?: 'none' | 'auto' | 'always'
         allowScriptedContent?: boolean

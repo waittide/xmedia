@@ -477,7 +477,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
       <!-- Drawer for TOC / Bookmarks / Typography -->
       <aside
         v-if="activePanel !== 'none'"
-        class="absolute bottom-0 right-0 top-0 z-30 flex w-80 flex-col border-l border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)]"
+        class="absolute bottom-0 right-0 top-0 z-30 flex w-80 max-w-full flex-col border-l border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] sm:w-[336px]"
       >
         <div class="flex items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/55 px-4 py-3">
           <h2 class="text-sm font-bold">
@@ -556,7 +556,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
         </div>
 
         <!-- Typography & Flow Panel -->
-        <div v-else class="flex-1 space-y-5 overflow-y-auto p-5 text-xs">
+        <div v-else class="flex-1 space-y-5 overflow-x-hidden overflow-y-auto p-4 text-xs">
           <div v-if="book?.format === 'epub' && !book.online_tracking">
             <label class="mb-2 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('reader.flowMode') }}
@@ -564,7 +564,8 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
             <MdSegmentedButton
               :model-value="themeStore.reader.flow"
               :options="flowOptions"
-              class="w-full"
+              size="sm"
+              full-width
               @update:model-value="(v) => themeStore.updateReaderPreferences({ flow: v })"
             />
           </div>
@@ -576,6 +577,8 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
             <MdSegmentedButton
               :model-value="themeStore.reader.font_family"
               :options="fontOptions"
+              size="sm"
+              full-width
               @update:model-value="(v) => themeStore.updateReaderPreferences({ font_family: v })"
             />
           </div>
@@ -583,7 +586,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
           <div>
             <div class="mb-1.5 flex justify-between">
               <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.fontSize') }}</span>
-              <span>{{ themeStore.reader.font_size }} px</span>
+              <span class="font-mono tabular-nums">{{ themeStore.reader.font_size }} px</span>
             </div>
             <AppSlider
               :model-value="themeStore.reader.font_size"
@@ -598,7 +601,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
           <div>
             <div class="mb-1.5 flex justify-between">
               <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.lineHeight') }}</span>
-              <span>{{ themeStore.reader.line_height.toFixed(2) }}</span>
+              <span class="font-mono tabular-nums">{{ themeStore.reader.line_height.toFixed(2) }}</span>
             </div>
             <AppSlider
               :model-value="themeStore.reader.line_height"
@@ -613,7 +616,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
           <div>
             <div class="mb-1.5 flex justify-between">
               <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.margin') }}</span>
-              <span>{{ themeStore.reader.margin_px }} px</span>
+              <span class="font-mono tabular-nums">{{ themeStore.reader.margin_px }} px</span>
             </div>
             <AppSlider
               :model-value="themeStore.reader.margin_px"

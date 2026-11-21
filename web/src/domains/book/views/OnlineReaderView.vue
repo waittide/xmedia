@@ -55,16 +55,35 @@ const catalogStore = useCatalogStore()
 const themeStore = useThemeStore()
 const snackbar = useSnackbarStore()
 
+interface LoadedOnlineChapter {
+  pos: number
+  chapterIndex: number
+  title: string
+  paragraphs: string[]
+  cached: boolean
+}
+
 const readerCtx = ref<ReaderContext | null>(null)
 const chapters = ref<OnlineChapterItem[]>([])
 const activeIndex = ref(0)
-const chapterTitle = ref('')
-const paragraphs = ref<string[]>([])
+const loadedChapters = ref<LoadedOnlineChapter[]>([])
 const loadingToc = ref(false)
 const loadingContent = ref(false)
-const contentCached = ref(false)
+const appendingNext = ref(false)
+const appendError = ref<string | null>(null)
 const errorMsg = ref<string | null>(null)
 const savingShelf = ref(false)
+
+const activeLoadedChapter = computed<LoadedOnlineChapter | null>(
+  () =>
+    loadedChapters.value.find((c) => c.pos === activeIndex.value) ??
+    loadedChapters.value[0] ??
+    null,
+)
+const chapterTitle = computed(
+  () => activeLoadedChapter.value?.title || currentChapter.value?.title || '',
+)
+const contentCached = computed(() => activeLoadedChapter.value?.cached ?? false)
 
 const tocOpen = ref(false)
 const tocQuery = ref('')
@@ -77,9 +96,12 @@ const downloadOpen = ref(false)
 
 const maxWidthPx = computed(() => Math.max(520, 920 - (themeStore.reader.margin_px || 48) * 2))
 const contentScrollRef = ref<HTMLElement | null>(null)
+const AUTO_LOAD_THRESHOLD_PX = 400
 let loadSeq = 0
 let tocSeq = 0
 let unmounted = false
+let progressSyncTimer: ReturnType<typeof setTimeout> | null = null
+let lastPersistedPos = -1
 
 // Sync typography preferences directly with themeStore (shared with local book reader)
 const fontSize = computed<number>({
@@ -129,13 +151,24 @@ const prevReadableIndex = computed<number | null>(() => {
   return null
 })
 
-const nextReadableIndex = computed<number | null>(() => {
-  for (let i = activeIndex.value + 1; i < chapters.value.length; i += 1) {
+function findNextReadablePos(fromPos: number): number | null {
+  for (let i = fromPos + 1; i < chapters.value.length; i += 1) {
     const ch = chapters.value[i]
     if (ch && !ch.is_volume && ch.url) return i
   }
   return null
+}
+
+const nextReadableIndex = computed<number | null>(() => findNextReadablePos(activeIndex.value))
+
+const lastLoadedPos = computed<number | null>(() => {
+  const last = loadedChapters.value[loadedChapters.value.length - 1]
+  return last ? last.pos : null
 })
+
+const nextAppendableIndex = computed<number | null>(() =>
+  lastLoadedPos.value === null ? nextReadableIndex.value : findNextReadablePos(lastLoadedPos.value),
+)
 
 const downloadTarget = computed<OnlineDownloadTarget | null>(() => {
   const c = readerCtx.value
@@ -505,6 +538,7 @@ async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<v
       const firstReadable = tocRes.chapters.findIndex((c) => !c.is_volume && Boolean(c.url))
       if (firstReadable >= 0) idx = firstReadable
     }
+    loadingToc.value = false
     await openChapter(idx, false)
   } catch (err) {
     if (unmounted || seq !== tocSeq) return
@@ -516,16 +550,77 @@ async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<v
   }
 }
 
+function clearProgressSyncTimer(): void {
+  if (progressSyncTimer) {
+    clearTimeout(progressSyncTimer)
+    progressSyncTimer = null
+  }
+}
+
+function persistReadingProgress(pos: number, title: string, immediate = false): void {
+  const ctx = readerCtx.value
+  if (!ctx || unmounted) return
+  if (pos === lastPersistedPos && !immediate) return
+
+  const commit = () => {
+    const curCtx = readerCtx.value
+    if (!curCtx || unmounted) return
+    lastPersistedPos = pos
+    curCtx.currentChapterIndex = pos
+    syncContextToUrlAndStorage(curCtx)
+    if (curCtx.shelfId) {
+      void onlineBookApi
+        .updateShelfBook(curCtx.shelfId, {
+          current_chapter_index: pos,
+          current_chapter_title: title,
+          total_chapters: chapters.value.length,
+          last_chapter: chapters.value[chapters.value.length - 1]?.title ?? null,
+        })
+        .catch(() => {})
+    }
+  }
+
+  clearProgressSyncTimer()
+  if (immediate) {
+    commit()
+  } else {
+    progressSyncTimer = setTimeout(() => {
+      progressSyncTimer = null
+      commit()
+    }, 300)
+  }
+}
+
+function prefetchReadableChapter(targetPos: number | null, sourceId: string): void {
+  const ctx = readerCtx.value
+  if (!ctx || targetPos === null) return
+  const nextCh = chapters.value[targetPos]
+  if (!nextCh || nextCh.is_volume || !nextCh.url) return
+  void onlineBookApi
+    .fetchContent(
+      sourceId,
+      nextCh.url,
+      buildBookJsCtxFrom(ctx, nextCh.index, nextCh.title),
+      { index: nextCh.index, title: nextCh.title, url: nextCh.url },
+      false,
+    )
+    .catch(() => {})
+}
+
 async function openChapter(pos: number, forceRefresh = false): Promise<void> {
   const ctx = readerCtx.value
   const ch = chapters.value[pos]
   if (!ctx || !ch || ch.is_volume || !ch.url) return
 
+  clearProgressSyncTimer()
   const seq = ++loadSeq
   const sourceId = ctx.sourceId
   const bookUrl = ctx.bookUrl
 
   activeIndex.value = pos
+  loadedChapters.value = []
+  appendingNext.value = false
+  appendError.value = null
   tocOpen.value = false
   loadingContent.value = true
   errorMsg.value = null
@@ -547,12 +642,22 @@ async function openChapter(pos: number, forceRefresh = false): Promise<void> {
       return
     }
 
-    chapterTitle.value = res.content.title || ch.title
-    paragraphs.value = res.content.content
+    const resolvedTitle = res.content.title || ch.title
+    const parsedParagraphs = res.content.content
       .split(/\n+/)
       .map((s) => s.trim())
       .filter(Boolean)
-    contentCached.value = res.cached
+
+    loadedChapters.value = [
+      {
+        pos,
+        chapterIndex: ch.index,
+        title: resolvedTitle,
+        paragraphs: parsedParagraphs,
+        cached: res.cached,
+      },
+    ]
+    loadingContent.value = false
 
     await nextTick()
     if (unmounted || seq !== loadSeq) return
@@ -561,34 +666,20 @@ async function openChapter(pos: number, forceRefresh = false): Promise<void> {
     }
 
     // Persist reading progress in URL query, sessionStorage, and online shelf
-    ctx.currentChapterIndex = pos
-    syncContextToUrlAndStorage(ctx)
-    if (ctx.shelfId) {
-      void onlineBookApi
-        .updateShelfBook(ctx.shelfId, {
-          current_chapter_index: pos,
-          current_chapter_title: chapterTitle.value,
-          total_chapters: chapters.value.length,
-          last_chapter: chapters.value[chapters.value.length - 1]?.title ?? null,
-        })
-        .catch(() => {})
-    }
+    persistReadingProgress(pos, resolvedTitle, true)
 
     // Prefetch next chapter silently into server disk cache
-    const nextPos = nextReadableIndex.value
-    if (nextPos !== null) {
-      const nextCh = chapters.value[nextPos]
-      if (nextCh && nextCh.url) {
-        void onlineBookApi
-          .fetchContent(
-            sourceId,
-            nextCh.url,
-            buildBookJsCtxFrom(ctx, nextCh.index, nextCh.title),
-            { index: nextCh.index, title: nextCh.title, url: nextCh.url },
-            false,
-          )
-          .catch(() => {})
-      }
+    const nextPos = findNextReadablePos(pos)
+    prefetchReadableChapter(nextPos, sourceId)
+
+    // If a short non-empty chapter doesn't fill the viewport, auto-append one next chapter so scroll works
+    if (
+      parsedParagraphs.length > 0 &&
+      nextPos !== null &&
+      contentScrollRef.value &&
+      contentScrollRef.value.scrollHeight <= contentScrollRef.value.clientHeight + 120
+    ) {
+      void appendNextChapter()
     }
   } catch (err) {
     if (unmounted || seq !== loadSeq) return
@@ -597,6 +688,109 @@ async function openChapter(pos: number, forceRefresh = false): Promise<void> {
     if (!unmounted && seq === loadSeq) {
       loadingContent.value = false
     }
+  }
+}
+
+async function appendNextChapter(): Promise<void> {
+  const ctx = readerCtx.value
+  const targetPos = nextAppendableIndex.value
+  if (!ctx || targetPos === null) return
+  if (loadingToc.value || loadingContent.value || appendingNext.value) return
+  if (loadedChapters.value.some((c) => c.pos === targetPos)) return
+
+  const ch = chapters.value[targetPos]
+  if (!ch || ch.is_volume || !ch.url) return
+
+  const seq = loadSeq
+  const sourceId = ctx.sourceId
+  const bookUrl = ctx.bookUrl
+  appendingNext.value = true
+  appendError.value = null
+
+  try {
+    const res = await onlineBookApi.fetchContent(
+      sourceId,
+      ch.url,
+      buildBookJsCtxFrom(ctx, ch.index, ch.title),
+      { index: ch.index, title: ch.title, url: ch.url },
+      false,
+    )
+    if (
+      unmounted ||
+      seq !== loadSeq ||
+      readerCtx.value?.sourceId !== sourceId ||
+      readerCtx.value?.bookUrl !== bookUrl
+    ) {
+      return
+    }
+    if (loadedChapters.value.some((c) => c.pos === targetPos)) return
+
+    const resolvedTitle = res.content.title || ch.title
+    const parsedParagraphs = res.content.content
+      .split(/\n+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+
+    loadedChapters.value.push({
+      pos: targetPos,
+      chapterIndex: ch.index,
+      title: resolvedTitle,
+      paragraphs: parsedParagraphs,
+      cached: res.cached,
+    })
+
+    // Silently prefetch the chapter after the newly appended one
+    prefetchReadableChapter(findNextReadablePos(targetPos), sourceId)
+  } catch (err) {
+    if (unmounted || seq !== loadSeq) return
+    appendError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    if (!unmounted && seq === loadSeq) {
+      appendingNext.value = false
+    }
+  }
+}
+
+function handleContentScroll(): void {
+  const el = contentScrollRef.value
+  if (!el || loadingContent.value || loadingToc.value || loadedChapters.value.length === 0) return
+
+  // Determine which loaded chapter is currently in view
+  const containerRect = el.getBoundingClientRect()
+  const anchorY = containerRect.top + Math.min(200, containerRect.height * 0.35)
+  const sections = el.querySelectorAll<HTMLElement>('[data-chapter-pos]')
+  let visiblePos = loadedChapters.value[0]!.pos
+  for (const sec of sections) {
+    const rect = sec.getBoundingClientRect()
+    if (rect.top <= anchorY) {
+      const parsed = Number.parseInt(sec.dataset.chapterPos ?? '', 10)
+      if (Number.isFinite(parsed)) {
+        visiblePos = parsed
+      }
+    } else {
+      break
+    }
+  }
+
+  if (visiblePos !== activeIndex.value) {
+    activeIndex.value = visiblePos
+    const item = loadedChapters.value.find((c) => c.pos === visiblePos)
+    const title = item?.title || chapters.value[visiblePos]?.title || ''
+    persistReadingProgress(visiblePos, title, false)
+    if (readerCtx.value) {
+      prefetchReadableChapter(findNextReadablePos(visiblePos), readerCtx.value.sourceId)
+    }
+  }
+
+  // Auto-append next chapter when scrolling close to bottom
+  const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
+  if (
+    remaining <= AUTO_LOAD_THRESHOLD_PX &&
+    !appendingNext.value &&
+    !appendError.value &&
+    nextAppendableIndex.value !== null
+  ) {
+    void appendNextChapter()
   }
 }
 
@@ -778,6 +972,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearProgressSyncTimer()
   unmounted = true
   loadSeq += 1
   tocSeq += 1
@@ -913,6 +1108,7 @@ onBeforeUnmount(() => {
     <div
       ref="contentScrollRef"
       class="flex-1 overflow-y-auto px-4 py-8 sm:px-8"
+      @scroll.passive="handleContentScroll"
     >
       <div
         class="mx-auto"
@@ -955,38 +1151,69 @@ onBeforeUnmount(() => {
           class="pb-16"
           :style="{ fontFamily: fontFamilyStyle }"
         >
-          <h1
-            class="mb-8 text-center font-bold tracking-tight"
-            :style="{ fontSize: `${Math.round(fontSize * 1.3)}px` }"
+          <section
+            v-for="(item, itemIdx) in loadedChapters"
+            :key="`chapter-${item.pos}-${item.chapterIndex}`"
+            :data-chapter-pos="item.pos"
+            :class="itemIdx > 0 ? 'mt-14 border-t border-[var(--md-sys-color-outline-variant)]/45 pt-12' : ''"
           >
-            {{ chapterTitle }}
-          </h1>
-
-          <div
-            class="space-y-4 select-text"
-            :style="{
-              fontSize: `${fontSize}px`,
-              lineHeight: String(lineHeight),
-            }"
-          >
-            <p
-              v-for="(para, idx) in paragraphs"
-              :key="`p-${idx}`"
-              class="indent-[2em] break-words"
+            <h1
+              class="mb-8 text-center font-bold tracking-tight"
+              :style="{ fontSize: `${Math.round(fontSize * 1.3)}px` }"
             >
-              {{ para }}
+              {{ item.title }}
+            </h1>
+
+            <div
+              class="space-y-4 select-text"
+              :style="{
+                fontSize: `${fontSize}px`,
+                lineHeight: String(lineHeight),
+              }"
+            >
+              <p
+                v-for="(para, idx) in item.paragraphs"
+                :key="`p-${item.pos}-${idx}`"
+                class="indent-[2em] break-words"
+              >
+                {{ para }}
+              </p>
+            </div>
+
+            <p
+              v-if="item.paragraphs.length === 0"
+              class="py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            >
+              本章正文为空，可点击右上角刷新重试或切换书源。
             </p>
+          </section>
+
+          <!-- Continuous Scroll Footer Status -->
+          <div class="mt-10 flex flex-col items-center gap-3 text-xs text-[var(--md-sys-color-on-surface-variant)]">
+            <div v-if="appendingNext" class="flex items-center gap-2 py-2">
+              <LuLoader2 class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
+              <span>正在自动加载下一章…</span>
+            </div>
+            <div
+              v-else-if="appendError"
+              class="flex flex-wrap items-center justify-center gap-2 rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-2.5 text-[var(--md-sys-color-on-error-container)]"
+            >
+              <span>自动加载下一章失败：{{ appendError }}</span>
+              <button
+                type="button"
+                class="md-btn md-btn-sm md-btn-filled md-state"
+                @click="appendNextChapter()"
+              >
+                重试
+              </button>
+            </div>
+            <span v-else-if="nextAppendableIndex === null && loadedChapters.length > 0" class="py-1 opacity-75">
+              已读至最后一章
+            </span>
           </div>
 
-          <p
-            v-if="paragraphs.length === 0"
-            class="py-12 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            本章正文为空，可点击右上角刷新重试或切换书源。
-          </p>
-
           <!-- Chapter Navigation Footer -->
-          <div class="mt-12 flex items-center justify-between gap-3 border-t border-[var(--md-sys-color-outline-variant)]/45 pt-6">
+          <div class="mt-6 flex items-center justify-between gap-3 border-t border-[var(--md-sys-color-outline-variant)]/45 pt-6">
             <button
               type="button"
               :disabled="prevReadableIndex === null"
@@ -1008,9 +1235,9 @@ onBeforeUnmount(() => {
 
             <button
               type="button"
-              :disabled="nextReadableIndex === null"
+              :disabled="nextAppendableIndex === null || appendingNext"
               class="md-btn md-btn-filled md-state disabled:opacity-40"
-              @click="nextReadableIndex !== null && openChapter(nextReadableIndex)"
+              @click="nextAppendableIndex !== null && openChapter(nextAppendableIndex)"
             >
               <span>下一章</span>
               <LuChevronRight class="h-4 w-4" />
@@ -1036,6 +1263,8 @@ onBeforeUnmount(() => {
           <MdSegmentedButton
             :model-value="themeStore.reader.font_family"
             :options="fontOptions"
+            size="sm"
+            full-width
             @update:model-value="(v) => themeStore.updateReaderPreferences({ font_family: v })"
           />
         </div>
