@@ -2,6 +2,7 @@ use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::domain::reading::SeriesReaderPref;
+use crate::source::model::SourceRuntimeState;
 
 #[derive(Debug, toasty::Model)]
 #[table = "comic_series"]
@@ -183,4 +184,30 @@ pub(crate) struct ComicBookmarkModel {
     pub page_number: i64,
     pub title: String,
     pub created_at: Timestamp,
+}
+
+#[derive(Debug, toasty::Model)]
+#[table = "comic_sources"]
+pub(crate) struct ComicSourceRecordModel {
+    #[key]
+    pub id: Uuid,
+
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+
+    #[column(type = text)]
+    pub raw_json: String,
+
+    #[column(type = text)]
+    pub runtime_state: toasty::Json<SourceRuntimeState>,
+
+    pub last_test_ok: Option<bool>,
+    pub last_test_msg: Option<String>,
+
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
 }

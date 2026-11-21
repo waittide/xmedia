@@ -19,6 +19,8 @@ use super::models::{
     ComicSeriesModel, ComicSeriesReaderPrefModel, ComicShelfModel,
 };
 
+pub use super::source_repository::ToastyComicSourceRepository;
+
 fn db_err(err: impl std::fmt::Display) -> DomainError {
     DomainError::Persistence(err.to_string())
 }

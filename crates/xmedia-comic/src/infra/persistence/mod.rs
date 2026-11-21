@@ -1,5 +1,6 @@
 pub(crate) mod models;
 pub mod repositories;
+mod source_repository;
 
 use toasty::Db;
 use toasty::schema::{Model, ModelSet};
@@ -8,7 +9,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use models::{
     ComicBookmarkModel, ComicChapterModel, ComicChapterProgressModel, ComicFavoriteSeriesModel,
-    ComicSeriesModel, ComicSeriesReaderPrefModel, ComicShelfModel,
+    ComicSeriesModel, ComicSeriesReaderPrefModel, ComicShelfModel, ComicSourceRecordModel,
 };
 
 pub fn register_comic_models(set: &mut ModelSet) {
@@ -19,6 +20,7 @@ pub fn register_comic_models(set: &mut ModelSet) {
     <ComicFavoriteSeriesModel as Model>::register(set);
     <ComicShelfModel as Model>::register(set);
     <ComicBookmarkModel as Model>::register(set);
+    <ComicSourceRecordModel as Model>::register(set);
 }
 
 async fn push_single_comic_model<M: Model>(
@@ -96,6 +98,14 @@ pub async fn ensure_comic_schema(db: &mut Db, database_url: &str) -> DomainResul
     }
     if ComicBookmarkModel::all().limit(1).exec(db).await.is_err() {
         push_single_comic_model::<ComicBookmarkModel>(database_url, "comic_bookmarks").await?;
+    }
+    if ComicSourceRecordModel::all()
+        .limit(1)
+        .exec(db)
+        .await
+        .is_err()
+    {
+        push_single_comic_model::<ComicSourceRecordModel>(database_url, "comic_sources").await?;
     }
     Ok(())
 }

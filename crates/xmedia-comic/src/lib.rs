@@ -2,9 +2,14 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
+pub mod source;
+
+#[cfg(test)]
+mod online_tests;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use toasty::Db;
 use xmedia_core::application::library::LibraryService;
@@ -15,15 +20,18 @@ use xmedia_core::domain::repository::LibraryRepository;
 use application::ComicServices;
 use application::catalog::ComicCatalogService;
 use application::lifecycle::ComicDomainLifecycle;
+use application::online::ComicOnlineService;
 use application::opds::ComicOpdsService;
 use application::reading::ComicReadingService;
 use infra::archive::PureRustArchiveReader;
 use infra::persistence::repositories::{
-    ToastyChapterRepository, ToastyComicReadingRepository, ToastySeriesRepository,
+    ToastyChapterRepository, ToastyComicReadingRepository, ToastyComicSourceRepository,
+    ToastySeriesRepository,
 };
 use infra::scanner::SmartComicScanner;
 use infra::storage::LocalComicFileStorage;
 use infra::thumbnail::WebpThumbnailGenerator;
+use source::ComicSourceEngine;
 
 pub use infra::persistence::{ensure_comic_schema, register_comic_models};
 
@@ -34,8 +42,27 @@ pub fn init_comic_module(
     library_service: &LibraryService,
     events: Arc<dyn RealtimeEventPort>,
 ) -> DomainResult<ComicServices> {
+    init_comic_module_with_allow_private_ips(
+        db,
+        data_dir,
+        libraries_repo,
+        library_service,
+        events,
+        false,
+    )
+}
+
+pub fn init_comic_module_with_allow_private_ips(
+    db: Db,
+    data_dir: &Path,
+    libraries_repo: Arc<dyn LibraryRepository>,
+    library_service: &LibraryService,
+    events: Arc<dyn RealtimeEventPort>,
+    allow_private_ips: bool,
+) -> DomainResult<ComicServices> {
     let series = Arc::new(ToastySeriesRepository::new(db.clone()));
     let chapters = Arc::new(ToastyChapterRepository::new(db.clone()));
+    let sources = Arc::new(ToastyComicSourceRepository::new(db.clone()));
     let reading_repo = Arc::new(ToastyComicReadingRepository::new(db));
 
     let archives = Arc::new(PureRustArchiveReader::new());
@@ -77,8 +104,20 @@ pub fn init_comic_module(
         chapters,
         reading_repo,
     ));
+    let engine = ComicSourceEngine::new(
+        source::http::HttpClientConfig {
+            allow_private_ips,
+            ..Default::default()
+        },
+        Duration::from_secs(45),
+    );
+    let online = Arc::new(ComicOnlineService::with_engine(
+        sources,
+        engine,
+        allow_private_ips,
+    ));
 
-    Ok(ComicServices::new(catalog, reading, opds))
+    Ok(ComicServices::new(catalog, reading, opds, online))
 }
 
 #[cfg(test)]
