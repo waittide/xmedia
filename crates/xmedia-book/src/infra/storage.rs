@@ -21,6 +21,7 @@ use crate::domain::book::{Book, BookFormat, BookId, BookSource};
 pub struct LocalBookStorage {
     uploads_dir: PathBuf,
     covers_dir: PathBuf,
+    online_tracked_dir: PathBuf,
     thumbnails: ThumbnailStore,
 }
 
@@ -29,6 +30,7 @@ impl LocalBookStorage {
         let base = data_dir.as_ref().join("book");
         let uploads_dir = base.join("uploads");
         let covers_dir = base.join("covers");
+        let online_tracked_dir = base.join("online_tracked");
         std::fs::create_dir_all(&uploads_dir).map_err(|e| {
             DomainError::Storage(format!(
                 "failed to create book uploads directory {}: {e}",
@@ -39,15 +41,18 @@ impl LocalBookStorage {
         Ok(Self {
             uploads_dir,
             covers_dir,
+            online_tracked_dir,
             thumbnails,
         })
     }
 
     fn resolve_book_path(&self, library: &Library, book: &Book) -> DomainResult<PathBuf> {
         match (&library.kind, &book.source) {
-            (_, BookSource::ManagedUpload { storage_key }) => {
-                sanitize_join(&self.uploads_dir, storage_key)
-            }
+            (
+                _,
+                BookSource::ManagedUpload { storage_key }
+                | BookSource::OnlineTracked { storage_key, .. },
+            ) => sanitize_join(&self.uploads_dir, storage_key),
             (
                 LibraryKind::LocalMount { root_path },
                 BookSource::MountedFile { relative_path, .. },
@@ -84,12 +89,17 @@ impl BookStoragePort for LocalBookStorage {
     ) -> DomainResult<StoredManagedBook> {
         let file_name = format!("{}.{}", book_id.0, format.as_str());
         let full_path = self.uploads_dir.join(&file_name);
+        let tmp_name = format!(".{}.{}.tmp", file_name, uuid::Uuid::new_v4().simple());
+        let tmp_path = self.uploads_dir.join(tmp_name);
         let file_hash = fast_bytes_fingerprint(&data);
         let file_size = data.len() as u64;
 
-        tokio::fs::write(&full_path, &data)
+        tokio::fs::write(&tmp_path, &data)
             .await
-            .map_err(|e| DomainError::Storage(format!("failed to write managed book: {e}")))?;
+            .map_err(|e| DomainError::Storage(format!("failed to write temp managed book: {e}")))?;
+        tokio::fs::rename(&tmp_path, &full_path)
+            .await
+            .map_err(|e| DomainError::Storage(format!("failed to commit managed book: {e}")))?;
 
         Ok(StoredManagedBook {
             storage_key: file_name,
@@ -104,6 +114,15 @@ impl BookStoragePort for LocalBookStorage {
             tokio::fs::remove_file(&path)
                 .await
                 .map_err(|e| DomainError::Storage(format!("failed to remove managed book: {e}")))?;
+        }
+        // If this managed book also had an online tracked chapter workspace, clean it up too.
+        if let Some(stem) = Path::new(storage_key).file_stem().and_then(|s| s.to_str())
+            && uuid::Uuid::parse_str(stem).is_ok()
+        {
+            let tracked_dir = self.online_tracked_dir.join(stem);
+            if tracked_dir.is_dir() {
+                let _ = tokio::fs::remove_dir_all(&tracked_dir).await;
+            }
         }
         Ok(())
     }

@@ -16,7 +16,9 @@ use xmedia_core::domain::user::{User, UserId, require_admin};
 use xmedia_core::infra::stream::open_file_range_stream_spec;
 
 use crate::application::catalog::BookCatalogService;
-use crate::domain::book::BookId;
+use crate::application::dto::BookSummaryDto;
+use crate::application::ports::CoverPayload;
+use crate::domain::book::{Book, BookFormat, BookId, BookMetadata, BookSource};
 use crate::domain::online::{BookSourceRecord, OnlineShelfBook};
 use crate::domain::repository::{BookSourceRepository, OnlineShelfRepository};
 use crate::source::BookSourceEngine;
@@ -29,12 +31,15 @@ use crate::source::model::{
 use crate::source::packager::{
     PackBookMetadata, PackChapterInput, package_chapters_to_epub, package_chapters_to_txt,
 };
+use crate::source::tracked_store::{TrackedBookStore, TrackedChapterFile, TrackedChapterMeta};
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 4;
 const DEFAULT_DOWNLOAD_MIN_INTERVAL_MS: u64 = 40;
 const DOWNLOAD_STATE_PERSIST_BATCH: usize = 20;
+const TRACKED_EPUB_DEBOUNCE: Duration = Duration::from_secs(6);
+const TRACKED_EPUB_IMMEDIATE_BATCH: u32 = 20;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookSourceSummaryDto {
@@ -211,7 +216,68 @@ pub enum DownloadJobStatus {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct TrackOnlineBookInput {
+    pub source_id: Uuid,
+    pub name: String,
+    #[serde(default)]
+    pub author: String,
+    pub book_url: String,
+    #[serde(default)]
+    pub toc_url: String,
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    #[serde(default)]
+    pub intro: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub last_chapter: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackedTocResponseDto {
+    pub book_id: BookId,
+    pub source_id: Uuid,
+    pub source_name: String,
+    pub chapters: Vec<TrackedChapterMeta>,
+    pub cached_chapters: u32,
+    pub total_chapters: u32,
+    pub last_chapter: Option<String>,
+    pub epub_dirty: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrackedChapterResponseDto {
+    pub book_id: BookId,
+    pub source_id: Uuid,
+    pub chapter_index: usize,
+    pub title: String,
+    pub content: String,
+    pub cached: bool,
+    pub cached_chapters: u32,
+    pub total_chapters: u32,
+    pub epub_dirty: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SwitchTrackedSourceInput {
+    pub source_id: Uuid,
+    pub book_url: String,
+    pub toc_url: String,
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    #[serde(default)]
+    pub intro: Option<String>,
+    #[serde(default)]
+    pub last_chapter: Option<String>,
+    #[serde(default)]
+    pub clear_cache: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct StartDownloadInput {
+    #[serde(default)]
+    pub book_id: Option<Uuid>,
     pub source_id: Uuid,
     pub book_name: String,
     #[serde(default)]
@@ -400,6 +466,9 @@ pub struct BookOnlineService {
     engine: BookSourceEngine,
     cache_dir: PathBuf,
     download_dir: PathBuf,
+    tracked_store: TrackedBookStore,
+    epub_sync_locks: Arc<RwLock<HashMap<BookId, Arc<tokio::sync::Mutex<()>>>>>,
+    pending_sync_gens: Arc<RwLock<HashMap<BookId, (u64, u32)>>>,
     downloads: Arc<RwLock<HashMap<Uuid, StoredDownloadJob>>>,
     allow_private_ips: bool,
 }
@@ -443,6 +512,7 @@ impl BookOnlineService {
                 download_dir.display()
             ))
         })?;
+        let tracked_store = TrackedBookStore::new(data_dir).map_err(DomainError::Storage)?;
 
         Ok(Self {
             sources,
@@ -451,6 +521,9 @@ impl BookOnlineService {
             engine,
             cache_dir,
             download_dir,
+            tracked_store,
+            epub_sync_locks: Arc::new(RwLock::new(HashMap::new())),
+            pending_sync_gens: Arc::new(RwLock::new(HashMap::new())),
             downloads: Arc::new(RwLock::new(HashMap::new())),
             allow_private_ips,
         })
@@ -1211,6 +1284,648 @@ impl BookOnlineService {
     }
 
     // -----------------------------------------------------------------------
+    // Unified Online-Tracked Books (BookModel + Incremental Chapters + EPUB 3.0)
+    // -----------------------------------------------------------------------
+
+    async fn epub_lock_for(&self, book_id: BookId) -> Arc<tokio::sync::Mutex<()>> {
+        {
+            let guard = self.epub_sync_locks.read().await;
+            if let Some(lock) = guard.get(&book_id) {
+                return Arc::clone(lock);
+            }
+        }
+        let mut guard = self.epub_sync_locks.write().await;
+        Arc::clone(
+            guard
+                .entry(book_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
+    fn parse_tags_from_kind(raw: Option<&str>) -> Vec<String> {
+        raw.map(|s| {
+            s.split([',', '，', '|', '/'])
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    /// Tracks an online book as a first-class unified `Book` in the managed library:
+    /// creates (or returns existing) `BookModel` with `BookSource::OnlineTracked`,
+    /// stores its cover, fetches initial TOC best-effort, and writes a valid initial EPUB 3.0.
+    pub async fn track_online_book(
+        self: &Arc<Self>,
+        actor: &User,
+        input: TrackOnlineBookInput,
+    ) -> DomainResult<BookSummaryDto> {
+        require_admin(actor)?;
+        let _src = self.load_source(input.source_id).await?;
+
+        if let Some(existing) = self
+            .catalog
+            .find_online_tracked_book(input.source_id, &input.book_url)
+            .await?
+        {
+            return self.catalog.get_book(Some(actor), existing.id).await;
+        }
+
+        let managed_lib = self.catalog.ensure_managed_library().await?;
+        let book_id = BookId::new();
+
+        // Best-effort cover download
+        let cover_payload = if let Some(ref cover_url) = input.cover_url
+            && !cover_url.trim().is_empty()
+        {
+            self.fetch_cover_proxy(cover_url)
+                .await
+                .ok()
+                .map(|(bytes, mime_type)| CoverPayload {
+                    bytes: Bytes::from(bytes),
+                    mime_type,
+                })
+        } else {
+            None
+        };
+
+        // Best-effort initial TOC fetch so manifest & chapter count are populated right away
+        let mut toc_url = input.toc_url.trim().to_string();
+        let mut last_chapter = input.last_chapter.clone();
+        let mut total_chapters = 0u32;
+
+        if toc_url.is_empty()
+            && let Ok(info) = self
+                .fetch_book_info(
+                    input.source_id,
+                    &input.book_url,
+                    Some(BookJsContext {
+                        name: input.name.clone(),
+                        author: input.author.clone(),
+                        book_url: input.book_url.clone(),
+                        toc_url: String::new(),
+                        cover_url: input.cover_url.clone(),
+                        intro: input.intro.clone(),
+                        ..Default::default()
+                    }),
+                )
+                .await
+        {
+            toc_url = info.detail.toc_url;
+            if last_chapter.is_none() {
+                last_chapter = info.detail.last_chapter;
+            }
+        }
+
+        if !toc_url.is_empty()
+            && let Ok(toc_res) = self
+                .fetch_toc(
+                    input.source_id,
+                    &toc_url,
+                    BookJsContext {
+                        name: input.name.clone(),
+                        author: input.author.clone(),
+                        book_url: input.book_url.clone(),
+                        toc_url: toc_url.clone(),
+                        cover_url: input.cover_url.clone(),
+                        intro: input.intro.clone(),
+                        ..Default::default()
+                    },
+                )
+                .await
+        {
+            let clean_chapters: Vec<OnlineChapterItem> = toc_res
+                .chapters
+                .into_iter()
+                .filter(|c| !c.is_volume && !c.url.trim().is_empty())
+                .collect();
+            if !clean_chapters.is_empty() {
+                if let Some(last) = clean_chapters.last() {
+                    last_chapter = Some(last.title.clone());
+                }
+                total_chapters = clean_chapters.len() as u32;
+                let _ =
+                    self.tracked_store
+                        .update_manifest_from_toc(book_id, &clean_chapters, false);
+            }
+        }
+
+        // Synthesize initial valid standard EPUB 3.0 archive (skeleton with cover + metadata)
+        let pack_meta = PackBookMetadata {
+            identifier: Some(book_id.0),
+            title: input.name.clone(),
+            author: input.author.clone(),
+            description: input.intro.clone(),
+            cover_bytes: cover_payload
+                .as_ref()
+                .map(|c| (c.bytes.to_vec(), c.mime_type.clone())),
+        };
+        let epub_bytes =
+            tokio::task::spawn_blocking(move || package_chapters_to_epub(&pack_meta, &[]))
+                .await
+                .map_err(|e| DomainError::Storage(format!("生成初始 EPUB3 失败: {e}")))?
+                .map_err(DomainError::Storage)?;
+
+        let (stored, cover_key) = self
+            .catalog
+            .save_managed_epub_and_cover(book_id, Bytes::from(epub_bytes), cover_payload)
+            .await?;
+
+        let mut metadata = BookMetadata::new(input.name)?;
+        if !input.author.trim().is_empty() {
+            metadata.authors = vec![input.author.trim().to_string()];
+        }
+        metadata.description = BookMetadata::normalize_optional(input.intro);
+        metadata.tags =
+            BookMetadata::normalize_list(Self::parse_tags_from_kind(input.kind.as_deref()));
+        metadata.language = Some("zh-CN".to_string());
+        metadata.chapter_count = if total_chapters > 0 {
+            Some(total_chapters)
+        } else {
+            None
+        };
+
+        let mut book = Book::new(
+            managed_lib.id,
+            BookFormat::Epub,
+            BookSource::OnlineTracked {
+                storage_key: stored.storage_key,
+                source_id: input.source_id,
+                book_url: input.book_url,
+                toc_url,
+                last_chapter,
+                cached_chapters: 0,
+                total_chapters,
+                epub_dirty: false,
+            },
+            stored.file_size,
+            stored.file_hash,
+            cover_key,
+            metadata,
+        )?;
+        book.id = book_id;
+
+        self.catalog.save_book_raw(&book).await?;
+        self.catalog.get_book(Some(actor), book_id).await
+    }
+
+    /// Returns the TOC for an online-tracked book (with per-chapter cache status).
+    /// Fetches fresh TOC from the source when `force_refresh` is true or manifest is empty.
+    pub async fn get_tracked_toc(
+        self: &Arc<Self>,
+        book_id: BookId,
+        force_refresh: bool,
+    ) -> DomainResult<TrackedTocResponseDto> {
+        let mut book = self.catalog.find_book_raw(book_id).await?;
+        let (
+            source_id,
+            book_url,
+            toc_url,
+            cached_chapters,
+            total_chapters,
+            last_chapter,
+            epub_dirty,
+        ) = match &book.source {
+            BookSource::OnlineTracked {
+                source_id,
+                book_url,
+                toc_url,
+                cached_chapters,
+                total_chapters,
+                last_chapter,
+                epub_dirty,
+                ..
+            } => (
+                *source_id,
+                book_url.clone(),
+                toc_url.clone(),
+                *cached_chapters,
+                *total_chapters,
+                last_chapter.clone(),
+                *epub_dirty,
+            ),
+            _ => {
+                return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
+            }
+        };
+
+        let source_name = self
+            .load_source(source_id)
+            .await
+            .map(|s| s.name)
+            .unwrap_or_else(|_| "已删除书源".to_string());
+
+        let existing_manifest = self.tracked_store.load_manifest(book_id);
+        if !force_refresh && !existing_manifest.chapters.is_empty() {
+            return Ok(TrackedTocResponseDto {
+                book_id,
+                source_id,
+                source_name,
+                chapters: existing_manifest.chapters,
+                cached_chapters,
+                total_chapters,
+                last_chapter,
+                epub_dirty,
+            });
+        }
+
+        let effective_toc_url = if toc_url.trim().is_empty() {
+            let info = self
+                .fetch_book_info(
+                    source_id,
+                    &book_url,
+                    Some(BookJsContext {
+                        name: book.metadata.title.clone(),
+                        author: book.metadata.authors.join(", "),
+                        book_url: book_url.clone(),
+                        toc_url: String::new(),
+                        intro: book.metadata.description.clone(),
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+            info.detail.toc_url
+        } else {
+            toc_url.clone()
+        };
+
+        let toc_res = self
+            .fetch_toc(
+                source_id,
+                &effective_toc_url,
+                BookJsContext {
+                    name: book.metadata.title.clone(),
+                    author: book.metadata.authors.join(", "),
+                    book_url: book_url.clone(),
+                    toc_url: effective_toc_url.clone(),
+                    intro: book.metadata.description.clone(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let clean_chapters: Vec<OnlineChapterItem> = toc_res
+            .chapters
+            .into_iter()
+            .filter(|c| !c.is_volume && !c.url.trim().is_empty())
+            .collect();
+
+        let manifest = self
+            .tracked_store
+            .update_manifest_from_toc(book_id, &clean_chapters, true)
+            .map_err(DomainError::Storage)?;
+
+        let new_total = manifest.chapters.len() as u32;
+        let new_cached = manifest.chapters.iter().filter(|c| c.cached).count() as u32;
+        let new_last = manifest.chapters.last().map(|c| c.title.clone());
+
+        if let BookSource::OnlineTracked {
+            toc_url: ref mut t_url,
+            last_chapter: ref mut l_ch,
+            cached_chapters: ref mut c_cnt,
+            total_chapters: ref mut t_cnt,
+            ..
+        } = book.source
+        {
+            *t_url = effective_toc_url;
+            *l_ch = new_last.clone();
+            *c_cnt = new_cached;
+            *t_cnt = new_total;
+        }
+        book.metadata.chapter_count = if new_total > 0 { Some(new_total) } else { None };
+        book.updated_at = Timestamp::now();
+        self.catalog.save_book_raw(&book).await?;
+
+        Ok(TrackedTocResponseDto {
+            book_id,
+            source_id,
+            source_name,
+            chapters: manifest.chapters,
+            cached_chapters: new_cached,
+            total_chapters: new_total,
+            last_chapter: new_last,
+            epub_dirty,
+        })
+    }
+
+    /// Reads a single chapter of an online-tracked book:
+    /// serves immediately from local chapter cache if present, otherwise fetches from the Legado
+    /// source, saves O(1) chapter file atomically, marks `epub_dirty`, and schedules EPUB 3.0 sync.
+    pub async fn get_tracked_chapter(
+        self: &Arc<Self>,
+        book_id: BookId,
+        chapter_index: usize,
+        force_refresh: bool,
+    ) -> DomainResult<TrackedChapterResponseDto> {
+        let mut book = self.catalog.find_book_raw(book_id).await?;
+        let (source_id, book_url, toc_url, cached_chapters, total_chapters, epub_dirty) =
+            match &book.source {
+                BookSource::OnlineTracked {
+                    source_id,
+                    book_url,
+                    toc_url,
+                    cached_chapters,
+                    total_chapters,
+                    epub_dirty,
+                    ..
+                } => (
+                    *source_id,
+                    book_url.clone(),
+                    toc_url.clone(),
+                    *cached_chapters,
+                    *total_chapters,
+                    *epub_dirty,
+                ),
+                _ => {
+                    return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
+                }
+            };
+
+        if !force_refresh
+            && let Some(cached) = self.tracked_store.load_chapter(book_id, chapter_index)
+            && !cached.content.trim().is_empty()
+        {
+            return Ok(TrackedChapterResponseDto {
+                book_id,
+                source_id,
+                chapter_index,
+                title: cached.title,
+                content: cached.content,
+                cached: true,
+                cached_chapters,
+                total_chapters,
+                epub_dirty,
+            });
+        }
+
+        let mut manifest = self.tracked_store.load_manifest(book_id);
+        if chapter_index >= manifest.chapters.len() {
+            let refreshed = self.get_tracked_toc(book_id, true).await?;
+            manifest.chapters = refreshed.chapters;
+        }
+        let chapter_meta = manifest
+            .chapters
+            .get(chapter_index)
+            .cloned()
+            .ok_or_else(|| {
+                DomainError::NotFound(format!("未找到第 {} 章目录信息", chapter_index + 1))
+            })?;
+        let book_ctx = BookJsContext {
+            name: book.metadata.title.clone(),
+            author: book.metadata.authors.join(", "),
+            book_url: book_url.clone(),
+            toc_url: toc_url.clone(),
+            intro: book.metadata.description.clone(),
+            dur_chapter_index: chapter_index,
+            dur_chapter_title: chapter_meta.title.clone(),
+            ..Default::default()
+        };
+        let chapter_ctx = ChapterJsContext {
+            title: chapter_meta.title.clone(),
+            url: chapter_meta.url.clone(),
+            index: chapter_index,
+        };
+
+        let fetched = self
+            .fetch_chapter_content(
+                source_id,
+                &chapter_meta.url,
+                book_ctx,
+                chapter_ctx,
+                force_refresh,
+            )
+            .await?;
+
+        let resolved_title = if fetched.content.title.trim().is_empty() {
+            chapter_meta.title.clone()
+        } else {
+            fetched.content.title.clone()
+        };
+        let chapter_file = TrackedChapterFile {
+            index: chapter_index,
+            title: resolved_title.clone(),
+            url: chapter_meta.url.clone(),
+            content: fetched.content.content.clone(),
+        };
+        let new_cached = self
+            .tracked_store
+            .save_chapter(book_id, &chapter_file)
+            .map_err(DomainError::Storage)?;
+        let new_total = manifest.chapters.len() as u32;
+
+        if let BookSource::OnlineTracked {
+            cached_chapters: ref mut c_cnt,
+            total_chapters: ref mut t_cnt,
+            epub_dirty: ref mut dirty,
+            ..
+        } = book.source
+        {
+            *c_cnt = new_cached;
+            *t_cnt = new_total.max(*t_cnt);
+            *dirty = true;
+        }
+        book.updated_at = Timestamp::now();
+        self.catalog.save_book_raw(&book).await?;
+
+        self.schedule_debounced_epub_sync(book_id).await;
+
+        Ok(TrackedChapterResponseDto {
+            book_id,
+            source_id,
+            chapter_index,
+            title: resolved_title,
+            content: fetched.content.content,
+            cached: false,
+            cached_chapters: new_cached,
+            total_chapters: new_total,
+            epub_dirty: true,
+        })
+    }
+
+    /// Switches the upstream book source for a unified online-tracked book while preserving
+    /// its `BookId`, shelves, favorites, tags, and reading progress.
+    pub async fn switch_tracked_source(
+        self: &Arc<Self>,
+        actor: &User,
+        book_id: BookId,
+        input: SwitchTrackedSourceInput,
+    ) -> DomainResult<TrackedTocResponseDto> {
+        require_admin(actor)?;
+        let _src = self.load_source(input.source_id).await?;
+        let mut book = self.catalog.find_book_raw(book_id).await?;
+
+        if !book.source.is_online_tracked() {
+            return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
+        }
+
+        if input.clear_cache {
+            self.tracked_store.clear_chapters(book_id);
+        }
+
+        if let BookSource::OnlineTracked {
+            source_id,
+            book_url,
+            toc_url,
+            last_chapter,
+            epub_dirty,
+            ..
+        } = &mut book.source
+        {
+            *source_id = input.source_id;
+            *book_url = input.book_url;
+            *toc_url = input.toc_url;
+            if input.last_chapter.is_some() {
+                *last_chapter = input.last_chapter;
+            }
+            *epub_dirty = true;
+        }
+        if let Some(intro) = input.intro
+            && !intro.trim().is_empty()
+        {
+            book.metadata.description = Some(intro.trim().to_string());
+        }
+        book.updated_at = Timestamp::now();
+        self.catalog.save_book_raw(&book).await?;
+
+        self.get_tracked_toc(book_id, true).await
+    }
+
+    /// Schedules a debounced background standard EPUB 3.0 rebuild so rapid page turns
+    /// do not cause ZIP write amplification. Flushes immediately every 20 newly cached chapters.
+    async fn schedule_debounced_epub_sync(self: &Arc<Self>, book_id: BookId) {
+        let (sync_gen, should_flush_now) = {
+            let mut guard = self.pending_sync_gens.write().await;
+            let entry = guard.entry(book_id).or_insert((0, 0));
+            entry.0 = entry.0.wrapping_add(1);
+            entry.1 = entry.1.saturating_add(1);
+            let flush_now = entry.1 >= TRACKED_EPUB_IMMEDIATE_BATCH;
+            if flush_now {
+                entry.1 = 0;
+            }
+            (entry.0, flush_now)
+        };
+
+        let svc = Arc::clone(self);
+        tokio::spawn(async move {
+            if !should_flush_now {
+                tokio::time::sleep(TRACKED_EPUB_DEBOUNCE).await;
+                let current_gen = svc
+                    .pending_sync_gens
+                    .read()
+                    .await
+                    .get(&book_id)
+                    .map(|(g, _)| *g)
+                    .unwrap_or(0);
+                if current_gen != sync_gen {
+                    return;
+                }
+            }
+            if let Err(err) = svc.ensure_tracked_epub_synced(book_id).await {
+                tracing::warn!(book_id = %book_id, error = %err, "background EPUB 3.0 sync failed");
+            }
+        });
+    }
+
+    /// Ensures the standard EPUB 3.0 archive on disk reflects all cached chapters if `epub_dirty`.
+    pub async fn ensure_tracked_epub_synced(&self, book_id: BookId) -> DomainResult<()> {
+        let book = self.catalog.find_book_raw(book_id).await?;
+        let is_dirty = matches!(
+            &book.source,
+            BookSource::OnlineTracked {
+                epub_dirty: true,
+                ..
+            }
+        );
+        if !is_dirty {
+            return Ok(());
+        }
+        let _ = self.sync_tracked_epub(book_id, false).await?;
+        Ok(())
+    }
+
+    /// Atomically synthesizes the standard EPUB 3.0 file for an online-tracked book from its
+    /// locally cached chapters + cover + metadata, updating `BookModel` in-place.
+    pub async fn sync_tracked_epub(
+        &self,
+        book_id: BookId,
+        force: bool,
+    ) -> DomainResult<BookSummaryDto> {
+        let lock = self.epub_lock_for(book_id).await;
+        let _guard = lock.lock().await;
+
+        let mut book = self.catalog.find_book_raw(book_id).await?;
+        let is_dirty = match &book.source {
+            BookSource::OnlineTracked { epub_dirty, .. } => *epub_dirty,
+            _ => {
+                return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
+            }
+        };
+
+        if !force && !is_dirty {
+            return self.catalog.get_book(None, book_id).await;
+        }
+
+        let (chapters, cached_count, total_count) =
+            self.tracked_store.collect_cached_chapters_for_epub(book_id);
+        let cover_bytes = match book.cover_key.as_deref() {
+            Some(key) => self.catalog.read_cover_bytes(key).await,
+            None => None,
+        };
+
+        let pack_meta = PackBookMetadata {
+            identifier: Some(book_id.0),
+            title: book.metadata.title.clone(),
+            author: book.metadata.authors.join(", "),
+            description: book.metadata.description.clone(),
+            cover_bytes,
+        };
+        let epub_bytes =
+            tokio::task::spawn_blocking(move || package_chapters_to_epub(&pack_meta, &chapters))
+                .await
+                .map_err(|e| DomainError::Storage(format!("合成 EPUB3 线程失败: {e}")))?
+                .map_err(DomainError::Storage)?;
+
+        let (stored, _) = self
+            .catalog
+            .save_managed_epub_and_cover(book_id, Bytes::from(epub_bytes), None)
+            .await?;
+
+        book.file_size = stored.file_size;
+        book.file_hash = stored.file_hash;
+        if let BookSource::OnlineTracked {
+            storage_key,
+            cached_chapters,
+            total_chapters,
+            epub_dirty,
+            ..
+        } = &mut book.source
+        {
+            *storage_key = stored.storage_key;
+            *cached_chapters = cached_count;
+            if total_count > 0 {
+                *total_chapters = total_count;
+            }
+            *epub_dirty = false;
+        }
+        book.metadata.chapter_count = if total_count > 0 {
+            Some(total_count)
+        } else if cached_count > 0 {
+            Some(cached_count)
+        } else {
+            book.metadata.chapter_count
+        };
+        book.updated_at = Timestamp::now();
+        self.catalog.save_book_raw(&book).await?;
+
+        if let Some(entry) = self.pending_sync_gens.write().await.get_mut(&book_id) {
+            entry.1 = 0;
+        }
+
+        self.catalog.get_book(None, book_id).await
+    }
+
+    // -----------------------------------------------------------------------
     // Background Download + EPUB 3.0 / TXT Packaging + Optional Library Import
     // -----------------------------------------------------------------------
 
@@ -1408,6 +2123,31 @@ impl BookOnlineService {
             .unwrap_or(all_chapters.len())
             .max(start);
         let selected: Vec<OnlineChapterItem> = all_chapters[start..end].to_vec();
+
+        // Check whether this download targets an existing unified online-tracked Book
+        let target_tracked_book_id: Option<BookId> = if let Some(bid) = input.book_id {
+            self.catalog
+                .find_book_raw(BookId(bid))
+                .await
+                .ok()
+                .filter(|b| b.source.is_online_tracked())
+                .map(|b| b.id)
+        } else if input.import_to_library && input.format == OnlineDownloadFormat::Epub {
+            self.catalog
+                .find_online_tracked_book(input.source_id, &input.book_url)
+                .await
+                .ok()
+                .flatten()
+                .map(|b| b.id)
+        } else {
+            None
+        };
+
+        if let Some(bid) = target_tracked_book_id {
+            let _ = self
+                .tracked_store
+                .update_manifest_from_toc(bid, &all_chapters, true);
+        }
         if selected.is_empty() {
             self.fail_job(job_id, started_at, "所选章节区间为空".into())
                 .await;
@@ -1559,6 +2299,22 @@ impl BookOnlineService {
                         break;
                     };
                     if let Some(slot) = ordered_chapters.get_mut(ev.idx) {
+                        if !ev.failed && let Some(bid) = target_tracked_book_id {
+                            let global_idx = start + ev.idx;
+                            let chapter_url = selected_arc
+                                .get(ev.idx)
+                                .map(|c| c.url.clone())
+                                .unwrap_or_default();
+                            let _ = self.tracked_store.save_chapter(
+                                bid,
+                                &TrackedChapterFile {
+                                    index: global_idx,
+                                    title: ev.packed.title.clone(),
+                                    url: chapter_url,
+                                    content: ev.packed.content.clone(),
+                                },
+                            );
+                        }
                         *slot = Some(ev.packed);
                     }
                     processed_count += 1;
@@ -1628,103 +2384,134 @@ impl BookOnlineService {
             })
             .collect();
 
-        // Optional cover download for EPUB
-        let cover_bytes = if input.format == OnlineDownloadFormat::Epub
-            && let Some(ref cover_url) = input.cover_url
-            && !cover_url.trim().is_empty()
-        {
-            self.fetch_cover_proxy(cover_url).await.ok()
-        } else {
-            None
-        };
-
-        if cancel_flag.load(Ordering::Acquire) {
-            self.mark_job_cancelled(job_id, started_at).await;
-            return;
-        }
-
-        self.update_job(job_id, |j| {
-            j.current_chapter_title = Some("正在封装书籍文件…".into());
-            j.elapsed_ms = started_at.elapsed().as_millis() as u64;
-            j.chapters_per_sec = compute_chapters_per_sec(j.processed_chapters, j.elapsed_ms);
-        })
-        .await;
-
-        let pack_meta = PackBookMetadata {
-            title: input.book_name.clone(),
-            author: input.author.clone(),
-            description: input.intro.clone(),
-            cover_bytes,
-        };
-        let fmt = input.format;
-        let packaged = tokio::task::spawn_blocking(move || match fmt {
-            OnlineDownloadFormat::Epub => package_chapters_to_epub(&pack_meta, &packed_chapters),
-            OnlineDownloadFormat::Txt => Ok(package_chapters_to_txt(&pack_meta, &packed_chapters)),
-        })
-        .await
-        .map_err(|e| format!("封装线程失败: {e}"))
-        .and_then(|r| r);
-
-        let bytes = match packaged {
-            Ok(b) => b,
-            Err(e) => {
-                self.fail_job(job_id, started_at, e).await;
-                return;
-            }
-        };
-
-        if cancel_flag.load(Ordering::Acquire) {
-            self.mark_job_cancelled(job_id, started_at).await;
-            return;
-        }
-
         let ext = match input.format {
             OnlineDownloadFormat::Epub => "epub",
             OnlineDownloadFormat::Txt => "txt",
         };
         let safe_stem = sanitize_file_stem(&input.book_name);
         let file_name = format!("{safe_stem}.{ext}");
-        let file_size = bytes.len() as u64;
 
         let mut imported_book_id = None;
         let mut output_path = None;
+        let file_size: u64;
 
-        if input.import_to_library {
+        // If downloading EPUB for an existing unified online-tracked book, atomically update
+        // its standard EPUB 3.0 in-place instead of creating a duplicate book entry.
+        if input.import_to_library
+            && input.format == OnlineDownloadFormat::Epub
+            && let Some(bid) = target_tracked_book_id
+        {
             self.update_job(job_id, |j| {
-                j.current_chapter_title = Some("正在导入本地图书库…".into());
+                j.current_chapter_title = Some("正在同步标准 EPUB 3.0 文件…".into());
                 j.elapsed_ms = started_at.elapsed().as_millis() as u64;
+                j.chapters_per_sec = compute_chapters_per_sec(j.processed_chapters, j.elapsed_ms);
             })
             .await;
-            match self
-                .catalog
-                .upload_book(&actor, &file_name, Bytes::from(bytes))
-                .await
-            {
+
+            match self.sync_tracked_epub(bid, true).await {
                 Ok(summary) => {
-                    // Do not write a redundant second copy in `online_downloads/{job_id}`;
-                    // downloads for imported books stream directly from the catalog storage.
                     imported_book_id = Some(summary.id.0);
+                    file_size = summary.file_size;
                 }
                 Err(e) => {
-                    self.fail_job(job_id, started_at, format!("封装成功但导入图书库失败: {e}"))
+                    self.fail_job(job_id, started_at, format!("同步 EPUB 3.0 失败: {e}"))
                         .await;
                     return;
                 }
             }
         } else {
-            let job_dir = self.download_dir.join(job_id.to_string());
-            if let Err(e) = tokio::fs::create_dir_all(&job_dir).await {
-                self.fail_job(job_id, started_at, format!("创建输出目录失败: {e}"))
-                    .await;
+            // Optional cover download for EPUB
+            let cover_bytes = if input.format == OnlineDownloadFormat::Epub
+                && let Some(ref cover_url) = input.cover_url
+                && !cover_url.trim().is_empty()
+            {
+                self.fetch_cover_proxy(cover_url).await.ok()
+            } else {
+                None
+            };
+
+            if cancel_flag.load(Ordering::Acquire) {
+                self.mark_job_cancelled(job_id, started_at).await;
                 return;
             }
-            let out_path = job_dir.join(&file_name);
-            if let Err(e) = tokio::fs::write(&out_path, &bytes).await {
-                self.fail_job(job_id, started_at, format!("写入输出文件失败: {e}"))
-                    .await;
+
+            self.update_job(job_id, |j| {
+                j.current_chapter_title = Some("正在封装书籍文件…".into());
+                j.elapsed_ms = started_at.elapsed().as_millis() as u64;
+                j.chapters_per_sec = compute_chapters_per_sec(j.processed_chapters, j.elapsed_ms);
+            })
+            .await;
+
+            let pack_meta = PackBookMetadata {
+                identifier: None,
+                title: input.book_name.clone(),
+                author: input.author.clone(),
+                description: input.intro.clone(),
+                cover_bytes,
+            };
+            let fmt = input.format;
+            let packaged = tokio::task::spawn_blocking(move || match fmt {
+                OnlineDownloadFormat::Epub => {
+                    package_chapters_to_epub(&pack_meta, &packed_chapters)
+                }
+                OnlineDownloadFormat::Txt => {
+                    Ok(package_chapters_to_txt(&pack_meta, &packed_chapters))
+                }
+            })
+            .await
+            .map_err(|e| format!("封装线程失败: {e}"))
+            .and_then(|r| r);
+
+            let bytes = match packaged {
+                Ok(b) => b,
+                Err(e) => {
+                    self.fail_job(job_id, started_at, e).await;
+                    return;
+                }
+            };
+
+            if cancel_flag.load(Ordering::Acquire) {
+                self.mark_job_cancelled(job_id, started_at).await;
                 return;
             }
-            output_path = Some(out_path);
+
+            file_size = bytes.len() as u64;
+
+            if input.import_to_library {
+                self.update_job(job_id, |j| {
+                    j.current_chapter_title = Some("正在导入本地图书库…".into());
+                    j.elapsed_ms = started_at.elapsed().as_millis() as u64;
+                })
+                .await;
+                match self
+                    .catalog
+                    .upload_book(&actor, &file_name, Bytes::from(bytes))
+                    .await
+                {
+                    Ok(summary) => {
+                        imported_book_id = Some(summary.id.0);
+                    }
+                    Err(e) => {
+                        self.fail_job(job_id, started_at, format!("封装成功但导入图书库失败: {e}"))
+                            .await;
+                        return;
+                    }
+                }
+            } else {
+                let job_dir = self.download_dir.join(job_id.to_string());
+                if let Err(e) = tokio::fs::create_dir_all(&job_dir).await {
+                    self.fail_job(job_id, started_at, format!("创建输出目录失败: {e}"))
+                        .await;
+                    return;
+                }
+                let out_path = job_dir.join(&file_name);
+                if let Err(e) = tokio::fs::write(&out_path, &bytes).await {
+                    self.fail_job(job_id, started_at, format!("写入输出文件失败: {e}"))
+                        .await;
+                    return;
+                }
+                output_path = Some(out_path);
+            }
         }
 
         let final_elapsed = started_at.elapsed().as_millis() as u64;
@@ -2335,6 +3122,7 @@ mod tests {
             .start_download(
                 &admin,
                 StartDownloadInput {
+                    book_id: None,
                     source_id,
                     book_name: "并发测试小说".into(),
                     author: "作者A".into(),
@@ -2483,6 +3271,7 @@ mod tests {
             .start_download(
                 &admin,
                 StartDownloadInput {
+                    book_id: None,
                     source_id,
                     book_name: "可取消小说".into(),
                     author: "作者B".into(),
@@ -2522,6 +3311,235 @@ mod tests {
         );
         let job_dir = tmp.path().join("online_downloads").join(job.id.to_string());
         assert!(!job_dir.exists());
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn tracked_online_book_creates_unified_book_and_syncs_standard_epub3() {
+        let mock_app = Router::new()
+            .route(
+                "/toc",
+                get(|| async {
+                    r#"<html><body><ul id="toc">
+                        <li><a href="/ch/1">第一章 初入江湖</a></li>
+                        <li><a href="/ch/2">第二章 剑气初成</a></li>
+                        <li><a href="/ch/3">第三章 远行问道</a></li>
+                    </ul></body></html>"#
+                }),
+            )
+            .route(
+                "/ch/{num}",
+                get(|AxumPath(num): AxumPath<usize>| async move {
+                    format!(
+                        "<html><body><div id=\"body\"><p>第{num}章正文第一段。</p><p>第{num}章正文第二段。</p></div></body></html>"
+                    )
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let (tmp, admin, online_svc) = setup_test_online_service().await;
+        let raw_source = serde_json::json!({
+            "bookSourceName": "统一书籍测试书源",
+            "bookSourceUrl": format!("http://{addr}"),
+            "ruleToc": {
+                "chapterList": "#toc li a",
+                "chapterName": "text",
+                "chapterUrl": "href"
+            },
+            "ruleContent": {
+                "content": "id.body@html"
+            }
+        })
+        .to_string();
+        let imported = online_svc
+            .import_sources(&admin, &raw_source)
+            .await
+            .unwrap();
+        let source_id = imported.sources[0].id;
+
+        // 1. Track online book -> creates a real unified Book + initial valid EPUB 3.0 skeleton
+        let tracked = online_svc
+            .track_online_book(
+                &admin,
+                TrackOnlineBookInput {
+                    source_id,
+                    name: "青山问道".into(),
+                    author: "测试作者".into(),
+                    book_url: format!("http://{addr}/book/1"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: Some("一本用来验证统一 EPUB3 同步的小说。".into()),
+                    kind: Some("玄幻, 仙侠".into()),
+                    last_chapter: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let tracking = tracked.online_tracking.as_ref().expect("tracking metadata");
+        assert_eq!(tracking.total_chapters, 3);
+        assert_eq!(tracking.cached_chapters, 0);
+        assert!(!tracking.epub_dirty);
+        assert_eq!(tracked.format, BookFormat::Epub);
+        assert!(tracked.file_size > 0);
+
+        // Verify initial skeleton EPUB 3.0 is valid ZIP with intro.xhtml
+        let epub_path = tmp
+            .path()
+            .join("book")
+            .join("uploads")
+            .join(format!("{}.epub", tracked.id.0));
+        assert!(epub_path.is_file());
+        {
+            let raw = std::fs::read(&epub_path).unwrap();
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(raw)).unwrap();
+            assert!(archive.by_name("mimetype").is_ok());
+            assert!(archive.by_name("OEBPS/content.opf").is_ok());
+            assert!(archive.by_name("OEBPS/nav.xhtml").is_ok());
+            assert!(archive.by_name("OEBPS/intro.xhtml").is_ok());
+        }
+
+        // Duplicate track call must return the exact same BookId
+        let tracked_again = online_svc
+            .track_online_book(
+                &admin,
+                TrackOnlineBookInput {
+                    source_id,
+                    name: "青山问道".into(),
+                    author: "测试作者".into(),
+                    book_url: format!("http://{addr}/book/1"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: None,
+                    kind: None,
+                    last_chapter: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(tracked_again.id, tracked.id);
+
+        // 2. Fetch chapter 0 & chapter 1 -> incremental single-chapter cache + epub_dirty = true
+        let ch0 = online_svc
+            .get_tracked_chapter(tracked.id, 0, false)
+            .await
+            .unwrap();
+        assert!(!ch0.cached);
+        assert!(ch0.content.contains("第1章正文第一段"));
+        assert_eq!(ch0.cached_chapters, 1);
+        assert!(ch0.epub_dirty);
+
+        // Second read of chapter 0 hits local chapter cache immediately
+        let ch0_cached = online_svc
+            .get_tracked_chapter(tracked.id, 0, false)
+            .await
+            .unwrap();
+        assert!(ch0_cached.cached);
+
+        let ch1 = online_svc
+            .get_tracked_chapter(tracked.id, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(ch1.cached_chapters, 2);
+
+        // 3. On-demand EPUB 3.0 sync -> rebuilds standard EPUB3 containing both cached chapters
+        let synced = online_svc
+            .sync_tracked_epub(tracked.id, false)
+            .await
+            .unwrap();
+        let synced_tracking = synced.online_tracking.as_ref().unwrap();
+        assert_eq!(synced_tracking.cached_chapters, 2);
+        assert!(!synced_tracking.epub_dirty);
+        {
+            let raw = std::fs::read(&epub_path).unwrap();
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(raw)).unwrap();
+            let mut ch1_html = String::new();
+            std::io::Read::read_to_string(
+                &mut archive.by_name("OEBPS/ch_00001.xhtml").unwrap(),
+                &mut ch1_html,
+            )
+            .unwrap();
+            assert!(ch1_html.contains("第1章正文第一段"));
+            let mut ch2_html = String::new();
+            std::io::Read::read_to_string(
+                &mut archive.by_name("OEBPS/ch_00002.xhtml").unwrap(),
+                &mut ch2_html,
+            )
+            .unwrap();
+            assert!(ch2_html.contains("第2章正文第一段"));
+        }
+
+        // 4. Batch download with book_id updates the SAME Book in-place (no duplicate book!)
+        let job = online_svc
+            .start_download(
+                &admin,
+                StartDownloadInput {
+                    book_id: Some(tracked.id.0),
+                    source_id,
+                    book_name: "青山问道".into(),
+                    author: "测试作者".into(),
+                    book_url: format!("http://{addr}/book/1"),
+                    toc_url: format!("http://{addr}/toc"),
+                    cover_url: None,
+                    intro: Some("一本用来验证统一 EPUB3 同步的小说。".into()),
+                    format: OnlineDownloadFormat::Epub,
+                    start_chapter: None,
+                    end_chapter: None,
+                    import_to_library: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        let mut finished = job;
+        for _ in 0..80 {
+            finished = online_svc
+                .get_download(admin.id, finished.id)
+                .await
+                .unwrap();
+            if finished.status == DownloadJobStatus::Completed
+                || finished.status == DownloadJobStatus::Failed
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(finished.status, DownloadJobStatus::Completed);
+        assert_eq!(finished.imported_book_id, Some(tracked.id.0));
+
+        // Verify all 3 chapters are now in the same EPUB3 file and only 1 Book exists
+        {
+            let raw = std::fs::read(&epub_path).unwrap();
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(raw)).unwrap();
+            assert!(archive.by_name("OEBPS/ch_00003.xhtml").is_ok());
+        }
+        let search_page = online_svc
+            .catalog
+            .search_books(Some(&admin), Default::default())
+            .await
+            .unwrap();
+        assert_eq!(search_page.total, 1);
+
+        // 5. Deleting the Book cleans up both EPUB3 file and online_tracked chapter workspace
+        let tracked_dir = tmp
+            .path()
+            .join("book")
+            .join("online_tracked")
+            .join(tracked.id.0.to_string());
+        assert!(tracked_dir.is_dir());
+        online_svc
+            .catalog
+            .delete_book(&admin, tracked.id)
+            .await
+            .unwrap();
+        assert!(!epub_path.exists());
+        assert!(!tracked_dir.exists());
 
         server_handle.abort();
     }

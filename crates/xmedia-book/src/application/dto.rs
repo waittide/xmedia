@@ -1,11 +1,23 @@
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use xmedia_core::domain::library::LibraryId;
 
 use crate::domain::book::{
-    Book, BookFormat, BookId, BookMetadata, BookSortField, SortOrder, TagMatchMode,
+    Book, BookFormat, BookId, BookMetadata, BookSortField, BookSource, SortOrder, TagMatchMode,
 };
 use crate::domain::reading::{Bookmark, ReadingLocation, ReadingProgress, Shelf, ShelfId};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BookOnlineTrackingDto {
+    pub source_id: Uuid,
+    pub book_url: String,
+    pub toc_url: String,
+    pub last_chapter: Option<String>,
+    pub cached_chapters: u32,
+    pub total_chapters: u32,
+    pub epub_dirty: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BookSummaryDto {
@@ -22,6 +34,7 @@ pub struct BookSummaryDto {
     pub is_favorite: bool,
     pub progress: Option<ReadingLocation>,
     pub last_read_at: Option<Timestamp>,
+    pub online_tracking: Option<BookOnlineTrackingDto>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -48,6 +61,28 @@ impl BookSummaryDto {
         is_favorite: bool,
         progress: Option<&ReadingProgress>,
     ) -> Self {
+        let online_tracking = match &book.source {
+            BookSource::OnlineTracked {
+                source_id,
+                book_url,
+                toc_url,
+                last_chapter,
+                cached_chapters,
+                total_chapters,
+                epub_dirty,
+                ..
+            } => Some(BookOnlineTrackingDto {
+                source_id: *source_id,
+                book_url: book_url.clone(),
+                toc_url: toc_url.clone(),
+                last_chapter: last_chapter.clone(),
+                cached_chapters: *cached_chapters,
+                total_chapters: *total_chapters,
+                epub_dirty: *epub_dirty,
+            }),
+            _ => None,
+        };
+
         Self {
             id: book.id,
             library_id: book.library_id,
@@ -65,6 +100,7 @@ impl BookSummaryDto {
             is_favorite,
             progress: progress.map(|p| p.location.clone()),
             last_read_at: progress.map(|p| p.last_read_at),
+            online_tracking,
             created_at: book.created_at,
             updated_at: book.updated_at,
         }

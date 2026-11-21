@@ -743,6 +743,7 @@ mod tests {
             .start_download(
                 &admin,
                 StartDownloadInput {
+                    book_id: None,
                     source_id,
                     book_name: "剑来".into(),
                     author: "烽火戏诸侯".into(),

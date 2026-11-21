@@ -99,7 +99,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                 let was_missing = existing.is_missing;
                 let stored_mtime = match &existing.source {
                     BookSource::MountedFile { file_mtime, .. } => *file_mtime,
-                    BookSource::ManagedUpload { .. } => 0,
+                    BookSource::ManagedUpload { .. } | BookSource::OnlineTracked { .. } => 0,
                 };
                 let stats_unchanged =
                     existing.file_size == entry.file_size && stored_mtime == entry.file_mtime;
@@ -242,7 +242,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
         for (_, mut stale_book) in existing_by_path {
             if !seen_paths.contains(match &stale_book.source {
                 BookSource::MountedFile { relative_path, .. } => relative_path.as_str(),
-                BookSource::ManagedUpload { .. } => "",
+                BookSource::ManagedUpload { .. } | BookSource::OnlineTracked { .. } => "",
             }) && !stale_book.is_missing
             {
                 stale_book.mark_missing();

@@ -14,7 +14,8 @@ use crate::application::dto::{
     UpdateMetadataPatch,
 };
 use crate::application::ports::{
-    BookAsset, BookParserPort, BookStoragePort, CoverPayload, TocItem, TxtChapterContent,
+    BookAsset, BookParserPort, BookStoragePort, CoverPayload, StoredManagedBook, TocItem,
+    TxtChapterContent,
 };
 use crate::application::reading::BookReadingService;
 use crate::domain::book::{
@@ -371,7 +372,7 @@ impl BookCatalogService {
     pub async fn delete_book(&self, actor: &User, book_id: BookId) -> DomainResult<()> {
         require_admin(actor)?;
         let book = self.find_book(book_id).await?;
-        if let BookSource::ManagedUpload { storage_key } = &book.source {
+        if let Some(storage_key) = book.source.storage_key() {
             let _ = self.storage.delete_managed_book(storage_key).await;
         }
         if let Some(cover_key) = &book.cover_key {
@@ -379,6 +380,81 @@ impl BookCatalogService {
         }
         self.readings.delete_by_book(book_id).await?;
         self.books.delete(book_id).await
+    }
+
+    pub(crate) async fn ensure_managed_library(&self) -> DomainResult<Library> {
+        match self
+            .libraries
+            .find_managed_by_media(MediaKind::Book)
+            .await?
+        {
+            Some(lib) => Ok(lib),
+            None => {
+                let lib =
+                    Library::new_managed(MediaKind::Book, MediaKind::Book.default_managed_name())?;
+                self.libraries.save(&lib).await?;
+                Ok(lib)
+            }
+        }
+    }
+
+    pub(crate) async fn find_book_raw(&self, book_id: BookId) -> DomainResult<Book> {
+        self.find_book(book_id).await
+    }
+
+    pub(crate) async fn find_online_tracked_book(
+        &self,
+        source_id: uuid::Uuid,
+        book_url: &str,
+    ) -> DomainResult<Option<Book>> {
+        let Some(lib) = self
+            .libraries
+            .find_managed_by_media(MediaKind::Book)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let list = self.books.list_by_library(lib.id).await?;
+        Ok(list.into_iter().find(|b| {
+            matches!(
+                &b.source,
+                BookSource::OnlineTracked {
+                    source_id: sid,
+                    book_url: url,
+                    ..
+                } if *sid == source_id && url == book_url
+            )
+        }))
+    }
+
+    pub(crate) async fn save_book_raw(&self, book: &Book) -> DomainResult<()> {
+        self.books.save(book).await
+    }
+
+    pub(crate) async fn save_managed_epub_and_cover(
+        &self,
+        book_id: BookId,
+        epub_bytes: Bytes,
+        cover: Option<CoverPayload>,
+    ) -> DomainResult<(StoredManagedBook, Option<String>)> {
+        let stored = self
+            .storage
+            .save_managed_book(book_id, BookFormat::Epub, epub_bytes)
+            .await?;
+        let cover_key = if let Some(payload) = cover {
+            Some(self.storage.save_cover(book_id, &payload).await?)
+        } else {
+            None
+        };
+        Ok((stored, cover_key))
+    }
+
+    pub(crate) async fn read_cover_bytes(&self, cover_key: &str) -> Option<(Vec<u8>, String)> {
+        self.storage
+            .read_cover(cover_key)
+            .await
+            .ok()
+            .map(|c| (c.bytes.to_vec(), c.mime_type))
     }
 
     pub async fn list_authors(&self) -> DomainResult<Vec<FacetCount>> {

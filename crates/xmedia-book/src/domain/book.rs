@@ -65,11 +65,41 @@ pub enum BookSource {
     ManagedUpload {
         storage_key: String,
     },
+    OnlineTracked {
+        storage_key: String,
+        source_id: uuid::Uuid,
+        book_url: String,
+        toc_url: String,
+        #[serde(default)]
+        last_chapter: Option<String>,
+        #[serde(default)]
+        cached_chapters: u32,
+        #[serde(default)]
+        total_chapters: u32,
+        #[serde(default)]
+        epub_dirty: bool,
+    },
 }
 
 impl BookSource {
     pub fn is_managed(&self) -> bool {
-        matches!(self, Self::ManagedUpload { .. })
+        matches!(
+            self,
+            Self::ManagedUpload { .. } | Self::OnlineTracked { .. }
+        )
+    }
+
+    pub fn storage_key(&self) -> Option<&str> {
+        match self {
+            Self::ManagedUpload { storage_key } | Self::OnlineTracked { storage_key, .. } => {
+                Some(storage_key.as_str())
+            }
+            Self::MountedFile { .. } => None,
+        }
+    }
+
+    pub fn is_online_tracked(&self) -> bool {
+        matches!(self, Self::OnlineTracked { .. })
     }
 }
 

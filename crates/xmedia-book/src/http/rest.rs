@@ -350,6 +350,14 @@ pub(crate) async fn serve_book_file_http(
     headers: &HeaderMap,
     as_attachment: bool,
 ) -> ApiResult<Response> {
+    // If this is an online-tracked book with newly cached chapters, atomically flush
+    // its standard EPUB 3.0 archive before streaming (transparent for both Web and OPDS).
+    state
+        .services
+        .online
+        .ensure_tracked_epub_synced(book_id)
+        .await?;
+
     let spec = parse_http_range_spec(headers);
     let (book, range_stream) = state
         .services

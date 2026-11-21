@@ -11,6 +11,7 @@ pub struct PackChapterInput {
 
 #[derive(Debug, Clone)]
 pub struct PackBookMetadata {
+    pub identifier: Option<uuid::Uuid>,
     pub title: String,
     pub author: String,
     pub description: Option<String>,
@@ -219,10 +220,73 @@ p {
     } else {
         meta.author.trim()
     });
-    let book_uuid = uuid::Uuid::new_v4();
+    let book_uuid = meta.identifier.unwrap_or_else(uuid::Uuid::new_v4);
     let now_iso = jiff::Timestamp::now()
         .strftime("%Y-%m-%dT%H:%M:%SZ")
         .to_string();
+
+    // If no chapters have been fetched yet, write a valid EPUB 3.0 title/intro document
+    // so `<spine>` and `<nav epub:type="toc">` always satisfy the EPUB 3.0 specification.
+    if chapters.is_empty() {
+        let cover_html = cover_info
+            .as_ref()
+            .map(|(cover_file, _)| {
+                format!(
+                    "  <div class=\"cover-page\"><img src=\"{cover_file}\" alt=\"{safe_book_title}\"/></div>\n"
+                )
+            })
+            .unwrap_or_default();
+        let intro_html = meta
+            .description
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|d| {
+                let mut buf = String::new();
+                for line in d.split('\n') {
+                    let t = line.trim();
+                    if !t.is_empty() {
+                        buf.push_str("  <p>");
+                        buf.push_str(&xml_escape(t));
+                        buf.push_str("</p>\n");
+                    }
+                }
+                buf
+            })
+            .unwrap_or_default();
+
+        let intro_xhtml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <title>{safe_book_title}</title>
+  <link rel="stylesheet" type="text/css" href="style.css"/>
+</head>
+<body>
+{cover_html}  <h1>{safe_book_title}</h1>
+  <p>{safe_author}</p>
+{intro_html}</body>
+</html>
+"#
+        );
+        zip.start_file("OEBPS/intro.xhtml", deflated)
+            .map_err(|e| e.to_string())?;
+        zip.write_all(intro_xhtml.as_bytes())
+            .map_err(|e| e.to_string())?;
+
+        manifest_items.push_str(
+            "    <item id=\"intro\" href=\"intro.xhtml\" media-type=\"application/xhtml+xml\"/>\n",
+        );
+        spine_items.push_str("    <itemref idref=\"intro\"/>\n");
+        nav_lis.push_str(&format!(
+            "      <li><a href=\"intro.xhtml\">{safe_book_title}</a></li>\n"
+        ));
+        ncx_points.push_str(&format!(
+            "    <navPoint id=\"nav_1\" playOrder=\"1\">\n      <navLabel><text>{safe_book_title}</text></navLabel>\n      <content src=\"intro.xhtml\"/>\n    </navPoint>\n"
+        ));
+    }
 
     // 6. OEBPS/nav.xhtml
     let nav_xhtml = format!(

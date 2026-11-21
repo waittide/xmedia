@@ -3,6 +3,7 @@ pub mod js_runtime;
 pub mod model;
 pub mod packager;
 pub mod rule;
+pub mod tracked_store;
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};

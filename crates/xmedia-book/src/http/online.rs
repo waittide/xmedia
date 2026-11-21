@@ -13,12 +13,16 @@ use serde::Deserialize;
 use uuid::Uuid;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename};
 
+use crate::application::dto::BookSummaryDto;
 use crate::application::online::{
     AddOnlineShelfInput, AggregatedSearchResponseDto, BookSourceSummaryDto,
     ImportBookSourcesReportDto, LoginActionResponseDto, OnlineBookDetailResponseDto,
     OnlineContentResponseDto, OnlineDownloadJobDto, OnlineShelfBookDto, OnlineTocResponseDto,
-    SourceTestReportDto, StartDownloadInput, UpdateBookSourceInput, UpdateOnlineShelfInput,
+    SourceTestReportDto, StartDownloadInput, SwitchTrackedSourceInput, TrackOnlineBookInput,
+    TrackedChapterResponseDto, TrackedTocResponseDto, UpdateBookSourceInput,
+    UpdateOnlineShelfInput,
 };
+use crate::domain::book::BookId;
 use crate::http::state::BookHttpState;
 use crate::source::model::{BookJsContext, ChapterJsContext};
 
@@ -40,7 +44,19 @@ pub fn router() -> Router<BookHttpState> {
         .route("/online/toc", post(online_toc))
         .route("/online/content", post(online_content))
         .route("/online/cover-proxy", get(online_cover_proxy))
-        // Per-user online bookshelf
+        // Unified Online-Tracked Books (BookModel + Incremental Chapters + EPUB 3.0)
+        .route("/online/track", post(track_online_book))
+        .route("/books/{id}/online/toc", get(get_tracked_toc))
+        .route(
+            "/books/{id}/online/chapter/{index}",
+            get(get_tracked_chapter),
+        )
+        .route(
+            "/books/{id}/online/switch-source",
+            post(switch_tracked_source),
+        )
+        .route("/books/{id}/online/sync-epub", post(sync_tracked_epub))
+        // Per-user online bookshelf (legacy compatibility)
         .route("/online/shelf", get(list_shelf).post(add_to_shelf))
         .route(
             "/online/shelf/{id}",
@@ -389,4 +405,74 @@ async fn download_packaged_file(
         resp.headers_mut().insert(CONTENT_DISPOSITION, cd);
     }
     Ok(resp)
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RefreshQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
+async fn track_online_book(
+    State(state): State<BookHttpState>,
+    WebAuth(user): WebAuth,
+    Json(req): Json<TrackOnlineBookInput>,
+) -> ApiResult<Json<BookSummaryDto>> {
+    let book = state.services.online.track_online_book(&user, req).await?;
+    Ok(Json(book))
+}
+
+async fn get_tracked_toc(
+    State(state): State<BookHttpState>,
+    WebAuth(_user): WebAuth,
+    Path(id): Path<Uuid>,
+    Query(q): Query<RefreshQuery>,
+) -> ApiResult<Json<TrackedTocResponseDto>> {
+    let toc = state
+        .services
+        .online
+        .get_tracked_toc(BookId(id), q.refresh)
+        .await?;
+    Ok(Json(toc))
+}
+
+async fn get_tracked_chapter(
+    State(state): State<BookHttpState>,
+    WebAuth(_user): WebAuth,
+    Path((id, index)): Path<(Uuid, usize)>,
+    Query(q): Query<RefreshQuery>,
+) -> ApiResult<Json<TrackedChapterResponseDto>> {
+    let ch = state
+        .services
+        .online
+        .get_tracked_chapter(BookId(id), index, q.refresh)
+        .await?;
+    Ok(Json(ch))
+}
+
+async fn switch_tracked_source(
+    State(state): State<BookHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SwitchTrackedSourceInput>,
+) -> ApiResult<Json<TrackedTocResponseDto>> {
+    let toc = state
+        .services
+        .online
+        .switch_tracked_source(&user, BookId(id), req)
+        .await?;
+    Ok(Json(toc))
+}
+
+async fn sync_tracked_epub(
+    State(state): State<BookHttpState>,
+    WebAuth(_user): WebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<BookSummaryDto>> {
+    let book = state
+        .services
+        .online
+        .sync_tracked_epub(BookId(id), true)
+        .await?;
+    Ok(Json(book))
 }
