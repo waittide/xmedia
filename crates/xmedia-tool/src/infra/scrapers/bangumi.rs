@@ -607,6 +607,11 @@ impl ScraperProviderPort for BangumiProvider {
     ) -> DomainResult<ScrapedMetadata> {
         let client = build_http_client(creds)?;
         let (base_id, season_ep, music_ep_id) = parse_bgm_external_id(external_id);
+        if base_id.is_empty() || !base_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(DomainError::Validation(format!(
+                "invalid Bangumi subject id '{base_id}'"
+            )));
+        }
         let tok_opt = creds
             .bangumi_access_token
             .as_deref()

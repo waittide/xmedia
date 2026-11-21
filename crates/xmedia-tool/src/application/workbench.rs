@@ -463,6 +463,12 @@ impl MediaWorkbenchService {
         })?;
 
         for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_symlink() {
+                continue;
+            }
             let p = entry.path();
             let Some(fname) = p.file_name().and_then(|s| s.to_str()) else {
                 continue;
@@ -470,9 +476,9 @@ impl MediaWorkbenchService {
             if fname.starts_with('.') {
                 continue;
             }
-            if p.is_dir() {
+            if ft.is_dir() {
                 raw_dirs.push((fname.to_string(), p));
-            } else if p.is_file() {
+            } else if ft.is_file() {
                 let matched_ins = self
                     .resolve_inspector_for_path(&p, effective_pref)
                     .filter(|ins| domain_filter.is_none_or(|want| ins.media_kind() == want));

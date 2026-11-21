@@ -303,8 +303,8 @@ impl ScraperProviderPort for MangaDexProvider {
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
         let id = external_id.trim();
-        if id.is_empty() {
-            return Err(DomainError::Validation("empty mangadex id".into()));
+        if uuid::Uuid::parse_str(id).is_err() {
+            return Err(DomainError::Validation("invalid mangadex uuid".into()));
         }
         let client = build_browser_http_client(creds, false)?;
         let resp = client

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
-use std::sync::{LazyLock, Mutex};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use reqwest::Client;
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::config::ProviderCredentials;
@@ -32,7 +33,7 @@ static HTTP_CLIENT_CACHE: LazyLock<Mutex<HashMap<HttpClientCacheKey, Client>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn is_restricted_ipv4(v4: Ipv4Addr) -> bool {
-    let [a, b, _, _] = v4.octets();
+    let [a, b, c, _] = v4.octets();
     v4.is_loopback()
         || v4.is_private()
         || v4.is_link_local()
@@ -41,6 +42,9 @@ fn is_restricted_ipv4(v4: Ipv4Addr) -> bool {
         || v4.is_multicast()
         || v4.is_unspecified()
         || (a == 100 && (64..=127).contains(&b)) // CGNAT 100.64.0.0/10
+        || (a == 192 && b == 0 && c == 0) // IETF protocol assignments 192.0.0.0/24
+        || (a == 192 && b == 88 && c == 99) // 6to4 relay anycast 192.88.99.0/24
+        || (a == 198 && (b == 18 || b == 19)) // Benchmarking 198.18.0.0/15
         || a == 0
         || a >= 240
 }
@@ -52,12 +56,100 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
             if let Some(mapped) = v6.to_ipv4_mapped() {
                 return is_restricted_ipv4(mapped);
             }
+            let s = v6.segments();
+            let is_ipv4_compatible =
+                s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0;
+            let is_ipv4_translated =
+                s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0xffff && s[5] == 0;
+            let is_nat64_well_known = s[0] == 0x0064
+                && s[1] == 0xff9b
+                && s[2] == 0
+                && s[3] == 0
+                && s[4] == 0
+                && s[5] == 0;
+            let is_nat64_local = s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0x0001;
+            let is_discard = s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0;
+            let is_benchmarking = s[0] == 0x2001 && s[1] == 0x0002 && s[2] == 0;
+            let is_orchid = s[0] == 0x2001 && (0x0010..=0x002f).contains(&s[1]);
+            let is_6to4 = s[0] == 0x2002;
+            let is_teredo = s[0] == 0x2001 && s[1] == 0x0000;
+            let is_doc = s[0] == 0x2001 && s[1] == 0x0db8;
+            let is_site_local = (s[0] & 0xffc0) == 0xfec0;
+            let is_ula = (s[0] & 0xfe00) == 0xfc00;
+            let is_link_local = (s[0] & 0xffc0) == 0xfe80;
+
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 ULA
-                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+                || is_ipv4_compatible
+                || is_ipv4_translated
+                || is_nat64_well_known
+                || is_nat64_local
+                || is_discard
+                || is_benchmarking
+                || is_orchid
+                || is_6to4
+                || is_teredo
+                || is_doc
+                || is_site_local
+                || is_ula
+                || is_link_local
         }
+    }
+}
+
+/// Async TOCTOU-free DNS resolver that pins validated public IPs at connect time
+/// and fails closed on DNS errors or private/reserved targets.
+#[derive(Debug, Default)]
+struct SsrfSafeResolver;
+
+impl Resolve for SsrfSafeResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let lower = host.to_ascii_lowercase();
+            if lower.is_empty()
+                || lower == "localhost"
+                || lower.ends_with(".localhost")
+                || lower.ends_with(".local")
+            {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("SSRF guard blocked restricted host '{host}'"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
+                .await
+                .map_err(|e| {
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::AddrNotAvailable,
+                        format!("DNS resolution failed for '{host}': {e}"),
+                    )) as Box<dyn std::error::Error + Send + Sync>
+                })?
+                .collect();
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::AddrNotAvailable,
+                    format!("DNS resolution returned no addresses for '{host}'"),
+                ))
+                    as Box<dyn std::error::Error + Send + Sync>);
+            }
+            for addr in &addrs {
+                if is_restricted_ip(addr.ip()) {
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!(
+                            "SSRF guard blocked host '{host}' resolving to restricted IP '{}'",
+                            addr.ip()
+                        ),
+                    ))
+                        as Box<dyn std::error::Error + Send + Sync>);
+                }
+            }
+            let boxed: Addrs = Box::new(addrs.into_iter());
+            Ok(boxed)
+        })
     }
 }
 
@@ -108,18 +200,6 @@ pub fn validate_artwork_http_url(
         return Ok(parsed);
     }
 
-    let port = parsed.port_or_known_default().unwrap_or(80);
-    if let Ok(addrs) = (host, port).to_socket_addrs() {
-        for addr in addrs {
-            if is_restricted_ip(addr.ip()) {
-                return Err(DomainError::Validation(format!(
-                    "host '{host}' resolved to private/reserved IP '{}'",
-                    addr.ip()
-                )));
-            }
-        }
-    }
-
     Ok(parsed)
 }
 
@@ -166,6 +246,8 @@ pub fn get_or_build_http_client(
             DomainError::Validation(format!("invalid proxy URL '{proxy_str}': {e}"))
         })?;
         builder = builder.proxy(proxy);
+    } else if key.ssrf_guard == SsrfRedirectGuard::PublicOnly {
+        builder = builder.no_proxy().dns_resolver(Arc::new(SsrfSafeResolver));
     }
 
     match key.ssrf_guard {
@@ -177,6 +259,15 @@ pub fn get_or_build_http_client(
                     return attempt.error(std::io::Error::other(format!(
                         "redirect limit ({MAX_REDIRECT_HOPS}) exceeded"
                     )));
+                }
+                if let Some(prev) = attempt.previous().last()
+                    && prev.scheme().eq_ignore_ascii_case("https")
+                    && attempt.url().scheme().eq_ignore_ascii_case("http")
+                {
+                    return attempt.error(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "HTTPS-to-HTTP redirect downgrade is forbidden",
+                    ));
                 }
                 if let Err(err) =
                     validate_artwork_http_url(attempt.url().as_str(), allow_private_ips)

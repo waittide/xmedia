@@ -471,6 +471,11 @@ impl ScraperProviderPort for TmdbProvider {
             .ok_or_else(|| DomainError::Validation("TMDB API Key is not configured".into()))?;
         let client = build_http_client(creds)?;
         let (base_id, season_ep) = parse_tmdb_external_id(external_id);
+        if base_id.is_empty() || !base_id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(DomainError::Validation(format!(
+                "invalid TMDB item id '{base_id}'"
+            )));
+        }
 
         let url = if target == ScrapeTargetKind::TvShow {
             format!("https://api.themoviedb.org/3/tv/{base_id}")

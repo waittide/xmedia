@@ -385,8 +385,13 @@ impl ScraperProviderPort for NeoDbProvider {
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
         let uuid = external_id.trim();
-        if uuid.is_empty() {
-            return Err(DomainError::Validation("empty NeoDB uuid".into()));
+        if uuid.is_empty()
+            || uuid.len() > 64
+            || !uuid
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        {
+            return Err(DomainError::Validation("invalid NeoDB uuid".into()));
         }
         let client = build_browser_http_client(creds, false)?;
         let url = format!("{NEODB_BOOK_PREFIX}{uuid}");

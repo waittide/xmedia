@@ -1,13 +1,13 @@
 use std::path::Path;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
+use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use crate::domain::config::XmediaWebhookConfig;
-use crate::infra::scrapers::http_client::{
-    DEFAULT_TOOL_USER_AGENT, SsrfRedirectGuard, get_or_build_http_client,
-};
+use crate::infra::scrapers::http_client::DEFAULT_TOOL_USER_AGENT;
 
 #[derive(Debug, Deserialize)]
 struct RemoteLibraryItem {
@@ -32,7 +32,14 @@ pub struct WebhookTestReportDto {
 }
 
 fn build_webhook_client() -> DomainResult<reqwest::Client> {
-    get_or_build_http_client(None, DEFAULT_TOOL_USER_AGENT, 10, SsrfRedirectGuard::None)
+    // Disable redirects so the admin `x-api-key` header can never be forwarded to a third-party host.
+    reqwest::Client::builder()
+        .user_agent(DEFAULT_TOOL_USER_AGENT)
+        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| DomainError::Storage(format!("failed building webhook client: {e}")))
 }
 
 fn paths_overlap_str(a: &Path, b: &Path) -> bool {
@@ -51,6 +58,19 @@ fn resolve_webhook_target(cfg: &XmediaWebhookConfig) -> DomainResult<(&str, &str
         .ok_or_else(|| DomainError::Validation("missing xmedia API key".into()))?;
     if base.is_empty() {
         return Err(DomainError::Validation("missing xmedia base_url".into()));
+    }
+    let parsed = reqwest::Url::parse(base)
+        .map_err(|_| DomainError::Validation("invalid xmedia webhook base_url".into()))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(DomainError::Validation(
+            "webhook base_url must be a clean http:// or https:// URL without embedded credentials"
+                .into(),
+        ));
     }
     Ok((base, api_key))
 }
@@ -98,7 +118,15 @@ async fn dispatch_matching_scans(
             if !matches {
                 continue;
             }
-            let url = format!("{base}/api/v1/libraries/{}/scan", lib.id);
+            let Ok(parsed_lib_id) = Uuid::parse_str(lib.id.trim()) else {
+                warn!(
+                    library = %lib.name,
+                    raw_id = %lib.id,
+                    "skipping webhook scan trigger for invalid non-UUID library id"
+                );
+                continue;
+            };
+            let url = format!("{base}/api/v1/libraries/{parsed_lib_id}/scan");
             match client.post(&url).header("x-api-key", api_key).send().await {
                 Ok(r) if r.status().is_success() => {
                     info!(

@@ -47,6 +47,13 @@ pub fn resolve_target_in_root(root: &ManagedRoot, rel_path: &str) -> DomainResul
         ));
     }
     let candidate = root.path.join(&cleaned_rel);
+    if let Ok(leaf_meta) = std::fs::symlink_metadata(&candidate)
+        && leaf_meta.file_type().is_symlink()
+    {
+        return Err(DomainError::Forbidden(
+            "target path cannot be a symbolic link".into(),
+        ));
+    }
     let mut ancestor = candidate.parent().unwrap_or(&root.path);
     while !ancestor.exists() {
         ancestor = ancestor

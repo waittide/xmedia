@@ -279,13 +279,20 @@ pub fn read_comic_page_image(
     let mut archive = ZipArchive::new(BufReader::new(file))
         .map_err(|e| DomainError::Validation(format!("invalid comic zip/cbz archive: {e}")))?;
 
-    let mut entry = archive
+    const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
+    let entry = archive
         .by_name(entry_name)
         .map_err(|_| DomainError::NotFound(format!("comic page '{entry_name}' not found")))?;
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    let mut bytes = Vec::with_capacity(entry.size().min(1024 * 1024) as usize);
     entry
+        .take(MAX_COMIC_PAGE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| DomainError::Storage(format!("read comic page failed: {e}")))?;
+    if (bytes.len() as u64) > MAX_COMIC_PAGE_BYTES {
+        return Err(DomainError::Validation(format!(
+            "comic page '{entry_name}' exceeds 64 MiB safety limit"
+        )));
+    }
 
     if let Some(target_w) = max_width
         && target_w >= 64
@@ -453,14 +460,24 @@ pub fn save_comic_pages(
     let mut page_payloads: Vec<PreparedPagePayload> = Vec::with_capacity(pages.len());
     let mut reencoded_pages = 0usize;
 
+    const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
     for (new_idx, spec) in pages.iter().enumerate() {
-        let mut entry = archive.by_name(&spec.entry_name).map_err(|_| {
+        let entry = archive.by_name(&spec.entry_name).map_err(|_| {
             DomainError::Validation(format!("page '{}' not found in archive", spec.entry_name))
         })?;
-        let mut raw = Vec::with_capacity(entry.size() as usize);
-        entry.read_to_end(&mut raw).map_err(|e| {
-            DomainError::Storage(format!("read page '{}' failed: {e}", spec.entry_name))
-        })?;
+        let mut raw = Vec::with_capacity(entry.size().min(1024 * 1024) as usize);
+        entry
+            .take(MAX_COMIC_PAGE_BYTES + 1)
+            .read_to_end(&mut raw)
+            .map_err(|e| {
+                DomainError::Storage(format!("read page '{}' failed: {e}", spec.entry_name))
+            })?;
+        if (raw.len() as u64) > MAX_COMIC_PAGE_BYTES {
+            return Err(DomainError::Validation(format!(
+                "comic page '{}' exceeds 64 MiB safety limit",
+                spec.entry_name
+            )));
+        }
 
         let orig_ext = Path::new(&spec.entry_name)
             .extension()
@@ -636,10 +653,16 @@ pub fn merge_comics_to_cbz(
         }
         names.sort_by_key(|a| natural_sort_key(a));
 
+        const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
         for name in names {
-            if let Ok(mut entry) = archive.by_name(&name) {
-                let mut bytes = Vec::with_capacity(entry.size() as usize);
-                if entry.read_to_end(&mut bytes).is_ok() {
+            if let Ok(entry) = archive.by_name(&name) {
+                let mut bytes = Vec::with_capacity(entry.size().min(1024 * 1024) as usize);
+                if entry
+                    .take(MAX_COMIC_PAGE_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .is_ok()
+                    && (bytes.len() as u64) <= MAX_COMIC_PAGE_BYTES
+                {
                     let ext = Path::new(&name)
                         .extension()
                         .and_then(|s| s.to_str())

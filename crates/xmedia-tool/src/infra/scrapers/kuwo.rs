@@ -180,7 +180,14 @@ async fn fetch_kuwo_newlyric_fallback(
     let query_plain = format!("user=12345,web,web,web&localhost&req=1&rid=MUSIC_{rid}&lrcx=0");
     let param = BASE64_STANDARD.encode(xor_yeelion(query_plain.as_bytes()));
     let url = format!("{KW_NEWLYRIC_URL}?{param}");
-    let raw = client.get(&url).send().await.ok()?.bytes().await.ok()?;
+    let mut resp = client.get(&url).send().await.ok()?;
+    let mut raw = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if raw.len().saturating_add(chunk.len()) > 2 * 1024 * 1024 {
+            return None;
+        }
+        raw.extend_from_slice(&chunk);
+    }
     let sep = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let header_str = String::from_utf8_lossy(&raw[..sep]);
     if header_str.contains("tp=none") {
@@ -188,9 +195,15 @@ async fn fetch_kuwo_newlyric_fallback(
     }
     let is_lrcx = header_str.contains("lrcx=1");
     let compressed = &raw[sep + 4..];
-    let mut z = ZlibDecoder::new(compressed);
+    const MAX_KUWO_LYRIC_BYTES: u64 = 4 * 1024 * 1024;
+    let z = ZlibDecoder::new(compressed);
     let mut inflated = Vec::new();
-    z.read_to_end(&mut inflated).ok()?;
+    z.take(MAX_KUWO_LYRIC_BYTES + 1)
+        .read_to_end(&mut inflated)
+        .ok()?;
+    if (inflated.len() as u64) > MAX_KUWO_LYRIC_BYTES {
+        return None;
+    }
 
     let decoded_bytes = if is_lrcx {
         let compact: Vec<u8> = inflated

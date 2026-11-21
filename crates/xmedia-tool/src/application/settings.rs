@@ -246,6 +246,14 @@ impl ToolSettingsService {
     }
 
     fn to_public(s: ToolSettings) -> PublicSettingsDto {
+        let masked_provider_configs = s
+            .provider_configs
+            .into_iter()
+            .map(|(k, mut cfg)| {
+                cfg.http_proxy = mask_proxy_url(cfg.http_proxy.as_deref());
+                (k, cfg)
+            })
+            .collect();
         PublicSettingsDto {
             roots: s.roots,
             has_tmdb_api_key: s.credentials.has_tmdb_key(),
@@ -258,11 +266,11 @@ impl ToolSettingsService {
             bangumi_token_masked: mask_secret(s.credentials.bangumi_access_token.as_deref()),
             has_qishui_cookie: s.credentials.get_extra("qishui_cookie").is_some(),
             qishui_cookie_masked: mask_secret(s.credentials.get_extra("qishui_cookie")),
-            http_proxy: s.credentials.http_proxy,
+            http_proxy: mask_proxy_url(s.credentials.http_proxy.as_deref()),
             enable_adult_scrapers: s.credentials.enable_adult_scrapers,
             rename_templates: s.rename_templates,
             scraper_priorities: s.scraper_priorities,
-            provider_configs: s.provider_configs,
+            provider_configs: masked_provider_configs,
             default_scrape_locale: s.default_scrape_locale,
             scrape_cache_ttl_ms: s.scrape_cache_ttl_ms,
             inbox: s.inbox,
@@ -279,6 +287,21 @@ impl ToolSettingsService {
             xmedia_webhook_notify_on_inbox: s.xmedia_webhook.notify_on_inbox,
         }
     }
+}
+
+fn mask_proxy_url(raw: Option<&str>) -> Option<String> {
+    let val = raw?.trim();
+    if val.is_empty() {
+        return None;
+    }
+    if let Ok(mut parsed) = reqwest::Url::parse(val)
+        && (!parsed.username().is_empty() || parsed.password().is_some())
+    {
+        let _ = parsed.set_username("***");
+        let _ = parsed.set_password(Some("***"));
+        return Some(parsed.to_string());
+    }
+    Some(val.to_string())
 }
 
 fn mask_secret(raw: Option<&str>) -> Option<String> {

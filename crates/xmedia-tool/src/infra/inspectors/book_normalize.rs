@@ -655,11 +655,14 @@ fn normalize_existing_epub(
         .map(|m| m.full_path.clone());
 
     // Read all existing archive files into memory (skipping OS junk)
+    const MAX_EPUB_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+    const MAX_EPUB_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
     let mut raw_entries: HashMap<String, Vec<u8>> = HashMap::new();
     let mut entry_order: Vec<String> = Vec::new();
     let mut junk_removed = 0usize;
+    let mut total_bytes_read: u64 = 0;
     for i in 0..archive.len() {
-        let Ok(mut zf) = archive.by_index(i) else {
+        let Ok(zf) = archive.by_index(i) else {
             continue;
         };
         let Ok(name_ref) = zf.name() else {
@@ -673,8 +676,24 @@ fn normalize_existing_epub(
             junk_removed += 1;
             continue;
         }
-        let mut buf = Vec::with_capacity(zf.size() as usize);
-        if zf.read_to_end(&mut buf).is_ok() {
+        let prealloc = zf.size().min(1024 * 1024) as usize;
+        let mut buf = Vec::with_capacity(prealloc);
+        if zf
+            .take(MAX_EPUB_ENTRY_BYTES + 1)
+            .read_to_end(&mut buf)
+            .is_ok()
+        {
+            if (buf.len() as u64) > MAX_EPUB_ENTRY_BYTES {
+                return Err(DomainError::Validation(format!(
+                    "EPUB entry '{name}' exceeds 64 MiB safety limit"
+                )));
+            }
+            total_bytes_read = total_bytes_read.saturating_add(buf.len() as u64);
+            if total_bytes_read > MAX_EPUB_TOTAL_BYTES {
+                return Err(DomainError::Validation(
+                    "decompressed EPUB archive exceeds 512 MiB safety limit".into(),
+                ));
+            }
             entry_order.push(name.clone());
             raw_entries.insert(name, buf);
         }
@@ -1107,8 +1126,10 @@ fn normalize_existing_epub(
 
 fn try_extract_pdf_pages_with_pdftotext(pdf_path: &Path) -> Option<Vec<String>> {
     let output = Command::new("pdftotext")
+        .stdin(std::process::Stdio::null())
         .arg("-enc")
         .arg("UTF-8")
+        .arg("--")
         .arg(pdf_path)
         .arg("-")
         .output()

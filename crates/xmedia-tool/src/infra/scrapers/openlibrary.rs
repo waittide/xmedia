@@ -174,6 +174,14 @@ impl ScraperProviderPort for OpenLibraryProvider {
     ) -> DomainResult<ScrapedMetadata> {
         let client = build_http_client(creds)?;
         let work_id = external_id.trim().trim_start_matches("/works/");
+        if work_id.is_empty()
+            || work_id.len() > 32
+            || !work_id.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return Err(DomainError::Validation(format!(
+                "invalid OpenLibrary work id '{work_id}'"
+            )));
+        }
         let work_key = format!("/works/{work_id}");
 
         let work_url = format!("https://openlibrary.org/works/{work_id}.json");

@@ -416,6 +416,9 @@ impl ScraperProviderPort for MusicBrainzProvider {
     ) -> DomainResult<ScrapedMetadata> {
         let client = build_http_client(creds)?;
         let id = external_id.trim();
+        if uuid::Uuid::parse_str(id).is_err() {
+            return Err(DomainError::Validation("invalid MusicBrainz MBID".into()));
+        }
 
         if target == ScrapeTargetKind::MusicAlbum {
             let url = format!("https://musicbrainz.org/ws/2/release/{id}");

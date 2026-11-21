@@ -57,8 +57,11 @@ pub fn build_browser_http_client(
     )
 }
 
+const MAX_SCRAPER_BODY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SCRAPER_DECOMPRESSED_BYTES: u64 = 16 * 1024 * 1024;
+
 pub async fn read_response_text(
-    resp: reqwest::Response,
+    mut resp: reqwest::Response,
     fallback_encoding: &'static Encoding,
 ) -> DomainResult<String> {
     let header_enc = resp
@@ -67,21 +70,47 @@ pub async fn read_response_text(
         .and_then(|v| v.to_str().ok())
         .and_then(detect_charset_from_content_type);
 
-    let raw = resp
-        .bytes()
+    if let Some(cl) = resp.content_length()
+        && cl > MAX_SCRAPER_BODY_BYTES as u64
+    {
+        return Err(DomainError::Validation(
+            "upstream response body exceeds 8 MiB safety limit".into(),
+        ));
+    }
+
+    let mut raw = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
         .await
-        .map_err(|e| DomainError::Storage(format!("failed reading HTTP body: {e}")))?;
+        .map_err(|e| DomainError::Storage(format!("failed reading HTTP body: {e}")))?
+    {
+        if raw.len().saturating_add(chunk.len()) > MAX_SCRAPER_BODY_BYTES {
+            return Err(DomainError::Validation(
+                "upstream response body exceeds 8 MiB safety limit".into(),
+            ));
+        }
+        raw.extend_from_slice(&chunk);
+    }
 
     let decompressed: Vec<u8> = if raw.starts_with(&[0x1f, 0x8b]) {
-        let mut decoder = GzDecoder::new(&raw[..]);
+        let decoder = GzDecoder::new(&raw[..]);
         let mut out = Vec::new();
-        if decoder.read_to_end(&mut out).is_ok() {
+        if decoder
+            .take(MAX_SCRAPER_DECOMPRESSED_BYTES + 1)
+            .read_to_end(&mut out)
+            .is_ok()
+        {
+            if (out.len() as u64) > MAX_SCRAPER_DECOMPRESSED_BYTES {
+                return Err(DomainError::Validation(
+                    "decompressed upstream body exceeds 16 MiB safety limit".into(),
+                ));
+            }
             out
         } else {
-            raw.to_vec()
+            raw
         }
     } else {
-        raw.to_vec()
+        raw
     };
 
     let enc = header_enc.unwrap_or(fallback_encoding);
@@ -92,7 +121,8 @@ pub async fn read_response_text(
 fn detect_charset_from_content_type(ct: &str) -> Option<&'static Encoding> {
     let lower = ct.to_ascii_lowercase();
     let idx = lower.find("charset=")?;
-    let rest = lower[idx + 8..].split([';', ' ', '"', '\'']).next()?.trim();
+    let trimmed = lower[idx + 8..].trim_start_matches([' ', '\t', '"', '\'']);
+    let rest = trimmed.split([';', ' ', '\t', '"', '\'']).next()?.trim();
     if rest.is_empty() {
         return None;
     }

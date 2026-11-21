@@ -194,7 +194,11 @@ impl ScraperProviderPort for LrclibProvider {
         creds: &ProviderCredentials,
     ) -> DomainResult<ScrapedMetadata> {
         let client = build_http_client(creds)?;
-        let url = format!("https://lrclib.net/api/get/{}", external_id.trim());
+        let id = external_id.trim();
+        if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(DomainError::Validation("invalid LRCLIB entry id".into()));
+        }
+        let url = format!("https://lrclib.net/api/get/{id}");
         let resp = client
             .get(&url)
             .send()
