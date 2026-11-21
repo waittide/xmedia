@@ -65,6 +65,9 @@ const playerStore = usePlayerStore()
 const videoStore = useVideoStore()
 
 const collapsed = ref(localStorage.getItem('xmedia.sidebar_collapsed') === '1')
+const desktopMediaQuery =
+  typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)') : null
+const isDesktop = ref(desktopMediaQuery ? desktopMediaQuery.matches : true)
 const mobileMenuOpen = ref(false)
 const accountMenuOpen = ref(false)
 const uploadMenuOpen = ref(false)
@@ -210,7 +213,13 @@ const { primaryNavItems } = usePrimaryNavItems(() => {
 
 const showMobileBottomNav = computed(() => primaryNavItems.value.length > 0)
 
-const isCompact = computed(() => collapsed.value && !mobileMenuOpen.value)
+const isCompact = computed(() => isDesktop.value && collapsed.value)
+const sidebarToggleExpanded = computed(() =>
+  isDesktop.value ? !collapsed.value : mobileMenuOpen.value,
+)
+const sidebarToggleLabel = computed(() =>
+  sidebarToggleExpanded.value ? t('nav.collapseSidebar') : t('nav.expandSidebar'),
+)
 
 async function switchDomain(kind: MediaKind): Promise<void> {
   const alreadyInDomain = domainStore.activeDomain === kind && route.meta.domain === kind
@@ -221,7 +230,9 @@ async function switchDomain(kind: MediaKind): Promise<void> {
 }
 
 function handleSidebarButtonClick(): void {
-  if (window.innerWidth < 768) {
+  if (!isDesktop.value) {
+    uploadMenuOpen.value = false
+    accountMenuOpen.value = false
     mobileMenuOpen.value = !mobileMenuOpen.value
     return
   }
@@ -324,6 +335,7 @@ function clearGlobalSearch(): void {
 
 // Upload & Drag-and-Drop
 function toggleUploadMenu(): void {
+  mobileMenuOpen.value = false
   accountMenuOpen.value = false
   uploadMenuOpen.value = !uploadMenuOpen.value
 }
@@ -492,14 +504,23 @@ function handleGlobalKeydown(ev: KeyboardEvent): void {
   }
 }
 
+function handleDesktopBreakpointChange(ev: MediaQueryListEvent): void {
+  isDesktop.value = ev.matches
+  if (ev.matches) {
+    mobileMenuOpen.value = false
+  }
+}
+
 onMounted(() => {
   document.addEventListener('mousedown', handleOutsideClick)
   window.addEventListener('keydown', handleGlobalKeydown)
+  desktopMediaQuery?.addEventListener('change', handleDesktopBreakpointChange)
 })
 
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', handleOutsideClick)
   window.removeEventListener('keydown', handleGlobalKeydown)
+  desktopMediaQuery?.removeEventListener('change', handleDesktopBreakpointChange)
   if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
 })
 </script>
@@ -552,7 +573,7 @@ onBeforeUnmount(() => {
 
     <!-- Full-Width MD3 Top App Bar -->
     <header
-      class="safe-pt safe-px shrink-0 bg-[var(--md-sys-color-surface-container)] select-none"
+      class="safe-pt safe-px relative z-30 shrink-0 bg-[var(--md-sys-color-surface-container)] select-none"
     >
       <div class="flex h-16 items-center justify-between gap-2.5 px-3 sm:gap-3 sm:px-4">
       <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Switcher -->
@@ -560,16 +581,18 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="md-icon-btn md-state"
-          :title="collapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
+          :title="sidebarToggleLabel"
+          :aria-label="sidebarToggleLabel"
+          :aria-expanded="sidebarToggleExpanded"
           @click="handleSidebarButtonClick"
         >
-          <LuPanelLeftOpen v-if="isCompact" class="h-5 w-5" />
-          <LuPanelLeftClose v-else class="h-5 w-5" />
+          <LuPanelLeftClose v-if="sidebarToggleExpanded" class="h-5 w-5" />
+          <LuPanelLeftOpen v-else class="h-5 w-5" />
         </button>
 
         <RouterLink
           :to="'/' + domainStore.activeDomain"
-          class="md-state flex items-center gap-2.5 rounded-full py-1 pr-2.5 pl-1 outline-none"
+          class="md-state flex items-center gap-2.5 rounded-full py-1 pr-2.5 pl-1"
           @click="mobileMenuOpen = false"
         >
           <div
@@ -783,7 +806,7 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="md-state flex h-9 w-9 items-center justify-center rounded-full bg-[var(--md-sys-color-primary-container)] text-xs font-bold text-[var(--md-sys-color-on-primary-container)]"
-            @click="uploadMenuOpen = false; accountMenuOpen = !accountMenuOpen"
+            @click="mobileMenuOpen = false; uploadMenuOpen = false; accountMenuOpen = !accountMenuOpen"
           >
             {{ userInitials }}
           </button>
@@ -864,7 +887,12 @@ onBeforeUnmount(() => {
     <!-- Reserve Space for Persistent Global PlayerBar Rendered in App.vue -->
     <div
       v-if="showMusicBar"
-      class="h-[5.5rem] shrink-0 sm:h-20 md:h-[calc(5rem+var(--safe-area-bottom))]"
+      class="shrink-0"
+      :class="
+        showMobileBottomNav
+          ? 'h-[var(--player-bar-h)] md:h-[calc(var(--player-bar-h)+var(--safe-area-bottom))]'
+          : 'h-[calc(var(--player-bar-h)+var(--safe-area-bottom))]'
+      "
       aria-hidden="true"
     />
 
@@ -888,7 +916,7 @@ onBeforeUnmount(() => {
           @click="item.onClick()"
         >
           <span
-            class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-200"
+            class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-200 group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-primary)]"
             :class="
               item.active
                 ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'

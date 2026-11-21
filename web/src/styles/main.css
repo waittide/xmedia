@@ -67,6 +67,15 @@
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
+
+  /* Global PlayerBar height (< sm includes compact progress slider row) */
+  --player-bar-h: 5.875rem;
+}
+
+@media (min-width: 640px) {
+  :root {
+    --player-bar-h: 5rem;
+  }
 }
 
 :root[data-theme="dark"] {
@@ -507,7 +516,7 @@ a,
   }
 
   :root:has([data-mobile-bottom-nav]):has(#app > footer.fixed.bottom-0) {
-    --md-snackbar-bottom: 10.5rem;
+    --md-snackbar-bottom: calc(5.25rem + var(--player-bar-h));
   }
 
   #app:has([data-mobile-bottom-nav]) > footer.fixed.bottom-0 {
@@ -522,18 +531,16 @@ a,
     top: calc(4rem + var(--safe-area-top));
   }
 
+  [data-workspace-shell][data-has-player="1"] aside.fixed.top-16 {
+    bottom: calc(var(--player-bar-h) + var(--safe-area-bottom));
+  }
+
   [data-workspace-shell]:has([data-mobile-bottom-nav]) aside.fixed.top-16 {
     bottom: calc(4rem + var(--safe-area-bottom));
   }
 
   [data-workspace-shell][data-has-player="1"]:has([data-mobile-bottom-nav]) aside.fixed.top-16 {
-    bottom: calc(9.5rem + var(--safe-area-bottom));
-  }
-}
-
-@media (min-width: 640px) and (max-width: 767.98px) {
-  [data-workspace-shell][data-has-player="1"]:has([data-mobile-bottom-nav]) aside.fixed.top-16 {
-    bottom: calc(9rem + var(--safe-area-bottom));
+    bottom: calc(4rem + var(--player-bar-h) + var(--safe-area-bottom));
   }
 }
 

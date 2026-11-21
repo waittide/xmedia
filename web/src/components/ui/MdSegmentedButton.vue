@@ -39,7 +39,7 @@ const emit = defineEmits<{
       role="radio"
       :aria-checked="modelValue === opt.value"
       :title="opt.title || opt.label"
-      class="md-state inline-flex cursor-pointer items-center justify-center gap-1.5 font-medium transition focus-visible:z-10"
+      class="md-state inline-flex cursor-pointer items-center justify-center gap-1.5 whitespace-nowrap font-medium transition focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--md-sys-color-primary)]"
       :class="[
         size === 'sm' ? 'h-9 px-3.5 text-xs' : 'md-label-large h-10 px-4',
         idx > 0 ? 'border-l border-[var(--md-sys-color-outline)]' : '',

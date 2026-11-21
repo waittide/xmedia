@@ -61,17 +61,17 @@ watch(creatingGroupId, async (id) => {
   <Transition name="md-fade">
     <div
       v-if="mobileMenuOpen"
-      class="fixed inset-0 z-30 bg-black/40 backdrop-blur-[1px] md:hidden"
+      class="fixed inset-0 z-[25] bg-black/40 backdrop-blur-[1px] md:hidden"
       @click="emit('closeMobile')"
     />
   </Transition>
 
   <aside
-    class="fixed top-16 left-0 z-40 flex shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none md:static md:top-0 md:bottom-0"
+    class="safe-pl fixed top-16 left-0 z-40 flex w-72 shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none md:static md:top-0 md:bottom-0"
     :class="[
-      showMusicBar ? 'bottom-20' : 'bottom-0',
+      showMusicBar ? 'bottom-[var(--player-bar-h)]' : 'bottom-0',
       mobileMenuOpen
-        ? 'w-72 translate-x-0 rounded-r-[28px] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
+        ? 'translate-x-0 rounded-r-[28px] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
         : '-translate-x-full md:translate-x-0',
       collapsed ? 'md:w-20' : 'md:w-64',
     ]"
@@ -111,7 +111,7 @@ watch(creatingGroupId, async (id) => {
         @click="item.onClick()"
       >
         <span
-          class="md-state flex h-8 w-14 items-center justify-center rounded-full transition"
+          class="md-state flex h-8 w-14 items-center justify-center rounded-full transition group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-primary)]"
           :class="
             item.active
               ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
@@ -217,7 +217,7 @@ watch(creatingGroupId, async (id) => {
 
             <button
               type="button"
-              class="truncate rounded-full px-1.5 py-0.5 text-left text-[11px] font-semibold tracking-wider uppercase transition"
+              class="truncate rounded-full px-1.5 py-0.5 text-left text-[11px] font-semibold tracking-wider uppercase transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
               :class="
                 group.overviewActive
                   ? 'text-[var(--md-sys-color-primary)]'
@@ -286,7 +286,7 @@ watch(creatingGroupId, async (id) => {
           <div
             v-for="sub in visibleGroupItems(group)"
             :key="sub.id"
-            class="md-state group flex h-9 items-center justify-between rounded-full px-3.5 text-[13px]"
+            class="md-state group flex h-9 items-center justify-between rounded-full px-3.5 text-[13px] has-[>button:focus-visible]:ring-2 has-[>button:focus-visible]:ring-inset has-[>button:focus-visible]:ring-[var(--md-sys-color-primary)]"
             :class="
               sub.active
                 ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
@@ -296,7 +296,7 @@ watch(creatingGroupId, async (id) => {
           >
             <button
               type="button"
-              class="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+              class="flex h-full min-w-0 flex-1 items-center gap-2.5 rounded-full text-left focus-visible:outline-none"
               @click="sub.onClick()"
             >
               <component :is="sub.icon" class="h-3.5 w-3.5 shrink-0" />
@@ -318,7 +318,7 @@ watch(creatingGroupId, async (id) => {
               <button
                 v-if="sub.onDelete"
                 type="button"
-                class="inline-flex rounded-full p-1 opacity-100 transition-opacity hover:text-[var(--md-sys-color-error)] focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
+                class="inline-flex rounded-full p-1 opacity-100 transition-opacity hover:text-[var(--md-sys-color-error)] focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--md-sys-color-primary)] sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
                 :title="t('common.delete')"
                 :aria-label="t('common.delete')"
                 @click.stop="sub.onDelete()"

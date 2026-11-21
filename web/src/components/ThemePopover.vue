@@ -126,7 +126,7 @@ function accentColorHex(accent: CatppuccinAccent): string {
             v-for="(m, idx) in modes"
             :key="m.value"
             type="button"
-            class="md-state flex h-9 cursor-pointer items-center justify-center gap-1.5 text-xs font-medium transition"
+            class="md-state flex h-9 cursor-pointer items-center justify-center gap-1.5 text-xs font-medium transition focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--md-sys-color-primary)]"
             :class="[
               idx > 0 ? 'border-l border-[var(--md-sys-color-outline)]' : '',
               themeStore.themeMode === m.value

@@ -174,7 +174,7 @@ onBeforeUnmount(() => {
 
 <template>
   <footer
-    class="fixed inset-x-0 bottom-0 z-30 flex flex-col border-t border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)]/95 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
+    class="safe-px fixed inset-x-0 bottom-0 z-30 flex flex-col border-t border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)]/95 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
   >
     <!-- Mobile Compact Draggable Progress Bar (< sm) -->
     <div class="flex items-center gap-2 px-3 pt-1 sm:hidden">
@@ -210,7 +210,7 @@ onBeforeUnmount(() => {
         <template v-if="playerStore.currentTrack">
           <button
             type="button"
-            class="group relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-sm outline-none sm:h-13 sm:w-13"
+            class="group relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] sm:h-13 sm:w-13"
             :title="t('player.openLyrics')"
             @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
           >

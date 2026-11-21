@@ -172,11 +172,13 @@ function handleResetDefaults(): void {
     </div>
 
     <div class="mt-4">
-      <MdSegmentedButton
-        :model-value="themeStore.themeMode"
-        :options="themeModeOptions"
-        @update:model-value="themeStore.setThemeMode($event)"
-      />
+      <div class="no-scrollbar -m-1 overflow-x-auto p-1">
+        <MdSegmentedButton
+          :model-value="themeStore.themeMode"
+          :options="themeModeOptions"
+          @update:model-value="themeStore.setThemeMode($event)"
+        />
+      </div>
     </div>
   </section>
 
@@ -281,11 +283,13 @@ function handleResetDefaults(): void {
     </h2>
 
     <div class="mt-4">
-      <MdSegmentedButton
-        :model-value="themeStore.accentMode"
-        :options="accentModeOptions"
-        @update:model-value="themeStore.setAccentMode($event)"
-      />
+      <div class="no-scrollbar -m-1 overflow-x-auto p-1">
+        <MdSegmentedButton
+          :model-value="themeStore.accentMode"
+          :options="accentModeOptions"
+          @update:model-value="themeStore.setAccentMode($event)"
+        />
+      </div>
     </div>
 
     <div

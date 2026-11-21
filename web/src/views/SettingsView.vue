@@ -268,7 +268,7 @@ function selectDomain(domain: MediaKind): void {
       <!-- Right Content Area -->
       <div class="min-w-0 space-y-6">
         <!-- Domain Switcher Tabs (shown for all lower domain-scoped categories) -->
-        <div v-if="showDomainTabs" class="flex flex-wrap items-center justify-between gap-3">
+        <div v-if="showDomainTabs" class="no-scrollbar -m-1 overflow-x-auto p-1">
           <MdSegmentedButton
             :model-value="activeDomain"
             :options="enabledDomainOptions"
