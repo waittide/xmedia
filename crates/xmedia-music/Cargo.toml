@@ -1,0 +1,28 @@
+[package]
+name = "xmedia-music"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+axum.workspace = true
+bytes.workspace = true
+form_urlencoded.workspace = true
+jiff.workspace = true
+lofty.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toasty.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+walkdir.workspace = true
+xmedia-core.workspace = true
+
+[dev-dependencies]
+encoding_rs.workspace = true
+hex.workspace = true
+md-5.workspace = true
+tempfile.workspace = true
+tower.workspace = true

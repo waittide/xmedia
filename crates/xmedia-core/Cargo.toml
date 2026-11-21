@@ -1,0 +1,54 @@
+[package]
+name = "xmedia-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["server"]
+server = [
+    "dep:aes-gcm",
+    "dep:argon2",
+    "dep:async-trait",
+    "dep:base64",
+    "dep:blake3",
+    "dep:form_urlencoded",
+    "dep:hex",
+    "dep:image",
+    "dep:jiff",
+    "dep:jsonwebtoken",
+    "dep:md-5",
+    "dep:sha2",
+    "dep:toasty",
+]
+db-postgres = ["server", "toasty/postgresql"]
+db-mysql = ["server", "toasty/mysql"]
+
+[dependencies]
+aes-gcm = { workspace = true, optional = true }
+argon2 = { workspace = true, optional = true }
+async-trait = { workspace = true, optional = true }
+axum.workspace = true
+base64 = { workspace = true, optional = true }
+blake3 = { workspace = true, optional = true }
+bytes.workspace = true
+chardetng.workspace = true
+encoding_rs.workspace = true
+form_urlencoded = { workspace = true, optional = true }
+futures-core.workspace = true
+hex = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
+jiff = { workspace = true, optional = true }
+jsonwebtoken = { workspace = true, optional = true }
+md-5 = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { workspace = true, optional = true }
+thiserror.workspace = true
+toasty = { workspace = true, optional = true }
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

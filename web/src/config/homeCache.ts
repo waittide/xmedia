@@ -1,0 +1,91 @@
+import { api as bookApi } from '@/domains/book/api'
+import type { BookHomeOverviewDto } from '@/domains/book/types'
+import { api as comicApi } from '@/domains/comic/api'
+import type { HomeOverviewDto as ComicHomeOverviewDto } from '@/domains/comic/types'
+import { api as musicApi } from '@/domains/music/api'
+import type { HomeOverviewDto as MusicHomeOverviewDto } from '@/domains/music/types'
+import { api as videoApi } from '@/domains/video/api'
+import type { VideoHomeOverviewDto } from '@/domains/video/types'
+import type { MediaKind } from '@/types/api'
+
+export interface DomainHomeMap {
+  book: BookHomeOverviewDto
+  comic: ComicHomeOverviewDto
+  music: MusicHomeOverviewDto
+  video: VideoHomeOverviewDto
+}
+
+type HomeCacheMap = { [K in MediaKind]?: { data: DomainHomeMap[K]; updatedAt: number } }
+type HomeInflightMap = { [K in MediaKind]?: Promise<DomainHomeMap[K]> }
+
+let currentUserKey = 'anon'
+const cacheByUser: Record<string, HomeCacheMap> = {}
+const inflightByUser: Record<string, HomeInflightMap> = {}
+
+export function setHomeCacheUser(userId: string | null | undefined): void {
+  const next = userId?.trim() || 'anon'
+  if (next !== currentUserKey) {
+    currentUserKey = next
+  }
+}
+
+export function clearHomeCache(): void {
+  for (const k of Object.keys(cacheByUser)) {
+    delete cacheByUser[k]
+  }
+  for (const k of Object.keys(inflightByUser)) {
+    delete inflightByUser[k]
+  }
+}
+
+export function invalidateHomeCache(kind?: MediaKind): void {
+  if (!kind) {
+    clearHomeCache()
+    return
+  }
+  for (const bucket of Object.values(cacheByUser)) {
+    delete bucket[kind]
+  }
+}
+
+export function peekHomeCache<K extends MediaKind>(kind: K): DomainHomeMap[K] | null {
+  return (cacheByUser[currentUserKey]?.[kind]?.data as DomainHomeMap[K] | undefined) ?? null
+}
+
+export function fetchHomeOverview<K extends MediaKind>(
+  kind: K,
+  options: { force?: boolean; maxAgeMs?: number } = {},
+): Promise<DomainHomeMap[K]> {
+  const { force = false, maxAgeMs = 15_000 } = options
+  const userKey = currentUserKey
+  const userCache = (cacheByUser[userKey] ??= {})
+  const userInflight = (inflightByUser[userKey] ??= {})
+
+  const existing = userCache[kind]
+  if (!force && existing && Date.now() - existing.updatedAt < maxAgeMs) {
+    return Promise.resolve(existing.data as DomainHomeMap[K])
+  }
+
+  const pending = userInflight[kind]
+  if (pending) return pending as Promise<DomainHomeMap[K]>
+
+  const req = (async (): Promise<DomainHomeMap[K]> => {
+    let data: unknown
+    if (kind === 'book') data = await bookApi.homeOverview()
+    else if (kind === 'comic') data = await comicApi.homeOverview()
+    else if (kind === 'music') data = await musicApi.homeOverview()
+    else data = await videoApi.homeOverview()
+
+    const bucket = (cacheByUser[userKey] ??= {})
+    ;(bucket as Record<MediaKind, { data: unknown; updatedAt: number }>)[kind] = {
+      data,
+      updatedAt: Date.now(),
+    }
+    return data as DomainHomeMap[K]
+  })().finally(() => {
+    delete inflightByUser[userKey]?.[kind]
+  })
+
+  ;(userInflight as Record<MediaKind, Promise<unknown>>)[kind] = req
+  return req
+}

@@ -1,0 +1,13 @@
+/target
+/data
+/data-tool
+/web/node_modules
+/web/dist
+/web/dist-tool
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.DS_Store
+/apps/xmedia-app/target
+/apps/xmedia-app/gen

@@ -1,0 +1,40 @@
+[package]
+name = "xmedia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["book", "comic", "music", "video"]
+book = ["dep:xmedia-book"]
+comic = ["dep:xmedia-comic"]
+music = ["dep:xmedia-music"]
+video = ["dep:xmedia-video"]
+db-postgres = ["xmedia-core/db-postgres", "toasty/postgresql"]
+db-mysql = ["xmedia-core/db-mysql", "toasty/mysql"]
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+futures-core.workspace = true
+mime_guess.workspace = true
+rust-embed.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toasty.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+xmedia-core.workspace = true
+
+xmedia-book = { workspace = true, optional = true }
+xmedia-comic = { workspace = true, optional = true }
+xmedia-music = { workspace = true, optional = true }
+xmedia-video = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+tower.workspace = true

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6750A4" />
+      <stop offset="55%" stop-color="#4F46E5" />
+      <stop offset="100%" stop-color="#3730A3" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#EADDFF" />
+      <stop offset="100%" stop-color="#C7D2FE" />
+    </linearGradient>
+    <linearGradient id="play" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#EDE9FE" />
+    </linearGradient>
+  </defs>
+  <!-- MD3 Rounded Squircle Surface -->
+  <rect x="48" y="48" width="928" height="928" rx="224" ry="224" fill="url(#bg)" />
+  <!-- Subtle MD3 Tonal Highlight Ring -->
+  <rect x="76" y="76" width="872" height="872" rx="198" ry="198" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="10" />
+  <!-- Stylized Unified Media X Ribbons -->
+  <path d="M 272 288 C 296 264 336 264 360 288 L 736 664 C 760 688 760 728 736 752 C 712 776 672 776 648 752 L 272 376 C 248 352 248 312 272 288 Z" fill="url(#accent)" fill-opacity="0.92" />
+  <path d="M 736 288 C 760 312 760 352 736 376 L 360 752 C 336 776 296 776 272 752 C 248 728 248 688 272 664 L 648 288 C 672 264 712 264 736 288 Z" fill="url(#play)" />
+  <!-- Central Play/Media Core Badge -->
+  <circle cx="512" cy="520" r="136" fill="#4338CA" />
+  <circle cx="512" cy="520" r="120" fill="#5B21B6" fill-opacity="0.55" />
+  <path d="M 476 456 L 578 520 L 476 584 Z" fill="#FFFFFF" stroke="#FFFFFF" stroke-width="12" stroke-linejoin="round" />
+</svg>

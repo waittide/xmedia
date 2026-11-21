@@ -1,0 +1,156 @@
+use std::sync::Arc;
+
+use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
+use xmedia_core::domain::error::{DomainError, DomainResult};
+use xmedia_core::domain::repository::LibraryRepository;
+
+use crate::application::ports::{
+    AudioTranscoderPort, FfmpegStatusDto, MusicStoragePort, TranscodeFormat, TranscodeRequest,
+    TranscodedAudioStream,
+};
+use crate::domain::catalog::{Track, TrackId};
+use crate::domain::repository::MusicCatalogRepository;
+
+pub enum ResolvedAudioStream {
+    RawRange {
+        track: Track,
+        range_stream: ByteRangeStream,
+        is_partial: bool,
+    },
+    Transcoded {
+        track: Track,
+        transcoded: TranscodedAudioStream,
+    },
+}
+
+#[derive(Clone)]
+pub struct MusicStreamingService {
+    libraries: Arc<dyn LibraryRepository>,
+    catalog: Arc<dyn MusicCatalogRepository>,
+    storage: Arc<dyn MusicStoragePort>,
+    transcoder: Arc<dyn AudioTranscoderPort>,
+}
+
+impl MusicStreamingService {
+    pub fn new(
+        libraries: Arc<dyn LibraryRepository>,
+        catalog: Arc<dyn MusicCatalogRepository>,
+        storage: Arc<dyn MusicStoragePort>,
+        transcoder: Arc<dyn AudioTranscoderPort>,
+    ) -> Self {
+        Self {
+            libraries,
+            catalog,
+            storage,
+            transcoder,
+        }
+    }
+
+    pub async fn get_ffmpeg_status(&self) -> FfmpegStatusDto {
+        self.transcoder.check_status().await
+    }
+
+    pub async fn open_raw_download(
+        &self,
+        track_id: TrackId,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<ResolvedAudioStream> {
+        let track = self
+            .catalog
+            .find_track_by_id(track_id)
+            .await?
+            .filter(|t| !t.is_missing)
+            .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
+        let library = self
+            .libraries
+            .find_by_id(track.library_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
+
+        let range_stream = self
+            .storage
+            .open_audio_stream(&library, &track, spec)
+            .await?;
+        Ok(ResolvedAudioStream::RawRange {
+            track,
+            range_stream,
+            is_partial: spec.is_partial(),
+        })
+    }
+
+    pub async fn open_stream(
+        &self,
+        track_id: TrackId,
+        requested_format: Option<&str>,
+        max_bit_rate_kbps: Option<u32>,
+        time_offset_secs: Option<u32>,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<ResolvedAudioStream> {
+        let track = self
+            .catalog
+            .find_track_by_id(track_id)
+            .await?
+            .filter(|t| !t.is_missing)
+            .ok_or_else(|| DomainError::NotFound("track not found".into()))?;
+        let library = self
+            .libraries
+            .find_by_id(track.library_id)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("library not found".into()))?;
+
+        let norm_format = requested_format
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_ascii_lowercase);
+        let max_br = max_bit_rate_kbps.filter(|&b| b > 0);
+        let offset = time_offset_secs.filter(|&t| t > 0);
+
+        let wants_raw = match norm_format.as_deref() {
+            Some("raw") => true,
+            Some(_) => false,
+            None => {
+                if offset.is_some() {
+                    false
+                } else if let Some(limit_kbps) = max_br {
+                    !track.format.is_lossless()
+                        && track.bit_rate_kbps.is_some_and(|src| src <= limit_kbps)
+                } else {
+                    true
+                }
+            }
+        };
+
+        if wants_raw {
+            let range_stream = self
+                .storage
+                .open_audio_stream(&library, &track, spec)
+                .await?;
+            return Ok(ResolvedAudioStream::RawRange {
+                track,
+                range_stream,
+                is_partial: spec.is_partial(),
+            });
+        }
+
+        let target_format = match norm_format.as_deref() {
+            Some(fmt) if fmt != "raw" => TranscodeFormat::parse(fmt)?,
+            _ => TranscodeFormat::Mp3,
+        };
+
+        let source_path = self.storage.resolve_audio_fs_path(&library, &track).await?;
+        let transcoded = self
+            .transcoder
+            .transcode_stream(
+                &source_path,
+                track.duration_secs,
+                &TranscodeRequest {
+                    target_format,
+                    max_bit_rate_kbps: max_br,
+                    time_offset_secs: offset,
+                },
+            )
+            .await?;
+
+        Ok(ResolvedAudioStream::Transcoded { track, transcoded })
+    }
+}

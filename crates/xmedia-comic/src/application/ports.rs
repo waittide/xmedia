@@ -1,0 +1,169 @@
+use std::collections::HashMap;
+use std::path::Path;
+
+use async_trait::async_trait;
+use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
+use xmedia_core::application::ports::{ByteRangeSpec, ByteRangeStream};
+use xmedia_core::domain::error::DomainResult;
+
+use crate::domain::chapter::{ChapterKind, ChapterSourceKind};
+use crate::domain::series::ReadingDirection;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComicInfoMetadata {
+    pub series: Option<String>,
+    pub series_group: Option<String>,
+    pub title: Option<String>,
+    pub number: Option<f64>,
+    pub volume: Option<f64>,
+    pub summary: Option<String>,
+    pub writers: Vec<String>,
+    pub pencillers: Vec<String>,
+    pub publisher: Option<String>,
+    pub genres: Vec<String>,
+    pub tags: Vec<String>,
+    pub age_rating: Option<String>,
+    pub language_iso: Option<String>,
+    pub year: Option<i32>,
+    pub reading_direction: Option<ReadingDirection>,
+    pub page_count: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageDescriptor {
+    pub page_number: u32,
+    pub entry_name: String,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PageContent {
+    pub bytes: Vec<u8>,
+    pub mime_type: String,
+    pub etag: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ArchiveInspection {
+    pub page_count: u32,
+    pub pages: Vec<PageDescriptor>,
+    pub comic_info: Option<ComicInfoMetadata>,
+    pub file_size: u64,
+    pub file_hash: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExistingChapterDigest {
+    pub file_size: u64,
+    pub file_hash: String,
+    pub page_count: u32,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScannedChapterEntry {
+    pub kind: ChapterKind,
+    pub number: f64,
+    pub volume_number: Option<f64>,
+    pub title: String,
+    pub page_count: u32,
+    pub source_kind: ChapterSourceKind,
+    pub source_path: String,
+    pub file_size: u64,
+    pub file_hash: String,
+    pub comic_info: Option<ComicInfoMetadata>,
+    pub unchanged: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScannedSeriesEntry {
+    pub title: String,
+    pub source_dir: String,
+    pub chapters: Vec<ScannedChapterEntry>,
+    pub series_cover_bytes: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredUploadFile {
+    pub source_dir: String,
+    pub source_path: String,
+    pub file_size: u64,
+    pub file_hash: String,
+}
+
+#[async_trait]
+pub trait ArchiveReaderPort: Send + Sync {
+    async fn inspect_source(
+        &self,
+        source_kind: ChapterSourceKind,
+        source_path: &str,
+    ) -> DomainResult<ArchiveInspection>;
+
+    async fn inspect_bytes(&self, filename: &str, bytes: &[u8]) -> DomainResult<ArchiveInspection>;
+
+    async fn read_page(
+        &self,
+        source_kind: ChapterSourceKind,
+        source_path: &str,
+        page_number: u32,
+        file_hash_hint: &str,
+    ) -> DomainResult<PageContent>;
+
+    async fn read_raw_archive(&self, source_path: &str) -> DomainResult<(Vec<u8>, String, String)>;
+
+    async fn open_raw_archive_stream(
+        &self,
+        source_path: &str,
+        spec: ByteRangeSpec,
+    ) -> DomainResult<(ByteRangeStream, String, String)>;
+}
+
+#[async_trait]
+pub trait ThumbnailGeneratorPort: Send + Sync {
+    async fn generate_from_bytes(&self, key: &str, image_bytes: &[u8]) -> DomainResult<String>;
+    async fn read_thumbnail(&self, cover_key: &str) -> DomainResult<PageContent>;
+    async fn read_thumbnail_sized(
+        &self,
+        cover_key: &str,
+        max_size: Option<u32>,
+    ) -> DomainResult<PageContent> {
+        let _ = max_size;
+        self.read_thumbnail(cover_key).await
+    }
+}
+
+#[async_trait]
+pub trait ComicScannerPort: Send + Sync {
+    async fn scan_directory(
+        &self,
+        root_path: &str,
+        known_chapters: &HashMap<String, ExistingChapterDigest>,
+    ) -> DomainResult<Vec<ScannedSeriesEntry>>;
+}
+
+#[async_trait]
+pub trait ComicFileStoragePort: Send + Sync {
+    async fn ensure_managed_root(&self) -> DomainResult<String>;
+    async fn store_uploaded_archive(
+        &self,
+        series_folder: &str,
+        filename: &str,
+        bytes: &[u8],
+    ) -> DomainResult<StoredUploadFile>;
+    async fn store_uploaded_archive_from_path(
+        &self,
+        series_folder: &str,
+        filename: &str,
+        src_path: &Path,
+    ) -> DomainResult<StoredUploadFile> {
+        let bytes = tokio::fs::read(src_path).await.map_err(|e| {
+            xmedia_core::domain::error::DomainError::Storage(format!(
+                "failed reading temp comic archive: {e}"
+            ))
+        })?;
+        self.store_uploaded_archive(series_folder, filename, &bytes)
+            .await
+    }
+    async fn delete_managed_file(&self, path: &str) -> DomainResult<()>;
+}

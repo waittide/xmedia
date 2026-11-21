@@ -1,0 +1,171 @@
+import { ref, watch } from 'vue'
+import { defineStore } from 'pinia'
+import { useEventsStore } from '@/stores/events'
+import { api } from './api'
+import type {
+  ShowSummaryDto,
+  VideoLibraryDto,
+  VideoShelfDto,
+  VideoSummaryDto,
+  VideoTagStat,
+} from './types'
+
+export const useVideoStore = defineStore('video', () => {
+  const eventsStore = useEventsStore()
+
+  const libraries = ref<VideoLibraryDto[]>([])
+  const shelves = ref<VideoShelfDto[]>([])
+  const shows = ref<ShowSummaryDto[]>([])
+  const genres = ref<VideoTagStat[]>([])
+  const tags = ref<VideoTagStat[]>([])
+  const catalogVersion = ref(0)
+
+  const SIDEBAR_CACHE_TTL_MS = 5000
+  let sidebarInFlight: Promise<void> | null = null
+  let lastSidebarLoadedAt = 0
+  let sidebarDirtyAfterInFlight = false
+  let sidebarDebounceTimer: ReturnType<typeof setTimeout> | null = null
+
+  async function runSidebarFetch(): Promise<void> {
+    const [libsRes, shelvesRes, videosRes, showsRes] = await Promise.allSettled([
+      api.listLibraries(),
+      api.listShelves(),
+      api.listVideos(),
+      api.listShows(),
+    ])
+    if (libsRes.status === 'fulfilled') libraries.value = libsRes.value
+    if (shelvesRes.status === 'fulfilled') shelves.value = shelvesRes.value
+    if (showsRes.status === 'fulfilled') shows.value = showsRes.value
+
+    const genreCounts = new Map<string, number>()
+    const tagCounts = new Map<string, number>()
+    if (videosRes.status === 'fulfilled') {
+      for (const v of videosRes.value) {
+        for (const g of v.genres) {
+          const clean = g.trim()
+          if (clean) genreCounts.set(clean, (genreCounts.get(clean) ?? 0) + 1)
+        }
+        for (const t of v.tags) {
+          const clean = t.trim()
+          if (clean) tagCounts.set(clean, (tagCounts.get(clean) ?? 0) + 1)
+        }
+      }
+    }
+    if (showsRes.status === 'fulfilled') {
+      for (const s of showsRes.value) {
+        for (const g of s.genres) {
+          const clean = g.trim()
+          if (clean && !genreCounts.has(clean)) genreCounts.set(clean, 1)
+        }
+        for (const t of s.tags) {
+          const clean = t.trim()
+          if (clean && !tagCounts.has(clean)) tagCounts.set(clean, 1)
+        }
+      }
+    }
+    genres.value = Array.from(genreCounts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    tags.value = Array.from(tagCounts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    lastSidebarLoadedAt = Date.now()
+  }
+
+  async function refreshSidebar(force = false): Promise<void> {
+    if (sidebarInFlight) {
+      if (force) sidebarDirtyAfterInFlight = true
+      return sidebarInFlight
+    }
+    if (!force && lastSidebarLoadedAt > 0 && Date.now() - lastSidebarLoadedAt < SIDEBAR_CACHE_TTL_MS) {
+      return
+    }
+    const task = runSidebarFetch().finally(() => {
+      sidebarInFlight = null
+      if (sidebarDirtyAfterInFlight) {
+        sidebarDirtyAfterInFlight = false
+        void refreshSidebar(true).catch(() => {})
+      }
+    })
+    sidebarInFlight = task
+    return task
+  }
+
+  function scheduleRefreshSidebar(): void {
+    if (sidebarDebounceTimer) clearTimeout(sidebarDebounceTimer)
+    sidebarDebounceTimer = setTimeout(() => {
+      sidebarDebounceTimer = null
+      void refreshSidebar(true).catch(() => {})
+    }, 250)
+  }
+
+  function bumpCatalogVersion(): void {
+    catalogVersion.value += 1
+  }
+
+  async function toggleVideoFavorite(video: VideoSummaryDto): Promise<boolean> {
+    const next = !video.is_favorite
+    await api.setFavorite('video', video.id, next)
+    video.is_favorite = next
+    return next
+  }
+
+  async function toggleShowFavorite(show: ShowSummaryDto): Promise<boolean> {
+    const next = !show.is_favorite
+    await api.setFavorite('show', show.id, next)
+    show.is_favorite = next
+    return next
+  }
+
+  async function addVideoToShelf(shelfId: string, videoId: string): Promise<void> {
+    const detail = await api.getShelf(shelfId)
+    const ids = detail.videos.map((v) => v.id)
+    if (!ids.includes(videoId)) {
+      ids.push(videoId)
+      await api.updateShelf(shelfId, {
+        name: detail.shelf.name,
+        description: detail.shelf.description,
+        video_ids: ids,
+      })
+      await refreshSidebar(true)
+    }
+  }
+
+  watch(
+    () => eventsStore.domainRefreshTick.video,
+    () => {
+      bumpCatalogVersion()
+      scheduleRefreshSidebar()
+    },
+  )
+
+  function resetState(): void {
+    if (sidebarDebounceTimer) {
+      clearTimeout(sidebarDebounceTimer)
+      sidebarDebounceTimer = null
+    }
+    lastSidebarLoadedAt = 0
+    sidebarDirtyAfterInFlight = false
+    libraries.value = []
+    shelves.value = []
+    shows.value = []
+    genres.value = []
+    tags.value = []
+    catalogVersion.value = 0
+  }
+
+  return {
+    libraries,
+    shelves,
+    shows,
+    genres,
+    tags,
+    catalogVersion,
+    refreshSidebar,
+    bumpCatalogVersion,
+    toggleVideoFavorite,
+    toggleShowFavorite,
+    addVideoToShelf,
+    resetState,
+  }
+})
