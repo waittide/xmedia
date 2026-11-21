@@ -285,11 +285,9 @@ async fn delete_book(
     WebAuth(actor): WebAuth,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    state
-        .services
-        .catalog
-        .delete_book(&actor, BookId(id))
-        .await?;
+    let book_id = BookId(id);
+    state.services.catalog.delete_book(&actor, book_id).await?;
+    state.services.online.cleanup_book_state(book_id);
     Ok(StatusCode::NO_CONTENT)
 }
 

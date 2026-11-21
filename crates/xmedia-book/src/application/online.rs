@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -22,7 +22,7 @@ use crate::domain::book::{Book, BookFormat, BookId, BookMetadata, BookSource};
 use crate::domain::online::{BookSourceRecord, OnlineShelfBook};
 use crate::domain::repository::{BookSourceRepository, OnlineShelfRepository};
 use crate::source::BookSourceEngine;
-use crate::source::http::{get_or_build_async_client, validate_target_url};
+use crate::source::http::{get_or_build_async_client, validate_target_url_static};
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ConcurrentRateSpec, ExecutionDiagnostics, LegadoBookSource,
     LoginUiItem, OnlineBookDetail, OnlineChapterContent, OnlineChapterItem, SearchBookResult,
@@ -31,13 +31,18 @@ use crate::source::model::{
 use crate::source::packager::{
     PackBookMetadata, PackChapterInput, package_chapters_to_epub, package_chapters_to_txt,
 };
-use crate::source::tracked_store::{TrackedBookStore, TrackedChapterFile, TrackedChapterMeta};
+use crate::source::tracked_store::{
+    TrackedBookStore, TrackedChapterFile, TrackedChapterMeta, write_atomic,
+};
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
+const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 4;
 const DEFAULT_DOWNLOAD_MIN_INTERVAL_MS: u64 = 40;
 const DOWNLOAD_STATE_PERSIST_BATCH: usize = 20;
+const MAX_ACTIVE_DOWNLOADS_PER_USER: usize = 3;
+const FINISHED_DOWNLOAD_TTL_SECS: i64 = 24 * 3600;
 const TRACKED_EPUB_DEBOUNCE: Duration = Duration::from_secs(6);
 const TRACKED_EPUB_IMMEDIATE_BATCH: u32 = 20;
 
@@ -527,6 +532,8 @@ struct ChapterProgressEvent {
     from_cache: bool,
 }
 
+type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>>;
+
 pub struct BookOnlineService {
     sources: Arc<dyn BookSourceRepository>,
     shelves: Arc<dyn OnlineShelfRepository>,
@@ -535,8 +542,10 @@ pub struct BookOnlineService {
     cache_dir: PathBuf,
     download_dir: PathBuf,
     tracked_store: TrackedBookStore,
-    epub_sync_locks: Arc<RwLock<HashMap<BookId, Arc<tokio::sync::Mutex<()>>>>>,
-    pending_sync_gens: Arc<RwLock<HashMap<BookId, (u64, u32)>>>,
+    book_state_locks: AsyncLockMap<BookId>,
+    epub_sync_locks: AsyncLockMap<BookId>,
+    pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>>,
+    track_locks: AsyncLockMap<(Uuid, String)>,
     downloads: Arc<RwLock<HashMap<Uuid, StoredDownloadJob>>>,
     allow_private_ips: bool,
 }
@@ -581,6 +590,33 @@ impl BookOnlineService {
             ))
         })?;
         let tracked_store = TrackedBookStore::new(data_dir).map_err(DomainError::Storage)?;
+        let book_state_locks: Arc<Mutex<HashMap<BookId, Arc<tokio::sync::Mutex<()>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let epub_sync_locks: Arc<Mutex<HashMap<BookId, Arc<tokio::sync::Mutex<()>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        {
+            let state_locks = Arc::clone(&book_state_locks);
+            let sync_locks = Arc::clone(&epub_sync_locks);
+            let gens = Arc::clone(&pending_sync_gens);
+            let store = tracked_store.clone();
+            catalog.set_on_book_deleted_hook(Arc::new(move |book_id| {
+                state_locks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&book_id);
+                sync_locks
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&book_id);
+                gens.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&book_id);
+                store.remove_book_lock(book_id);
+            }));
+        }
 
         Ok(Self {
             sources,
@@ -590,11 +626,52 @@ impl BookOnlineService {
             cache_dir,
             download_dir,
             tracked_store,
-            epub_sync_locks: Arc::new(RwLock::new(HashMap::new())),
-            pending_sync_gens: Arc::new(RwLock::new(HashMap::new())),
+            book_state_locks,
+            epub_sync_locks,
+            pending_sync_gens,
+            track_locks: Arc::new(Mutex::new(HashMap::new())),
             downloads: Arc::new(RwLock::new(HashMap::new())),
             allow_private_ips,
         })
+    }
+
+    /// Removes in-memory synchronization locks and generation counters for a deleted book.
+    pub fn cleanup_book_state(&self, book_id: BookId) {
+        self.book_state_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&book_id);
+        self.epub_sync_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&book_id);
+        self.pending_sync_gens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&book_id);
+        self.tracked_store.remove_book_lock(book_id);
+    }
+
+    fn is_sensitive_login_field(key: &str, login_ui: &[LoginUiItem]) -> bool {
+        if login_ui
+            .iter()
+            .any(|item| item.name == key && item.item_type.eq_ignore_ascii_case("password"))
+        {
+            return true;
+        }
+        let lower = key.to_ascii_lowercase();
+        lower.contains("password")
+            || lower.contains("passwd")
+            || lower.contains("pwd")
+            || lower.contains("token")
+            || lower.contains("secret")
+            || lower.contains("cookie")
+            || lower.contains("key")
+            || key.contains("密码")
+            || key.contains("口令")
+            || key.contains("密钥")
+            || key.contains("授权码")
+            || key.contains("凭证")
     }
 
     fn record_to_summary(m: &BookSourceRecord, is_admin: bool) -> BookSourceSummaryDto {
@@ -620,10 +697,10 @@ impl BookOnlineService {
         let (login_info, variable_preview, cookie_hosts) = if is_admin {
             let mut masked = HashMap::new();
             for (k, v) in &m.runtime_state.login_info {
-                let is_pwd = k.contains("密码") || k.to_ascii_lowercase().contains("password");
+                let is_sensitive = Self::is_sensitive_login_field(k, &login_ui);
                 masked.insert(
                     k.clone(),
-                    if is_pwd && !v.is_empty() {
+                    if is_sensitive && !v.is_empty() {
                         "••••••••".to_string()
                     } else {
                         v.clone()
@@ -665,6 +742,25 @@ impl BookOnlineService {
             .find_by_id(id)
             .await?
             .ok_or_else(|| DomainError::NotFound(format!("未找到书源 {id}")))
+    }
+
+    async fn load_source_for_actor(
+        &self,
+        actor: &User,
+        id: Uuid,
+    ) -> DomainResult<BookSourceRecord> {
+        let rec = self.load_source(id).await?;
+        if !actor.role.is_admin() && !rec.enabled {
+            return Err(DomainError::Forbidden("该书源已被禁用".into()));
+        }
+        Ok(rec)
+    }
+
+    /// Returns the full untruncated runtime variable for a source (admin only).
+    pub async fn get_source_variable(&self, actor: &User, id: Uuid) -> DomainResult<String> {
+        require_admin(actor)?;
+        let rec = self.load_source(id).await?;
+        Ok(rec.runtime_state.variable)
     }
 
     async fn persist_runtime_state(
@@ -716,16 +812,23 @@ impl BookOnlineService {
 
         let total = final_order.len() as i64;
         let now = Timestamp::now();
-        for (idx, rec) in final_order.iter_mut().enumerate() {
+        let mut persisted = Vec::with_capacity(final_order.len());
+        for (idx, rec) in final_order.into_iter().enumerate() {
             let target_weight = (total - idx as i64) * 10;
             if rec.weight != target_weight {
-                rec.weight = target_weight;
-                rec.updated_at = now;
-                self.sources.save(rec).await?;
+                if let Some(updated) = self
+                    .sources
+                    .update_weight_if_exists(rec.id, target_weight, now)
+                    .await?
+                {
+                    persisted.push(updated);
+                }
+            } else {
+                persisted.push(rec);
             }
         }
 
-        Ok(final_order
+        Ok(persisted
             .iter()
             .map(|r| Self::record_to_summary(r, true))
             .collect())
@@ -748,7 +851,8 @@ impl BookOnlineService {
 
         let mut imported_count = 0usize;
         let mut updated_count = 0usize;
-        let mut out = Vec::with_capacity(parsed_batch.len());
+        let mut out_by_id: HashMap<Uuid, usize> = HashMap::new();
+        let mut out: Vec<BookSourceSummaryDto> = Vec::with_capacity(parsed_batch.len());
         let now = Timestamp::now();
 
         for (src, item_raw) in parsed_batch {
@@ -763,8 +867,16 @@ impl BookOnlineService {
                 rec.raw_json = item_raw;
                 rec.updated_at = now;
                 self.sources.save(&rec).await?;
-                updated_count += 1;
-                out.push(Self::record_to_summary(&rec, true));
+                let summary = Self::record_to_summary(&rec, true);
+                if let Some(&pos) = out_by_id.get(&rec.id) {
+                    out[pos] = summary;
+                } else {
+                    updated_count += 1;
+                    out_by_id.insert(rec.id, out.len());
+                    out.push(summary);
+                }
+                // Re-insert so duplicate keys within the same batch update this record
+                existing_by_key.insert(key, rec);
             } else {
                 let mut rt = SourceRuntimeState::default();
                 rt.ensure_android_id(&src.book_source_url);
@@ -785,7 +897,9 @@ impl BookOnlineService {
                 };
                 self.sources.save(&rec).await?;
                 imported_count += 1;
+                out_by_id.insert(rec.id, out.len());
                 out.push(Self::record_to_summary(&rec, true));
+                existing_by_key.insert(key, rec);
             }
         }
 
@@ -809,10 +923,17 @@ impl BookOnlineService {
         if let Some(raw) = input.raw_json {
             let mut batch =
                 LegadoBookSource::parse_json_batch(&raw).map_err(DomainError::Validation)?;
+            if batch.len() != 1 {
+                return Err(DomainError::Validation(
+                    "编辑单条书源时仅支持提交 1 条书源 JSON".into(),
+                ));
+            }
             let (parsed, clean_raw) = batch.remove(0);
             rec.name = parsed.book_source_name;
             rec.source_url = parsed.book_source_url;
             rec.group_name = parsed.book_source_group.unwrap_or_default();
+            rec.enabled = parsed.enabled;
+            rec.weight = parsed.weight;
             rec.source_type = parsed.book_source_type;
             rec.raw_json = clean_raw;
         }
@@ -822,15 +943,25 @@ impl BookOnlineService {
         if let Some(w) = input.weight {
             rec.weight = w;
         }
-        if let Some(g) = input.group_name {
-            rec.group_name = g;
+        if let Some(ref g) = input.group_name {
+            rec.group_name = g.trim().to_string();
+        }
+        if input.enabled.is_some() || input.weight.is_some() || input.group_name.is_some() {
+            rec.raw_json = BookSourceRecord::sync_raw_json_fields(
+                &rec.raw_json,
+                input.enabled,
+                input.weight,
+                input.group_name.as_deref(),
+            );
         }
         if let Some(v) = input.variable {
             rec.runtime_state.variable = v;
         }
         rec.updated_at = now;
 
-        self.sources.save(&rec).await?;
+        if !self.sources.update_existing(&rec).await? {
+            return Err(DomainError::NotFound(format!("未找到书源 {id}")));
+        }
         Ok(Self::record_to_summary(&rec, true))
     }
 
@@ -839,8 +970,10 @@ impl BookOnlineService {
         let _ = self.load_source(id).await?;
         self.sources.delete(id).await?;
         let src_cache = self.cache_dir.join(id.to_string());
-        if src_cache.is_dir() {
-            let _ = std::fs::remove_dir_all(src_cache);
+        if let Err(err) = tokio::fs::remove_dir_all(&src_cache).await
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(source_id = %id, error = %err, "failed to remove source cache dir");
         }
         Ok(())
     }
@@ -861,10 +994,11 @@ impl BookOnlineService {
             return Err(DomainError::Validation("请至少选择一条书源".into()));
         }
         let all = self.sources.list_all().await?;
-        let by_id: HashMap<Uuid, BookSourceRecord> = all.into_iter().map(|r| (r.id, r)).collect();
+        let mut by_id: HashMap<Uuid, BookSourceRecord> =
+            all.into_iter().map(|r| (r.id, r)).collect();
         let mut arr: Vec<serde_json::Value> = Vec::new();
         for id in ids {
-            if let Some(rec) = by_id.get(&id)
+            if let Some(rec) = by_id.remove(&id)
                 && let Ok(val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
             {
                 arr.push(val);
@@ -886,75 +1020,57 @@ impl BookOnlineService {
         if input.ids.is_empty() {
             return Err(DomainError::Validation("请至少选择一条书源".into()));
         }
-        let all = self.sources.list_all().await?;
-        let mut by_id: HashMap<Uuid, BookSourceRecord> =
-            all.into_iter().map(|r| (r.id, r)).collect();
+
+        let mut seen = HashSet::with_capacity(input.ids.len());
+        let unique_ids: Vec<Uuid> = input
+            .ids
+            .into_iter()
+            .filter(|id| seen.insert(*id))
+            .collect();
 
         let now = Timestamp::now();
         let mut affected_count = 0usize;
 
-        for id in input.ids {
-            let Some(mut rec) = by_id.remove(&id) else {
-                continue;
-            };
+        for id in unique_ids {
             match &input.action {
                 BatchBookSourceAction::Enable => {
-                    rec.enabled = true;
-                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
-                        && let Some(obj) = val.as_object_mut()
+                    if self
+                        .sources
+                        .update_batch_fields_if_exists(id, Some(true), None, now)
+                        .await?
                     {
-                        obj.insert("enabled".into(), serde_json::Value::Bool(true));
-                        if let Ok(s) = serde_json::to_string(&val) {
-                            rec.raw_json = s;
-                        }
+                        affected_count += 1;
                     }
-                    rec.updated_at = now;
-                    self.sources.save(&rec).await?;
-                    affected_count += 1;
                 }
                 BatchBookSourceAction::Disable => {
-                    rec.enabled = false;
-                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
-                        && let Some(obj) = val.as_object_mut()
+                    if self
+                        .sources
+                        .update_batch_fields_if_exists(id, Some(false), None, now)
+                        .await?
                     {
-                        obj.insert("enabled".into(), serde_json::Value::Bool(false));
-                        if let Ok(s) = serde_json::to_string(&val) {
-                            rec.raw_json = s;
-                        }
+                        affected_count += 1;
                     }
-                    rec.updated_at = now;
-                    self.sources.save(&rec).await?;
-                    affected_count += 1;
                 }
                 BatchBookSourceAction::SetGroup { group_name } => {
-                    let trimmed = group_name.trim().to_string();
-                    rec.group_name = trimmed.clone();
-                    if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&rec.raw_json)
-                        && let Some(obj) = val.as_object_mut()
+                    if self
+                        .sources
+                        .update_batch_fields_if_exists(id, None, Some(group_name.clone()), now)
+                        .await?
                     {
-                        if trimmed.is_empty() {
-                            obj.remove("bookSourceGroup");
-                        } else {
-                            obj.insert(
-                                "bookSourceGroup".into(),
-                                serde_json::Value::String(trimmed),
-                            );
-                        }
-                        if let Ok(s) = serde_json::to_string(&val) {
-                            rec.raw_json = s;
-                        }
+                        affected_count += 1;
                     }
-                    rec.updated_at = now;
-                    self.sources.save(&rec).await?;
-                    affected_count += 1;
                 }
                 BatchBookSourceAction::Delete => {
-                    self.sources.delete(id).await?;
-                    let src_cache = self.cache_dir.join(id.to_string());
-                    if src_cache.is_dir() {
-                        let _ = std::fs::remove_dir_all(src_cache);
+                    if self.sources.find_by_id(id).await?.is_some() {
+                        self.sources.delete(id).await?;
+                        let src_cache = self.cache_dir.join(id.to_string());
+                        if let Err(err) = tokio::fs::remove_dir_all(&src_cache).await
+                            && err.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::warn!(source_id = %id, error = %err, "failed to remove source cache dir");
+                        }
+                        affected_count += 1;
                     }
-                    affected_count += 1;
                 }
             }
         }
@@ -966,7 +1082,7 @@ impl BookOnlineService {
         &self,
         actor: &User,
         id: Uuid,
-        mut login_info: HashMap<String, String>,
+        login_info: HashMap<String, String>,
         action: Option<String>,
     ) -> DomainResult<LoginActionResponseDto> {
         require_admin(actor)?;
@@ -974,13 +1090,14 @@ impl BookOnlineService {
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
-        // Preserve existing real password if frontend echoed masked placeholder back
-        for (k, v) in login_info.iter_mut() {
-            if v == "••••••••"
-                && let Some(orig) = rec.runtime_state.login_info.get(k)
-            {
-                *v = orig.clone();
+        // Merge submitted fields onto persisted login_info so omitted keys are never wiped,
+        // and preserve real secrets when the frontend echoes back the masked placeholder.
+        let mut merged_login = rec.runtime_state.login_info.clone();
+        for (k, v) in login_info {
+            if v == "••••••••" && merged_login.contains_key(&k) {
+                continue;
             }
+            merged_login.insert(k, v);
         }
 
         let engine = self.engine.clone();
@@ -988,7 +1105,7 @@ impl BookOnlineService {
         let action_clone = action.clone();
 
         let out = tokio::task::spawn_blocking(move || {
-            engine.run_login_action_sync(&parsed, prev_state, login_info, action_clone.as_deref())
+            engine.run_login_action_sync(&parsed, prev_state, merged_login, action_clone.as_deref())
         })
         .await
         .map_err(|e| DomainError::Storage(format!("执行登录脚本线程失败: {e}")))?
@@ -1011,7 +1128,7 @@ impl BookOnlineService {
         input: SourceTestInput,
     ) -> DomainResult<SourceTestReportDto> {
         require_admin(actor)?;
-        let mut rec = self.load_source(id).await?;
+        let rec = self.load_source(id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
@@ -1031,7 +1148,9 @@ impl BookOnlineService {
             .unwrap_or("我的")
             .to_string();
 
-        let is_http_url = |s: &str| s.starts_with("http://") || s.starts_with("https://");
+        let is_direct_url = |s: &str| {
+            s.starts_with("http://") || s.starts_with("https://") || s.starts_with("data:")
+        };
 
         let explicit_book_url = input
             .book_url
@@ -1109,405 +1228,495 @@ impl BookOnlineService {
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let kw_clone = effective_keyword.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
 
-        let (final_state, report) = tokio::task::spawn_blocking(move || {
-            fn merge_diag(acc: &mut ExecutionDiagnostics, d: &ExecutionDiagnostics) {
-                acc.logs.extend(d.logs.iter().cloned());
-                acc.toasts.extend(d.toasts.iter().cloned());
-                acc.browser_urls.extend(d.browser_urls.iter().cloned());
-            }
-
-            let total_start = Instant::now();
-            let mut state = prev_state;
-            let mut steps: Vec<SourceDebugStepDto> = Vec::new();
-            let mut all_diag = ExecutionDiagnostics::default();
-
-            let mut search_items: Vec<SearchBookResult> = Vec::new();
-            let mut search_total_count: usize = 0;
-            let mut book_detail: Option<OnlineBookDetail> = None;
-            let mut toc_chapters: Vec<OnlineChapterItem> = Vec::new();
-            let mut toc_total_count: usize = 0;
-            let mut content_chapter_index: Option<usize> = None;
-            let mut content_chapter_title: Option<String> = None;
-            let mut content_chapter_url: Option<String> = None;
-            let mut content_text: Option<String> = None;
-            let mut content_char_count: usize = 0;
-
-            let mut next_book_url: Option<String> = explicit_book_url.clone();
-            let mut next_fallback_hint: Option<BookJsContext> = None;
-            let mut next_toc_url: Option<String> = explicit_toc_url.clone();
-            let mut next_chapter_url: Option<String> = explicit_chapter_url.clone();
-            let mut next_chapter_title = chapter_title_override.unwrap_or_default();
-            let mut next_chapter_idx = chapter_index_override.unwrap_or(0);
-
-            // In Full mode, pasting a direct URL into the keyword box jumps straight to book_info (Legado behavior)
-            let skip_search_for_url = mode == SourceTestMode::Full
-                && (next_book_url.is_some() || raw_input.as_deref().is_some_and(is_http_url));
-            if skip_search_for_url && next_book_url.is_none() {
-                next_book_url = raw_input.clone();
-            }
-
-            // Stage 1: ruleSearch
-            if mode == SourceTestMode::Search
-                || (mode == SourceTestMode::Full && !skip_search_for_url)
-            {
-                let t0 = Instant::now();
-                match engine.search_sync(&parsed, state.clone(), &kw_clone, 1) {
-                    Ok(out) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        state = out.state;
-                        merge_diag(&mut all_diag, &out.diagnostics);
-                        search_total_count = out.data.len();
-                        let ok = search_total_count > 0;
-                        let summary = if ok {
-                            format!("命中 {search_total_count} 本（关键词：{kw_clone}）")
-                        } else {
-                            format!("关键词「{kw_clone}」未匹配到书籍")
-                        };
-                        let err = if ok {
-                            None
-                        } else {
-                            Some("搜索未返回条目，请检查关键词、是否需要登录或书源规则".into())
-                        };
-                        search_items = out.data.into_iter().take(30).collect();
-                        if let Some(first) = search_items.first() {
-                            next_book_url = Some(first.book_url.clone());
-                            next_fallback_hint = Some(BookJsContext {
-                                name: first.name.clone(),
-                                author: first.author.clone(),
-                                book_url: first.book_url.clone(),
-                                toc_url: String::new(),
-                                cover_url: first.cover_url.clone(),
-                                intro: first.intro.clone(),
-                                dur_chapter_index: 0,
-                                dur_chapter_title: String::new(),
-                                custom_variable: String::new(),
-                            });
-                        }
-                        steps.push(SourceDebugStepDto {
-                            stage: "search".into(),
-                            label: "搜索规则 (ruleSearch)".into(),
-                            ok,
-                            elapsed_ms,
-                            summary,
-                            error: err,
-                            diagnostics: out.diagnostics,
-                        });
-                    }
-                    Err(err) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        steps.push(SourceDebugStepDto {
-                            stage: "search".into(),
-                            label: "搜索规则 (ruleSearch)".into(),
-                            ok: false,
-                            elapsed_ms,
-                            summary: "搜索请求或解析失败".into(),
-                            error: Some(err),
-                            diagnostics: ExecutionDiagnostics::default(),
-                        });
-                    }
+        let timed_res = tokio::time::timeout(
+            SOURCE_TEST_TOTAL_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                fn merge_diag(acc: &mut ExecutionDiagnostics, d: &ExecutionDiagnostics) {
+                    acc.logs.extend(d.logs.iter().cloned());
+                    acc.toasts.extend(d.toasts.iter().cloned());
+                    acc.browser_urls.extend(d.browser_urls.iter().cloned());
                 }
-            }
 
-            // Stage 2: ruleBookInfo
-            let run_book_info = match mode {
-                SourceTestMode::BookInfo => {
-                    if next_book_url.is_none() {
-                        next_book_url = raw_input.clone();
-                    }
-                    next_book_url.is_some()
-                }
-                SourceTestMode::Full => next_book_url.is_some(),
-                _ => false,
-            };
-
-            if run_book_info && let Some(ref b_url) = next_book_url {
-                let t0 = Instant::now();
-                match engine.fetch_book_info_sync(
-                    &parsed,
-                    state.clone(),
-                    b_url,
-                    next_fallback_hint.as_ref(),
-                ) {
-                    Ok(out) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        state = out.state;
-                        merge_diag(&mut all_diag, &out.diagnostics);
-                        let detail = out.data;
-                        let ok = !detail.name.is_empty() || !detail.toc_url.is_empty();
-                        let summary = if ok {
-                            let author_part = if detail.author.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" / {}", detail.author)
-                            };
-                            format!("《{}》{}", detail.name, author_part)
-                        } else {
-                            "详情页未解析出书名与目录地址".into()
-                        };
-                        let err = if ok {
-                            None
-                        } else {
-                            Some("ruleBookInfo 未能提取有效书名或目录 URL".into())
-                        };
-                        if next_toc_url.is_none() {
-                            next_toc_url = Some(if detail.toc_url.is_empty() {
-                                b_url.clone()
-                            } else {
-                                detail.toc_url.clone()
-                            });
-                        }
-                        book_detail = Some(detail);
-                        steps.push(SourceDebugStepDto {
-                            stage: "book_info".into(),
-                            label: "详情规则 (ruleBookInfo)".into(),
-                            ok,
-                            elapsed_ms,
-                            summary,
-                            error: err,
-                            diagnostics: out.diagnostics,
-                        });
-                    }
-                    Err(err) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        steps.push(SourceDebugStepDto {
-                            stage: "book_info".into(),
-                            label: "详情规则 (ruleBookInfo)".into(),
-                            ok: false,
-                            elapsed_ms,
-                            summary: "详情请求或解析失败".into(),
-                            error: Some(err),
-                            diagnostics: ExecutionDiagnostics::default(),
-                        });
-                    }
-                }
-            }
-
-            // Build BookJsContext for toc / content stages
-            let book_ctx = if let Some(ref d) = book_detail {
-                BookJsContext {
-                    name: d.name.clone(),
-                    author: d.author.clone(),
-                    book_url: d.book_url.clone(),
-                    toc_url: d.toc_url.clone(),
-                    cover_url: d.cover_url.clone(),
-                    intro: d.intro.clone(),
-                    dur_chapter_index: next_chapter_idx,
-                    dur_chapter_title: next_chapter_title.clone(),
-                    custom_variable: String::new(),
-                }
-            } else if let Some(ref hint) = next_fallback_hint {
-                hint.clone()
-            } else {
-                BookJsContext {
-                    book_url: next_book_url.clone().unwrap_or_default(),
-                    toc_url: next_toc_url.clone().unwrap_or_default(),
-                    ..BookJsContext::default()
-                }
-            };
-
-            // Stage 3: ruleToc
-            let run_toc = match mode {
-                SourceTestMode::Toc => {
-                    if next_toc_url.is_none() {
-                        next_toc_url = next_book_url.clone().or_else(|| raw_input.clone());
-                    }
-                    next_toc_url.is_some()
-                }
-                SourceTestMode::Full => {
-                    next_toc_url.is_some()
-                        && steps.last().is_none_or(|s| s.stage != "book_info" || s.ok)
-                }
-                _ => false,
-            };
-
-            if run_toc && let Some(ref t_url) = next_toc_url {
-                let t0 = Instant::now();
-                match engine.fetch_toc_sync(&parsed, state.clone(), t_url, &book_ctx) {
-                    Ok(out) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        state = out.state;
-                        merge_diag(&mut all_diag, &out.diagnostics);
-                        toc_total_count = out.data.len();
-                        let ok = toc_total_count > 0;
-                        let summary = if ok {
-                            format!("解析到 {toc_total_count} 章")
-                        } else {
-                            "目录未解析到任何章节".into()
-                        };
-                        let err = if ok {
-                            None
-                        } else {
-                            Some("ruleToc 未匹配到章节列表".into())
-                        };
-                        toc_chapters = out.data.into_iter().take(500).collect();
-
-                        if next_chapter_url.is_none() {
-                            let chosen = chapter_index_override
-                                .and_then(|idx| toc_chapters.iter().find(|c| c.index == idx))
-                                .or_else(|| {
-                                    toc_chapters
-                                        .iter()
-                                        .find(|c| !c.is_volume && !c.url.is_empty())
-                                })
-                                .or_else(|| toc_chapters.first());
-                            if let Some(ch) = chosen {
-                                next_chapter_url = Some(ch.url.clone());
-                                next_chapter_title = ch.title.clone();
-                                next_chapter_idx = ch.index;
-                            }
-                        }
-
-                        steps.push(SourceDebugStepDto {
-                            stage: "toc".into(),
-                            label: "目录规则 (ruleToc)".into(),
-                            ok,
-                            elapsed_ms,
-                            summary,
-                            error: err,
-                            diagnostics: out.diagnostics,
-                        });
-                    }
-                    Err(err) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        steps.push(SourceDebugStepDto {
-                            stage: "toc".into(),
-                            label: "目录规则 (ruleToc)".into(),
-                            ok: false,
-                            elapsed_ms,
-                            summary: "目录请求或解析失败".into(),
-                            error: Some(err),
-                            diagnostics: ExecutionDiagnostics::default(),
-                        });
-                    }
-                }
-            }
-
-            // Stage 4: ruleContent
-            let run_content = match mode {
-                SourceTestMode::Content => {
-                    if next_chapter_url.is_none() {
-                        next_chapter_url = raw_input.clone();
-                    }
-                    next_chapter_url.is_some()
-                }
-                SourceTestMode::Full => {
-                    next_chapter_url
-                        .as_deref()
-                        .is_some_and(|u| !u.trim().is_empty())
-                        && steps.last().is_none_or(|s| s.stage != "toc" || s.ok)
-                }
-                _ => false,
-            };
-
-            if run_content && let Some(ref c_url) = next_chapter_url {
-                let t0 = Instant::now();
-                let ch_ctx = ChapterJsContext {
-                    index: next_chapter_idx,
-                    title: next_chapter_title.clone(),
-                    url: c_url.clone(),
+                let total_start = Instant::now();
+                let remaining_budget = || {
+                    SOURCE_TEST_TOTAL_TIMEOUT
+                        .saturating_sub(total_start.elapsed())
+                        .max(Duration::from_millis(1))
                 };
-                let mut content_book_ctx = book_ctx.clone();
-                content_book_ctx.dur_chapter_index = next_chapter_idx;
-                content_book_ctx.dur_chapter_title = next_chapter_title.clone();
+                let mut state = prev_state;
+                let mut steps: Vec<SourceDebugStepDto> = Vec::new();
+                let mut all_diag = ExecutionDiagnostics::default();
 
-                match engine.fetch_chapter_content_sync(
-                    &parsed,
-                    state.clone(),
-                    c_url,
-                    &content_book_ctx,
-                    &ch_ctx,
-                ) {
-                    Ok(out) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        state = out.state;
-                        merge_diag(&mut all_diag, &out.diagnostics);
-                        let char_count = out.data.content.chars().count();
-                        let resolved_title = if !out.data.title.trim().is_empty() {
-                            out.data.title.clone()
-                        } else if !next_chapter_title.is_empty() {
-                            next_chapter_title.clone()
-                        } else {
-                            format!("第 {} 章", next_chapter_idx + 1)
-                        };
-                        let ok = char_count > 0;
-                        let summary = if ok {
-                            format!("《{resolved_title}》解析正文 {char_count} 字")
-                        } else {
-                            format!("《{resolved_title}》正文内容为空")
-                        };
-                        let err = if ok {
-                            None
-                        } else {
-                            Some("ruleContent 提取的正文内容为空".into())
-                        };
-                        content_chapter_index = Some(next_chapter_idx);
-                        content_chapter_title = Some(resolved_title);
-                        content_chapter_url = Some(c_url.clone());
-                        content_text = Some(out.data.content);
-                        content_char_count = char_count;
-                        steps.push(SourceDebugStepDto {
-                            stage: "content".into(),
-                            label: "正文规则 (ruleContent)".into(),
-                            ok,
-                            elapsed_ms,
-                            summary,
-                            error: err,
-                            diagnostics: out.diagnostics,
-                        });
-                    }
-                    Err(err) => {
-                        let elapsed_ms = t0.elapsed().as_millis() as u64;
-                        content_chapter_index = Some(next_chapter_idx);
-                        content_chapter_title =
-                            (!next_chapter_title.is_empty()).then_some(next_chapter_title.clone());
-                        content_chapter_url = Some(c_url.clone());
-                        steps.push(SourceDebugStepDto {
-                            stage: "content".into(),
-                            label: "正文规则 (ruleContent)".into(),
-                            ok: false,
-                            elapsed_ms,
-                            summary: "正文请求或解析失败".into(),
-                            error: Some(err),
-                            diagnostics: ExecutionDiagnostics::default(),
-                        });
+                let mut search_items: Vec<SearchBookResult> = Vec::new();
+                let mut search_total_count: usize = 0;
+                let mut book_detail: Option<OnlineBookDetail> = None;
+                let mut toc_chapters: Vec<OnlineChapterItem> = Vec::new();
+                let mut toc_total_count: usize = 0;
+                let mut content_chapter_index: Option<usize> = None;
+                let mut content_chapter_title: Option<String> = None;
+                let mut content_chapter_url: Option<String> = None;
+                let mut content_text: Option<String> = None;
+                let mut content_char_count: usize = 0;
+
+                let mut next_book_url: Option<String> = explicit_book_url.clone();
+                let mut next_fallback_hint: Option<BookJsContext> = None;
+                let mut next_toc_url: Option<String> = explicit_toc_url.clone();
+                let mut next_chapter_url: Option<String> = explicit_chapter_url.clone();
+                let mut next_chapter_title = chapter_title_override.unwrap_or_default();
+                let mut next_chapter_idx = chapter_index_override.unwrap_or(0);
+
+                // In Full mode, pasting a direct URL (including data:) into the keyword box jumps straight to book_info
+                let skip_search_for_url = mode == SourceTestMode::Full
+                    && (next_book_url.is_some() || raw_input.as_deref().is_some_and(is_direct_url));
+                if skip_search_for_url && next_book_url.is_none() {
+                    next_book_url = raw_input.clone();
+                }
+
+                // Stage 1: ruleSearch
+                if mode == SourceTestMode::Search
+                    || (mode == SourceTestMode::Full && !skip_search_for_url)
+                {
+                    let t0 = Instant::now();
+                    match engine.search_sync_with_control(
+                        &parsed,
+                        state.clone(),
+                        &kw_clone,
+                        1,
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    ) {
+                        Ok(out) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            state = out.state;
+                            merge_diag(&mut all_diag, &out.diagnostics);
+                            search_total_count = out.data.len();
+                            let ok = search_total_count > 0;
+                            let summary = if ok {
+                                format!("命中 {search_total_count} 本（关键词：{kw_clone}）")
+                            } else {
+                                format!("关键词「{kw_clone}」未匹配到书籍")
+                            };
+                            let err = if ok {
+                                None
+                            } else {
+                                Some("搜索未返回条目，请检查关键词、是否需要登录或书源规则".into())
+                            };
+                            search_items = out.data.into_iter().take(30).collect();
+                            if let Some(first) = search_items.first() {
+                                next_book_url = Some(first.book_url.clone());
+                                next_fallback_hint = Some(BookJsContext {
+                                    name: first.name.clone(),
+                                    author: first.author.clone(),
+                                    book_url: first.book_url.clone(),
+                                    toc_url: String::new(),
+                                    cover_url: first.cover_url.clone(),
+                                    intro: first.intro.clone(),
+                                    dur_chapter_index: 0,
+                                    dur_chapter_title: String::new(),
+                                    custom_variable: String::new(),
+                                });
+                            }
+                            steps.push(SourceDebugStepDto {
+                                stage: "search".into(),
+                                label: "搜索规则 (ruleSearch)".into(),
+                                ok,
+                                elapsed_ms,
+                                summary,
+                                error: err,
+                                diagnostics: out.diagnostics,
+                            });
+                        }
+                        Err(err) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            merge_diag(&mut all_diag, &err.diagnostics);
+                            steps.push(SourceDebugStepDto {
+                                stage: "search".into(),
+                                label: "搜索规则 (ruleSearch)".into(),
+                                ok: false,
+                                elapsed_ms,
+                                summary: "搜索请求或解析失败".into(),
+                                error: Some(err.message),
+                                diagnostics: err.diagnostics,
+                            });
+                        }
                     }
                 }
+
+                // Stage 2: ruleBookInfo
+                let run_book_info = match mode {
+                    SourceTestMode::BookInfo => {
+                        if next_book_url.is_none() {
+                            next_book_url = raw_input.clone();
+                        }
+                        next_book_url.is_some()
+                    }
+                    SourceTestMode::Full => next_book_url.is_some(),
+                    _ => false,
+                };
+
+                if run_book_info && let Some(ref b_url) = next_book_url {
+                    let t0 = Instant::now();
+                    match engine.fetch_book_info_sync_with_control(
+                        &parsed,
+                        state.clone(),
+                        b_url,
+                        next_fallback_hint.as_ref(),
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    ) {
+                        Ok(out) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            state = out.state;
+                            merge_diag(&mut all_diag, &out.diagnostics);
+                            let detail = out.data;
+                            let ok = !detail.name.is_empty() || !detail.toc_url.is_empty();
+                            let summary = if ok {
+                                let author_part = if detail.author.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" / {}", detail.author)
+                                };
+                                format!("《{}》{}", detail.name, author_part)
+                            } else {
+                                "详情页未解析出书名与目录地址".into()
+                            };
+                            let err = if ok {
+                                None
+                            } else {
+                                Some("ruleBookInfo 未能提取有效书名或目录 URL".into())
+                            };
+                            if next_toc_url.is_none() {
+                                next_toc_url = Some(if detail.toc_url.is_empty() {
+                                    b_url.clone()
+                                } else {
+                                    detail.toc_url.clone()
+                                });
+                            }
+                            book_detail = Some(detail);
+                            steps.push(SourceDebugStepDto {
+                                stage: "book_info".into(),
+                                label: "详情规则 (ruleBookInfo)".into(),
+                                ok,
+                                elapsed_ms,
+                                summary,
+                                error: err,
+                                diagnostics: out.diagnostics,
+                            });
+                        }
+                        Err(err) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            merge_diag(&mut all_diag, &err.diagnostics);
+                            steps.push(SourceDebugStepDto {
+                                stage: "book_info".into(),
+                                label: "详情规则 (ruleBookInfo)".into(),
+                                ok: false,
+                                elapsed_ms,
+                                summary: "详情请求或解析失败".into(),
+                                error: Some(err.message),
+                                diagnostics: err.diagnostics,
+                            });
+                        }
+                    }
+                }
+
+                // Build BookJsContext for toc / content stages
+                let book_ctx = if let Some(ref d) = book_detail {
+                    BookJsContext {
+                        name: d.name.clone(),
+                        author: d.author.clone(),
+                        book_url: d.book_url.clone(),
+                        toc_url: d.toc_url.clone(),
+                        cover_url: d.cover_url.clone(),
+                        intro: d.intro.clone(),
+                        dur_chapter_index: next_chapter_idx,
+                        dur_chapter_title: next_chapter_title.clone(),
+                        custom_variable: String::new(),
+                    }
+                } else if let Some(ref hint) = next_fallback_hint {
+                    hint.clone()
+                } else {
+                    BookJsContext {
+                        book_url: next_book_url.clone().unwrap_or_default(),
+                        toc_url: next_toc_url.clone().unwrap_or_default(),
+                        ..BookJsContext::default()
+                    }
+                };
+
+                // Stage 3: ruleToc
+                let run_toc = match mode {
+                    SourceTestMode::Toc => {
+                        if next_toc_url.is_none() {
+                            next_toc_url = next_book_url.clone().or_else(|| raw_input.clone());
+                        }
+                        next_toc_url.is_some()
+                    }
+                    SourceTestMode::Full => {
+                        next_toc_url.is_some()
+                            && steps.last().is_none_or(|s| s.stage != "book_info" || s.ok)
+                    }
+                    _ => false,
+                };
+
+                let mut toc_succeeded_without_chapter_url = false;
+                if run_toc && let Some(ref t_url) = next_toc_url {
+                    let t0 = Instant::now();
+                    match engine.fetch_toc_sync_with_control(
+                        &parsed,
+                        state.clone(),
+                        t_url,
+                        &book_ctx,
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    ) {
+                        Ok(out) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            state = out.state;
+                            merge_diag(&mut all_diag, &out.diagnostics);
+                            let full_toc = out.data;
+                            toc_total_count = full_toc.len();
+                            let ok = toc_total_count > 0;
+                            let summary = if ok {
+                                format!("解析到 {toc_total_count} 章")
+                            } else {
+                                "目录未解析到任何章节".into()
+                            };
+                            let err = if ok {
+                                None
+                            } else {
+                                Some("ruleToc 未匹配到章节列表".into())
+                            };
+
+                            // Look up `chapter_index_override` from FULL TOC before truncating to 500
+                            if next_chapter_url.is_none() {
+                                let chosen = chapter_index_override
+                                    .and_then(|idx| full_toc.iter().find(|c| c.index == idx))
+                                    .or_else(|| {
+                                        full_toc
+                                            .iter()
+                                            .find(|c| !c.is_volume && !c.url.trim().is_empty())
+                                    })
+                                    .or_else(|| full_toc.iter().find(|c| !c.url.trim().is_empty()));
+                                if let Some(ch) = chosen {
+                                    next_chapter_url = Some(ch.url.clone());
+                                    next_chapter_title = ch.title.clone();
+                                    next_chapter_idx = ch.index;
+                                } else if ok {
+                                    toc_succeeded_without_chapter_url = true;
+                                }
+                            }
+
+                            toc_chapters = full_toc.into_iter().take(500).collect();
+
+                            steps.push(SourceDebugStepDto {
+                                stage: "toc".into(),
+                                label: "目录规则 (ruleToc)".into(),
+                                ok,
+                                elapsed_ms,
+                                summary,
+                                error: err,
+                                diagnostics: out.diagnostics,
+                            });
+                        }
+                        Err(err) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            merge_diag(&mut all_diag, &err.diagnostics);
+                            steps.push(SourceDebugStepDto {
+                                stage: "toc".into(),
+                                label: "目录规则 (ruleToc)".into(),
+                                ok: false,
+                                elapsed_ms,
+                                summary: "目录请求或解析失败".into(),
+                                error: Some(err.message),
+                                diagnostics: err.diagnostics,
+                            });
+                        }
+                    }
+                }
+
+                // Stage 4: ruleContent
+                let run_content = match mode {
+                    SourceTestMode::Content => {
+                        if next_chapter_url.is_none() {
+                            next_chapter_url = raw_input.clone();
+                        }
+                        next_chapter_url.is_some()
+                    }
+                    SourceTestMode::Full => {
+                        next_chapter_url
+                            .as_deref()
+                            .is_some_and(|u| !u.trim().is_empty())
+                            && steps.last().is_none_or(|s| s.stage != "toc" || s.ok)
+                    }
+                    _ => false,
+                };
+
+                if run_content && let Some(ref c_url) = next_chapter_url {
+                    let t0 = Instant::now();
+                    let ch_ctx = ChapterJsContext {
+                        index: next_chapter_idx,
+                        title: next_chapter_title.clone(),
+                        url: c_url.clone(),
+                    };
+                    let mut content_book_ctx = book_ctx.clone();
+                    content_book_ctx.dur_chapter_index = next_chapter_idx;
+                    content_book_ctx.dur_chapter_title = next_chapter_title.clone();
+
+                    match engine.fetch_chapter_content_sync_with_control(
+                        &parsed,
+                        state.clone(),
+                        c_url,
+                        &content_book_ctx,
+                        &ch_ctx,
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    ) {
+                        Ok(out) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            state = out.state;
+                            merge_diag(&mut all_diag, &out.diagnostics);
+                            let char_count = out.data.content.chars().count();
+                            let resolved_title = if !out.data.title.trim().is_empty() {
+                                out.data.title.clone()
+                            } else if !next_chapter_title.is_empty() {
+                                next_chapter_title.clone()
+                            } else {
+                                format!("第 {} 章", next_chapter_idx + 1)
+                            };
+                            let ok = char_count > 0;
+                            let summary = if ok {
+                                format!("《{resolved_title}》解析正文 {char_count} 字")
+                            } else {
+                                format!("《{resolved_title}》正文内容为空")
+                            };
+                            let err = if ok {
+                                None
+                            } else {
+                                Some("ruleContent 提取的正文内容为空".into())
+                            };
+                            content_chapter_index = Some(next_chapter_idx);
+                            content_chapter_title = Some(resolved_title);
+                            content_chapter_url = Some(c_url.clone());
+                            content_text = Some(out.data.content);
+                            content_char_count = char_count;
+                            steps.push(SourceDebugStepDto {
+                                stage: "content".into(),
+                                label: "正文规则 (ruleContent)".into(),
+                                ok,
+                                elapsed_ms,
+                                summary,
+                                error: err,
+                                diagnostics: out.diagnostics,
+                            });
+                        }
+                        Err(err) => {
+                            let elapsed_ms = t0.elapsed().as_millis() as u64;
+                            merge_diag(&mut all_diag, &err.diagnostics);
+                            content_chapter_index = Some(next_chapter_idx);
+                            content_chapter_title = (!next_chapter_title.is_empty())
+                                .then_some(next_chapter_title.clone());
+                            content_chapter_url = Some(c_url.clone());
+                            steps.push(SourceDebugStepDto {
+                                stage: "content".into(),
+                                label: "正文规则 (ruleContent)".into(),
+                                ok: false,
+                                elapsed_ms,
+                                summary: "正文请求或解析失败".into(),
+                                error: Some(err.message),
+                                diagnostics: err.diagnostics,
+                            });
+                        }
+                    }
+                } else if mode == SourceTestMode::Full && toc_succeeded_without_chapter_url {
+                    steps.push(SourceDebugStepDto {
+                        stage: "content".into(),
+                        label: "正文规则 (ruleContent)".into(),
+                        ok: false,
+                        elapsed_ms: 0,
+                        summary: "目录未包含有效章节 URL".into(),
+                        error: Some("目录仅返回无有效链接的卷名或空链接，无法继续抓取正文".into()),
+                        diagnostics: ExecutionDiagnostics::default(),
+                    });
+                }
+
+                let total_elapsed_ms = total_start.elapsed().as_millis() as u64;
+                let overall_ok = !steps.is_empty() && steps.iter().all(|s| s.ok);
+                let first_error = steps.iter().find_map(|s| s.error.clone());
+                let sample_titles: Vec<String> = search_items
+                    .iter()
+                    .take(5)
+                    .map(|b| b.name.clone())
+                    .collect();
+
+                let report = SourceTestReportDto {
+                    ok: overall_ok,
+                    mode,
+                    keyword: kw_clone,
+                    total_elapsed_ms,
+                    result_count: search_total_count,
+                    sample_titles,
+                    error: first_error,
+                    diagnostics: all_diag,
+                    steps,
+                    search_items,
+                    book_detail,
+                    toc_chapters,
+                    toc_total_count,
+                    content_chapter_index,
+                    content_chapter_title,
+                    content_chapter_url,
+                    content_text,
+                    content_char_count,
+                };
+                (state, report)
+            }),
+        )
+        .await;
+
+        let (final_state, report) = match timed_res {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(e)) => {
+                return Err(DomainError::Storage(format!("测试书源线程失败: {e}")));
             }
-
-            let total_elapsed_ms = total_start.elapsed().as_millis() as u64;
-            let overall_ok = !steps.is_empty() && steps.iter().all(|s| s.ok);
-            let first_error = steps.iter().find_map(|s| s.error.clone());
-            let sample_titles: Vec<String> = search_items
-                .iter()
-                .take(5)
-                .map(|b| b.name.clone())
-                .collect();
-
-            let report = SourceTestReportDto {
-                ok: overall_ok,
-                mode,
-                keyword: kw_clone,
-                total_elapsed_ms,
-                result_count: search_total_count,
-                sample_titles,
-                error: first_error,
-                diagnostics: all_diag,
-                steps,
-                search_items,
-                book_detail,
-                toc_chapters,
-                toc_total_count,
-                content_chapter_index,
-                content_chapter_title,
-                content_chapter_url,
-                content_text,
-                content_char_count,
-            };
-            (state, report)
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("测试书源线程失败: {e}")))?;
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                let timeout_msg = format!(
+                    "书源调试总耗时超过 {} 秒，已强制中止",
+                    SOURCE_TEST_TOTAL_TIMEOUT.as_secs()
+                );
+                let report = SourceTestReportDto {
+                    ok: false,
+                    mode,
+                    keyword: effective_keyword,
+                    total_elapsed_ms: SOURCE_TEST_TOTAL_TIMEOUT.as_millis() as u64,
+                    result_count: 0,
+                    sample_titles: Vec::new(),
+                    error: Some(timeout_msg.clone()),
+                    diagnostics: ExecutionDiagnostics::default(),
+                    steps: vec![SourceDebugStepDto {
+                        stage: "timeout".into(),
+                        label: "总超时控制".into(),
+                        ok: false,
+                        elapsed_ms: SOURCE_TEST_TOTAL_TIMEOUT.as_millis() as u64,
+                        summary: timeout_msg.clone(),
+                        error: Some(timeout_msg),
+                        diagnostics: ExecutionDiagnostics::default(),
+                    }],
+                    search_items: Vec::new(),
+                    book_detail: None,
+                    toc_chapters: Vec::new(),
+                    toc_total_count: 0,
+                    content_chapter_index: None,
+                    content_chapter_title: None,
+                    content_chapter_url: None,
+                    content_text: None,
+                    content_char_count: 0,
+                };
+                (rec.runtime_state, report)
+            }
+        };
 
         let now = Timestamp::now();
         let last_msg = if report.ok {
@@ -1544,17 +1753,17 @@ impl BookOnlineService {
             "测试失败".into()
         };
 
-        rec.runtime_state = final_state;
-        rec.last_test_ok = Some(report.ok);
-        rec.last_test_msg = Some(last_msg);
-        rec.updated_at = now;
-        self.sources.save(&rec).await?;
+        let _ = self
+            .sources
+            .update_test_result(id, final_state, report.ok, Some(last_msg), now)
+            .await?;
 
         Ok(report)
     }
 
     pub async fn search(
         &self,
+        actor: &User,
         keyword: &str,
         source_ids: Option<Vec<Uuid>>,
         page: u32,
@@ -1565,9 +1774,10 @@ impl BookOnlineService {
         }
 
         let mut sources = self.sources.list_all().await?;
+        let is_admin = actor.role.is_admin();
 
         if let Some(filter_ids) = source_ids.filter(|v| !v.is_empty()) {
-            sources.retain(|s| filter_ids.contains(&s.id));
+            sources.retain(|s| filter_ids.contains(&s.id) && (is_admin || s.enabled));
         } else {
             sources.retain(|s| s.enabled);
         }
@@ -1606,10 +1816,21 @@ impl BookOnlineService {
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (sid, sname, prev_state_cmp, Err("搜索并发调度已关闭".into()));
                 };
+                let cancel_flag = Arc::new(AtomicBool::new(false));
+                let cancel_worker = cancel_flag.clone();
                 let timed = tokio::time::timeout(
                     SEARCH_PER_SOURCE_TIMEOUT,
                     tokio::task::spawn_blocking(move || {
-                        engine.search_sync(&parsed, state, &kw_owned, page_num)
+                        engine
+                            .search_sync_with_control(
+                                &parsed,
+                                state,
+                                &kw_owned,
+                                page_num,
+                                SEARCH_PER_SOURCE_TIMEOUT,
+                                cancel_worker,
+                            )
+                            .map_err(Into::into)
                     }),
                 )
                 .await;
@@ -1621,15 +1842,18 @@ impl BookOnlineService {
                         prev_state_cmp,
                         Err(format!("搜索任务异常: {e}")),
                     ),
-                    Err(_) => (
-                        sid,
-                        sname,
-                        prev_state_cmp,
-                        Err(format!(
-                            "搜索超时（超过 {} 秒）",
-                            SEARCH_PER_SOURCE_TIMEOUT.as_secs()
-                        )),
-                    ),
+                    Err(_) => {
+                        cancel_flag.store(true, Ordering::Relaxed);
+                        (
+                            sid,
+                            sname,
+                            prev_state_cmp,
+                            Err(format!(
+                                "搜索超时（超过 {} 秒）",
+                                SEARCH_PER_SOURCE_TIMEOUT.as_secs()
+                            )),
+                        )
+                    }
                 }
             }));
         }
@@ -1642,8 +1866,10 @@ impl BookOnlineService {
             if let Ok((sid, sname, prev_state, res)) = h.await {
                 match res {
                     Ok(out) => {
-                        if out.state != prev_state {
-                            let _ = self.persist_runtime_state(sid, out.state).await;
+                        if out.state != prev_state
+                            && let Err(err) = self.persist_runtime_state(sid, out.state).await
+                        {
+                            tracing::warn!(source_id = %sid, error = %err, "failed to persist source runtime state after search");
                         }
                         toasts.extend(out.diagnostics.toasts);
                         for book in out.data {
@@ -1674,13 +1900,14 @@ impl BookOnlineService {
         })
     }
 
-    pub async fn fetch_book_info(
+    async fn fetch_book_info_internal(
         &self,
-        source_id: Uuid,
+        rec: BookSourceRecord,
         book_url: &str,
         fallback_hint: Option<BookJsContext>,
+        include_logs: bool,
     ) -> DomainResult<OnlineBookDetailResponseDto> {
-        let rec = self.load_source(source_id).await?;
+        let source_id = rec.id;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
@@ -1689,15 +1916,20 @@ impl BookOnlineService {
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
-        let out = tokio::task::spawn_blocking(move || {
+        let mut out = tokio::task::spawn_blocking(move || {
             engine.fetch_book_info_sync(&parsed, prev_state, &url_owned, fallback_hint.as_ref())
         })
         .await
         .map_err(|e| DomainError::Storage(format!("获取书籍详情失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        if out.state != prev_state_cmp {
-            let _ = self.persist_runtime_state(source_id, out.state).await;
+        if out.state != prev_state_cmp
+            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+        {
+            tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_book_info");
+        }
+        if !include_logs {
+            out.diagnostics.logs.clear();
         }
 
         Ok(OnlineBookDetailResponseDto {
@@ -1708,13 +1940,26 @@ impl BookOnlineService {
         })
     }
 
-    pub async fn fetch_toc(
+    pub async fn fetch_book_info(
         &self,
+        actor: &User,
         source_id: Uuid,
+        book_url: &str,
+        fallback_hint: Option<BookJsContext>,
+    ) -> DomainResult<OnlineBookDetailResponseDto> {
+        let rec = self.load_source_for_actor(actor, source_id).await?;
+        self.fetch_book_info_internal(rec, book_url, fallback_hint, actor.role.is_admin())
+            .await
+    }
+
+    async fn fetch_toc_internal(
+        &self,
+        rec: BookSourceRecord,
         toc_url: &str,
         book_ctx: BookJsContext,
+        include_logs: bool,
     ) -> DomainResult<OnlineTocResponseDto> {
-        let rec = self.load_source(source_id).await?;
+        let source_id = rec.id;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
@@ -1723,15 +1968,20 @@ impl BookOnlineService {
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
-        let out = tokio::task::spawn_blocking(move || {
+        let mut out = tokio::task::spawn_blocking(move || {
             engine.fetch_toc_sync(&parsed, prev_state, &url_owned, &book_ctx)
         })
         .await
         .map_err(|e| DomainError::Storage(format!("获取目录失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        if out.state != prev_state_cmp {
-            let _ = self.persist_runtime_state(source_id, out.state).await;
+        if out.state != prev_state_cmp
+            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+        {
+            tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_toc");
+        }
+        if !include_logs {
+            out.diagnostics.logs.clear();
         }
 
         Ok(OnlineTocResponseDto {
@@ -1741,42 +1991,48 @@ impl BookOnlineService {
         })
     }
 
-    fn read_cached_chapter(
+    pub async fn fetch_toc(
         &self,
+        actor: &User,
         source_id: Uuid,
-        chapter_url: &str,
-    ) -> Option<OnlineChapterContent> {
-        read_cached_chapter_at(&self.cache_dir, source_id, chapter_url)
+        toc_url: &str,
+        book_ctx: BookJsContext,
+    ) -> DomainResult<OnlineTocResponseDto> {
+        let rec = self.load_source_for_actor(actor, source_id).await?;
+        self.fetch_toc_internal(rec, toc_url, book_ctx, actor.role.is_admin())
+            .await
     }
 
-    fn write_cached_chapter(
+    async fn fetch_chapter_content_internal(
         &self,
-        source_id: Uuid,
-        chapter_url: &str,
-        content: &OnlineChapterContent,
-    ) {
-        write_cached_chapter_at(&self.cache_dir, source_id, chapter_url, content);
-    }
-
-    pub async fn fetch_chapter_content(
-        &self,
-        source_id: Uuid,
+        rec: BookSourceRecord,
         chapter_url: &str,
         book_ctx: BookJsContext,
         chapter_ctx: ChapterJsContext,
         force_refresh: bool,
+        include_logs: bool,
     ) -> DomainResult<OnlineContentResponseDto> {
-        if !force_refresh && let Some(cached) = self.read_cached_chapter(source_id, chapter_url) {
-            return Ok(OnlineContentResponseDto {
-                source_id,
-                chapter_index: chapter_ctx.index,
-                content: cached,
-                cached: true,
-                diagnostics: ExecutionDiagnostics::default(),
-            });
+        let source_id = rec.id;
+        if !force_refresh {
+            let cache_dir = self.cache_dir.clone();
+            let ch_url = chapter_url.to_string();
+            let cached = tokio::task::spawn_blocking(move || {
+                read_cached_chapter_at(&cache_dir, source_id, &ch_url)
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(cached) = cached {
+                return Ok(OnlineContentResponseDto {
+                    source_id,
+                    chapter_index: chapter_ctx.index,
+                    content: cached,
+                    cached: true,
+                    diagnostics: ExecutionDiagnostics::default(),
+                });
+            }
         }
 
-        let rec = self.load_source(source_id).await?;
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
@@ -1786,7 +2042,7 @@ impl BookOnlineService {
         let prev_state_cmp = prev_state.clone();
         let ch_idx = chapter_ctx.index;
 
-        let out = tokio::task::spawn_blocking(move || {
+        let mut out = tokio::task::spawn_blocking(move || {
             engine.fetch_chapter_content_sync(
                 &parsed,
                 prev_state,
@@ -1799,10 +2055,23 @@ impl BookOnlineService {
         .map_err(|e| DomainError::Storage(format!("获取章节正文失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        if out.state != prev_state_cmp {
-            let _ = self.persist_runtime_state(source_id, out.state).await;
+        if out.state != prev_state_cmp
+            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+        {
+            tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_chapter_content");
         }
-        self.write_cached_chapter(source_id, chapter_url, &out.data);
+        {
+            let cache_dir = self.cache_dir.clone();
+            let ch_url = chapter_url.to_string();
+            let content_clone = out.data.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                write_cached_chapter_at(&cache_dir, source_id, &ch_url, &content_clone);
+            })
+            .await;
+        }
+        if !include_logs {
+            out.diagnostics.logs.clear();
+        }
 
         Ok(OnlineContentResponseDto {
             source_id,
@@ -1811,6 +2080,27 @@ impl BookOnlineService {
             cached: false,
             diagnostics: out.diagnostics,
         })
+    }
+
+    pub async fn fetch_chapter_content(
+        &self,
+        actor: &User,
+        source_id: Uuid,
+        chapter_url: &str,
+        book_ctx: BookJsContext,
+        chapter_ctx: ChapterJsContext,
+        force_refresh: bool,
+    ) -> DomainResult<OnlineContentResponseDto> {
+        let rec = self.load_source_for_actor(actor, source_id).await?;
+        self.fetch_chapter_content_internal(
+            rec,
+            chapter_url,
+            book_ctx,
+            chapter_ctx,
+            force_refresh,
+            actor.role.is_admin(),
+        )
+        .await
     }
 
     // -----------------------------------------------------------------------
@@ -1858,10 +2148,11 @@ impl BookOnlineService {
 
     pub async fn add_to_shelf(
         &self,
-        user_id: UserId,
+        actor: &User,
         input: AddOnlineShelfInput,
     ) -> DomainResult<OnlineShelfBookDto> {
-        let src = self.load_source(input.source_id).await?;
+        let src = self.load_source_for_actor(actor, input.source_id).await?;
+        let user_id = actor.id;
         let existing_list = self.shelves.list_by_user(user_id).await?;
         let now = Timestamp::now();
 
@@ -1985,19 +2276,61 @@ impl BookOnlineService {
     // Unified Online-Tracked Books (BookModel + Incremental Chapters + EPUB 3.0)
     // -----------------------------------------------------------------------
 
-    async fn epub_lock_for(&self, book_id: BookId) -> Arc<tokio::sync::Mutex<()>> {
-        {
-            let guard = self.epub_sync_locks.read().await;
-            if let Some(lock) = guard.get(&book_id) {
-                return Arc::clone(lock);
-            }
-        }
-        let mut guard = self.epub_sync_locks.write().await;
+    fn book_state_lock_for(&self, book_id: BookId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self
+            .book_state_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         Arc::clone(
             guard
                 .entry(book_id)
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
         )
+    }
+
+    fn epub_lock_for(&self, book_id: BookId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self
+            .epub_sync_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            guard
+                .entry(book_id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
+    fn track_lock_for(&self, source_id: Uuid, book_url: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self.track_locks.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            guard
+                .entry((source_id, book_url.to_string()))
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
+    fn bump_sync_gen(&self, book_id: BookId, delta_chapters: u32) -> (u64, bool) {
+        let mut guard = self
+            .pending_sync_gens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let entry = guard.entry(book_id).or_insert((0, 0));
+        entry.0 = entry.0.wrapping_add(1);
+        entry.1 = entry.1.saturating_add(delta_chapters);
+        let flush_now = entry.1 >= TRACKED_EPUB_IMMEDIATE_BATCH;
+        if flush_now {
+            entry.1 = 0;
+        }
+        (entry.0, flush_now)
+    }
+
+    fn current_sync_gen(&self, book_id: BookId) -> u64 {
+        self.pending_sync_gens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&book_id)
+            .map(|(g, _)| *g)
+            .unwrap_or(0)
     }
 
     fn parse_tags_from_kind(raw: Option<&str>) -> Vec<String> {
@@ -2020,7 +2353,11 @@ impl BookOnlineService {
         input: TrackOnlineBookInput,
     ) -> DomainResult<BookSummaryDto> {
         require_admin(actor)?;
-        let _src = self.load_source(input.source_id).await?;
+        let src = self.load_source(input.source_id).await?;
+
+        // Serialize concurrent track requests for the same (source_id, book_url) to prevent duplicate Books.
+        let tlock = self.track_lock_for(input.source_id, &input.book_url);
+        let _track_guard = tlock.lock().await;
 
         if let Some(existing) = self
             .catalog
@@ -2055,8 +2392,8 @@ impl BookOnlineService {
 
         if toc_url.is_empty()
             && let Ok(info) = self
-                .fetch_book_info(
-                    input.source_id,
+                .fetch_book_info_internal(
+                    src.clone(),
                     &input.book_url,
                     Some(BookJsContext {
                         name: input.name.clone(),
@@ -2067,6 +2404,7 @@ impl BookOnlineService {
                         intro: input.intro.clone(),
                         ..Default::default()
                     }),
+                    false,
                 )
                 .await
         {
@@ -2078,8 +2416,8 @@ impl BookOnlineService {
 
         if !toc_url.is_empty()
             && let Ok(toc_res) = self
-                .fetch_toc(
-                    input.source_id,
+                .fetch_toc_internal(
+                    src,
                     &toc_url,
                     BookJsContext {
                         name: input.name.clone(),
@@ -2090,6 +2428,7 @@ impl BookOnlineService {
                         intro: input.intro.clone(),
                         ..Default::default()
                     },
+                    false,
                 )
                 .await
         {
@@ -2103,9 +2442,16 @@ impl BookOnlineService {
                     last_chapter = Some(last.title.clone());
                 }
                 total_chapters = clean_chapters.len() as u32;
-                let _ =
-                    self.tracked_store
-                        .update_manifest_from_toc(book_id, &clean_chapters, false);
+                let store = self.tracked_store.clone();
+                if let Err(err) = tokio::task::spawn_blocking(move || {
+                    store.update_manifest_from_toc(book_id, &clean_chapters, false)
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r)
+                {
+                    tracing::warn!(book_id = %book_id, error = %err, "failed to save initial tracked manifest");
+                }
             }
         }
 
@@ -2175,7 +2521,7 @@ impl BookOnlineService {
         book_id: BookId,
         force_refresh: bool,
     ) -> DomainResult<TrackedTocResponseDto> {
-        let mut book = self.catalog.find_book_raw(book_id).await?;
+        let book = self.catalog.find_book_raw(book_id).await?;
         let (
             source_id,
             book_url,
@@ -2208,13 +2554,18 @@ impl BookOnlineService {
             }
         };
 
-        let source_name = self
-            .load_source(source_id)
-            .await
-            .map(|s| s.name)
-            .unwrap_or_else(|_| "已删除书源".to_string());
+        let src_rec_opt = self.load_source(source_id).await.ok();
+        let source_name = src_rec_opt
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| "已删除书源".to_string());
 
-        let existing_manifest = self.tracked_store.load_manifest(book_id);
+        let existing_manifest = {
+            let store = self.tracked_store.clone();
+            tokio::task::spawn_blocking(move || store.load_manifest(book_id))
+                .await
+                .map_err(|e| DomainError::Storage(format!("读取目录清单失败: {e}")))?
+        };
         if !force_refresh && !existing_manifest.chapters.is_empty() {
             return Ok(TrackedTocResponseDto {
                 book_id,
@@ -2228,10 +2579,13 @@ impl BookOnlineService {
             });
         }
 
+        let src_rec =
+            src_rec_opt.ok_or_else(|| DomainError::NotFound(format!("未找到书源 {source_id}")))?;
+
         let effective_toc_url = if toc_url.trim().is_empty() {
             let info = self
-                .fetch_book_info(
-                    source_id,
+                .fetch_book_info_internal(
+                    src_rec.clone(),
                     &book_url,
                     Some(BookJsContext {
                         name: book.metadata.title.clone(),
@@ -2241,6 +2595,7 @@ impl BookOnlineService {
                         intro: book.metadata.description.clone(),
                         ..Default::default()
                     }),
+                    false,
                 )
                 .await?;
             info.detail.toc_url
@@ -2249,8 +2604,8 @@ impl BookOnlineService {
         };
 
         let toc_res = self
-            .fetch_toc(
-                source_id,
+            .fetch_toc_internal(
+                src_rec,
                 &effective_toc_url,
                 BookJsContext {
                     name: book.metadata.title.clone(),
@@ -2260,6 +2615,7 @@ impl BookOnlineService {
                     intro: book.metadata.description.clone(),
                     ..Default::default()
                 },
+                false,
             )
             .await?;
 
@@ -2269,31 +2625,51 @@ impl BookOnlineService {
             .filter(|c| !c.is_volume && !c.url.trim().is_empty())
             .collect();
 
-        let manifest = self
-            .tracked_store
-            .update_manifest_from_toc(book_id, &clean_chapters, true)
-            .map_err(DomainError::Storage)?;
+        // Serialize manifest + DB update under per-book state lock and re-read latest Book.
+        let state_lock = self.book_state_lock_for(book_id);
+        let _state_guard = state_lock.lock().await;
+        let mut latest_book = self.catalog.find_book_raw(book_id).await?;
+        let current_source_matches = matches!(
+            &latest_book.source,
+            BookSource::OnlineTracked { source_id: sid, .. } if *sid == source_id
+        );
+        if !current_source_matches {
+            return Err(DomainError::Validation(
+                "书籍来源已在拉取目录期间变更，请重新加载目录".into(),
+            ));
+        }
+
+        let store = self.tracked_store.clone();
+        let manifest = tokio::task::spawn_blocking(move || {
+            store.update_manifest_from_toc(book_id, &clean_chapters, true)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("更新目录清单线程失败: {e}")))?
+        .map_err(DomainError::Storage)?;
 
         let new_total = manifest.chapters.len() as u32;
         let new_cached = manifest.chapters.iter().filter(|c| c.cached).count() as u32;
         let new_last = manifest.chapters.last().map(|c| c.title.clone());
+        let mut latest_dirty = epub_dirty;
 
         if let BookSource::OnlineTracked {
             toc_url: ref mut t_url,
             last_chapter: ref mut l_ch,
             cached_chapters: ref mut c_cnt,
             total_chapters: ref mut t_cnt,
+            epub_dirty: ref dirty,
             ..
-        } = book.source
+        } = latest_book.source
         {
             *t_url = effective_toc_url;
             *l_ch = new_last.clone();
             *c_cnt = new_cached;
             *t_cnt = new_total;
+            latest_dirty = *dirty;
         }
-        book.metadata.chapter_count = if new_total > 0 { Some(new_total) } else { None };
-        book.updated_at = Timestamp::now();
-        self.catalog.save_book_raw(&book).await?;
+        latest_book.metadata.chapter_count = if new_total > 0 { Some(new_total) } else { None };
+        latest_book.updated_at = Timestamp::now();
+        self.catalog.save_book_raw(&latest_book).await?;
 
         Ok(TrackedTocResponseDto {
             book_id,
@@ -2303,20 +2679,21 @@ impl BookOnlineService {
             cached_chapters: new_cached,
             total_chapters: new_total,
             last_chapter: new_last,
-            epub_dirty,
+            epub_dirty: latest_dirty,
         })
     }
 
     /// Reads a single chapter of an online-tracked book:
-    /// serves immediately from local chapter cache if present, otherwise fetches from the Legado
-    /// source, saves O(1) chapter file atomically, marks `epub_dirty`, and schedules EPUB 3.0 sync.
+    /// serves immediately from local chapter cache if present (with matching URL), otherwise
+    /// fetches from the Legado source, saves O(1) chapter file atomically, marks `epub_dirty`,
+    /// and schedules EPUB 3.0 sync.
     pub async fn get_tracked_chapter(
         self: &Arc<Self>,
         book_id: BookId,
         chapter_index: usize,
         force_refresh: bool,
     ) -> DomainResult<TrackedChapterResponseDto> {
-        let mut book = self.catalog.find_book_raw(book_id).await?;
+        let book = self.catalog.find_book_raw(book_id).await?;
         let (source_id, book_url, toc_url, cached_chapters, total_chapters, epub_dirty) =
             match &book.source {
                 BookSource::OnlineTracked {
@@ -2340,24 +2717,37 @@ impl BookOnlineService {
                 }
             };
 
-        if !force_refresh
-            && let Some(cached) = self.tracked_store.load_chapter(book_id, chapter_index)
-            && !cached.content.trim().is_empty()
-        {
-            return Ok(TrackedChapterResponseDto {
-                book_id,
-                source_id,
-                chapter_index,
-                title: cached.title,
-                content: cached.content,
-                cached: true,
-                cached_chapters,
-                total_chapters,
-                epub_dirty,
-            });
+        let mut manifest = {
+            let store = self.tracked_store.clone();
+            tokio::task::spawn_blocking(move || store.load_manifest(book_id))
+                .await
+                .map_err(|e| DomainError::Storage(format!("读取目录清单失败: {e}")))?
+        };
+
+        if !force_refresh && let Some(meta) = manifest.chapters.get(chapter_index) {
+            let expected_url = meta.url.clone();
+            let store = self.tracked_store.clone();
+            let cached_opt = tokio::task::spawn_blocking(move || {
+                store.load_chapter_matching_url(book_id, chapter_index, &expected_url)
+            })
+            .await
+            .ok()
+            .flatten();
+            if let Some(cached) = cached_opt {
+                return Ok(TrackedChapterResponseDto {
+                    book_id,
+                    source_id,
+                    chapter_index,
+                    title: cached.title,
+                    content: cached.content,
+                    cached: true,
+                    cached_chapters,
+                    total_chapters,
+                    epub_dirty,
+                });
+            }
         }
 
-        let mut manifest = self.tracked_store.load_manifest(book_id);
         if chapter_index >= manifest.chapters.len() {
             let refreshed = self.get_tracked_toc(book_id, true).await?;
             manifest.chapters = refreshed.chapters;
@@ -2385,13 +2775,15 @@ impl BookOnlineService {
             index: chapter_index,
         };
 
+        let src_rec = self.load_source(source_id).await?;
         let fetched = self
-            .fetch_chapter_content(
-                source_id,
+            .fetch_chapter_content_internal(
+                src_rec,
                 &chapter_meta.url,
                 book_ctx,
                 chapter_ctx,
                 force_refresh,
+                false,
             )
             .await?;
 
@@ -2406,27 +2798,51 @@ impl BookOnlineService {
             url: chapter_meta.url.clone(),
             content: fetched.content.content.clone(),
         };
-        let new_cached = self
-            .tracked_store
-            .save_chapter(book_id, &chapter_file)
-            .map_err(DomainError::Storage)?;
-        let new_total = manifest.chapters.len() as u32;
 
-        if let BookSource::OnlineTracked {
-            cached_chapters: ref mut c_cnt,
-            total_chapters: ref mut t_cnt,
-            epub_dirty: ref mut dirty,
-            ..
-        } = book.source
-        {
-            *c_cnt = new_cached;
-            *t_cnt = new_total.max(*t_cnt);
-            *dirty = true;
-        }
-        book.updated_at = Timestamp::now();
-        self.catalog.save_book_raw(&book).await?;
+        // Coordinate manifest write + generation bump + latest Book DB update under `book_state_lock`.
+        let (new_cached, new_total, sync_gen, should_flush_now) = {
+            let state_lock = self.book_state_lock_for(book_id);
+            let _state_guard = state_lock.lock().await;
 
-        self.schedule_debounced_epub_sync(book_id).await;
+            let mut latest_book = self.catalog.find_book_raw(book_id).await?;
+            let source_still_matches = matches!(
+                &latest_book.source,
+                BookSource::OnlineTracked { source_id: sid, .. } if *sid == source_id
+            );
+            if !source_still_matches {
+                return Err(DomainError::Validation(
+                    "书籍来源已在章节抓取期间变更，请重新加载".into(),
+                ));
+            }
+
+            let store = self.tracked_store.clone();
+            let cf = chapter_file;
+            let new_cached = tokio::task::spawn_blocking(move || store.save_chapter(book_id, &cf))
+                .await
+                .map_err(|e| DomainError::Storage(format!("写入章节缓存线程失败: {e}")))?
+                .map_err(DomainError::Storage)?;
+            let new_total = manifest.chapters.len() as u32;
+
+            let (sync_gen, should_flush_now) = self.bump_sync_gen(book_id, 1);
+
+            if let BookSource::OnlineTracked {
+                cached_chapters: ref mut c_cnt,
+                total_chapters: ref mut t_cnt,
+                epub_dirty: ref mut dirty,
+                ..
+            } = latest_book.source
+            {
+                *c_cnt = new_cached;
+                *t_cnt = new_total.max(*t_cnt);
+                *dirty = true;
+            }
+            latest_book.updated_at = Timestamp::now();
+            self.catalog.save_book_raw(&latest_book).await?;
+
+            (new_cached, new_total, sync_gen, should_flush_now)
+        };
+
+        self.spawn_debounced_epub_sync(book_id, sync_gen, should_flush_now);
 
         Ok(TrackedChapterResponseDto {
             book_id,
@@ -2443,6 +2859,7 @@ impl BookOnlineService {
 
     /// Switches the upstream book source for a unified online-tracked book while preserving
     /// its `BookId`, shelves, favorites, tags, and reading progress.
+    /// Fetches the new source's TOC (and optional cover) BEFORE committing DB changes or clearing old cache.
     pub async fn switch_tracked_source(
         self: &Arc<Self>,
         actor: &User,
@@ -2450,72 +2867,185 @@ impl BookOnlineService {
         input: SwitchTrackedSourceInput,
     ) -> DomainResult<TrackedTocResponseDto> {
         require_admin(actor)?;
-        let _src = self.load_source(input.source_id).await?;
-        let mut book = self.catalog.find_book_raw(book_id).await?;
+        let new_src = self.load_source(input.source_id).await?;
+        let book_snapshot = self.catalog.find_book_raw(book_id).await?;
 
-        if !book.source.is_online_tracked() {
+        if !book_snapshot.source.is_online_tracked() {
             return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
         }
 
-        if input.clear_cache {
-            self.tracked_store.clear_chapters(book_id);
-        }
-
-        if let BookSource::OnlineTracked {
-            source_id,
-            book_url,
-            toc_url,
-            last_chapter,
-            epub_dirty,
-            ..
-        } = &mut book.source
-        {
-            *source_id = input.source_id;
-            *book_url = input.book_url;
-            *toc_url = input.toc_url;
-            if input.last_chapter.is_some() {
-                *last_chapter = input.last_chapter;
-            }
-            *epub_dirty = true;
-        }
-        if let Some(intro) = input.intro
-            && !intro.trim().is_empty()
-        {
-            book.metadata.description = Some(intro.trim().to_string());
-        }
-        book.updated_at = Timestamp::now();
-        self.catalog.save_book_raw(&book).await?;
-
-        self.get_tracked_toc(book_id, true).await
-    }
-
-    /// Schedules a debounced background standard EPUB 3.0 rebuild so rapid page turns
-    /// do not cause ZIP write amplification. Flushes immediately every 20 newly cached chapters.
-    async fn schedule_debounced_epub_sync(self: &Arc<Self>, book_id: BookId) {
-        let (sync_gen, should_flush_now) = {
-            let mut guard = self.pending_sync_gens.write().await;
-            let entry = guard.entry(book_id).or_insert((0, 0));
-            entry.0 = entry.0.wrapping_add(1);
-            entry.1 = entry.1.saturating_add(1);
-            let flush_now = entry.1 >= TRACKED_EPUB_IMMEDIATE_BATCH;
-            if flush_now {
-                entry.1 = 0;
-            }
-            (entry.0, flush_now)
+        // 1. Pre-fetch new TOC (and book_info if toc_url is empty) BEFORE touching DB or old cache
+        let effective_toc_url = if input.toc_url.trim().is_empty() {
+            let info = self
+                .fetch_book_info_internal(
+                    new_src.clone(),
+                    &input.book_url,
+                    Some(BookJsContext {
+                        name: book_snapshot.metadata.title.clone(),
+                        author: book_snapshot.metadata.authors.join(", "),
+                        book_url: input.book_url.clone(),
+                        toc_url: String::new(),
+                        cover_url: input.cover_url.clone(),
+                        intro: input
+                            .intro
+                            .clone()
+                            .or_else(|| book_snapshot.metadata.description.clone()),
+                        ..Default::default()
+                    }),
+                    false,
+                )
+                .await?;
+            info.detail.toc_url
+        } else {
+            input.toc_url.trim().to_string()
         };
 
+        let toc_res = self
+            .fetch_toc_internal(
+                new_src.clone(),
+                &effective_toc_url,
+                BookJsContext {
+                    name: book_snapshot.metadata.title.clone(),
+                    author: book_snapshot.metadata.authors.join(", "),
+                    book_url: input.book_url.clone(),
+                    toc_url: effective_toc_url.clone(),
+                    cover_url: input.cover_url.clone(),
+                    intro: input
+                        .intro
+                        .clone()
+                        .or_else(|| book_snapshot.metadata.description.clone()),
+                    ..Default::default()
+                },
+                false,
+            )
+            .await?;
+
+        let clean_chapters: Vec<OnlineChapterItem> = toc_res
+            .chapters
+            .into_iter()
+            .filter(|c| !c.is_volume && !c.url.trim().is_empty())
+            .collect();
+        if clean_chapters.is_empty() {
+            return Err(DomainError::Validation(
+                "新书源未解析到有效章节目录，已取消换源以保留原书数据".into(),
+            ));
+        }
+
+        // Best-effort download & save new cover if `input.cover_url` was provided
+        let new_cover_key = if let Some(ref cover_url) = input.cover_url
+            && !cover_url.trim().is_empty()
+        {
+            if let Ok((bytes, mime_type)) = self.fetch_cover_proxy(cover_url).await {
+                self.catalog
+                    .save_cover_raw(
+                        book_id,
+                        &CoverPayload {
+                            bytes: Bytes::from(bytes),
+                            mime_type,
+                        },
+                    )
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 2. Commit cache update + DB update atomically under `book_state_lock`
+        let (manifest, new_cached, new_total, new_last, sync_gen) = {
+            let state_lock = self.book_state_lock_for(book_id);
+            let _state_guard = state_lock.lock().await;
+
+            let mut latest_book = self.catalog.find_book_raw(book_id).await?;
+            if !latest_book.source.is_online_tracked() {
+                return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
+            }
+
+            let store = self.tracked_store.clone();
+            let clear_cache = input.clear_cache;
+            let manifest = tokio::task::spawn_blocking(move || {
+                if clear_cache {
+                    store.clear_chapters(book_id);
+                }
+                store.update_manifest_from_toc(book_id, &clean_chapters, !clear_cache)
+            })
+            .await
+            .map_err(|e| DomainError::Storage(format!("切换书源更新清单线程失败: {e}")))?
+            .map_err(DomainError::Storage)?;
+
+            let new_total = manifest.chapters.len() as u32;
+            let new_cached = manifest.chapters.iter().filter(|c| c.cached).count() as u32;
+            let new_last = manifest
+                .chapters
+                .last()
+                .map(|c| c.title.clone())
+                .or(input.last_chapter);
+
+            if let BookSource::OnlineTracked {
+                source_id,
+                book_url,
+                toc_url,
+                last_chapter,
+                cached_chapters,
+                total_chapters,
+                epub_dirty,
+                ..
+            } = &mut latest_book.source
+            {
+                *source_id = input.source_id;
+                *book_url = input.book_url;
+                *toc_url = effective_toc_url;
+                *last_chapter = new_last.clone();
+                *cached_chapters = new_cached;
+                *total_chapters = new_total;
+                *epub_dirty = true;
+            }
+            if let Some(intro) = input.intro
+                && !intro.trim().is_empty()
+            {
+                latest_book.metadata.description = Some(intro.trim().to_string());
+            }
+            if let Some(ck) = new_cover_key {
+                latest_book.set_cover(Some(ck));
+            }
+            latest_book.metadata.chapter_count = if new_total > 0 { Some(new_total) } else { None };
+            latest_book.updated_at = Timestamp::now();
+
+            // Bump generation so any in-flight `sync_tracked_epub` will NOT clear `epub_dirty`
+            let (sync_gen, _) = self.bump_sync_gen(book_id, 1);
+            self.catalog.save_book_raw(&latest_book).await?;
+
+            (manifest, new_cached, new_total, new_last, sync_gen)
+        };
+
+        self.spawn_debounced_epub_sync(book_id, sync_gen, false);
+
+        Ok(TrackedTocResponseDto {
+            book_id,
+            source_id: input.source_id,
+            source_name: new_src.name,
+            chapters: manifest.chapters,
+            cached_chapters: new_cached,
+            total_chapters: new_total,
+            last_chapter: new_last,
+            epub_dirty: true,
+        })
+    }
+
+    /// Spawns a debounced background standard EPUB 3.0 rebuild task for `sync_gen`.
+    fn spawn_debounced_epub_sync(
+        self: &Arc<Self>,
+        book_id: BookId,
+        sync_gen: u64,
+        should_flush_now: bool,
+    ) {
         let svc = Arc::clone(self);
         tokio::spawn(async move {
             if !should_flush_now {
                 tokio::time::sleep(TRACKED_EPUB_DEBOUNCE).await;
-                let current_gen = svc
-                    .pending_sync_gens
-                    .read()
-                    .await
-                    .get(&book_id)
-                    .map(|(g, _)| *g)
-                    .unwrap_or(0);
-                if current_gen != sync_gen {
+                if svc.current_sync_gen(book_id) != sync_gen {
                     return;
                 }
             }
@@ -2526,7 +3056,7 @@ impl BookOnlineService {
     }
 
     /// Ensures the standard EPUB 3.0 archive on disk reflects all cached chapters if `epub_dirty`.
-    pub async fn ensure_tracked_epub_synced(&self, book_id: BookId) -> DomainResult<()> {
+    pub async fn ensure_tracked_epub_synced(self: &Arc<Self>, book_id: BookId) -> DomainResult<()> {
         let book = self.catalog.find_book_raw(book_id).await?;
         let is_dirty = matches!(
             &book.source,
@@ -2544,38 +3074,55 @@ impl BookOnlineService {
 
     /// Atomically synthesizes the standard EPUB 3.0 file for an online-tracked book from its
     /// locally cached chapters + cover + metadata, updating `BookModel` in-place.
+    /// Uses generation tracking (`start_gen` vs `current_gen`) and re-reads the latest `Book`
+    /// under `book_state_lock` so concurrent chapter fetches or source switches are never lost.
     pub async fn sync_tracked_epub(
-        &self,
+        self: &Arc<Self>,
         book_id: BookId,
         force: bool,
     ) -> DomainResult<BookSummaryDto> {
-        let lock = self.epub_lock_for(book_id).await;
-        let _guard = lock.lock().await;
+        let epub_lock = self.epub_lock_for(book_id);
+        let _epub_guard = epub_lock.lock().await;
 
-        let mut book = self.catalog.find_book_raw(book_id).await?;
-        let is_dirty = match &book.source {
-            BookSource::OnlineTracked { epub_dirty, .. } => *epub_dirty,
-            _ => {
-                return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
+        let (start_gen, title, author, description, cover_key) = {
+            let state_lock = self.book_state_lock_for(book_id);
+            let _state_guard = state_lock.lock().await;
+
+            let book = self.catalog.find_book_raw(book_id).await?;
+            let is_dirty = match &book.source {
+                BookSource::OnlineTracked { epub_dirty, .. } => *epub_dirty,
+                _ => {
+                    return Err(DomainError::Validation("该书籍不是在线追更书籍".into()));
+                }
+            };
+            if !force && !is_dirty {
+                return self.catalog.get_book(None, book_id).await;
             }
+            (
+                self.current_sync_gen(book_id),
+                book.metadata.title.clone(),
+                book.metadata.authors.join(", "),
+                book.metadata.description.clone(),
+                book.cover_key.clone(),
+            )
         };
 
-        if !force && !is_dirty {
-            return self.catalog.get_book(None, book_id).await;
-        }
-
+        let store = self.tracked_store.clone();
         let (chapters, cached_count, total_count) =
-            self.tracked_store.collect_cached_chapters_for_epub(book_id);
-        let cover_bytes = match book.cover_key.as_deref() {
+            tokio::task::spawn_blocking(move || store.collect_cached_chapters_for_epub(book_id))
+                .await
+                .map_err(|e| DomainError::Storage(format!("收集章节缓存线程失败: {e}")))?;
+
+        let cover_bytes = match cover_key.as_deref() {
             Some(key) => self.catalog.read_cover_bytes(key).await,
             None => None,
         };
 
         let pack_meta = PackBookMetadata {
             identifier: Some(book_id.0),
-            title: book.metadata.title.clone(),
-            author: book.metadata.authors.join(", "),
-            description: book.metadata.description.clone(),
+            title,
+            author,
+            description,
             cover_bytes,
         };
         let epub_bytes =
@@ -2589,35 +3136,61 @@ impl BookOnlineService {
             .save_managed_epub_and_cover(book_id, Bytes::from(epub_bytes), None)
             .await?;
 
-        book.file_size = stored.file_size;
-        book.file_hash = stored.file_hash;
-        if let BookSource::OnlineTracked {
-            storage_key,
-            cached_chapters,
-            total_chapters,
-            epub_dirty,
-            ..
-        } = &mut book.source
-        {
-            *storage_key = stored.storage_key;
-            *cached_chapters = cached_count;
-            if total_count > 0 {
-                *total_chapters = total_count;
-            }
-            *epub_dirty = false;
-        }
-        book.metadata.chapter_count = if total_count > 0 {
-            Some(total_count)
-        } else if cached_count > 0 {
-            Some(cached_count)
-        } else {
-            book.metadata.chapter_count
-        };
-        book.updated_at = Timestamp::now();
-        self.catalog.save_book_raw(&book).await?;
+        let reschedule_gen = {
+            let state_lock = self.book_state_lock_for(book_id);
+            let _state_guard = state_lock.lock().await;
 
-        if let Some(entry) = self.pending_sync_gens.write().await.get_mut(&book_id) {
-            entry.1 = 0;
+            let mut latest_book = self.catalog.find_book_raw(book_id).await?;
+            let current_gen = self.current_sync_gen(book_id);
+            let is_clean = current_gen == start_gen;
+
+            latest_book.file_size = stored.file_size;
+            latest_book.file_hash = stored.file_hash;
+            if let BookSource::OnlineTracked {
+                storage_key,
+                cached_chapters,
+                total_chapters,
+                epub_dirty,
+                ..
+            } = &mut latest_book.source
+            {
+                *storage_key = stored.storage_key;
+                if is_clean {
+                    *cached_chapters = cached_count;
+                    if total_count > 0 {
+                        *total_chapters = total_count;
+                    }
+                    *epub_dirty = false;
+                } else {
+                    *epub_dirty = true;
+                }
+            }
+            if is_clean {
+                latest_book.metadata.chapter_count = if total_count > 0 {
+                    Some(total_count)
+                } else if cached_count > 0 {
+                    Some(cached_count)
+                } else {
+                    latest_book.metadata.chapter_count
+                };
+                if let Some(entry) = self
+                    .pending_sync_gens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_mut(&book_id)
+                {
+                    entry.1 = 0;
+                }
+            }
+            latest_book.updated_at = Timestamp::now();
+            self.catalog.save_book_raw(&latest_book).await?;
+
+            if is_clean { None } else { Some(current_gen) }
+        };
+
+        drop(_epub_guard);
+        if let Some(next_gen) = reschedule_gen {
+            self.spawn_debounced_epub_sync(book_id, next_gen, false);
         }
 
         self.catalog.get_book(None, book_id).await
@@ -2632,12 +3205,82 @@ impl BookOnlineService {
         actor: &User,
         input: StartDownloadInput,
     ) -> DomainResult<OnlineDownloadJobDto> {
-        if input.import_to_library {
+        if input.import_to_library || input.book_id.is_some() {
             require_admin(actor)?;
         }
-        let src = self.load_source(input.source_id).await?;
-        let job_id = Uuid::now_v7();
+        let src = self.load_source_for_actor(actor, input.source_id).await?;
+
+        if let Some(bid) = input.book_id {
+            let book = self.catalog.find_book_raw(BookId(bid)).await?;
+            match &book.source {
+                BookSource::OnlineTracked {
+                    source_id, toc_url, ..
+                } => {
+                    if *source_id != input.source_id {
+                        return Err(DomainError::Validation(
+                            "下载任务的书源与目标追更书籍不一致".into(),
+                        ));
+                    }
+                    if !toc_url.trim().is_empty() && input.toc_url.trim() != toc_url.trim() {
+                        return Err(DomainError::Validation(
+                            "下载任务的目录地址与目标追更书籍不一致".into(),
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(DomainError::Validation(
+                        "目标书籍不是在线追更书籍，无法关联写入缓存".into(),
+                    ));
+                }
+            }
+        }
+
+        // Evict stale finished jobs and enforce per-user active download quota
         let now = Timestamp::now();
+        let mut stale_dirs = Vec::new();
+        {
+            let mut guard = self.downloads.write().await;
+            let stale_ids: Vec<Uuid> = guard
+                .iter()
+                .filter(|(_, job)| {
+                    matches!(
+                        job.dto.status,
+                        DownloadJobStatus::Completed
+                            | DownloadJobStatus::Failed
+                            | DownloadJobStatus::Cancelled
+                    ) && now
+                        .as_second()
+                        .saturating_sub(job.dto.updated_at.as_second())
+                        > FINISHED_DOWNLOAD_TTL_SECS
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            for sid in stale_ids {
+                guard.remove(&sid);
+                stale_dirs.push(self.download_dir.join(sid.to_string()));
+            }
+
+            let active_count = guard
+                .values()
+                .filter(|j| {
+                    j.dto.user_id == actor.id.0
+                        && matches!(
+                            j.dto.status,
+                            DownloadJobStatus::Pending | DownloadJobStatus::Running
+                        )
+                })
+                .count();
+            if active_count >= MAX_ACTIVE_DOWNLOADS_PER_USER {
+                return Err(DomainError::Validation(format!(
+                    "同时进行的下载任务数已达上限 ({MAX_ACTIVE_DOWNLOADS_PER_USER})，请等待或取消部分任务"
+                )));
+            }
+        }
+        for dir in stale_dirs {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+        }
+
+        let job_id = Uuid::now_v7();
 
         let dto = OnlineDownloadJobDto {
             id: job_id,
@@ -2729,7 +3372,7 @@ impl BookOnlineService {
         }
 
         // Load & parse book source ONCE for the entire download job
-        let src_rec = match self.load_source(input.source_id).await {
+        let src_rec = match self.load_source_for_actor(&actor, input.source_id).await {
             Ok(r) => r,
             Err(e) => {
                 self.fail_job(job_id, started_at, format!("加载书源失败: {e}"))
@@ -2746,10 +3389,11 @@ impl BookOnlineService {
             }
         };
         let mut last_persisted_state = src_rec.runtime_state.clone();
-        let reusable_ctx = match self
-            .engine
-            .prepare_reusable_context(Arc::clone(&parsed_source), src_rec.runtime_state)
-        {
+        let reusable_ctx = match self.engine.prepare_reusable_context_with_cancel(
+            Arc::clone(&parsed_source),
+            src_rec.runtime_state,
+            cancel_flag.clone(),
+        ) {
             Ok(c) => c,
             Err(e) => {
                 self.fail_job(job_id, started_at, format!("初始化书源会话失败: {e}"))
@@ -2768,6 +3412,9 @@ impl BookOnlineService {
             ..Default::default()
         };
 
+        // Pin cancel_notify BEFORE checking cancel_flag so we never miss a wakeup.
+        let toc_cancelled = cancel_notify.notified();
+        tokio::pin!(toc_cancelled);
         if cancel_flag.load(Ordering::Acquire) {
             self.mark_job_cancelled(job_id, started_at).await;
             return;
@@ -2781,14 +3428,15 @@ impl BookOnlineService {
         };
 
         let toc_res = tokio::select! {
+            biased;
+            _ = &mut toc_cancelled => {
+                self.mark_job_cancelled(job_id, started_at).await;
+                return;
+            }
             res = toc_task => match res {
                 Ok(inner) => inner,
                 Err(e) => Err(format!("获取目录线程失败: {e}")),
             },
-            _ = cancel_notify.notified() => {
-                self.mark_job_cancelled(job_id, started_at).await;
-                return;
-            }
         };
 
         if cancel_flag.load(Ordering::Acquire) {
@@ -2822,29 +3470,53 @@ impl BookOnlineService {
             .max(start);
         let selected: Vec<OnlineChapterItem> = all_chapters[start..end].to_vec();
 
-        // Check whether this download targets an existing unified online-tracked Book
-        let target_tracked_book_id: Option<BookId> = if let Some(bid) = input.book_id {
-            self.catalog
-                .find_book_raw(BookId(bid))
-                .await
-                .ok()
-                .filter(|b| b.source.is_online_tracked())
-                .map(|b| b.id)
-        } else if input.import_to_library && input.format == OnlineDownloadFormat::Epub {
-            self.catalog
-                .find_online_tracked_book(input.source_id, &input.book_url)
-                .await
-                .ok()
-                .flatten()
-                .map(|b| b.id)
-        } else {
-            None
-        };
+        // Only admin imports may write to shared `OnlineTracked` cache, and source/toc must match.
+        let target_tracked_book_id: Option<BookId> =
+            if input.import_to_library && actor.role.is_admin() {
+                if let Some(bid) = input.book_id {
+                    self.catalog
+                        .find_book_raw(BookId(bid))
+                        .await
+                        .ok()
+                        .filter(|b| {
+                            matches!(
+                                &b.source,
+                                BookSource::OnlineTracked {
+                                    source_id,
+                                    toc_url,
+                                    ..
+                                } if *source_id == input.source_id
+                                    && (toc_url.trim().is_empty()
+                                        || toc_url.trim() == input.toc_url.trim())
+                            )
+                        })
+                        .map(|b| b.id)
+                } else if input.format == OnlineDownloadFormat::Epub {
+                    self.catalog
+                        .find_online_tracked_book(input.source_id, &input.book_url)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|b| b.id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
         if let Some(bid) = target_tracked_book_id {
-            let _ = self
-                .tracked_store
-                .update_manifest_from_toc(bid, &all_chapters, true);
+            let store = self.tracked_store.clone();
+            let toc_for_manifest = all_chapters.clone();
+            if let Err(err) = tokio::task::spawn_blocking(move || {
+                store.update_manifest_from_toc(bid, &toc_for_manifest, true)
+            })
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|r| r)
+            {
+                tracing::warn!(book_id = %bid, error = %err, "failed to update tracked manifest before download");
+            }
         }
         if selected.is_empty() {
             self.fail_job(job_id, started_at, "所选章节区间为空".into())
@@ -2923,6 +3595,7 @@ impl BookOnlineService {
                         break;
                     }
 
+                    session.reset_chapter_budget();
                     let mut cur_book_ctx = book_ctx_w.clone();
                     cur_book_ctx.dur_chapter_index = ch.index;
                     cur_book_ctx.dur_chapter_title = ch.title.clone();
@@ -2981,6 +3654,10 @@ impl BookOnlineService {
         let mut uncached_since_persist = 0usize;
         let mut was_cancelled = false;
 
+        // Pin cancel_notify BEFORE checking cancel_flag so a signal between check and select is never lost.
+        let loop_cancelled = cancel_notify.notified();
+        tokio::pin!(loop_cancelled);
+
         loop {
             if cancel_flag.load(Ordering::Acquire) {
                 was_cancelled = true;
@@ -2988,7 +3665,7 @@ impl BookOnlineService {
             }
             tokio::select! {
                 biased;
-                _ = cancel_notify.notified() => {
+                _ = &mut loop_cancelled => {
                     was_cancelled = true;
                     break;
                 }
@@ -3003,15 +3680,24 @@ impl BookOnlineService {
                                 .get(ev.idx)
                                 .map(|c| c.url.clone())
                                 .unwrap_or_default();
-                            let _ = self.tracked_store.save_chapter(
-                                bid,
-                                &TrackedChapterFile {
-                                    index: global_idx,
-                                    title: ev.packed.title.clone(),
-                                    url: chapter_url,
-                                    content: ev.packed.content.clone(),
-                                },
-                            );
+                            let store = self.tracked_store.clone();
+                            let chapter_file = TrackedChapterFile {
+                                index: global_idx,
+                                title: ev.packed.title.clone(),
+                                url: chapter_url,
+                                content: ev.packed.content.clone(),
+                            };
+                            if let Err(err) = tokio::task::spawn_blocking(move || {
+                                store.save_chapter(bid, &chapter_file)
+                            })
+                            .await
+                            .map_err(|e| e.to_string())
+                            .and_then(|r| r)
+                            {
+                                tracing::warn!(book_id = %bid, index = global_idx, error = %err, "failed to save downloaded chapter to tracked store");
+                            } else {
+                                self.bump_sync_gen(bid, 1);
+                            }
                         }
                         *slot = Some(ev.packed);
                     }
@@ -3037,37 +3723,35 @@ impl BookOnlineService {
                     if uncached_since_persist >= DOWNLOAD_STATE_PERSIST_BATCH {
                         uncached_since_persist = 0;
                         let snap = reusable_ctx.snapshot_state();
-                        if snap != last_persisted_state {
-                            if self.persist_runtime_state(input.source_id, snap.clone()).await.is_ok() {
-                                last_persisted_state = snap;
-                            }
+                        if snap != last_persisted_state
+                            && self.persist_runtime_state(input.source_id, snap.clone()).await.is_ok()
+                        {
+                            last_persisted_state = snap;
                         }
                     }
                 }
             }
         }
 
+        // Always join all worker threads before cleaning up directories or persisting final state
+        for h in worker_handles {
+            let _ = h.await;
+        }
+
         // Persist any final runtime_state changes once at end of chapter fetching
         let final_snap = reusable_ctx.snapshot_state();
-        if final_snap != last_persisted_state {
-            let _ = self
+        if final_snap != last_persisted_state
+            && let Err(err) = self
                 .persist_runtime_state(input.source_id, final_snap)
-                .await;
+                .await
+        {
+            tracing::warn!(source_id = %input.source_id, error = %err, "failed to persist final download runtime state");
         }
 
         if was_cancelled || cancel_flag.load(Ordering::Acquire) {
             self.mark_job_cancelled(job_id, started_at).await;
             let job_dir = self.download_dir.join(job_id.to_string());
             let _ = tokio::fs::remove_dir_all(&job_dir).await;
-            return;
-        }
-
-        for h in worker_handles {
-            let _ = h.await;
-        }
-
-        if cancel_flag.load(Ordering::Acquire) {
-            self.mark_job_cancelled(job_id, started_at).await;
             return;
         }
 
@@ -3426,7 +4110,7 @@ impl BookOnlineService {
 
     pub async fn fetch_cover_proxy(&self, raw_url: &str) -> DomainResult<(Vec<u8>, String)> {
         const MAX_COVER_BYTES: usize = 8 * 1024 * 1024;
-        let validated = validate_target_url(raw_url.trim(), self.allow_private_ips)
+        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
             .map_err(DomainError::Validation)?;
         let client = get_or_build_async_client(12, self.allow_private_ips, None)
             .map_err(DomainError::Storage)?;
@@ -3574,11 +4258,16 @@ fn write_cached_chapter_at(
         return;
     }
     let path = chapter_cache_path_at(cache_dir, source_id, chapter_url);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = path.parent()
+        && let Err(err) = std::fs::create_dir_all(parent)
+    {
+        tracing::warn!(path = %parent.display(), error = %err, "failed to create chapter cache dir");
+        return;
     }
-    if let Ok(json) = serde_json::to_string(content) {
-        let _ = std::fs::write(path, json);
+    if let Ok(json) = serde_json::to_vec(content)
+        && let Err(err) = write_atomic(&path, &json)
+    {
+        tracing::warn!(path = %path.display(), error = %err, "failed to atomically write cached chapter");
     }
 }
 

@@ -9,8 +9,9 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use xmedia_core::domain::user::require_admin;
 use xmedia_core::http::{ApiError, ApiResult, WebAuth, sanitize_download_filename};
 
 use crate::application::dto::BookSummaryDto;
@@ -39,6 +40,7 @@ pub fn router() -> Router<BookHttpState> {
             post(import_sources).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/sources/{id}", patch(update_source).delete(delete_source))
+        .route("/sources/{id}/variable", get(get_source_variable))
         .route("/sources/{id}/export", get(export_source))
         .route("/sources/{id}/login-action", post(run_login_action))
         .route("/sources/{id}/test", post(test_source))
@@ -188,6 +190,20 @@ async fn batch_sources(
     Ok(Json(report))
 }
 
+#[derive(Debug, Serialize)]
+struct SourceVariableResponse {
+    variable: String,
+}
+
+async fn get_source_variable(
+    State(state): State<BookHttpState>,
+    WebAuth(user): WebAuth,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<SourceVariableResponse>> {
+    let variable = state.services.online.get_source_variable(&user, id).await?;
+    Ok(Json(SourceVariableResponse { variable }))
+}
+
 async fn export_sources_batch(
     State(state): State<BookHttpState>,
     WebAuth(user): WebAuth,
@@ -203,6 +219,8 @@ async fn export_sources_batch(
         CONTENT_TYPE,
         HeaderValue::from_static("application/json; charset=utf-8"),
     );
+    resp.headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     Ok(resp)
 }
 
@@ -236,6 +254,8 @@ async fn export_source(
         CONTENT_TYPE,
         HeaderValue::from_static("application/json; charset=utf-8"),
     );
+    resp.headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     Ok(resp)
 }
 
@@ -265,52 +285,53 @@ async fn test_source(
 
 async fn online_search(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Json(req): Json<OnlineSearchRequest>,
 ) -> ApiResult<Json<AggregatedSearchResponseDto>> {
     let out = state
         .services
         .online
-        .search(&req.keyword, req.source_ids, req.page)
+        .search(&user, &req.keyword, req.source_ids, req.page)
         .await?;
     Ok(Json(out))
 }
 
 async fn online_book_info(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Json(req): Json<OnlineBookInfoRequest>,
 ) -> ApiResult<Json<OnlineBookDetailResponseDto>> {
     let out = state
         .services
         .online
-        .fetch_book_info(req.source_id, &req.book_url, req.fallback_hint)
+        .fetch_book_info(&user, req.source_id, &req.book_url, req.fallback_hint)
         .await?;
     Ok(Json(out))
 }
 
 async fn online_toc(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Json(req): Json<OnlineTocRequest>,
 ) -> ApiResult<Json<OnlineTocResponseDto>> {
     let out = state
         .services
         .online
-        .fetch_toc(req.source_id, &req.toc_url, req.book)
+        .fetch_toc(&user, req.source_id, &req.toc_url, req.book)
         .await?;
     Ok(Json(out))
 }
 
 async fn online_content(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Json(req): Json<OnlineContentRequest>,
 ) -> ApiResult<Json<OnlineContentResponseDto>> {
     let out = state
         .services
         .online
         .fetch_chapter_content(
+            &user,
             req.source_id,
             &req.chapter_url,
             req.book,
@@ -335,7 +356,7 @@ async fn online_cover_proxy(
         .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     resp.headers_mut().insert(
         CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
+        HeaderValue::from_static("private, max-age=86400"),
     );
     Ok(resp)
 }
@@ -353,7 +374,7 @@ async fn add_to_shelf(
     WebAuth(user): WebAuth,
     Json(req): Json<AddOnlineShelfInput>,
 ) -> ApiResult<Json<OnlineShelfBookDto>> {
-    let item = state.services.online.add_to_shelf(user.id, req).await?;
+    let item = state.services.online.add_to_shelf(&user, req).await?;
     Ok(Json(item))
 }
 
@@ -440,6 +461,8 @@ async fn download_packaged_file(
     let mut resp = Response::new(Body::from_stream(range_stream.stream));
     resp.headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+    resp.headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     if let Ok(len_val) = HeaderValue::from_str(&range_stream.total_size.to_string()) {
         resp.headers_mut().insert(CONTENT_LENGTH, len_val);
     }
@@ -509,15 +532,25 @@ async fn switch_tracked_source(
     Ok(Json(toc))
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct SyncEpubQuery {
+    #[serde(default)]
+    force: bool,
+}
+
 async fn sync_tracked_epub(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
+    Query(q): Query<SyncEpubQuery>,
 ) -> ApiResult<Json<BookSummaryDto>> {
+    if q.force {
+        require_admin(&user)?;
+    }
     let book = state
         .services
         .online
-        .sync_tracked_epub(BookId(id), true)
+        .sync_tracked_epub(BookId(id), q.force)
         .await?;
     Ok(Json(book))
 }

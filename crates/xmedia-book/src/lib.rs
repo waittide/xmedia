@@ -187,7 +187,7 @@ mod tests {
         let events = Arc::new(BroadcastEventHub::default());
 
         let auth = Arc::new(AuthService::new(
-            users,
+            users.clone(),
             security,
             tokens,
             lifecycles.clone(),
@@ -295,6 +295,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(epub_res.status(), StatusCode::OK);
+        assert_eq!(
+            epub_res
+                .headers()
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        let csp = epub_res
+            .headers()
+            .get("content-security-policy")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            csp.contains("sandbox") && csp.contains("default-src 'none'"),
+            "expected strict sandbox CSP header on EPUB resource, got: {csp}"
+        );
 
         // 3. Verify HTTP Range & Suffix Range streaming
         let suffix_res = app
@@ -651,17 +667,22 @@ mod tests {
         assert_eq!(imported.imported_count, 1);
         let source_id = imported.sources[0].id;
 
-        let search = online_svc.search("剑来", None, 1).await.unwrap();
+        let search = online_svc.search(&admin, "剑来", None, 1).await.unwrap();
         assert_eq!(search.items.len(), 1);
         let hit = &search.items[0];
         assert_eq!(hit.book.name, "剑来");
 
         let detail = online_svc
-            .fetch_book_info(source_id, &hit.book.book_url, None)
+            .fetch_book_info(&admin, source_id, &hit.book.book_url, None)
             .await
             .unwrap();
         let toc = online_svc
-            .fetch_toc(source_id, &detail.detail.toc_url, BookJsContext::default())
+            .fetch_toc(
+                &admin,
+                source_id,
+                &detail.detail.toc_url,
+                BookJsContext::default(),
+            )
             .await
             .unwrap();
         assert_eq!(toc.chapters.len(), 2);
@@ -669,6 +690,7 @@ mod tests {
         // First read fetches remotely; second read hits disk cache
         let c1 = online_svc
             .fetch_chapter_content(
+                &admin,
                 source_id,
                 &toc.chapters[0].url,
                 BookJsContext::default(),
@@ -686,6 +708,7 @@ mod tests {
 
         let c1_cached = online_svc
             .fetch_chapter_content(
+                &admin,
                 source_id,
                 &toc.chapters[0].url,
                 BookJsContext::default(),
@@ -703,7 +726,7 @@ mod tests {
         // Online shelf add + progress update
         let shelf_item = online_svc
             .add_to_shelf(
-                admin.id,
+                &admin,
                 AddOnlineShelfInput {
                     source_id,
                     name: detail.detail.name.clone(),
@@ -1020,7 +1043,7 @@ mod tests {
         let tokens = Arc::new(JwtTokenService::new("cascade-secret", 3600));
         let events = Arc::new(BroadcastEventHub::default());
         let auth = Arc::new(AuthService::new(
-            users,
+            users.clone(),
             security,
             tokens,
             lifecycles.clone(),
@@ -1066,10 +1089,15 @@ mod tests {
             .unwrap();
         let source_id = imported.sources[0].id;
 
+        let member_user =
+            xmedia_core::domain::repository::UserRepository::find_by_id(users.as_ref(), member.id)
+                .await
+                .unwrap()
+                .unwrap();
         book_services
             .online
             .add_to_shelf(
-                member.id,
+                &member_user,
                 AddOnlineShelfInput {
                     source_id,
                     name: "测试书".into(),

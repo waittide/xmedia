@@ -25,12 +25,15 @@ use crate::domain::book::{
 use crate::domain::reading::ReadingProgress;
 use crate::domain::repository::{BookReadingRepository, BookRepository};
 
+type BookDeletedHook = Arc<dyn Fn(BookId) + Send + Sync>;
+
 pub struct BookCatalogService {
     books: Arc<dyn BookRepository>,
     libraries: Arc<dyn LibraryRepository>,
     readings: Arc<dyn BookReadingRepository>,
     parser: Arc<dyn BookParserPort>,
     storage: Arc<dyn BookStoragePort>,
+    on_book_deleted: std::sync::RwLock<Option<BookDeletedHook>>,
 }
 
 impl BookCatalogService {
@@ -47,7 +50,16 @@ impl BookCatalogService {
             readings,
             parser,
             storage,
+            on_book_deleted: std::sync::RwLock::new(None),
         }
+    }
+
+    pub(crate) fn set_on_book_deleted_hook(&self, hook: Arc<dyn Fn(BookId) + Send + Sync>) {
+        let mut guard = self
+            .on_book_deleted
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = Some(hook);
     }
 
     pub async fn upload_book(
@@ -387,7 +399,16 @@ impl BookCatalogService {
             let _ = self.storage.delete_cover(cover_key).await;
         }
         self.readings.delete_by_book(book_id).await?;
-        self.books.delete(book_id).await
+        self.books.delete(book_id).await?;
+        if let Some(hook) = self
+            .on_book_deleted
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            hook(book_id);
+        }
+        Ok(())
     }
 
     pub(crate) async fn ensure_managed_library(&self) -> DomainResult<Library> {
@@ -455,6 +476,14 @@ impl BookCatalogService {
             None
         };
         Ok((stored, cover_key))
+    }
+
+    pub(crate) async fn save_cover_raw(
+        &self,
+        book_id: BookId,
+        payload: &CoverPayload,
+    ) -> DomainResult<String> {
+        self.storage.save_cover(book_id, payload).await
     }
 
     pub(crate) async fn read_cover_bytes(&self, cover_key: &str) -> Option<(Vec<u8>, String)> {
