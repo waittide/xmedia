@@ -20,6 +20,19 @@ pub struct VideoSourceRecord {
     pub updated_at: Timestamp,
 }
 
+#[derive(Debug, Clone)]
+pub struct VideoSourceMetadataUpdate {
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+    pub raw_json: String,
+    pub variable: Option<String>,
+    pub updated_at: Timestamp,
+}
+
 impl VideoSourceRecord {
     /// Synchronizes mutable metadata (`enabled`, `weight`, `group_name`) back into `raw_json`
     /// so exported JSON reflects live edits and batch updates.

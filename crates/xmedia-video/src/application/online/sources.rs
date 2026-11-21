@@ -10,7 +10,7 @@ use xmedia_source::crud::{
     dedup_preserve_order_uuids, format_export_batch_json, merge_login_info_preserving_masked,
 };
 
-use crate::domain::online::VideoSourceRecord;
+use crate::domain::online::{VideoSourceMetadataUpdate, VideoSourceRecord};
 use crate::source::model::{SourceRuntimeState, VideoSourceSpec};
 
 use super::dto::{
@@ -142,6 +142,8 @@ impl VideoOnlineService {
         let now = Timestamp::now();
         let mut persisted = Vec::with_capacity(targets.len());
         for (rec, target_weight) in targets {
+            let lock = self.source_state_lock_for(rec.id);
+            let _guard = lock.lock().await;
             if rec.weight != target_weight {
                 if let Some(updated) = self
                     .sources
@@ -150,8 +152,8 @@ impl VideoOnlineService {
                 {
                     persisted.push(updated);
                 }
-            } else {
-                persisted.push(rec);
+            } else if let Some(fresh) = self.sources.find_by_id(rec.id).await? {
+                persisted.push(fresh);
             }
         }
 
@@ -188,47 +190,57 @@ impl VideoOnlineService {
             let source_type = src.source_type_code();
             let key = (effective_url.clone(), src.source_name.clone());
 
-            if let Some(mut rec) = existing_by_key.remove(&key) {
-                rec.group_name = group_name;
-                rec.enabled = src.enabled;
-                rec.weight = src.weight;
-                rec.source_type = source_type;
-                rec.raw_json = item_raw;
-                rec.updated_at = now;
-                self.sources.save(&rec).await?;
-                let summary = Self::record_to_summary(&rec, true);
-                if let Some(&pos) = out_by_id.get(&rec.id) {
-                    out[pos] = summary;
-                } else {
-                    updated_count += 1;
-                    out_by_id.insert(rec.id, out.len());
-                    out.push(summary);
-                }
-                existing_by_key.insert(key, rec);
-            } else {
-                let mut rt = SourceRuntimeState::default();
-                rt.ensure_android_id(&effective_url);
-                let rec = VideoSourceRecord {
-                    id: Uuid::now_v7(),
-                    name: src.source_name.clone(),
-                    source_url: effective_url,
-                    group_name,
+            if let Some(existing_rec) = existing_by_key.remove(&key) {
+                let id = existing_rec.id;
+                let lock = self.source_state_lock_for(id);
+                let _guard = lock.lock().await;
+                let patch = VideoSourceMetadataUpdate {
+                    name: existing_rec.name.clone(),
+                    source_url: existing_rec.source_url.clone(),
+                    group_name: group_name.clone(),
                     enabled: src.enabled,
                     weight: src.weight,
                     source_type,
-                    raw_json: item_raw,
-                    runtime_state: rt,
-                    last_test_ok: None,
-                    last_test_msg: None,
-                    created_at: now,
+                    raw_json: item_raw.clone(),
+                    variable: None,
                     updated_at: now,
                 };
-                self.sources.save(&rec).await?;
-                imported_count += 1;
-                out_by_id.insert(rec.id, out.len());
-                out.push(Self::record_to_summary(&rec, true));
-                existing_by_key.insert(key, rec);
+                if let Some(rec) = self.sources.update_metadata_if_exists(id, patch).await? {
+                    let summary = Self::record_to_summary(&rec, true);
+                    if let Some(&pos) = out_by_id.get(&rec.id) {
+                        out[pos] = summary;
+                    } else {
+                        updated_count += 1;
+                        out_by_id.insert(rec.id, out.len());
+                        out.push(summary);
+                    }
+                    existing_by_key.insert(key, rec);
+                    continue;
+                }
             }
+
+            let mut rt = SourceRuntimeState::default();
+            rt.ensure_android_id(&effective_url);
+            let rec = VideoSourceRecord {
+                id: Uuid::now_v7(),
+                name: src.source_name.clone(),
+                source_url: effective_url,
+                group_name,
+                enabled: src.enabled,
+                weight: src.weight,
+                source_type,
+                raw_json: item_raw,
+                runtime_state: rt,
+                last_test_ok: None,
+                last_test_msg: None,
+                created_at: now,
+                updated_at: now,
+            };
+            self.sources.save(&rec).await?;
+            imported_count += 1;
+            out_by_id.insert(rec.id, out.len());
+            out.push(Self::record_to_summary(&rec, true));
+            existing_by_key.insert(key, rec);
         }
 
         Ok(ImportVideoSourcesReportDto {
@@ -245,10 +257,7 @@ impl VideoOnlineService {
         input: UpdateVideoSourceInput,
     ) -> DomainResult<VideoSourceSummaryDto> {
         require_admin(actor)?;
-        let mut rec = self.load_source(id).await?;
-        let now = Timestamp::now();
-
-        if let Some(raw) = input.raw_json {
+        let parsed_raw = if let Some(raw) = input.raw_json {
             let mut batch =
                 VideoSourceSpec::parse_json_batch(&raw).map_err(DomainError::Validation)?;
             if batch.len() != 1 {
@@ -256,7 +265,17 @@ impl VideoOnlineService {
                     "编辑单条影视源时仅支持提交 1 条影视源 JSON".into(),
                 ));
             }
-            let (parsed, clean_raw) = batch.remove(0);
+            Some(batch.remove(0))
+        } else {
+            None
+        };
+
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
+        let mut rec = self.load_source(id).await?;
+        let now = Timestamp::now();
+
+        if let Some((parsed, clean_raw)) = parsed_raw {
             rec.name = parsed.source_name.clone();
             rec.source_url = parsed.effective_source_url().to_string();
             rec.group_name = parsed.source_group.clone().unwrap_or_default();
@@ -282,19 +301,30 @@ impl VideoOnlineService {
                 input.group_name.as_deref(),
             );
         }
-        if let Some(v) = input.variable {
-            rec.runtime_state.variable = v;
-        }
-        rec.updated_at = now;
 
-        if !self.sources.update_existing(&rec).await? {
-            return Err(DomainError::NotFound(format!("未找到影视源 {id}")));
-        }
-        Ok(Self::record_to_summary(&rec, true))
+        let patch = VideoSourceMetadataUpdate {
+            name: rec.name,
+            source_url: rec.source_url,
+            group_name: rec.group_name,
+            enabled: rec.enabled,
+            weight: rec.weight,
+            source_type: rec.source_type,
+            raw_json: rec.raw_json,
+            variable: input.variable,
+            updated_at: now,
+        };
+        let updated = self
+            .sources
+            .update_metadata_if_exists(id, patch)
+            .await?
+            .ok_or_else(|| DomainError::NotFound(format!("未找到影视源 {id}")))?;
+        Ok(Self::record_to_summary(&updated, true))
     }
 
     pub async fn delete_source(&self, actor: &User, id: Uuid) -> DomainResult<()> {
         require_admin(actor)?;
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
         let _ = self.load_source(id).await?;
         self.sources.delete(id).await?;
         Ok(())
@@ -342,6 +372,8 @@ impl VideoOnlineService {
         let mut affected_count = 0usize;
 
         for id in unique_ids {
+            let lock = self.source_state_lock_for(id);
+            let _guard = lock.lock().await;
             match &input.action {
                 BatchVideoSourceAction::Enable => {
                     if self

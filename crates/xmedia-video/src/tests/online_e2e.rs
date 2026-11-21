@@ -653,6 +653,31 @@ async fn post_json(
     (status, val)
 }
 
+async fn patch_json(
+    app: &Router,
+    uri: &str,
+    token: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let val = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, val)
+}
+
 async fn get_bytes_with_auth(
     app: &Router,
     uri: &str,
@@ -1856,4 +1881,363 @@ async fn test_source_concurrent_login_action_preserves_updated_state_case_b_e2e(
     assert_eq!(rec2["login_info"]["varVal"], "var_3");
 
     srv.abort();
+}
+
+fn race_login_source_json(origin: &str, weight: i64, group_name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sourceName": "Concurrent Race Source",
+        "sourceUrl": format!("{origin}/race/api.php/provide/vod/"),
+        "sourceGroup": group_name,
+        "weight": weight,
+        "sourceFormat": "applecms_v10",
+        "apiUrl": format!("{origin}/race/api.php/provide/vod/"),
+        "enabled": true,
+        "searchable": true,
+        "loginUi": "[{\"name\":\"username\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"},{\"name\":\"varVal\",\"type\":\"text\"}]",
+        "loginUrl": "function doLogin(){ var info = source.getLoginInfoMap(); var u = String(info['username'] || ''); var v = String(info['varVal'] || ''); source.setVariable(v); cookie.setCookie('https://login-race.example', 'tok=' + u); cache.put('k_user', u); return u; } function readCache(){ return String(cache.get('k_user') || '') + '|' + String(cookie.getCookie('https://login-race.example', 'tok') || ''); }"
+    })
+}
+
+#[tokio::test]
+async fn patch_weight_concurrent_with_login_action_has_zero_lost_updates_e2e() {
+    let (_tmp, app, admin_tok, _member_tok) = setup_test_app(true).await;
+
+    let src_json = race_login_source_json("https://race-weight.example", 0, "race");
+    let (st, import_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let sid = import_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for round in 1..=60i64 {
+        let user_val = format!("user_{round}");
+        let var_val = format!("var_{round}");
+        let secret_val = format!("secret_{round}");
+        let delay_us = ((round as u64) % 20) * 100;
+
+        let app_login = app.clone();
+        let tok_login = admin_tok.clone();
+        let sid_login = sid.clone();
+        let u_clone = user_val.clone();
+        let v_clone = var_val.clone();
+        let s_clone = secret_val.clone();
+        let login_task = tokio::spawn(async move {
+            post_json(
+                &app_login,
+                &format!("/api/v1/video/sources/{sid_login}/login-action"),
+                &tok_login,
+                serde_json::json!({
+                    "login_info": {
+                        "username": u_clone,
+                        "apiToken": s_clone,
+                        "varVal": v_clone
+                    },
+                    "action": "doLogin()"
+                }),
+            )
+            .await
+        });
+
+        let app_patch = app.clone();
+        let tok_patch = admin_tok.clone();
+        let sid_patch = sid.clone();
+        let patch_task = tokio::spawn(async move {
+            if delay_us > 0 {
+                tokio::time::sleep(std::time::Duration::from_micros(delay_us)).await;
+            }
+            patch_json(
+                &app_patch,
+                &format!("/api/v1/video/sources/{sid_patch}"),
+                &tok_patch,
+                serde_json::json!({ "weight": round }),
+            )
+            .await
+        });
+
+        let (login_res, patch_res) = tokio::join!(login_task, patch_task);
+        let (login_st, _) = login_res.unwrap();
+        let (patch_st, _) = patch_res.unwrap();
+        assert_eq!(login_st, StatusCode::OK);
+        assert_eq!(patch_st, StatusCode::OK);
+
+        let (st, _, var_bytes) = get_bytes_with_auth(
+            &app,
+            &format!("/api/v1/video/sources/{sid}/variable"),
+            Some(&admin_tok),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let var_json: serde_json::Value = serde_json::from_slice(&var_bytes).unwrap();
+        assert_eq!(
+            var_json["variable"].as_str(),
+            Some(var_val.as_str()),
+            "round {round} (delay={delay_us}us) lost variable update"
+        );
+
+        let (st, _, list_bytes) =
+            get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
+        let rec = sources
+            .iter()
+            .find(|s| s["id"].as_str() == Some(sid.as_str()))
+            .unwrap();
+        assert_eq!(
+            rec["weight"].as_i64(),
+            Some(round),
+            "round {round} lost weight update"
+        );
+        assert_eq!(
+            rec["login_info"]["username"].as_str(),
+            Some(user_val.as_str()),
+            "round {round} lost login_info username"
+        );
+        assert_eq!(
+            rec["login_info"]["varVal"].as_str(),
+            Some(var_val.as_str()),
+            "round {round} lost login_info varVal"
+        );
+        assert_eq!(rec["login_info"]["apiToken"], "••••••••");
+
+        let (st, cache_res) = post_json(
+            &app,
+            &format!("/api/v1/video/sources/{sid}/login-action"),
+            &admin_tok,
+            serde_json::json!({ "login_info": {}, "action": "readCache()" }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let expected_cache_cookie = format!("{user_val}|{user_val}");
+        assert_eq!(
+            cache_res["result"].as_str(),
+            Some(expected_cache_cookie.as_str()),
+            "round {round} lost cache/cookie update"
+        );
+    }
+}
+
+#[tokio::test]
+async fn patch_variable_concurrent_with_login_action_preserves_login_cookies_cache_e2e() {
+    let (_tmp, app, admin_tok, _member_tok) = setup_test_app(true).await;
+
+    let src_json = race_login_source_json("https://race-var.example", 10, "race");
+    let (st, import_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let sid = import_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for round in 1..=60i64 {
+        let user_val = format!("user_{round}");
+        let var_val = format!("var_{round}");
+        let patch_var = format!("v_patch_{round}");
+        let secret_val = format!("secret_{round}");
+        let delay_us = ((round as u64) % 20) * 100;
+
+        let app_login = app.clone();
+        let tok_login = admin_tok.clone();
+        let sid_login = sid.clone();
+        let u_clone = user_val.clone();
+        let v_clone = var_val.clone();
+        let s_clone = secret_val.clone();
+        let login_task = tokio::spawn(async move {
+            post_json(
+                &app_login,
+                &format!("/api/v1/video/sources/{sid_login}/login-action"),
+                &tok_login,
+                serde_json::json!({
+                    "login_info": {
+                        "username": u_clone,
+                        "apiToken": s_clone,
+                        "varVal": v_clone
+                    },
+                    "action": "doLogin()"
+                }),
+            )
+            .await
+        });
+
+        let app_patch = app.clone();
+        let tok_patch = admin_tok.clone();
+        let sid_patch = sid.clone();
+        let pv_clone = patch_var.clone();
+        let patch_task = tokio::spawn(async move {
+            if delay_us > 0 {
+                tokio::time::sleep(std::time::Duration::from_micros(delay_us)).await;
+            }
+            patch_json(
+                &app_patch,
+                &format!("/api/v1/video/sources/{sid_patch}"),
+                &tok_patch,
+                serde_json::json!({ "variable": pv_clone }),
+            )
+            .await
+        });
+
+        let (login_res, patch_res) = tokio::join!(login_task, patch_task);
+        let (login_st, _) = login_res.unwrap();
+        let (patch_st, _) = patch_res.unwrap();
+        assert_eq!(login_st, StatusCode::OK);
+        assert_eq!(patch_st, StatusCode::OK);
+
+        let (st, _, var_bytes) = get_bytes_with_auth(
+            &app,
+            &format!("/api/v1/video/sources/{sid}/variable"),
+            Some(&admin_tok),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let var_json: serde_json::Value = serde_json::from_slice(&var_bytes).unwrap();
+        let got_var = var_json["variable"].as_str().unwrap_or_default();
+        assert!(
+            got_var == var_val || got_var == patch_var,
+            "round {round} (delay={delay_us}us) reverted variable to stale value: {got_var}"
+        );
+
+        let (st, _, list_bytes) =
+            get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
+        let rec = sources
+            .iter()
+            .find(|s| s["id"].as_str() == Some(sid.as_str()))
+            .unwrap();
+        assert_eq!(
+            rec["login_info"]["username"].as_str(),
+            Some(user_val.as_str()),
+            "round {round} lost login_info username"
+        );
+        assert_eq!(
+            rec["login_info"]["varVal"].as_str(),
+            Some(var_val.as_str()),
+            "round {round} lost login_info varVal"
+        );
+
+        let (st, cache_res) = post_json(
+            &app,
+            &format!("/api/v1/video/sources/{sid}/login-action"),
+            &admin_tok,
+            serde_json::json!({ "login_info": {}, "action": "readCache()" }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let expected_cache_cookie = format!("{user_val}|{user_val}");
+        assert_eq!(
+            cache_res["result"].as_str(),
+            Some(expected_cache_cookie.as_str()),
+            "round {round} lost cache/cookie update"
+        );
+    }
+}
+
+#[tokio::test]
+async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e() {
+    let (_tmp, app, admin_tok, _member_tok) = setup_test_app(true).await;
+
+    let initial_json = race_login_source_json("https://race-import.example", 0, "g_0");
+    let (st, import_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": initial_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let sid = import_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for round in 1..=20i64 {
+        let user_val = format!("user_{round}");
+        let var_val = format!("var_{round}");
+        let group_val = format!("g_{round}");
+        let delay_us = ((round as u64) % 10) * 150;
+        let upsert_json = race_login_source_json("https://race-import.example", round, &group_val);
+
+        let app_login = app.clone();
+        let tok_login = admin_tok.clone();
+        let sid_login = sid.clone();
+        let u_clone = user_val.clone();
+        let v_clone = var_val.clone();
+        let login_task = tokio::spawn(async move {
+            post_json(
+                &app_login,
+                &format!("/api/v1/video/sources/{sid_login}/login-action"),
+                &tok_login,
+                serde_json::json!({
+                    "login_info": {
+                        "username": u_clone,
+                        "apiToken": "secret",
+                        "varVal": v_clone
+                    },
+                    "action": "doLogin()"
+                }),
+            )
+            .await
+        });
+
+        let app_import = app.clone();
+        let tok_import = admin_tok.clone();
+        let import_task = tokio::spawn(async move {
+            if delay_us > 0 {
+                tokio::time::sleep(std::time::Duration::from_micros(delay_us)).await;
+            }
+            post_json(
+                &app_import,
+                "/api/v1/video/sources/import",
+                &tok_import,
+                serde_json::json!({ "raw_json": upsert_json.to_string() }),
+            )
+            .await
+        });
+
+        let (login_res, import_res) = tokio::join!(login_task, import_task);
+        assert_eq!(login_res.unwrap().0, StatusCode::OK);
+        assert_eq!(import_res.unwrap().0, StatusCode::OK);
+
+        let (st, _, var_bytes) = get_bytes_with_auth(
+            &app,
+            &format!("/api/v1/video/sources/{sid}/variable"),
+            Some(&admin_tok),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let var_json: serde_json::Value = serde_json::from_slice(&var_bytes).unwrap();
+        assert_eq!(var_json["variable"].as_str(), Some(var_val.as_str()));
+
+        let (st, _, list_bytes) =
+            get_bytes_with_auth(&app, "/api/v1/video/sources", Some(&admin_tok), None).await;
+        assert_eq!(st, StatusCode::OK);
+        let sources: Vec<serde_json::Value> = serde_json::from_slice(&list_bytes).unwrap();
+        let rec = sources
+            .iter()
+            .find(|s| s["id"].as_str() == Some(sid.as_str()))
+            .unwrap();
+        assert_eq!(rec["weight"].as_i64(), Some(round));
+        assert_eq!(rec["group_name"].as_str(), Some(group_val.as_str()));
+        assert_eq!(
+            rec["login_info"]["username"].as_str(),
+            Some(user_val.as_str())
+        );
+
+        let (st, cache_res) = post_json(
+            &app,
+            &format!("/api/v1/video/sources/{sid}/login-action"),
+            &admin_tok,
+            serde_json::json!({ "login_info": {}, "action": "readCache()" }),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+        let expected = format!("{user_val}|{user_val}");
+        assert_eq!(cache_res["result"].as_str(), Some(expected.as_str()));
+    }
 }
