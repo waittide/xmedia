@@ -19,7 +19,7 @@ const props = withDefaults(
     step: 1,
     buffered: 0,
     commitOnRelease: false,
-    alwaysShowThumb: false,
+    alwaysShowThumb: true,
     disabled: false,
     ariaLabel: 'slider',
   },
@@ -128,13 +128,14 @@ function onKeydown(ev: KeyboardEvent): void {
   <div
     ref="trackRef"
     role="slider"
-    tabindex="0"
+    :tabindex="disabled ? -1 : 0"
     :aria-label="ariaLabel"
     :aria-valuemin="min"
     :aria-valuemax="max"
     :aria-valuenow="Math.round(effectiveValue * 100) / 100"
-    class="group relative flex h-6 w-full cursor-pointer items-center select-none touch-none focus-visible:outline-none"
-    :class="disabled ? 'pointer-events-none opacity-45' : ''"
+    :aria-disabled="disabled || undefined"
+    class="group md-touch-target relative flex h-8 w-full cursor-pointer items-center select-none touch-none focus-visible:outline-none"
+    :class="disabled ? 'pointer-events-none opacity-38' : ''"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="onPointerUp"
@@ -142,7 +143,7 @@ function onKeydown(ev: KeyboardEvent): void {
     @keydown="onKeydown"
   >
     <div
-      class="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)] transition-all group-hover:h-2"
+      class="relative h-1 w-full overflow-hidden rounded-full bg-[var(--md-sys-color-secondary-container)]"
     >
       <div
         v-if="bufferedPercent > 0"
@@ -153,18 +154,29 @@ function onKeydown(ev: KeyboardEvent): void {
         class="absolute inset-y-0 left-0 rounded-full bg-[var(--md-sys-color-primary)]"
         :style="{ width: `${fillPercent}%` }"
       />
+      <span
+        aria-hidden="true"
+        class="pointer-events-none absolute top-1/2 right-0.5 h-1 w-1 -translate-y-1/2 rounded-full bg-[var(--md-sys-color-primary)] opacity-60"
+      />
     </div>
 
     <span
-      class="pointer-events-none absolute h-4 w-4 -translate-x-1/2 rounded-full bg-[var(--md-sys-color-primary)] ring-2 ring-[var(--md-sys-color-surface)] shadow-[var(--md-sys-elevation-1)] transition-transform group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-primary)]"
+      class="pointer-events-none absolute flex h-5 w-5 -translate-x-1/2 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] shadow-[var(--md-sys-elevation-1)] transition-transform group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-secondary)]"
       :class="
         dragging
-          ? 'scale-125'
+          ? 'scale-115'
           : alwaysShowThumb
-            ? 'scale-100 group-hover:scale-110'
+            ? 'scale-100 group-hover:scale-105'
             : 'scale-0 group-hover:scale-100 group-focus-visible:scale-100'
       "
       :style="{ left: `${fillPercent}%` }"
-    />
+    >
+      <span
+        v-if="!disabled"
+        aria-hidden="true"
+        class="pointer-events-none absolute -inset-2.5 rounded-full bg-[var(--md-sys-color-primary)] opacity-0 transition-opacity group-hover:opacity-[0.08] group-focus-visible:opacity-[0.10]"
+        :class="dragging ? 'opacity-[0.12]' : ''"
+      />
+    </span>
   </div>
 </template>

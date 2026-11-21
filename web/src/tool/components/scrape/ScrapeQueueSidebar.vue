@@ -14,6 +14,8 @@ import {
   LuSearch,
   LuX,
 } from 'vue-icons-plus/lu'
+import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { buildArtworkUrl } from '../../api'
 import { entryCompositeKey, isEntryComplete } from '../../completeness'
 import { useToolTaskStore, type ScrapeSubItem } from '../../tasks'
@@ -45,6 +47,13 @@ const emit = defineEmits<{
 const filter = ref<QueueFilter>('all')
 const query = ref('')
 const taskStore = useToolTaskStore()
+const asideRef = ref<HTMLElement | null>(null)
+const escapeStack = useEscapeStack()
+escapeStack.register(
+  () => props.mobileMenuOpen,
+  () => emit('closeMobile'),
+)
+useFocusTrap(asideRef, () => props.mobileMenuOpen)
 
 function entryTaskStatus(e: MediaFileEntry): ScrapeSubItem['status'] | undefined {
   return taskStore.fileStatusMap.get(entryCompositeKey(e))
@@ -97,10 +106,14 @@ const filteredEntries = computed(() => {
   </Transition>
 
   <aside
+    ref="asideRef"
+    :role="mobileMenuOpen ? 'dialog' : undefined"
+    :aria-modal="mobileMenuOpen ? 'true' : undefined"
+    aria-label="刮削队列"
     class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none md:static"
     :class="[
       mobileMenuOpen
-        ? 'w-72 translate-x-0 rounded-r-[28px] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
+        ? 'w-72 translate-x-0 rounded-r-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-1)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
         : '-translate-x-full md:translate-x-0',
       collapsed ? 'md:w-20' : 'md:w-64',
     ]"
@@ -147,6 +160,7 @@ const filteredEntries = computed(() => {
         :disabled="!hasPrev"
         class="md-icon-btn md-state disabled:opacity-35"
         title="上一项 (Alt+↑)"
+        aria-label="上一项"
         @click="emit('step', -1)"
       >
         <LuArrowUp class="h-[18px] w-[18px]" />
@@ -162,6 +176,7 @@ const filteredEntries = computed(() => {
         :disabled="!hasNext"
         class="md-icon-btn md-state disabled:opacity-35"
         title="下一项 (Alt+↓)"
+        aria-label="下一项"
         @click="emit('step', 1)"
       >
         <LuArrowDown class="h-[18px] w-[18px]" />
@@ -212,6 +227,7 @@ const filteredEntries = computed(() => {
           v-if="query"
           type="button"
           class="text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
+          aria-label="清空筛选"
           @click="query = ''"
         >
           <LuX class="h-3 w-3" />

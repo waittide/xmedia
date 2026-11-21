@@ -191,6 +191,48 @@ function updateHueFromEvent(ev: PointerEvent): void {
   emitHsv()
 }
 
+function onSvKeydown(ev: KeyboardEvent): void {
+  const step = ev.shiftKey ? 0.1 : 0.02
+  if (ev.key === 'ArrowLeft') {
+    ev.preventDefault()
+    sat.value = Math.max(0, sat.value - step)
+    emitHsv()
+  } else if (ev.key === 'ArrowRight') {
+    ev.preventDefault()
+    sat.value = Math.min(1, sat.value + step)
+    emitHsv()
+  } else if (ev.key === 'ArrowUp') {
+    ev.preventDefault()
+    val.value = Math.min(1, val.value + step)
+    emitHsv()
+  } else if (ev.key === 'ArrowDown') {
+    ev.preventDefault()
+    val.value = Math.max(0, val.value - step)
+    emitHsv()
+  }
+}
+
+function onHueKeydown(ev: KeyboardEvent): void {
+  const step = ev.shiftKey ? 15 : 3
+  if (ev.key === 'ArrowLeft' || ev.key === 'ArrowDown') {
+    ev.preventDefault()
+    hue.value = (hue.value - step + 360) % 360
+    emitHsv()
+  } else if (ev.key === 'ArrowRight' || ev.key === 'ArrowUp') {
+    ev.preventDefault()
+    hue.value = (hue.value + step) % 360
+    emitHsv()
+  } else if (ev.key === 'Home') {
+    ev.preventDefault()
+    hue.value = 0
+    emitHsv()
+  } else if (ev.key === 'End') {
+    ev.preventDefault()
+    hue.value = 359
+    emitHsv()
+  }
+}
+
 function commitHexDraft(): void {
   const normalized = normalizeHex(hexDraft.value, props.modelValue)
   syncFromHex(normalized)
@@ -234,11 +276,13 @@ onBeforeUnmount(unbindGlobalListeners)
     ref="triggerRef"
     type="button"
     :title="t('theme.pickColor')"
-    class="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-[var(--md-sys-shape-corner-sm)] border border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] p-0.5 transition hover:border-[var(--md-sys-color-primary)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
+    :aria-label="`${t('theme.pickColor')} (${modelValue})`"
+    :aria-expanded="open"
+    class="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-[var(--md-sys-shape-corner-xs)] border border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] p-0.5 transition hover:border-[var(--md-sys-color-primary)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
     @click="toggleOpen"
   >
     <span
-      class="h-full w-full rounded-[5px] border border-black/10"
+      class="h-full w-full rounded-[3px] border border-[var(--md-sys-color-outline-variant)]/40"
       :style="{ backgroundColor: modelValue }"
     />
   </button>
@@ -247,18 +291,28 @@ onBeforeUnmount(unbindGlobalListeners)
     <div
       v-if="open"
       ref="panelRef"
+      role="dialog"
+      :aria-label="t('theme.pickColor')"
       :style="panelStyle"
       class="z-[var(--z-popover)] rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-surface-container)] p-3 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
     >
       <!-- 2D Saturation / Value Canvas -->
       <div
         ref="svBoxRef"
-        class="relative h-32 w-full cursor-crosshair overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] select-none touch-none"
+        role="slider"
+        tabindex="0"
+        :aria-label="t('theme.pickColor')"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="Math.round(sat * 100)"
+        :aria-valuetext="`S ${Math.round(sat * 100)}%, V ${Math.round(val * 100)}%`"
+        class="relative h-32 w-full cursor-crosshair overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] select-none touch-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
         :style="{ backgroundColor: pureHueHex }"
         @pointerdown="onSvPointerDown"
         @pointermove="onSvPointerMove"
         @pointerup="onSvPointerUp"
         @pointercancel="onSvPointerUp"
+        @keydown="onSvKeydown"
       >
         <div class="absolute inset-0 bg-gradient-to-r from-white to-transparent" />
         <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent" />
@@ -271,12 +325,19 @@ onBeforeUnmount(unbindGlobalListeners)
       <!-- Hue Rainbow Slider -->
       <div
         ref="hueBarRef"
-        class="relative mt-2.5 h-3 w-full cursor-pointer rounded-full select-none touch-none"
+        role="slider"
+        tabindex="0"
+        aria-label="Hue"
+        aria-valuemin="0"
+        aria-valuemax="360"
+        :aria-valuenow="Math.round(hue)"
+        class="relative mt-2.5 h-3 w-full cursor-pointer rounded-full select-none touch-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
         style="background: linear-gradient(to right, #f00 0%, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00 100%)"
         @pointerdown="onHuePointerDown"
         @pointermove="onHuePointerMove"
         @pointerup="onHuePointerUp"
         @pointercancel="onHuePointerUp"
+        @keydown="onHueKeydown"
       >
         <span
           class="pointer-events-none absolute top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow"

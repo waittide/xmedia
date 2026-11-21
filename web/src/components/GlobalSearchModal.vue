@@ -18,6 +18,7 @@ import {
 } from 'vue-icons-plus/lu'
 import { requestJson } from '@/api/client'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { BookSummaryDto, PagedResult as BookPagedResult } from '@/domains/book/types'
@@ -75,6 +76,8 @@ const loading = ref(false)
 const domainSections = ref<DomainResultSection[]>([])
 const searchError = ref<string | null>(null)
 const activeIndex = ref(0)
+const dialogRef = ref<HTMLElement | null>(null)
+useFocusTrap(dialogRef, () => props.open, { initialFocusRef: inputRef })
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let activeController: AbortController | null = null
@@ -422,9 +425,12 @@ function handleKeydown(ev: KeyboardEvent): void {
       >
         <Transition name="md-dialog" appear>
           <div
+            ref="dialogRef"
             role="dialog"
             aria-modal="true"
-            class="flex w-full max-w-xl flex-col overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
+            tabindex="-1"
+            :aria-label="t('common.search')"
+            class="flex h-dvh w-full max-w-xl flex-col overflow-hidden rounded-none bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] outline-none sm:h-auto sm:rounded-[28px]"
             @keydown="handleKeydown"
           >
             <!-- MD3 Search Dialog Header -->

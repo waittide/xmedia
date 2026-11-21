@@ -544,7 +544,10 @@ async function handleSave(): Promise<void> {
       <Teleport to="body">
         <div
           v-if="lightboxIdx !== null && lightboxPage"
-          class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-black/88 text-white backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="lightboxPage.entry_name"
+          class="fixed inset-0 z-[var(--z-fullscreen)] flex flex-col bg-[var(--md-sys-color-scrim)]/90 text-white"
           @click.self="lightboxIdx = null"
         >
           <div class="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs">
@@ -594,7 +597,8 @@ async function handleSave(): Promise<void> {
               </template>
               <button
                 type="button"
-                class="rounded-full bg-white/10 p-1.5 hover:bg-white/20"
+                class="md-icon-btn md-icon-btn-sm md-state !bg-white/10 !text-white hover:!bg-white/20"
+                aria-label="关闭大图预览"
                 @click="lightboxIdx = null"
               >
                 <LuX class="h-4 w-4" />
@@ -606,7 +610,8 @@ async function handleSave(): Promise<void> {
             <button
               v-if="lightboxIdx > 0"
               type="button"
-              class="absolute left-4 rounded-full bg-black/60 p-2.5 text-white hover:bg-black/85"
+              class="md-icon-btn md-state absolute left-4 !bg-[var(--md-sys-color-scrim)]/65 !text-white hover:!bg-[var(--md-sys-color-scrim)]/85"
+              aria-label="上一页"
               @click="lightboxIdx -= 1"
             >
               <LuChevronLeft class="h-5 w-5" />
@@ -619,7 +624,8 @@ async function handleSave(): Promise<void> {
             <button
               v-if="lightboxIdx < pages.length - 1"
               type="button"
-              class="absolute right-4 rounded-full bg-black/60 p-2.5 text-white hover:bg-black/85"
+              class="md-icon-btn md-state absolute right-4 !bg-[var(--md-sys-color-scrim)]/65 !text-white hover:!bg-[var(--md-sys-color-scrim)]/85"
+              aria-label="下一页"
               @click="lightboxIdx += 1"
             >
               <LuChevronRight class="h-5 w-5" />

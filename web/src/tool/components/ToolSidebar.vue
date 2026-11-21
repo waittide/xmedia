@@ -9,10 +9,12 @@ import {
   LuLibrary,
 } from 'vue-icons-plus/lu'
 import type { MediaKind } from '@/types/api'
+import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useToolText } from '../i18n'
 import type { ManagedRootDto } from '../types'
 
-defineProps<{
+const props = defineProps<{
   mobileMenuOpen: boolean
   collapsed: boolean
   isCompact: boolean
@@ -34,6 +36,13 @@ const emit = defineEmits<{
 
 const txt = useToolText()
 const rootsFolded = ref(false)
+const asideRef = ref<HTMLElement | null>(null)
+const escapeStack = useEscapeStack()
+escapeStack.register(
+  () => props.mobileMenuOpen,
+  () => emit('closeMobile'),
+)
+useFocusTrap(asideRef, () => props.mobileMenuOpen)
 </script>
 
 <template>
@@ -46,10 +55,14 @@ const rootsFolded = ref(false)
   </Transition>
 
   <aside
+    ref="asideRef"
+    :role="mobileMenuOpen ? 'dialog' : undefined"
+    :aria-modal="mobileMenuOpen ? 'true' : undefined"
+    :aria-label="txt.brand"
     class="fixed top-16 bottom-0 left-0 z-40 flex shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none md:static"
     :class="[
       mobileMenuOpen
-        ? 'w-72 translate-x-0 rounded-r-[28px] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
+        ? 'w-72 translate-x-0 rounded-r-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-1)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
         : '-translate-x-full md:translate-x-0',
       collapsed ? 'md:w-20' : 'md:w-64',
     ]"
@@ -138,6 +151,7 @@ const rootsFolded = ref(false)
         type="button"
         class="md-icon-btn md-state"
         :title="txt.roots.title"
+        :aria-label="txt.roots.title"
         @click="emit('openSettingsRoots')"
       >
         <LuHardDrive class="h-[18px] w-[18px]" />
@@ -194,6 +208,7 @@ const rootsFolded = ref(false)
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state"
             :title="txt.roots.add"
+            :aria-label="txt.roots.add"
             @click="emit('openSettingsRoots')"
           >
             <LuFolderPlus class="h-3.5 w-3.5" />

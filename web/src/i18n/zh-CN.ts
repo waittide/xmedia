@@ -38,6 +38,7 @@ export default {
     onlineBookSearchSubtitle: '聚合检索已启用的书源，支持在线阅读与入库',
   },
   nav: {
+    navigation: '导航栏',
     showMore: '展开其余 {count} 项',
     showLess: '收起',
     toggleGroup: '展开 / 折叠分组',

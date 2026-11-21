@@ -110,6 +110,7 @@ defineExpose({ focusSearch })
         type="button"
         class="md-icon-btn md-state"
         :title="isCompact ? '展开导航栏' : '收起为图标导航栏'"
+        :aria-label="isCompact ? '展开导航栏' : '收起为图标导航栏'"
         @click="emit('toggleSidebar')"
       >
         <LuPanelLeftOpen v-if="isCompact" class="h-5 w-5" />
@@ -170,6 +171,8 @@ defineExpose({ focusSearch })
         v-else
         type="button"
         class="md-icon-btn md-icon-btn-sm md-state absolute top-1/2 right-1.5 -translate-y-1/2"
+        :aria-label="t('common.clear')"
+        :title="t('common.clear')"
         @click="emit('update:searchQuery', '')"
       >
         <LuX class="h-4 w-4" />
@@ -196,6 +199,7 @@ defineExpose({ focusSearch })
             : ''
         "
         :title="themeModeTooltip"
+        :aria-label="themeModeTooltip"
         @click="cycleThemeMode"
       >
         <LuMonitor v-if="themeStore.themeMode === 'system'" class="h-[18px] w-[18px]" />
@@ -208,6 +212,7 @@ defineExpose({ focusSearch })
         type="button"
         class="md-btn md-btn-sm md-btn-tonal md-state"
         :title="txt.actions.lock"
+        :aria-label="txt.actions.lock"
         @click="emit('lock')"
       >
         <LuLock class="h-3.5 w-3.5" />
@@ -221,6 +226,7 @@ defineExpose({ focusSearch })
         class="md-state inline-flex h-9 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-3 text-xs font-semibold text-[var(--md-sys-color-on-primary-container)] transition hover:opacity-95"
         :class="tasksOpen ? 'ring-2 ring-[var(--md-sys-color-primary)]/50' : ''"
         :title="taskButtonTooltip"
+        :aria-label="taskButtonTooltip"
         @click="emit('toggleTasks')"
       >
         <LuLoader2 class="h-3.5 w-3.5 shrink-0 animate-spin" />
@@ -237,6 +243,7 @@ defineExpose({ focusSearch })
             : ''
         "
         :title="taskButtonTooltip"
+        :aria-label="taskButtonTooltip"
         @click="emit('toggleTasks')"
       >
         <LuClock class="h-[18px] w-[18px]" />
@@ -255,6 +262,7 @@ defineExpose({ focusSearch })
             : ''
         "
         :title="t('nav.settings')"
+        :aria-label="t('nav.settings')"
         @click="emit('toggleSettings')"
       >
         <LuSettings class="h-[18px] w-[18px]" />

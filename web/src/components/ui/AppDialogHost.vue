@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useDialogStore } from '@/stores/dialog'
 
 const { t } = useI18n()
 const dialogStore = useDialogStore()
 const escapeStack = useEscapeStack()
+const dialogRef = ref<HTMLElement | null>(null)
 const promptInputRef = ref<HTMLInputElement | null>(null)
+const titleId = useId()
+const descId = useId()
+
+useFocusTrap(dialogRef, () => Boolean(dialogStore.active), {
+  initialFocusRef: promptInputRef,
+})
 
 escapeStack.register(
   () => Boolean(dialogStore.active),
@@ -37,15 +45,19 @@ watch(
       >
         <Transition name="md-dialog" appear>
           <form
+            ref="dialogRef"
             role="dialog"
             aria-modal="true"
-            class="w-full max-w-sm rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] p-6 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
+            tabindex="-1"
+            :aria-labelledby="dialogStore.active.title ? titleId : undefined"
+            :aria-describedby="dialogStore.active.message ? descId : undefined"
+            class="w-full max-w-sm rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] p-6 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] outline-none"
             @submit.prevent="dialogStore.submit()"
           >
-            <h3 v-if="dialogStore.active.title" class="md-headline-small mb-2">
+            <h3 v-if="dialogStore.active.title" :id="titleId" class="md-headline-small mb-2">
               {{ dialogStore.active.title }}
             </h3>
-            <p class="md-body-medium text-[var(--md-sys-color-on-surface-variant)]">
+            <p :id="descId" class="md-body-medium text-[var(--md-sys-color-on-surface-variant)]">
               {{ dialogStore.active.message }}
             </p>
 

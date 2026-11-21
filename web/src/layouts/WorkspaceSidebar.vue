@@ -12,9 +12,11 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import type { MediaKind } from '@/types/api'
+import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useWorkspaceSidebar } from './useWorkspaceSidebar'
 
-defineProps<{
+const props = defineProps<{
   mobileMenuOpen: boolean
   collapsed: boolean
   isCompact: boolean
@@ -27,6 +29,14 @@ const emit = defineEmits<{
   switchDomain: [kind: MediaKind]
   openCustomizer: []
 }>()
+
+const asideRef = ref<HTMLElement | null>(null)
+const escapeStack = useEscapeStack()
+escapeStack.register(
+  () => props.mobileMenuOpen,
+  () => emit('closeMobile'),
+)
+useFocusTrap(asideRef, () => props.mobileMenuOpen)
 
 const {
   t,
@@ -67,11 +77,15 @@ watch(creatingGroupId, async (id) => {
   </Transition>
 
   <aside
+    ref="asideRef"
+    :role="mobileMenuOpen ? 'dialog' : undefined"
+    :aria-modal="mobileMenuOpen ? 'true' : undefined"
+    :aria-label="t('nav.navigation')"
     class="safe-pl fixed top-16 left-0 z-40 flex w-72 shrink-0 flex-col bg-[var(--md-sys-color-surface-container)] transition-[width,transform] duration-300 ease-[var(--md-sys-motion-easing-standard)] select-none md:static md:top-0 md:bottom-0"
     :class="[
       showMusicBar ? 'bottom-[var(--player-bar-h)]' : 'bottom-0',
       mobileMenuOpen
-        ? 'translate-x-0 rounded-r-[28px] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
+        ? 'translate-x-0 rounded-r-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-1)] md:rounded-none md:bg-[var(--md-sys-color-surface-container)] md:shadow-none'
         : '-translate-x-full md:translate-x-0',
       collapsed ? 'md:w-20' : 'md:w-64',
     ]"
@@ -148,6 +162,7 @@ watch(creatingGroupId, async (id) => {
             : ''
         "
         :title="group.label"
+        :aria-label="group.label"
         @click="group.onOpenOverview()"
       >
         <component :is="group.icon" class="h-[18px] w-[18px] shrink-0" />
@@ -157,6 +172,7 @@ watch(creatingGroupId, async (id) => {
         type="button"
         class="md-icon-btn md-state mt-1"
         :title="t('layoutCustomizer.customizeSidebar')"
+        :aria-label="t('layoutCustomizer.customizeSidebar')"
         @click="emit('openCustomizer')"
       >
         <LuSlidersHorizontal class="h-[18px] w-[18px] shrink-0" />
@@ -209,6 +225,7 @@ watch(creatingGroupId, async (id) => {
               type="button"
               class="md-icon-btn md-icon-btn-sm md-state !h-6 !w-6"
               :title="t('nav.toggleGroup')"
+              :aria-label="t('nav.toggleGroup')"
               @click="toggleGroupFold(group.id)"
             >
               <LuChevronRight v-if="isGroupFolded(group.id)" class="h-3.5 w-3.5" />
@@ -234,6 +251,7 @@ watch(creatingGroupId, async (id) => {
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7"
             :title="group.createTitle"
+            :aria-label="group.createTitle"
             @click="toggleCreateForGroup(group)"
           >
             <LuFolderPlus class="h-3.5 w-3.5" />

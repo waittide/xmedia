@@ -16,6 +16,7 @@ import {
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 import { formatTime } from '@/utils/format'
 import { buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
@@ -29,6 +30,9 @@ const router = useRouter()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 const escapeStack = useEscapeStack()
+
+const overlayRef = ref<HTMLElement | null>(null)
+useFocusTrap(overlayRef, () => playerStore.lyricsOpen && Boolean(playerStore.currentTrack))
 
 escapeStack.register(
   () => playerStore.lyricsOpen && Boolean(playerStore.currentTrack),
@@ -107,10 +111,12 @@ function navigateAndClose(path: string): void {
     <Transition name="md-fade">
       <div
         v-if="playerStore.lyricsOpen && playerStore.currentTrack"
+        ref="overlayRef"
         role="dialog"
         aria-modal="true"
+        tabindex="-1"
         :aria-label="t('player.lyricsTitle')"
-        class="fixed inset-0 z-[var(--z-fullscreen)] flex h-dvh w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)]"
+        class="fixed inset-0 z-[var(--z-fullscreen)] flex h-dvh w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] outline-none"
       >
         <!-- Atmospheric Blurred Cover Backdrop -->
         <div

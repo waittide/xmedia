@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 
 const props = withDefaults(
   defineProps<{
@@ -29,6 +31,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const escapeStack = useEscapeStack()
+const dialogRef = ref<HTMLElement | null>(null)
+const titleId = useId()
+const subtitleId = useId()
+
+useFocusTrap(dialogRef, () => props.open)
 
 escapeStack.register(
   () => props.open,
@@ -46,9 +53,13 @@ escapeStack.register(
       >
         <Transition name="md-dialog" appear>
           <div
+            ref="dialogRef"
             role="dialog"
             aria-modal="true"
-            class="flex max-h-[90vh] w-full flex-col overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
+            tabindex="-1"
+            :aria-labelledby="title ? titleId : undefined"
+            :aria-describedby="subtitle ? subtitleId : undefined"
+            class="flex max-h-[90vh] w-full flex-col overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] outline-none"
             :class="maxWidth"
           >
             <!-- MD3 Dialog Header -->
@@ -65,11 +76,12 @@ escapeStack.register(
                     <slot name="icon" />
                   </div>
                   <div class="min-w-0">
-                    <h3 class="md-headline-small">
+                    <h3 :id="titleId" class="md-headline-small">
                       {{ title }}
                     </h3>
                     <p
                       v-if="subtitle"
+                      :id="subtitleId"
                       class="md-body-small mt-1 leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
                     >
                       {{ subtitle }}

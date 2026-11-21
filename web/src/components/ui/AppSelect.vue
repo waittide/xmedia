@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuChevronDown, LuSearch } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
@@ -40,6 +40,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const escapeStack = useEscapeStack()
+const listboxId = useId()
 const open = ref(false)
 const query = ref('')
 const highlightedIdx = ref(0)
@@ -47,6 +48,16 @@ const triggerRef = ref<HTMLButtonElement | null>(null)
 const menuRef = ref<HTMLDivElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const menuStyle = ref<Record<string, string>>({})
+
+function optionDomId(idx: number): string {
+  return `${listboxId}-opt-${idx}`
+}
+
+const activeDescendantId = computed<string | undefined>(() => {
+  if (!open.value || filteredOptions.value.length === 0) return undefined
+  const idx = Math.max(0, Math.min(highlightedIdx.value, filteredOptions.value.length - 1))
+  return optionDomId(idx)
+})
 
 const resolvedTeleportTarget = computed<string | HTMLElement>(() => {
   if (props.teleportTo) return props.teleportTo
@@ -160,6 +171,14 @@ function onMenuKeydown(ev: KeyboardEvent): void {
     ev.preventDefault()
     ev.stopPropagation()
     highlightedIdx.value = (highlightedIdx.value - 1 + len) % len
+  } else if (ev.key === 'Home' && len > 0) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    highlightedIdx.value = 0
+  } else if (ev.key === 'End' && len > 0) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    highlightedIdx.value = len - 1
   } else if (ev.key === 'Enter' && len > 0) {
     ev.preventDefault()
     ev.stopPropagation()
@@ -215,7 +234,10 @@ onBeforeUnmount(unbindGlobalListeners)
     ref="triggerRef"
     type="button"
     role="combobox"
+    aria-haspopup="listbox"
     :aria-expanded="open"
+    :aria-controls="open ? listboxId : undefined"
+    :aria-activedescendant="activeDescendantId"
     :disabled="disabled"
     class="inline-flex cursor-pointer items-center justify-between gap-2 text-left text-xs transition outline-none select-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)] disabled:cursor-not-allowed disabled:opacity-38"
     :class="[
@@ -246,6 +268,7 @@ onBeforeUnmount(unbindGlobalListeners)
   <Teleport :to="resolvedTeleportTarget">
     <div
       v-if="open"
+      :id="listboxId"
       ref="menuRef"
       role="listbox"
       :style="menuStyle"
@@ -268,6 +291,7 @@ onBeforeUnmount(unbindGlobalListeners)
       <div class="max-h-60 space-y-0.5 overflow-y-auto">
         <button
           v-for="(opt, idx) in filteredOptions"
+          :id="optionDomId(idx)"
           :key="`${opt.value}-${idx}`"
           type="button"
           role="option"

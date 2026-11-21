@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuChevronDown, LuSearch, LuX } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
@@ -62,12 +62,24 @@ function formatShowingTop(shown: number, total: number): string {
   return t('common.showingTop', { shown, total })
 }
 
+const listboxId = useId()
 const open = ref(false)
 const query = ref('')
+const highlightedIdx = ref(0)
 const triggerRef = ref<HTMLButtonElement | null>(null)
 const menuRef = ref<HTMLDivElement | null>(null)
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const menuStyle = ref<Record<string, string>>({})
+
+function optionDomId(idx: number): string {
+  return `${listboxId}-opt-${idx}`
+}
+
+const activeDescendantId = computed<string | undefined>(() => {
+  if (!open.value || renderedOptions.value.length === 0) return undefined
+  const idx = Math.max(0, Math.min(highlightedIdx.value, renderedOptions.value.length - 1))
+  return optionDomId(idx)
+})
 
 const selectedSet = computed(() => new Set(props.modelValue))
 
@@ -133,11 +145,54 @@ async function openMenu(): Promise<void> {
   if (props.disabled) return
   open.value = true
   query.value = ''
+  highlightedIdx.value = 0
   updatePosition()
   await nextTick()
   updatePosition()
   if (showSearchBox.value) {
     searchInputRef.value?.focus()
+  }
+}
+
+function onTriggerKeydown(ev: KeyboardEvent): void {
+  if (props.disabled) return
+  if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp' || ev.key === 'Enter' || ev.key === ' ') {
+    if (!open.value) {
+      ev.preventDefault()
+      void openMenu()
+      return
+    }
+  }
+  onMenuKeydown(ev)
+}
+
+function onMenuKeydown(ev: KeyboardEvent): void {
+  if (!open.value || ev.isComposing) return
+  const len = renderedOptions.value.length
+  if (ev.key === 'ArrowDown' && len > 0) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    highlightedIdx.value = (highlightedIdx.value + 1) % len
+  } else if (ev.key === 'ArrowUp' && len > 0) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    highlightedIdx.value = (highlightedIdx.value - 1 + len) % len
+  } else if (ev.key === 'Home' && len > 0) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    highlightedIdx.value = 0
+  } else if (ev.key === 'End' && len > 0) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    highlightedIdx.value = len - 1
+  } else if (
+    (ev.key === 'Enter' || (ev.key === ' ' && document.activeElement !== searchInputRef.value)) &&
+    len > 0
+  ) {
+    ev.preventDefault()
+    ev.stopPropagation()
+    const picked = renderedOptions.value[highlightedIdx.value]
+    if (picked) toggleValue(picked.value)
   }
 }
 
@@ -191,6 +246,9 @@ function handleViewportChange(): void {
 }
 
 watch(renderedOptions, () => {
+  if (highlightedIdx.value >= renderedOptions.value.length) {
+    highlightedIdx.value = 0
+  }
   if (open.value) void nextTick(updatePosition)
 })
 
@@ -218,9 +276,14 @@ onBeforeUnmount(unbindGlobalListeners)
   <button
     ref="triggerRef"
     type="button"
+    role="combobox"
+    aria-haspopup="listbox"
     :aria-expanded="open"
+    :aria-controls="open ? listboxId : undefined"
+    :aria-activedescendant="activeDescendantId"
+    :aria-label="label"
     :disabled="disabled"
-    class="inline-flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-[var(--md-sys-shape-corner-sm)] border px-3 text-left text-xs font-medium transition outline-none select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] disabled:cursor-not-allowed disabled:opacity-45"
+    class="inline-flex h-9 w-full cursor-pointer items-center justify-between gap-2 rounded-[var(--md-sys-shape-corner-xs)] border px-3 text-left text-xs font-medium transition outline-none select-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)] disabled:cursor-not-allowed disabled:opacity-38"
     :class="[
       open
         ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] ring-1 ring-[var(--md-sys-color-primary)]'
@@ -229,6 +292,7 @@ onBeforeUnmount(unbindGlobalListeners)
           : 'border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] hover:border-[var(--md-sys-color-on-surface)]',
     ]"
     @click="toggleMenu"
+    @keydown="onTriggerKeydown"
   >
     <span class="truncate">{{ triggerText }}</span>
     <span class="flex shrink-0 items-center gap-1">
@@ -250,7 +314,8 @@ onBeforeUnmount(unbindGlobalListeners)
       v-if="open"
       ref="menuRef"
       :style="menuStyle"
-      class="z-[var(--z-popover)] overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] bg-[var(--md-sys-color-surface-container)] p-2 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+      class="z-[var(--z-popover)] overflow-hidden rounded-[var(--md-sys-shape-corner-xs)] bg-[var(--md-sys-color-surface-container)] p-2 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+      @keydown="onMenuKeydown"
     >
       <!-- Optional Header Controls Slot (e.g. Tag Match Any / Match All toggle) -->
       <div
@@ -284,7 +349,13 @@ onBeforeUnmount(unbindGlobalListeners)
       </div>
 
       <!-- Scrollable Option List (Selected pinned at top) -->
-      <div class="max-h-60 space-y-0.5 overflow-y-auto pr-0.5">
+      <div
+        :id="listboxId"
+        role="listbox"
+        aria-multiselectable="true"
+        :aria-label="label"
+        class="max-h-60 space-y-0.5 overflow-y-auto pr-0.5"
+      >
         <div
           v-if="renderedOptions.length === 0"
           class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
@@ -293,15 +364,21 @@ onBeforeUnmount(unbindGlobalListeners)
         </div>
 
         <button
-          v-for="opt in renderedOptions"
+          v-for="(opt, idx) in renderedOptions"
+          :id="optionDomId(idx)"
           :key="opt.value"
           type="button"
+          role="option"
+          :aria-selected="selectedSet.has(opt.value)"
           class="md-state flex w-full cursor-pointer items-center justify-between gap-2.5 rounded-[var(--md-sys-shape-corner-xs)] px-2.5 py-1.5 text-left text-xs transition"
           :class="
             selectedSet.has(opt.value)
               ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface)]'
+              : idx === highlightedIdx
+                ? 'bg-[color-mix(in_srgb,var(--md-sys-color-on-surface)_8%,transparent)] text-[var(--md-sys-color-on-surface)]'
+                : 'text-[var(--md-sys-color-on-surface)]'
           "
+          @mouseenter="highlightedIdx = idx"
           @click="toggleValue(opt.value)"
         >
           <span class="flex min-w-0 items-center gap-2">

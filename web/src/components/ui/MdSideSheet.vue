@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { useFocusTrap } from '@/composables/useFocusTrap'
 
 const props = withDefaults(
   defineProps<{
@@ -23,6 +25,11 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const escapeStack = useEscapeStack()
+const sheetRef = ref<HTMLElement | null>(null)
+const titleId = useId()
+const subtitleId = useId()
+
+useFocusTrap(sheetRef, () => props.open)
 
 escapeStack.register(
   () => props.open,
@@ -40,19 +47,24 @@ escapeStack.register(
       >
         <Transition name="md-sheet-right" appear>
           <aside
+            ref="sheetRef"
             role="dialog"
             aria-modal="true"
-            class="flex h-full flex-col overflow-hidden rounded-l-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-1)]"
+            tabindex="-1"
+            :aria-labelledby="title ? titleId : undefined"
+            :aria-describedby="subtitle ? subtitleId : undefined"
+            class="flex h-full flex-col overflow-hidden rounded-l-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-1)] outline-none"
             :class="widthClass"
           >
             <!-- Side Sheet Header -->
             <div class="flex items-start justify-between gap-3 px-6 pt-6 pb-4">
               <div class="min-w-0">
-                <h3 class="md-title-large">
+                <h3 :id="titleId" class="md-title-large">
                   {{ title }}
                 </h3>
                 <p
                   v-if="subtitle"
+                  :id="subtitleId"
                   class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   {{ subtitle }}

@@ -38,6 +38,7 @@ export default {
     onlineBookSearchSubtitle: 'Aggregate search across enabled book sources',
   },
   nav: {
+    navigation: 'Navigation',
     showMore: 'Show {count} more',
     showLess: 'Show less',
     toggleGroup: 'Toggle group',
