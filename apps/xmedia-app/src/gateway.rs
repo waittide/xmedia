@@ -370,8 +370,17 @@ fn load_source_with_protocol(
 }
 
 fn mark_source_ok(state: &StandaloneGatewayState, id: &str) {
-    if let Ok(mut guard) = state.sources.write() {
-        guard.mark_ok(id);
+    let pending = if let Ok(mut guard) = state.sources.write() {
+        guard.mark_ok_throttled(id)
+    } else {
+        None
+    };
+    if let Some(task) = pending {
+        tokio::task::spawn_blocking(move || {
+            if let Err(err) = task.persist() {
+                tracing::warn!(error = %err, "failed to persist remote source last_ok_at");
+            }
+        });
     }
 }
 
