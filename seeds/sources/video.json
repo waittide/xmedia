@@ -1,0 +1,151 @@
+[
+  {
+    "sourceName": "爱坤资源 (ikunzy)",
+    "sourceUrl": "https://ikunzyapi.com/api.php/provide/vod/",
+    "sourceGroup": "影视 · AppleCMS",
+    "sourceComment": "AppleCMS v10 节点，支持搜索、分类浏览、HLS 播放 (ikm3u8)",
+    "sourceFormat": "applecms_v10",
+    "apiUrl": "https://ikunzyapi.com/api.php/provide/vod/",
+    "enabled": true,
+    "enabledExplore": true,
+    "searchable": true,
+    "weight": 100,
+    "concurrentRate": "5/1000",
+    "checkKeyword": "流浪地球",
+    "preferredPlayFrom": ["ikm3u8"],
+    "playUrlFilterRegex": "(?i)\\.(m3u8|mp4|mkv|webm)(\\?|$)"
+  },
+  {
+    "sourceName": "魔都资源 (moduzy)",
+    "sourceUrl": "https://www.mdzyapi.com/api.php/provide/vod/",
+    "sourceGroup": "影视 · AppleCMS",
+    "sourceComment": "AppleCMS v10 节点，支持搜索、分类浏览、HLS 播放 (modum3u8)",
+    "sourceFormat": "applecms_v10",
+    "apiUrl": "https://www.mdzyapi.com/api.php/provide/vod/",
+    "enabled": true,
+    "enabledExplore": true,
+    "searchable": true,
+    "weight": 95,
+    "concurrentRate": "5/1000",
+    "checkKeyword": "流浪地球",
+    "preferredPlayFrom": ["modum3u8"],
+    "playUrlFilterRegex": "(?i)\\.(m3u8|mp4|mkv|webm)(\\?|$)"
+  },
+  {
+    "sourceName": "索尼资源 (suoniapi)",
+    "sourceUrl": "https://suoniapi.com/api.php/provide/vod/",
+    "sourceGroup": "影视 · AppleCMS",
+    "sourceComment": "AppleCMS v10 节点，支持分类与列表浏览及 HLS 播放 (snm3u8)；上游关闭了关键词搜索",
+    "sourceFormat": "applecms_v10",
+    "apiUrl": "https://suoniapi.com/api.php/provide/vod/",
+    "enabled": true,
+    "enabledExplore": true,
+    "searchable": false,
+    "weight": 85,
+    "concurrentRate": "5/1000",
+    "preferredPlayFrom": ["snm3u8"],
+    "playUrlFilterRegex": "(?i)\\.(m3u8|mp4|mkv|webm)(\\?|$)"
+  },
+  {
+    "sourceName": "樱花资源 (apiyhzy)",
+    "sourceUrl": "https://m3u8.apiyhzy.com/api.php/provide/vod/",
+    "sourceGroup": "影视 · AppleCMS",
+    "sourceComment": "AppleCMS v10 节点，支持分类与列表浏览及 HLS 播放 (yhm3u8)；上游对 wd 搜索返回 403",
+    "sourceFormat": "applecms_v10",
+    "apiUrl": "https://m3u8.apiyhzy.com/api.php/provide/vod/",
+    "enabled": true,
+    "enabledExplore": true,
+    "searchable": false,
+    "weight": 80,
+    "concurrentRate": "5/1000",
+    "preferredPlayFrom": ["yhm3u8"],
+    "playUrlFilterRegex": "(?i)\\.(m3u8|mp4|mkv|webm)(\\?|$)"
+  },
+  {
+    "sourceName": "PeerTube (Framatube)",
+    "sourceUrl": "https://framatube.org",
+    "sourceGroup": "影视 · 开源公共",
+    "sourceComment": "PeerTube v1 REST API，支持分类、搜索、HLS/fMP4 与字幕流",
+    "sourceFormat": "rule",
+    "enabled": true,
+    "enabledExplore": true,
+    "searchable": true,
+    "weight": 90,
+    "concurrentRate": "5/1000",
+    "checkKeyword": "blender",
+    "header": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"application/json\"}",
+    "categoriesUrl": "https://framatube.org/api/v1/videos/categories",
+    "searchUrl": "<js>'https://framatube.org/api/v1/search/videos?search=' + encodeURIComponent(key) + '&count=20&start=' + ((page - 1) * 20)</js>",
+    "exploreUrl": "<js>'https://framatube.org/api/v1/videos?count=20&start=' + ((page - 1) * 20) + (catId ? '&categoryOneOf=' + encodeURIComponent(catId) : '')</js>",
+    "ruleCategories": {
+      "list": "<js>Object.keys(result).map(function(k){ return { id: k, name: result[k] }; })</js>",
+      "id": "$.id",
+      "name": "$.name"
+    },
+    "ruleSearch": {
+      "list": "$.data[*]",
+      "vodId": "$.uuid",
+      "name": "$.name",
+      "coverUrl": "https://framatube.org{{$.thumbnailPath}}",
+      "remarks": "<js>(function(){ var s=Number(result.duration||0); if(!s) return ''; var m=Math.floor(s/60), r=s%60; return m + ':' + (r<10?'0':'') + r; })()</js>",
+      "year": "$.publishedAt##^(\\d{4}).*$##$1",
+      "typeName": "$.category.label",
+      "detailUrl": "https://framatube.org/api/v1/videos/{{$.uuid}}"
+    },
+    "ruleDetail": {
+      "name": "$.name",
+      "coverUrl": "https://framatube.org{{$.thumbnailPath}}",
+      "intro": "$.description",
+      "director": "$.account.displayName",
+      "year": "$.publishedAt##^(\\d{4}).*$##$1",
+      "remarks": "$.category.label",
+      "playUrl": "$.streamingPlaylists[0].playlistUrl||$.files[0].fileUrl||$.streamingPlaylists[0].files[0].fileUrl"
+    },
+    "rulePlay": {
+      "streamType": "auto"
+    }
+  },
+  {
+    "sourceName": "Internet Archive Video",
+    "sourceUrl": "https://archive.org",
+    "sourceGroup": "影视 · 开源公共",
+    "sourceComment": "Internet Archive 公共领域影视，支持集合浏览、搜索与 Range MP4 直连",
+    "sourceFormat": "rule",
+    "enabled": true,
+    "enabledExplore": true,
+    "searchable": true,
+    "weight": 88,
+    "concurrentRate": "4/1000",
+    "checkKeyword": "Big Buck Bunny",
+    "header": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"application/json\"}",
+    "categoriesUrl": "data:application/json,[{\"id\":\"opensource_movies\",\"name\":\"Open Source Movies\"},{\"id\":\"animationandcartoons\",\"name\":\"Animation & Cartoons\"},{\"id\":\"feature_films\",\"name\":\"Feature Films\"},{\"id\":\"classic_tv\",\"name\":\"Classic TV\"},{\"id\":\"prelinger\",\"name\":\"Prelinger Archives\"}]",
+    "searchUrl": "<js>'https://archive.org/advancedsearch.php?q=' + encodeURIComponent('mediatype:movies AND format:(\"MPEG4\" OR \"h.264\") AND (' + key + ')') + '&fl[]=identifier,title,year,creator,description&sort[]=downloads+desc&rows=20&page=' + page + '&output=json'</js>",
+    "exploreUrl": "<js>var q = 'mediatype:movies AND format:(\"MPEG4\" OR \"h.264\")' + (catId ? ' AND collection:' + catId : ''); 'https://archive.org/advancedsearch.php?q=' + encodeURIComponent(q) + '&fl[]=identifier,title,year,creator,description&sort[]=downloads+desc&rows=20&page=' + page + '&output=json';</js>",
+    "ruleCategories": {
+      "list": "$[*]",
+      "id": "$.id",
+      "name": "$.name"
+    },
+    "ruleSearch": {
+      "list": "$.response.docs[*]",
+      "vodId": "$.identifier",
+      "name": "$.title",
+      "coverUrl": "https://archive.org/services/img/{{$.identifier}}",
+      "year": "$.year",
+      "detailUrl": "https://archive.org/metadata/{{$.identifier}}"
+    },
+    "ruleDetail": {
+      "name": "$.metadata.title",
+      "coverUrl": "https://archive.org/services/img/{{$.metadata.identifier}}",
+      "intro": "$.metadata.description",
+      "director": "$.metadata.creator",
+      "year": "$.metadata.year",
+      "episodes": "<js>(function(){ var host = result.d1 || result.server || 'archive.org'; var dir = result.dir || ''; var files = Array.isArray(result.files) ? result.files : []; var mp4s = files.filter(function(f){ return f && f.name && /\\.mp4$/i.test(String(f.name)); }); mp4s.sort(function(a,b){ var sa = a.source === 'derivative' ? 0 : 1; var sb = b.source === 'derivative' ? 0 : 1; return sa - sb; }); return mp4s.slice(0, 12).map(function(f){ var cleanPath = String(f.name).split('/').map(encodeURIComponent).join('/'); return { name: String(f.name).split('/').pop(), url: 'https://' + host + dir + '/' + cleanPath }; }); })()</js>",
+      "episodeName": "$.name",
+      "episodeUrl": "$.url"
+    },
+    "rulePlay": {
+      "streamType": "mp4"
+    }
+  }
+]
