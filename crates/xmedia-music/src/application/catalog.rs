@@ -981,6 +981,7 @@ impl MusicCatalogService {
 
     pub async fn get_cover_art(
         &self,
+        actor: &User,
         raw_id: &str,
         max_size: Option<u32>,
     ) -> DomainResult<BinaryPayload> {
@@ -999,6 +1000,7 @@ impl MusicCatalogService {
                 return self.storage.read_cover(key, max_size).await;
             }
             if let Some(track) = self.catalog.find_track_by_id(TrackId(uuid)).await?
+                && !track.is_missing
                 && let Some(ref key) = track.cover_key
             {
                 return self.storage.read_cover(key, max_size).await;
@@ -1012,11 +1014,21 @@ impl MusicCatalogService {
                 .collections
                 .find_playlist_by_id(PlaylistId(uuid))
                 .await?
-                && let Some(&first_track_id) = pl.track_ids.first()
-                && let Some(track) = self.catalog.find_track_by_id(first_track_id).await?
-                && let Some(ref key) = track.cover_key
             {
-                return self.storage.read_cover(key, max_size).await;
+                if !pl.is_public && pl.owner_id != actor.id && !actor.role.is_admin() {
+                    return Err(DomainError::Forbidden(
+                        "not authorized to access private playlist cover".into(),
+                    ));
+                }
+                for &track_id in &pl.track_ids {
+                    if let Some(track) = self.catalog.find_track_by_id(track_id).await?
+                        && !track.is_missing
+                        && let Some(ref key) = track.cover_key
+                    {
+                        return self.storage.read_cover(key, max_size).await;
+                    }
+                }
+                return Err(DomainError::NotFound("playlist has no cover art".into()));
             }
         }
 

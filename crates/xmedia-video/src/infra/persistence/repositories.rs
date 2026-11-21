@@ -483,14 +483,16 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         let all_shows = VideoShowModel::all().exec(&mut db).await.map_err(db_err)?;
 
         let mut ep_counts: HashMap<Uuid, i64> = HashMap::new();
+        let mut total_refs: HashMap<Uuid, i64> = HashMap::new();
         let mut seasons_by_show: HashMap<Uuid, HashSet<i64>> = HashMap::new();
         let mut fallback_poster: HashMap<Uuid, String> = HashMap::new();
 
         for v in all_videos {
-            if v.is_missing {
-                continue;
-            }
             if let Some(sid) = v.show_id {
+                *total_refs.entry(sid).or_default() += 1;
+                if v.is_missing {
+                    continue;
+                }
                 *ep_counts.entry(sid).or_default() += 1;
                 seasons_by_show
                     .entry(sid)
@@ -503,16 +505,26 @@ impl VideoCatalogRepository for ToastyVideoCatalogRepository {
         }
 
         for mut show in all_shows {
-            let ep_count = ep_counts.get(&show.id).copied().unwrap_or(0);
-            if ep_count == 0 {
+            let total_ref_count = total_refs.get(&show.id).copied().unwrap_or(0);
+            if total_ref_count == 0 {
+                // Only remove a show when zero episodes (active OR missing) reference it.
+                let favs = VideoFavoriteModel::all()
+                    .exec(&mut db)
+                    .await
+                    .map_err(db_err)?;
+                for fav in favs {
+                    if fav.kind == "show" && fav.target_id == show.id {
+                        fav.delete().exec(&mut db).await.map_err(db_err)?;
+                    }
+                }
                 show.delete().exec(&mut db).await.map_err(db_err)?;
                 continue;
             }
+            let ep_count = ep_counts.get(&show.id).copied().unwrap_or(0);
             let season_count = seasons_by_show
                 .get(&show.id)
                 .map(|set| set.len() as i64)
-                .unwrap_or(1)
-                .max(1);
+                .unwrap_or(0);
             let poster = show
                 .poster_key
                 .clone()

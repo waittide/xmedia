@@ -472,10 +472,12 @@ fn base_json_envelope(status: &str) -> Map<String, Value> {
 
 fn xml_http_response(xml: String) -> Response {
     let mut res = (StatusCode::OK, Body::from(xml)).into_response();
-    res.headers_mut().insert(
+    let headers = res.headers_mut();
+    headers.insert(
         CONTENT_TYPE,
         HeaderValue::from_static("application/xml; charset=utf-8"),
     );
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     res
 }
 
@@ -517,10 +519,12 @@ fn json_http_response(fmt: ResponseFormat, callback: &str, root: Map<String, Val
         }
         _ => {
             let mut res = (StatusCode::OK, Body::from(json_text)).into_response();
-            res.headers_mut().insert(
+            let headers = res.headers_mut();
+            headers.insert(
                 CONTENT_TYPE,
                 HeaderValue::from_static("application/json; charset=utf-8"),
             );
+            headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
             res
         }
     }

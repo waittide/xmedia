@@ -202,13 +202,15 @@ impl VideoStoragePort for LocalVideoStorage {
             .find(|s| s.id == sub_id)
             .ok_or_else(|| DomainError::NotFound("subtitle track not found".into()))?;
 
-        let path = match (&library.kind, &video.source) {
-            (LibraryKind::Managed, VideoSource::Managed { .. }) => {
-                sanitize_join(&self.subtitles_dir, &sub.path_or_key)?
-            }
-            (LibraryKind::LocalMount { root_path }, VideoSource::LocalPath { .. }) => {
-                sanitize_join(Path::new(root_path), &sub.path_or_key)?
-            }
+        let (root_dir, path) = match (&library.kind, &video.source) {
+            (LibraryKind::Managed, VideoSource::Managed { .. }) => (
+                self.subtitles_dir.clone(),
+                sanitize_join(&self.subtitles_dir, &sub.path_or_key)?,
+            ),
+            (LibraryKind::LocalMount { root_path }, VideoSource::LocalPath { .. }) => (
+                PathBuf::from(root_path),
+                sanitize_join(Path::new(root_path), &sub.path_or_key)?,
+            ),
             _ => {
                 return Err(DomainError::Validation(
                     "mismatched library kind and video source".into(),
@@ -216,9 +218,9 @@ impl VideoStoragePort for LocalVideoStorage {
             }
         };
 
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|e| DomainError::Storage(format!("failed to read subtitle: {e}")))?;
+        let bytes = read_regular_bounded_async(&path, Some(&root_dir), MAX_SIDECAR_SUBTITLE_BYTES)
+            .await?
+            .ok_or_else(|| DomainError::NotFound("subtitle file not found or rejected".into()))?;
         Ok((sub.format.clone(), bytes))
     }
 
@@ -336,14 +338,7 @@ impl VideoScannerPort for LocalVideoScanner {
     }
 
     async fn read_external_image(&self, path: &str) -> DomainResult<Option<Vec<u8>>> {
-        let p = Path::new(path);
-        if !p.is_file() {
-            return Ok(None);
-        }
-        let bytes = tokio::fs::read(p)
-            .await
-            .map_err(|e| DomainError::Storage(format!("failed reading poster {path}: {e}")))?;
-        Ok(Some(bytes))
+        read_regular_bounded_async(Path::new(path), None, MAX_EXTERNAL_POSTER_BYTES).await
     }
 
     async fn compute_file_fingerprint(&self, path: &Path) -> DomainResult<String> {
@@ -369,6 +364,55 @@ fn path_to_slash(rel: &Path) -> String {
         .join("/")
 }
 
+const MAX_SIDECAR_SUBTITLE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_EXTERNAL_POSTER_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_NFO_BYTES: u64 = 2 * 1024 * 1024;
+
+fn is_regular_non_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| !m.file_type().is_symlink() && m.is_file())
+        .unwrap_or(false)
+}
+
+async fn read_regular_bounded_async(
+    path: &Path,
+    expected_root: Option<&Path>,
+    max_bytes: u64,
+) -> DomainResult<Option<Vec<u8>>> {
+    let path_owned = path.to_path_buf();
+    let root_owned = expected_root.map(Path::to_path_buf);
+    tokio::task::spawn_blocking(move || {
+        let Ok(meta) = std::fs::symlink_metadata(&path_owned) else {
+            return Ok(None);
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > max_bytes {
+            return Ok(None);
+        }
+        let target = if let Some(ref root) = root_owned {
+            let Ok(canon_root) = std::fs::canonicalize(root) else {
+                return Ok(None);
+            };
+            let Ok(canon_file) = std::fs::canonicalize(&path_owned) else {
+                return Ok(None);
+            };
+            if !canon_file.starts_with(&canon_root) {
+                return Ok(None);
+            }
+            canon_file
+        } else {
+            path_owned
+        };
+        let bytes = std::fs::read(&target)
+            .map_err(|e| DomainError::Storage(format!("failed reading file: {e}")))?;
+        if (bytes.len() as u64) > max_bytes {
+            return Ok(None);
+        }
+        Ok(Some(bytes))
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("file read task failed: {e}")))?
+}
+
 fn scan_dir_subtitles(root: &Path, parent_dir: &Path) -> Vec<CachedSubtitleFile> {
     let Ok(read_dir) = std::fs::read_dir(parent_dir) else {
         return Vec::new();
@@ -376,7 +420,7 @@ fn scan_dir_subtitles(root: &Path, parent_dir: &Path) -> Vec<CachedSubtitleFile>
     let mut files: Vec<CachedSubtitleFile> = Vec::new();
     for item in read_dir.flatten() {
         let p = item.path();
-        if !p.is_file() {
+        if !is_regular_non_symlink(&p) {
             continue;
         }
         let Some(ext) = p.extension().and_then(|s| s.to_str()) else {
@@ -483,7 +527,7 @@ fn discover_video_poster(
             format!("{video_stem}.{ext}"),
         ] {
             let p = parent_dir.join(candidate_name);
-            if p.is_file() {
+            if is_regular_non_symlink(&p) {
                 return Some(p.to_string_lossy().into_owned());
             }
         }
@@ -503,7 +547,7 @@ fn discover_video_poster(
     ];
 
     let allow_dir_poster = single_video_dir
-        || parent_dir.join("tvshow.nfo").is_file()
+        || is_regular_non_symlink(&parent_dir.join("tvshow.nfo"))
         || is_season_dir_name(parent_dir);
     if allow_dir_poster {
         let found_in_dir = dir_cache
@@ -511,7 +555,7 @@ fn discover_video_poster(
             .or_insert_with(|| {
                 for name in poster_names {
                     let p = parent_dir.join(name);
-                    if p.is_file() {
+                    if is_regular_non_symlink(&p) {
                         return Some(p.to_string_lossy().into_owned());
                     }
                 }
@@ -524,7 +568,7 @@ fn discover_video_poster(
     }
 
     // Jellyfin `Show/Season XX/` fallback: look up series-level `poster.*` in parent show directory
-    if (is_season_dir_name(parent_dir) || parent_dir.join("season.nfo").is_file())
+    if (is_season_dir_name(parent_dir) || is_regular_non_symlink(&parent_dir.join("season.nfo")))
         && parent_dir != root
         && let Some(show_dir) = parent_dir.parent()
         && show_dir != root
@@ -535,7 +579,7 @@ fn discover_video_poster(
             .or_insert_with(|| {
                 for name in poster_names {
                     let p = show_dir.join(name);
-                    if p.is_file() {
+                    if is_regular_non_symlink(&p) {
                         return Some(p.to_string_lossy().into_owned());
                     }
                 }
@@ -570,7 +614,8 @@ fn nfo_candidate_paths(
 }
 
 fn read_and_parse_nfo(path: &Path) -> Option<ParsedNfoMetadata> {
-    if !path.is_file() {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > MAX_NFO_BYTES {
         return None;
     }
     let bytes = std::fs::read(path).ok()?;

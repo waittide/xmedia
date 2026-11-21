@@ -88,7 +88,8 @@ impl VideoShelf {
         video_ids: Vec<VideoId>,
     ) -> DomainResult<Self> {
         let name = name.into().trim().to_string();
-        if name.is_empty() || name.len() > 120 {
+        let char_len = name.chars().count();
+        if char_len == 0 || char_len > 120 {
             return Err(DomainError::Validation(
                 "shelf name must be between 1 and 120 characters".into(),
             ));

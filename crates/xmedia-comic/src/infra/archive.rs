@@ -157,28 +157,78 @@ impl ArchiveReaderPort for PureRustArchiveReader {
         };
 
         tokio::task::spawn_blocking(move || {
+            const MAX_COMIC_PAGE_BYTES: u64 = 64 * 1024 * 1024;
             let bytes = match source_kind {
                 ChapterSourceKind::ArchiveFile => {
                     let file = File::open(&path_owned).map_err(|e| {
-                        DomainError::Storage(format!("failed to open archive '{path_owned}': {e}"))
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            DomainError::NotFound(format!("archive '{path_owned}' not found"))
+                        } else {
+                            DomainError::Storage(format!(
+                                "failed to open archive '{path_owned}': {e}"
+                            ))
+                        }
                     })?;
                     let mut zip = ZipArchive::new(file).map_err(|e| {
                         DomainError::Storage(format!("invalid zip archive '{path_owned}': {e}"))
                     })?;
-                    let mut entry = zip.by_name(&entry_name).map_err(|e| {
+                    let entry = zip.by_name(&entry_name).map_err(|e| {
                         DomainError::NotFound(format!(
                             "page entry '{entry_name}' not found in '{path_owned}': {e}"
                         ))
                     })?;
-                    let mut buf = Vec::with_capacity(entry.size() as usize);
-                    entry.read_to_end(&mut buf).map_err(|e| {
-                        DomainError::Storage(format!("failed reading page bytes: {e}"))
-                    })?;
+                    let prealloc = entry.size().min(1024 * 1024) as usize;
+                    let mut buf = Vec::with_capacity(prealloc);
+                    entry
+                        .take(MAX_COMIC_PAGE_BYTES + 1)
+                        .read_to_end(&mut buf)
+                        .map_err(|e| {
+                            DomainError::Storage(format!("failed reading page bytes: {e}"))
+                        })?;
+                    if (buf.len() as u64) > MAX_COMIC_PAGE_BYTES {
+                        return Err(DomainError::Validation(format!(
+                            "comic page '{entry_name}' exceeds {} MiB safety limit",
+                            MAX_COMIC_PAGE_BYTES / (1024 * 1024)
+                        )));
+                    }
                     buf
                 }
                 ChapterSourceKind::ImageDirectory => {
-                    let full_path = Path::new(&path_owned).join(&entry_name);
-                    fs::read(&full_path).map_err(|e| {
+                    let base = Path::new(&path_owned);
+                    let full_path = base.join(&entry_name);
+                    let sym_meta = fs::symlink_metadata(&full_path).map_err(|e| {
+                        if e.kind() == std::io::ErrorKind::NotFound {
+                            DomainError::NotFound(format!("page image '{entry_name}' not found"))
+                        } else {
+                            DomainError::Storage(format!(
+                                "failed stating image '{}': {e}",
+                                full_path.display()
+                            ))
+                        }
+                    })?;
+                    if sym_meta.file_type().is_symlink() || !sym_meta.is_file() {
+                        return Err(DomainError::Forbidden(
+                            "symlink or non-regular comic page file rejected".into(),
+                        ));
+                    }
+                    if sym_meta.len() > MAX_COMIC_PAGE_BYTES {
+                        return Err(DomainError::Validation(format!(
+                            "comic page '{entry_name}' exceeds {} MiB safety limit",
+                            MAX_COMIC_PAGE_BYTES / (1024 * 1024)
+                        )));
+                    }
+                    let canon_base = fs::canonicalize(base).map_err(|e| {
+                        DomainError::Storage(format!("failed resolving comic dir: {e}"))
+                    })?;
+                    let canon_file = fs::canonicalize(&full_path).map_err(|e| {
+                        DomainError::Storage(format!("failed resolving comic page: {e}"))
+                    })?;
+                    if !canon_file.starts_with(&canon_base) {
+                        return Err(DomainError::Forbidden(
+                            "comic page path escapes chapter directory".into(),
+                        ));
+                    }
+                    fs::read(&canon_file).map_err(|e| {
                         DomainError::Storage(format!(
                             "failed reading image '{}': {e}",
                             full_path.display()

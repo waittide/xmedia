@@ -11,7 +11,7 @@ use xmedia_core::infra::fingerprint::{fast_content_fingerprint, max_mtime_secs};
 use xmedia_core::infra::stream::{
     move_or_copy_file, open_file_range_stream_spec, sanitize_join, sha256_file_hex, sha256_hex,
 };
-use xmedia_core::infra::thumbnail::{ThumbnailStore, sniff_image_mime};
+use xmedia_core::infra::thumbnail::ThumbnailStore;
 
 use crate::application::ports::{
     MusicScannerPort, MusicStoragePort, ScannedAudioEntry, StoredManagedAudio,
@@ -186,10 +186,10 @@ impl MusicStoragePort for LocalMusicStorage {
                 },
             ) => {
                 let p = sanitize_join(&self.lyrics_dir, key)?;
-                if p.is_file() {
-                    let b = tokio::fs::read(&p)
-                        .await
-                        .map_err(|e| DomainError::Storage(format!("failed reading lrc: {e}")))?;
+                if let Some(b) =
+                    read_regular_bounded_async(&p, Some(&self.lyrics_dir), MAX_SIDECAR_LRC_BYTES)
+                        .await?
+                {
                     return Ok(Some(Bytes::from(b)));
                 }
                 Ok(None)
@@ -202,18 +202,19 @@ impl MusicStoragePort for LocalMusicStorage {
                     ..
                 },
             ) => {
+                let root = Path::new(root_path);
                 if let Some(rel_lrc) = sidecar_lrc_path {
-                    let p = sanitize_join(Path::new(root_path), rel_lrc)?;
-                    if p.is_file()
-                        && let Ok(b) = tokio::fs::read(&p).await
+                    let p = sanitize_join(root, rel_lrc)?;
+                    if let Ok(Some(b)) =
+                        read_regular_bounded_async(&p, Some(root), MAX_SIDECAR_LRC_BYTES).await
                     {
                         return Ok(Some(Bytes::from(b)));
                     }
                 }
-                let audio_p = sanitize_join(Path::new(root_path), relative_path)?;
+                let audio_p = sanitize_join(root, relative_path)?;
                 let lrc_p = audio_p.with_extension("lrc");
-                if lrc_p.is_file()
-                    && let Ok(b) = tokio::fs::read(&lrc_p).await
+                if let Ok(Some(b)) =
+                    read_regular_bounded_async(&lrc_p, Some(root), MAX_SIDECAR_LRC_BYTES).await
                 {
                     return Ok(Some(Bytes::from(b)));
                 }
@@ -293,7 +294,8 @@ impl MusicScannerPort for LocalMusicScanner {
                     .to_string();
 
                 let sidecar_lrc = path.with_extension("lrc");
-                let sidecar_lrc_relative_path = if sidecar_lrc.is_file() {
+                let has_safe_lrc = is_regular_non_symlink(&sidecar_lrc);
+                let sidecar_lrc_relative_path = if has_safe_lrc {
                     sidecar_lrc.strip_prefix(&root).ok().map(|r| {
                         r.components()
                             .map(|c| c.as_os_str().to_string_lossy().into_owned())
@@ -311,7 +313,7 @@ impl MusicScannerPort for LocalMusicScanner {
                     .clone();
 
                 let mut sidecars: Vec<PathBuf> = Vec::new();
-                if sidecar_lrc.is_file() {
+                if has_safe_lrc {
                     sidecars.push(sidecar_lrc);
                 }
                 if let Some(ref cov) = directory_cover_path {
@@ -343,19 +345,19 @@ impl MusicScannerPort for LocalMusicScanner {
         absolute_cover_path: &str,
     ) -> DomainResult<Option<BinaryPayload>> {
         let p = Path::new(absolute_cover_path);
-        if !p.is_file() {
+        let Some(bytes) = read_regular_bounded_async(p, None, MAX_DIR_COVER_BYTES).await? else {
             return Ok(None);
-        }
-        let bytes = tokio::fs::read(p).await.map_err(|e| {
-            DomainError::Storage(format!(
-                "failed to read directory cover {absolute_cover_path}: {e}"
-            ))
-        })?;
+        };
         if bytes.is_empty() {
             return Ok(None);
         }
-        let mime_type = sniff_image_mime(&bytes).to_string();
-        Ok(Some(BinaryPayload { bytes, mime_type }))
+        let Some(mime_type) = xmedia_core::infra::thumbnail::sniff_raster_image_mime(&bytes) else {
+            return Ok(None);
+        };
+        Ok(Some(BinaryPayload {
+            bytes,
+            mime_type: mime_type.to_string(),
+        }))
     }
 
     async fn compute_file_fingerprint(&self, absolute_path: &str) -> DomainResult<String> {
@@ -365,6 +367,54 @@ impl MusicScannerPort for LocalMusicScanner {
             .map_err(|e| DomainError::Storage(format!("fingerprint task failed: {e}")))??;
         Ok(hash)
     }
+}
+
+const MAX_SIDECAR_LRC_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_DIR_COVER_BYTES: u64 = 16 * 1024 * 1024;
+
+fn is_regular_non_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|m| !m.file_type().is_symlink() && m.is_file())
+        .unwrap_or(false)
+}
+
+async fn read_regular_bounded_async(
+    path: &Path,
+    expected_root: Option<&Path>,
+    max_bytes: u64,
+) -> DomainResult<Option<Vec<u8>>> {
+    let path_owned = path.to_path_buf();
+    let root_owned = expected_root.map(Path::to_path_buf);
+    tokio::task::spawn_blocking(move || {
+        let Ok(meta) = std::fs::symlink_metadata(&path_owned) else {
+            return Ok(None);
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > max_bytes {
+            return Ok(None);
+        }
+        let target = if let Some(ref root) = root_owned {
+            let Ok(canon_root) = std::fs::canonicalize(root) else {
+                return Ok(None);
+            };
+            let Ok(canon_file) = std::fs::canonicalize(&path_owned) else {
+                return Ok(None);
+            };
+            if !canon_file.starts_with(&canon_root) {
+                return Ok(None);
+            }
+            canon_file
+        } else {
+            path_owned
+        };
+        let bytes = std::fs::read(&target)
+            .map_err(|e| DomainError::Storage(format!("failed reading file: {e}")))?;
+        if (bytes.len() as u64) > max_bytes {
+            return Ok(None);
+        }
+        Ok(Some(bytes))
+    })
+    .await
+    .map_err(|e| DomainError::Storage(format!("file read task failed: {e}")))?
 }
 
 fn find_directory_cover(dir: &Path) -> Option<String> {
@@ -380,7 +430,7 @@ fn find_directory_cover(dir: &Path) -> Option<String> {
     ];
     for name in CANDIDATES {
         let p = dir.join(name);
-        if p.is_file() {
+        if is_regular_non_symlink(&p) {
             return Some(p.to_string_lossy().into_owned());
         }
     }

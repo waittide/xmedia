@@ -324,6 +324,7 @@ impl SmartComicScanner {
 }
 
 fn find_series_cover_bytes(series_dir: &Path) -> Option<Vec<u8>> {
+    const MAX_SERIES_COVER_BYTES: u64 = 32 * 1024 * 1024;
     const CANDIDATES: &[&str] = &[
         "cover.jpg",
         "cover.jpeg",
@@ -334,10 +335,22 @@ fn find_series_cover_bytes(series_dir: &Path) -> Option<Vec<u8>> {
         "folder.png",
         "folder.webp",
     ];
+    let canon_dir = fs::canonicalize(series_dir).ok()?;
     for name in CANDIDATES {
         let candidate = series_dir.join(name);
-        if candidate.is_file()
-            && let Ok(bytes) = fs::read(&candidate)
+        let Ok(meta) = fs::symlink_metadata(&candidate) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > MAX_SERIES_COVER_BYTES {
+            continue;
+        }
+        let Ok(canon_file) = fs::canonicalize(&candidate) else {
+            continue;
+        };
+        if !canon_file.starts_with(&canon_dir) {
+            continue;
+        }
+        if let Ok(bytes) = fs::read(&canon_file)
             && !bytes.is_empty()
         {
             return Some(bytes);

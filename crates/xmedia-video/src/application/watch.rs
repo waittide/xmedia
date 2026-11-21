@@ -53,6 +53,11 @@ impl VideoWatchService {
             .duration_secs
             .filter(|&d| d > 0)
             .unwrap_or(video.duration_secs);
+        if !input.position_secs.is_finite() {
+            return Err(DomainError::Validation(
+                "position_secs must be a finite number".into(),
+            ));
+        }
         let position_secs = input.position_secs.max(0.0);
         let completed =
             WatchProgress::compute_completed(position_secs, duration_secs, input.completed);

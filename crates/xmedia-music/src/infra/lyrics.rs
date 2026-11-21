@@ -151,9 +151,16 @@ fn extract_leading_timestamps(mut rest: &str) -> (Vec<u64>, &str) {
     (out, rest)
 }
 
+fn parse_ascii_u64(raw: &str) -> Option<u64> {
+    if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse().ok()
+}
+
 fn parse_single_lrc_timestamp(token: &str) -> Option<u64> {
     let (mins_str, sec_part) = token.trim().split_once(':')?;
-    let mins: u64 = mins_str.trim().parse().ok()?;
+    let mins: u64 = parse_ascii_u64(mins_str.trim())?;
 
     let (secs_str, frac_opt) = if let Some((s, f)) = sec_part.split_once('.') {
         (s, Some(f))
@@ -163,16 +170,21 @@ fn parse_single_lrc_timestamp(token: &str) -> Option<u64> {
         (sec_part, None)
     };
 
-    let secs: u64 = secs_str.trim().parse().ok()?;
+    let secs: u64 = parse_ascii_u64(secs_str.trim())?;
     let frac_ms: u64 = match frac_opt {
         None => 0,
         Some(f) => {
             let clean = f.trim();
-            match clean.len() {
-                0 => 0,
-                1 => clean.parse::<u64>().ok()? * 100,
-                2 => clean.parse::<u64>().ok()? * 10,
-                _ => clean[..3].parse::<u64>().ok()?,
+            if clean.is_empty() {
+                0
+            } else if !clean.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            } else {
+                match clean.len() {
+                    1 => clean.parse::<u64>().ok()? * 100,
+                    2 => clean.parse::<u64>().ok()? * 10,
+                    _ => clean.get(..3)?.parse::<u64>().ok()?,
+                }
             }
         }
     };

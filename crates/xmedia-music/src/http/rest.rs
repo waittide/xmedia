@@ -449,11 +449,15 @@ async fn download_track(
 
 async fn get_cover(
     State(state): State<MusicHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<String>,
     Query(p): Query<CoverParams>,
 ) -> ApiResult<Response> {
-    let cover = state.services.catalog.get_cover_art(&id, p.size).await?;
+    let cover = state
+        .services
+        .catalog
+        .get_cover_art(&user, &id, p.size)
+        .await?;
     Ok(into_binary_cache_response(cover))
 }
 

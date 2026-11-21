@@ -217,14 +217,17 @@ pub fn convert_ass_to_vtt(ass: &str) -> String {
             continue;
         }
         if let Some(diag) = line.strip_prefix("Dialogue:") {
-            let parts: Vec<&str> = diag.splitn(text_col + 1, ',').collect();
-            if parts.len() > text_col
-                && let (Some(start_vtt), Some(end_vtt)) = (
-                    ass_time_to_vtt(parts[start_col].trim()),
-                    ass_time_to_vtt(parts[end_col].trim()),
-                )
-            {
-                let cleaned = strip_ass_tags(parts[text_col]);
+            let max_col = start_col.max(end_col).max(text_col);
+            let parts: Vec<&str> = diag.splitn(max_col + 1, ',').collect();
+            if let (Some(start_raw), Some(end_raw), Some(text_raw)) = (
+                parts.get(start_col),
+                parts.get(end_col),
+                parts.get(text_col),
+            ) && let (Some(start_vtt), Some(end_vtt)) = (
+                ass_time_to_vtt(start_raw.trim()),
+                ass_time_to_vtt(end_raw.trim()),
+            ) {
+                let cleaned = strip_ass_tags(text_raw);
                 if !cleaned.trim().is_empty() {
                     out.push_str(&format!("{start_vtt} --> {end_vtt}\n{cleaned}\n\n"));
                 }
@@ -251,16 +254,31 @@ fn ass_time_to_vtt(raw: &str) -> Option<String> {
 
 fn strip_ass_tags(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut in_brace = false;
-    for ch in raw.chars() {
-        match ch {
-            '{' => in_brace = true,
-            '}' => in_brace = false,
-            _ if !in_brace => out.push(ch),
-            _ => {}
+    let mut rest = raw;
+    while let Some(open_idx) = rest.find('{') {
+        out.push_str(&rest[..open_idx]);
+        let after_open = &rest[open_idx + 1..];
+        if let Some(close_idx) = after_open.find('}') {
+            rest = &after_open[close_idx + 1..];
+        } else {
+            // Unclosed '{' — preserve literal text rather than dropping trailing dialogue.
+            out.push_str(&rest[open_idx..]);
+            rest = "";
+            break;
         }
     }
-    out.replace("\\N", "\n").replace("\\n", "\n")
+    out.push_str(rest);
+    let converted = out
+        .replace("\\N", "\n")
+        .replace("\\n", "\n")
+        .replace("\\h", " ");
+    // Collapse blank lines so crafted `\N\N` cannot terminate a WebVTT cue prematurely.
+    converted
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn shift_webvtt_timestamps(vtt: &str, offset_secs: f64) -> String {

@@ -518,7 +518,7 @@ async fn handle_authenticated_method(
                 .first("id")
                 .ok_or_else(|| SubsonicError::missing_param("id"))?;
             let size = params.u32("size");
-            let cover = state.services.catalog.get_cover_art(id, size).await?;
+            let cover = state.services.catalog.get_cover_art(user, id, size).await?;
             Ok(into_binary_cache_response(cover))
         }
 
