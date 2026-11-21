@@ -345,17 +345,19 @@ function formatElapsed(task: ToolTaskEntry): string {
   >
     <template #subheader>
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <MdSegmentedButton
-          v-model="statusFilter"
-          :options="[
-            { value: 'all', label: `${txt.tasks.filterAll} (${taskStore.persistentTasks.length})` },
-            { value: 'active', label: `${txt.tasks.filterActive} (${taskStore.activeCount})` },
-            { value: 'completed', label: txt.tasks.filterCompleted },
-            { value: 'failed', label: txt.tasks.filterFailed },
-          ]"
-          size="sm"
-          show-check
-        />
+        <div class="no-scrollbar -m-1 max-w-full overflow-x-auto p-1">
+          <MdSegmentedButton
+            v-model="statusFilter"
+            :options="[
+              { value: 'all', label: `${txt.tasks.filterAll} (${taskStore.persistentTasks.length})` },
+              { value: 'active', label: `${txt.tasks.filterActive} (${taskStore.activeCount})` },
+              { value: 'completed', label: txt.tasks.filterCompleted },
+              { value: 'failed', label: txt.tasks.filterFailed },
+            ]"
+            size="sm"
+            show-check
+          />
+        </div>
 
         <button
           v-if="hasCompleted"

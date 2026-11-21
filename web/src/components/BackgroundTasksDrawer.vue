@@ -422,14 +422,13 @@ async function handleClearFinished(): Promise<void> {
     @close="emit('close')"
   >
     <template #subheader>
-      <div class="no-scrollbar -m-1 overflow-x-auto p-1">
-        <MdSegmentedButton
-          v-model="activeFilter"
-          :options="filterOptions"
-          size="sm"
-          :show-check="false"
-        />
-      </div>
+      <MdSegmentedButton
+        v-model="activeFilter"
+        :options="filterOptions"
+        size="sm"
+        full-width
+        :show-check="false"
+      />
     </template>
 
     <!-- Empty State -->

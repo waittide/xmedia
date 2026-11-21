@@ -693,7 +693,7 @@ async function togglePageBookmark(): Promise<void> {
     <!-- Floating Reader Settings Popover -->
     <div
       v-if="settingsDrawerOpen && ctx"
-      class="fixed top-16 right-4 z-[var(--z-sheet)] w-80 space-y-4 rounded-[24px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)] p-5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
+      class="fixed top-16 right-4 z-[var(--z-sheet)] w-80 max-w-[calc(100vw-2rem)] space-y-4 rounded-[24px] border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)] p-5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
     >
       <div>
         <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
@@ -728,9 +728,10 @@ async function togglePageBookmark(): Promise<void> {
       </div>
 
       <div v-if="readerMode === 'webtoon'">
-        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ t('reader.webtoonWidth') }} ({{ webtoonWidth }}px)
-        </label>
+        <div class="mb-1 flex items-center justify-between text-xs">
+          <span class="font-semibold text-[var(--md-sys-color-on-surface)]">{{ t('reader.webtoonWidth') }}</span>
+          <span class="font-mono tabular-nums text-[var(--md-sys-color-on-surface-variant)]">{{ webtoonWidth }} px</span>
+        </div>
         <AppSlider
           v-model="webtoonWidth"
           :min="520"

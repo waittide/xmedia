@@ -269,6 +269,7 @@ async function handleSubmit(): Promise<void> {
           v-model="protocol"
           :options="protocolOptions"
           size="sm"
+          full-width
           :show-check="false"
         />
       </div>
