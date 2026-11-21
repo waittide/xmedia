@@ -1410,3 +1410,212 @@ async fn image_proxy_ssrf_svg_html_and_16mib_cap_and_search_error_isolation() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_full_without_rule_detail_and_group_key()
+ {
+    let mock_app = Router::new()
+        .route(
+            "/err500",
+            get(|| async { (StatusCode::INTERNAL_SERVER_ERROR, "<h1>Server Error</h1>") }),
+        )
+        .route(
+            "/empty200",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from("<html><body><p>unrelated</p></body></html>"))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/valid_detail",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        r#"<html><body><h1 class="title">Real Comic</h1><a class="toc" href="/toc_page">TOC</a></body></html>"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/no_detail_entry",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        r#"<ul id="toc"><li><a href="/ch_page">Ch 1</a></li></ul>"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch_page",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(r#"<div id="imgs"><img src="/p1.jpg"></div>"#))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let h = setup_test_harness(true).await;
+
+    // 1. Import a Legado-format source with ruleDetail
+    let detail_src = serde_json::json!({
+        "bookSourceName": "DetailTest",
+        "bookSourceUrl": base,
+        "bookSourceGroup": "OriginalGroup",
+        "bookSourceType": 2,
+        "ruleDetail": { "name": "h1.title@text", "tocUrl": "a.toc@href" }
+    });
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": detail_src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let detail_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // HTTP 500 -> mode: "detail" must report ok=false and persist last_test_ok=false
+    let (st_500, b_500) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{detail_id}/test"),
+        &h.admin_token,
+        Some(serde_json::json!({ "mode": "detail", "target_url": format!("{base}/err500") })),
+    )
+    .await;
+    assert_eq!(st_500, StatusCode::OK);
+    let v_500: serde_json::Value = serde_json::from_slice(&b_500).unwrap();
+    assert_eq!(v_500["ok"], false, "expected ok=false on 500: {v_500}");
+    assert_eq!(v_500["steps"][0]["ok"], false);
+
+    // Empty-match 200 -> mode: "detail" must report ok=false and persist last_test_ok=false
+    let (st_emp, b_emp) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{detail_id}/test"),
+        &h.admin_token,
+        Some(serde_json::json!({ "mode": "detail", "target_url": format!("{base}/empty200") })),
+    )
+    .await;
+    assert_eq!(st_emp, StatusCode::OK);
+    let v_emp: serde_json::Value = serde_json::from_slice(&b_emp).unwrap();
+    assert_eq!(v_emp["ok"], false, "expected ok=false on empty200: {v_emp}");
+    assert_eq!(v_emp["steps"][0]["ok"], false);
+
+    let (st_list, b_list) =
+        json_request(&h.app, "GET", "/api/v1/comic/sources", &h.admin_token, None).await;
+    assert_eq!(st_list, StatusCode::OK);
+    let list_val: Vec<serde_json::Value> = serde_json::from_slice(&b_list).unwrap();
+    assert_eq!(list_val[0]["last_test_ok"], false);
+
+    // Valid 200 detail -> mode: "detail" reports ok=true
+    let (st_ok, b_ok) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{detail_id}/test"),
+        &h.admin_token,
+        Some(serde_json::json!({ "mode": "detail", "target_url": format!("{base}/valid_detail") })),
+    )
+    .await;
+    assert_eq!(st_ok, StatusCode::OK);
+    let v_ok: serde_json::Value = serde_json::from_slice(&b_ok).unwrap();
+    assert_eq!(v_ok["ok"], true);
+    assert_eq!(v_ok["comic_detail"]["title"], "Real Comic");
+
+    // Bug 7: Clear group_name -> restore group_name -> export must preserve "bookSourceGroup"
+    let (st_clr, _) = json_request(
+        &h.app,
+        "PATCH",
+        &format!("/api/v1/comic/sources/{detail_id}"),
+        &h.admin_token,
+        Some(serde_json::json!({ "group_name": "" })),
+    )
+    .await;
+    assert_eq!(st_clr, StatusCode::OK);
+    let (st_rst, _) = json_request(
+        &h.app,
+        "PATCH",
+        &format!("/api/v1/comic/sources/{detail_id}"),
+        &h.admin_token,
+        Some(serde_json::json!({ "group_name": "Restored" })),
+    )
+    .await;
+    assert_eq!(st_rst, StatusCode::OK);
+    let (st_exp, b_exp) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/comic/sources/{detail_id}/export"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_exp, StatusCode::OK);
+    let exp_val: serde_json::Value = serde_json::from_slice(&b_exp).unwrap();
+    assert_eq!(exp_val["bookSourceGroup"], "Restored");
+    assert!(exp_val.get("sourceGroup").is_none());
+
+    // 2. Source WITHOUT ruleDetail running Full mode with target_url still succeeds through toc + pages
+    let no_detail_src = serde_json::json!({
+        "sourceName": "NoDetailSource",
+        "sourceUrl": format!("{base}#nodetail"),
+        "ruleToc": {
+            "chapterList": "#toc li",
+            "chapterName": "a@text",
+            "chapterUrl": "a@href"
+        },
+        "ruleContent": {
+            "content": "#imgs@html"
+        }
+    });
+    let (st_imp2, b_imp2) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": no_detail_src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp2, StatusCode::OK);
+    let imp_val2: serde_json::Value = serde_json::from_slice(&b_imp2).unwrap();
+    let no_detail_id = imp_val2["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st_full_nd, b_full_nd) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{no_detail_id}/test"),
+        &h.admin_token,
+        Some(
+            serde_json::json!({ "mode": "full", "target_url": format!("{base}/no_detail_entry") }),
+        ),
+    )
+    .await;
+    assert_eq!(st_full_nd, StatusCode::OK);
+    let v_full_nd: serde_json::Value = serde_json::from_slice(&b_full_nd).unwrap();
+    assert_eq!(
+        v_full_nd["ok"], true,
+        "full mode without ruleDetail failed: {v_full_nd}"
+    );
+    assert_eq!(v_full_nd["chapters_total_count"], 1);
+    assert_eq!(v_full_nd["page_count"], 1);
+
+    server.abort();
+}

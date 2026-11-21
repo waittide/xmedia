@@ -33,7 +33,12 @@ impl ComicSourceRecord {
             .ok()
             .and_then(|v| {
                 v.as_object().map(|obj| {
-                    obj.contains_key("bookSourceGroup") && !obj.contains_key("sourceGroup")
+                    obj.contains_key("bookSourceGroup")
+                        || (!obj.contains_key("sourceGroup")
+                            && (obj.contains_key("bookSourceName")
+                                || obj.contains_key("bookSourceUrl")
+                                || obj.contains_key("ruleBookInfo")
+                                || obj.contains_key("ruleContent")))
                 })
             })
             .unwrap_or(false)

@@ -212,17 +212,20 @@ impl ReusableComicSession {
         let mut chapters = Vec::new();
         let mut next_url_opt = Some(toc_url.to_string());
         let mut visited = HashSet::new();
+        let mut pages_fetched = 0usize;
         const MAX_TOC_PAGES: usize = 30;
 
         while let Some(page_url) = next_url_opt.take() {
             self.check_active()?;
-            if visited.len() >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
+            if pages_fetched >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
                 break;
             }
+            pages_fetched += 1;
             let fetched = self
                 .inner
                 .http()
                 .fetch(&page_url, &self.source.source_url)?;
+            visited.insert(fetched.final_url.clone());
             let mut raw_input = RuleValue::from_raw(fetched.body);
 
             if let Some(ref pre_js) = rule_toc.pre_update_js
@@ -250,14 +253,14 @@ impl ReusableComicSession {
                 let is_vol_str =
                     self.eval_opt(&item, rule_toc.is_volume.as_deref(), &fetched.final_url);
                 let trimmed_url = url_raw.trim();
+                let is_placeholder =
+                    is_placeholder_or_fragment_url(trimmed_url, &fetched.final_url);
                 let is_volume = matches!(
                     is_vol_str.trim().to_ascii_lowercase().as_str(),
                     "true" | "1"
-                ) || trimmed_url.is_empty()
-                    || trimmed_url == "#"
-                    || trimmed_url.to_ascii_lowercase().starts_with("javascript:");
+                ) || is_placeholder;
 
-                let resolved = if trimmed_url.is_empty() || is_volume && trimmed_url == "#" {
+                let resolved = if is_placeholder {
                     String::new()
                 } else {
                     resolve_relative_url(trimmed_url, &fetched.final_url)
@@ -276,8 +279,9 @@ impl ReusableComicSession {
                 && !next_rule.trim().is_empty()
             {
                 let next_raw = self.eval_opt(&raw_input, Some(next_rule), &fetched.final_url);
-                if !next_raw.is_empty() {
-                    let resolved_next = resolve_relative_url(&next_raw, &fetched.final_url);
+                let next_trimmed = next_raw.trim();
+                if !is_placeholder_or_fragment_url(next_trimmed, &fetched.final_url) {
+                    let resolved_next = resolve_relative_url(next_trimmed, &fetched.final_url);
                     if !visited.contains(&resolved_next) {
                         next_url_opt = Some(resolved_next);
                     }
@@ -311,17 +315,20 @@ impl ReusableComicSession {
         let mut seen_urls = HashSet::new();
         let mut next_url_opt = Some(chapter_url.to_string());
         let mut visited_pages = HashSet::new();
+        let mut pages_fetched = 0usize;
         const MAX_CONTENT_PAGES: usize = 20;
 
         while let Some(page_url) = next_url_opt.take() {
             self.check_active()?;
-            if visited_pages.len() >= MAX_CONTENT_PAGES || !visited_pages.insert(page_url.clone()) {
+            if pages_fetched >= MAX_CONTENT_PAGES || !visited_pages.insert(page_url.clone()) {
                 break;
             }
+            pages_fetched += 1;
             let fetched = self
                 .inner
                 .http()
                 .fetch(&page_url, &self.source.source_url)?;
+            visited_pages.insert(fetched.final_url.clone());
             let raw_input = RuleValue::from_raw(fetched.body);
 
             let evaluated = self.eval_string(&raw_input, content_rule, &fetched.final_url)?;
@@ -348,8 +355,9 @@ impl ReusableComicSession {
                 && !next_rule.trim().is_empty()
             {
                 let next_raw = self.eval_opt(&raw_input, Some(next_rule), &fetched.final_url);
-                if !next_raw.is_empty() {
-                    let resolved_next = resolve_relative_url(&next_raw, &fetched.final_url);
+                let next_trimmed = next_raw.trim();
+                if !is_placeholder_or_fragment_url(next_trimmed, &fetched.final_url) {
+                    let resolved_next = resolve_relative_url(next_trimmed, &fetched.final_url);
                     if !visited_pages.contains(&resolved_next) {
                         next_url_opt = Some(resolved_next);
                     }
@@ -372,31 +380,36 @@ impl ReusableComicSession {
         }
 
         let mut raw_candidates: Vec<String> = Vec::new();
+        let img_rule_opt = image_url_rule.filter(|r| !r.trim().is_empty());
 
         // 1. JSON array output (from JS rules or JSONPath arrays serialized as JSON)
         if trimmed.starts_with('[')
             && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed)
         {
             for item in arr {
-                match item {
-                    serde_json::Value::String(s) => raw_candidates.push(s),
-                    other => {
-                        if let Some(img_rule) = image_url_rule.filter(|r| !r.trim().is_empty()) {
-                            let rv = RuleValue::Json(other);
-                            let extracted = self.eval_opt(&rv, Some(img_rule), base_url);
-                            if !extracted.is_empty() {
-                                raw_candidates.push(extracted);
-                            }
-                        } else if let Some(s) = other.as_str() {
-                            raw_candidates.push(s.to_string());
-                        }
+                if let Some(img_rule) = img_rule_opt {
+                    let rv = match item {
+                        serde_json::Value::String(s) => RuleValue::from_raw(s),
+                        other => RuleValue::Json(other),
+                    };
+                    let extracted = self.eval_opt(&rv, Some(img_rule), base_url);
+                    if !extracted.is_empty() {
+                        raw_candidates.push(extracted);
                     }
+                } else if let Some(s) = item.as_str() {
+                    raw_candidates.push(s.to_string());
                 }
             }
             return normalize_extracted_urls(raw_candidates, base_url);
         }
 
-        // 2. Line-by-line / HTML <img> extraction (preserving HTML without stripping!)
+        // 2. Full HTML fragment <img> extraction when no per-item imageUrl rule is configured
+        if img_rule_opt.is_none() && trimmed.to_ascii_lowercase().contains("<img") {
+            extract_img_srcs_from_html(trimmed, &mut raw_candidates);
+            return normalize_extracted_urls(raw_candidates, base_url);
+        }
+
+        // 3. Line-by-line / HTML <img> extraction (preserving HTML without stripping!)
         for line in trimmed.lines() {
             let l = line.trim();
             if l.is_empty() {
@@ -405,13 +418,13 @@ impl ReusableComicSession {
             let lower = l.to_ascii_lowercase();
             if lower.contains("<img") {
                 extract_img_srcs_from_html(l, &mut raw_candidates);
-            } else if let Some(img_rule) = image_url_rule.filter(|r| !r.trim().is_empty()) {
+            } else if let Some(img_rule) = img_rule_opt {
                 let rv = RuleValue::from_raw(l.to_string());
                 let extracted = self.eval_opt(&rv, Some(img_rule), base_url);
                 if !extracted.is_empty() {
                     raw_candidates.push(extracted);
                 }
-            } else {
+            } else if !l.starts_with('<') {
                 raw_candidates.push(l.to_string());
             }
         }
@@ -420,20 +433,42 @@ impl ReusableComicSession {
     }
 }
 
+fn is_invalid_image_candidate(raw: &str) -> bool {
+    let t = raw.trim();
+    if t.is_empty() || t == "#" || t.starts_with('#') {
+        return true;
+    }
+    let lower = t.to_ascii_lowercase();
+    lower.starts_with("javascript:")
+        || lower.starts_with("about:")
+        || lower.starts_with("data:image/svg+xml")
+}
+
+fn is_placeholder_or_fragment_url(raw_url: &str, final_url: &str) -> bool {
+    let t = raw_url.trim();
+    if t.is_empty() || t == "#" || t.starts_with('#') {
+        return true;
+    }
+    let lower = t.to_ascii_lowercase();
+    if lower.starts_with("javascript:") || lower.starts_with("about:") {
+        return true;
+    }
+    let final_no_frag = final_url.split('#').next().unwrap_or(final_url);
+    t.strip_prefix(final_no_frag)
+        .is_some_and(|rest| rest.starts_with('#'))
+}
+
 pub(crate) fn extract_img_srcs_from_html(html_fragment: &str, out: &mut Vec<String>) {
     let Ok(img_sel) = Selector::parse("img") else {
         return;
     };
     let doc = Html::parse_fragment(html_fragment);
     for el in doc.select(&img_sel) {
-        let attr = el
-            .value()
-            .attr("data-url")
-            .or_else(|| el.value().attr("data-original"))
-            .or_else(|| el.value().attr("data-src"))
-            .or_else(|| el.value().attr("src"))
+        let attr = ["data-url", "data-original", "data-src", "src"]
+            .into_iter()
+            .filter_map(|name| el.value().attr(name))
             .map(str::trim)
-            .filter(|s| !s.is_empty());
+            .find(|val| !is_invalid_image_candidate(val));
         if let Some(val) = attr {
             out.push(val.to_string());
         }
@@ -444,14 +479,7 @@ fn normalize_extracted_urls(candidates: Vec<String>, base_url: &str) -> Vec<Stri
     let mut out = Vec::with_capacity(candidates.len());
     for raw in candidates {
         let t = raw.trim();
-        if t.is_empty() || t == "#" {
-            continue;
-        }
-        let lower = t.to_ascii_lowercase();
-        if lower.starts_with("javascript:")
-            || lower.starts_with("about:")
-            || lower.starts_with("data:image/svg+xml")
-        {
+        if is_invalid_image_candidate(t) {
             continue;
         }
         let resolved = resolve_relative_url(t, base_url);

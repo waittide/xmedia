@@ -392,19 +392,32 @@ impl ComicOnlineService {
                             state = out.state;
                             merge_diagnostics(&mut all_diag, &out.diagnostics);
                             let detail = out.data;
-                            let ok = !detail.title.is_empty() || !detail.toc_url.is_empty();
+                            let ok = !detail.title.is_empty()
+                                || (mode == ComicSourceTestMode::Full
+                                    && parsed.rule_detail.is_none());
                             let summary = if ok {
-                                let author_part = if detail.author.is_empty() {
-                                    String::new()
+                                if detail.title.is_empty() {
+                                    "未配置 ruleDetail，直接进入目录解析".into()
                                 } else {
-                                    format!(" / {}", detail.author)
-                                };
-                                format!("《{}》{}", detail.title, author_part)
+                                    let author_part = if detail.author.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" / {}", detail.author)
+                                    };
+                                    format!("《{}》{}", detail.title, author_part)
+                                }
+                            } else if parsed.rule_detail.is_none() {
+                                "漫画源未配置 ruleDetail".into()
                             } else {
-                                "详情页未解析出漫画名与目录地址".into()
+                                "详情页未解析出漫画标题".into()
                             };
-                            let err =
-                                (!ok).then(|| "ruleDetail 未能提取有效漫画标题或目录 URL".into());
+                            let err = (!ok).then(|| {
+                                if parsed.rule_detail.is_none() {
+                                    "漫画源未配置 ruleDetail / ruleBookInfo".into()
+                                } else {
+                                    "ruleDetail 未能提取有效漫画标题".into()
+                                }
+                            });
                             if next_toc_url.is_none() {
                                 next_toc_url = Some(if detail.toc_url.is_empty() {
                                     c_url.clone()

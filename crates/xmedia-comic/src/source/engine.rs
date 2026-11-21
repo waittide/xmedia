@@ -91,6 +91,73 @@ fn pick_rule_field<'a>(
         })
 }
 
+fn split_legado_url_and_raw_options(input: &str) -> Option<(&str, &str)> {
+    let trimmed = input.trim();
+    if !trimmed.ends_with('}') {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+
+    for idx in (0..bytes.len()).rev() {
+        let b = bytes[idx];
+        if b == b'"' {
+            let mut backslashes = 0usize;
+            let mut k = idx;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes.is_multiple_of(2) {
+                in_string = !in_string;
+            }
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match b {
+            b'}' => depth += 1,
+            b'{' => {
+                depth -= 1;
+                if depth == 0 {
+                    let url_part = trimmed[..idx].trim_end().strip_suffix(',')?;
+                    return Some((url_part.trim(), &trimmed[idx..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn normalize_explore_url(raw_url: &str, base_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains("{{")
+        || trimmed.contains("}}")
+        || split_js_pipeline(trimmed).is_some()
+        || split_legado_url_and_raw_options(trimmed).is_some()
+    {
+        return trimmed.to_string();
+    }
+    resolve_relative_url(trimmed, base_url)
+}
+
+fn resolve_relative_url_preserving_options(raw_url: &str, base_url: &str) -> String {
+    let trimmed = raw_url.trim();
+    if let Some((url_part, opt_json)) = split_legado_url_and_raw_options(trimmed)
+        && serde_json::from_str::<serde_json::Value>(opt_json).is_ok()
+    {
+        let resolved_part = resolve_relative_url(url_part, base_url);
+        return format!("{resolved_part},{opt_json}");
+    }
+    resolve_relative_url(trimmed, base_url)
+}
+
 fn parse_explore_text(raw: &str, base_url: &str) -> Vec<ExploreCategoryItem> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -121,7 +188,7 @@ fn parse_explore_text(raw: &str, base_url: &str) -> Vec<ExploreCategoryItem> {
             }
             out.push(ExploreCategoryItem {
                 title: title.to_string(),
-                url: resolve_relative_url(url, base_url),
+                url: normalize_explore_url(url, base_url),
             });
         }
         return out;
@@ -146,12 +213,12 @@ fn parse_explore_text(raw: &str, base_url: &str) -> Vec<ExploreCategoryItem> {
                 }
                 items.push(ExploreCategoryItem {
                     title: title.to_string(),
-                    url: resolve_relative_url(url, base_url),
+                    url: normalize_explore_url(url, base_url),
                 });
             } else {
                 items.push(ExploreCategoryItem {
                     title: "发现".to_string(),
-                    url: resolve_relative_url(seg, base_url),
+                    url: normalize_explore_url(seg, base_url),
                 });
             }
         }
@@ -242,7 +309,10 @@ impl ComicSourceEngine {
         if trimmed.is_empty() {
             return Err(format!("{label} 求值结果为空"));
         }
-        Ok(resolve_relative_url(trimmed, &source.source_url))
+        Ok(resolve_relative_url_preserving_options(
+            trimmed,
+            &source.source_url,
+        ))
     }
 
     fn eval_comic_list(
@@ -549,6 +619,9 @@ impl ComicSourceEngine {
             }
             session.check_active()?;
             let fetched = session.inner.http().fetch(comic_url, &source.source_url)?;
+            if fetched.status >= 400 {
+                return Err(format!("详情页请求失败: HTTP {}", fetched.status));
+            }
             let mut info_input = RuleValue::from_raw(fetched.body);
 
             let Some(rule_detail) = source.rule_detail.as_ref() else {
