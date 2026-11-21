@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import {
@@ -12,6 +12,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
 import ThemePopover from '@/components/ThemePopover.vue'
@@ -32,14 +33,16 @@ const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const themeStore = useThemeStore()
+const snackbarStore = useSnackbarStore()
 
-const bookId = String(route.params.id)
+const bookId = computed(() => String(route.params.id ?? ''))
 const book = ref<BookSummaryDto | null>(null)
 const toc = ref<TocItem[]>([])
 const bookmarks = ref<Bookmark[]>([])
 const initialLocation = ref<ReadingLocation | null>(null)
 const currentLocation = ref<ReadingLocation | null>(null)
 const loading = ref(true)
+const loadError = ref<string | null>(null)
 
 const activePanel = ref<'none' | 'toc' | 'bookmarks' | 'typography'>('none')
 const bookmarkLabel = ref('')
@@ -69,7 +72,15 @@ interface PendingProgressPayload {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
-let pendingProgress: PendingProgressPayload | null = null
+let pendingProgress: { bookId: string; payload: PendingProgressPayload } | null = null
+let disposed = false
+let loadSeq = 0
+
+function parseFiniteQueryNumber(raw: unknown): number | null {
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  const num = Number(raw)
+  return Number.isFinite(num) ? num : null
+}
 
 async function flushPendingProgress(): Promise<void> {
   if (saveTimer) {
@@ -77,40 +88,86 @@ async function flushPendingProgress(): Promise<void> {
     saveTimer = null
   }
   if (!pendingProgress) return
-  const payload = pendingProgress
+  const { bookId: targetBookId, payload } = pendingProgress
   pendingProgress = null
-  await api.saveProgress(bookId, payload).catch(() => {})
+  if (!targetBookId) return
+  await api.saveProgress(targetBookId, payload).catch(() => {})
 }
 
-onMounted(async () => {
-  const [b, progress, bms] = await Promise.all([
-    api.getBook(bookId),
-    api.getProgress(bookId),
-    api.listBookmarks(bookId),
-  ])
-  book.value = b
-  bookmarks.value = bms
-  if (!b.online_tracking) {
-    toc.value = await api.getToc(bookId).catch(() => [])
+async function loadBook(id: string): Promise<void> {
+  const seq = ++loadSeq
+  loading.value = true
+  loadError.value = null
+  book.value = null
+  toc.value = []
+  bookmarks.value = []
+  initialLocation.value = null
+  currentLocation.value = null
+  activePanel.value = 'none'
+
+  if (!id) {
+    loadError.value = t('detail.notFound')
+    loading.value = false
+    return
   }
-  const queryLocator = typeof route.query.locator === 'string' ? route.query.locator : null
-  if (queryLocator) {
-    initialLocation.value = {
-      progress_percent: progress?.location.progress_percent ?? 0,
-      locator: queryLocator,
-      chapter_index: route.query.chapter ? Number(route.query.chapter) : null,
-      page_number: route.query.page ? Number(route.query.page) : null,
-      scroll_ratio: route.query.ratio ? Number(route.query.ratio) : null,
+
+  try {
+    const [b, progress, bms] = await Promise.all([
+      api.getBook(id),
+      api.getProgress(id),
+      api.listBookmarks(id),
+    ])
+    if (disposed || seq !== loadSeq) return
+
+    book.value = b
+    bookmarks.value = bms
+    if (!b.online_tracking) {
+      const loadedToc = await api.getToc(id).catch(() => [])
+      if (disposed || seq !== loadSeq) return
+      toc.value = loadedToc
     }
-  } else {
-    initialLocation.value = progress?.location ?? b.progress ?? null
+
+    const queryLocator = typeof route.query.locator === 'string' ? route.query.locator : null
+    if (queryLocator) {
+      initialLocation.value = {
+        progress_percent: progress?.location.progress_percent ?? 0,
+        locator: queryLocator,
+        chapter_index: parseFiniteQueryNumber(route.query.chapter),
+        page_number: parseFiniteQueryNumber(route.query.page),
+        scroll_ratio: parseFiniteQueryNumber(route.query.ratio),
+      }
+    } else {
+      initialLocation.value = progress?.location ?? b.progress ?? null
+    }
+    currentLocation.value = initialLocation.value
+  } catch (err) {
+    if (disposed || seq !== loadSeq) return
+    loadError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    if (!disposed && seq === loadSeq) {
+      loading.value = false
+    }
   }
-  currentLocation.value = initialLocation.value
-  loading.value = false
+}
+
+onMounted(() => {
+  disposed = false
   window.addEventListener('keydown', handleReaderKeydown)
+  void loadBook(bookId.value)
+})
+
+watch(bookId, (nextId, prevId) => {
+  if (nextId === prevId) return
+  void flushPendingProgress().finally(() => {
+    if (!disposed) {
+      void loadBook(nextId)
+    }
+  })
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  loadSeq += 1
   window.removeEventListener('keydown', handleReaderKeydown)
   void flushPendingProgress()
 })
@@ -145,11 +202,14 @@ function handleReaderKeydown(ev: KeyboardEvent): void {
 
 async function exitReader(): Promise<void> {
   await flushPendingProgress()
+  const currentId = bookId.value
   const prev = (window.history.state as { back?: string | null } | null)?.back
-  if (typeof prev === 'string' && prev.startsWith(`/book/items/${bookId}`)) {
+  if (typeof prev === 'string' && prev.startsWith(`/book/items/${currentId}`)) {
     router.back()
+  } else if (currentId) {
+    await router.replace(`/book/items/${currentId}`)
   } else {
-    await router.replace(`/book/items/${bookId}`)
+    await router.replace('/book/catalog')
   }
 }
 
@@ -164,6 +224,8 @@ function handleProgressUpdate(payload: {
   page_number?: number | null
   scroll_ratio?: number | null
 }): void {
+  const currentId = bookId.value
+  if (!currentId) return
   currentLocation.value = {
     progress_percent: payload.progress_percent,
     locator: payload.locator,
@@ -172,14 +234,14 @@ function handleProgressUpdate(payload: {
     scroll_ratio: payload.scroll_ratio ?? null,
   }
 
-  pendingProgress = payload
+  pendingProgress = { bookId: currentId, payload }
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = null
     const toSave = pendingProgress
     pendingProgress = null
     if (toSave) {
-      void api.saveProgress(bookId, toSave).catch(() => {})
+      void api.saveProgress(toSave.bookId, toSave.payload).catch(() => {})
     }
   }, 600)
 }
@@ -198,24 +260,38 @@ async function jumpToTarget(hrefOrLocator: string, scrollRatio = 0): Promise<voi
 }
 
 async function handleAddBookmark(): Promise<void> {
-  if (!currentLocation.value) return
+  if (!currentLocation.value || !bookId.value) return
   const loc = currentLocation.value
   const defaultTitle = `${Math.round(loc.progress_percent)}% · ${book.value?.metadata.title ?? ''}`
-  const created = await api.createBookmark(bookId, {
-    title: bookmarkLabel.value.trim() || defaultTitle,
-    progress_percent: loc.progress_percent,
-    locator: loc.locator,
-    chapter_index: loc.chapter_index,
-    page_number: loc.page_number,
-    scroll_ratio: loc.scroll_ratio,
-  })
-  bookmarkLabel.value = ''
-  bookmarks.value = [created, ...bookmarks.value]
+  try {
+    const created = await api.createBookmark(bookId.value, {
+      title: bookmarkLabel.value.trim() || defaultTitle,
+      progress_percent: loc.progress_percent,
+      locator: loc.locator,
+      chapter_index: loc.chapter_index,
+      page_number: loc.page_number,
+      scroll_ratio: loc.scroll_ratio,
+    })
+    bookmarkLabel.value = ''
+    bookmarks.value = [created, ...bookmarks.value]
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 async function handleRemoveBookmark(bmId: string): Promise<void> {
-  await api.deleteBookmark(bmId)
-  bookmarks.value = bookmarks.value.filter((b) => b.id !== bmId)
+  try {
+    await api.deleteBookmark(bmId)
+    bookmarks.value = bookmarks.value.filter((b) => b.id !== bmId)
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 </script>
 
@@ -301,9 +377,35 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
         {{ t('reader.loadingBook') }}
       </div>
 
+      <div
+        v-else-if="loadError"
+        class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+      >
+        <p class="max-w-md rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]">
+          {{ loadError }}
+        </p>
+        <div class="flex items-center gap-2">
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-tonal md-state"
+            @click="exitReader"
+          >
+            {{ t('reader.backToBook') }}
+          </button>
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-filled md-state"
+            @click="loadBook(bookId)"
+          >
+            重试
+          </button>
+        </div>
+      </div>
+
       <template v-else-if="book">
         <TrackedOnlineReader
           v-if="book.online_tracking"
+          :key="`tracked-${bookId}`"
           ref="trackedRef"
           :book-id="bookId"
           :initial-location="initialLocation"
@@ -312,6 +414,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
         />
         <EpubReader
           v-else-if="book.format === 'epub'"
+          :key="`epub-${bookId}`"
           ref="epubRef"
           :book-id="bookId"
           :initial-location="initialLocation"
@@ -319,6 +422,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
         />
         <TxtReader
           v-else-if="book.format === 'txt'"
+          :key="`txt-${bookId}`"
           ref="txtRef"
           :book-id="bookId"
           :initial-location="initialLocation"
@@ -326,6 +430,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
         />
         <PdfReader
           v-else
+          :key="`pdf-${bookId}`"
           ref="pdfRef"
           :book-id="bookId"
           :initial-location="initialLocation"
@@ -416,7 +521,7 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
 
         <!-- Typography & Flow Panel -->
         <div v-else class="flex-1 space-y-5 overflow-y-auto p-5 text-xs">
-          <div v-if="book?.format === 'epub'">
+          <div v-if="book?.format === 'epub' && !book.online_tracking">
             <label class="mb-2 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('reader.flowMode') }}
             </label>

@@ -36,6 +36,14 @@ const errorMsg = ref('')
 const chapterCache = new Map<number, TxtChapterContent>()
 const inflightFetches = new Map<number, Promise<TxtChapterContent>>()
 let loadSeq = 0
+let scrollTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearScrollTimer(): void {
+  if (scrollTimer) {
+    clearTimeout(scrollTimer)
+    scrollTimer = null
+  }
+}
 
 function cacheChapter(index: number, data: TxtChapterContent): void {
   if (chapterCache.has(index)) {
@@ -99,6 +107,7 @@ const paragraphs = computed(() => {
 const fontFamilyStyle = computed(() => resolveFontStack(themeStore.reader.font_family))
 
 async function loadChapter(index: number, restoreScrollRatio = 0): Promise<void> {
+  clearScrollTimer()
   const seq = ++loadSeq
   const hasCached = chapterCache.has(index)
   if (!hasCached) {
@@ -145,6 +154,14 @@ function reportCurrentProgress(explicitRatio?: number): void {
     chapter_index: chapter.value.index,
     scroll_ratio: Number(ratio.toFixed(4)),
   })
+}
+
+function handleScroll(): void {
+  clearScrollTimer()
+  scrollTimer = setTimeout(() => {
+    scrollTimer = null
+    reportCurrentProgress()
+  }, 200)
 }
 
 async function navigateTo(target: string, scrollRatio = 0): Promise<void> {
@@ -194,6 +211,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
+  clearScrollTimer()
   chapterCache.clear()
   inflightFetches.clear()
 })
@@ -203,7 +221,7 @@ onBeforeUnmount(() => {
   <div
     ref="scrollContainer"
     class="h-full w-full overflow-y-auto bg-[var(--md-sys-color-surface)] transition-colors"
-    @scroll.passive="reportCurrentProgress()"
+    @scroll.passive="handleScroll"
   >
     <div
       v-if="loading"
@@ -251,7 +269,7 @@ onBeforeUnmount(() => {
       </header>
 
       <div class="space-y-4 text-[var(--md-sys-color-on-surface)]">
-        <p v-for="(para, i) in paragraphs" :key="i" class="indent-8 leading-relaxed">
+        <p v-for="(para, i) in paragraphs" :key="i" class="indent-8">
           {{ para }}
         </p>
       </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   LuChevronLeft,
   LuChevronRight,
@@ -36,19 +36,42 @@ const themeStore = useThemeStore()
 
 const scrollContainerRef = ref<HTMLElement | null>(null)
 const chapters = ref<TrackedChapterMetaDto[]>([])
-const activeIndex = ref(0)
+const activePos = ref(0)
 const chapterTitle = ref('')
 const paragraphs = ref<string[]>([])
 const chapterCached = ref(false)
 const cachedCount = ref(0)
 const totalCount = ref(0)
 const loadingToc = ref(true)
+const tocLoadFailed = ref(false)
 const loadingChapter = ref(false)
 const errorMsg = ref<string | null>(null)
 
 const preloadedSet = new Set<number>()
 let scrollTimer: ReturnType<typeof setTimeout> | null = null
 let loadSeq = 0
+let unmounted = false
+
+const activeChapter = computed<TrackedChapterMetaDto | null>(
+  () => chapters.value[activePos.value] ?? null,
+)
+const activeChapterIndex = computed<number>(
+  () => activeChapter.value?.index ?? activePos.value,
+)
+
+function clearScrollTimer(): void {
+  if (scrollTimer) {
+    clearTimeout(scrollTimer)
+    scrollTimer = null
+  }
+}
+
+function findPosByChapterIndex(chapterIdx: number): number {
+  if (chapters.value.length === 0) return 0
+  const exact = chapters.value.findIndex((c) => c.index === chapterIdx)
+  if (exact >= 0) return exact
+  return Math.min(chapters.value.length - 1, Math.max(0, chapterIdx))
+}
 
 const fontFamilyStyle = computed(() => resolveFontStack(themeStore.reader.font_family))
 
@@ -84,13 +107,14 @@ function parseChapterIndexFromLocator(
   return 0
 }
 
-function computeProgressPercent(idx: number, scrollRatio: number): number {
+function computeProgressPercent(pos: number, scrollRatio: number): number {
   const total = Math.max(1, chapters.value.length || totalCount.value || 1)
   const ratio = Math.min(1, Math.max(0, scrollRatio))
-  return Math.min(100, Math.max(0, ((idx + ratio) / total) * 100))
+  return Math.min(100, Math.max(0, ((pos + ratio) / total) * 100))
 }
 
 function emitCurrentProgress(scrollRatio?: number): void {
+  if (unmounted) return
   const el = scrollContainerRef.value
   const ratio =
     scrollRatio !== undefined
@@ -99,59 +123,75 @@ function emitCurrentProgress(scrollRatio?: number): void {
         ? el.scrollTop / (el.scrollHeight - el.clientHeight)
         : 0
   const clamped = Math.min(1, Math.max(0, ratio))
+  const chIdx = activeChapterIndex.value
   emit('progress', {
-    progress_percent: computeProgressPercent(activeIndex.value, clamped),
-    locator: `chapter:${activeIndex.value}`,
-    chapter_index: activeIndex.value,
+    progress_percent: computeProgressPercent(activePos.value, clamped),
+    locator: `chapter:${chIdx}`,
+    chapter_index: chIdx,
     scroll_ratio: clamped,
   })
 }
 
-function preloadUpcoming(currentIdx: number): void {
+function preloadUpcoming(currentPos: number, targetBookId: string): void {
   const total = chapters.value.length
   for (const offset of [1, 2]) {
-    const nextIdx = currentIdx + offset
-    if (nextIdx >= total || preloadedSet.has(nextIdx)) continue
-    if (chapters.value[nextIdx]?.cached) {
-      preloadedSet.add(nextIdx)
+    const nextPos = currentPos + offset
+    if (nextPos >= total) continue
+    const nextCh = chapters.value[nextPos]
+    if (!nextCh) continue
+    const nextChapterIdx = nextCh.index
+    if (preloadedSet.has(nextChapterIdx)) continue
+    if (nextCh.cached) {
+      preloadedSet.add(nextChapterIdx)
       continue
     }
-    preloadedSet.add(nextIdx)
+    preloadedSet.add(nextChapterIdx)
     void onlineBookApi
-      .getTrackedChapter(props.bookId, nextIdx, false)
+      .getTrackedChapter(targetBookId, nextChapterIdx, false)
       .then((res) => {
+        if (unmounted || props.bookId !== targetBookId) return
         cachedCount.value = res.cached_chapters
         totalCount.value = res.total_chapters
-        const entry = chapters.value[nextIdx]
+        const entry = chapters.value.find((c) => c.index === nextChapterIdx)
         if (entry) entry.cached = true
       })
       .catch(() => {
-        preloadedSet.delete(nextIdx)
+        if (props.bookId === targetBookId) {
+          preloadedSet.delete(nextChapterIdx)
+        }
       })
   }
 }
 
-async function openChapter(
-  index: number,
+async function openChapterByPos(
+  pos: number,
   opts: { forceRefresh?: boolean; scrollRatio?: number } = {},
 ): Promise<void> {
-  const maxIdx = Math.max(0, chapters.value.length - 1)
-  const targetIdx = Math.min(maxIdx, Math.max(0, index))
+  clearScrollTimer()
+  if (chapters.value.length === 0) return
+
+  const maxPos = Math.max(0, chapters.value.length - 1)
+  const targetPos = Math.min(maxPos, Math.max(0, pos))
+  const targetChapter = chapters.value[targetPos]
+  if (!targetChapter) return
+
+  const targetChapterIdx = targetChapter.index
+  const targetBookId = props.bookId
   const seq = ++loadSeq
 
-  activeIndex.value = targetIdx
+  activePos.value = targetPos
   loadingChapter.value = true
   errorMsg.value = null
 
   try {
     const res = await onlineBookApi.getTrackedChapter(
-      props.bookId,
-      targetIdx,
+      targetBookId,
+      targetChapterIdx,
       Boolean(opts.forceRefresh),
     )
-    if (seq !== loadSeq) return
+    if (unmounted || seq !== loadSeq || props.bookId !== targetBookId) return
 
-    chapterTitle.value = res.title || chapters.value[targetIdx]?.title || `第 ${targetIdx + 1} 章`
+    chapterTitle.value = res.title || targetChapter.title || `第 ${targetPos + 1} 章`
     paragraphs.value = res.content
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -159,10 +199,11 @@ async function openChapter(
     chapterCached.value = res.cached
     cachedCount.value = res.cached_chapters
     totalCount.value = res.total_chapters
-    const entry = chapters.value[targetIdx]
+    const entry = chapters.value.find((c) => c.index === targetChapterIdx)
     if (entry) entry.cached = true
 
     await nextTick()
+    if (unmounted || seq !== loadSeq || props.bookId !== targetBookId) return
     const el = scrollContainerRef.value
     if (el) {
       const targetRatio = opts.scrollRatio ?? 0
@@ -172,48 +213,76 @@ async function openChapter(
           : 0
     }
     emitCurrentProgress(opts.scrollRatio ?? 0)
-    preloadUpcoming(targetIdx)
+    preloadUpcoming(targetPos, targetBookId)
   } catch (err) {
-    if (seq !== loadSeq) return
+    if (unmounted || seq !== loadSeq || props.bookId !== targetBookId) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    if (seq === loadSeq) {
+    if (!unmounted && seq === loadSeq) {
       loadingChapter.value = false
     }
   }
 }
 
+async function openChapter(
+  chapterIdx: number,
+  opts: { forceRefresh?: boolean; scrollRatio?: number } = {},
+): Promise<void> {
+  const pos = findPosByChapterIndex(chapterIdx)
+  await openChapterByPos(pos, opts)
+}
+
 async function loadInitial(): Promise<void> {
+  clearScrollTimer()
+  const targetBookId = props.bookId
+  const seq = ++loadSeq
   loadingToc.value = true
+  tocLoadFailed.value = false
   errorMsg.value = null
   try {
-    const tocRes = await onlineBookApi.getTrackedToc(props.bookId, false)
+    const tocRes = await onlineBookApi.getTrackedToc(targetBookId, false)
+    if (unmounted || seq !== loadSeq || props.bookId !== targetBookId) return
+
     chapters.value = tocRes.chapters
     cachedCount.value = tocRes.cached_chapters
     totalCount.value = tocRes.total_chapters
     emit('toc-loaded', toTocItems(tocRes.chapters))
 
     if (tocRes.chapters.length === 0) {
+      tocLoadFailed.value = true
       errorMsg.value = '目录为空，请返回书籍详情刷新目录或切换书源'
       return
     }
 
-    const initialIdx = parseChapterIndexFromLocator(
+    const initialChapterIdx = parseChapterIndexFromLocator(
       props.initialLocation?.locator,
       props.initialLocation?.chapter_index,
     )
-    await openChapter(initialIdx, {
+    const initialPos = findPosByChapterIndex(initialChapterIdx)
+    await openChapterByPos(initialPos, {
       scrollRatio: props.initialLocation?.scroll_ratio ?? 0,
     })
   } catch (err) {
+    if (unmounted || seq !== loadSeq || props.bookId !== targetBookId) return
+    tocLoadFailed.value = true
     errorMsg.value = err instanceof Error ? err.message : String(err)
   } finally {
-    loadingToc.value = false
+    if (!unmounted && seq === loadSeq) {
+      loadingToc.value = false
+    }
+  }
+}
+
+function handleRetry(): void {
+  if (tocLoadFailed.value || chapters.value.length === 0) {
+    void loadInitial()
+  } else {
+    void openChapterByPos(activePos.value, { forceRefresh: true })
   }
 }
 
 function handleScroll(): void {
-  if (scrollTimer) clearTimeout(scrollTimer)
+  clearScrollTimer()
   scrollTimer = setTimeout(() => {
     scrollTimer = null
     emitCurrentProgress()
@@ -221,23 +290,27 @@ function handleScroll(): void {
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return
   const target = ev.target
   if (
     target instanceof HTMLElement &&
-    (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable)
   ) {
     return
   }
-  if (ev.key === 'ArrowLeft' && activeIndex.value > 0 && !loadingChapter.value) {
+  if (ev.key === 'ArrowLeft' && activePos.value > 0 && !loadingChapter.value) {
     ev.preventDefault()
-    void openChapter(activeIndex.value - 1)
+    void openChapterByPos(activePos.value - 1)
   } else if (
     ev.key === 'ArrowRight' &&
-    activeIndex.value + 1 < chapters.value.length &&
+    activePos.value + 1 < chapters.value.length &&
     !loadingChapter.value
   ) {
     ev.preventDefault()
-    void openChapter(activeIndex.value + 1)
+    void openChapterByPos(activePos.value + 1)
   }
 }
 
@@ -248,14 +321,31 @@ async function navigateTo(target: string, scrollRatio = 0): Promise<void> {
 
 defineExpose({ navigateTo })
 
+watch(
+  () => props.bookId,
+  (nextId, prevId) => {
+    if (nextId === prevId) return
+    clearScrollTimer()
+    preloadedSet.clear()
+    chapters.value = []
+    paragraphs.value = []
+    chapterTitle.value = ''
+    activePos.value = 0
+    void loadInitial()
+  },
+)
+
 onMounted(() => {
+  unmounted = false
   window.addEventListener('keydown', handleKeydown)
   void loadInitial()
 })
 
 onBeforeUnmount(() => {
+  unmounted = true
+  loadSeq += 1
   window.removeEventListener('keydown', handleKeydown)
-  if (scrollTimer) clearTimeout(scrollTimer)
+  clearScrollTimer()
 })
 </script>
 
@@ -275,11 +365,11 @@ onBeforeUnmount(() => {
       <div class="mb-6 flex flex-wrap items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/45 pb-4">
         <div class="min-w-0 flex-1">
           <h2 class="text-xl font-bold leading-snug text-[var(--md-sys-color-on-surface)] sm:text-2xl">
-            {{ chapterTitle || chapters[activeIndex]?.title }}
+            {{ chapterTitle || activeChapter?.title }}
           </h2>
           <p class="mt-1 flex items-center gap-2 text-xs text-[var(--md-sys-color-on-surface-variant)]">
             <span class="font-mono">
-              {{ activeIndex + 1 }} / {{ Math.max(1, chapters.length) }}
+              {{ activePos + 1 }} / {{ Math.max(1, chapters.length) }}
             </span>
             <span v-if="totalCount > 0" class="inline-flex items-center gap-1">
               <LuCheckCircle2 class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
@@ -291,9 +381,9 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="md-icon-btn md-icon-btn-sm md-state"
-          :disabled="loadingChapter"
+          :disabled="loadingChapter || chapters.length === 0"
           title="重新抓取本章"
-          @click="openChapter(activeIndex, { forceRefresh: true })"
+          @click="openChapterByPos(activePos, { forceRefresh: true })"
         >
           <LuRefreshCw class="h-4 w-4" :class="loadingChapter ? 'animate-spin' : ''" />
         </button>
@@ -317,7 +407,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="md-btn md-btn-sm md-btn-filled mt-4"
-          @click="openChapter(activeIndex, { forceRefresh: true })"
+          @click="handleRetry"
         >
           重试
         </button>
@@ -341,23 +431,23 @@ onBeforeUnmount(() => {
       >
         <button
           type="button"
-          :disabled="activeIndex <= 0"
+          :disabled="activePos <= 0"
           class="md-btn md-btn-tonal md-state"
-          @click="openChapter(activeIndex - 1)"
+          @click="openChapterByPos(activePos - 1)"
         >
           <LuChevronLeft class="h-4 w-4" />
           <span>上一章</span>
         </button>
 
         <span class="font-mono text-xs text-[var(--md-sys-color-on-surface-variant)]">
-          {{ activeIndex + 1 }} / {{ chapters.length }}
+          {{ activePos + 1 }} / {{ chapters.length }}
         </span>
 
         <button
           type="button"
-          :disabled="activeIndex + 1 >= chapters.length"
+          :disabled="activePos + 1 >= chapters.length"
           class="md-btn md-btn-filled md-state"
-          @click="openChapter(activeIndex + 1)"
+          @click="openChapterByPos(activePos + 1)"
         >
           <span>下一章</span>
           <LuChevronRight class="h-4 w-4" />

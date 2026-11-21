@@ -43,11 +43,13 @@ const currentPage = ref(1)
 const totalPages = ref(1)
 const scale = ref(1.35)
 const fitMode = ref<FitMode>('manual')
-const pageInput = ref(1)
+const pageInput = ref<number | string>(1)
 
 let loadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null
 let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null
 let activeRenderTask: pdfjsLib.RenderTask | null = null
+let renderSeq = 0
+let unmounted = false
 
 function clampScale(value: number): number {
   return Math.min(3.0, Math.max(0.5, Number(value.toFixed(2))))
@@ -68,19 +70,36 @@ async function computeFitScale(page: pdfjsLib.PDFPageProxy, mode: 'width' | 'pag
 }
 
 async function renderPage(pageNum: number): Promise<void> {
-  if (!pdfDoc || !canvasEl.value) return
-  const clamped = Math.min(totalPages.value, Math.max(1, pageNum))
+  if (!pdfDoc || !canvasEl.value || unmounted) return
+  if (!Number.isFinite(pageNum)) {
+    pageInput.value = currentPage.value
+    return
+  }
+  const clamped = Math.min(totalPages.value, Math.max(1, Math.trunc(pageNum)))
   currentPage.value = clamped
   pageInput.value = clamped
 
+  const seq = ++renderSeq
+
   if (activeRenderTask) {
-    activeRenderTask.cancel()
+    const prevTask = activeRenderTask
     activeRenderTask = null
+    prevTask.cancel()
+    try {
+      await prevTask.promise
+    } catch {
+      // expected RenderingCancelledException
+    }
   }
+  if (seq !== renderSeq || unmounted || !pdfDoc || !canvasEl.value) return
 
   const page = await pdfDoc.getPage(clamped)
+  if (seq !== renderSeq || unmounted || !canvasEl.value) return
+
   if (fitMode.value === 'width' || fitMode.value === 'page') {
-    scale.value = await computeFitScale(page, fitMode.value)
+    const computedScale = await computeFitScale(page, fitMode.value)
+    if (seq !== renderSeq || unmounted || !canvasEl.value) return
+    scale.value = computedScale
   }
 
   const dpr = window.devicePixelRatio || 1
@@ -107,7 +126,13 @@ async function renderPage(pageNum: number): Promise<void> {
     await task.promise
   } catch {
     return
+  } finally {
+    if (activeRenderTask === task) {
+      activeRenderTask = null
+    }
   }
+
+  if (seq !== renderSeq || unmounted) return
 
   const pct = (clamped / Math.max(1, totalPages.value)) * 100
   emit('progress', {
@@ -115,6 +140,15 @@ async function renderPage(pageNum: number): Promise<void> {
     locator: `page:${clamped}`,
     page_number: clamped,
   })
+}
+
+function handlePageSubmit(): void {
+  const parsed = Number(pageInput.value)
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    pageInput.value = currentPage.value
+    return
+  }
+  void renderPage(parsed)
 }
 
 async function navigateTo(target: string): Promise<void> {
@@ -168,33 +202,47 @@ function handleResize(): void {
 defineExpose({ navigateTo })
 
 onMounted(async () => {
+  unmounted = false
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('resize', handleResize)
   try {
-    loadingTask = pdfjsLib.getDocument({
+    const task = pdfjsLib.getDocument({
       url: api.fileUrl(props.bookId),
       withCredentials: true,
     })
+    loadingTask = task
 
-    pdfDoc = await loadingTask.promise
-    totalPages.value = pdfDoc.numPages
+    const doc = await task.promise
+    if (unmounted) {
+      void doc.cleanup()
+      void task.destroy()
+      return
+    }
+    pdfDoc = doc
+    totalPages.value = doc.numPages
     loading.value = false
 
     const startPage = props.initialLocation?.page_number ?? 1
     await renderPage(startPage)
   } catch (err) {
+    if (unmounted) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
   }
 })
 
 onBeforeUnmount(() => {
+  unmounted = true
+  renderSeq += 1
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('resize', handleResize)
   if (resizeTimer) clearTimeout(resizeTimer)
   activeRenderTask?.cancel()
+  activeRenderTask = null
   void pdfDoc?.cleanup()
+  pdfDoc = null
   void loadingTask?.destroy()
+  loadingTask = null
 })
 </script>
 
@@ -212,7 +260,7 @@ onBeforeUnmount(() => {
         <LuChevronLeft class="h-4 w-4" />
       </button>
 
-      <form class="flex items-center gap-1.5" @submit.prevent="renderPage(pageInput)">
+      <form class="flex items-center gap-1.5" @submit.prevent="handlePageSubmit">
         <input
           v-model.number="pageInput"
           type="number"

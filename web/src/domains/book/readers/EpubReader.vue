@@ -38,6 +38,7 @@ let book: Book | null = null
 let rendition: Rendition | null = null
 let locationsReady = false
 let lastKnownCfi = ''
+let unmounted = false
 
 interface EpubLocationsWithCache {
   generate(chars?: number): Promise<string[]>
@@ -179,39 +180,64 @@ function handleRenditionKeydown(...args: unknown[]): void {
   }
 }
 
+function handleRelocated(...args: unknown[]): void {
+  if (unmounted) return
+  const loc = args[0] as { start?: { cfi?: string; percentage?: number } } | undefined
+  const cfi = loc?.start?.cfi
+  if (!cfi) return
+  lastKnownCfi = cfi
+  let pct = (loc?.start?.percentage ?? 0) * 100
+  if (locationsReady && book) {
+    pct = book.locations.percentageFromCfi(cfi) * 100
+  }
+  if (!Number.isFinite(pct)) pct = 0
+  emit('progress', {
+    progress_percent: Math.min(100, Math.max(0, Number(pct.toFixed(2)))),
+    locator: cfi,
+  })
+}
+
 defineExpose({ navigateTo })
 
 onMounted(async () => {
+  unmounted = false
   window.addEventListener('keydown', handleKeydown)
   try {
     const resp = await fetch(api.fileUrl(props.bookId), {
       credentials: 'include',
     })
+    if (unmounted) return
     if (!resp.ok) {
       throw new Error(`HTTP ${resp.status}`)
     }
     const buffer = await resp.arrayBuffer()
-    if (!mountEl.value) return
+    if (unmounted || !mountEl.value) return
 
-    book = ePub(buffer)
-    await book.ready
+    const localBook = ePub(buffer)
+    await localBook.ready
+    if (unmounted || !mountEl.value) {
+      localBook.destroy()
+      return
+    }
+    book = localBook
 
     const flowMode = themeStore.reader.flow === 'scrolled' ? 'scrolled-doc' : 'paginated'
-    rendition = book.renderTo(mountEl.value, {
+    const localRendition = localBook.renderTo(mountEl.value, {
       width: '100%',
       height: '100%',
       flow: flowMode,
       spread: 'none',
     })
+    rendition = localRendition
 
     // Ensure arrow-key paging still works after clicking inside the epub iframe
-    rendition.on('keydown', handleRenditionKeydown)
+    localRendition.on('keydown', handleRenditionKeydown)
 
     applyRenditionTheme()
 
     const cacheKey = buildLocationsCacheKey(props.bookId, buffer.byteLength)
     const cachedLocations = readCachedLocations(cacheKey)
-    const locationsApi = book.locations as unknown as EpubLocationsWithCache
+    const locationsApi = localBook.locations as unknown as EpubLocationsWithCache
     if (cachedLocations && typeof locationsApi.load === 'function') {
       try {
         locationsApi.load(cachedLocations)
@@ -222,50 +248,55 @@ onMounted(async () => {
     }
 
     const startTarget = props.initialLocation?.locator || undefined
-    await rendition.display(startTarget)
+    await localRendition.display(startTarget)
+    if (unmounted) {
+      const r = localRendition as EpubRenditionWithOff
+      if (typeof r.off === 'function') {
+        r.off('keydown', handleRenditionKeydown)
+      }
+      localRendition.destroy()
+      localBook.destroy()
+      if (rendition === localRendition) rendition = null
+      if (book === localBook) book = null
+      return
+    }
     loading.value = false
 
-    rendition.on('relocated', (loc) => {
-      const cfi = loc.start.cfi
-      lastKnownCfi = cfi
-      let pct = loc.start.percentage * 100
-      if (locationsReady && book) {
-        pct = book.locations.percentageFromCfi(cfi) * 100
-      }
-      if (!Number.isFinite(pct)) pct = 0
-      emit('progress', {
-        progress_percent: Math.min(100, Math.max(0, Number(pct.toFixed(2)))),
-        locator: cfi,
-      })
-    })
+    localRendition.on('relocated', handleRelocated)
 
     if (!locationsReady) {
-      const currentBook = book
+      const currentBook = localBook
       const currentLocations = currentBook.locations as unknown as EpubLocationsWithCache
-      void currentBook.locations.generate(1200).then(() => {
-        if (book !== currentBook) return
-        locationsReady = true
-        try {
-          const serialized =
-            typeof currentLocations.save === 'function' ? currentLocations.save() : ''
-          if (serialized) {
-            writeCachedLocations(cacheKey, serialized)
+      void currentBook.locations
+        .generate(1200)
+        .then(() => {
+          if (unmounted || book !== currentBook) return
+          locationsReady = true
+          try {
+            const serialized =
+              typeof currentLocations.save === 'function' ? currentLocations.save() : ''
+            if (serialized) {
+              writeCachedLocations(cacheKey, serialized)
+            }
+          } catch {
+            // ignore
           }
-        } catch {
-          // ignore
-        }
-        if (lastKnownCfi) {
-          const pct = currentBook.locations.percentageFromCfi(lastKnownCfi) * 100
-          if (Number.isFinite(pct)) {
-            emit('progress', {
-              progress_percent: Math.min(100, Math.max(0, Number(pct.toFixed(2)))),
-              locator: lastKnownCfi,
-            })
+          if (lastKnownCfi) {
+            const pct = currentBook.locations.percentageFromCfi(lastKnownCfi) * 100
+            if (Number.isFinite(pct)) {
+              emit('progress', {
+                progress_percent: Math.min(100, Math.max(0, Number(pct.toFixed(2)))),
+                locator: lastKnownCfi,
+              })
+            }
           }
-        }
-      })
+        })
+        .catch(() => {
+          // ignore background location indexing errors
+        })
     }
   } catch (err) {
+    if (unmounted) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
   }
@@ -293,10 +324,12 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  unmounted = true
   window.removeEventListener('keydown', handleKeydown)
   const r = rendition as EpubRenditionWithOff | null
   if (r && typeof r.off === 'function') {
     r.off('keydown', handleRenditionKeydown)
+    r.off('relocated', handleRelocated)
   }
   rendition?.destroy()
   book?.destroy()

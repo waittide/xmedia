@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
-import { LuChevronRight } from 'vue-icons-plus/lu'
 import type { TocItem } from '@/domains/book/types'
+import TocTreeItem from './TocTreeItem.vue'
 
 export interface TocTreeNode {
   key: string
@@ -74,12 +74,18 @@ const allExpanded = computed(
     parentKeys.value.every((k) => expandedKeys.value.has(k)),
 )
 
+function normalizeHrefPath(raw: string): string {
+  const withoutHash = raw.split('#')[0] ?? raw
+  return withoutHash.replace(/^(\.\/|\/)+/, '')
+}
+
 function isHrefMatch(itemHref: string, active: string | null | undefined): boolean {
   if (!active || !itemHref) return false
   if (itemHref === active) return true
-  const cleanItem = itemHref.split('#')[0] ?? itemHref
-  const cleanActive = active.split('#')[0] ?? active
-  return Boolean(cleanItem && cleanActive && cleanActive.endsWith(cleanItem))
+  const cleanItem = normalizeHrefPath(itemHref)
+  const cleanActive = normalizeHrefPath(active)
+  if (!cleanItem || !cleanActive) return false
+  return cleanActive === cleanItem || cleanActive.endsWith(`/${cleanItem}`)
 }
 
 function subtreeContainsActive(node: TocTreeNode, active: string | null | undefined): boolean {
@@ -172,126 +178,19 @@ function onVolumeRowClick(node: TocTreeNode): void {
       </div>
 
       <div class="space-y-0.5">
-        <div v-for="root in treeRoots" :key="root.key">
-          <!-- Volume / Group Node with Children -->
-          <template v-if="root.children.length > 0">
-            <div
-              class="group flex items-center justify-between gap-1.5 rounded-xl px-2 py-2 text-xs font-semibold transition"
-              :class="
-                subtreeContainsActive(root, activeHref)
-                  ? 'bg-[var(--md-sys-color-secondary-container)]/75 text-[var(--md-sys-color-on-secondary-container)]'
-                  : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]'
-              "
-            >
-              <button
-                type="button"
-                class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-highest)] hover:text-[var(--md-sys-color-on-surface)]"
-                @click.stop="toggleExpand(root.key)"
-              >
-                <LuChevronRight
-                  class="h-3.5 w-3.5 transition-transform duration-150"
-                  :class="expandedKeys.has(root.key) ? 'rotate-90' : ''"
-                />
-              </button>
-
-              <button
-                type="button"
-                class="min-w-0 flex-1 truncate text-left"
-                @click="onVolumeRowClick(root)"
-              >
-                {{ root.item.title }}
-              </button>
-
-              <span class="shrink-0 rounded-md bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
-                {{ root.children.length }}
-              </span>
-            </div>
-
-            <!-- Nested Chapters under Volume -->
-            <div
-              v-if="expandedKeys.has(root.key)"
-              class="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--md-sys-color-outline-variant)]/70 pl-2"
-            >
-              <div v-for="child in root.children" :key="child.key">
-                <template v-if="child.children.length > 0">
-                  <div
-                    class="flex items-center justify-between gap-1.5 rounded-xl px-2 py-1.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]"
-                  >
-                    <button
-                      type="button"
-                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)]"
-                      @click.stop="toggleExpand(child.key)"
-                    >
-                      <LuChevronRight
-                        class="h-3.5 w-3.5 transition-transform duration-150"
-                        :class="expandedKeys.has(child.key) ? 'rotate-90' : ''"
-                      />
-                    </button>
-                    <button
-                      type="button"
-                      class="min-w-0 flex-1 truncate text-left"
-                      @click="onVolumeRowClick(child)"
-                    >
-                      {{ child.item.title }}
-                    </button>
-                    <span class="shrink-0 rounded-md bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                      {{ child.children.length }}
-                    </span>
-                  </div>
-
-                  <div
-                    v-if="expandedKeys.has(child.key)"
-                    class="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--md-sys-color-outline-variant)]/70 pl-2"
-                  >
-                    <button
-                      v-for="leaf in child.children"
-                      :key="leaf.key"
-                      type="button"
-                      class="flex w-full items-center rounded-xl px-2.5 py-1.5 text-left text-xs transition"
-                      :class="
-                        isHrefMatch(leaf.item.href, activeHref)
-                          ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                          : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
-                      "
-                      @click="emit('select', leaf.item.href)"
-                    >
-                      <span class="truncate">{{ leaf.item.title }}</span>
-                    </button>
-                  </div>
-                </template>
-
-                <button
-                  v-else
-                  type="button"
-                  class="flex w-full items-center rounded-xl px-2.5 py-1.5 text-left text-xs transition"
-                  :class="
-                    isHrefMatch(child.item.href, activeHref)
-                      ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                      : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
-                  "
-                  @click="emit('select', child.item.href)"
-                >
-                  <span class="truncate">{{ child.item.title }}</span>
-                </button>
-              </div>
-            </div>
-          </template>
-
-          <!-- Flat Top-Level Chapter Node -->
-          <button
-            v-else
-            type="button"
-            class="flex w-full items-center rounded-xl px-3 py-2 text-left text-xs transition"
-            :class="
-              isHrefMatch(root.item.href, activeHref)
-                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]'
-            "
-            @click="emit('select', root.item.href)"
-          >
-            <span class="truncate">{{ root.item.title }}</span>
-          </button>
-        </div>
+        <TocTreeItem
+          v-for="root in treeRoots"
+          :key="root.key"
+          :node="root"
+          :depth="0"
+          :expanded-keys="expandedKeys"
+          :active-href="activeHref"
+          :is-href-match="isHrefMatch"
+          :subtree-contains-active="subtreeContainsActive"
+          @select="emit('select', $event)"
+          @toggle-expand="toggleExpand"
+          @volume-click="onVolumeRowClick"
+        />
       </div>
     </template>
   </div>
