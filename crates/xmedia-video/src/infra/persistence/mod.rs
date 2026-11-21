@@ -8,6 +8,7 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use models::{
     VideoFavoriteModel, VideoItemModel, VideoProgressModel, VideoShelfModel, VideoShowModel,
+    VideoSourceRecordModel,
 };
 
 pub fn register_video_models(set: &mut ModelSet) {
@@ -16,6 +17,7 @@ pub fn register_video_models(set: &mut ModelSet) {
     <VideoProgressModel as Model>::register(set);
     <VideoFavoriteModel as Model>::register(set);
     <VideoShelfModel as Model>::register(set);
+    <VideoSourceRecordModel as Model>::register(set);
 }
 
 async fn push_single_video_model<M: Model>(
@@ -63,6 +65,14 @@ pub async fn ensure_video_schema(db: &mut Db, database_url: &str) -> DomainResul
     }
     if VideoShelfModel::all().limit(1).exec(db).await.is_err() {
         push_single_video_model::<VideoShelfModel>(database_url, "video_shelves").await?;
+    }
+    if VideoSourceRecordModel::all()
+        .limit(1)
+        .exec(db)
+        .await
+        .is_err()
+    {
+        push_single_video_model::<VideoSourceRecordModel>(database_url, "video_sources").await?;
     }
     Ok(())
 }

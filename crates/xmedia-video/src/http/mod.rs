@@ -1,3 +1,4 @@
+pub mod online;
 pub mod rest;
 pub mod state;
 
@@ -11,7 +12,7 @@ use crate::application::streaming::ResolvedVideoStream;
 use state::VideoHttpState;
 
 pub fn rest_router(state: VideoHttpState) -> Router {
-    rest::router().with_state(state)
+    rest::router().merge(online::router()).with_state(state)
 }
 
 pub(crate) fn into_video_http_response(

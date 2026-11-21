@@ -2,9 +2,11 @@ pub mod application;
 pub mod domain;
 pub mod http;
 pub mod infra;
+pub mod source;
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use toasty::Db;
 use xmedia_core::application::library::LibraryService;
@@ -12,15 +14,20 @@ use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_source::http::HttpClientConfig;
 
 use application::VideoServices;
 use application::catalog::VideoCatalogService;
 use application::lifecycle::VideoDomainLifecycle;
+use application::online::VideoOnlineService;
 use application::streaming::VideoStreamingService;
 use application::watch::VideoWatchService;
 use infra::media_engine::FfmpegVideoEngine;
-use infra::persistence::repositories::{ToastyVideoCatalogRepository, ToastyVideoWatchRepository};
+use infra::persistence::repositories::{
+    ToastyVideoCatalogRepository, ToastyVideoSourceRepository, ToastyVideoWatchRepository,
+};
 use infra::storage::{LocalVideoScanner, LocalVideoStorage};
+use source::VideoSourceEngine;
 
 pub use infra::persistence::{ensure_video_schema, register_video_models};
 
@@ -32,8 +39,29 @@ pub fn init_video_module(
     library_service: &LibraryService,
     events: Arc<dyn RealtimeEventPort>,
 ) -> DomainResult<VideoServices> {
+    init_video_module_with_allow_private_ips(
+        db,
+        data_dir,
+        ffmpeg,
+        libraries_repo,
+        library_service,
+        events,
+        false,
+    )
+}
+
+pub fn init_video_module_with_allow_private_ips(
+    db: Db,
+    data_dir: &Path,
+    ffmpeg: FfmpegToolkit,
+    libraries_repo: Arc<dyn LibraryRepository>,
+    library_service: &LibraryService,
+    events: Arc<dyn RealtimeEventPort>,
+    allow_private_ips: bool,
+) -> DomainResult<VideoServices> {
     let catalog_repo = Arc::new(ToastyVideoCatalogRepository::new(db.clone()));
-    let watch_repo = Arc::new(ToastyVideoWatchRepository::new(db));
+    let watch_repo = Arc::new(ToastyVideoWatchRepository::new(db.clone()));
+    let source_repo = Arc::new(ToastyVideoSourceRepository::new(db));
 
     let storage = Arc::new(LocalVideoStorage::new(data_dir)?);
     let scanner = Arc::new(LocalVideoScanner);
@@ -70,16 +98,32 @@ pub fn init_video_module(
     ));
     library_service.register_lifecycle(ingest.clone());
 
+    let source_engine = VideoSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips,
+            ..Default::default()
+        },
+        Duration::from_secs(45),
+    );
+    let online = Arc::new(VideoOnlineService::with_engine(
+        source_repo,
+        source_engine,
+        allow_private_ips,
+    ));
+
     Ok(VideoServices::new(
         Arc::new(catalog),
         watch,
         streaming,
         ingest,
+        online,
     ))
 }
 
 #[cfg(test)]
 mod tests {
+    mod online_e2e;
+
     use std::collections::HashMap;
     use std::sync::{Arc, RwLock};
 

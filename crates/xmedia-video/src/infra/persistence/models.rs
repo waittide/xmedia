@@ -4,6 +4,7 @@ use xmedia_core::domain::media::{ProbedAudioStream, ProbedSubtitleStream};
 
 use crate::domain::id::VideoId;
 use crate::domain::video::VideoSource;
+use crate::source::model::SourceRuntimeState;
 
 #[derive(Debug, toasty::Model)]
 #[table = "video_shows"]
@@ -134,6 +135,31 @@ pub(crate) struct VideoShelfModel {
     #[column(type = text)]
     pub video_ids: toasty::Json<Vec<VideoId>>,
 
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, toasty::Model)]
+#[table = "video_sources"]
+pub(crate) struct VideoSourceRecordModel {
+    #[key]
+    pub id: Uuid,
+
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+
+    #[column(type = text)]
+    pub raw_json: String,
+
+    #[column(type = text)]
+    pub runtime_state: toasty::Json<SourceRuntimeState>,
+
+    pub last_test_ok: Option<bool>,
+    pub last_test_msg: Option<String>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
