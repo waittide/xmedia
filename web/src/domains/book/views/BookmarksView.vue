@@ -6,10 +6,12 @@ import DomainBookmarksView from '@/components/domain/DomainBookmarksView.vue'
 import { api } from '@/domains/book/api'
 import { useCatalogStore } from '@/domains/book/store'
 import type { BookBookmarkItemDto } from '@/domains/book/types'
+import { useSnackbarStore } from '@/stores/snackbar'
 
 const { t } = useI18n()
 const router = useRouter()
 const catalogStore = useCatalogStore()
+const snackbarStore = useSnackbarStore()
 
 const keyword = ref('')
 const loading = ref(false)
@@ -49,8 +51,15 @@ function openBookmark(item: BookBookmarkItemDto): void {
 }
 
 async function removeBookmark(item: BookBookmarkItemDto): Promise<void> {
-  await api.deleteBookmark(item.bookmark.id)
-  await catalogStore.refreshSidebarData()
+  try {
+    await api.deleteBookmark(item.bookmark.id)
+    await catalogStore.refreshSidebarData()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 </script>
 

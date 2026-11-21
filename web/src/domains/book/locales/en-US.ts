@@ -4,7 +4,6 @@ export default {
     allBooks: 'All',
     recentReading: 'Continue',
     favorites: 'Favorites',
-    onlineSources: 'Sources',
     newShelf: 'New Shelf',
     shelfNamePlaceholder: 'Shelf name, press Enter…',
   },
@@ -59,6 +58,8 @@ export default {
     reset: 'Clear filters',
   },
   catalog: {
+    scopeLocal: 'Local Library',
+    scopeOnline: 'Online Sources',
     gridView: 'Grid view',
     tableView: 'Table view',
     sortCreatedAt: 'Recently added',

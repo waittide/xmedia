@@ -56,12 +56,20 @@ const searchResults = ref<AggregatedSearchItemDto[]>([])
 const searchErrors = ref<SourceSearchErrorDto[]>([])
 const searchToasts = ref<string[]>([])
 const hasSearched = ref(false)
-const addingShelfKey = ref<string | null>(null)
-const openingKey = ref<string | null>(null)
+const addingShelfKeys = ref<Set<string>>(new Set())
+const openingKeys = ref<Set<string>>(new Set())
 const downloadTarget = ref<OnlineDownloadTarget | null>(null)
 const modalTrackedJobId = ref<string | null>(null)
+let searchSeq = 0
 
 const enabledSources = computed(() => sources.value.filter((s) => s.enabled))
+
+function setKeyInSet(target: typeof addingShelfKeys, key: string, active: boolean): void {
+  const next = new Set(target.value)
+  if (active) next.add(key)
+  else next.delete(key)
+  target.value = next
+}
 
 const modalTrackedJob = computed<OnlineDownloadJobDto | null>(() => {
   if (!modalTrackedJobId.value) return null
@@ -71,7 +79,7 @@ const modalTrackedJob = computed<OnlineDownloadJobDto | null>(() => {
 watch(
   () => props.initialSourceId,
   (nextId) => {
-    if (nextId && sources.value.some((s) => s.id === nextId)) {
+    if (nextId && enabledSources.value.some((s) => s.id === nextId)) {
       selectedSourceIds.value = [nextId]
     }
   },
@@ -101,7 +109,7 @@ async function initData(): Promise<void> {
       bookApi.searchBooks({ page: 1, page_size: 200 }).catch(() => null),
     ])
     sources.value = srcList
-    if (props.initialSourceId && srcList.some((s) => s.id === props.initialSourceId)) {
+    if (props.initialSourceId && enabledSources.value.some((s) => s.id === props.initialSourceId)) {
       selectedSourceIds.value = [props.initialSourceId]
     }
     if (existingPage) {
@@ -139,15 +147,18 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
       ? searchKeyword.value
       : lastSearchKeyword.value || searchKeyword.value
   ).trim()
-  if (!kw || searching.value || loadingMore.value || enabledSources.value.length === 0) return
+  if (!kw || enabledSources.value.length === 0) return
+  if (mode === 'append' && (searching.value || loadingMore.value)) return
 
   const srcIds =
     mode === 'replace' && page === 1 ? [...selectedSourceIds.value] : [...lastSearchSourceIds.value]
 
+  const seq = ++searchSeq
   if (mode === 'append') {
     loadingMore.value = true
   } else {
     searching.value = true
+    loadingMore.value = false
     hasSearched.value = true
     searchErrors.value = []
     searchToasts.value = []
@@ -155,6 +166,7 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
 
   try {
     const res = await onlineBookApi.search(kw, srcIds, page)
+    if (seq !== searchSeq) return
     lastSearchKeyword.value = kw
     lastSearchSourceIds.value = srcIds
     searchPage.value = res.page || page
@@ -174,13 +186,16 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
     searchErrors.value = res.errors
     searchToasts.value = res.toasts
   } catch (err) {
+    if (seq !== searchSeq) return
     snackbar.show({
       message: err instanceof Error ? err.message : String(err),
       tone: 'error',
     })
   } finally {
-    searching.value = false
-    loadingMore.value = false
+    if (seq === searchSeq) {
+      searching.value = false
+      loadingMore.value = false
+    }
   }
 }
 
@@ -223,7 +238,8 @@ async function handleAddSearchResultToShelf(item: AggregatedSearchItemDto): Prom
     return
   }
   const key = `${item.source_id}:${item.book.book_url}`
-  addingShelfKey.value = key
+  if (addingShelfKeys.value.has(key)) return
+  setKeyInSet(addingShelfKeys, key, true)
   try {
     const detailRes = await onlineBookApi
       .fetchBookInfo(item.source_id, item.book.book_url, {
@@ -261,7 +277,7 @@ async function handleAddSearchResultToShelf(item: AggregatedSearchItemDto): Prom
       tone: 'error',
     })
   } finally {
-    addingShelfKey.value = null
+    setKeyInSet(addingShelfKeys, key, false)
   }
 }
 
@@ -272,7 +288,8 @@ async function openSearchResultReader(item: AggregatedSearchItemDto): Promise<vo
     return
   }
   const key = `${item.source_id}:${item.book.book_url}`
-  openingKey.value = key
+  if (openingKeys.value.has(key)) return
+  setKeyInSet(openingKeys, key, true)
   try {
     const detailRes = await onlineBookApi.fetchBookInfo(item.source_id, item.book.book_url, {
       name: item.book.name,
@@ -288,20 +305,24 @@ async function openSearchResultReader(item: AggregatedSearchItemDto): Promise<vo
     const intro = detailRes.detail.intro ?? item.book.intro
     const tocUrl = detailRes.detail.toc_url
 
-    sessionStorage.setItem(
-      'xmedia_online_reader_ctx',
-      JSON.stringify({
-        sourceId: item.source_id,
-        sourceName: item.source_name,
-        name: bookName,
-        author: bookAuthor,
-        bookUrl: item.book.book_url,
-        tocUrl,
-        coverUrl,
-        intro,
-        currentChapterIndex: 0,
-      }),
-    )
+    try {
+      sessionStorage.setItem(
+        'xmedia_online_reader_ctx',
+        JSON.stringify({
+          sourceId: item.source_id,
+          sourceName: item.source_name,
+          name: bookName,
+          author: bookAuthor,
+          bookUrl: item.book.book_url,
+          tocUrl,
+          coverUrl,
+          intro,
+          currentChapterIndex: 0,
+        }),
+      )
+    } catch {
+      // ignore storage errors (e.g. private browsing / quota exceeded)
+    }
 
     const query: Record<string, string> = {
       sourceId: item.source_id,
@@ -320,13 +341,14 @@ async function openSearchResultReader(item: AggregatedSearchItemDto): Promise<vo
       tone: 'error',
     })
   } finally {
-    openingKey.value = null
+    setKeyInSet(openingKeys, key, false)
   }
 }
 
 async function openDownloadForSearchItem(item: AggregatedSearchItemDto): Promise<void> {
   const key = `dl:${item.source_id}:${item.book.book_url}`
-  openingKey.value = key
+  if (openingKeys.value.has(key)) return
+  setKeyInSet(openingKeys, key, true)
   try {
     const detailRes = await onlineBookApi.fetchBookInfo(item.source_id, item.book.book_url, {
       name: item.book.name,
@@ -353,7 +375,7 @@ async function openDownloadForSearchItem(item: AggregatedSearchItemDto): Promise
       tone: 'error',
     })
   } finally {
-    openingKey.value = null
+    setKeyInSet(openingKeys, key, false)
   }
 }
 
@@ -389,7 +411,7 @@ function goManageDataSources(): void {
         </div>
         <button
           type="submit"
-          :disabled="!searchKeyword.trim() || searching || enabledSources.length === 0"
+          :disabled="!searchKeyword.trim() || enabledSources.length === 0"
           class="md-btn md-btn-filled md-state h-10 px-5"
         >
           <LuLoader2 v-if="searching" class="h-4 w-4 animate-spin" />
@@ -522,12 +544,12 @@ function goManageDataSources(): void {
             <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
               <button
                 type="button"
-                :disabled="openingKey === `${item.source_id}:${item.book.book_url}`"
+                :disabled="openingKeys.has(`${item.source_id}:${item.book.book_url}`)"
                 class="md-btn md-btn-sm md-btn-filled md-state"
                 @click="openSearchResultReader(item)"
               >
                 <LuLoader2
-                  v-if="openingKey === `${item.source_id}:${item.book.book_url}`"
+                  v-if="openingKeys.has(`${item.source_id}:${item.book.book_url}`)"
                   class="h-3.5 w-3.5 animate-spin"
                 />
                 <LuBookOpen v-else class="h-3.5 w-3.5" />
@@ -536,12 +558,12 @@ function goManageDataSources(): void {
 
               <button
                 type="button"
-                :disabled="addingShelfKey === `${item.source_id}:${item.book.book_url}`"
+                :disabled="addingShelfKeys.has(`${item.source_id}:${item.book.book_url}`)"
                 class="md-btn md-btn-sm md-btn-tonal md-state"
                 @click="handleAddSearchResultToShelf(item)"
               >
                 <LuLoader2
-                  v-if="addingShelfKey === `${item.source_id}:${item.book.book_url}`"
+                  v-if="addingShelfKeys.has(`${item.source_id}:${item.book.book_url}`)"
                   class="h-3.5 w-3.5 animate-spin"
                 />
                 <LuPlus v-else class="h-3.5 w-3.5" />
@@ -550,12 +572,12 @@ function goManageDataSources(): void {
 
               <button
                 type="button"
-                :disabled="openingKey === `dl:${item.source_id}:${item.book.book_url}`"
+                :disabled="openingKeys.has(`dl:${item.source_id}:${item.book.book_url}`)"
                 class="md-btn md-btn-sm md-btn-outlined md-state"
                 @click="openDownloadForSearchItem(item)"
               >
                 <LuLoader2
-                  v-if="openingKey === `dl:${item.source_id}:${item.book.book_url}`"
+                  v-if="openingKeys.has(`dl:${item.source_id}:${item.book.book_url}`)"
                   class="h-3.5 w-3.5 animate-spin"
                 />
                 <LuDownload v-else class="h-3.5 w-3.5" />

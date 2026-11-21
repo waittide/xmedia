@@ -15,6 +15,7 @@ import { useCatalogStore } from '@/domains/book/store'
 import type { LibraryDto } from '@/domains/book/types'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
+import { useSnackbarStore } from '@/stores/snackbar'
 
 type CollectionKind = 'libraries' | 'shelves' | 'tags' | 'authors'
 
@@ -24,6 +25,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const catalogStore = useCatalogStore()
 const dialogStore = useDialogStore()
+const snackbarStore = useSnackbarStore()
 
 const kind = computed<CollectionKind>(() => {
   if (route.name === 'book-libraries-overview') return 'libraries'
@@ -134,27 +136,45 @@ const chipItems = computed<CollectionChipItem[]>(() => {
 
 async function openLibrary(id: string): Promise<void> {
   catalogStore.selectSection('library', id)
-  await router.push('/book/catalog')
+  await router.push({ path: '/book/catalog', query: { section: 'library', library: id } })
 }
 
 async function openShelf(id: string): Promise<void> {
   catalogStore.selectSection('shelf', id)
-  await router.push('/book/catalog')
+  await router.push({ path: '/book/catalog', query: { section: 'shelf', shelf: id } })
 }
 
 async function openChip(name: string): Promise<void> {
-  catalogStore.selectSection(kind.value === 'authors' ? 'author' : 'tag', name)
-  await router.push('/book/catalog')
+  const sec = kind.value === 'authors' ? 'author' : 'tag'
+  catalogStore.selectSection(sec, name)
+  await router.push({
+    path: '/book/catalog',
+    query: sec === 'author' ? { section: 'author', author: name } : { section: 'tag', tag: name },
+  })
 }
 
 async function triggerLibraryScan(id: string): Promise<void> {
-  const started = await api.scanLibrary(id)
-  catalogStore.applyLibraryUpdate(started)
+  try {
+    const started = await api.scanLibrary(id)
+    catalogStore.applyLibraryUpdate(started)
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 async function createShelfInline(name: string): Promise<void> {
-  await api.createShelf(name)
-  await catalogStore.refreshSidebarData()
+  try {
+    await api.createShelf(name)
+    await catalogStore.refreshSidebarData()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 async function renameShelfPrompt(id: string): Promise<void> {
@@ -166,8 +186,15 @@ async function renameShelfPrompt(id: string): Promise<void> {
     defaultValue: shelf.name,
   })
   if (!nextName || !nextName.trim() || nextName.trim() === shelf.name) return
-  await api.renameShelf(shelf.id, nextName.trim())
-  await catalogStore.refreshSidebarData()
+  try {
+    await api.renameShelf(shelf.id, nextName.trim())
+    await catalogStore.refreshSidebarData()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 async function removeShelf(id: string): Promise<void> {
@@ -179,8 +206,15 @@ async function removeShelf(id: string): Promise<void> {
     danger: true,
   })
   if (!ok) return
-  await api.deleteShelf(shelf.id)
-  await catalogStore.refreshSidebarData()
+  try {
+    await api.deleteShelf(shelf.id)
+    await catalogStore.refreshSidebarData()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 </script>
 

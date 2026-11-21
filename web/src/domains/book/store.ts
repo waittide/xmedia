@@ -16,6 +16,16 @@ import type {
 
 export type NavSection = 'all' | 'recent' | 'favorites' | 'library' | 'shelf' | 'tag' | 'author'
 
+function readStoredViewMode(): 'list' | 'grid' {
+  try {
+    const raw = localStorage.getItem('xmedia.book_view_mode')
+    if (raw === 'list' || raw === 'grid') return raw
+  } catch {
+    // ignore storage errors
+  }
+  return 'grid'
+}
+
 export const useCatalogStore = defineStore('bookCatalog', () => {
   const eventsStore = useEventsStore()
 
@@ -30,10 +40,9 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
   const page = ref<number>(1)
   const pageSize = ref<number>(24)
   const loading = ref<boolean>(false)
+  let fetchSeq = 0
 
-  const viewMode = ref<'list' | 'grid'>(
-    (localStorage.getItem('xmedia.book_view_mode') as 'list' | 'grid') || 'grid',
-  )
+  const viewMode = ref<'list' | 'grid'>(readStoredViewMode())
   const activeSection = ref<NavSection>('all')
   const activeLibraryId = ref<string>('')
   const activeShelfId = ref<string>('')
@@ -64,7 +73,11 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
 
   function setViewMode(mode: 'list' | 'grid'): void {
     viewMode.value = mode
-    localStorage.setItem('xmedia.book_view_mode', mode)
+    try {
+      localStorage.setItem('xmedia.book_view_mode', mode)
+    } catch {
+      // ignore storage errors
+    }
   }
 
   async function refreshSidebarData(): Promise<void> {
@@ -83,11 +96,20 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
   }
 
   async function fetchBooks(): Promise<void> {
+    const seq = ++fetchSeq
     loading.value = true
     selectedBookIds.value = new Set()
     try {
-      if (activeSection.value === 'recent' && !keyword.value.trim()) {
+      const hasSecondaryFilters =
+        filterFormats.value.length > 0 ||
+        filterAuthors.value.length > 0 ||
+        filterTags.value.length > 0 ||
+        filterLibraryIds.value.length > 0 ||
+        includeMissing.value
+
+      if (activeSection.value === 'recent' && !keyword.value.trim() && !hasSecondaryFilters) {
         const recent = await api.listRecent(48)
+        if (seq !== fetchSeq) return
         books.value = recent
         total.value = recent.length
         return
@@ -118,10 +140,13 @@ export const useCatalogStore = defineStore('bookCatalog', () => {
         page_size: pageSize.value,
       })
 
+      if (seq !== fetchSeq) return
       books.value = res.items
       total.value = res.total
     } finally {
-      loading.value = false
+      if (seq === fetchSeq) {
+        loading.value = false
+      }
     }
   }
 

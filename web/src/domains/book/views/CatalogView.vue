@@ -19,6 +19,7 @@ import { api } from '@/domains/book/api'
 import { useAuthStore } from '@/stores/auth'
 import { useCatalogStore, type NavSection } from '@/domains/book/store'
 import { useDialogStore } from '@/stores/dialog'
+import { useSnackbarStore } from '@/stores/snackbar'
 import type { BookFormat, BookSortField, BookSummaryDto } from '@/domains/book/types'
 import BookCard from '@/domains/book/components/BookCard.vue'
 import OnlineBookSearchSection from '@/domains/book/components/OnlineBookSearchSection.vue'
@@ -37,6 +38,7 @@ const router = useRouter()
 const authStore = useAuthStore()
 const catalogStore = useCatalogStore()
 const dialogStore = useDialogStore()
+const snackbarStore = useSnackbarStore()
 
 const showFilters = ref(false)
 const searchScope = ref<CatalogSearchScope>(route.query.scope === 'online' ? 'online' : 'local')
@@ -51,15 +53,18 @@ const showSearchScopeSwitch = computed(
   () => catalogStore.keyword.trim().length > 0 || searchScope.value === 'online',
 )
 
-const searchScopeOptions: readonly SegmentedOption<CatalogSearchScope>[] = [
-  { value: 'local', label: '本地书库', icon: LuBookOpen },
-  { value: 'online', label: '在线书源', icon: LuGlobe },
-]
+const searchScopeOptions = computed<SegmentedOption<CatalogSearchScope>[]>(() => [
+  { value: 'local', label: t('catalog.scopeLocal'), icon: LuBookOpen },
+  { value: 'online', label: t('catalog.scopeOnline'), icon: LuGlobe },
+])
 
 function buildQueryFromStore(): Record<string, string> {
   const q: Record<string, string> = {}
   if (searchScope.value === 'online') {
     q.scope = 'online'
+    if (onlineSourceId.value) {
+      q.source = onlineSourceId.value
+    }
   }
   if (catalogStore.activeSection !== 'all') {
     q.section = catalogStore.activeSection
@@ -134,47 +139,33 @@ function applyQueryParamsFromRoute(): void {
     catalogStore.activeSection = 'library'
   } else if (qShelf) {
     catalogStore.activeSection = 'shelf'
-  } else if (Object.keys(route.query).length > 0) {
+  } else {
     catalogStore.activeSection = 'all'
   }
 
-  if (qLibrary) catalogStore.activeLibraryId = qLibrary
-  if (qShelf) catalogStore.activeShelfId = qShelf
-  if ('q' in route.query) {
-    catalogStore.keyword = qKeyword
-  }
-  if (qAuthor) {
-    catalogStore.filterAuthors = [qAuthor]
-  } else if (catalogStore.activeSection === 'all' && Object.keys(route.query).length > 0 && !('author' in route.query)) {
-    catalogStore.filterAuthors = []
-  }
-  if (qTag) {
-    catalogStore.filterTags = [qTag]
-  } else if (catalogStore.activeSection === 'all' && Object.keys(route.query).length > 0 && !('tag' in route.query)) {
-    catalogStore.filterTags = []
-  }
-  if (qFormat === 'epub' || qFormat === 'txt' || qFormat === 'pdf') {
-    catalogStore.filterFormats = [qFormat]
-  }
-  if (
+  catalogStore.activeLibraryId = qLibrary
+  catalogStore.activeShelfId = qShelf
+  catalogStore.keyword = qKeyword
+  catalogStore.filterAuthors = qAuthor ? [qAuthor] : []
+  catalogStore.filterTags = qTag ? [qTag] : []
+  catalogStore.filterFormats =
+    qFormat === 'epub' || qFormat === 'txt' || qFormat === 'pdf' ? [qFormat] : []
+  catalogStore.sortBy =
     qSortBy === 'created_at' ||
     qSortBy === 'updated_at' ||
     qSortBy === 'title' ||
     qSortBy === 'file_size'
-  ) {
-    catalogStore.sortBy = qSortBy
-  }
-  if (qSortOrder === 'asc' || qSortOrder === 'desc') {
-    catalogStore.sortOrder = qSortOrder
-  }
-  if (Number.isFinite(qPage) && qPage >= 1) {
-    catalogStore.page = qPage
-  }
+      ? qSortBy
+      : 'created_at'
+  catalogStore.sortOrder = qSortOrder === 'asc' || qSortOrder === 'desc' ? qSortOrder : 'desc'
+  catalogStore.page = Number.isFinite(qPage) && qPage >= 1 ? qPage : 1
 }
 
 onMounted(() => {
   applyQueryParamsFromRoute()
-  void catalogStore.fetchBooks()
+  if (searchScope.value !== 'online') {
+    void catalogStore.fetchBooks()
+  }
 })
 
 watch(
@@ -182,7 +173,9 @@ watch(
   () => {
     if (syncingRouteQuery) return
     applyQueryParamsFromRoute()
-    void catalogStore.fetchBooks()
+    if (searchScope.value !== 'online') {
+      void catalogStore.fetchBooks()
+    }
   },
 )
 
@@ -276,16 +269,30 @@ function toggleSelectAll(): void {
 
 async function toggleBookFavorite(book: BookSummaryDto): Promise<void> {
   const next = !book.is_favorite
-  await api.setFavorite(book.id, next)
-  catalogStore.updateBookInList({ ...book, is_favorite: next })
+  try {
+    await api.setFavorite(book.id, next)
+    catalogStore.updateBookInList({ ...book, is_favorite: next })
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 async function batchFavorite(fav: boolean): Promise<void> {
   const ids = Array.from(catalogStore.selectedBookIds)
   if (ids.length === 0) return
-  await api.batchBooks({ book_ids: ids, set_favorite: fav })
-  catalogStore.clearSelection()
-  await catalogStore.fetchBooks()
+  try {
+    await api.batchBooks({ book_ids: ids, set_favorite: fav })
+    catalogStore.clearSelection()
+    await catalogStore.fetchBooks()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 async function batchAddTag(): Promise<void> {
@@ -301,9 +308,21 @@ async function batchAddTag(): Promise<void> {
     .map((s) => s.trim())
     .filter(Boolean)
   if (addTags.length === 0) return
-  await api.batchBooks({ book_ids: ids, add_tags: addTags })
-  catalogStore.clearSelection()
-  await Promise.all([catalogStore.refreshSidebarData(), catalogStore.fetchBooks()])
+  try {
+    await api.batchBooks({ book_ids: ids, add_tags: addTags })
+    catalogStore.clearSelection()
+    await Promise.all([catalogStore.refreshSidebarData(), catalogStore.fetchBooks()])
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
+function handleResetFilters(): void {
+  catalogStore.resetFilters()
+  syncStoreToRouteQuery()
 }
 
 function triggerRefetch(): void {
@@ -575,7 +594,7 @@ async function refreshPage(): Promise<void> {
             v-if="hasFilterPills"
             type="button"
             class="text-xs font-semibold text-[var(--md-sys-color-primary)] hover:underline"
-            @click="catalogStore.resetFilters()"
+            @click="handleResetFilters"
           >
             {{ t('search.reset') }}
           </button>

@@ -39,7 +39,9 @@ const { overview, loading, refreshPage } = useHomeOverview('book', {
 
 function goSection(sec: 'all' | 'recent' | 'favorites'): void {
   catalogStore.selectSection(sec)
-  void router.push('/book/catalog')
+  const query: Record<string, string> = {}
+  if (sec !== 'all') query.section = sec
+  void router.push({ path: '/book/catalog', query })
 }
 
 const statCards = computed<StatCardItem[]>(() => {

@@ -4,7 +4,6 @@ export default {
     allBooks: '全部',
     recentReading: '继续',
     favorites: '收藏',
-    onlineSources: '书源',
     newShelf: '新建书架',
     shelfNamePlaceholder: '书架名称，回车创建…',
   },
@@ -59,6 +58,8 @@ export default {
     reset: '清除筛选',
   },
   catalog: {
+    scopeLocal: '本地书库',
+    scopeOnline: '在线书源',
     gridView: '网格视图',
     tableView: '列表视图',
     sortCreatedAt: '最新上架',
