@@ -249,3 +249,28 @@ pub(crate) struct MusicTrackTagModel {
     pub tag: String,
     pub created_at: Timestamp,
 }
+
+#[derive(Debug, toasty::Model)]
+#[table = "music_sources"]
+pub(crate) struct MusicSourceRecordModel {
+    #[key]
+    pub id: Uuid,
+
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+
+    #[column(type = text)]
+    pub raw_json: String,
+
+    #[column(type = text)]
+    pub runtime_state: toasty::Json<xmedia_source::model::SourceRuntimeState>,
+
+    pub last_test_ok: Option<bool>,
+    pub last_test_msg: Option<String>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}

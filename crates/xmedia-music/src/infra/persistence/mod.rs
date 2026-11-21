@@ -8,8 +8,8 @@ use xmedia_core::domain::error::{DomainError, DomainResult};
 
 use models::{
     MusicAlbumModel, MusicArtistModel, MusicBookmarkModel, MusicPlayQueueModel, MusicPlayStatModel,
-    MusicPlaylistModel, MusicRatingModel, MusicScrobbleModel, MusicStarredModel, MusicTrackModel,
-    MusicTrackTagModel,
+    MusicPlaylistModel, MusicRatingModel, MusicScrobbleModel, MusicSourceRecordModel,
+    MusicStarredModel, MusicTrackModel, MusicTrackTagModel,
 };
 
 pub fn register_music_models(set: &mut ModelSet) {
@@ -24,6 +24,7 @@ pub fn register_music_models(set: &mut ModelSet) {
     <MusicPlayQueueModel as Model>::register(set);
     <MusicBookmarkModel as Model>::register(set);
     <MusicTrackTagModel as Model>::register(set);
+    <MusicSourceRecordModel as Model>::register(set);
 }
 
 async fn push_single_music_model<M: Model>(
@@ -89,6 +90,14 @@ pub async fn ensure_music_schema(db: &mut Db, database_url: &str) -> DomainResul
     }
     if MusicTrackTagModel::all().limit(1).exec(db).await.is_err() {
         push_single_music_model::<MusicTrackTagModel>(database_url, "music_track_tags").await?;
+    }
+    if MusicSourceRecordModel::all()
+        .limit(1)
+        .exec(db)
+        .await
+        .is_err()
+    {
+        push_single_music_model::<MusicSourceRecordModel>(database_url, "music_sources").await?;
     }
     Ok(())
 }
