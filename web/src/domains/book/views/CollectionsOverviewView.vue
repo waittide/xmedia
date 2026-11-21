@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { LuFolder, LuGlobe, LuTag, LuUser } from 'vue-icons-plus/lu'
+import { LuFolder, LuTag, LuUser } from 'vue-icons-plus/lu'
 import DomainCollectionsView, {
   type CollectionChipItem,
   type CollectionGroupItem,
@@ -9,9 +9,7 @@ import DomainCollectionsView, {
   type CollectionViewMode,
 } from '@/components/domain/DomainCollectionsView.vue'
 import type { SelectOption } from '@/components/ui/AppSelect.vue'
-import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import { api } from '@/domains/book/api'
-import OnlineShelfSection from '@/domains/book/components/OnlineShelfSection.vue'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import { useCatalogStore } from '@/domains/book/store'
 import type { LibraryDto } from '@/domains/book/types'
@@ -19,7 +17,6 @@ import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 
 type CollectionKind = 'libraries' | 'shelves' | 'tags' | 'authors'
-type ShelfTab = 'local' | 'online'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -34,33 +31,6 @@ const kind = computed<CollectionKind>(() => {
   if (route.name === 'book-authors-overview') return 'authors'
   return 'tags'
 })
-
-const shelfTab = ref<ShelfTab>(route.query.tab === 'online' ? 'online' : 'local')
-const onlineShelfCount = ref(0)
-
-watch(
-  () => [route.name, route.query.tab] as const,
-  ([name, tab]) => {
-    if (name === 'book-shelves-overview') {
-      shelfTab.value = tab === 'online' ? 'online' : 'local'
-    }
-  },
-)
-
-const shelfTabOptions = computed<SegmentedOption<ShelfTab>[]>(() => [
-  { value: 'local', label: '本地书架', icon: LuFolder },
-  {
-    value: 'online',
-    label: onlineShelfCount.value > 0 ? `在线书架 ${onlineShelfCount.value}` : '在线书架',
-    icon: LuGlobe,
-  },
-])
-
-function switchShelfTab(next: ShelfTab): void {
-  shelfTab.value = next
-  const query = next === 'online' ? { tab: 'online' } : {}
-  void router.replace({ path: '/book/shelves', query })
-}
 
 const viewMode = computed<CollectionViewMode>(() => {
   if (kind.value === 'libraries') return 'libraries'
@@ -215,38 +185,7 @@ async function removeShelf(id: string): Promise<void> {
 </script>
 
 <template>
-  <div
-    v-if="kind === 'shelves' && shelfTab === 'online'"
-    class="mx-auto max-w-6xl space-y-6 px-6 py-8 sm:px-8"
-  >
-    <div class="flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <div class="flex items-center gap-2.5">
-          <h1 class="text-2xl font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
-            {{ headerMeta.title }}
-          </h1>
-          <span
-            class="rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-0.5 text-xs font-bold text-[var(--md-sys-color-on-primary-container)]"
-          >
-            {{ onlineShelfCount }}
-          </span>
-        </div>
-      </div>
-
-      <MdSegmentedButton
-        :model-value="shelfTab"
-        :options="shelfTabOptions"
-        size="sm"
-        :show-check="false"
-        @update:model-value="switchShelfTab($event)"
-      />
-    </div>
-
-    <OnlineShelfSection @count-change="onlineShelfCount = $event" />
-  </div>
-
   <DomainCollectionsView
-    v-else
     :mode="viewMode"
     :reset-key="kind"
     :title="headerMeta.title"
@@ -277,15 +216,5 @@ async function removeShelf(id: string): Promise<void> {
     @rename-collection="renameShelfPrompt"
     @delete-collection="removeShelf"
     @open-chip="openChip"
-  >
-    <template v-if="kind === 'shelves'" #header-extra>
-      <MdSegmentedButton
-        :model-value="shelfTab"
-        :options="shelfTabOptions"
-        size="sm"
-        :show-check="false"
-        @update:model-value="switchShelfTab($event)"
-      />
-    </template>
-  </DomainCollectionsView>
+  />
 </template>

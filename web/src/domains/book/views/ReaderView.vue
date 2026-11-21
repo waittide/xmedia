@@ -20,6 +20,9 @@ import TocTree from '@/domains/book/components/TocTree.vue'
 const EpubReader = defineAsyncComponent(() => import('@/domains/book/readers/EpubReader.vue'))
 const TxtReader = defineAsyncComponent(() => import('@/domains/book/readers/TxtReader.vue'))
 const PdfReader = defineAsyncComponent(() => import('@/domains/book/readers/PdfReader.vue'))
+const TrackedOnlineReader = defineAsyncComponent(
+  () => import('@/domains/book/readers/TrackedOnlineReader.vue'),
+)
 
 interface ReaderHandle {
   navigateTo: (target: string, scrollRatio?: number) => Promise<void>
@@ -44,6 +47,7 @@ const bookmarkLabel = ref('')
 const epubRef = ref<ReaderHandle | null>(null)
 const txtRef = ref<ReaderHandle | null>(null)
 const pdfRef = ref<ReaderHandle | null>(null)
+const trackedRef = ref<ReaderHandle | null>(null)
 
 const flowOptions = computed<SegmentedOption<'paginated' | 'scrolled'>[]>(() => [
   { value: 'paginated', label: t('reader.paginated') },
@@ -79,15 +83,16 @@ async function flushPendingProgress(): Promise<void> {
 }
 
 onMounted(async () => {
-  const [b, tocItems, progress, bms] = await Promise.all([
+  const [b, progress, bms] = await Promise.all([
     api.getBook(bookId),
-    api.getToc(bookId).catch(() => []),
     api.getProgress(bookId),
     api.listBookmarks(bookId),
   ])
   book.value = b
-  toc.value = tocItems
   bookmarks.value = bms
+  if (!b.online_tracking) {
+    toc.value = await api.getToc(bookId).catch(() => [])
+  }
   const queryLocator = typeof route.query.locator === 'string' ? route.query.locator : null
   if (queryLocator) {
     initialLocation.value = {
@@ -181,7 +186,9 @@ function handleProgressUpdate(payload: {
 
 async function jumpToTarget(hrefOrLocator: string, scrollRatio = 0): Promise<void> {
   activePanel.value = 'none'
-  if (book.value?.format === 'epub') {
+  if (book.value?.online_tracking) {
+    await trackedRef.value?.navigateTo(hrefOrLocator, scrollRatio)
+  } else if (book.value?.format === 'epub') {
     await epubRef.value?.navigateTo(hrefOrLocator)
   } else if (book.value?.format === 'txt') {
     await txtRef.value?.navigateTo(hrefOrLocator, scrollRatio)
@@ -295,8 +302,16 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
       </div>
 
       <template v-else-if="book">
+        <TrackedOnlineReader
+          v-if="book.online_tracking"
+          ref="trackedRef"
+          :book-id="bookId"
+          :initial-location="initialLocation"
+          @progress="handleProgressUpdate"
+          @toc-loaded="toc = $event"
+        />
         <EpubReader
-          v-if="book.format === 'epub'"
+          v-else-if="book.format === 'epub'"
           ref="epubRef"
           :book-id="bookId"
           :initial-location="initialLocation"

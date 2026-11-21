@@ -23,6 +23,8 @@ import ThemePopover from '@/components/ThemePopover.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import { resolveFontStack } from '@/utils/format'
+import { api as bookApi } from '../api'
+import { useCatalogStore } from '../store'
 import OnlineDownloadModal, {
   type OnlineDownloadTarget,
 } from '../components/OnlineDownloadModal.vue'
@@ -48,6 +50,7 @@ interface ReaderContext {
 
 const route = useRoute()
 const router = useRouter()
+const catalogStore = useCatalogStore()
 const themeStore = useThemeStore()
 const snackbar = useSnackbarStore()
 
@@ -453,7 +456,7 @@ async function initReader(): Promise<void> {
   }
 
   if (!readerCtx.value) {
-    void router.replace({ path: '/book/shelves', query: { tab: 'online' } })
+    void router.replace({ path: '/book/catalog', query: { scope: 'online' } })
     return
   }
 
@@ -563,10 +566,10 @@ async function openChapter(idx: number, forceRefresh = false): Promise<void> {
 
 async function handleSaveToShelf(): Promise<void> {
   const ctx = readerCtx.value
-  if (!ctx || ctx.shelfId || savingShelf.value) return
+  if (!ctx || savingShelf.value) return
   savingShelf.value = true
   try {
-    const saved = await onlineBookApi.addToShelf({
+    const created = await onlineBookApi.trackOnlineBook({
       source_id: ctx.sourceId,
       name: ctx.name,
       author: ctx.author,
@@ -575,16 +578,19 @@ async function handleSaveToShelf(): Promise<void> {
       cover_url: ctx.coverUrl ?? null,
       intro: ctx.intro ?? null,
       last_chapter: chapters.value[chapters.value.length - 1]?.title ?? null,
-      total_chapters: chapters.value.length,
     })
-    await onlineBookApi.updateShelfBook(saved.id, {
-      current_chapter_index: activeIndex.value,
-      current_chapter_title: chapterTitle.value || null,
-      total_chapters: chapters.value.length,
-    })
-    ctx.shelfId = saved.id
-    syncContextToUrlAndStorage(ctx)
-    snackbar.show({ message: `已将《${ctx.name}》加入在线书架并记录当前进度` })
+    const total = Math.max(1, chapters.value.length)
+    await bookApi
+      .saveProgress(created.id, {
+        progress_percent: Math.min(100, (activeIndex.value / total) * 100),
+        locator: `chapter:${activeIndex.value}`,
+        chapter_index: activeIndex.value,
+        scroll_ratio: 0,
+      })
+      .catch(() => {})
+    void catalogStore.refreshSidebarData()
+    snackbar.show({ message: `已将《${created.metadata.title}》加入书库（标准 EPUB 3.0）` })
+    void router.replace(`/book/read/${created.id}`)
   } catch (err) {
     snackbar.show({
       message: err instanceof Error ? err.message : String(err),
@@ -700,8 +706,8 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="md-icon-btn md-icon-btn-sm md-state"
-          title="返回在线书架"
-          @click="router.push({ path: '/book/shelves', query: { tab: 'online' } })"
+          title="返回在线搜索"
+          @click="router.push({ path: '/book/catalog', query: { scope: 'online' } })"
         >
           <LuArrowLeft class="h-4 w-4" />
         </button>

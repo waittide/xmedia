@@ -1,4 +1,35 @@
 import { requestJson, withAuthToken } from '@/api/client'
+import type { BookSummaryDto } from './types'
+
+export interface TrackedChapterMetaDto {
+  index: number
+  title: string
+  url: string
+  cached: boolean
+}
+
+export interface TrackedTocResponseDto {
+  book_id: string
+  source_id: string
+  source_name: string
+  chapters: TrackedChapterMetaDto[]
+  cached_chapters: number
+  total_chapters: number
+  last_chapter: string | null
+  epub_dirty: boolean
+}
+
+export interface TrackedChapterResponseDto {
+  book_id: string
+  source_id: string
+  chapter_index: number
+  title: string
+  content: string
+  cached: boolean
+  cached_chapters: number
+  total_chapters: number
+  epub_dirty: boolean
+}
 
 export interface LoginUiStyle {
   layout_flex_grow?: number | null
@@ -389,7 +420,60 @@ export const onlineBookApi = {
   listDownloads: (): Promise<OnlineDownloadJobDto[]> =>
     requestJson('/book/online/downloads'),
 
+  trackOnlineBook: (payload: {
+    source_id: string
+    name: string
+    author: string
+    book_url: string
+    toc_url?: string
+    cover_url?: string | null
+    intro?: string | null
+    kind?: string | null
+    last_chapter?: string | null
+  }): Promise<BookSummaryDto> =>
+    requestJson('/book/online/track', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  getTrackedToc: (bookId: string, refresh = false): Promise<TrackedTocResponseDto> =>
+    requestJson(
+      `/book/books/${encodeURIComponent(bookId)}/online/toc${refresh ? '?refresh=true' : ''}`,
+    ),
+
+  getTrackedChapter: (
+    bookId: string,
+    index: number,
+    refresh = false,
+  ): Promise<TrackedChapterResponseDto> =>
+    requestJson(
+      `/book/books/${encodeURIComponent(bookId)}/online/chapter/${index}${refresh ? '?refresh=true' : ''}`,
+    ),
+
+  switchTrackedSource: (
+    bookId: string,
+    payload: {
+      source_id: string
+      book_url: string
+      toc_url: string
+      cover_url?: string | null
+      intro?: string | null
+      last_chapter?: string | null
+      clear_cache?: boolean
+    },
+  ): Promise<TrackedTocResponseDto> =>
+    requestJson(`/book/books/${encodeURIComponent(bookId)}/online/switch-source`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  syncTrackedEpub: (bookId: string): Promise<BookSummaryDto> =>
+    requestJson(`/book/books/${encodeURIComponent(bookId)}/online/sync-epub`, {
+      method: 'POST',
+    }),
+
   startDownload: (payload: {
+    book_id?: string
     source_id: string
     book_name: string
     author: string

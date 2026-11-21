@@ -14,6 +14,8 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
 import { useSnackbarStore } from '@/stores/snackbar'
+import { api as bookApi } from '../api'
+import { useCatalogStore } from '../store'
 import OnlineDownloadModal, { type OnlineDownloadTarget } from './OnlineDownloadModal.vue'
 import {
   buildOnlineCoverUrl,
@@ -21,7 +23,6 @@ import {
   type AggregatedSearchItemDto,
   type BookSourceSummaryDto,
   type OnlineDownloadJobDto,
-  type OnlineShelfBookDto,
   type SourceSearchErrorDto,
 } from '../onlineApi'
 
@@ -35,12 +36,13 @@ const emit = defineEmits<{
 
 const router = useRouter()
 const authStore = useAuthStore()
+const catalogStore = useCatalogStore()
 const snackbar = useSnackbarStore()
 const onlineDownloadsStore = useOnlineDownloadsStore()
 
 const loadingInit = ref(false)
 const sources = ref<BookSourceSummaryDto[]>([])
-const shelfBooks = ref<OnlineShelfBookDto[]>([])
+const trackedBookIdByKey = ref<Record<string, string>>({})
 const searchKeyword = ref(props.keyword)
 const selectedSourceIds = ref<string[]>([])
 const searching = ref(false)
@@ -84,12 +86,20 @@ watch(
 async function initData(): Promise<void> {
   loadingInit.value = true
   try {
-    const [srcList, shelfList] = await Promise.all([
+    const [srcList, existingPage] = await Promise.all([
       onlineBookApi.listSources().catch(() => []),
-      onlineBookApi.listShelf().catch(() => []),
+      bookApi.searchBooks({ page: 1, page_size: 200 }).catch(() => null),
     ])
     sources.value = srcList
-    shelfBooks.value = shelfList
+    if (existingPage) {
+      const map: Record<string, string> = {}
+      for (const b of existingPage.items) {
+        if (b.online_tracking) {
+          map[`${b.online_tracking.source_id}:${b.online_tracking.book_url}`] = b.id
+        }
+      }
+      trackedBookIdByKey.value = map
+    }
   } finally {
     loadingInit.value = false
   }
@@ -185,67 +195,53 @@ function formatKindTags(raw: string | null | undefined): string {
     .join(' · ')
 }
 
-function isInShelf(item: AggregatedSearchItemDto): boolean {
-  return shelfBooks.value.some(
-    (b) => b.source_id === item.source_id && b.book_url === item.book.book_url,
-  )
+function trackedBookIdFor(item: AggregatedSearchItemDto): string | undefined {
+  return trackedBookIdByKey.value[`${item.source_id}:${item.book.book_url}`]
 }
 
-function openShelfReader(book: OnlineShelfBookDto): void {
-  sessionStorage.setItem(
-    'xmedia_online_reader_ctx',
-    JSON.stringify({
-      shelfId: book.id,
-      sourceId: book.source_id,
-      sourceName: book.source_name,
-      name: book.name,
-      author: book.author,
-      bookUrl: book.book_url,
-      tocUrl: book.toc_url,
-      coverUrl: book.cover_url,
-      intro: book.intro,
-      currentChapterIndex: book.current_chapter_index,
-    }),
-  )
-  const query: Record<string, string> = {
-    shelfId: book.id,
-    sourceId: book.source_id,
-    sourceName: book.source_name,
-    bookUrl: book.book_url,
-    tocUrl: book.toc_url,
-    name: book.name,
-    author: book.author,
-    chapter: String(book.current_chapter_index || 0),
-  }
-  if (book.cover_url) query.coverUrl = book.cover_url
-  void router.push({ path: '/book/online/read', query })
+function isInShelf(item: AggregatedSearchItemDto): boolean {
+  return Boolean(trackedBookIdFor(item))
 }
 
 async function handleAddSearchResultToShelf(item: AggregatedSearchItemDto): Promise<void> {
+  const existingId = trackedBookIdFor(item)
+  if (existingId) {
+    void router.push(`/book/items/${existingId}`)
+    return
+  }
   const key = `${item.source_id}:${item.book.book_url}`
   addingShelfKey.value = key
   try {
-    const detailRes = await onlineBookApi.fetchBookInfo(item.source_id, item.book.book_url, {
-      name: item.book.name,
-      author: item.book.author,
-      book_url: item.book.book_url,
-      toc_url: '',
-      cover_url: item.book.cover_url,
-      intro: item.book.intro,
-    })
-    const saved = await onlineBookApi.addToShelf({
+    const detailRes = await onlineBookApi
+      .fetchBookInfo(item.source_id, item.book.book_url, {
+        name: item.book.name,
+        author: item.book.author,
+        book_url: item.book.book_url,
+        toc_url: '',
+        cover_url: item.book.cover_url,
+        intro: item.book.intro,
+      })
+      .catch(() => null)
+    const created = await onlineBookApi.trackOnlineBook({
       source_id: item.source_id,
-      name: detailRes.detail.name || item.book.name,
-      author: detailRes.detail.author || item.book.author,
+      name: detailRes?.detail.name || item.book.name,
+      author: detailRes?.detail.author || item.book.author,
       book_url: item.book.book_url,
-      toc_url: detailRes.detail.toc_url,
-      cover_url: detailRes.detail.cover_url ?? item.book.cover_url,
-      intro: detailRes.detail.intro ?? item.book.intro,
-      kind: detailRes.detail.kind ?? item.book.kind,
-      last_chapter: detailRes.detail.last_chapter ?? item.book.last_chapter,
+      toc_url: detailRes?.detail.toc_url || '',
+      cover_url: detailRes?.detail.cover_url ?? item.book.cover_url,
+      intro: detailRes?.detail.intro ?? item.book.intro,
+      kind: detailRes?.detail.kind ?? item.book.kind,
+      last_chapter: detailRes?.detail.last_chapter ?? item.book.last_chapter,
     })
-    shelfBooks.value = [saved, ...shelfBooks.value.filter((b) => b.id !== saved.id)]
-    snackbar.show({ message: `已将《${saved.name}》加入在线书架` })
+    trackedBookIdByKey.value = { ...trackedBookIdByKey.value, [key]: created.id }
+    void catalogStore.refreshSidebarData()
+    snackbar.show({
+      message: `已将《${created.metadata.title}》加入书库（标准 EPUB 3.0）`,
+      actionLabel: '查看',
+      onAction: () => {
+        void router.push(`/book/items/${created.id}`)
+      },
+    })
   } catch (err) {
     snackbar.show({
       message: err instanceof Error ? err.message : String(err),
@@ -257,11 +253,9 @@ async function handleAddSearchResultToShelf(item: AggregatedSearchItemDto): Prom
 }
 
 async function openSearchResultReader(item: AggregatedSearchItemDto): Promise<void> {
-  const existing = shelfBooks.value.find(
-    (b) => b.source_id === item.source_id && b.book_url === item.book.book_url,
-  )
-  if (existing) {
-    openShelfReader(existing)
+  const existingId = trackedBookIdFor(item)
+  if (existingId) {
+    void router.push(`/book/read/${existingId}`)
     return
   }
   const key = `${item.source_id}:${item.book.book_url}`
@@ -330,6 +324,7 @@ async function openDownloadForSearchItem(item: AggregatedSearchItemDto): Promise
       intro: item.book.intro,
     })
     downloadTarget.value = {
+      bookId: trackedBookIdFor(item),
       sourceId: item.source_id,
       sourceName: item.source_name,
       bookName: detailRes.detail.name || item.book.name,
@@ -528,7 +523,7 @@ function goManageDataSources(): void {
 
               <button
                 type="button"
-                :disabled="isInShelf(item) || addingShelfKey === `${item.source_id}:${item.book.book_url}`"
+                :disabled="addingShelfKey === `${item.source_id}:${item.book.book_url}`"
                 class="md-btn md-btn-sm md-btn-tonal md-state"
                 @click="handleAddSearchResultToShelf(item)"
               >
@@ -537,7 +532,7 @@ function goManageDataSources(): void {
                   class="h-3.5 w-3.5 animate-spin"
                 />
                 <LuPlus v-else class="h-3.5 w-3.5" />
-                <span>{{ isInShelf(item) ? '已加' : '加书架' }}</span>
+                <span>{{ isInShelf(item) ? '已入库' : '加书架' }}</span>
               </button>
 
               <button

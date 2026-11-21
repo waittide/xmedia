@@ -14,15 +14,23 @@ import {
   LuTrash2,
   LuCheck,
   LuBookmark,
+  LuCloud,
+  LuRefreshCw,
 } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
+import { onlineBookApi } from '@/domains/book/onlineApi'
 import { useAuthStore } from '@/stores/auth'
 import { useCatalogStore } from '@/domains/book/store'
+import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import { useDialogStore } from '@/stores/dialog'
 import type { Bookmark, BookSummaryDto, TocItem } from '@/domains/book/types'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import OnlineDownloadModal, {
+  type OnlineDownloadTarget,
+} from '@/domains/book/components/OnlineDownloadModal.vue'
 import TocTree from '@/domains/book/components/TocTree.vue'
 import { formatBytes } from '@/utils/format'
 
@@ -31,6 +39,8 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const catalogStore = useCatalogStore()
+const onlineDownloadsStore = useOnlineDownloadsStore()
+const snackbarStore = useSnackbarStore()
 const themeStore = useThemeStore()
 const dialogStore = useDialogStore()
 
@@ -40,6 +50,17 @@ const bookmarks = ref<Bookmark[]>([])
 const loading = ref(true)
 const statusMsg = ref('')
 const editErrorMsg = ref('')
+const trackedSourceName = ref('')
+const refreshingToc = ref(false)
+const syncingEpub = ref(false)
+const onlineDownloadTarget = ref<OnlineDownloadTarget | null>(null)
+const onlineDownloadJobId = ref<string | null>(null)
+
+const trackedDownloadJob = computed(() =>
+  onlineDownloadJobId.value
+    ? (onlineDownloadsStore.jobs.find((j) => j.id === onlineDownloadJobId.value) ?? null)
+    : null,
+)
 
 const shelfPopoverOpen = ref(false)
 const moreMenuOpen = ref(false)
@@ -68,20 +89,101 @@ function onOutsideClick(ev: MouseEvent): void {
 async function loadDetail(id: string): Promise<void> {
   loading.value = true
   statusMsg.value = ''
+  trackedSourceName.value = ''
   try {
-    const [b, tocItems, bms] = await Promise.all([
+    const [b, bms] = await Promise.all([
       api.getBook(id),
-      api.getToc(id).catch(() => []),
       api.listBookmarks(id).catch(() => []),
     ])
     book.value = b
-    toc.value = tocItems
     bookmarks.value = bms
     catalogStore.activeBookId = b.id
+
+    if (b.online_tracking) {
+      const trackedToc = await onlineBookApi.getTrackedToc(id, false).catch(() => null)
+      if (trackedToc) {
+        trackedSourceName.value = trackedToc.source_name
+        toc.value = trackedToc.chapters.map((ch) => ({
+          index: ch.index,
+          title: ch.title,
+          href: `chapter:${ch.index}`,
+          level: 0,
+        }))
+      } else {
+        toc.value = []
+      }
+    } else {
+      toc.value = await api.getToc(id).catch(() => [])
+    }
   } catch {
     book.value = null
   } finally {
     loading.value = false
+  }
+}
+
+async function handleRefreshTrackedToc(): Promise<void> {
+  if (!book.value?.online_tracking || refreshingToc.value) return
+  refreshingToc.value = true
+  try {
+    const res = await onlineBookApi.getTrackedToc(book.value.id, true)
+    trackedSourceName.value = res.source_name
+    toc.value = res.chapters.map((ch) => ({
+      index: ch.index,
+      title: ch.title,
+      href: `chapter:${ch.index}`,
+      level: 0,
+    }))
+    book.value = await api.getBook(book.value.id)
+    snackbarStore.show(`目录已刷新，共 ${res.total_chapters} 章`)
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    refreshingToc.value = false
+  }
+}
+
+async function handleSyncTrackedEpub(): Promise<void> {
+  if (!book.value?.online_tracking || syncingEpub.value) return
+  syncingEpub.value = true
+  try {
+    book.value = await onlineBookApi.syncTrackedEpub(book.value.id)
+    snackbarStore.show('标准 EPUB 3.0 已同步更新')
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    syncingEpub.value = false
+  }
+}
+
+function openTrackedBatchDownload(): void {
+  const b = book.value
+  const tr = b?.online_tracking
+  if (!b || !tr) return
+  onlineDownloadTarget.value = {
+    bookId: b.id,
+    sourceId: tr.source_id,
+    sourceName: trackedSourceName.value || '在线书源',
+    bookName: b.metadata.title,
+    author: b.metadata.authors.join(', '),
+    bookUrl: tr.book_url,
+    tocUrl: tr.toc_url,
+    intro: b.metadata.description,
+    totalChapters: tr.total_chapters || undefined,
+  }
+}
+
+function closeTrackedDownloadModal(): void {
+  onlineDownloadTarget.value = null
+  onlineDownloadJobId.value = null
+  if (book.value) {
+    void loadDetail(book.value.id)
   }
 }
 
@@ -342,6 +444,18 @@ function openBookmarkInReader(bm: Bookmark): void {
                 {{ book.format }}
               </span>
               <span
+                v-if="book.online_tracking"
+                class="rounded-full bg-[var(--md-sys-color-secondary-container)] px-3 py-0.5 text-xs font-medium text-[var(--md-sys-color-on-secondary-container)]"
+              >
+                追更 · 已缓存 {{ book.online_tracking.cached_chapters }} / {{ book.online_tracking.total_chapters || '?' }} 章
+              </span>
+              <span
+                v-if="book.online_tracking?.epub_dirty"
+                class="rounded-full bg-[var(--md-sys-color-tertiary-container)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--md-sys-color-on-tertiary-container)]"
+              >
+                EPUB3 待同步
+              </span>
+              <span
                 v-if="book.is_missing"
                 class="rounded-full bg-[var(--md-sys-color-error-container)] px-3 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-error-container)]"
               >
@@ -460,10 +574,42 @@ function openBookmarkInReader(bm: Bookmark): void {
               v-if="!book.is_missing"
               :href="api.fileUrl(book.id, true)"
               class="md-icon-btn md-state !h-11 !w-11 bg-[var(--md-sys-color-surface-container-low)] hover:shadow-sm"
-              :title="t('catalog.download')"
+              :title="book.online_tracking ? '下载标准 EPUB 3.0' : t('catalog.download')"
             >
               <LuDownload class="h-4 w-4" />
             </a>
+
+            <!-- Online-Tracked Book Actions: Cache Chapters / Refresh TOC / Sync EPUB3 -->
+            <template v-if="book.online_tracking && authStore.isAdmin">
+              <button
+                type="button"
+                class="md-btn md-btn-tonal md-state !h-11 !px-4 !text-xs"
+                @click="openTrackedBatchDownload"
+              >
+                <LuCloud class="h-4 w-4" />
+                <span>缓存章节</span>
+              </button>
+
+              <button
+                type="button"
+                class="md-icon-btn md-state !h-11 !w-11 bg-[var(--md-sys-color-surface-container-low)] hover:shadow-sm"
+                :disabled="refreshingToc"
+                title="刷新在线目录"
+                @click="handleRefreshTrackedToc"
+              >
+                <LuRefreshCw class="h-4 w-4" :class="refreshingToc ? 'animate-spin' : ''" />
+              </button>
+
+              <button
+                v-if="book.online_tracking.epub_dirty"
+                type="button"
+                class="md-btn md-btn-outlined md-state !h-11 !px-3.5 !text-xs"
+                :disabled="syncingEpub"
+                @click="handleSyncTrackedEpub"
+              >
+                <span>{{ syncingEpub ? '同步中…' : '同步 EPUB3' }}</span>
+              </button>
+            </template>
 
             <!-- More Actions Dropdown (Admin only: Edit Metadata / Replace Cover / Delete) -->
             <div v-if="authStore.isAdmin" class="relative">
@@ -772,5 +918,15 @@ function openBookmarkInReader(bm: Bookmark): void {
         </div>
       </template>
     </MdDialog>
+
+    <!-- Online Tracked Book Chapter Cache / EPUB3 Sync Modal -->
+    <OnlineDownloadModal
+      :open="onlineDownloadTarget !== null"
+      :target="onlineDownloadTarget"
+      :external-job="trackedDownloadJob"
+      :disable-polling="true"
+      @close="closeTrackedDownloadModal"
+      @job-updated="onlineDownloadJobId = $event.id; onlineDownloadsStore.trackJob($event)"
+    />
   </div>
 </template>

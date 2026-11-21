@@ -24,6 +24,7 @@ import {
 } from '../onlineApi'
 
 export interface OnlineDownloadTarget {
+  bookId?: string
   sourceId: string
   sourceName: string
   bookName: string
@@ -106,6 +107,7 @@ async function handleStart(): Promise<void> {
   errorMsg.value = null
   try {
     const job = await onlineBookApi.startDownload({
+      book_id: props.target.bookId,
       source_id: props.target.sourceId,
       book_name: props.target.bookName,
       author: props.target.author,

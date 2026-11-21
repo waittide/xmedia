@@ -143,7 +143,7 @@ export const router = createRouter({
         },
         {
           path: 'book/online',
-          redirect: { path: '/book/shelves', query: { tab: 'online' } },
+          redirect: { path: '/book/catalog', query: { scope: 'online' } },
         },
 
         // 2. Comics Domain (/comic)

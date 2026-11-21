@@ -98,6 +98,16 @@ export interface ReadingLocation {
   scroll_ratio: number | null
 }
 
+export interface BookOnlineTrackingDto {
+  source_id: string
+  book_url: string
+  toc_url: string
+  last_chapter: string | null
+  cached_chapters: number
+  total_chapters: number
+  epub_dirty: boolean
+}
+
 export interface BookSummaryDto {
   id: string
   library_id: string
@@ -111,6 +121,7 @@ export interface BookSummaryDto {
   is_favorite: boolean
   progress: ReadingLocation | null
   last_read_at: string | null
+  online_tracking?: BookOnlineTrackingDto | null
   created_at: string
   updated_at: string
 }
