@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   LuAlertCircle,
@@ -58,13 +58,12 @@ import { formatBytes, formatDuration, formatTime } from '@/utils/format'
 type ActiveTab = 'opds' | 'subsonic' | 'manage'
 
 const props = defineProps<{
-  embeddedProtocol?: RemoteProtocol
+  embeddedProtocol: RemoteProtocol
 }>()
 
 const ALBUM_PAGE_SIZE = 30
 
 const { t } = useI18n()
-const route = useRoute()
 const router = useRouter()
 const appClientStore = useAppClientStore()
 const dialogStore = useDialogStore()
@@ -72,14 +71,13 @@ const snackbarStore = useSnackbarStore()
 const uploadStore = useUploadStore()
 const playerStore = usePlayerStore()
 
-const isEmbedded = computed(() => Boolean(props.embeddedProtocol))
-const activeTab = ref<ActiveTab>(props.embeddedProtocol ?? 'opds')
+const activeTab = ref<ActiveTab>(props.embeddedProtocol)
 const initLoading = ref(false)
 
 // Source form dialog state
 const formDialogOpen = ref(false)
 const editingSource = ref<RemoteSourceSummaryDto | null>(null)
-const formDefaultProtocol = ref<RemoteProtocol>(props.embeddedProtocol ?? 'opds')
+const formDefaultProtocol = ref<RemoteProtocol>(props.embeddedProtocol)
 
 // Source management list actions
 const testingSourceId = ref<string | null>(null)
@@ -148,30 +146,21 @@ const tabOptions = computed<SegmentedOption<ActiveTab>[]>(() => {
       { value: 'opds', label: t('remote.browseBtn'), icon: LuBookOpen },
     ]
   }
-  if (props.embeddedProtocol === 'subsonic') {
-    return [
-      { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
-      { value: 'subsonic', label: t('remote.browseBtn'), icon: LuDisc3 },
-    ]
-  }
   return [
-    { value: 'opds', label: t('remote.tabOpds'), icon: LuBookOpen },
-    { value: 'subsonic', label: t('remote.tabSubsonic'), icon: LuDisc3 },
     { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
+    { value: 'subsonic', label: t('remote.browseBtn'), icon: LuDisc3 },
   ]
 })
 
-const managedSources = computed<RemoteSourceSummaryDto[]>(() => {
-  if (props.embeddedProtocol === 'opds') return appClientStore.opdsSources
-  if (props.embeddedProtocol === 'subsonic') return appClientStore.subsonicSources
-  return appClientStore.remoteSources
-})
+const managedSources = computed<RemoteSourceSummaryDto[]>(() =>
+  props.embeddedProtocol === 'opds' ? appClientStore.opdsSources : appClientStore.subsonicSources,
+)
 
-const embeddedHeaderTitle = computed(() => {
-  if (props.embeddedProtocol === 'opds') return t('settings.remoteOpdsTitle')
-  if (props.embeddedProtocol === 'subsonic') return t('settings.remoteSubsonicTitle')
-  return t('remote.title')
-})
+const embeddedHeaderTitle = computed(() =>
+  props.embeddedProtocol === 'opds'
+    ? t('settings.remoteOpdsTitle')
+    : t('settings.remoteSubsonicTitle'),
+)
 
 const opdsSourceOptions = computed<SelectOption[]>(() =>
   appClientStore.opdsSources.map((src) => ({
@@ -203,6 +192,28 @@ function getEntrySelectedDownload(entry: OpdsEntryDto): OpdsDownloadLinkDto | nu
 function opdsImportKey(sourceId: string, href: string): string {
   return `${sourceId}::${href}`
 }
+
+interface OpdsEntryCardView {
+  entry: OpdsEntryDto
+  selectedDownload: OpdsDownloadLinkDto | null
+  importing: boolean
+  imported: boolean
+}
+
+const opdsEntryCards = computed<OpdsEntryCardView[]>(() => {
+  const entries = opdsFeed.value?.entries ?? []
+  const sourceId = selectedOpdsId.value
+  return entries.map((entry) => {
+    const selectedDownload = getEntrySelectedDownload(entry)
+    const key = selectedDownload ? opdsImportKey(sourceId, selectedDownload.href) : null
+    return {
+      entry,
+      selectedDownload,
+      importing: Boolean(key && opdsImportingKeys.value[key]),
+      imported: Boolean(key && opdsImportedKeys.value[key]),
+    }
+  })
+})
 
 function buildOpdsFilename(entry: OpdsEntryDto, dl: OpdsDownloadLinkDto): string {
   const safeBase = (entry.title || 'book')
@@ -625,6 +636,21 @@ function openEditSourceDialog(source: RemoteSourceSummaryDto): void {
 }
 
 function handleSourceSaved(source: RemoteSourceSummaryDto): void {
+  const opdsIds = new Set(appClientStore.opdsSources.map((s) => s.id))
+  if (selectedOpdsId.value && !opdsIds.has(selectedOpdsId.value)) {
+    selectedOpdsId.value = appClientStore.opdsSources[0]?.id ?? ''
+    opdsFeed.value = null
+    opdsHistory.value = []
+  }
+
+  const subsonicIds = new Set(appClientStore.subsonicSources.map((s) => s.id))
+  if (selectedSubsonicId.value && !subsonicIds.has(selectedSubsonicId.value)) {
+    selectedSubsonicId.value = appClientStore.subsonicSources[0]?.id ?? ''
+    subsonicAlbums.value = []
+    albumSheetOpen.value = false
+    closePreviewBar()
+  }
+
   if (source.protocol === 'opds' && !selectedOpdsId.value) {
     selectedOpdsId.value = source.id
     if (activeTab.value === 'opds') {
@@ -771,9 +797,23 @@ watch(activeTab, (tab) => {
 })
 
 watch(
+  () => playerStore.isPlaying,
+  (playing) => {
+    if (playing && previewSong.value) {
+      closePreviewBar()
+    }
+  },
+)
+
+watch(
   () => props.embeddedProtocol,
   (proto) => {
-    if (!proto) return
+    if (proto !== 'subsonic') {
+      closePreviewBar()
+      albumSheetOpen.value = false
+    } else {
+      opdsDetailEntry.value = null
+    }
     formDefaultProtocol.value = proto
     if (proto === 'opds') {
       activeTab.value = appClientStore.opdsSources.length > 0 ? 'opds' : 'manage'
@@ -804,19 +844,8 @@ onMounted(async () => {
 
   if (props.embeddedProtocol === 'opds') {
     activeTab.value = appClientStore.opdsSources.length > 0 ? 'opds' : 'manage'
-  } else if (props.embeddedProtocol === 'subsonic') {
-    activeTab.value = appClientStore.subsonicSources.length > 0 ? 'subsonic' : 'manage'
   } else {
-    const queryTab = route.query.tab
-    if (queryTab === 'opds' || queryTab === 'subsonic' || queryTab === 'manage') {
-      activeTab.value = queryTab
-    } else if (appClientStore.opdsSources.length > 0) {
-      activeTab.value = 'opds'
-    } else if (appClientStore.subsonicSources.length > 0) {
-      activeTab.value = 'subsonic'
-    } else {
-      activeTab.value = 'manage'
-    }
+    activeTab.value = appClientStore.subsonicSources.length > 0 ? 'subsonic' : 'manage'
   }
 
   if (appClientStore.opdsSources.length > 0) {
@@ -839,23 +868,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div :class="isEmbedded ? 'space-y-4' : 'mx-auto max-w-6xl space-y-5 px-4 py-6 sm:px-6'">
+  <div class="space-y-4">
     <!-- Header + MD3 Segmented Tabs -->
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2
-        v-if="isEmbedded"
-        class="md-title-small flex items-center gap-2 text-[var(--md-sys-color-on-surface)]"
-      >
+      <h2 class="md-title-small flex items-center gap-2 text-[var(--md-sys-color-on-surface)]">
         <LuCloud class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
         <span>{{ embeddedHeaderTitle }}</span>
       </h2>
-      <h1
-        v-else
-        class="flex items-center gap-2 text-2xl font-bold tracking-tight text-[var(--md-sys-color-on-surface)]"
-      >
-        <LuCloud class="h-6 w-6 text-[var(--md-sys-color-primary)]" />
-        <span>{{ t('remote.title') }}</span>
-      </h1>
 
       <MdSegmentedButton
         v-model="activeTab"
@@ -1050,32 +1069,30 @@ onBeforeUnmount(() => {
               {{ t('remote.opdsBooks') }}
             </h2>
 
-            <div
-              class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
-            >
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
               <article
-                v-for="entry in opdsFeed.entries"
-                :key="entry.id"
+                v-for="card in opdsEntryCards"
+                :key="card.entry.id"
                 class="group flex flex-col"
               >
                 <!-- 2:3 Portrait Cover -->
                 <div
                   role="button"
                   tabindex="0"
-                  :aria-label="entry.title"
+                  :aria-label="card.entry.title"
                   class="book-shadow relative aspect-[2/3] w-full cursor-pointer overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-low)] outline-none transition duration-200 group-hover:-translate-y-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
-                  @click="opdsDetailEntry = entry"
-                  @keydown.enter.prevent="opdsDetailEntry = entry"
-                  @keydown.space.prevent="opdsDetailEntry = entry"
+                  @click="opdsDetailEntry = card.entry"
+                  @keydown.enter.prevent="opdsDetailEntry = card.entry"
+                  @keydown.space.prevent="opdsDetailEntry = card.entry"
                 >
                   <img
-                    v-if="entry.cover_url && !opdsCoverFailed[entry.id]"
-                    :src="entry.cover_url"
-                    :alt="entry.title"
+                    v-if="card.entry.cover_url && !opdsCoverFailed[card.entry.id]"
+                    :src="card.entry.cover_url"
+                    :alt="card.entry.title"
                     loading="lazy"
                     decoding="async"
                     class="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
-                    @error="opdsCoverFailed = { ...opdsCoverFailed, [entry.id]: true }"
+                    @error="opdsCoverFailed = { ...opdsCoverFailed, [card.entry.id]: true }"
                   />
                   <div
                     v-else
@@ -1084,19 +1101,19 @@ onBeforeUnmount(() => {
                     <p
                       class="line-clamp-3 text-sm font-bold leading-snug text-[var(--md-sys-color-on-surface)]"
                     >
-                      {{ entry.title }}
+                      {{ card.entry.title }}
                     </p>
                     <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                      {{ entry.authors.join(', ') || t('remote.opdsUnknownAuthor') }}
+                      {{ card.entry.authors.join(', ') || t('remote.opdsUnknownAuthor') }}
                     </p>
                   </div>
 
                   <!-- Format badge -->
                   <span
-                    v-if="getEntrySelectedDownload(entry)"
+                    v-if="card.selectedDownload"
                     class="pointer-events-none absolute top-2 left-2 rounded-md bg-black/60 px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase text-white backdrop-blur-sm"
                   >
-                    {{ getEntrySelectedDownload(entry)!.format || 'FILE' }}
+                    {{ card.selectedDownload.format || 'FILE' }}
                   </span>
 
                   <!-- Info button -->
@@ -1105,7 +1122,7 @@ onBeforeUnmount(() => {
                     :title="t('remote.opdsDetailTitle')"
                     :aria-label="t('remote.opdsDetailTitle')"
                     class="absolute top-2 right-2 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full bg-black/55 text-white opacity-100 backdrop-blur-sm transition hover:bg-black/75 focus-visible:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                    @click.stop="opdsDetailEntry = entry"
+                    @click.stop="opdsDetailEntry = card.entry"
                   >
                     <LuInfo class="h-3.5 w-3.5" />
                   </button>
@@ -1116,83 +1133,51 @@ onBeforeUnmount(() => {
                   <button
                     type="button"
                     class="block w-full cursor-pointer truncate text-left text-sm font-semibold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
-                    :title="entry.title"
-                    @click="opdsDetailEntry = entry"
+                    :title="card.entry.title"
+                    @click="opdsDetailEntry = card.entry"
                   >
-                    {{ entry.title }}
+                    {{ card.entry.title }}
                   </button>
                   <p class="mt-0.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                    {{ entry.authors.join(', ') || t('remote.opdsUnknownAuthor') }}
+                    {{ card.entry.authors.join(', ') || t('remote.opdsUnknownAuthor') }}
                   </p>
                 </div>
 
                 <!-- Compact Import Action -->
                 <div class="mt-2 flex items-center gap-1.5">
-                  <template v-if="getEntrySelectedDownload(entry)">
+                  <template v-if="card.selectedDownload">
                     <button
-                      v-if="entry.downloads.length > 1"
+                      v-if="card.entry.downloads.length > 1"
                       type="button"
                       class="h-7 shrink-0 rounded-full border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] px-2 font-mono text-[10px] font-semibold uppercase text-[var(--md-sys-color-on-surface-variant)] hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-surface)]"
                       :title="t('remote.opdsFormats')"
                       @click="
                         opdsSelectedFormatIdx = {
                           ...opdsSelectedFormatIdx,
-                          [entry.id]:
-                            ((opdsSelectedFormatIdx[entry.id] ?? 0) + 1) % entry.downloads.length,
+                          [card.entry.id]:
+                            ((opdsSelectedFormatIdx[card.entry.id] ?? 0) + 1) %
+                            card.entry.downloads.length,
                         }
                       "
                     >
-                      {{ getEntrySelectedDownload(entry)!.format || 'FILE' }}
+                      {{ card.selectedDownload.format || 'FILE' }}
                     </button>
 
                     <button
                       type="button"
                       class="md-btn md-btn-sm md-state !h-7 flex-1 !px-2.5 !text-[11px]"
-                      :class="
-                        opdsImportedKeys[
-                          opdsImportKey(selectedOpdsId, getEntrySelectedDownload(entry)!.href)
-                        ]
-                          ? 'md-btn-outlined'
-                          : 'md-btn-tonal'
-                      "
-                      :disabled="
-                        Boolean(
-                          opdsImportingKeys[
-                            opdsImportKey(selectedOpdsId, getEntrySelectedDownload(entry)!.href)
-                          ],
-                        )
-                      "
-                      @click="handleImportOpds(entry, getEntrySelectedDownload(entry)!)"
+                      :class="card.imported ? 'md-btn-outlined' : 'md-btn-tonal'"
+                      :disabled="card.importing"
+                      @click="handleImportOpds(card.entry, card.selectedDownload)"
                     >
-                      <LuLoader2
-                        v-if="
-                          opdsImportingKeys[
-                            opdsImportKey(selectedOpdsId, getEntrySelectedDownload(entry)!.href)
-                          ]
-                        "
-                        class="h-3 w-3 animate-spin"
-                      />
-                      <LuCheck
-                        v-else-if="
-                          opdsImportedKeys[
-                            opdsImportKey(selectedOpdsId, getEntrySelectedDownload(entry)!.href)
-                          ]
-                        "
-                        class="h-3 w-3"
-                      />
+                      <LuLoader2 v-if="card.importing" class="h-3 w-3 animate-spin" />
+                      <LuCheck v-else-if="card.imported" class="h-3 w-3" />
                       <LuDownload v-else class="h-3 w-3" />
                       <span>
                         {{
-                          opdsImportingKeys[
-                            opdsImportKey(selectedOpdsId, getEntrySelectedDownload(entry)!.href)
-                          ]
+                          card.importing
                             ? t('remote.importingBtn')
-                            : opdsImportedKeys[
-                                  opdsImportKey(
-                                    selectedOpdsId,
-                                    getEntrySelectedDownload(entry)!.href,
-                                  )
-                                ]
+                            : card.imported
                               ? t('remote.importedBtn')
                               : t('remote.importBtn')
                         }}
@@ -1442,14 +1427,12 @@ onBeforeUnmount(() => {
             <h2 class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]">
               {{ t('remote.subsonicSearchAlbums') }}
             </h2>
-            <div
-              class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
-            >
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
               <button
                 v-for="album in subsonicSearchAlbums"
                 :key="album.id"
                 type="button"
-                class="group flex cursor-pointer flex-col text-left outline-none"
+                class="group flex cursor-pointer flex-col rounded-2xl text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--md-sys-color-primary)]"
                 @click="openSubsonicAlbum(album)"
               >
                 <MediaCoverImage
@@ -1484,14 +1467,12 @@ onBeforeUnmount(() => {
           </div>
 
           <template v-else>
-            <div
-              class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
-            >
+            <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
               <button
                 v-for="album in subsonicAlbums"
                 :key="album.id"
                 type="button"
-                class="group flex cursor-pointer flex-col text-left outline-none"
+                class="group flex cursor-pointer flex-col rounded-2xl text-left focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--md-sys-color-primary)]"
                 @click="openSubsonicAlbum(album)"
               >
                 <MediaCoverImage
@@ -1560,7 +1541,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="md-btn md-btn-filled md-btn-sm"
-          @click="openAddSourceDialog(embeddedProtocol ?? 'opds')"
+          @click="openAddSourceDialog(embeddedProtocol)"
         >
           <LuPlus class="h-4 w-4" />
           <span>{{ t('remote.addSource') }}</span>
@@ -1575,30 +1556,25 @@ onBeforeUnmount(() => {
           class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
         >
           <LuBookOpen v-if="embeddedProtocol === 'opds'" class="h-6 w-6" />
-          <LuDisc3 v-else-if="embeddedProtocol === 'subsonic'" class="h-6 w-6" />
-          <LuCloud v-else class="h-6 w-6" />
+          <LuDisc3 v-else class="h-6 w-6" />
         </div>
         <p class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
           {{
             embeddedProtocol === 'opds'
               ? t('remote.opdsEmptySourcesTitle')
-              : embeddedProtocol === 'subsonic'
-                ? t('remote.subsonicEmptySourcesTitle')
-                : t('remote.emptySourcesTitle')
+              : t('remote.subsonicEmptySourcesTitle')
           }}
         </p>
         <p class="mx-auto mt-1 max-w-md text-xs text-[var(--md-sys-color-on-surface-variant)]">
           {{
             embeddedProtocol === 'opds'
               ? t('remote.opdsEmptySourcesHint')
-              : embeddedProtocol === 'subsonic'
-                ? t('remote.subsonicEmptySourcesHint')
-                : t('remote.emptySourcesHint')
+              : t('remote.subsonicEmptySourcesHint')
           }}
         </p>
         <div class="mt-5 flex flex-wrap justify-center gap-2">
           <button
-            v-if="!embeddedProtocol || embeddedProtocol === 'opds'"
+            v-if="embeddedProtocol === 'opds'"
             type="button"
             class="md-btn md-btn-sm md-btn-filled"
             @click="openAddSourceDialog('opds')"
@@ -1607,10 +1583,9 @@ onBeforeUnmount(() => {
             <span>{{ t('remote.opdsAddBtn') }}</span>
           </button>
           <button
-            v-if="!embeddedProtocol || embeddedProtocol === 'subsonic'"
+            v-else
             type="button"
-            class="md-btn md-btn-sm"
-            :class="embeddedProtocol === 'subsonic' ? 'md-btn-filled' : 'md-btn-tonal'"
+            class="md-btn md-btn-sm md-btn-filled"
             @click="openAddSourceDialog('subsonic')"
           >
             <LuDisc3 class="h-3.5 w-3.5" />
@@ -2150,6 +2125,7 @@ onBeforeUnmount(() => {
       :open="formDialogOpen"
       :editing-source="editingSource"
       :default-protocol="formDefaultProtocol"
+      :locked-protocol="embeddedProtocol"
       @close="formDialogOpen = false"
       @saved="handleSourceSaved"
     />

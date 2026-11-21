@@ -45,10 +45,12 @@ export interface UpdateRemoteSourcePayload {
   url?: string
   username?: string
   password?: string
+  clear_password?: boolean
   allow_insecure_tls?: boolean
 }
 
 export interface TestRemoteSourcePayload {
+  source_id?: string
   protocol: RemoteProtocol
   url: string
   username?: string
@@ -72,7 +74,7 @@ export interface OpdsNavLinkDto {
 
 export interface OpdsDownloadLinkDto {
   href: string
-  title: string
+  title?: string | null
   format: string
   media_type: string
 }

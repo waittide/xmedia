@@ -25,10 +25,12 @@ const props = withDefaults(
     open: boolean
     editingSource?: RemoteSourceSummaryDto | null
     defaultProtocol?: RemoteProtocol
+    lockedProtocol?: RemoteProtocol
   }>(),
   {
     editingSource: null,
     defaultProtocol: 'opds',
+    lockedProtocol: undefined,
   },
 )
 
@@ -93,20 +95,20 @@ function extractDefaultName(raw: string): string {
 }
 
 watch(
-  () => [props.open, props.editingSource, props.defaultProtocol] as const,
-  ([isOpen, src, defProto]) => {
+  () => [props.open, props.editingSource, props.defaultProtocol, props.lockedProtocol] as const,
+  ([isOpen, src, defProto, lockedProto]) => {
     if (!isOpen) return
     errorMsg.value = ''
     testResult.value = null
     if (src) {
-      protocol.value = src.protocol
+      protocol.value = lockedProto ?? src.protocol
       name.value = src.name
       url.value = src.url
       username.value = src.username
       password.value = ''
       allowInsecureTls.value = src.allow_insecure_tls
     } else {
-      protocol.value = defProto
+      protocol.value = lockedProto ?? defProto
       name.value = ''
       url.value = ''
       username.value = ''
@@ -129,12 +131,14 @@ async function handleTest(): Promise<void> {
     return
   }
 
+  const effectiveProtocol = props.lockedProtocol ?? protocol.value
   errorMsg.value = ''
   testResult.value = null
   testing.value = true
   try {
     const res = await appClientStore.testSource({
-      protocol: protocol.value,
+      source_id: props.editingSource?.id,
+      protocol: effectiveProtocol,
       url: normalized,
       username: username.value.trim() || undefined,
       password: password.value || undefined,
@@ -145,7 +149,7 @@ async function handleTest(): Promise<void> {
     testResult.value = {
       ok: false,
       latency_ms: 0,
-      protocol: protocol.value,
+      protocol: effectiveProtocol,
       error: err instanceof Error ? err.message : String(err),
     }
   } finally {
@@ -160,6 +164,7 @@ async function handleSubmit(): Promise<void> {
     return
   }
 
+  const effectiveProtocol = props.lockedProtocol ?? protocol.value
   errorMsg.value = ''
   saving.value = true
   try {
@@ -168,7 +173,7 @@ async function handleSubmit(): Promise<void> {
     if (props.editingSource) {
       saved = await appClientStore.updateSource(props.editingSource.id, {
         name: resolvedName,
-        protocol: protocol.value,
+        protocol: effectiveProtocol,
         url: normalized,
         username: username.value.trim(),
         password: password.value ? password.value : undefined,
@@ -178,7 +183,7 @@ async function handleSubmit(): Promise<void> {
     } else {
       saved = await appClientStore.createSource({
         name: resolvedName,
-        protocol: protocol.value,
+        protocol: effectiveProtocol,
         url: normalized,
         username: username.value.trim() || undefined,
         password: password.value || undefined,
@@ -220,7 +225,22 @@ async function handleSubmit(): Promise<void> {
         <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
           {{ t('remote.protocolLabel') }}
         </label>
+        <div
+          v-if="lockedProtocol"
+          class="inline-flex h-9 items-center gap-1.5 rounded-full bg-[var(--md-sys-color-secondary-container)] px-3.5 text-xs font-semibold text-[var(--md-sys-color-on-secondary-container)]"
+        >
+          <LuBookOpen v-if="lockedProtocol === 'opds'" class="h-4 w-4 shrink-0" />
+          <LuDisc3 v-else class="h-4 w-4 shrink-0" />
+          <span>
+            {{
+              lockedProtocol === 'opds'
+                ? t('remote.protocolOpds')
+                : t('remote.protocolSubsonic')
+            }}
+          </span>
+        </div>
         <MdSegmentedButton
+          v-else
           v-model="protocol"
           :options="protocolOptions"
           size="sm"
