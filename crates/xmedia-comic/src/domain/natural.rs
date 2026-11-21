@@ -88,17 +88,54 @@ fn cmp_number_tokens(a: &NumberToken, b: &NumberToken) -> Ordering {
     }
 }
 
+fn natural_title_sort_key(title: &str) -> String {
+    let mut out = String::with_capacity(title.len() + 16);
+    let mut chars = title.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            let mut digits = String::new();
+            while let Some(&d) = chars.peek() {
+                if d.is_ascii_digit() {
+                    digits.push(d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            let trimmed = digits.trim_start_matches('0');
+            let normalized = if trimmed.is_empty() { "0" } else { trimmed };
+            if normalized.len() < 18 {
+                for _ in 0..(18 - normalized.len()) {
+                    out.push('0');
+                }
+            }
+            out.push_str(normalized);
+        } else {
+            for lc in c.to_lowercase() {
+                out.push(lc);
+            }
+            chars.next();
+        }
+    }
+    out
+}
+
 pub fn build_chapter_sort_key(
     kind_rank: u8,
     volume: Option<f64>,
     number: f64,
     title: &str,
 ) -> String {
-    let vol = volume.unwrap_or(0.0).max(0.0);
-    let vol_scaled = (vol * 1000.0).round() as u64;
-    let num_scaled = (number.max(0.0) * 1000.0).round() as u64;
+    let vol = volume.filter(|v| v.is_finite()).unwrap_or(0.0).max(0.0);
+    let vol_scaled = (vol * 1000.0).round().min(9_999_999_999_999_999.0) as u64;
+    let num = if number.is_finite() {
+        number.max(0.0)
+    } else {
+        0.0
+    };
+    let num_scaled = (num * 1000.0).round().min(9_999_999_999_999_999.0) as u64;
     format!(
-        "{kind_rank:02}:{vol_scaled:010}:{num_scaled:010}:{}",
-        title.to_lowercase()
+        "{kind_rank:02}:{vol_scaled:016}:{num_scaled:016}:{}",
+        natural_title_sort_key(title)
     )
 }

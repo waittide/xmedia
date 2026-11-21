@@ -591,10 +591,28 @@ async fn upload_comic_archive(
                 files.push((filename, temp));
             }
         } else {
-            let text = field.text().await.unwrap_or_default();
+            let raw_bytes = field.bytes().await.map_err(|e| {
+                ApiError(DomainError::Validation(format!(
+                    "failed to read multipart text field: {e}"
+                )))
+            })?;
+            if raw_bytes.len() > 64 * 1024 {
+                return Err(ApiError(DomainError::Validation(
+                    "multipart text field exceeds 64 KiB limit".into(),
+                )));
+            }
+            let text = String::from_utf8_lossy(&raw_bytes);
             match field_name.as_str() {
                 "target_series_id" | "series_id" => {
-                    target_series_id = text.trim().parse::<Uuid>().ok().map(SeriesId);
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        let parsed = trimmed.parse::<Uuid>().map_err(|_| {
+                            ApiError(DomainError::Validation(
+                                "invalid target_series_id UUID".into(),
+                            ))
+                        })?;
+                        target_series_id = Some(SeriesId(parsed));
+                    }
                 }
                 "series_title" | "series_title_override" if !text.trim().is_empty() => {
                     series_title_override = Some(text.trim().to_owned());

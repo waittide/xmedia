@@ -419,6 +419,25 @@ fn render_atom_feed(prefix: &str, feed: &OpdsFeed) -> Response {
     res
 }
 
+fn infer_cover_mime(cover_url: &str) -> &'static str {
+    let clean = cover_url
+        .split('?')
+        .next()
+        .unwrap_or(cover_url)
+        .to_ascii_lowercase();
+    if clean.ends_with(".png") {
+        "image/png"
+    } else if clean.ends_with(".webp") {
+        "image/webp"
+    } else if clean.ends_with(".gif") {
+        "image/gif"
+    } else if clean.ends_with(".avif") {
+        "image/avif"
+    } else {
+        "image/jpeg"
+    }
+}
+
 fn append_nav_entry_xml(xml: &mut String, item: &OpdsNavItem) {
     let updated = item.updated_at.to_string();
     let sub_kind = if item.subsection_path.contains("/series/")
@@ -441,8 +460,9 @@ fn append_nav_entry_xml(xml: &mut String, item: &OpdsNavItem) {
         xml_escape(&item.subsection_path)
     ));
     if let Some(cover) = &item.cover_url {
+        let cover_mime = infer_cover_mime(cover);
         xml.push_str(&format!(
-            "\n    <link rel=\"http://opds-spec.org/image/thumbnail\" href=\"{}\" type=\"image/webp\"/>",
+            "\n    <link rel=\"http://opds-spec.org/image/thumbnail\" href=\"{}\" type=\"{cover_mime}\"/>",
             xml_escape(cover)
         ));
     }
@@ -475,12 +495,13 @@ fn append_acq_entry_xml(xml: &mut String, prefix: &str, entry: &OpdsChapterEntry
         ));
     }
     if let Some(cover) = &entry.cover_url {
+        let cover_mime = infer_cover_mime(cover);
         xml.push_str(&format!(
-            "\n    <link rel=\"http://opds-spec.org/image\" href=\"{}\" type=\"image/webp\"/>",
+            "\n    <link rel=\"http://opds-spec.org/image\" href=\"{}\" type=\"{cover_mime}\"/>",
             xml_escape(cover)
         ));
         xml.push_str(&format!(
-            "\n    <link rel=\"http://opds-spec.org/image/thumbnail\" href=\"{}\" type=\"image/webp\"/>",
+            "\n    <link rel=\"http://opds-spec.org/image/thumbnail\" href=\"{}\" type=\"{cover_mime}\"/>",
             xml_escape(cover)
         ));
     }
@@ -493,7 +514,8 @@ fn append_acq_entry_xml(xml: &mut String, prefix: &str, entry: &OpdsChapterEntry
 
     let mut pse_attrs = format!("pse:count=\"{}\"", entry.page_count);
     if let Some(last_page) = entry.last_read_page {
-        pse_attrs.push_str(&format!(" pse:lastRead=\"{last_page}\""));
+        let last_read_zero_based = last_page.saturating_sub(1);
+        pse_attrs.push_str(&format!(" pse:lastRead=\"{last_read_zero_based}\""));
     }
     if let Some(last_ts) = entry.last_read_at {
         pse_attrs.push_str(&format!(" pse:lastReadDate=\"{last_ts}\""));
@@ -565,7 +587,7 @@ fn render_opds2_json(prefix: &str, feed: &OpdsFeed) -> Response {
                         "templated": true,
                         "properties": {
                             "numberOfItems": e.page_count,
-                            "pse:lastRead": e.last_read_page,
+                            "pse:lastRead": e.last_read_page.map(|p| p.saturating_sub(1)),
                         }
                     })];
                     if e.can_download_archive {
@@ -578,7 +600,7 @@ fn render_opds2_json(prefix: &str, feed: &OpdsFeed) -> Response {
                     let images: Vec<serde_json::Value> = e
                         .cover_url
                         .iter()
-                        .map(|c| json!({ "href": c, "type": "image/webp" }))
+                        .map(|c| json!({ "href": c, "type": infer_cover_mime(c) }))
                         .collect();
                     json!({
                         "metadata": {
@@ -720,7 +742,7 @@ mod tests {
         .unwrap();
         assert!(xml.contains("Witch &amp; Hat - #1 - &lt;Start&gt;"));
         assert!(xml.contains("<author><name>Author &lt;A&gt;</name></author>"));
-        assert!(xml.contains("pse:count=\"24\" pse:lastRead=\"7\""));
+        assert!(xml.contains("pse:count=\"24\" pse:lastRead=\"6\""));
         assert!(xml.contains(&format!("/opds/comic/v1.2/chapters/{chapter_id}/download")));
 
         let json_res = OpdsVersion::V20.render("/opds/comic", &feed);
@@ -730,7 +752,7 @@ mod tests {
         assert!(body.get("navigation").is_none());
         let pub0 = &body["publications"][0];
         assert_eq!(pub0["metadata"]["numberOfPages"], 24);
-        assert_eq!(pub0["links"][0]["properties"]["pse:lastRead"], 7);
+        assert_eq!(pub0["links"][0]["properties"]["pse:lastRead"], 6);
         assert_eq!(pub0["links"][1]["rel"], "http://opds-spec.org/acquisition");
         assert_eq!(pub0["images"][0]["href"], "/opds/comic/covers/hash.jpg");
     }

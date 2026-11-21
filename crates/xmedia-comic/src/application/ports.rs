@@ -59,6 +59,8 @@ pub struct ExistingChapterDigest {
     pub file_hash: String,
     pub page_count: u32,
     pub updated_at: Timestamp,
+    pub series_title: Option<String>,
+    pub series_source_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +76,8 @@ pub struct ScannedChapterEntry {
     pub file_hash: String,
     pub comic_info: Option<ComicInfoMetadata>,
     pub unchanged: bool,
+    pub preserved_series_title: Option<String>,
+    pub preserved_series_source_dir: Option<String>,
 }
 
 #[derive(Debug, Clone)]

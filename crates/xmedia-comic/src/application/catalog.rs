@@ -70,11 +70,7 @@ impl ComicCatalogService {
         let fav_set: HashSet<SeriesId> = favorites.iter().map(|f| f.series_id).collect();
 
         let mut progress_by_series: HashMap<SeriesId, Vec<ChapterProgress>> = HashMap::new();
-        let mut completed_chapters_total = 0_u32;
         for p in user_progress {
-            if p.is_completed {
-                completed_chapters_total += 1;
-            }
             progress_by_series.entry(p.series_id).or_default().push(p);
         }
 
@@ -86,6 +82,24 @@ impl ComicCatalogService {
         let chapters_by_series = self
             .load_sorted_chapters_map(&series_ids_with_progress)
             .await?;
+
+        let mut completed_chapters_total = 0_u32;
+        for (sid, progs) in &progress_by_series {
+            let active_chapter_ids: HashSet<ChapterId> = chapters_by_series
+                .get(sid)
+                .map(|list| {
+                    list.iter()
+                        .filter(|c| !c.is_missing)
+                        .map(|c| c.id)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for p in progs {
+                if p.is_completed && active_chapter_ids.contains(&p.chapter_id) {
+                    completed_chapters_total += 1;
+                }
+            }
+        }
 
         let mut total_chapters = 0_u32;
         let mut distinct_tags: HashSet<String> = HashSet::new();

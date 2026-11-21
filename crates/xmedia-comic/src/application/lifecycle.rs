@@ -76,11 +76,20 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         };
 
         let library_id = library.id;
+        let existing_series_list = self.series.list_by_library(library_id).await?;
+        let series_info_by_id: HashMap<SeriesId, (String, String)> = existing_series_list
+            .iter()
+            .map(|s| (s.id, (s.title.clone(), s.source_dir.clone())))
+            .collect();
         let existing_chapters = self.chapters.list_by_library(library_id).await?;
         let mut existing_by_path: HashMap<String, Chapter> = HashMap::new();
         let mut known_digests: HashMap<String, ExistingChapterDigest> = HashMap::new();
 
         for ch in existing_chapters {
+            let (series_title, series_source_dir) = series_info_by_id
+                .get(&ch.series_id)
+                .map(|(t, d)| (Some(t.clone()), Some(d.clone())))
+                .unwrap_or((None, None));
             known_digests.insert(
                 ch.source_path.clone(),
                 ExistingChapterDigest {
@@ -88,6 +97,8 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                     file_hash: ch.file_hash.clone(),
                     page_count: ch.page_count,
                     updated_at: ch.updated_at,
+                    series_title,
+                    series_source_dir,
                 },
             );
             existing_by_path.insert(ch.source_path.clone(), ch);
@@ -110,7 +121,6 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
         );
         reporter.start().await;
 
-        let existing_series_list = self.series.list_by_library(library_id).await?;
         let mut series_by_dir: HashMap<String, Series> = existing_series_list
             .into_iter()
             .map(|s| (s.source_dir.clone(), s))
@@ -285,7 +295,7 @@ impl MediaDomainLifecycle for ComicDomainLifecycle {
                 series_dirty = true;
             }
             if let Some(ref cov_bytes) = entry.series_cover_bytes
-                && (series.cover_path.is_none() || series_dirty)
+                && (series.cover_path.is_none() || (!series.metadata_locked && series_dirty))
             {
                 let thumb_key = format!("series_{}", series.id);
                 if let Ok(saved_key) = self

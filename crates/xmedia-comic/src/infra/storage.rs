@@ -54,8 +54,15 @@ impl ComicFileStoragePort for LocalComicFileStorage {
             ))
         })?;
 
-        let dest = unique_destination(&series_dir, &safe_file);
+        let dir_for_reserve = series_dir.clone();
+        let file_for_reserve = safe_file.clone();
+        let dest = tokio::task::spawn_blocking(move || {
+            reserve_unique_destination(&dir_for_reserve, &file_for_reserve)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("reserve upload path join failed: {e}")))??;
         tokio::fs::write(&dest, bytes).await.map_err(|e| {
+            let _ = std::fs::remove_file(&dest);
             DomainError::Storage(format!(
                 "failed to write uploaded comic '{}': {e}",
                 dest.display()
@@ -92,8 +99,17 @@ impl ComicFileStoragePort for LocalComicFileStorage {
             ))
         })?;
 
-        let dest = unique_destination(&series_dir, &safe_file);
-        let _ = move_or_copy_file(src_path, &dest).await?;
+        let dir_for_reserve = series_dir.clone();
+        let file_for_reserve = safe_file.clone();
+        let dest = tokio::task::spawn_blocking(move || {
+            reserve_unique_destination(&dir_for_reserve, &file_for_reserve)
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("reserve upload path join failed: {e}")))??;
+        if let Err(err) = move_or_copy_file(src_path, &dest).await {
+            let _ = tokio::fs::remove_file(&dest).await;
+            return Err(err);
+        }
 
         let dest_clone = dest.clone();
         let (file_size, file_hash) =
@@ -110,10 +126,21 @@ impl ComicFileStoragePort for LocalComicFileStorage {
     }
 
     async fn delete_managed_file(&self, path: &str) -> DomainResult<()> {
+        let root = self.uploads_root.clone();
         let target = PathBuf::from(path);
-        if target.starts_with(&self.uploads_root) && target.exists() {
-            let _ = tokio::fs::remove_file(&target).await;
-        }
+        tokio::task::spawn_blocking(move || {
+            let Ok(canon_root) = root.canonicalize() else {
+                return;
+            };
+            let Ok(canon_target) = target.canonicalize() else {
+                return;
+            };
+            if canon_target.starts_with(&canon_root) && canon_target.is_file() {
+                let _ = std::fs::remove_file(&canon_target);
+            }
+        })
+        .await
+        .map_err(|e| DomainError::Storage(format!("delete managed comic file failed: {e}")))?;
         Ok(())
     }
 }
@@ -135,11 +162,29 @@ fn sanitize_component(name: &str) -> String {
     }
 }
 
-fn unique_destination(dir: &Path, filename: &str) -> PathBuf {
+fn reserve_unique_destination(dir: &Path, filename: &str) -> DomainResult<PathBuf> {
+    let try_create = |p: &Path| -> std::io::Result<bool> {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(p)
+        {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+            Err(e) => Err(e),
+        }
+    };
+
     let candidate = dir.join(filename);
-    if !candidate.exists() {
-        return candidate;
+    if try_create(&candidate).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed to reserve destination '{}': {e}",
+            candidate.display()
+        ))
+    })? {
+        return Ok(candidate);
     }
+
     let stem = Path::new(filename)
         .file_stem()
         .and_then(|s| s.to_str())
@@ -152,9 +197,21 @@ fn unique_destination(dir: &Path, filename: &str) -> PathBuf {
 
     for idx in 1..10000 {
         let next = dir.join(format!("{stem}_{idx}{ext}"));
-        if !next.exists() {
-            return next;
+        if try_create(&next).map_err(|e| {
+            DomainError::Storage(format!(
+                "failed to reserve destination '{}': {e}",
+                next.display()
+            ))
+        })? {
+            return Ok(next);
         }
     }
-    dir.join(format!("{stem}_{}{ext}", uuid::Uuid::now_v7()))
+    let fallback = dir.join(format!("{stem}_{}{ext}", uuid::Uuid::now_v7()));
+    let _ = try_create(&fallback).map_err(|e| {
+        DomainError::Storage(format!(
+            "failed to reserve destination '{}': {e}",
+            fallback.display()
+        ))
+    })?;
+    Ok(fallback)
 }

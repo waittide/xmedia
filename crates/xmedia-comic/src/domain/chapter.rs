@@ -123,6 +123,13 @@ impl Chapter {
                 "chapter number must be a non-negative finite number".into(),
             ));
         }
+        if let Some(vol) = volume_number
+            && (!vol.is_finite() || vol < 0.0)
+        {
+            return Err(DomainError::Validation(
+                "volume number must be a non-negative finite number".into(),
+            ));
+        }
         let clean_title = title.trim().to_owned();
         let sort_key =
             build_chapter_sort_key(kind.sort_rank(), volume_number, number, &clean_title);
@@ -165,6 +172,13 @@ impl Chapter {
             self.number = number;
         }
         if let Some(vol) = patch.volume_number {
+            if let Some(v) = vol
+                && (!v.is_finite() || v < 0.0)
+            {
+                return Err(DomainError::Validation(
+                    "volume number must be a non-negative finite number".into(),
+                ));
+            }
             self.volume_number = vol;
         }
         if let Some(title) = patch.title {

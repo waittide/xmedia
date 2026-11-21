@@ -33,10 +33,18 @@ pub fn parse_chapter_filename(filename: &str, fallback_index: u32) -> ParsedChap
         .or_else(|| extract_v_shorthand(&rest_lower))
         .or_else(|| extract_chinese_unit_number(rest, &['卷', '册']));
 
+    let has_sp_token = rest_lower.strip_prefix("sp").is_some_and(|after| {
+        after.is_empty()
+            || !after
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic())
+    });
+
     let is_special = rest_lower.contains("special")
         || rest_lower.contains("extra")
         || rest_lower.contains("omake")
-        || rest_lower.starts_with("sp")
+        || has_sp_token
         || rest.contains("番外")
         || rest.contains("特别篇")
         || rest.contains("外传");
@@ -156,7 +164,9 @@ fn extract_single_letter_shorthand(lower: &str, letter: char) -> Option<f64> {
 }
 
 fn extract_chinese_unit_number(text: &str, units: &[char]) -> Option<f64> {
-    if let Some(pos) = text.find('第') {
+    let mut search_from = 0usize;
+    while let Some(rel) = text[search_from..].find('第') {
+        let pos = search_from + rel;
         let after = text[pos + '第'.len_utf8()..].trim_start();
         let num_str: String = after
             .chars()
@@ -166,10 +176,13 @@ fn extract_chinese_unit_number(text: &str, units: &[char]) -> Option<f64> {
             let remaining = after[num_str.len()..].trim_start();
             if remaining.chars().next().is_some_and(|u| units.contains(&u))
                 && let Ok(val) = num_str.parse::<f64>()
+                && val.is_finite()
+                && val >= 0.0
             {
                 return Some(val);
             }
         }
+        search_from = pos + '第'.len_utf8();
     }
     None
 }
@@ -191,7 +204,10 @@ fn parse_leading_float(s: &str) -> Option<f64> {
     if clean.is_empty() {
         None
     } else {
-        clean.parse::<f64>().ok()
+        clean
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0)
     }
 }
 

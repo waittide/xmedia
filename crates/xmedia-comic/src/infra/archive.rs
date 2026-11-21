@@ -374,6 +374,15 @@ fn inspect_zip_reader<R: Read + Seek>(
     let mut archive = ZipArchive::new(reader)
         .map_err(|e| DomainError::Validation(format!("invalid zip/cbz/epub archive: {e}")))?;
 
+    const MAX_ZIP_ENTRIES: usize = 65_536;
+    const MAX_XML_ENTRY_BYTES: u64 = 4 * 1024 * 1024;
+
+    if archive.len() > MAX_ZIP_ENTRIES {
+        return Err(DomainError::Validation(format!(
+            "comic archive exceeds maximum entry count ({MAX_ZIP_ENTRIES})"
+        )));
+    }
+
     let mut image_names: Vec<String> = Vec::new();
     let mut comic_info_entry: Option<String> = None;
     let mut opf_candidates: Vec<String> = Vec::new();
@@ -405,10 +414,18 @@ fn inspect_zip_reader<R: Read + Seek>(
     }
 
     let mut comic_info = if let Some(ci_name) = comic_info_entry {
-        if let Ok(mut entry) = archive.by_name(&ci_name) {
+        if let Ok(entry) = archive.by_name(&ci_name) {
             let mut xml = Vec::new();
-            let _ = entry.read_to_end(&mut xml);
-            parse_comic_info_xml(&xml)
+            if entry
+                .take(MAX_XML_ENTRY_BYTES + 1)
+                .read_to_end(&mut xml)
+                .is_ok()
+                && (xml.len() as u64) <= MAX_XML_ENTRY_BYTES
+            {
+                parse_comic_info_xml(&xml)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -416,12 +433,18 @@ fn inspect_zip_reader<R: Read + Seek>(
         None
     };
 
+    let mut ordered_by_opf = false;
     if is_epub
         && let Some(opf_path) = opf_candidates.first()
-        && let Ok(mut opf_entry) = archive.by_name(opf_path)
+        && let Ok(opf_entry) = archive.by_name(opf_path)
     {
         let mut opf_bytes = Vec::new();
-        if opf_entry.read_to_end(&mut opf_bytes).is_ok() {
+        if opf_entry
+            .take(MAX_XML_ENTRY_BYTES + 1)
+            .read_to_end(&mut opf_bytes)
+            .is_ok()
+            && (opf_bytes.len() as u64) <= MAX_XML_ENTRY_BYTES
+        {
             let (opf_meta, ordered_imgs) = parse_epub_opf(&opf_bytes, opf_path);
             if comic_info.is_none() && opf_meta.is_some() {
                 comic_info = opf_meta;
@@ -434,14 +457,12 @@ fn inspect_zip_reader<R: Read + Seek>(
                     .collect();
                 if !filtered.is_empty() {
                     image_names = filtered;
-                } else {
-                    image_names.sort_by(|a, b| natural_cmp(a, b));
+                    ordered_by_opf = true;
                 }
-            } else {
-                image_names.sort_by(|a, b| natural_cmp(a, b));
             }
         }
-    } else {
+    }
+    if !ordered_by_opf {
         image_names.sort_by(|a, b| natural_cmp(a, b));
     }
 

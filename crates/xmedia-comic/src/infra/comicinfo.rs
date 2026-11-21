@@ -1,49 +1,55 @@
 use quick_xml::events::Event;
 use quick_xml::reader::Reader;
+use xmedia_core::infra::stream::decode_text_smart;
 
 use crate::application::ports::ComicInfoMetadata;
 use crate::domain::series::ReadingDirection;
 
 pub fn parse_comic_info_xml(xml_bytes: &[u8]) -> Option<ComicInfoMetadata> {
-    let mut reader = Reader::from_reader(xml_bytes);
+    let (decoded, _) = decode_text_smart(xml_bytes);
+    let mut reader = Reader::from_str(&decoded);
     reader.config_mut().trim_text(false);
 
-    let mut buf = Vec::new();
-    let mut current_tag: Option<String> = None;
-    let mut text_acc = String::new();
+    let mut tag_stack: Vec<(String, String)> = Vec::new();
     let mut meta = ComicInfoMetadata::default();
     let mut manga_raw: Option<String> = None;
     let mut found_any = false;
 
     loop {
-        match reader.read_event_into(&mut buf) {
+        match reader.read_event() {
             Ok(Event::Start(e)) => {
                 let tag = e.local_name().as_ref().to_ascii_lowercase();
-                current_tag = Some(tag);
-                text_acc.clear();
+                if tag_stack.len() < 64 {
+                    tag_stack.push((tag, String::new()));
+                }
             }
             Ok(Event::End(_)) => {
-                if let Some(tag) = current_tag.take() {
+                if let Some((tag, text_acc)) = tag_stack.pop() {
                     let trimmed = text_acc.trim();
                     if !trimmed.is_empty() {
                         found_any = true;
                         assign_field(&mut meta, &mut manga_raw, &tag, trimmed);
+                        if let Some((_, parent_acc)) = tag_stack.last_mut() {
+                            if !parent_acc.is_empty() {
+                                parent_acc.push(' ');
+                            }
+                            parent_acc.push_str(trimmed);
+                        }
                     }
                 }
-                text_acc.clear();
             }
             Ok(Event::Text(t)) => {
-                if current_tag.is_some() {
+                if let Some((_, text_acc)) = tag_stack.last_mut() {
                     text_acc.push_str(&t.xml10_content());
                 }
             }
             Ok(Event::GeneralRef(r)) => {
-                if current_tag.is_some() {
-                    append_xml_ref(&mut text_acc, &r);
+                if let Some((_, text_acc)) = tag_stack.last_mut() {
+                    append_xml_ref(text_acc, &r);
                 }
             }
             Ok(Event::CData(c)) => {
-                if current_tag.is_some() {
+                if let Some((_, text_acc)) = tag_stack.last_mut() {
                     text_acc.push_str(c.as_ref());
                 }
             }
@@ -51,7 +57,6 @@ pub fn parse_comic_info_xml(xml_bytes: &[u8]) -> Option<ComicInfoMetadata> {
             Err(_) => return None,
             _ => {}
         }
-        buf.clear();
     }
 
     if !found_any {
@@ -89,10 +94,14 @@ fn assign_field(
         "seriesgroup" => meta.series_group = Some(value.to_owned()),
         "title" => meta.title = Some(value.to_owned()),
         "number" => {
-            meta.number = value.parse::<f64>().ok();
+            meta.number = value
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v >= 0.0);
         }
         "volume" => {
             if let Ok(v) = value.parse::<f64>()
+                && v.is_finite()
                 && v >= 0.0
             {
                 meta.volume = Some(v);

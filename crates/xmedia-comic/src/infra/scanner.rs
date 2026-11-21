@@ -80,6 +80,8 @@ fn check_archive_unchanged(
         file_hash: hash,
         comic_info: None,
         unchanged: true,
+        preserved_series_title: prev.series_title.clone(),
+        preserved_series_source_dir: prev.series_source_dir.clone(),
     })
 }
 
@@ -236,15 +238,30 @@ impl ComicScannerPort for SmartComicScanner {
             let fallback_index = cand.fallback_index;
             if let Some(ch) = self.resolve_candidate(cand, known_chapters).await {
                 let parsed = parse_chapter_filename(&filename, fallback_index);
-                let series_title = ch
-                    .comic_info
-                    .as_ref()
-                    .and_then(|ci| ci.series.clone())
-                    .filter(|s| !s.trim().is_empty())
-                    .or(parsed.inferred_series)
-                    .unwrap_or_else(|| parsed.clean_title.clone());
+                let (series_title, synthetic_dir) = if ch.unchanged
+                    && let Some(prev_dir) = ch
+                        .preserved_series_source_dir
+                        .as_deref()
+                        .filter(|s| !s.trim().is_empty())
+                {
+                    let title = ch
+                        .preserved_series_title
+                        .clone()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| parsed.clean_title.clone());
+                    (title, prev_dir.to_owned())
+                } else {
+                    let title = ch
+                        .comic_info
+                        .as_ref()
+                        .and_then(|ci| ci.series.clone())
+                        .filter(|s| !s.trim().is_empty())
+                        .or(parsed.inferred_series)
+                        .unwrap_or_else(|| parsed.clean_title.clone());
+                    let dir = format!("{}::{}", root.to_string_lossy(), title.trim());
+                    (title, dir)
+                };
 
-                let synthetic_dir = format!("{}::{}", root.to_string_lossy(), series_title.trim());
                 let entry =
                     series_map
                         .entry(synthetic_dir.clone())
@@ -307,6 +324,11 @@ impl SmartComicScanner {
             false
         };
 
+        let (preserved_series_title, preserved_series_source_dir) = known_chapters
+            .get(&source_path)
+            .map(|p| (p.series_title.clone(), p.series_source_dir.clone()))
+            .unwrap_or((None, None));
+
         Some(ScannedChapterEntry {
             kind: parsed.kind,
             number: parsed.number,
@@ -319,6 +341,8 @@ impl SmartComicScanner {
             file_hash: inspection.file_hash,
             comic_info: inspection.comic_info,
             unchanged,
+            preserved_series_title,
+            preserved_series_source_dir,
         })
     }
 }
