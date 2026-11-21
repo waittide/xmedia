@@ -1,5 +1,13 @@
 @import "tailwindcss";
 
+@theme {
+  /* MD3 Window Size Classes: Compact (<600) | Medium (600-839) | Expanded (840-1199) | Large (1200-1599) | Extra-large (1600+) */
+  --breakpoint-sm: 600px;
+  --breakpoint-md: 840px;
+  --breakpoint-lg: 1200px;
+  --breakpoint-xl: 1600px;
+}
+
 :root {
   color-scheme: light;
 

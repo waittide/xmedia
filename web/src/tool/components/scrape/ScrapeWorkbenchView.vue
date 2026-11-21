@@ -23,6 +23,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
+import MdTabs, { type MdTabItem } from '@/components/ui/MdTabs.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { buildArtworkUrl, toolApi } from '../../api'
@@ -100,11 +101,26 @@ const candidatePreview = ref<CandidatePreviewState | null>(null)
 let lastEntryKey = ''
 
 // Compact queue dropdown (shown only on mobile or when desktop sidebar is collapsed)
-const isMobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 768 : false)
+const isMobileViewport = ref(typeof window !== 'undefined' ? window.innerWidth < 840 : false)
 const showCompactQueueDropdown = computed(() => props.sidebarCollapsed || isMobileViewport.value)
 const queueDropdownOpen = ref(false)
 const dropdownQuery = ref('')
 const dropdownFilter = ref<DropdownFilter>('all')
+
+type WorkbenchMobilePane = 'local' | 'candidates' | 'preview'
+const mobilePane = ref<WorkbenchMobilePane>('candidates')
+const mobilePaneTabs = computed<MdTabItem<WorkbenchMobilePane>[]>(() => [
+  { value: 'local', label: localEditMode.value ? '当前信息（编辑中）' : '当前信息' },
+  { value: 'candidates', label: '候选结果' },
+  { value: 'preview', label: candidatePreview.value ? '对比预览 · 已选' : '对比预览' },
+])
+
+function handleSelectCandidatePreview(next: CandidatePreviewState | null): void {
+  candidatePreview.value = next
+  if (next && typeof window !== 'undefined' && window.innerWidth < 1200) {
+    mobilePane.value = 'preview'
+  }
+}
 
 const dropdownFilterOptions = [
   { value: 'all' as const, label: '全部' },
@@ -118,7 +134,7 @@ watch(showCompactQueueDropdown, (visible) => {
 })
 
 function handleResize(): void {
-  isMobileViewport.value = window.innerWidth < 768
+  isMobileViewport.value = window.innerWidth < 840
 }
 
 const dropdownEntries = computed(() => {
@@ -688,6 +704,7 @@ defineExpose({
           type="button"
           class="md-icon-btn md-icon-btn-sm md-state hidden md:inline-flex"
           :title="sidebarCollapsed ? '展开左侧队列列表' : '收起左侧队列列表（最大化三栏宽度）'"
+          :aria-label="sidebarCollapsed ? '展开左侧队列列表' : '收起左侧队列列表'"
           @click="emit('toggleSidebar')"
         >
           <LuPanelLeft class="h-4 w-4" />
@@ -701,6 +718,7 @@ defineExpose({
           :disabled="!hasPrev"
           class="md-icon-btn md-icon-btn-sm md-state !h-8 !w-8 shrink-0 disabled:opacity-35"
           title="上一项 (Alt+↑)"
+          aria-label="上一项"
           @click="requestStep(-1)"
         >
           <LuArrowUp class="h-4 w-4" />
@@ -760,6 +778,7 @@ defineExpose({
           :disabled="!hasNext"
           class="md-icon-btn md-icon-btn-sm md-state !h-8 !w-8 shrink-0 disabled:opacity-35"
           title="下一项 (Alt+↓)"
+          aria-label="下一项"
           @click="requestStep(1)"
         >
           <LuArrowDown class="h-4 w-4" />
@@ -910,13 +929,25 @@ defineExpose({
       </button>
     </div>
 
-    <!-- MAIN 3-COLUMN WORKBENCH: [Left: Current Item (Read/Inline Edit)] | [Middle: Scraper Sources] | [Right: Editable Result & Save] -->
-    <div
-      v-else
-      class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_330px_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.05fr)_370px_minmax(0,1.05fr)]"
-    >
+    <!-- MAIN 3-COLUMN WORKBENCH: Tabbed panes (<1200px) | 3-column grid (>=1200px) -->
+    <div v-else class="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div class="shrink-0 bg-[var(--md-sys-color-surface-container-low)] lg:hidden">
+        <MdTabs
+          v-model="mobilePane"
+          :tabs="mobilePaneTabs"
+          variant="primary"
+          aria-label="刮削工作台分区"
+        />
+      </div>
+
+      <div
+        class="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[minmax(0,1fr)_330px_minmax(0,1fr)] xl:grid-cols-[minmax(0,1.05fr)_370px_minmax(0,1.05fr)]"
+      >
       <!-- COLUMN 1 (LEFT): Current Persisted Entry with Direct Inline Edit Toggle -->
-      <div class="flex min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)]">
+      <div
+        class="min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] lg:flex"
+        :class="mobilePane === 'local' ? 'flex' : 'hidden'"
+      >
         <div
           class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/45 px-4 py-2"
         >
@@ -1232,7 +1263,8 @@ defineExpose({
 
       <!-- COLUMN 2 (MIDDLE): Scraper Sources & Candidate List -->
       <div
-        class="flex min-h-0 flex-col border-t border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/40 lg:border-t-0 lg:border-x"
+        class="min-h-0 flex-col border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container)]/40 lg:flex lg:border-x"
+        :class="mobilePane === 'candidates' ? 'flex' : 'hidden'"
       >
         <div class="min-h-0 flex-1 overflow-hidden">
           <WorkbenchCandidatePane
@@ -1241,7 +1273,7 @@ defineExpose({
             :auto-search-trigger="autoSearchTrigger"
             :selected-preview-key="candidatePreview?.key ?? null"
             @direct-apply="(m, mode) => handleApplyAndSave(m, mode, false)"
-            @select-preview="candidatePreview = $event"
+            @select-preview="handleSelectCandidatePreview"
             @open-settings="emit('openSettingsScrapers')"
             @settings-updated="emit('settingsUpdated', $event)"
           />
@@ -1249,7 +1281,10 @@ defineExpose({
       </div>
 
       <!-- COLUMN 3 (RIGHT): Editable Pending Result & Save Area -->
-      <div class="flex min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)]">
+      <div
+        class="min-h-0 flex-col overflow-hidden bg-[var(--md-sys-color-surface-container-low)] lg:flex"
+        :class="mobilePane === 'preview' ? 'flex' : 'hidden'"
+      >
         <CandidateDetailPreviewPane
           v-if="candidatePreview"
           ref="previewPaneRef"
@@ -1280,12 +1315,13 @@ defineExpose({
             v-if="canSaveMetadata && !localEditMode"
             type="button"
             class="md-btn md-btn-sm md-btn-tonal md-state"
-            @click="enterLocalEditMode"
+            @click="enterLocalEditMode(); mobilePane = 'local'"
           >
             <LuPencil class="h-3.5 w-3.5" />
             <span>在左栏直接编辑</span>
           </button>
         </div>
+      </div>
       </div>
     </div>
   </div>

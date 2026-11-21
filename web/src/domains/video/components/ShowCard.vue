@@ -17,8 +17,13 @@ const videoStore = useVideoStore()
 
 <template>
   <div
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]"
+    role="link"
+    tabindex="0"
+    :aria-label="show.title"
+    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container-high)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
     @click="router.push(`/video/shows/${show.id}`)"
+    @keydown.enter.self="router.push(`/video/shows/${show.id}`)"
+    @keydown.space.self.prevent="router.push(`/video/shows/${show.id}`)"
   >
     <div class="relative mb-2.5">
       <PosterImage
@@ -40,7 +45,9 @@ const videoStore = useVideoStore()
 
         <button
           type="button"
-          class="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white opacity-0 backdrop-blur-xs transition group-hover:opacity-100 hover:scale-105"
+          class="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white opacity-0 backdrop-blur-xs transition group-hover:opacity-100 focus-visible:opacity-100 hover:scale-105"
+          :aria-label="show.is_favorite ? t('common.unfavorite') : t('common.favorite')"
+          :aria-pressed="show.is_favorite"
           @click.stop="videoStore.toggleShowFavorite(show)"
         >
           <LuHeart

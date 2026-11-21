@@ -5,15 +5,20 @@ import {
   LuBookOpen,
   LuCheckCircle2,
   LuClapperboard,
+  LuClock,
   LuDisc3,
   LuFileText,
   LuFolder,
+  LuHome,
   LuImage,
   LuLayers,
+  LuLibrary,
   LuLoader2,
+  LuSettings,
   LuSparkles,
   LuTrash2,
 } from 'vue-icons-plus/lu'
+import MdBadge from '@/components/ui/MdBadge.vue'
 import MdDialog from '@/components/ui/MdDialog.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import type { MediaKind } from '@/types/api'
@@ -168,6 +173,15 @@ watch(tasksDrawerOpen, (isOpen) => {
   if (isOpen) tasksDrawerMounted.value = true
 })
 const collapsed = ref(localStorage.getItem('xmedia_tool.sidebar_collapsed') === '1')
+const desktopMediaQuery =
+  typeof window !== 'undefined' ? window.matchMedia('(min-width: 840px)') : null
+const isDesktop = ref(desktopMediaQuery ? desktopMediaQuery.matches : true)
+function handleDesktopBreakpointChange(ev: MediaQueryListEvent): void {
+  isDesktop.value = ev.matches
+  if (ev.matches) {
+    mobileMenuOpen.value = false
+  }
+}
 function loadSavedViewMode(): BrowseViewMode {
   const saved = localStorage.getItem('xmedia_tool.view_mode')
   if (saved === 'folders') return 'folders'
@@ -664,7 +678,7 @@ const allFilteredSelected = computed(
 )
 
 function toggleSidebar(): void {
-  if (window.innerWidth < 768) {
+  if (!isDesktop.value) {
     mobileMenuOpen.value = !mobileMenuOpen.value
     return
   }
@@ -2044,6 +2058,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   window.addEventListener('beforeunload', handleBeforeUnload)
   window.addEventListener('hashchange', handleHashChange)
+  desktopMediaQuery?.addEventListener('change', handleDesktopBreakpointChange)
   offFileScraped = taskStore.onFileScraped((updated, prevRelPath) => {
     bumpFileArtworkVersion(updated.entry.root_id, updated.entry.rel_path)
     if (prevRelPath && prevRelPath !== updated.entry.rel_path) {
@@ -2125,6 +2140,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   window.removeEventListener('hashchange', handleHashChange)
+  desktopMediaQuery?.removeEventListener('change', handleDesktopBreakpointChange)
   if (offFileScraped) offFileScraped()
   if (offBatchSettled) offBatchSettled()
   if (scrapeRefreshTimer) clearTimeout(scrapeRefreshTimer)
@@ -2133,7 +2149,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)]"
+    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)] supports-[height:100dvh]:h-dvh"
   >
     <!-- Full-Width Top Bar -->
     <ToolTopHeader
@@ -2387,6 +2403,134 @@ onBeforeUnmount(() => {
         </template>
       </main>
     </div>
+
+    <!-- Compact (<840px) MD3 Bottom Navigation Bar -->
+    <nav
+      aria-label="主导航"
+      class="safe-pb safe-px relative z-30 shrink-0 border-t border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container)] select-none md:hidden"
+    >
+      <div class="grid h-16 grid-cols-4 items-center">
+        <button
+          type="button"
+          :aria-current="activeNav === 'home' && !tasksDrawerOpen ? 'page' : undefined"
+          class="group flex h-full flex-col items-center justify-center gap-1 outline-none"
+          @click="tasksDrawerOpen = false; void navigatePrimary('home')"
+        >
+          <span
+            class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-[var(--md-sys-motion-duration-short)] group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-secondary)]"
+            :class="
+              activeNav === 'home' && !tasksDrawerOpen
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
+            "
+          >
+            <LuHome class="h-5 w-5 shrink-0" />
+          </span>
+          <span
+            class="md-label-medium truncate"
+            :class="
+              activeNav === 'home' && !tasksDrawerOpen
+                ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)]'
+            "
+          >
+            {{ txt.nav.home }}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          :aria-current="activeNav === 'items' && !tasksDrawerOpen ? 'page' : undefined"
+          class="group flex h-full flex-col items-center justify-center gap-1 outline-none"
+          @click="tasksDrawerOpen = false; void navigatePrimary('items')"
+        >
+          <span
+            class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-[var(--md-sys-motion-duration-short)] group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-secondary)]"
+            :class="
+              activeNav === 'items' && !tasksDrawerOpen
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
+            "
+          >
+            <LuLibrary class="h-5 w-5 shrink-0" />
+          </span>
+          <span
+            class="md-label-medium truncate"
+            :class="
+              activeNav === 'items' && !tasksDrawerOpen
+                ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)]'
+            "
+          >
+            {{ txt.nav.items }}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          :aria-pressed="tasksDrawerOpen"
+          class="group flex h-full flex-col items-center justify-center gap-1 outline-none"
+          @click="tasksDrawerOpen = !tasksDrawerOpen"
+        >
+          <span
+            class="md-state relative flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-[var(--md-sys-motion-duration-short)] group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-secondary)]"
+            :class="
+              tasksDrawerOpen
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
+            "
+          >
+            <LuLoader2 v-if="taskStore.activeTask" class="h-5 w-5 shrink-0 animate-spin" />
+            <LuClock v-else class="h-5 w-5 shrink-0" />
+            <MdBadge
+              v-if="taskStore.unresolvedCount > 0"
+              :value="taskStore.unresolvedCount"
+              :max="99"
+              tone="error"
+              class="pointer-events-none absolute top-0.5 right-3"
+            />
+          </span>
+          <span
+            class="md-label-medium truncate"
+            :class="
+              tasksDrawerOpen
+                ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)]'
+            "
+          >
+            {{ txt.tasks.title }}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          :aria-current="activeNav === 'settings' && !tasksDrawerOpen ? 'page' : undefined"
+          class="group flex h-full flex-col items-center justify-center gap-1 outline-none"
+          @click="tasksDrawerOpen = false; activeNav === 'settings' ? exitSettings() : openSettingsTab('appearance')"
+        >
+          <span
+            class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-[var(--md-sys-motion-duration-short)] group-focus-visible:outline-3 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-secondary)]"
+            :class="
+              activeNav === 'settings' && !tasksDrawerOpen
+                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
+            "
+          >
+            <LuSettings class="h-5 w-5 shrink-0" />
+          </span>
+          <span
+            class="md-label-medium truncate"
+            :class="
+              activeNav === 'settings' && !tasksDrawerOpen
+                ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
+                : 'text-[var(--md-sys-color-on-surface-variant)]'
+            "
+          >
+            设置
+          </span>
+        </button>
+      </div>
+    </nav>
 
     <BatchMetadataModal
       v-if="batchMetadataModalOpen && effectiveModalRootId"

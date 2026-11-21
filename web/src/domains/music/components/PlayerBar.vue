@@ -20,6 +20,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
+import MdBadge from '@/components/ui/MdBadge.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { formatTime } from '@/utils/format'
 import { api } from '../api'
@@ -211,8 +212,9 @@ onBeforeUnmount(() => {
         <template v-if="playerStore.currentTrack">
           <button
             type="button"
-            class="group relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] sm:h-13 sm:w-13"
+            class="group relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-sm focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)] sm:h-13 sm:w-13"
             :title="t('player.openLyrics')"
+            :aria-label="t('player.openLyrics')"
             @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
           >
             <CoverImage
@@ -252,6 +254,8 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
+            :aria-label="playerStore.currentTrack.starred_at ? t('common.unfavorite') : t('common.favorite')"
+            :aria-pressed="Boolean(playerStore.currentTrack.starred_at)"
             @click="musicStore.toggleTrackStar(playerStore.currentTrack)"
           >
             <LuHeart
@@ -268,6 +272,7 @@ onBeforeUnmount(() => {
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state hidden lg:inline-flex"
             :title="bookmarkJustSaved ? t('player.bookmarkSaved') : t('player.bookmarkBtn')"
+            :aria-label="bookmarkJustSaved ? t('player.bookmarkSaved') : t('player.bookmarkBtn')"
             @click="saveCurrentBookmark"
           >
             <LuCheck v-if="bookmarkJustSaved" class="h-4 w-4 text-[var(--md-sys-color-success)]" />
@@ -297,6 +302,7 @@ onBeforeUnmount(() => {
                 : ''
             "
             :title="playModeTitle"
+            :aria-label="playModeTitle"
             @click="playerStore.cyclePlayMode()"
           >
             <LuRepeat1 v-if="playerStore.playMode === 'loop_one'" class="h-4 w-4" />
@@ -309,6 +315,7 @@ onBeforeUnmount(() => {
             :disabled="!playerStore.currentTrack"
             class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface)] disabled:opacity-40"
             :title="t('player.prev')"
+            :aria-label="t('player.prev')"
             @click="playerStore.playPrev()"
           >
             <LuSkipBack class="h-4 w-4 fill-current" />
@@ -319,6 +326,7 @@ onBeforeUnmount(() => {
             :disabled="!playerStore.currentTrack"
             class="md-state flex h-10 w-10 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)] transition hover:scale-105 disabled:opacity-45"
             :title="playerStore.isPlaying ? t('player.pause') : t('player.play')"
+            :aria-label="playerStore.isPlaying ? t('player.pause') : t('player.play')"
             @click="playerStore.togglePlay()"
           >
             <LuPause v-if="playerStore.isPlaying" class="h-4 w-4 fill-current" />
@@ -330,6 +338,7 @@ onBeforeUnmount(() => {
             :disabled="!playerStore.currentTrack"
             class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface)] disabled:opacity-40"
             :title="t('player.next')"
+            :aria-label="t('player.next')"
             @click="playerStore.playNext()"
           >
             <LuSkipForward class="h-4 w-4 fill-current" />
@@ -381,6 +390,8 @@ onBeforeUnmount(() => {
               : ''
           "
           :title="t('player.openLyrics')"
+          :aria-label="t('player.openLyrics')"
+          :aria-pressed="playerStore.lyricsOpen"
           @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
         >
           <LuMic2 class="h-4 w-4" />
@@ -395,15 +406,18 @@ onBeforeUnmount(() => {
               : ''
           "
           :title="t('player.queueTitle')"
+          :aria-label="t('player.queueTitle')"
+          :aria-pressed="playerStore.queueOpen"
           @click="playerStore.queueOpen = !playerStore.queueOpen"
         >
           <LuListMusic class="h-4 w-4" />
-          <span
+          <MdBadge
             v-if="playerStore.queue.length > 0"
-            class="absolute -top-0.5 -right-0.5 rounded-full bg-[var(--md-sys-color-primary)] px-1 text-[9px] font-bold text-[var(--md-sys-color-on-primary)]"
-          >
-            {{ playerStore.queue.length }}
-          </span>
+            :value="playerStore.queue.length"
+            :max="999"
+            tone="primary"
+            class="pointer-events-none absolute -top-0.5 -right-0.5"
+          />
         </button>
 
         <div class="hidden w-28 items-center gap-1.5 lg:flex">
@@ -411,6 +425,7 @@ onBeforeUnmount(() => {
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state"
             :title="playerStore.muted ? t('player.unmute') : t('player.mute')"
+            :aria-label="playerStore.muted ? t('player.unmute') : t('player.mute')"
             @click="playerStore.toggleMute()"
           >
             <LuVolumeX v-if="playerStore.muted || playerStore.volume === 0" class="h-4 w-4" />

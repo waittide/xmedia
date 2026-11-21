@@ -69,7 +69,7 @@ const videoStore = useVideoStore()
 
 const collapsed = ref(localStorage.getItem('xmedia.sidebar_collapsed') === '1')
 const desktopMediaQuery =
-  typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)') : null
+  typeof window !== 'undefined' ? window.matchMedia('(min-width: 840px)') : null
 const isDesktop = ref(desktopMediaQuery ? desktopMediaQuery.matches : true)
 const mobileMenuOpen = ref(false)
 const accountMenuOpen = ref(false)

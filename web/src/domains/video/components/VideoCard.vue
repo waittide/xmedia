@@ -152,8 +152,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]"
+    role="link"
+    tabindex="0"
+    :aria-label="video.title"
+    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container-high)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
     @click="router.push(`/video/watch/${video.id}`)"
+    @keydown.enter.self="router.push(`/video/watch/${video.id}`)"
+    @keydown.space.self.prevent="router.push(`/video/watch/${video.id}`)"
   >
     <div class="relative mb-2.5">
       <PosterImage
@@ -202,6 +207,7 @@ onBeforeUnmount(() => {
             type="button"
             class="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105"
             :title="t('common.play')"
+            :aria-label="t('common.play')"
           >
             <LuPlay class="ml-0.5 h-5 w-5 fill-current" />
           </button>
@@ -209,6 +215,8 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-xs transition hover:scale-105"
+            :aria-label="video.is_favorite ? t('common.unfavorite') : t('common.favorite')"
+            :aria-pressed="video.is_favorite"
             @click.stop="videoStore.toggleVideoFavorite(video)"
           >
             <LuHeart
@@ -237,14 +245,15 @@ onBeforeUnmount(() => {
           {{ video.title }}
         </h3>
         <div class="mt-0.5 flex items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-          <span
+          <button
             v-if="video.show_id && video.show_title"
-            class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
+            type="button"
+            class="truncate text-left hover:text-[var(--md-sys-color-primary)] hover:underline"
             @click.stop="router.push(`/video/shows/${video.show_id}`)"
           >
             {{ video.show_title }}
-          </span>
-          <span v-else class="font-mono text-[10px] uppercase">
+          </button>
+          <span v-else class="font-mono text-[11px] uppercase">
             {{ video.container }}
           </span>
           <span v-if="video.year" class="shrink-0">· {{ video.year }}</span>
@@ -254,6 +263,9 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="md-icon-btn md-icon-btn-sm md-state"
+        :aria-label="t('common.moreActions')"
+        :aria-expanded="menuOpen"
+        aria-haspopup="menu"
         @click="openMenu"
       >
         <LuMoreHorizontal class="h-4 w-4" />

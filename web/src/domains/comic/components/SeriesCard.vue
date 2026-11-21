@@ -43,8 +43,13 @@ function quickRead(ev: MouseEvent): void {
 
 <template>
   <div
-    class="group flex cursor-pointer flex-col gap-2.5 select-none"
+    role="link"
+    tabindex="0"
+    :aria-label="series.title"
+    class="group flex cursor-pointer flex-col gap-2.5 rounded-2xl select-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
     @click="openDetail"
+    @keydown.enter.self="openDetail"
+    @keydown.space.self.prevent="openDetail"
   >
     <div
       class="book-shadow relative aspect-[2/3] w-full overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)]"
@@ -84,7 +89,8 @@ function quickRead(ev: MouseEvent): void {
       <button
         v-if="series.continue_reading"
         type="button"
-        class="md-state absolute right-2.5 bottom-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] opacity-0 shadow-[var(--md-sys-elevation-2)] transition group-hover:opacity-100 hover:scale-105"
+        :aria-label="t('home.continueReading')"
+        class="md-state absolute right-2.5 bottom-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] opacity-0 shadow-[var(--md-sys-elevation-2)] transition group-hover:opacity-100 focus-visible:opacity-100 hover:scale-105"
         @click="quickRead"
       >
         <LuPlay class="h-4 w-4 fill-current" />

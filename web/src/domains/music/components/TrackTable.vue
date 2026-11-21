@@ -195,6 +195,11 @@ onBeforeUnmount(() => {
           <td class="px-3 py-2.5 text-center" @click="handlePlayRow(idx)">
             <button
               type="button"
+              :aria-label="
+                playerStore.currentTrack?.id === tr.id && playerStore.isPlaying
+                  ? t('player.pause')
+                  : t('player.play')
+              "
               class="inline-flex h-7 w-7 items-center justify-center rounded-full"
             >
               <LuPause
@@ -240,7 +245,7 @@ onBeforeUnmount(() => {
                   </span>
                   <span
                     v-if="tr.has_lyrics"
-                    class="shrink-0 rounded bg-[var(--md-sys-color-primary-container)] px-1 py-0.2 text-[9px] font-bold text-[var(--md-sys-color-on-primary-container)]"
+                    class="md-label-small shrink-0 rounded bg-[var(--md-sys-color-primary-container)] px-1 py-0.2 font-bold text-[var(--md-sys-color-on-primary-container)]"
                   >
                     LRC
                   </span>
@@ -248,17 +253,18 @@ onBeforeUnmount(() => {
                 <div
                   class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
                 >
-                  <span
-                    class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
+                  <button
+                    type="button"
+                    class="truncate text-left hover:text-[var(--md-sys-color-primary)] hover:underline"
                     @click.stop="router.push(`/music/artists/${tr.artist_id}`)"
                   >
                     {{ tr.artist_name }}
-                  </span>
+                  </button>
                   <button
                     v-for="tg in tr.tags ?? []"
                     :key="tg"
                     type="button"
-                    class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.2 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-secondary-container)] hover:text-[var(--md-sys-color-on-secondary-container)]"
+                    class="md-label-small rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.2 text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-secondary-container)] hover:text-[var(--md-sys-color-on-secondary-container)]"
                     @click.stop="router.push({ path: '/music/songs', query: { tag: tg } })"
                   >
                     #{{ tg }}
@@ -302,6 +308,8 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
+                :aria-label="tr.starred_at ? t('common.unfavorite') : t('common.favorite')"
+                :aria-pressed="Boolean(tr.starred_at)"
                 @click.stop="musicStore.toggleTrackStar(tr)"
               >
                 <LuHeart
@@ -317,6 +325,9 @@ onBeforeUnmount(() => {
               <button
                 type="button"
                 class="md-icon-btn md-icon-btn-sm md-state"
+                :aria-label="t('common.moreActions')"
+                :aria-expanded="activeMenuIdx === idx"
+                aria-haspopup="menu"
                 @click="openRowMenu($event, idx)"
               >
                 <LuMoreHorizontal class="h-4 w-4" />

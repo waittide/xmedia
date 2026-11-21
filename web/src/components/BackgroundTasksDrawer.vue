@@ -446,13 +446,17 @@ async function handleClearFinished(): Promise<void> {
       <article
         v-for="item in filteredTasks"
         :key="item.id"
-        class="md-card-outlined p-3.5 transition-colors"
+        :role="item.targetRoute ? 'button' : undefined"
+        :tabindex="item.targetRoute ? 0 : undefined"
+        class="md-card-outlined p-3.5 transition-colors focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
         :class="
           item.targetRoute
             ? 'cursor-pointer hover:bg-[var(--md-sys-color-surface-container)]'
             : ''
         "
         @click="item.targetRoute && handleNavigate(item.targetRoute)"
+        @keydown.enter.self="item.targetRoute && handleNavigate(item.targetRoute)"
+        @keydown.space.self.prevent="item.targetRoute && handleNavigate(item.targetRoute)"
       >
         <!-- Top Row: Icon + Title + Badges + Status / Quick Controls -->
         <div class="flex items-start justify-between gap-2.5">

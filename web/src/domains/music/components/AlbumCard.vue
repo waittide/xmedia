@@ -31,8 +31,13 @@ async function onStar(ev: MouseEvent): Promise<void> {
 
 <template>
   <div
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container)]"
+    role="link"
+    tabindex="0"
+    :aria-label="album.title"
+    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
     @click="router.push(`/music/albums/${album.id}`)"
+    @keydown.enter.self="router.push(`/music/albums/${album.id}`)"
+    @keydown.space.self.prevent="router.push(`/music/albums/${album.id}`)"
   >
     <div class="relative mb-2.5">
       <CoverImage
@@ -49,6 +54,8 @@ async function onStar(ev: MouseEvent): Promise<void> {
           <button
             type="button"
             class="md-icon-btn md-icon-btn-sm md-state bg-black/45 text-white backdrop-blur-sm hover:scale-105 hover:text-white"
+            :aria-label="album.starred_at ? t('common.unfavorite') : t('common.favorite')"
+            :aria-pressed="Boolean(album.starred_at)"
             @click="onStar"
           >
             <LuHeart
@@ -65,6 +72,7 @@ async function onStar(ev: MouseEvent): Promise<void> {
             type="button"
             class="md-state flex h-10 w-10 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105"
             :title="t('common.playAll')"
+            :aria-label="t('common.playAll')"
             @click="quickPlayAlbum"
           >
             <LuPlay class="ml-0.5 h-4 w-4 fill-current" />
@@ -79,12 +87,13 @@ async function onStar(ev: MouseEvent): Promise<void> {
     <div
       class="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
     >
-      <span
-        class="truncate hover:text-[var(--md-sys-color-primary)] hover:underline"
+      <button
+        type="button"
+        class="truncate text-left hover:text-[var(--md-sys-color-primary)] hover:underline"
         @click.stop="router.push(`/music/artists/${album.album_artist_id}`)"
       >
         {{ album.album_artist_name }}
-      </span>
+      </button>
       <span v-if="album.year" class="shrink-0">{{ album.year }}</span>
     </div>
   </div>
