@@ -453,7 +453,7 @@ async function initReader(): Promise<void> {
   }
 
   if (!readerCtx.value) {
-    void router.replace('/book/online')
+    void router.replace({ path: '/book/shelves', query: { tab: 'online' } })
     return
   }
 
@@ -700,8 +700,8 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="md-icon-btn md-icon-btn-sm md-state"
-          title="返回在线书源"
-          @click="router.push('/book/online')"
+          title="返回在线书架"
+          @click="router.push({ path: '/book/shelves', query: { tab: 'online' } })"
         >
           <LuArrowLeft class="h-4 w-4" />
         </button>

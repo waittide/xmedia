@@ -461,13 +461,6 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
           active: isBookSectionActive('favorites'),
           onClick: () => void openBookSection('favorites'),
         },
-        {
-          key: 'online',
-          label: bookT('nav.onlineSources'),
-          icon: LuGlobe,
-          active: route.name === 'book-online',
-          onClick: () => go('/book/online'),
-        },
       ]
     }
 
@@ -654,20 +647,33 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
             key,
             label,
             icon: LuFolder,
-            overviewActive: route.name === 'book-shelves-overview',
+            overviewActive:
+              route.name === 'book-shelves-overview' && route.query.tab !== 'online',
             onOpenOverview: () => go('/book/shelves'),
             canCreate: true,
             createTitle: bookT('nav.newShelf'),
             createPlaceholder: bookT('nav.shelfNamePlaceholder'),
-            items: bookStore.shelves.map((sh) => ({
-              id: sh.id,
-              label: sh.name,
-              count: sh.book_count,
-              icon: LuFolder,
-              active: isBookSectionActive('shelf', sh.id),
-              onClick: () => void openBookSection('shelf', sh.id),
-              onDelete: sh.is_favorite ? undefined : () => void handleDeleteBookShelf(sh.id, sh.name),
-            })),
+            items: [
+              {
+                id: '__online_shelf__',
+                label: '在线书架',
+                icon: LuGlobe,
+                active:
+                  route.name === 'book-shelves-overview' && route.query.tab === 'online',
+                onClick: () => go({ path: '/book/shelves', query: { tab: 'online' } }),
+              },
+              ...bookStore.shelves.map((sh) => ({
+                id: sh.id,
+                label: sh.name,
+                count: sh.book_count,
+                icon: LuFolder,
+                active: isBookSectionActive('shelf', sh.id),
+                onClick: () => void openBookSection('shelf', sh.id),
+                onDelete: sh.is_favorite
+                  ? undefined
+                  : () => void handleDeleteBookShelf(sh.id, sh.name),
+              })),
+            ],
           }
         case 'libraries':
           return {

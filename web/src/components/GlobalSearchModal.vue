@@ -8,6 +8,7 @@ import {
   LuClapperboard,
   LuCornerDownLeft,
   LuDisc3,
+  LuGlobe,
   LuLayers,
   LuLoader2,
   LuMusic,
@@ -114,9 +115,28 @@ const quickNavItems = computed<QuickResultItem[]>(() => {
 
 const hasQuery = computed(() => query.value.trim().length > 0)
 
-const flatItems = computed<QuickResultItem[]>(() =>
-  hasQuery.value ? domainSections.value.flatMap((sec) => sec.items) : quickNavItems.value,
-)
+const onlineBookSearchItem = computed<QuickResultItem | null>(() => {
+  const q = query.value.trim()
+  if (!q || !authStore.hasModule('book')) return null
+  return {
+    id: 'online-book-search',
+    group: 'book',
+    title: isZh.value ? `在线书源搜索「${q}」` : `Search online book sources for "${q}"`,
+    subtitle: isZh.value ? '聚合检索已启用的书源，支持在线阅读与入库' : 'Aggregate search across enabled book sources',
+    to: `/book/catalog?q=${encodeURIComponent(q)}&scope=online`,
+    icon: LuGlobe,
+    domain: 'book',
+  }
+})
+
+const flatItems = computed<QuickResultItem[]>(() => {
+  if (!hasQuery.value) return quickNavItems.value
+  const items = domainSections.value.flatMap((sec) => sec.items)
+  if (onlineBookSearchItem.value) {
+    items.push(onlineBookSearchItem.value)
+  }
+  return items
+})
 
 const itemIndexById = computed<Map<string, number>>(() => {
   const map = new Map<string, number>()
@@ -523,6 +543,55 @@ function handleKeydown(ev: KeyboardEvent): void {
                       />
                     </button>
                   </div>
+                </section>
+
+                <!-- Online Book Source Search Quick Action -->
+                <section v-if="onlineBookSearchItem" class="space-y-1">
+                  <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase">
+                    <LuGlobe class="h-3.5 w-3.5" />
+                    <span>{{ isZh ? '在线书源' : 'Online Book Sources' }}</span>
+                  </div>
+                  <button
+                    type="button"
+                    :data-active="itemIndexById.get(onlineBookSearchItem.id) === activeIndex"
+                    class="md-state flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors"
+                    :class="
+                      itemIndexById.get(onlineBookSearchItem.id) === activeIndex
+                        ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                        : 'text-[var(--md-sys-color-on-surface)]'
+                    "
+                    @mouseenter="activeIndex = itemIndexById.get(onlineBookSearchItem.id) ?? 0"
+                    @click="selectItem(onlineBookSearchItem)"
+                  >
+                    <span
+                      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+                      :class="
+                        itemIndexById.get(onlineBookSearchItem.id) === activeIndex
+                          ? 'bg-[var(--md-sys-color-on-secondary-container)]/10'
+                          : 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
+                      "
+                    >
+                      <LuGlobe class="h-4 w-4" />
+                    </span>
+                    <div class="min-w-0 flex-1">
+                      <p class="truncate text-[13px] font-medium">{{ onlineBookSearchItem.title }}</p>
+                      <p
+                        v-if="onlineBookSearchItem.subtitle"
+                        class="truncate text-[11px]"
+                        :class="
+                          itemIndexById.get(onlineBookSearchItem.id) === activeIndex
+                            ? 'opacity-80'
+                            : 'text-[var(--md-sys-color-on-surface-variant)]'
+                        "
+                      >
+                        {{ onlineBookSearchItem.subtitle }}
+                      </p>
+                    </div>
+                    <LuCornerDownLeft
+                      v-if="itemIndexById.get(onlineBookSearchItem.id) === activeIndex"
+                      class="h-3.5 w-3.5 shrink-0 opacity-75"
+                    />
+                  </button>
                 </section>
               </div>
 

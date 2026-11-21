@@ -12,6 +12,7 @@ import {
   LuBookOpen,
   LuChevronLeft,
   LuChevronRight,
+  LuGlobe,
   LuX,
 } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
@@ -20,11 +21,15 @@ import { useCatalogStore, type NavSection } from '@/domains/book/store'
 import { useDialogStore } from '@/stores/dialog'
 import type { BookFormat, BookSortField, BookSummaryDto } from '@/domains/book/types'
 import BookCard from '@/domains/book/components/BookCard.vue'
+import OnlineBookSearchSection from '@/domains/book/components/OnlineBookSearchSection.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
 import AppCheckbox from '@/components/ui/AppCheckbox.vue'
+import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { formatBytes } from '@/utils/format'
+
+type CatalogSearchScope = 'local' | 'online'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -34,10 +39,23 @@ const catalogStore = useCatalogStore()
 const dialogStore = useDialogStore()
 
 const showFilters = ref(false)
+const searchScope = ref<CatalogSearchScope>(route.query.scope === 'online' ? 'online' : 'local')
 let syncingRouteQuery = false
+
+const showSearchScopeSwitch = computed(
+  () => catalogStore.keyword.trim().length > 0 || searchScope.value === 'online',
+)
+
+const searchScopeOptions: readonly SegmentedOption<CatalogSearchScope>[] = [
+  { value: 'local', label: '本地书库', icon: LuBookOpen },
+  { value: 'online', label: '在线书源', icon: LuGlobe },
+]
 
 function buildQueryFromStore(): Record<string, string> {
   const q: Record<string, string> = {}
+  if (searchScope.value === 'online') {
+    q.scope = 'online'
+  }
   if (catalogStore.activeSection !== 'all') {
     q.section = catalogStore.activeSection
   }
@@ -85,6 +103,7 @@ function syncStoreToRouteQuery(): void {
 }
 
 function applyQueryParamsFromRoute(): void {
+  searchScope.value = route.query.scope === 'online' ? 'online' : 'local'
   const qSection = typeof route.query.section === 'string' ? route.query.section : ''
   const qLibrary = typeof route.query.library === 'string' ? route.query.library : ''
   const qShelf = typeof route.query.shelf === 'string' ? route.query.shelf : ''
@@ -295,6 +314,19 @@ function goPage(nextPage: number): void {
   void catalogStore.fetchBooks()
 }
 
+function switchSearchScope(next: CatalogSearchScope): void {
+  searchScope.value = next
+  syncStoreToRouteQuery()
+  if (next === 'local') {
+    void catalogStore.fetchBooks()
+  }
+}
+
+function handleOnlineKeywordUpdate(nextKw: string): void {
+  catalogStore.keyword = nextKw
+  syncStoreToRouteQuery()
+}
+
 async function refreshPage(): Promise<void> {
   await Promise.all([catalogStore.refreshSidebarData(), catalogStore.fetchBooks()])
 }
@@ -302,6 +334,27 @@ async function refreshPage(): Promise<void> {
 
 <template>
   <div class="mx-auto max-w-6xl px-6 py-6 sm:px-8">
+    <!-- Local vs Online Book Source Search Switcher -->
+    <div
+      v-if="showSearchScopeSwitch"
+      class="mb-5 flex flex-wrap items-center justify-between gap-3"
+    >
+      <MdSegmentedButton
+        :model-value="searchScope"
+        :options="searchScopeOptions"
+        size="sm"
+        :show-check="false"
+        @update:model-value="switchSearchScope($event)"
+      />
+    </div>
+
+    <OnlineBookSearchSection
+      v-if="searchScope === 'online'"
+      :keyword="catalogStore.keyword"
+      @update:keyword="handleOnlineKeywordUpdate"
+    />
+
+    <template v-else>
     <!-- Top Filter & View Controls Bar -->
     <div class="mb-6 space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -709,5 +762,6 @@ async function refreshPage(): Promise<void> {
         <LuChevronRight class="h-4 w-4" />
       </button>
     </div>
+    </template>
   </div>
 </template>

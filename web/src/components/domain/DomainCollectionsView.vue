@@ -206,6 +206,8 @@ async function handleCreate(): Promise<void> {
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
+        <slot name="header-extra" />
+
         <RefreshButton size="md" :action="onRefresh" />
 
         <RouterLink

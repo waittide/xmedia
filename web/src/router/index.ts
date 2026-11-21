@@ -143,9 +143,7 @@ export const router = createRouter({
         },
         {
           path: 'book/online',
-          name: 'book-online',
-          component: () => import('@/domains/book/views/OnlineBookSourcesView.vue'),
-          meta: { domain: 'book' as MediaKind },
+          redirect: { path: '/book/shelves', query: { tab: 'online' } },
         },
 
         // 2. Comics Domain (/comic)
