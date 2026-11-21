@@ -170,12 +170,36 @@ async function main() {
     if (!opts.json) {
       console.log('Running xmedia opt-in --live external source verification...');
     }
-    const mod = await loadSuiteModule('tests/live.mjs');
-    const runner = mod.runLiveTests || mod.runSuite || mod.default;
-    if (typeof runner !== 'function') {
-      throw new Error('e2e/tests/live.mjs must export runLiveTests(context)');
+    let res;
+    try {
+      const mod = await loadSuiteModule('tests/live.mjs');
+      const runner = mod.runLiveTests || mod.runSuite || mod.default;
+      if (typeof runner !== 'function') {
+        throw new Error('e2e/tests/live.mjs must export runLiveTests(context)');
+      }
+      res = await runner(context);
+    } catch (err) {
+      res = {
+        name: 'live',
+        suite: 'live',
+        total: 1,
+        passed: 0,
+        failed: 1,
+        cases: [
+          {
+            id: 'LIVE-RUNNER',
+            domain: 'core',
+            title: 'Live runner execution',
+            status: 'fail',
+            durationMs: Math.round(performance.now() - startTimeMs),
+            error: err.stack || err.message,
+          },
+        ],
+      };
+      if (!opts.json) {
+        console.error(`  [FAIL] LIVE-RUNNER: ${err.message}`);
+      }
     }
-    const res = await runner(context);
     const summary = summarizeResults([res], startTimeMs);
     if (opts.json) {
       console.log(JSON.stringify(summary, null, 2));
@@ -193,14 +217,39 @@ async function main() {
     if (!opts.json) {
       console.log(`\nRunning Tier ${tier}${opts.domain ? ` (domain=${opts.domain})` : ''}...`);
     }
-    const mod = await loadSuiteModule(`tests/tier${tier}.mjs`);
-    const runner =
-      mod[`runTier${tier}`] || mod.runSuite || mod.runTests || mod.default;
-    if (typeof runner !== 'function') {
-      throw new Error(`e2e/tests/tier${tier}.mjs must export runTier${tier}(context) or runSuite(context)`);
+    const tierStartMs = performance.now();
+    try {
+      const mod = await loadSuiteModule(`tests/tier${tier}.mjs`);
+      const runner =
+        mod[`runTier${tier}`] || mod.runSuite || mod.runTests || mod.default;
+      if (typeof runner !== 'function') {
+        throw new Error(`e2e/tests/tier${tier}.mjs must export runTier${tier}(context) or runSuite(context)`);
+      }
+      const res = await runner(context);
+      results.push(res);
+    } catch (err) {
+      const durationMs = Math.round(performance.now() - tierStartMs);
+      if (!opts.json) {
+        console.error(`  [FAIL] T${tier}-RUNNER: ${err.message}`);
+      }
+      results.push({
+        name: `tier${tier}`,
+        suite: `tier${tier}`,
+        total: 1,
+        passed: 0,
+        failed: 1,
+        cases: [
+          {
+            id: `T${tier}-RUNNER`,
+            domain: opts.domain || 'core',
+            title: `Tier ${tier} runner execution`,
+            status: 'fail',
+            durationMs,
+            error: err.stack || err.message,
+          },
+        ],
+      });
     }
-    const res = await runner(context);
-    results.push(res);
   }
 
   const summary = summarizeResults(results, startTimeMs);

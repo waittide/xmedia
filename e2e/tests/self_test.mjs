@@ -386,20 +386,82 @@ export async function runSelfTests({ silent = false } = {}) {
       assert.throws(() => assertRasterImage(svgBuf, 'image/jpeg', 'disguised svg'), /unexpected markup/i);
       assert.throws(() => assertJpeg(svgBuf, 'disguised svg'));
 
+      // 2-byte BMP prefix followed by SVG payload (both short and >= 26 bytes) must be rejected
+      assert.throws(
+        () => assertRasterImage(Buffer.from('BM<svg xmlns="http://www.w3.org/2000/svg"/>'), null, 'BM+svg'),
+        /unexpected markup|unrecognized raster/i,
+      );
+      assert.throws(
+        () =>
+          assertRasterImage(
+            Buffer.from('BM<svg xmlns="http://www.w3.org/2000/svg">padded-to-over-26</svg>'),
+            null,
+            'BM+svg padded',
+          ),
+        /unexpected markup|unrecognized raster/i,
+      );
+      assert.throws(
+        () => assertRasterImage(Buffer.alloc(20, 0x42), null, 'short BM header'),
+        /unrecognized raster/i,
+      );
+
       const htmlBuf = Buffer.from('<!doctype html><html><body>fake jpg</body></html>');
       assert.throws(() => assertRasterImage(htmlBuf, null, 'disguised html'), /unexpected markup/i);
 
       assert.throws(() => assertMp3(Buffer.from('{"not":"mp3"}')), /missing ID3 or MPEG sync/i);
-      assert.throws(() => assertMpegTs(Buffer.alloc(200, 0)), /missing 0x47 sync byte/i);
+      assert.throws(() => assertMpegTs(Buffer.alloc(376, 0)), /missing 0x47 sync byte/i);
+
+      // Unaligned / truncated MPEG-TS buffers (even when 0x47 appears at packet starts) must be rejected
+      const ts189 = Buffer.alloc(189, 0);
+      ts189[0] = 0x47;
+      ts189[188] = 0x47;
+      assert.throws(() => assertMpegTs(ts189), /not a multiple of 188/i);
+
+      const ts200 = Buffer.alloc(200, 0);
+      ts200[0] = 0x47;
+      ts200[188] = 0x47;
+      assert.throws(() => assertMpegTs(ts200), /not a multiple of 188/i);
+
       assert.throws(() => assertMp4(Buffer.from('not-an-mp4-buffer-at-all')), /expected ftyp box/i);
 
       assert.throws(
         () => assertSecurityHeaders(new Headers({ 'content-type': 'image/jpeg' })),
         /nosniff/i,
       );
+      assert.throws(
+        () =>
+          assertSecurityHeaders(
+            new Headers({
+              'x-content-type-options': 'nosniff',
+              'content-security-policy': "default-src * 'unsafe-inline'",
+            }),
+          ),
+        /unsafe-inline|wildcard/i,
+      );
+      assert.throws(
+        () =>
+          assertSecurityHeaders(
+            new Headers({
+              'x-content-type-options': 'nosniff',
+              'content-security-policy': "default-src 'none'; img-src *",
+            }),
+          ),
+        /wildcard/i,
+      );
 
       const unrewrittenM3u8 = '#EXTM3U\n#EXTINF:1.0,\nhttp://127.0.0.1:9000/seg0.ts\n';
       assert.throws(() => assertM3u8Rewritten(unrewrittenM3u8), /expected rewritten path/i);
+
+      const unrewrittenExtXMedia = [
+        '#EXTM3U',
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="g",NAME="en",URI="https://upstream.example/audio.m3u8"',
+        '#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO="g"',
+        '/api/v1/video/online/hls-proxy?url=http%3A%2F%2F127.0.0.1%3A9000%2Fmain.m3u8&source_id=src-1',
+      ].join('\n');
+      assert.throws(
+        () => assertM3u8Rewritten(unrewrittenExtXMedia, { expectedSourceId: 'src-1' }),
+        /expected rewritten path/i,
+      );
 
       // Verify failLoudlyRequest rejects HTTP 200 when 206 is expected
       const client = new ApiClient(baseUrl);

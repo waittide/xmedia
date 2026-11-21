@@ -178,15 +178,32 @@ async function clickButtonByText(cdp, texts, { timeoutMs = 8000 } = {}) {
   const clicked = await cdp.waitForFn(
     `(() => {
       const targets = ${JSON.stringify(list)}.map(s => s.toLowerCase());
-      const els = [...document.querySelectorAll('button, [role="tab"], [role="menuitem"], a')];
-      for (const el of els) {
+      const isVisible = (el) => {
         const st = getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden') continue;
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
         const r = el.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) continue;
-        const txt = (el.textContent || '').trim().toLowerCase();
-        const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-        if (targets.some(t => txt.includes(t) || aria.includes(t))) {
+        return r.width > 0 && r.height > 0;
+      };
+      const matchesEl = (el) => {
+        const candidates = [
+          el.textContent || '',
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('title') || '',
+        ].map((s) => s.trim().toLowerCase()).filter(Boolean);
+        return candidates.some((c) => targets.some((t) => c.includes(t)));
+      };
+      const primary = [...document.querySelectorAll('button, [role="link"], [role="button"], [role="tab"], [role="menuitem"], a')];
+      for (const el of primary) {
+        if (isVisible(el) && matchesEl(el)) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return true;
+        }
+      }
+      const fallback = [...document.querySelectorAll('tr, td')];
+      for (const el of fallback) {
+        if (isVisible(el) && matchesEl(el)) {
+          el.scrollIntoView({ block: 'center' });
           el.click();
           return true;
         }
@@ -261,6 +278,7 @@ export async function runTier4(context = {}) {
       }
       return {
         name: 'tier4',
+        suite: 'tier4',
         total: 1,
         passed: 0,
         failed: 1,
@@ -488,8 +506,21 @@ export async function runTier4(context = {}) {
         const aud = (await importSources(admin, 'music', musicMocks.audius)).sources[0];
         try {
           // Verify API 206 + 200 streaming first
+          const gdSearch = await member.failLoudlyRequest('POST', '/api/v1/music/online/search', {
+            body: { keyword: 'Mojito', source_ids: [gd.id] },
+            expectedStatus: 200,
+          });
+          const gdTrack = (gdSearch.json?.results || gdSearch.json?.items || [])[0];
+          assert.ok(gdTrack, 'Expected GDStudio search result in T4-03');
           const gdInfo = await member.failLoudlyRequest('POST', '/api/v1/music/online/track-info', {
-            body: { source_id: gd.id, track_id: 'gd-101', quality: '320' },
+            body: {
+              source_id: gd.id,
+              track_id: gdTrack.track_id || gdTrack.id || 'gd-101',
+              url_id: gdTrack.url_id,
+              cover_id: gdTrack.cover_id,
+              lyric_id: gdTrack.lyric_id,
+              quality: '320',
+            },
             expectedStatus: 200,
           });
           const gdSlice = await member.failLoudlyRequest(
@@ -848,7 +879,12 @@ export async function runTier4(context = {}) {
             body: musicForm,
             expectedStatus: 201,
           });
-          trackId = mUp.json?.tracks?.[0]?.id || mUp.json?.uploaded?.[0]?.id || null;
+          trackId =
+            mUp.json?.uploaded_tracks?.[0]?.id ||
+            mUp.json?.tracks?.[0]?.id ||
+            mUp.json?.uploaded?.[0]?.id ||
+            null;
+          assert.ok(trackId, 'Expected uploaded_tracks[0].id from /api/v1/music/upload');
 
           const videoForm = new FormData();
           videoForm.append('file', new Blob([MOCK_MP4_BYTES], { type: 'video/mp4' }), 't4_local.mp4');
@@ -856,7 +892,12 @@ export async function runTier4(context = {}) {
             body: videoForm,
             expectedStatus: 201,
           });
-          videoId = vUp.json?.videos?.[0]?.id || vUp.json?.uploaded?.[0]?.id || null;
+          videoId =
+            vUp.json?.uploaded_videos?.[0]?.id ||
+            vUp.json?.videos?.[0]?.id ||
+            vUp.json?.uploaded?.[0]?.id ||
+            null;
+          assert.ok(videoId, 'Expected uploaded_videos[0].id from /api/v1/video/upload');
 
           // Verify legacy xmedia-book online search + OPDS + OpenSubsonic + new domains
           const bookOnlineSearch = await member.failLoudlyRequest(
@@ -888,22 +929,19 @@ export async function runTier4(context = {}) {
           });
           assert.equal(subsonicPing.json?.['subsonic-response']?.status, 'ok');
 
-          if (trackId) {
-            const localStream = await member.failLoudlyRequest(
-              'GET',
-              `/api/v1/music/tracks/${trackId}/stream`,
-              { expectedStatus: 200 },
-            );
-            assertMp3(localStream.buffer, 'Local MP3 stream');
-          }
-          if (videoId) {
-            const localVid = await member.failLoudlyRequest(
-              'GET',
-              `/api/v1/video/videos/${videoId}/stream`,
-              { expectedStatus: 200 },
-            );
-            assertMp4(localVid.buffer, 'Local MP4 stream');
-          }
+          const localStream = await member.failLoudlyRequest(
+            'GET',
+            `/api/v1/music/tracks/${trackId}/stream`,
+            { expectedStatus: 200 },
+          );
+          assertMp3(localStream.buffer, 'Local MP3 stream');
+
+          const localVid = await member.failLoudlyRequest(
+            'GET',
+            `/api/v1/video/videos/${videoId}/stream`,
+            { expectedStatus: 200 },
+          );
+          assertMp4(localVid.buffer, 'Local MP4 stream');
 
           // New online domain searches still succeed cleanly
           await member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
@@ -1044,6 +1082,7 @@ export async function runTier4(context = {}) {
   const failed = cases.filter((c) => c.status === 'fail').length;
   return {
     name: 'tier4',
+    suite: 'tier4',
     total: cases.length,
     passed,
     failed,

@@ -163,6 +163,17 @@ async function bootstrapClients(baseUrl, ApiClientCtor = ApiClient) {
     });
   } else {
     await admin.login({ username: 'admin', password: 'AdminPass123!' });
+    const createRes = await admin.request('POST', '/api/v1/users', {
+      body: {
+        username: 'member',
+        display_name: 'E2E Member',
+        password: 'UserPass123!',
+        role: 'member',
+      },
+    });
+    if (createRes.status === 404 || createRes.status === 405) {
+      throw new SutEndpointMissingError('POST', '/api/v1/users', createRes.status, createRes.text);
+    }
   }
   const member = await admin.loginAs({
     username: 'member',
@@ -249,19 +260,24 @@ async function ensureVideoMocks(admin, mockBaseUrl) {
 
 async function openAuthenticatedPage(CdpCtor, baseUrl, client, targetPath = '/') {
   const cdp = new CdpCtor();
-  await cdp.launch();
-  const cookieVal = client.cookie || client.token;
-  assert.ok(cookieVal, 'Client must have cookie or token for browser session');
-  await cdp.setCookie({
-    name: 'xmedia_token',
-    value: cookieVal,
-    url: baseUrl,
-    httpOnly: true,
-    sameSite: 'Lax',
-  });
-  await cdp.goto(`${baseUrl}${targetPath}`);
-  await cdp.waitForSelector('#app', { timeoutMs: 12000 });
-  return cdp;
+  try {
+    await cdp.launch();
+    const cookieVal = client.cookie || client.token;
+    assert.ok(cookieVal, 'Client must have cookie or token for browser session');
+    await cdp.setCookie({
+      name: 'xmedia_token',
+      value: cookieVal,
+      url: baseUrl,
+      httpOnly: true,
+      sameSite: 'Lax',
+    });
+    await cdp.goto(`${baseUrl}${targetPath}`);
+    await cdp.waitForSelector('#app', { timeoutMs: 12000 });
+    return cdp;
+  } catch (err) {
+    await cdp.close().catch(() => {});
+    throw err;
+  }
 }
 
 async function clickButtonMatching(cdp, patterns, { rootSelector = 'body', timeoutMs = 10000 } = {}) {
@@ -270,13 +286,26 @@ async function clickButtonMatching(cdp, patterns, { rootSelector = 'body', timeo
     `(() => {
       const root = document.querySelector(${JSON.stringify(rootSelector)}) || document;
       const regs = ${JSON.stringify(patStrings)}.map((s) => new RegExp(s, 'i'));
-      const btns = [...root.querySelectorAll('button, a, [role="tab"], [role="button"]')];
-      const match = btns.find((el) => {
+      const isVisible = (el) => {
         const st = getComputedStyle(el);
         if (st.display === 'none' || st.visibility === 'hidden') return false;
-        const txt = (el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
-        return regs.some((r) => r.test(txt));
-      });
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const matchesEl = (el) => {
+        const candidates = [
+          el.textContent || '',
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('title') || '',
+        ].map((s) => s.trim()).filter(Boolean);
+        return candidates.some((txt) => regs.some((r) => r.test(txt)));
+      };
+      const primary = [...root.querySelectorAll('button, a, [role="link"], [role="button"], [role="menuitem"], [role="tab"], [role="option"], [role="checkbox"], label')];
+      let match = primary.find((el) => isVisible(el) && matchesEl(el));
+      if (!match) {
+        const fallback = [...root.querySelectorAll('tr, td')];
+        match = fallback.find((el) => isVisible(el) && matchesEl(el));
+      }
       if (!match) return false;
       match.scrollIntoView({ block: 'center' });
       match.click();
@@ -1578,7 +1607,7 @@ function buildTier1Cases() {
           const rep = await ctx.admin.failLoudlyRequest(
             'POST',
             `/api/v1/${domain}/sources/import-seeds`,
-            { expectedStatus: 200 },
+            { body: {}, expectedStatus: 200 },
           );
           assert.ok((rep.json.imported_count ?? rep.json.sources?.length ?? 0) >= 2);
           const list = await ctx.admin.failLoudlyRequest('GET', `/api/v1/${domain}/sources`, {
@@ -1597,6 +1626,7 @@ function buildTier1Cases() {
         for (const domain of ['comic', 'music', 'video']) {
           await clearDomainSources(ctx.admin, domain);
           await ctx.admin.failLoudlyRequest('POST', `/api/v1/${domain}/sources/import-seeds`, {
+            body: {},
             expectedStatus: 200,
           });
           const before = (
@@ -1608,7 +1638,7 @@ function buildTier1Cases() {
           const second = await ctx.admin.failLoudlyRequest(
             'POST',
             `/api/v1/${domain}/sources/import-seeds`,
-            { expectedStatus: 200 },
+            { body: {}, expectedStatus: 200 },
           );
           assert.equal(second.json.imported_count, 0, `${domain}: second import-seeds must import 0`);
           const after = (
@@ -2098,7 +2128,7 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForSelector('img[src*="image-proxy"]', { visible: true });
           for (const pat of [/条漫|webtoon/i, /双页|double/i, /单页|single/i]) {
-            await clickButtonMatching(cdp, [pat]).catch(() => {});
+            await clickButtonMatching(cdp, [pat]);
           }
           const ok = await cdp.evalJs(
             `[...document.querySelectorAll('img[src*="image-proxy"]')].every((i) => i.complete && i.naturalWidth > 0)`,
@@ -2475,7 +2505,12 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Mock Blender Open Movie/]);
           await clickButtonMatching(cdp, [/播放|play|360|正片/i]);
           await cdp.waitForSelector('video', { visible: true });
-          await clickButtonMatching(cdp, [/静音|mute/i]).catch(() => {});
+          const wasMuted = await cdp.evalJs(`Boolean(document.querySelector('video')?.muted)`);
+          await clickButtonMatching(cdp, [/静音|mute/i]);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('video')?.muted) !== ${JSON.stringify(wasMuted)}`,
+            { timeoutMs: 5000, label: 'video mute state toggled' },
+          );
           await clickButtonMatching(cdp, [/返回|back/i]);
           await cdp.waitForFn(`!location.pathname.includes('/watch')`, { timeoutMs: 8000 });
           cdp.assertNoErrors('T1-F16-05');
@@ -2868,24 +2903,47 @@ export async function runTier1(context = {}) {
     let hardenedAdmin = null;
     let hardenedMember = null;
 
-    if (externalBaseUrl) {
-      ({ admin, member } = await bootstrapClients(externalBaseUrl, ApiCtor));
-      hardenedAdmin = admin;
-      hardenedMember = member;
-    } else {
-      if (needsMockSut) {
-        mockManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
-        baseUrl = await mockManager.start({ mode: 'mock' });
-        ({ admin, member } = await bootstrapClients(baseUrl, ApiCtor));
+    try {
+      if (externalBaseUrl) {
+        ({ admin, member } = await bootstrapClients(externalBaseUrl, ApiCtor));
+        hardenedAdmin = admin;
+        hardenedMember = member;
+      } else {
+        if (needsMockSut) {
+          mockManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
+          baseUrl = await mockManager.start({ mode: 'mock' });
+          ({ admin, member } = await bootstrapClients(baseUrl, ApiCtor));
+        }
+        if (needsHardenedSut) {
+          hardenedManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
+          const hardenedBaseUrl = await hardenedManager.start({ mode: 'hardened' });
+          ({ admin: hardenedAdmin, member: hardenedMember } = await bootstrapClients(
+            hardenedBaseUrl,
+            ApiCtor,
+          ));
+        }
       }
-      if (needsHardenedSut) {
-        hardenedManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
-        const hardenedBaseUrl = await hardenedManager.start({ mode: 'hardened' });
-        ({ admin: hardenedAdmin, member: hardenedMember } = await bootstrapClients(
-          hardenedBaseUrl,
-          ApiCtor,
-        ));
+    } catch (bootErr) {
+      results.push({
+        id: 'T1-BOOTSTRAP',
+        feature: 'BOOTSTRAP',
+        domain: domain || 'core',
+        title: 'Tier 1 SUT startup & auth bootstrap',
+        status: 'fail',
+        durationMs: 0,
+        error: bootErr.stack || bootErr.message,
+      });
+      if (!silent) {
+        console.error(`  [FAIL] T1-BOOTSTRAP: ${bootErr.message}`);
       }
+      return {
+        name: 'tier1',
+        suite: 'tier1',
+        total: 1,
+        passed: 0,
+        failed: 1,
+        cases: results,
+      };
     }
 
     const ctx = {

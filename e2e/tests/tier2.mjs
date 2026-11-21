@@ -131,6 +131,17 @@ async function bootstrapClients(baseUrl, ApiClientCtor = ApiClient) {
     });
   } else {
     await admin.login({ username: 'admin', password: 'AdminPass123!' });
+    const createRes = await admin.request('POST', '/api/v1/users', {
+      body: {
+        username: 'member',
+        display_name: 'E2E Member',
+        password: 'UserPass123!',
+        role: 'member',
+      },
+    });
+    if (createRes.status === 404 || createRes.status === 405) {
+      throw new SutEndpointMissingError('POST', '/api/v1/users', createRes.status, createRes.text);
+    }
   }
   const member = await admin.loginAs({
     username: 'member',
@@ -214,19 +225,24 @@ async function ensureVideoMocks(admin, mockBaseUrl) {
 
 async function openAuthenticatedPage(CdpCtor, baseUrl, client, targetPath = '/') {
   const cdp = new CdpCtor();
-  await cdp.launch();
-  const cookieVal = client.cookie || client.token;
-  assert.ok(cookieVal, 'Client must have cookie or token for browser session');
-  await cdp.setCookie({
-    name: 'xmedia_token',
-    value: cookieVal,
-    url: baseUrl,
-    httpOnly: true,
-    sameSite: 'Lax',
-  });
-  await cdp.goto(`${baseUrl}${targetPath}`);
-  await cdp.waitForSelector('#app', { timeoutMs: 12000 });
-  return cdp;
+  try {
+    await cdp.launch();
+    const cookieVal = client.cookie || client.token;
+    assert.ok(cookieVal, 'Client must have cookie or token for browser session');
+    await cdp.setCookie({
+      name: 'xmedia_token',
+      value: cookieVal,
+      url: baseUrl,
+      httpOnly: true,
+      sameSite: 'Lax',
+    });
+    await cdp.goto(`${baseUrl}${targetPath}`);
+    await cdp.waitForSelector('#app', { timeoutMs: 12000 });
+    return cdp;
+  } catch (err) {
+    await cdp.close().catch(() => {});
+    throw err;
+  }
 }
 
 async function clickButtonMatching(cdp, patterns, { rootSelector = 'body', timeoutMs = 10000 } = {}) {
@@ -235,13 +251,26 @@ async function clickButtonMatching(cdp, patterns, { rootSelector = 'body', timeo
     `(() => {
       const root = document.querySelector(${JSON.stringify(rootSelector)}) || document;
       const regs = ${JSON.stringify(patStrings)}.map((s) => new RegExp(s, 'i'));
-      const btns = [...root.querySelectorAll('button, a, [role="tab"], [role="button"]')];
-      const match = btns.find((el) => {
+      const isVisible = (el) => {
         const st = getComputedStyle(el);
         if (st.display === 'none' || st.visibility === 'hidden') return false;
-        const txt = (el.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
-        return regs.some((r) => r.test(txt));
-      });
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      };
+      const matchesEl = (el) => {
+        const candidates = [
+          el.textContent || '',
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('title') || '',
+        ].map((s) => s.trim()).filter(Boolean);
+        return candidates.some((txt) => regs.some((r) => r.test(txt)));
+      };
+      const primary = [...root.querySelectorAll('button, a, [role="link"], [role="button"], [role="menuitem"], [role="tab"], [role="option"], [role="checkbox"], label')];
+      let match = primary.find((el) => isVisible(el) && matchesEl(el));
+      if (!match) {
+        const fallback = [...root.querySelectorAll('tr, td')];
+        match = fallback.find((el) => isVisible(el) && matchesEl(el));
+      }
       if (!match) return false;
       match.scrollIntoView({ block: 'center' });
       match.click();
@@ -1488,6 +1517,7 @@ function buildTier2Cases() {
       async run(ctx) {
         await clearDomainSources(ctx.admin, 'comic');
         await ctx.admin.failLoudlyRequest('POST', '/api/v1/comic/sources/import-seeds', {
+          body: {},
           expectedStatus: 200,
         });
         const list1 = (
@@ -1508,7 +1538,7 @@ function buildTier2Cases() {
         const reimp = await ctx.admin.failLoudlyRequest(
           'POST',
           '/api/v1/comic/sources/import-seeds',
-          { expectedStatus: 200 },
+          { body: {}, expectedStatus: 200 },
         );
         assert.equal(reimp.json.imported_count, 1);
         const list2 = (
@@ -1528,7 +1558,7 @@ function buildTier2Cases() {
           const res = await ctx.member.failLoudlyRequest(
             'POST',
             `/api/v1/${domain}/sources/import-seeds`,
-            { expectedStatus: 403 },
+            { body: {}, expectedStatus: 403 },
           );
           assert.equal(res.json?.error?.code, 'forbidden');
         }
@@ -2029,8 +2059,8 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForSelector('img[src*="image-proxy"]', { visible: true });
-          await clickButtonMatching(cdp, [/护眼|调暗|dim/i]).catch(() => {});
-          await clickButtonMatching(cdp, [/适应宽度|fit/i]).catch(() => {});
+          await clickButtonMatching(cdp, [/护眼|调暗|dim/i]);
+          await clickButtonMatching(cdp, [/适应宽度|fit/i]);
           cdp.assertNoErrors('T2-F14-04');
         } finally {
           await cdp.close();
@@ -2171,6 +2201,9 @@ function buildTier2Cases() {
           await cdp.waitForSelector('audio', { timeoutMs: 8000 });
           await clickButtonMatching(cdp, [/播放队列|队列|queue/i]);
           await clickButtonMatching(cdp, [/清空|clear/i]);
+          await clickButtonMatching(cdp, [/删除|确认|清空|delete|confirm|clear/i], {
+            rootSelector: '[role="dialog"]',
+          });
           cdp.assertNoErrors('T2-F15-04');
         } finally {
           await cdp.close();
@@ -2194,7 +2227,8 @@ function buildTier2Cases() {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock Mojito|播放|play/i]);
           await cdp.waitForSelector('audio', { timeoutMs: 8000 });
-          await clickButtonMatching(cdp, [/退出|登出|logout/i]);
+          await cdp.click('header [aria-haspopup="menu"], header div.relative.ml-1 > button');
+          await clickButtonMatching(cdp, [/退出|登出|logout|sign out/i]);
           await cdp.waitForFn(`location.pathname.includes('/login')`, { timeoutMs: 10000 });
           const audioPaused = await cdp.evalJs(
             `!document.querySelector('audio') || document.querySelector('audio').paused`,
@@ -2520,7 +2554,9 @@ function buildTier2Cases() {
       title: 'Upstream connection reset mid-body terminates proxy cleanly without crashing gateway',
       async run(ctx) {
         const mocks = await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        let resetHitCount = 0;
         const resetSrv = http.createServer((req, res) => {
+          resetHitCount += 1;
           res.writeHead(200, {
             'Content-Type': 'audio/mpeg',
             'Content-Length': String(MOCK_MP3_BYTES.length),
@@ -2531,8 +2567,9 @@ function buildTier2Cases() {
         await new Promise((r) => resetSrv.listen(0, '127.0.0.1', r));
         try {
           const port = resetSrv.address().port;
+          let res = null;
           try {
-            await ctx.member.request('GET', '/api/v1/music/online/audio-proxy', {
+            res = await ctx.member.request('GET', '/api/v1/music/online/audio-proxy', {
               query: {
                 url: `http://127.0.0.1:${port}/abrupt.mp3`,
                 source_id: mocks.gdstudio.id,
@@ -2540,8 +2577,20 @@ function buildTier2Cases() {
               timeoutMs: 10000,
             });
           } catch {
-            // Stream truncation or connection reset on client side is acceptable
+            // Stream truncation or connection reset on client side is acceptable once upstream was hit
           }
+          if (res && (res.status === 404 || res.status === 405)) {
+            throw new SutEndpointMissingError(
+              'GET',
+              '/api/v1/music/online/audio-proxy',
+              res.status,
+              res.text?.slice(0, 200) || '',
+            );
+          }
+          assert.ok(
+            resetHitCount >= 1,
+            `Expected audio-proxy to connect to upstream resetSrv (resetHitCount=${resetHitCount}, status=${res?.status ?? 'thrown'})`,
+          );
           const cap = await ctx.member.failLoudlyRequest('GET', '/api/v1/system/capabilities', {
             authMode: 'none',
             expectedStatus: 200,
@@ -2764,24 +2813,47 @@ export async function runTier2(context = {}) {
     let hardenedAdmin = null;
     let hardenedMember = null;
 
-    if (externalBaseUrl) {
-      ({ admin, member } = await bootstrapClients(externalBaseUrl, ApiCtor));
-      hardenedAdmin = admin;
-      hardenedMember = member;
-    } else {
-      if (needsMockSut) {
-        mockManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
-        baseUrl = await mockManager.start({ mode: 'mock' });
-        ({ admin, member } = await bootstrapClients(baseUrl, ApiCtor));
+    try {
+      if (externalBaseUrl) {
+        ({ admin, member } = await bootstrapClients(externalBaseUrl, ApiCtor));
+        hardenedAdmin = admin;
+        hardenedMember = member;
+      } else {
+        if (needsMockSut) {
+          mockManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
+          baseUrl = await mockManager.start({ mode: 'mock' });
+          ({ admin, member } = await bootstrapClients(baseUrl, ApiCtor));
+        }
+        if (needsHardenedSut) {
+          hardenedManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
+          const hardenedBaseUrl = await hardenedManager.start({ mode: 'hardened' });
+          ({ admin: hardenedAdmin, member: hardenedMember } = await bootstrapClients(
+            hardenedBaseUrl,
+            ApiCtor,
+          ));
+        }
       }
-      if (needsHardenedSut) {
-        hardenedManager = new ManagerCtor({ xmediaBin, webDir, keepTmp });
-        const hardenedBaseUrl = await hardenedManager.start({ mode: 'hardened' });
-        ({ admin: hardenedAdmin, member: hardenedMember } = await bootstrapClients(
-          hardenedBaseUrl,
-          ApiCtor,
-        ));
+    } catch (bootErr) {
+      results.push({
+        id: 'T2-BOOTSTRAP',
+        feature: 'BOOTSTRAP',
+        domain: domain || 'core',
+        title: 'Tier 2 SUT startup & auth bootstrap',
+        status: 'fail',
+        durationMs: 0,
+        error: bootErr.stack || bootErr.message,
+      });
+      if (!silent) {
+        console.error(`  [FAIL] T2-BOOTSTRAP: ${bootErr.message}`);
       }
+      return {
+        name: 'tier2',
+        suite: 'tier2',
+        total: 1,
+        passed: 0,
+        failed: 1,
+        cases: results,
+      };
     }
 
     const ctx = {

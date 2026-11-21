@@ -6,6 +6,49 @@ import path from 'node:path';
 const DEFAULT_CHROMIUM_BIN = process.env.XMEDIA_CHROMIUM_BIN || '/usr/sbin/chromium';
 const DEFAULT_ALLOWED_ERROR_PATTERNS = [/\/_app\/health(?:$|\?)/, /\/favicon\.ico(?:$|\?)/];
 
+const activeCdpClients = new Set();
+let cdpSignalHandlersInstalled = false;
+
+function cleanupAllActiveCdpClientsSync() {
+  for (const client of [...activeCdpClients]) {
+    client.forceKillSync();
+  }
+}
+
+const onCdpExit = () => {
+  cleanupAllActiveCdpClientsSync();
+};
+const onCdpSigint = () => {
+  cleanupAllActiveCdpClientsSync();
+  detachCdpSignalHandlers();
+  if (process.listenerCount('SIGINT') === 0) {
+    process.kill(process.pid, 'SIGINT');
+  }
+};
+const onCdpSigterm = () => {
+  cleanupAllActiveCdpClientsSync();
+  detachCdpSignalHandlers();
+  if (process.listenerCount('SIGTERM') === 0) {
+    process.kill(process.pid, 'SIGTERM');
+  }
+};
+
+function attachCdpSignalHandlers() {
+  if (cdpSignalHandlersInstalled) return;
+  cdpSignalHandlersInstalled = true;
+  process.on('exit', onCdpExit);
+  process.on('SIGINT', onCdpSigint);
+  process.on('SIGTERM', onCdpSigterm);
+}
+
+function detachCdpSignalHandlers() {
+  if (!cdpSignalHandlersInstalled) return;
+  cdpSignalHandlersInstalled = false;
+  process.off('exit', onCdpExit);
+  process.off('SIGINT', onCdpSigint);
+  process.off('SIGTERM', onCdpSigterm);
+}
+
 function matchesAnyPattern(url, patterns) {
   if (!url) return false;
   for (const pat of patterns) {
@@ -45,13 +88,7 @@ export class CdpClient {
     this.networkResponses = [];
     this.networkRequests = [];
     this.closed = false;
-
-    this.#exitHook = () => {
-      this.#forceKillSync();
-    };
   }
-
-  #exitHook;
 
   async launch() {
     if (this.proc) {
@@ -77,7 +114,8 @@ export class CdpClient {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    process.once('exit', this.#exitHook);
+    activeCdpClients.add(this);
+    attachCdpSignalHandlers();
 
     const browserWsUrl = await new Promise((resolve, reject) => {
       let stderrBuf = '';
@@ -545,7 +583,8 @@ export class CdpClient {
     }
   }
 
-  #forceKillSync() {
+  forceKillSync() {
+    activeCdpClients.delete(this);
     if (this.proc && this.proc.exitCode === null && this.proc.signalCode === null) {
       try {
         process.kill(-this.proc.pid, 'SIGKILL');
@@ -563,13 +602,17 @@ export class CdpClient {
       } catch {
         // ignore
       }
+      this.userDataDir = null;
+    }
+    if (activeCdpClients.size === 0) {
+      detachCdpSignalHandlers();
     }
   }
 
   async close() {
     if (this.closed) return;
     this.closed = true;
-    process.off('exit', this.#exitHook);
+    activeCdpClients.delete(this);
 
     if (this.ws) {
       try {
@@ -613,13 +656,17 @@ export class CdpClient {
       rmSync(this.userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 });
       this.userDataDir = null;
     }
+
+    if (activeCdpClients.size === 0) {
+      detachCdpSignalHandlers();
+    }
   }
 }
 
 export async function withCdpBrowser(fn, opts = {}) {
   const cdp = new CdpClient(opts);
-  await cdp.launch();
   try {
+    await cdp.launch();
     return await fn(cdp);
   } finally {
     await cdp.close();

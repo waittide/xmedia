@@ -5,7 +5,7 @@ import { deflateSync } from 'node:zlib';
 // Deterministic valid binary media fixtures (generated in-memory / constant)
 // ---------------------------------------------------------------------------
 
-// Valid 16x16 JFIF JPEG (268 bytes, decodable by Chromium <img> and ffmpeg)
+// Valid 16x16 JFIF JPEG (225 bytes, decodable by Chromium <img> and ffmpeg)
 export const MOCK_JPEG_BYTES = Buffer.from(
   '/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYzLjI0LjEwMAD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABMAAEBAAAAAAAAAAAAAAAAAAAABwEBAQAAAAAAAAAAAAAAAAAABQcQAQAAAAAAAAAAAAAAAAAAAAARAQAAAAAAAAAAAAAAAAAAAAD/wAARCAAQABADASIAAhEAAxEA/9oADAMBAAIRAxEAPwCOAL+Kf//Z',
   'base64',
@@ -87,7 +87,7 @@ function buildMockMp3() {
 
 export const MOCK_MP3_BYTES = buildMockMp3();
 
-// Valid 188-byte aligned MPEG-TS segments (16 packets = 3008 bytes each, PAT+PMT+H.264/AAC PES)
+// Valid 188-byte aligned MPEG-TS segments (15 packets = 2820 bytes each, PAT+PMT+H.264/AAC PES)
 export const MOCK_TS_SEGMENT_1 = Buffer.from(
   'R0AREABC8CUAAcEAAP8B/wAB/IAUSBIBBkZGbXBlZwlTZXJ2aWNlMDF3fEPK//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9HQAAQAACwDQABwQAAAAHwACqxBLL//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////0dQABAAArAXAAHBAADhAPAAG+EA8AAP4QHwAC9EuZv/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////R0EAMAdQAAB/IX4AAAAB4AAAgIAFIQAH6LUAAAABCfAAAAABZ0LACtkEJsBEAAADAAQAAAMAyDxImSAAAAABaMuDyyAAAAEGBf//a9xF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjUgcjMyMjIgYjM1NjA1YSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjUgLSBodHRwOi8vd3d3LnZpZGVvbGFHAQARbi5vcmcveDI2NC5odG1sIC0gb3B0aW9uczogY2FiYWM9MCByZWY9MyBkZWJsb2NrPTE6MDowIGFuYWx5c2U9MHgxOjB4MTExIG1lPWhleCBzdWJtZT03IHBzeT0xIHBzeV9yZD0xLjAwOjAuMDAgbWl4ZWRfcmVmPTEgbWVfcmFuZ2U9MTYgY2hyb21hX21lPTEgdHJlbGxpcz0xIDh4OGRjdD0wIGNxbT0wIGRlYWR6b25lPTIxLEcBABIxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTIgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0wIHdlaWdodHA9MCBrZXlpbnQ9MTUga2V5aW50RwEAMwsA/////////////19taW49MSBzY2VuZWN1dD00MCBpbnRyYV9yZWZyZXNoPTAgcmNfbG9va2FoZWFkPTE1IHJjPWNyZiBtYnRyZWU9MSBjcmY9MjMuMCBxY29tcD0wLjYwIHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW89MS40MCBhcT0xOjEuMDAAgAAAAWWIhAzxGKAAKWscAAT2o4AAhAycnJ1111111111115HQQA0mQD//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////wAAAeAAAICABSEACQTVAAAAAQnwAAAAAUGaOBnhGEdBADWZEAAAjTF+AP//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////AAAB4AAAgIAFIQAJIPUAAAABCfAAAAABQZpUBnhGR0AAEQAAsA0AAcEAAAAB8AAqsQSy//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9HUAARAAKwFwABwQAA4QDwABvhAPAAD+EB8AAvRLmb/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////0dBADaZAP//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////AAAB4AAAgIAFIQAJPRUAAAABCfAAAAABQZpgL8IwR0EAN5kQAACbQX4A//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////8AAAHgAACAgAUhAAlZNQAAAAEJ8AAAAAFBmoAvwjBHQQA4mQD//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////wAAAeAAAICABSEACXVVAAAAAQnwAAAAAUGaoCvCMEdBATAUQP////////////////////////8AAAHAAJ2AgAUhAAfYYf/xUEADn/zeAgBMYXZjNjMuMjQuMTAwAAAAQA7/8VBAAX/8AAAgB//xUEABf/wAACAH//FQQAF//AAAIAf/8VBAAX/8AAAgB//xUEABf/wAACAH//FQQAF//AAAIAf/8VBAAX/8AAAgB//xUEABf/wAACAH//FQQAF//AAAIAf/8VBAAX/8AAAgB//xUEABf/wAACAH',
   'base64',
@@ -132,17 +132,29 @@ function toBuffer(input) {
   throw new TypeError(`Expected Buffer or Uint8Array, got ${typeof input}`);
 }
 
-function rejectTextMarkup(buf, label) {
-  const head = buf.subarray(0, Math.min(buf.length, 256)).toString('utf8').trimStart().toLowerCase();
+function hasMarkupSignature(buf) {
+  const headRaw = buf.subarray(0, Math.min(buf.length, 256)).toString('utf8');
+  const head = headRaw.replace(/^\uFEFF/, '').trimStart().toLowerCase();
   if (
     head.startsWith('<svg') ||
     head.startsWith('<?xml') ||
     head.startsWith('<!doctype') ||
     head.startsWith('<html') ||
     head.startsWith('<head') ||
-    head.startsWith('<body')
+    head.startsWith('<body') ||
+    head.includes('<svg') ||
+    head.includes('<html') ||
+    head.includes('<!doctype')
   ) {
-    throw new Error(`${label}: unexpected markup payload (${head.slice(0, 64)})`);
+    return head.slice(0, 64);
+  }
+  return null;
+}
+
+function rejectTextMarkup(buf, label) {
+  const sig = hasMarkupSignature(buf);
+  if (sig !== null) {
+    throw new Error(`${label}: unexpected markup payload (${sig})`);
   }
 }
 
@@ -150,8 +162,7 @@ export function sniffRasterImage(input) {
   const buf = toBuffer(input);
   if (buf.length < 4) return null;
 
-  const head = buf.subarray(0, Math.min(buf.length, 256)).toString('utf8').trimStart().toLowerCase();
-  if (head.startsWith('<svg') || head.startsWith('<?xml') || head.startsWith('<!doctype') || head.startsWith('<html')) {
+  if (hasMarkupSignature(buf) !== null) {
     return null;
   }
 
@@ -188,8 +199,8 @@ export function sniffRasterImage(input) {
   ) {
     return 'image/gif';
   }
-  // BMP: BM
-  if (buf.length >= 2 && buf[0] === 0x42 && buf[1] === 0x4d) {
+  // BMP: BM + 14-byte file header + >=12-byte DIB header (minimum 26 bytes)
+  if (buf.length >= 26 && buf[0] === 0x42 && buf[1] === 0x4d) {
     return 'image/bmp';
   }
   return null;
@@ -233,11 +244,28 @@ export function assertMp3(input, label = 'MP3') {
   return 'audio/mpeg';
 }
 
-export function assertMpegTs(input, label = 'MPEG-TS') {
+export function assertMpegTs(input, labelOrOpts = 'MPEG-TS', maybeOpts = {}) {
+  let label = 'MPEG-TS';
+  let opts = maybeOpts || {};
+  if (typeof labelOrOpts === 'string') {
+    label = labelOrOpts;
+  } else if (labelOrOpts && typeof labelOrOpts === 'object') {
+    opts = labelOrOpts;
+    if (typeof opts.label === 'string') {
+      label = opts.label;
+    }
+  }
   const buf = toBuffer(input);
   rejectTextMarkup(buf, label);
   assert.ok(buf.length >= 188, `${label}: MPEG-TS buffer too short (${buf.length} < 188 bytes)`);
   assert.equal(buf[0], 0x47, `${label}: missing 0x47 sync byte at offset 0`);
+  if (opts.allowPartialTail !== true) {
+    assert.equal(
+      buf.length % 188,
+      0,
+      `${label}: MPEG-TS buffer length ${buf.length} is not a multiple of 188 bytes`,
+    );
+  }
   for (let off = 0; off < buf.length; off += 188) {
     assert.equal(buf[off], 0x47, `${label}: missing 0x47 sync byte at packet offset ${off}`);
   }
@@ -289,6 +317,24 @@ export function assertSecurityHeaders(headers, { requireCsp = true, label = 'pro
       lowerCsp.includes('default-src') || lowerCsp.includes('sandbox'),
       `${label}: non-restrictive CSP header: ${csp}`,
     );
+    assert.ok(
+      !lowerCsp.includes("'unsafe-inline'"),
+      `${label}: unsafe-inline forbidden in CSP header: ${csp}`,
+    );
+    const directives = lowerCsp
+      .split(';')
+      .map((d) => d.trim())
+      .filter(Boolean);
+    for (const dir of directives) {
+      const tokens = dir.split(/\s+/);
+      const name = tokens[0];
+      if (name === 'default-src' || name === 'img-src' || name === 'script-src') {
+        assert.ok(
+          !tokens.slice(1).includes('*'),
+          `${label}: wildcard '*' forbidden in ${name} CSP directive: ${csp}`,
+        );
+      }
+    }
   }
 }
 
@@ -317,17 +363,19 @@ function assertProxyUri(uri, expectedProxyPath, expectedSourceId, contextLabel) 
   return uri;
 }
 
-export function assertM3u8Rewritten(
-  playlistText,
-  {
+export function assertM3u8Rewritten(playlistText, optsOrSourceId = {}) {
+  const opts =
+    typeof optsOrSourceId === 'string'
+      ? { expectedSourceId: optsOrSourceId }
+      : optsOrSourceId || {};
+  const {
     expectedProxyPath = '/api/v1/video/online/hls-proxy',
     expectedSourceId = null,
     requireKey = false,
     requireMap = false,
     minSegments = 1,
     label = 'rewritten m3u8',
-  } = {},
-) {
+  } = opts;
   assert.equal(typeof playlistText, 'string', `${label}: playlist must be string`);
   const lines = playlistText.replace(/\r\n/g, '\n').split('\n').map((l) => l.trim());
   const nonEmpty = lines.filter((l) => l.length > 0);
@@ -336,20 +384,28 @@ export function assertM3u8Rewritten(
   const segments = [];
   const keys = [];
   const maps = [];
+  const tagUris = [];
 
   for (const line of nonEmpty) {
-    if (line.startsWith('#EXT-X-KEY:') || line.startsWith('#EXT-X-MAP:')) {
-      const m = line.match(/URI="([^"]*)"/);
-      if (m) {
-        const rewritten = assertProxyUri(
-          m[1],
-          expectedProxyPath,
-          expectedSourceId,
-          `${label} ${line.slice(0, 12)}`,
-        );
-        if (line.startsWith('#EXT-X-KEY:')) keys.push(rewritten);
-        else maps.push(rewritten);
-      } else if (!line.includes('METHOD=NONE')) {
+    if (line.startsWith('#EXT-X-')) {
+      const uriMatches = [...line.matchAll(/URI=(?:"([^"]*)"|'([^']*)')/g)];
+      if (uriMatches.length > 0) {
+        for (const m of uriMatches) {
+          const rawUri = m[1] ?? m[2] ?? '';
+          const rewritten = assertProxyUri(
+            rawUri,
+            expectedProxyPath,
+            expectedSourceId,
+            `${label} ${line.split(':')[0]}`,
+          );
+          if (line.startsWith('#EXT-X-KEY:')) keys.push(rewritten);
+          else if (line.startsWith('#EXT-X-MAP:')) maps.push(rewritten);
+          else tagUris.push(rewritten);
+        }
+      } else if (
+        (line.startsWith('#EXT-X-KEY:') && !line.includes('METHOD=NONE')) ||
+        line.startsWith('#EXT-X-MAP:')
+      ) {
         throw new Error(`${label}: tag missing URI="..." attribute: ${line}`);
       }
       continue;
@@ -370,7 +426,7 @@ export function assertM3u8Rewritten(
     `${label}: expected >= ${minSegments} rewritten URI lines, got ${segments.length}`,
   );
 
-  return { segments, keys, maps };
+  return { segments, keys, maps, tagUris };
 }
 
 export function parseByteRange(rangeHeader, totalLength) {

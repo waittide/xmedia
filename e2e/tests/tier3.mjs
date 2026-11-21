@@ -189,15 +189,32 @@ async function clickButtonByText(cdp, texts, { timeoutMs = 8000 } = {}) {
   const clicked = await cdp.waitForFn(
     `(() => {
       const targets = ${JSON.stringify(list)}.map(s => s.toLowerCase());
-      const els = [...document.querySelectorAll('button, [role="tab"], [role="menuitem"], a')];
-      for (const el of els) {
+      const isVisible = (el) => {
         const st = getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden') continue;
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
         const r = el.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) continue;
-        const txt = (el.textContent || '').trim().toLowerCase();
-        const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-        if (targets.some(t => txt.includes(t) || aria.includes(t))) {
+        return r.width > 0 && r.height > 0;
+      };
+      const matchesEl = (el) => {
+        const candidates = [
+          el.textContent || '',
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('title') || '',
+        ].map((s) => s.trim().toLowerCase()).filter(Boolean);
+        return candidates.some((c) => targets.some((t) => c.includes(t)));
+      };
+      const primary = [...document.querySelectorAll('button, [role="link"], [role="button"], [role="tab"], [role="menuitem"], a')];
+      for (const el of primary) {
+        if (isVisible(el) && matchesEl(el)) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return true;
+        }
+      }
+      const fallback = [...document.querySelectorAll('tr, td')];
+      for (const el of fallback) {
+        if (isVisible(el) && matchesEl(el)) {
+          el.scrollIntoView({ block: 'center' });
           el.click();
           return true;
         }
@@ -275,6 +292,7 @@ export async function runTier3(context = {}) {
       }
       return {
         name: 'tier3',
+        suite: 'tier3',
         total: 1,
         passed: 0,
         failed: 1,
@@ -608,6 +626,9 @@ export async function runTier3(context = {}) {
             body: {
               source_id: src.id,
               track_id: track.track_id || track.id,
+              url_id: track.url_id,
+              cover_id: track.cover_id,
+              lyric_id: track.lyric_id,
               quality: '320',
             },
             expectedStatus: 200,
@@ -1306,7 +1327,12 @@ export async function runTier3(context = {}) {
             body: musicForm,
             expectedStatus: 201,
           });
-          localTrackId = mUp.json?.tracks?.[0]?.id || mUp.json?.uploaded?.[0]?.id || null;
+          localTrackId =
+            mUp.json?.uploaded_tracks?.[0]?.id ||
+            mUp.json?.tracks?.[0]?.id ||
+            mUp.json?.uploaded?.[0]?.id ||
+            null;
+          assert.ok(localTrackId, 'Expected uploaded_tracks[0].id from /api/v1/music/upload');
 
           const videoForm = new FormData();
           videoForm.append('file', new Blob([MOCK_MP4_BYTES], { type: 'video/mp4' }), 't3_local_video.mp4');
@@ -1314,7 +1340,12 @@ export async function runTier3(context = {}) {
             body: videoForm,
             expectedStatus: 201,
           });
-          localVideoId = vUp.json?.videos?.[0]?.id || vUp.json?.uploaded?.[0]?.id || null;
+          localVideoId =
+            vUp.json?.uploaded_videos?.[0]?.id ||
+            vUp.json?.videos?.[0]?.id ||
+            vUp.json?.uploaded?.[0]?.id ||
+            null;
+          assert.ok(localVideoId, 'Expected uploaded_videos[0].id from /api/v1/video/upload');
 
           // 2. Interleave local reads & online searches
           const [localComicList, onlineComicRes] = await Promise.all([
@@ -1366,6 +1397,7 @@ export async function runTier3(context = {}) {
   const failed = cases.filter((c) => c.status === 'fail').length;
   return {
     name: 'tier3',
+    suite: 'tier3',
     total: cases.length,
     passed,
     failed,

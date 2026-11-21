@@ -12,6 +12,49 @@ export { assertM3u8Rewritten };
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
+const activeServerManagers = new Set();
+let serverSignalHandlersInstalled = false;
+
+function cleanupAllActiveServersSync() {
+  for (const mgr of [...activeServerManagers]) {
+    mgr.forceCleanupSync();
+  }
+}
+
+const onServerExit = () => {
+  cleanupAllActiveServersSync();
+};
+const onServerSigint = () => {
+  cleanupAllActiveServersSync();
+  detachServerSignalHandlers();
+  if (process.listenerCount('SIGINT') === 0) {
+    process.kill(process.pid, 'SIGINT');
+  }
+};
+const onServerSigterm = () => {
+  cleanupAllActiveServersSync();
+  detachServerSignalHandlers();
+  if (process.listenerCount('SIGTERM') === 0) {
+    process.kill(process.pid, 'SIGTERM');
+  }
+};
+
+function attachServerSignalHandlers() {
+  if (serverSignalHandlersInstalled) return;
+  serverSignalHandlersInstalled = true;
+  process.on('exit', onServerExit);
+  process.on('SIGINT', onServerSigint);
+  process.on('SIGTERM', onServerSigterm);
+}
+
+function detachServerSignalHandlers() {
+  if (!serverSignalHandlersInstalled) return;
+  serverSignalHandlersInstalled = false;
+  process.off('exit', onServerExit);
+  process.off('SIGINT', onServerSigint);
+  process.off('SIGTERM', onServerSigterm);
+}
+
 export class SutEndpointMissingError extends Error {
   constructor(method, reqPath, status, bodyPreview = '') {
     super(
@@ -166,6 +209,8 @@ export class XMediaServerManager {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    activeServerManagers.add(this);
+    attachServerSignalHandlers();
 
     const pushLog = (stream, chunk) => {
       const lines = chunk.toString('utf8').split(/\r?\n/).filter(Boolean);
@@ -245,10 +290,36 @@ export class XMediaServerManager {
     return this.start({ mode: targetMode });
   }
 
+  forceCleanupSync() {
+    activeServerManagers.delete(this);
+    if (this.proc && this.proc.exitCode === null && this.proc.signalCode === null) {
+      try {
+        this.proc.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+      this.proc = null;
+    }
+    if (this.ownsTempDir && !this.keepTmp && this.dataDir) {
+      try {
+        rmSync(this.dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 });
+      } catch {
+        // ignore
+      }
+    }
+    if (activeServerManagers.size === 0) {
+      detachServerSignalHandlers();
+    }
+  }
+
   async cleanup() {
     await this.stop();
+    activeServerManagers.delete(this);
     if (this.ownsTempDir && !this.keepTmp && this.dataDir) {
-      rmSync(this.dataDir, { recursive: true, force: true });
+      rmSync(this.dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 40 });
+    }
+    if (activeServerManagers.size === 0) {
+      detachServerSignalHandlers();
     }
   }
 }

@@ -133,14 +133,32 @@ async function clickButtonByText(cdp, texts, { timeoutMs = 10000 } = {}) {
   const clicked = await cdp.waitForFn(
     `(() => {
       const targets = ${JSON.stringify(list)}.map(s => s.toLowerCase());
-      const els = [...document.querySelectorAll('button, [role="tab"], a')];
-      for (const el of els) {
+      const isVisible = (el) => {
         const st = getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden') continue;
+        if (st.display === 'none' || st.visibility === 'hidden') return false;
         const r = el.getBoundingClientRect();
-        if (r.width === 0 || r.height === 0) continue;
-        const txt = (el.textContent || '').trim().toLowerCase();
-        if (targets.some(t => txt.includes(t))) {
+        return r.width > 0 && r.height > 0;
+      };
+      const matchesEl = (el) => {
+        const candidates = [
+          el.textContent || '',
+          el.getAttribute('aria-label') || '',
+          el.getAttribute('title') || '',
+        ].map((s) => s.trim().toLowerCase()).filter(Boolean);
+        return candidates.some((c) => targets.some((t) => c.includes(t)));
+      };
+      const primary = [...document.querySelectorAll('button, [role="link"], [role="button"], [role="tab"], [role="menuitem"], a')];
+      for (const el of primary) {
+        if (isVisible(el) && matchesEl(el)) {
+          el.scrollIntoView({ block: 'center' });
+          el.click();
+          return true;
+        }
+      }
+      const fallback = [...document.querySelectorAll('tr, td')];
+      for (const el of fallback) {
+        if (isVisible(el) && matchesEl(el)) {
+          el.scrollIntoView({ block: 'center' });
           el.click();
           return true;
         }
@@ -572,11 +590,12 @@ export async function runLiveTests(context = {}) {
           const tsRes = await member.failLoudlyRequest(
             'GET',
             toRelativeApiPath(parsed.segments[0]),
-            { headers: { Range: 'bytes=0-2047' }, expectedStatus: [200, 206], timeoutMs: 25000 },
+            { headers: { Range: 'bytes=0-1879' }, expectedStatus: [200, 206], timeoutMs: 25000 },
           );
-          const alignedLen = Math.floor(tsRes.buffer.length / 188) * 188;
-          assert.ok(alignedLen >= 188, `TS segment too small: ${tsRes.buffer.length}`);
-          assertMpegTs(tsRes.buffer.subarray(0, alignedLen), `LIVE-07 ${src.name} TS`);
+          assert.ok(tsRes.buffer.length >= 188, `TS segment too small: ${tsRes.buffer.length}`);
+          assertMpegTs(tsRes.buffer, `LIVE-07 ${src.name} TS`, {
+            allowPartialTail: tsRes.status === 206 && tsRes.buffer.length < 1880,
+          });
           liveVideoSample = liveVideoSample || { keyword: vod.title, title: vod.title };
           return {
             source: src.name,
@@ -688,7 +707,7 @@ export async function runLiveTests(context = {}) {
               `document.body.textContent.includes(${JSON.stringify(liveMusicSample.title)})`,
               { timeoutMs: 25000, label: 'LIVE-09 music search result' },
             );
-            await clickButtonByText(cdp, [liveMusicSample.title], { timeoutMs: 10000 });
+            await clickButtonByText(cdp, [liveMusicSample.title, '播放', 'Play'], { timeoutMs: 10000 });
             await cdp.waitForFn(
               `(() => {
                 const a = document.querySelector('audio');
@@ -821,6 +840,7 @@ export async function runLiveTests(context = {}) {
   const failed = cases.filter((c) => c.status === 'fail').length;
   return {
     name: 'live',
+    suite: 'live',
     total: cases.length,
     passed,
     failed,
