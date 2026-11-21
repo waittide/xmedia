@@ -386,3 +386,163 @@ fn infer_segment_content_type_normalizes_case_and_generic_binary_for_compression
         "video/mp4"
     );
 }
+
+#[tokio::test]
+async fn rule_play_subtitles_evaluates_jsonpath_js_and_edge_cases() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use axum::Router;
+    use axum::http::StatusCode;
+    use axum::routing::get;
+
+    use crate::source::engine::VideoSourceEngine;
+    use crate::source::model::SourceRuntimeState;
+
+    let app = Router::new()
+        .route(
+            "/play/one",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    r#"{"stream":"/cdn/one.mp4","subs":[{"label":"中文","lang":"zh","url":"/subs/zh.vtt"}]}"#,
+                )
+            }),
+        )
+        .route(
+            "/play/multi",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    r#"{"stream":"/cdn/multi.mp4","subs":[{"label":"中文","lang":"zh","url":"/subs/zh.vtt"},{"url":"https://sub.example.com/en.srt"}]}"#,
+                )
+            }),
+        )
+        .route(
+            "/play/single-obj",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    r#"{"stream":"/cdn/obj.mp4","sub":{"label":"日语","lang":"ja","url":"/subs/ja.ass"}}"#,
+                )
+            }),
+        )
+        .route(
+            "/play/url-list",
+            get(|| async {
+                (
+                    StatusCode::OK,
+                    r#"{"stream":"/cdn/urls.mp4","subs":["/subs/a.vtt","https://sub.example.com/b.srt"]}"#,
+                )
+            }),
+        )
+        .route(
+            "/play/empty",
+            get(|| async { (StatusCode::OK, r#"{"stream":"/cdn/empty.mp4","subs":[]}"#) }),
+        )
+        .route(
+            "/play/null",
+            get(|| async { (StatusCode::OK, r#"{"stream":"/cdn/null.mp4","subs":null}"#) }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let origin_clone = origin.clone();
+    tokio::task::spawn_blocking(move || {
+        let engine = VideoSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(10),
+        );
+
+        let make_spec = |sub_rule: &str| -> VideoSourceSpec {
+            let raw = serde_json::json!({
+                "sourceName": "SubTest",
+                "sourceUrl": origin_clone,
+                "sourceFormat": "rule",
+                "rulePlay": {
+                    "requestUrl": "{{playUrl}}",
+                    "streamUrl": "$.stream",
+                    "subtitles": sub_rule
+                }
+            });
+            VideoSourceSpec::parse_json_batch(&raw.to_string())
+                .unwrap()
+                .remove(0)
+                .0
+        };
+
+        let resolve = |sub_rule: &str, path: &str| {
+            let spec = make_spec(sub_rule);
+            engine
+                .resolve_play_sync_with_control(
+                    &spec,
+                    SourceRuntimeState::default(),
+                    path,
+                    None,
+                    Duration::from_secs(10),
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .unwrap()
+                .data
+        };
+
+        // 1. JSONPath `$.subs` with 1 item
+        let r1 = resolve("$.subs", "/play/one");
+        assert_eq!(r1.subtitles.len(), 1);
+        assert_eq!(r1.subtitles[0].label, "中文");
+        assert_eq!(r1.subtitles[0].lang.as_deref(), Some("zh"));
+        assert_eq!(r1.subtitles[0].url, format!("{origin_clone}/subs/zh.vtt"));
+
+        // 2. JSONPath `$.subs` with 2 items
+        let r2 = resolve("$.subs", "/play/multi");
+        assert_eq!(r2.subtitles.len(), 2);
+        assert_eq!(r2.subtitles[0].label, "中文");
+        assert_eq!(r2.subtitles[1].label, "字幕 2");
+        assert_eq!(r2.subtitles[1].lang, None);
+        assert_eq!(r2.subtitles[1].url, "https://sub.example.com/en.srt");
+
+        // 3. JSONPath wildcard `$.subs[*]`
+        let r3 = resolve("$.subs[*]", "/play/multi");
+        assert_eq!(r3.subtitles.len(), 2);
+        assert_eq!(r3.subtitles[0].url, format!("{origin_clone}/subs/zh.vtt"));
+        assert_eq!(r3.subtitles[1].url, "https://sub.example.com/en.srt");
+
+        // 4. Single JSON object `$.sub`
+        let r4 = resolve("$.sub", "/play/single-obj");
+        assert_eq!(r4.subtitles.len(), 1);
+        assert_eq!(r4.subtitles[0].label, "日语");
+        assert_eq!(r4.subtitles[0].lang.as_deref(), Some("ja"));
+        assert_eq!(r4.subtitles[0].url, format!("{origin_clone}/subs/ja.ass"));
+
+        // 5. Array of URL strings
+        let r5 = resolve("$.subs", "/play/url-list");
+        assert_eq!(r5.subtitles.len(), 2);
+        assert_eq!(r5.subtitles[0].label, "字幕 1");
+        assert_eq!(r5.subtitles[0].url, format!("{origin_clone}/subs/a.vtt"));
+        assert_eq!(r5.subtitles[1].url, "https://sub.example.com/b.srt");
+
+        // 6. `<js>JSON.stringify(result.subs)</js>` and `<js>result.subs</js>`
+        let r6 = resolve("<js>JSON.stringify(result.subs)</js>", "/play/multi");
+        assert_eq!(r6.subtitles.len(), 2);
+        let r7 = resolve("<js>result.subs</js>", "/play/multi");
+        assert_eq!(r7.subtitles.len(), 2);
+
+        // 7. Empty / null / missing
+        assert!(resolve("$.subs", "/play/empty").subtitles.is_empty());
+        assert!(resolve("$.subs", "/play/null").subtitles.is_empty());
+        assert!(resolve("$.missing", "/play/one").subtitles.is_empty());
+        assert!(resolve("<js>null</js>", "/play/one").subtitles.is_empty());
+    })
+    .await
+    .unwrap();
+
+    srv.abort();
+}

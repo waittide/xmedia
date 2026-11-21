@@ -453,6 +453,112 @@ impl VideoOnlineService {
     }
 }
 
+fn parse_cookie_pairs(raw: &str) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for part in raw.split(';') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = trimmed.split_once('=') {
+            let key = k.trim().to_string();
+            let val = v.trim().to_string();
+            if key.is_empty() {
+                continue;
+            }
+            if let Some(slot) = pairs.iter_mut().find(|(ek, _)| ek == &key) {
+                slot.1 = val;
+            } else {
+                pairs.push((key, val));
+            }
+        }
+    }
+    pairs
+}
+
+fn format_cookie_pairs(pairs: &[(String, String)]) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn merge_cookie_pairs_with_base(
+    base_pairs: &[(String, String)],
+    current_pairs: Vec<(String, String)>,
+    updated_pairs: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let base_map: HashMap<&str, &str> = base_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let updated_map: HashMap<&str, &str> = updated_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+
+    let mut result: Vec<(String, String)> = current_pairs
+        .into_iter()
+        .filter(|(k, cur_v)| {
+            if let Some(&base_v) = base_map.get(k.as_str())
+                && !updated_map.contains_key(k.as_str())
+                && cur_v == base_v
+            {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    for (k, upd_v) in updated_pairs {
+        if base_map.get(k.as_str()) != Some(&upd_v.as_str()) {
+            if let Some(slot) = result.iter_mut().find(|(ek, _)| ek == &k) {
+                slot.1 = upd_v;
+            } else {
+                result.push((k, upd_v));
+            }
+        }
+    }
+
+    result
+}
+
+fn merge_cookies_with_base(
+    base: &HashMap<String, String>,
+    merged: &mut HashMap<String, String>,
+    updated: HashMap<String, String>,
+) {
+    let mut hosts: Vec<String> = base.keys().cloned().collect();
+    for host in updated.keys() {
+        if !base.contains_key(host) {
+            hosts.push(host.clone());
+        }
+    }
+
+    for host in hosts {
+        let base_pairs = base
+            .get(&host)
+            .map(|s| parse_cookie_pairs(s))
+            .unwrap_or_default();
+        let current_pairs = merged
+            .get(&host)
+            .map(|s| parse_cookie_pairs(s))
+            .unwrap_or_default();
+        let updated_pairs = updated
+            .get(&host)
+            .map(|s| parse_cookie_pairs(s))
+            .unwrap_or_default();
+
+        let next_pairs = merge_cookie_pairs_with_base(&base_pairs, current_pairs, updated_pairs);
+        if next_pairs.is_empty() {
+            merged.remove(&host);
+        } else {
+            merged.insert(host, format_cookie_pairs(&next_pairs));
+        }
+    }
+}
+
 fn merge_map_with_base(
     base: &HashMap<String, String>,
     merged: &mut HashMap<String, String>,
@@ -480,7 +586,7 @@ pub(super) fn merge_runtime_state_with_base(
         return updated;
     };
 
-    merge_map_with_base(&base.cookies, &mut merged.cookies, updated.cookies);
+    merge_cookies_with_base(&base.cookies, &mut merged.cookies, updated.cookies);
     merge_map_with_base(&base.cache, &mut merged.cache, updated.cache);
 
     if updated.variable != base.variable {
@@ -528,7 +634,7 @@ mod tests {
     #[test]
     fn merge_runtime_state_with_base_when_current_none_returns_updated() {
         let base = sample_state("v1", &[("u", "a")], &[], &[], "d1");
-        let updated = sample_state("v2", &[("u", "b")], &[("c", "1")], &[], "d2");
+        let updated = sample_state("v2", &[("u", "b")], &[("example.com", "c=1")], &[], "d2");
         let merged = merge_runtime_state_with_base(&base, None, updated.clone(), false);
         assert_eq!(merged, updated);
     }
@@ -538,14 +644,14 @@ mod tests {
         let base = sample_state(
             "var_1",
             &[("username", "alice_1"), ("apiToken", "secret_1")],
-            &[("sid", "s1")],
+            &[("sid.example", "sid=s1")],
             &[("k1", "v1")],
             "dev1",
         );
         let current = sample_state(
             "var_2",
             &[("username", "bob_2"), ("apiToken", "secret_2")],
-            &[("sid", "s2"), ("other", "o2")],
+            &[("sid.example", "sid=s2"), ("other.example", "other=o2")],
             &[("k1", "v2")],
             "dev2",
         );
@@ -570,9 +676,9 @@ mod tests {
             "var_1",
             &[("username", "alice_1")],
             &[
-                ("keep", "1"),
-                ("remove_ok", "r1"),
-                ("remove_conflict", "c1"),
+                ("keep.example", "k=1"),
+                ("remove_ok.example", "r=1"),
+                ("remove_conflict.example", "c=1"),
             ],
             &[("k1", "v1")],
             "dev1",
@@ -581,10 +687,10 @@ mod tests {
             "var_2",
             &[("username", "bob_2")],
             &[
-                ("keep", "1_concurrent"),
-                ("remove_ok", "r1"),
-                ("remove_conflict", "c2_modified"),
-                ("added_concurrent", "ac"),
+                ("keep.example", "k=1_concurrent"),
+                ("remove_ok.example", "r=1"),
+                ("remove_conflict.example", "c=2_modified"),
+                ("added_concurrent.example", "a=c"),
             ],
             &[("k1", "v1_concurrent")],
             "dev1",
@@ -592,7 +698,7 @@ mod tests {
         let updated = sample_state(
             "var_3",
             &[("username", "stale_alice")],
-            &[("keep", "1"), ("added_by_op", "ao")],
+            &[("keep.example", "k=1"), ("added_by_op.example", "a=o")],
             &[("k1", "v1"), ("k2", "v2")],
             "dev_new",
         );
@@ -605,27 +711,113 @@ mod tests {
             Some("bob_2")
         );
         assert_eq!(
-            merged.cookies.get("keep").map(String::as_str),
-            Some("1_concurrent")
+            merged.cookies.get("keep.example").map(String::as_str),
+            Some("k=1_concurrent")
         );
-        assert!(!merged.cookies.contains_key("remove_ok"));
+        assert!(!merged.cookies.contains_key("remove_ok.example"));
         assert_eq!(
-            merged.cookies.get("remove_conflict").map(String::as_str),
-            Some("c2_modified")
+            merged
+                .cookies
+                .get("remove_conflict.example")
+                .map(String::as_str),
+            Some("c=2_modified")
         );
         assert_eq!(
-            merged.cookies.get("added_concurrent").map(String::as_str),
-            Some("ac")
+            merged
+                .cookies
+                .get("added_concurrent.example")
+                .map(String::as_str),
+            Some("a=c")
         );
         assert_eq!(
-            merged.cookies.get("added_by_op").map(String::as_str),
-            Some("ao")
+            merged
+                .cookies
+                .get("added_by_op.example")
+                .map(String::as_str),
+            Some("a=o")
         );
         assert_eq!(
             merged.cache.get("k1").map(String::as_str),
             Some("v1_concurrent")
         );
         assert_eq!(merged.cache.get("k2").map(String::as_str), Some("v2"));
+    }
+
+    #[test]
+    fn merge_runtime_state_with_base_merges_same_host_cookies_at_pair_level() {
+        // Case 1: Concurrent login rotates session_id on same host while browse adds cf_bm.
+        let base = sample_state(
+            "v1",
+            &[],
+            &[("origin.example", "session_id=old_session")],
+            &[],
+            "",
+        );
+        let current = sample_state(
+            "v1",
+            &[],
+            &[("origin.example", "session_id=new_session")],
+            &[],
+            "",
+        );
+        let updated = sample_state(
+            "v1",
+            &[],
+            &[(
+                "origin.example",
+                "session_id=old_session; cf_bm=browse_cookie_123",
+            )],
+            &[],
+            "",
+        );
+
+        let merged = merge_runtime_state_with_base(&base, Some(current), updated, false);
+        assert_eq!(
+            merged.cookies.get("origin.example").map(String::as_str),
+            Some("session_id=new_session; cf_bm=browse_cookie_123")
+        );
+
+        // Case 2: Both concurrent ops add distinct cookies on a previously absent host.
+        let base2 = sample_state("v1", &[], &[], &[], "");
+        let current2 = sample_state("v1", &[], &[("new.example", "session_id=s_new")], &[], "");
+        let updated2 = sample_state("v1", &[], &[("new.example", "cf_bm=c_new")], &[], "");
+        let merged2 = merge_runtime_state_with_base(&base2, Some(current2), updated2, false);
+        assert_eq!(
+            merged2.cookies.get("new.example").map(String::as_str),
+            Some("session_id=s_new; cf_bm=c_new")
+        );
+
+        // Case 3: Conflict-safe per-pair removal & empty host cleanup.
+        let base3 = sample_state(
+            "v1",
+            &[],
+            &[("mix.example", "a=1; b=2; c=3"), ("cleared.example", "x=1")],
+            &[],
+            "",
+        );
+        let current3 = sample_state(
+            "v1",
+            &[],
+            &[
+                ("mix.example", "a=1; b=2_concurrent; c=3; d=4"),
+                ("cleared.example", "x=1"),
+            ],
+            &[],
+            "",
+        );
+        let updated3 = sample_state(
+            "v1",
+            &[],
+            &[("mix.example", "a=1; e=5"), ("cleared.example", "")],
+            &[],
+            "",
+        );
+        let merged3 = merge_runtime_state_with_base(&base3, Some(current3), updated3, false);
+        assert_eq!(
+            merged3.cookies.get("mix.example").map(String::as_str),
+            Some("a=1; b=2_concurrent; d=4; e=5")
+        );
+        assert!(!merged3.cookies.contains_key("cleared.example"));
     }
 
     #[test]

@@ -2241,3 +2241,248 @@ async fn import_upsert_concurrent_with_login_action_preserves_runtime_state_e2e(
         assert_eq!(cache_res["result"].as_str(), Some(expected.as_str()));
     }
 }
+
+#[tokio::test]
+async fn same_host_browse_set_cookie_concurrent_with_login_action_preserves_both_e2e() {
+    let (_tmp, app, admin_tok, _member_tok) = setup_test_app(true).await;
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let entered_srv = entered.clone();
+    let release_srv = release.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/browse",
+            get(move || {
+                let entered_inner = entered_srv.clone();
+                let release_inner = release_srv.clone();
+                async move {
+                    entered_inner.notify_one();
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        release_inner.notified(),
+                    )
+                    .await;
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .header(
+                            header::SET_COOKIE,
+                            "cf_bm=browse_cookie_123; Path=/; HttpOnly",
+                        )
+                        .body(Body::from(
+                            serde_json::json!({
+                                "list": [{ "id": "vid-1", "title": "SameHost Movie" }]
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/echo",
+            get(|headers: HeaderMap| async move {
+                let cookie_hdr = headers
+                    .get(header::COOKIE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "cookie": cookie_hdr }).to_string(),
+                    ))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let login_script = format!(
+        "function setSession() {{ cookie.setCookie('{origin}', 'session_id=' + String(result.sid || '')); return 'ok'; }} \
+         function readCookies() {{ return String(cookie.getCookie('{origin}', 'session_id') || '') + '|' + String(cookie.getCookie('{origin}', 'cf_bm') || ''); }} \
+         function probeEcho() {{ return String(java.ajax('{origin}/echo')); }}"
+    );
+    let src_json = serde_json::json!({
+        "sourceName": "Same Host Cookie Source",
+        "sourceUrl": origin,
+        "sourceFormat": "rule",
+        "enabled": true,
+        "enabledExplore": true,
+        "enabledCookieJar": true,
+        "exploreUrl": "/browse",
+        "ruleExplore": {
+            "list": "$.list",
+            "name": "$.title",
+            "vodId": "$.id"
+        },
+        "loginUrl": login_script
+    });
+
+    let (st, import_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let sid = import_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 1. Seed initial session_id=old_session on origin host.
+    let (st, _) = post_json(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &admin_tok,
+        serde_json::json!({ "login_info": { "sid": "old_session" }, "action": "setSession()" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // 2. Start delayed browse on the same origin host and wait until it hits upstream.
+    let app_browse = app.clone();
+    let tok_browse = admin_tok.clone();
+    let sid_browse = sid.clone();
+    let browse_task = tokio::spawn(async move {
+        post_json(
+            &app_browse,
+            "/api/v1/video/online/browse",
+            &tok_browse,
+            serde_json::json!({ "source_id": sid_browse, "page": 1 }),
+        )
+        .await
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+        .await
+        .expect("delayed browse request should reach upstream");
+
+    // 3. Concurrently rotate session_id=new_session on the SAME origin host via login-action.
+    let (st, _) = post_json(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &admin_tok,
+        serde_json::json!({ "login_info": { "sid": "new_session" }, "action": "setSession()" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // 4. Release browse (returns Set-Cookie: cf_bm=browse_cookie_123 on the same origin).
+    release.notify_one();
+    let (browse_st, browse_res) = browse_task.await.unwrap();
+    assert_eq!(browse_st, StatusCode::OK);
+    assert_eq!(browse_res["results"][0]["title"], "SameHost Movie");
+
+    // 5. Both new_session and browse_cookie_123 must survive on the same host.
+    let (st, read_res) = post_json(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &admin_tok,
+        serde_json::json!({ "login_info": {}, "action": "readCookies()" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(read_res["result"], "new_session|browse_cookie_123");
+
+    // 6. Subsequent HTTP fetch to origin carries both cookies in Cookie header.
+    let (st, echo_res) = post_json(
+        &app,
+        &format!("/api/v1/video/sources/{sid}/login-action"),
+        &admin_tok,
+        serde_json::json!({ "login_info": {}, "action": "probeEcho()" }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let echo_json: serde_json::Value =
+        serde_json::from_str(echo_res["result"].as_str().unwrap()).unwrap();
+    let sent_cookie = echo_json["cookie"].as_str().unwrap();
+    assert!(sent_cookie.contains("session_id=new_session"));
+    assert!(sent_cookie.contains("cf_bm=browse_cookie_123"));
+    assert!(!sent_cookie.contains("old_session"));
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn rule_play_subtitles_jsonpath_and_js_e2e() {
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let origin_app = Router::new().route(
+        "/api/play",
+        get(|| async {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "stream": "/media/ep1.mp4",
+                        "subs": [
+                            { "label": "中文", "lang": "zh", "url": "/subs/zh.vtt" },
+                            { "label": "English", "lang": "en", "url": "/subs/en.srt" }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let src_json = serde_json::json!({
+        "sourceName": "Rule Subtitles JSONPath",
+        "sourceUrl": origin,
+        "sourceFormat": "rule",
+        "enabled": true,
+        "rulePlay": {
+            "requestUrl": "{{playUrl}}",
+            "streamUrl": "$.stream",
+            "subtitles": "$.subs"
+        }
+    });
+    let (st, import_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let sid = import_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st, play_res) = post_json(
+        &app,
+        "/api/v1/video/online/play",
+        &member_tok,
+        serde_json::json!({
+            "source_id": sid,
+            "play_url": format!("{origin}/api/play")
+        }),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(play_res["stream_url"], format!("{origin}/media/ep1.mp4"));
+    let subs = play_res["subtitles"].as_array().unwrap();
+    assert_eq!(subs.len(), 2);
+    assert_eq!(subs[0]["label"], "中文");
+    assert_eq!(subs[0]["lang"], "zh");
+    assert_eq!(subs[0]["url"], format!("{origin}/subs/zh.vtt"));
+    assert_eq!(subs[1]["label"], "English");
+    assert_eq!(subs[1]["lang"], "en");
+    assert_eq!(subs[1]["url"], format!("{origin}/subs/en.srt"));
+
+    srv.abort();
+}

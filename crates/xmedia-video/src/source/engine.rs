@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use xmedia_source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
-use xmedia_source::rule::{RuleValue, split_js_pipeline};
+use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline};
 
 use crate::source::applecms;
 use crate::source::model::{
@@ -698,8 +698,7 @@ impl VideoSourceEngine {
             let subtitles = if let Some(ref sub_rule) = rule_play.subtitles
                 && !sub_rule.trim().is_empty()
             {
-                let raw_subs = session.eval_opt(&target_input, Some(sub_rule), &eval_base_url);
-                parse_subtitles_json(&raw_subs, &eval_base_url)
+                eval_play_subtitles(&mut session, &target_input, sub_rule, &eval_base_url)
             } else {
                 Vec::new()
             };
@@ -838,44 +837,157 @@ fn eval_episodes_list(
     Ok(episodes)
 }
 
-fn parse_subtitles_json(raw: &str, base_url: &str) -> Vec<OnlineVideoSubtitle> {
-    let trimmed = raw.trim();
+fn eval_play_subtitles(
+    session: &mut ReusableSourceSession,
+    input: &RuleValue,
+    sub_rule: &str,
+    base_url: &str,
+) -> Vec<OnlineVideoSubtitle> {
+    let trimmed = sub_rule.trim();
     if trimmed.is_empty() {
         return Vec::new();
     }
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-        return Vec::new();
-    };
-    let Some(arr) = val.as_array() else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for (i, item) in arr.iter().enumerate() {
-        let Some(url_raw) = item.get("url").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let clean_url = url_raw.trim();
-        if clean_url.is_empty() {
-            continue;
+
+    let js_parts = split_js_pipeline(trimmed);
+    let use_string_eval = (trimmed.contains("{{") && trimmed.contains("}}") && js_parts.is_none())
+        || (js_parts.is_none() && (trimmed.starts_with(':') || trimmed.contains("##")))
+        || js_parts.is_some_and(|(_, _, suffix)| !suffix.is_empty() && suffix.contains("##"));
+
+    if !use_string_eval {
+        match session.eval_list(input, trimmed, base_url) {
+            Ok(items) => {
+                let mut out = Vec::new();
+                for item in items {
+                    match item {
+                        RuleValue::Json(val) => {
+                            collect_subtitles_from_json_value(&val, base_url, &mut out);
+                        }
+                        RuleValue::Text(text) => {
+                            collect_subtitles_from_text(&text, base_url, &mut out);
+                        }
+                    }
+                }
+                return out;
+            }
+            Err(err) => {
+                if rule_needs_js(trimmed) {
+                    let mut g = session.diag_arc().lock().unwrap_or_else(|e| e.into_inner());
+                    if g.logs.len() < 100 {
+                        g.logs.push(format!("字段规则求值失败: {err}"));
+                    }
+                }
+                return Vec::new();
+            }
         }
-        let label = item
-            .get("label")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| format!("字幕 {}", i + 1));
-        let lang = item
-            .get("lang")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string);
+    }
+
+    let raw_subs = session.eval_opt(input, Some(trimmed), base_url);
+    parse_subtitles_json(&raw_subs, base_url)
+}
+
+fn looks_like_subtitle_url(s: &str) -> bool {
+    let trimmed = s.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return false;
+    }
+    if trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.starts_with('/')
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+    {
+        return true;
+    }
+    let path_part = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
+    let lower = path_part.to_ascii_lowercase();
+    lower.ends_with(".vtt")
+        || lower.ends_with(".srt")
+        || lower.ends_with(".ass")
+        || lower.ends_with(".ssa")
+}
+
+fn collect_subtitle_object(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    base_url: &str,
+    out: &mut Vec<OnlineVideoSubtitle>,
+) {
+    let Some(url_raw) = obj.get("url").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let clean_url = url_raw.trim();
+    if clean_url.is_empty() {
+        return;
+    }
+    let label = obj
+        .get("label")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("字幕 {}", out.len() + 1));
+    let lang = obj
+        .get("lang")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string);
+    out.push(OnlineVideoSubtitle {
+        label,
+        lang,
+        url: resolve_relative_url(clean_url, base_url),
+    });
+}
+
+fn collect_subtitles_from_json_value(
+    val: &serde_json::Value,
+    base_url: &str,
+    out: &mut Vec<OnlineVideoSubtitle>,
+) {
+    match val {
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                collect_subtitles_from_json_value(item, base_url, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            collect_subtitle_object(map, base_url, out);
+        }
+        serde_json::Value::String(s) => {
+            collect_subtitles_from_text(s, base_url, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_subtitles_from_text(raw: &str, base_url: &str, out: &mut Vec<OnlineVideoSubtitle>) {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        collect_subtitles_from_json_value(&val, base_url, out);
+        return;
+    }
+    if trimmed.contains('\n') {
+        for line in trimmed.lines() {
+            let line_trimmed = line.trim();
+            if !line_trimmed.is_empty() {
+                collect_subtitles_from_text(line_trimmed, base_url, out);
+            }
+        }
+        return;
+    }
+    if looks_like_subtitle_url(trimmed) {
         out.push(OnlineVideoSubtitle {
-            label,
-            lang,
-            url: resolve_relative_url(clean_url, base_url),
+            label: format!("字幕 {}", out.len() + 1),
+            lang: None,
+            url: resolve_relative_url(trimmed, base_url),
         });
     }
+}
+
+fn parse_subtitles_json(raw: &str, base_url: &str) -> Vec<OnlineVideoSubtitle> {
+    let mut out = Vec::new();
+    collect_subtitles_from_text(raw, base_url, &mut out);
     out
 }
