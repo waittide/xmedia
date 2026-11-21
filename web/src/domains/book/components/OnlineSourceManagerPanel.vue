@@ -649,18 +649,20 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
         <button
           type="button"
           class="md-btn md-btn-sm md-btn-tonal md-state"
+          title="从本地 JSON 文件导入书源"
           @click="triggerFileImport"
         >
           <LuUpload class="h-3.5 w-3.5" />
-          <span>上传 JSON</span>
+          <span>导入</span>
         </button>
         <button
           type="button"
           class="md-btn md-btn-sm md-btn-filled md-state"
+          title="粘贴书源 JSON 文本导入"
           @click="showImportBox = !showImportBox"
         >
           <LuPlus class="h-3.5 w-3.5" />
-          <span>粘贴导入</span>
+          <span>粘贴</span>
         </button>
       </div>
     </div>
@@ -1083,7 +1085,7 @@ function handleSavedAndDebug(updated: BookSourceSummaryDto): void {
             @click="closeMenu"
           >
             <LuDownload class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
-            <span>导出 JSON</span>
+            <span>导出</span>
           </a>
 
           <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/50" />
