@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -36,7 +36,7 @@ pub struct TrackedChapterFile {
 #[derive(Debug, Clone)]
 pub struct TrackedBookStore {
     root_dir: PathBuf,
-    book_locks: Arc<Mutex<HashMap<BookId, Arc<Mutex<()>>>>>,
+    book_locks: Arc<Mutex<HashMap<BookId, Weak<Mutex<()>>>>>,
 }
 
 impl TrackedBookStore {
@@ -52,11 +52,15 @@ impl TrackedBookStore {
 
     fn lock_for(&self, book_id: BookId) -> Arc<Mutex<()>> {
         let mut guard = self.book_locks.lock().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(
-            guard
-                .entry(book_id)
-                .or_insert_with(|| Arc::new(Mutex::new(()))),
-        )
+        if let Some(existing) = guard.get(&book_id).and_then(Weak::upgrade) {
+            return existing;
+        }
+        if guard.len() > 256 {
+            guard.retain(|_, w| w.strong_count() > 0);
+        }
+        let lock = Arc::new(Mutex::new(()));
+        guard.insert(book_id, Arc::downgrade(&lock));
+        lock
     }
 
     pub fn remove_book_lock(&self, book_id: BookId) {
@@ -82,10 +86,23 @@ impl TrackedBookStore {
 
     fn load_manifest_unlocked(&self, book_id: BookId) -> TrackedManifest {
         let path = self.manifest_path(book_id);
-        let Ok(bytes) = fs::read(path) else {
-            return TrackedManifest::default();
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return TrackedManifest::default();
+            }
+            Err(err) => {
+                tracing::warn!(book_id = %book_id, path = %path.display(), error = %err, "failed to read tracked manifest");
+                return TrackedManifest::default();
+            }
         };
-        serde_json::from_slice(&bytes).unwrap_or_default()
+        match serde_json::from_slice(&bytes) {
+            Ok(m) => m,
+            Err(err) => {
+                tracing::warn!(book_id = %book_id, path = %path.display(), error = %err, "corrupt tracked manifest JSON");
+                TrackedManifest::default()
+            }
+        }
     }
 
     fn save_manifest_unlocked(
@@ -122,12 +139,9 @@ impl TrackedBookStore {
         let lock = self.lock_for(book_id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
 
-        let existing_cached_indices: HashSet<usize> = if preserve_existing_cache {
-            self.existing_chapter_indices(book_id)
-        } else {
-            HashSet::new()
-        };
+        let existing_cached_indices: HashSet<usize> = self.existing_chapter_indices(book_id);
 
+        let mut valid_cached_indices = HashSet::new();
         let chapters = toc
             .iter()
             .enumerate()
@@ -137,6 +151,9 @@ impl TrackedBookStore {
                     && self.load_chapter(book_id, idx).is_some_and(|cached| {
                         !cached.content.trim().is_empty() && cached.url == ch.url
                     });
+                if is_cached {
+                    valid_cached_indices.insert(idx);
+                }
                 TrackedChapterMeta {
                     index: idx,
                     title: ch.title.clone(),
@@ -145,6 +162,13 @@ impl TrackedBookStore {
                 }
             })
             .collect();
+
+        // Prune orphaned or URL-invalidated chapter cache files to avoid stale cross-source data.
+        for old_idx in existing_cached_indices {
+            if !valid_cached_indices.contains(&old_idx) {
+                let _ = fs::remove_file(self.chapter_path(book_id, old_idx));
+            }
+        }
 
         let manifest = TrackedManifest { chapters };
         self.save_manifest_unlocked(book_id, &manifest)?;
@@ -229,7 +253,11 @@ impl TrackedBookStore {
         &self,
         book_id: BookId,
     ) -> (Vec<PackChapterInput>, u32, u32) {
-        let manifest = self.load_manifest(book_id);
+        let lock = self.lock_for(book_id);
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        let manifest_exists = self.manifest_path(book_id).is_file();
+        let manifest = self.load_manifest_unlocked(book_id);
         let total = manifest.chapters.len() as u32;
         let mut out = Vec::new();
 
@@ -254,7 +282,13 @@ impl TrackedBookStore {
             return (out, cached, total);
         }
 
-        // Fallback if chapter files exist without manifest
+        // If a manifest file exists on disk but failed to parse or is empty, do not silently pack
+        // arbitrary raw chapter files that may belong to an old source.
+        if manifest_exists {
+            return (Vec::new(), 0, 0);
+        }
+
+        // Fallback if chapter files exist without any manifest
         let mut indices: Vec<usize> = self.existing_chapter_indices(book_id).into_iter().collect();
         indices.sort_unstable();
         for idx in indices {

@@ -250,11 +250,15 @@ impl LegadoJsSession {
                 let base_ref = b.current_base_url.clone();
                 let diag = b.diagnostics.clone();
                 let op_dl = b.op_deadline_ms.clone();
+                let eval_dl = self.eval_deadline_ms.clone();
                 let cancel = b.cancel_flag.clone();
                 let req_cnt = b.http_req_count.clone();
                 let f = Function::new(ctx.clone(), move |raw_url: String| -> String {
-                    if cancel.load(Ordering::Relaxed) || now_mono_ms() > op_dl.load(Ordering::Relaxed)
-                    {
+                    let now = now_mono_ms();
+                    let deadline = op_dl
+                        .load(Ordering::Relaxed)
+                        .min(eval_dl.load(Ordering::Relaxed));
+                    if cancel.load(Ordering::Relaxed) || now >= deadline {
                         push_diag_log(&diag, "java.ajax 已中断：超过操作超时或已取消");
                         return String::new();
                     }
@@ -268,8 +272,9 @@ impl LegadoJsSession {
                         );
                         return String::new();
                     }
+                    let remaining = Duration::from_millis(deadline.saturating_sub(now));
                     let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    match http.fetch(&raw_url, &base) {
+                    match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
                         Ok(res) => res.body,
                         Err(err) => {
                             push_diag_log(&diag, format!("java.ajax 失败: {err}"));
@@ -286,11 +291,15 @@ impl LegadoJsSession {
                 let base_ref = b.current_base_url.clone();
                 let diag = b.diagnostics.clone();
                 let op_dl = b.op_deadline_ms.clone();
+                let eval_dl = self.eval_deadline_ms.clone();
                 let cancel = b.cancel_flag.clone();
                 let req_cnt = b.http_req_count.clone();
                 let f = Function::new(ctx.clone(), move |raw_url: String| -> String {
-                    if cancel.load(Ordering::Relaxed) || now_mono_ms() > op_dl.load(Ordering::Relaxed)
-                    {
+                    let now = now_mono_ms();
+                    let deadline = op_dl
+                        .load(Ordering::Relaxed)
+                        .min(eval_dl.load(Ordering::Relaxed));
+                    if cancel.load(Ordering::Relaxed) || now >= deadline {
                         let err = "java.connect 已中断：超过操作超时或已取消";
                         push_diag_log(&diag, err);
                         return serde_json::json!({
@@ -317,8 +326,9 @@ impl LegadoJsSession {
                         })
                         .to_string();
                     }
+                    let remaining = Duration::from_millis(deadline.saturating_sub(now));
                     let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    match http.fetch(&raw_url, &base) {
+                    match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
                         Ok(res) => serde_json::json!({
                             "body": res.body,
                             "code": res.status,

@@ -234,7 +234,7 @@ fn render_acquisition_feed(prefix: &str, data: &OpdsAcquisitionData) -> Response
             let _ = writeln!(xml, "    <summary>{}</summary>", xml_escape(desc));
         }
         if book.has_cover {
-            let cover_mime = book.cover_mime.as_deref().unwrap_or("image/jpeg");
+            let cover_mime = xml_escape(book.cover_mime.as_deref().unwrap_or("image/jpeg"));
             let cover_href = format!("{prefix}/books/{}/cover", book.id);
             let _ = writeln!(
                 xml,
@@ -252,7 +252,7 @@ fn render_acquisition_feed(prefix: &str, data: &OpdsAcquisitionData) -> Response
             xml,
             r#"    <link rel="http://opds-spec.org/acquisition" href="{}" type="{}"/>"#,
             xml_escape(&dl_href),
-            book.format.mime_type()
+            xml_escape(book.format.mime_type())
         );
         let _ = writeln!(xml, "  </entry>");
     }
@@ -276,7 +276,7 @@ async fn opensearch_descriptor(
     State(state): State<BookHttpState>,
     OpdsAuth(_actor): OpdsAuth,
 ) -> Response {
-    let p = state.opds_prefix.as_ref();
+    let p = xml_escape(state.opds_prefix.as_ref());
     let body = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">

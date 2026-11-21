@@ -373,11 +373,23 @@ mod tests {
         // 5. Verify local mount scan with sidecar .opf + cover & rename preservation
         let mount_dir = tmp.path().join("mounted_books");
         std::fs::create_dir_all(&mount_dir).unwrap();
-        std::fs::write(
-            mount_dir.join("three_body.pdf"),
-            b"%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n%%EOF",
-        )
-        .unwrap();
+        let mut sample_pdf = lopdf::Document::with_version("1.4");
+        let pages_id = sample_pdf.new_object_id();
+        let mut pages_dict = lopdf::Dictionary::new();
+        pages_dict.set("Type", lopdf::Object::Name(b"Pages".to_vec()));
+        pages_dict.set("Kids", lopdf::Object::Array(vec![]));
+        pages_dict.set("Count", lopdf::Object::Integer(0));
+        sample_pdf
+            .objects
+            .insert(pages_id, lopdf::Object::Dictionary(pages_dict));
+        let mut catalog_dict = lopdf::Dictionary::new();
+        catalog_dict.set("Type", lopdf::Object::Name(b"Catalog".to_vec()));
+        catalog_dict.set("Pages", lopdf::Object::Reference(pages_id));
+        let catalog_id = sample_pdf.add_object(lopdf::Object::Dictionary(catalog_dict));
+        sample_pdf.trailer.set("Root", catalog_id);
+        let mut pdf_bytes = Vec::new();
+        sample_pdf.save_to(&mut pdf_bytes).unwrap();
+        std::fs::write(mount_dir.join("three_body.pdf"), &pdf_bytes).unwrap();
         std::fs::write(
             mount_dir.join("three_body.opf"),
             r#"<package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>三体</dc:title><dc:creator>刘慈欣</dc:creator></metadata></package>"#,
@@ -1342,7 +1354,7 @@ mod tests {
             xmedia_core::domain::error::DomainError::Validation(_)
         ));
 
-        // 4. POST /books/{id}/online/sync-epub: non-admin with ?force=true -> 403, default (force=false) -> 200
+        // 4. POST /books/{id}/online/sync-epub: admin-only for both ?force=true and default (M2-MED-05)
         let force_member_res = app
             .clone()
             .oneshot(
@@ -1375,7 +1387,24 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(default_member_res.status(), StatusCode::OK);
+        assert_eq!(default_member_res.status(), StatusCode::FORBIDDEN);
+
+        let default_admin_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/book/books/{}/online/sync-epub",
+                        tracked.id.0
+                    ))
+                    .header("authorization", format!("Bearer {}", admin_session.token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(default_admin_res.status(), StatusCode::OK);
 
         // 5. BookDomainLifecycle::on_library_deleted must clean up BOTH OnlineTracked EPUB & online_tracked dir
         let book_lifecycle = lifecycles

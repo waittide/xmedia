@@ -60,9 +60,33 @@ fn guess_epub_mime(path: &str) -> &'static str {
     }
 }
 
+fn decode_percent_path(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            )
+        {
+            out.push(((hi << 4) | lo) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn normalize_zip_path(base_dir: &Path, relative: &str) -> String {
-    let clean_rel = relative.split('#').next().unwrap_or(relative);
-    let joined = base_dir.join(clean_rel);
+    let without_frag = relative.split('#').next().unwrap_or(relative);
+    let without_query = without_frag.split('?').next().unwrap_or(without_frag);
+    let decoded = decode_percent_path(without_query);
+    let joined = base_dir.join(decoded);
     let mut out = PathBuf::new();
     for comp in joined.components() {
         match comp {
@@ -112,9 +136,11 @@ fn read_zip_entry_bounded(
         let size = file.size();
         return read_bounded_zip_file(&mut file, size, max_bytes);
     }
+    const MAX_CASE_FALLBACK_SCAN: usize = 8192;
     let target_lower = name.to_lowercase();
     let mut matched_idx = None;
-    for idx in 0..archive.len() {
+    let scan_limit = archive.len().min(MAX_CASE_FALLBACK_SCAN);
+    for idx in 0..scan_limit {
         if let Ok(entry) = archive.by_index(idx)
             && let Ok(entry_name) = entry.name()
             && entry_name.to_lowercase() == target_lower
@@ -216,7 +242,8 @@ fn parse_opf(opf_xml: &[u8]) -> OpfData {
         spine_toc_id: None,
     };
 
-    let mut active_tag: Option<String> = None;
+    let mut tag_stack: Vec<String> = Vec::new();
+    let mut description_parts: Vec<String> = Vec::new();
 
     loop {
         match reader.read_event() {
@@ -249,8 +276,9 @@ fn parse_opf(opf_xml: &[u8]) -> OpfData {
                             data.spine_ids.push(idref);
                         }
                     }
-                    _ => active_tag = Some(local),
+                    _ => {}
                 }
+                tag_stack.push(local);
             }
             Ok(Event::Empty(ref e)) => match e.local_name().as_ref() {
                 "meta" => {
@@ -278,14 +306,30 @@ fn parse_opf(opf_xml: &[u8]) -> OpfData {
                 _ => {}
             },
             Ok(Event::Text(ref t)) => {
-                if let Some(ref tag) = active_tag {
+                let active_meta = tag_stack.iter().rev().find(|tag| {
+                    matches!(
+                        tag.as_str(),
+                        "title"
+                            | "creator"
+                            | "description"
+                            | "language"
+                            | "publisher"
+                            | "date"
+                            | "subject"
+                            | "identifier"
+                    )
+                });
+                if let Some(tag) = active_meta {
                     let val = decode_xml_text(t).trim().to_string();
                     if !val.is_empty() {
                         match tag.as_str() {
                             "title" if data.title.is_none() => data.title = Some(val),
                             "creator" => data.authors.push(val),
-                            "description" if data.description.is_none() => {
-                                data.description = Some(strip_html_tags(&val))
+                            "description" => {
+                                let clean = strip_html_tags(&val);
+                                if !clean.is_empty() {
+                                    description_parts.push(clean);
+                                }
                             }
                             "language" if data.language.is_none() => data.language = Some(val),
                             "publisher" if data.publisher.is_none() => data.publisher = Some(val),
@@ -308,11 +352,15 @@ fn parse_opf(opf_xml: &[u8]) -> OpfData {
                 }
             }
             Ok(Event::End(_)) => {
-                active_tag = None;
+                tag_stack.pop();
             }
             Ok(Event::Eof) | Err(_) => break,
             _ => {}
         }
+    }
+
+    if !description_parts.is_empty() {
+        data.description = Some(description_parts.join("\n"));
     }
 
     data

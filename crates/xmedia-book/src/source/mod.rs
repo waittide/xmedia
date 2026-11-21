@@ -342,14 +342,13 @@ impl ReusableWorkerSession {
                     self.eval_opt(&item, rule_toc.update_time.as_deref(), &fetched.final_url);
                 let is_vol_str =
                     self.eval_opt(&item, rule_toc.is_volume.as_deref(), &fetched.final_url);
+                let trimmed_url = url_raw.trim();
                 let is_volume = matches!(
                     is_vol_str.trim().to_ascii_lowercase().as_str(),
                     "true" | "1"
-                ) || url_raw.is_empty()
-                    || (!url_raw.starts_with("http://")
-                        && !url_raw.starts_with("https://")
-                        && !url_raw.starts_with("data:")
-                        && !url_raw.contains('/'));
+                ) || trimmed_url.is_empty()
+                    || trimmed_url == "#"
+                    || trimmed_url.to_ascii_lowercase().starts_with("javascript:");
 
                 let resolved = if url_raw.is_empty() {
                     String::new()

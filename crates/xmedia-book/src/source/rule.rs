@@ -464,8 +464,31 @@ struct RegexReplaceSpec<'a> {
     only_first: bool,
 }
 
+fn find_double_hash_outside_mustache(rule: &str) -> Option<usize> {
+    let bytes = rule.as_bytes();
+    let mut i = 0usize;
+    let mut mustache_depth = 0usize;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            mustache_depth += 1;
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'}' && bytes[i + 1] == b'}' && mustache_depth > 0 {
+            mustache_depth -= 1;
+            i += 2;
+            continue;
+        }
+        if mustache_depth == 0 && bytes[i] == b'#' && bytes[i + 1] == b'#' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
 fn split_regex_replace_suffix(rule: &str) -> (&str, Option<RegexReplaceSpec<'_>>) {
-    let Some(first_idx) = rule.find("##") else {
+    let Some(first_idx) = find_double_hash_outside_mustache(rule) else {
         return (rule, None);
     };
     let core = rule[..first_idx].trim();

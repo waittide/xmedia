@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime};
 
 use bytes::Bytes;
@@ -539,7 +539,23 @@ struct ChapterFetchOptions {
     allow_shared_cache_write: bool,
 }
 
-type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>>;
+type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
+
+fn get_or_insert_weak_lock<K: Eq + std::hash::Hash>(
+    map: &AsyncLockMap<K>,
+    key: K,
+) -> Arc<tokio::sync::Mutex<()>> {
+    let mut guard = map.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = guard.get(&key).and_then(Weak::upgrade) {
+        return existing;
+    }
+    if guard.len() > 256 {
+        guard.retain(|_, w| w.strong_count() > 0);
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    guard.insert(key, Arc::downgrade(&lock));
+    lock
+}
 
 pub struct BookOnlineService {
     sources: Arc<dyn BookSourceRepository>,
@@ -597,11 +613,20 @@ impl BookOnlineService {
                 download_dir.display()
             ))
         })?;
+        // Clean up any leftover per-job download directories from previous server runs.
+        if let Ok(entries) = std::fs::read_dir(&download_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let _ = std::fs::remove_dir_all(&p);
+                } else {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
         let tracked_store = TrackedBookStore::new(data_dir).map_err(DomainError::Storage)?;
-        let book_state_locks: Arc<Mutex<HashMap<BookId, Arc<tokio::sync::Mutex<()>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let epub_sync_locks: Arc<Mutex<HashMap<BookId, Arc<tokio::sync::Mutex<()>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let book_state_locks: AsyncLockMap<BookId> = Arc::new(Mutex::new(HashMap::new()));
+        let epub_sync_locks: AsyncLockMap<BookId> = Arc::new(Mutex::new(HashMap::new()));
         let pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -773,15 +798,7 @@ impl BookOnlineService {
     }
 
     fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
-        let mut guard = self
-            .source_state_locks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        Arc::clone(
-            guard
-                .entry(id)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
+        get_or_insert_weak_lock(&self.source_state_locks, id)
     }
 
     async fn persist_runtime_state(
@@ -2264,6 +2281,10 @@ impl BookOnlineService {
         }
 
         if let Some(source_id) = input.source_id {
+            let src = self.load_source(source_id).await?;
+            if !src.enabled {
+                return Err(DomainError::Validation("目标书源未启用".into()));
+            }
             rec.source_id = source_id;
         }
         if let Some(book_url) = input.book_url {
@@ -2279,7 +2300,10 @@ impl BookOnlineService {
             rec.current_chapter_title = input.current_chapter_title;
         }
         if let Some(scroll) = input.scroll_ratio {
-            rec.scroll_ratio = scroll;
+            if !scroll.is_finite() {
+                return Err(DomainError::Validation("阅读进度比例无效".into()));
+            }
+            rec.scroll_ratio = scroll.clamp(0.0, 1.0);
         }
         if let Some(total) = input.total_chapters {
             rec.total_chapters = total;
@@ -2317,36 +2341,15 @@ impl BookOnlineService {
     // -----------------------------------------------------------------------
 
     fn book_state_lock_for(&self, book_id: BookId) -> Arc<tokio::sync::Mutex<()>> {
-        let mut guard = self
-            .book_state_locks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        Arc::clone(
-            guard
-                .entry(book_id)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
+        get_or_insert_weak_lock(&self.book_state_locks, book_id)
     }
 
     fn epub_lock_for(&self, book_id: BookId) -> Arc<tokio::sync::Mutex<()>> {
-        let mut guard = self
-            .epub_sync_locks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        Arc::clone(
-            guard
-                .entry(book_id)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
+        get_or_insert_weak_lock(&self.epub_sync_locks, book_id)
     }
 
     fn track_lock_for(&self, source_id: Uuid, book_url: &str) -> Arc<tokio::sync::Mutex<()>> {
-        let mut guard = self.track_locks.lock().unwrap_or_else(|e| e.into_inner());
-        Arc::clone(
-            guard
-                .entry((source_id, book_url.to_string()))
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
-        )
+        get_or_insert_weak_lock(&self.track_locks, (source_id, book_url.to_string()))
     }
 
     fn bump_sync_gen(&self, book_id: BookId, delta_chapters: u32) -> (u64, bool) {
@@ -2558,9 +2561,13 @@ impl BookOnlineService {
     /// Fetches fresh TOC from the source when `force_refresh` is true or manifest is empty.
     pub async fn get_tracked_toc(
         self: &Arc<Self>,
+        actor: &User,
         book_id: BookId,
         force_refresh: bool,
     ) -> DomainResult<TrackedTocResponseDto> {
+        if force_refresh {
+            require_admin(actor)?;
+        }
         let book = self.catalog.find_book_raw(book_id).await?;
         let (
             source_id,
@@ -2621,6 +2628,11 @@ impl BookOnlineService {
 
         let src_rec =
             src_rec_opt.ok_or_else(|| DomainError::NotFound(format!("未找到书源 {source_id}")))?;
+        if !src_rec.enabled && !actor.role.is_admin() {
+            return Err(DomainError::Forbidden(
+                "书源已禁用，仅管理员可刷新目录".into(),
+            ));
+        }
 
         let effective_toc_url = if toc_url.trim().is_empty() {
             let info = self
@@ -2729,10 +2741,14 @@ impl BookOnlineService {
     /// and schedules EPUB 3.0 sync.
     pub async fn get_tracked_chapter(
         self: &Arc<Self>,
+        actor: &User,
         book_id: BookId,
         chapter_index: usize,
         force_refresh: bool,
     ) -> DomainResult<TrackedChapterResponseDto> {
+        if force_refresh {
+            require_admin(actor)?;
+        }
         let book = self.catalog.find_book_raw(book_id).await?;
         let (source_id, book_url, toc_url, cached_chapters, total_chapters, epub_dirty) =
             match &book.source {
@@ -2788,8 +2804,12 @@ impl BookOnlineService {
             }
         }
 
-        if chapter_index >= manifest.chapters.len() {
-            let refreshed = self.get_tracked_toc(book_id, true).await?;
+        if manifest.chapters.is_empty()
+            || (chapter_index >= manifest.chapters.len() && actor.role.is_admin())
+        {
+            let refreshed = self
+                .get_tracked_toc(actor, book_id, !manifest.chapters.is_empty())
+                .await?;
             manifest.chapters = refreshed.chapters;
         }
         let chapter_meta = manifest
@@ -2816,6 +2836,11 @@ impl BookOnlineService {
         };
 
         let src_rec = self.load_source(source_id).await?;
+        if !src_rec.enabled && !actor.role.is_admin() {
+            return Err(DomainError::Forbidden(
+                "书源已禁用，仅管理员可拉取未缓存章节".into(),
+            ));
+        }
         let fetched = self
             .fetch_chapter_content_internal(
                 src_rec,
@@ -3183,7 +3208,17 @@ impl BookOnlineService {
             let state_lock = self.book_state_lock_for(book_id);
             let _state_guard = state_lock.lock().await;
 
-            let mut latest_book = self.catalog.find_book_raw(book_id).await?;
+            let mut latest_book = match self.catalog.find_book_raw(book_id).await {
+                Ok(b) => b,
+                Err(err) => {
+                    // Clean up the newly written EPUB if the book was deleted concurrently.
+                    let _ = self
+                        .catalog
+                        .delete_managed_book_file(&stored.storage_key)
+                        .await;
+                    return Err(err);
+                }
+            };
             let current_gen = self.current_sync_gen(book_id);
             let is_clean = current_gen == start_gen;
 
@@ -3549,16 +3584,25 @@ impl BookOnlineService {
             };
 
         if let Some(bid) = target_tracked_book_id {
-            let store = self.tracked_store.clone();
-            let toc_for_manifest = all_chapters.clone();
-            if let Err(err) = tokio::task::spawn_blocking(move || {
-                store.update_manifest_from_toc(bid, &toc_for_manifest, true)
-            })
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|r| r)
-            {
-                tracing::warn!(book_id = %bid, error = %err, "failed to update tracked manifest before download");
+            let state_lock = self.book_state_lock_for(bid);
+            let _state_guard = state_lock.lock().await;
+            let source_matches = self
+                .catalog
+                .find_book_raw(bid)
+                .await
+                .is_ok_and(|b| matches!(&b.source, BookSource::OnlineTracked { source_id, .. } if *source_id == input.source_id));
+            if source_matches {
+                let store = self.tracked_store.clone();
+                let toc_for_manifest = all_chapters.clone();
+                if let Err(err) = tokio::task::spawn_blocking(move || {
+                    store.update_manifest_from_toc(bid, &toc_for_manifest, true)
+                })
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r)
+                {
+                    tracing::warn!(book_id = %bid, error = %err, "failed to update tracked manifest before download");
+                }
             }
         }
         if selected.is_empty() {
@@ -3695,6 +3739,7 @@ impl BookOnlineService {
         let mut processed_count = 0usize;
         let mut failed_count = 0usize;
         let mut uncached_since_persist = 0usize;
+        let mut tracked_chapters_written = 0u32;
         let mut was_cancelled = false;
 
         // Pin cancel_notify BEFORE checking cancel_flag so a signal between check and select is never lost.
@@ -3718,28 +3763,36 @@ impl BookOnlineService {
                     };
                     if let Some(slot) = ordered_chapters.get_mut(ev.idx) {
                         if !ev.failed && let Some(bid) = target_tracked_book_id {
-                            let global_idx = start + ev.idx;
-                            let chapter_url = selected_arc
-                                .get(ev.idx)
-                                .map(|c| c.url.clone())
-                                .unwrap_or_default();
-                            let store = self.tracked_store.clone();
-                            let chapter_file = TrackedChapterFile {
-                                index: global_idx,
-                                title: ev.packed.title.clone(),
-                                url: chapter_url,
-                                content: ev.packed.content.clone(),
-                            };
-                            if let Err(err) = tokio::task::spawn_blocking(move || {
-                                store.save_chapter(bid, &chapter_file)
-                            })
-                            .await
-                            .map_err(|e| e.to_string())
-                            .and_then(|r| r)
-                            {
-                                tracing::warn!(book_id = %bid, index = global_idx, error = %err, "failed to save downloaded chapter to tracked store");
-                            } else {
-                                self.bump_sync_gen(bid, 1);
+                            let state_lock = self.book_state_lock_for(bid);
+                            let _state_guard = state_lock.lock().await;
+                            let source_matches = self.catalog.find_book_raw(bid).await.is_ok_and(
+                                |b| matches!(&b.source, BookSource::OnlineTracked { source_id, .. } if *source_id == input.source_id),
+                            );
+                            if source_matches {
+                                let global_idx = start + ev.idx;
+                                let chapter_url = selected_arc
+                                    .get(ev.idx)
+                                    .map(|c| c.url.clone())
+                                    .unwrap_or_default();
+                                let store = self.tracked_store.clone();
+                                let chapter_file = TrackedChapterFile {
+                                    index: global_idx,
+                                    title: ev.packed.title.clone(),
+                                    url: chapter_url,
+                                    content: ev.packed.content.clone(),
+                                };
+                                if let Err(err) = tokio::task::spawn_blocking(move || {
+                                    store.save_chapter(bid, &chapter_file)
+                                })
+                                .await
+                                .map_err(|e| e.to_string())
+                                .and_then(|r| r)
+                                {
+                                    tracing::warn!(book_id = %bid, index = global_idx, error = %err, "failed to save downloaded chapter to tracked store");
+                                } else {
+                                    tracked_chapters_written = tracked_chapters_written.saturating_add(1);
+                                    self.bump_sync_gen(bid, 1);
+                                }
                             }
                         }
                         *slot = Some(ev.packed);
@@ -3792,6 +3845,24 @@ impl BookOnlineService {
         }
 
         if was_cancelled || cancel_flag.load(Ordering::Acquire) {
+            if tracked_chapters_written > 0
+                && let Some(bid) = target_tracked_book_id
+            {
+                let state_lock = self.book_state_lock_for(bid);
+                let _state_guard = state_lock.lock().await;
+                if let Ok(mut latest_book) = self.catalog.find_book_raw(bid).await
+                    && let BookSource::OnlineTracked {
+                        source_id,
+                        epub_dirty,
+                        ..
+                    } = &mut latest_book.source
+                    && *source_id == input.source_id
+                {
+                    *epub_dirty = true;
+                    latest_book.updated_at = Timestamp::now();
+                    let _ = self.catalog.save_book_raw(&latest_book).await;
+                }
+            }
             self.mark_job_cancelled(job_id, started_at).await;
             let job_dir = self.download_dir.join(job_id.to_string());
             let _ = tokio::fs::remove_dir_all(&job_dir).await;
@@ -4314,6 +4385,35 @@ fn write_cached_chapter_at(
     }
 }
 
+fn is_windows_reserved_stem(stem: &str) -> bool {
+    let upper = stem.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
 fn sanitize_file_stem(name: &str) -> String {
     let cleaned: String = name
         .trim()
@@ -4328,9 +4428,13 @@ fn sanitize_file_stem(name: &str) -> String {
         .collect();
     let trimmed = cleaned.trim_matches('.').trim();
     if trimmed.is_empty() {
-        "novel".to_string()
+        return "novel".to_string();
+    }
+    let truncated: String = trimmed.chars().take(80).collect();
+    if is_windows_reserved_stem(&truncated) {
+        format!("_{truncated}")
     } else {
-        trimmed.chars().take(80).collect()
+        truncated
     }
 }
 
@@ -4882,7 +4986,7 @@ mod tests {
 
         // 2. Fetch chapter 0 & chapter 1 -> incremental single-chapter cache + epub_dirty = true
         let ch0 = online_svc
-            .get_tracked_chapter(tracked.id, 0, false)
+            .get_tracked_chapter(&admin, tracked.id, 0, false)
             .await
             .unwrap();
         assert!(!ch0.cached);
@@ -4892,13 +4996,13 @@ mod tests {
 
         // Second read of chapter 0 hits local chapter cache immediately
         let ch0_cached = online_svc
-            .get_tracked_chapter(tracked.id, 0, false)
+            .get_tracked_chapter(&admin, tracked.id, 0, false)
             .await
             .unwrap();
         assert!(ch0_cached.cached);
 
         let ch1 = online_svc
-            .get_tracked_chapter(tracked.id, 1, false)
+            .get_tracked_chapter(&admin, tracked.id, 1, false)
             .await
             .unwrap();
         assert_eq!(ch1.cached_chapters, 2);
@@ -5674,7 +5778,7 @@ mod tests {
             .await
             .unwrap();
         let _ = online_svc
-            .get_tracked_chapter(tracked.id, 0, false)
+            .get_tracked_chapter(&admin, tracked.id, 0, false)
             .await
             .unwrap();
 
@@ -6199,8 +6303,8 @@ mod tests {
 
         // Fetch ch0 and ch1 concurrently while running sync_tracked_epub
         let (c0, c1, _sync) = tokio::join!(
-            online_svc.get_tracked_chapter(tracked.id, 0, false),
-            online_svc.get_tracked_chapter(tracked.id, 1, false),
+            online_svc.get_tracked_chapter(&admin, tracked.id, 0, false),
+            online_svc.get_tracked_chapter(&admin, tracked.id, 1, false),
             online_svc.sync_tracked_epub(tracked.id, true),
         );
         c0.unwrap();

@@ -115,123 +115,185 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
                     );
                     self.books.save(&existing).await?;
                     updated += 1;
-                } else if let Ok(loaded) = self
+                } else {
+                    match self
+                        .scanner
+                        .read_entry(&root_path, &entry.relative_path)
+                        .await
+                    {
+                        Ok(loaded) => {
+                            let parser = self.parser.clone();
+                            let fmt = entry.format;
+                            let bytes_for_parse = loaded.bytes.clone();
+                            let fallback_title = entry.fallback_title.clone();
+                            let sidecar_opf = loaded.sidecar_opf;
+                            let sidecar_cover = loaded.sidecar_cover;
+                            let parsed_res = tokio::task::spawn_blocking(move || {
+                                parser.parse_book_with_sidecars(
+                                    fmt,
+                                    &bytes_for_parse,
+                                    &fallback_title,
+                                    sidecar_opf.as_deref(),
+                                    sidecar_cover,
+                                )
+                            })
+                            .await;
+                            match parsed_res {
+                                Ok(Ok(parsed)) => {
+                                    if let Some(cover) = &parsed.cover
+                                        && let Ok(cover_key) =
+                                            self.storage.save_cover(existing.id, cover).await
+                                    {
+                                        existing.set_cover(Some(cover_key));
+                                    }
+                                    let _ = existing.update_metadata(parsed.metadata);
+                                }
+                                Ok(Err(err)) => {
+                                    tracing::warn!(
+                                        library_id = %library_id,
+                                        path = %entry.relative_path,
+                                        error = %err,
+                                        "failed to parse updated book during scan"
+                                    );
+                                }
+                                Err(err) => {
+                                    tracing::warn!(
+                                        library_id = %library_id,
+                                        path = %entry.relative_path,
+                                        error = %err,
+                                        "book parse task panicked during scan"
+                                    );
+                                }
+                            }
+
+                            existing.mark_present(
+                                entry.file_size,
+                                loaded.file_hash,
+                                Some(entry.file_mtime),
+                            );
+                            self.books.save(&existing).await?;
+                            updated += 1;
+                        }
+                        Err(err) => {
+                            tracing::warn!(
+                                library_id = %library_id,
+                                path = %entry.relative_path,
+                                error = %err,
+                                "failed to read modified book file during scan"
+                            );
+                        }
+                    }
+                }
+            } else {
+                match self
                     .scanner
                     .read_entry(&root_path, &entry.relative_path)
                     .await
                 {
-                    let parser = self.parser.clone();
-                    let fmt = entry.format;
-                    let bytes_for_parse = loaded.bytes.clone();
-                    let fallback_title = entry.fallback_title.clone();
-                    let sidecar_opf = loaded.sidecar_opf;
-                    let sidecar_cover = loaded.sidecar_cover;
-                    let parsed_res = tokio::task::spawn_blocking(move || {
-                        parser.parse_book_with_sidecars(
-                            fmt,
-                            &bytes_for_parse,
-                            &fallback_title,
-                            sidecar_opf.as_deref(),
-                            sidecar_cover,
-                        )
-                    })
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok());
-                    if let Some(parsed) = parsed_res {
-                        if let Some(cover) = &parsed.cover
-                            && let Ok(cover_key) = self.storage.save_cover(existing.id, cover).await
-                        {
-                            existing.set_cover(Some(cover_key));
-                        }
-                        let _ = existing.update_metadata(parsed.metadata);
-                    }
-
-                    existing.mark_present(
-                        entry.file_size,
-                        loaded.file_hash,
-                        Some(entry.file_mtime),
-                    );
-                    self.books.save(&existing).await?;
-                    updated += 1;
-                }
-            } else if let Ok(loaded) = self
-                .scanner
-                .read_entry(&root_path, &entry.relative_path)
-                .await
-            {
-                let parser = self.parser.clone();
-                let fmt = entry.format;
-                let bytes_for_parse = loaded.bytes.clone();
-                let fallback_title = entry.fallback_title.clone();
-                let sidecar_opf = loaded.sidecar_opf;
-                let sidecar_cover = loaded.sidecar_cover;
-                if let Some(parsed) = tokio::task::spawn_blocking(move || {
-                    parser.parse_book_with_sidecars(
-                        fmt,
-                        &bytes_for_parse,
-                        &fallback_title,
-                        sidecar_opf.as_deref(),
-                        sidecar_cover,
-                    )
-                })
-                .await
-                .ok()
-                .and_then(|r| r.ok())
-                {
-                    // Check whether this is a moved/renamed existing book in the same library
-                    let matched_old_key = existing_by_path
-                        .iter()
-                        .find(|(old_rel, old_book)| {
-                            !entry_paths.contains(*old_rel)
-                                && old_book.format == entry.format
-                                && (old_book.file_hash == loaded.file_hash
-                                    || old_book.file_hash == loaded.legacy_sha256)
+                    Ok(loaded) => {
+                        let parser = self.parser.clone();
+                        let fmt = entry.format;
+                        let bytes_for_parse = loaded.bytes.clone();
+                        let fallback_title = entry.fallback_title.clone();
+                        let sidecar_opf = loaded.sidecar_opf;
+                        let sidecar_cover = loaded.sidecar_cover;
+                        let parsed = match tokio::task::spawn_blocking(move || {
+                            parser.parse_book_with_sidecars(
+                                fmt,
+                                &bytes_for_parse,
+                                &fallback_title,
+                                sidecar_opf.as_deref(),
+                                sidecar_cover,
+                            )
                         })
-                        .map(|(k, _)| k.clone());
-
-                    if let Some(old_rel) = matched_old_key
-                        && let Some(mut migrated) = existing_by_path.remove(&old_rel)
-                    {
-                        migrated.source = BookSource::MountedFile {
-                            relative_path: entry.relative_path,
-                            file_mtime: entry.file_mtime,
+                        .await
+                        {
+                            Ok(Ok(p)) => Some(p),
+                            Ok(Err(err)) => {
+                                tracing::warn!(
+                                    library_id = %library_id,
+                                    path = %entry.relative_path,
+                                    error = %err,
+                                    "failed to parse new book during scan"
+                                );
+                                None
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    library_id = %library_id,
+                                    path = %entry.relative_path,
+                                    error = %err,
+                                    "new book parse task panicked during scan"
+                                );
+                                None
+                            }
                         };
-                        if let Some(cover) = &parsed.cover
-                            && let Ok(cover_key) = self.storage.save_cover(migrated.id, cover).await
-                        {
-                            migrated.set_cover(Some(cover_key));
+                        if let Some(parsed) = parsed {
+                            // Check whether this is a moved/renamed existing book in the same library
+                            let matched_old_key = existing_by_path
+                                .iter()
+                                .find(|(old_rel, old_book)| {
+                                    !entry_paths.contains(*old_rel)
+                                        && old_book.format == entry.format
+                                        && (old_book.file_hash == loaded.file_hash
+                                            || old_book.file_hash == loaded.legacy_sha256)
+                                })
+                                .map(|(k, _)| k.clone());
+
+                            if let Some(old_rel) = matched_old_key
+                                && let Some(mut migrated) = existing_by_path.remove(&old_rel)
+                            {
+                                migrated.source = BookSource::MountedFile {
+                                    relative_path: entry.relative_path,
+                                    file_mtime: entry.file_mtime,
+                                };
+                                if let Some(cover) = &parsed.cover
+                                    && let Ok(cover_key) =
+                                        self.storage.save_cover(migrated.id, cover).await
+                                {
+                                    migrated.set_cover(Some(cover_key));
+                                }
+                                let _ = migrated.update_metadata(parsed.metadata);
+                                migrated.mark_present(
+                                    entry.file_size,
+                                    loaded.file_hash,
+                                    Some(entry.file_mtime),
+                                );
+                                self.books.save(&migrated).await?;
+                                updated += 1;
+                            } else {
+                                let mut book = Book::new(
+                                    library_id,
+                                    entry.format,
+                                    BookSource::MountedFile {
+                                        relative_path: entry.relative_path,
+                                        file_mtime: entry.file_mtime,
+                                    },
+                                    entry.file_size,
+                                    loaded.file_hash,
+                                    None,
+                                    parsed.metadata,
+                                )?;
+
+                                if let Some(cover) = &parsed.cover
+                                    && let Ok(cover_key) =
+                                        self.storage.save_cover(book.id, cover).await
+                                {
+                                    book.set_cover(Some(cover_key));
+                                }
+
+                                self.books.save(&book).await?;
+                                added += 1;
+                            }
                         }
-                        let _ = migrated.update_metadata(parsed.metadata);
-                        migrated.mark_present(
-                            entry.file_size,
-                            loaded.file_hash,
-                            Some(entry.file_mtime),
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            library_id = %library_id,
+                            path = %entry.relative_path,
+                            error = %err,
+                            "failed to read new book file during scan"
                         );
-                        self.books.save(&migrated).await?;
-                        updated += 1;
-                    } else {
-                        let mut book = Book::new(
-                            library_id,
-                            entry.format,
-                            BookSource::MountedFile {
-                                relative_path: entry.relative_path,
-                                file_mtime: entry.file_mtime,
-                            },
-                            entry.file_size,
-                            loaded.file_hash,
-                            None,
-                            parsed.metadata,
-                        )?;
-
-                        if let Some(cover) = &parsed.cover
-                            && let Ok(cover_key) = self.storage.save_cover(book.id, cover).await
-                        {
-                            book.set_cover(Some(cover_key));
-                        }
-
-                        self.books.save(&book).await?;
-                        added += 1;
                     }
                 }
             }

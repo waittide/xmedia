@@ -107,9 +107,35 @@ impl BookRepository for ToastyBookRepository {
             .as_ref()
             .map(|ids| ids.iter().copied().collect());
 
+        let mut restricted_ids: Option<Vec<Uuid>> = match (&fav_filter, &shelf_filter) {
+            (Some(favs), Some(shelf)) => Some(favs.intersection(shelf).map(|id| id.0).collect()),
+            (Some(favs), None) => Some(favs.iter().map(|id| id.0).collect()),
+            (None, Some(shelf)) => Some(shelf.iter().map(|id| id.0).collect()),
+            (None, None) => None,
+        };
+        if let Some(ref mut ids) = restricted_ids {
+            if ids.is_empty() {
+                return Ok(PagedResult {
+                    items: Vec::new(),
+                    total: 0,
+                    page: query.page,
+                    page_size: query.page_size,
+                });
+            }
+            ids.sort_unstable();
+            ids.dedup();
+        }
+
         let effective_lib_ids: Vec<Uuid> = query.library_ids.iter().map(|l| l.0).collect();
 
         let mut builder = BookModel::all();
+        if let Some(ids) = restricted_ids {
+            if ids.len() == 1 {
+                builder = builder.filter(BookModel::fields().id().eq(ids[0]));
+            } else {
+                builder = builder.filter(BookModel::fields().id().in_list(ids));
+            }
+        }
         if effective_lib_ids.len() == 1 {
             builder = builder.filter(BookModel::fields().library_id().eq(effective_lib_ids[0]));
         } else if effective_lib_ids.len() > 1 {

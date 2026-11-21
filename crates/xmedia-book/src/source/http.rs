@@ -826,6 +826,15 @@ impl LegadoHttpClient {
     }
 
     pub fn fetch(&self, raw_url: &str, base_url: &str) -> Result<HttpFetchResult, String> {
+        self.fetch_with_timeout(raw_url, base_url, None)
+    }
+
+    pub fn fetch_with_timeout(
+        &self,
+        raw_url: &str,
+        base_url: &str,
+        timeout_override: Option<Duration>,
+    ) -> Result<HttpFetchResult, String> {
         let parsed = parse_legado_url(raw_url);
         if let Some(res) = try_resolve_data_url(&parsed) {
             return res;
@@ -925,6 +934,12 @@ impl LegadoHttpClient {
             .client
             .request(method.clone(), validated.clone())
             .headers(header_map);
+        if let Some(override_timeout) = timeout_override {
+            let clamped = override_timeout
+                .min(Duration::from_secs(self.config.timeout_secs.max(1)))
+                .max(Duration::from_millis(100));
+            req = req.timeout(clamped);
+        }
 
         if method != reqwest::Method::GET
             && method != reqwest::Method::HEAD

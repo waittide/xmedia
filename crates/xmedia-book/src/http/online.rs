@@ -471,9 +471,11 @@ async fn download_packaged_file(
     if let Ok(len_val) = HeaderValue::from_str(&range_stream.total_size.to_string()) {
         resp.headers_mut().insert(CONTENT_LENGTH, len_val);
     }
+    let encoded_name = form_urlencoded::byte_serialize(file_name.as_bytes())
+        .map(|chunk| chunk.replace('+', "%20"))
+        .collect::<String>();
     if let Ok(cd) = HeaderValue::from_str(&format!(
-        "attachment; filename=\"{safe_name}\"; filename*=UTF-8''{}",
-        form_urlencoded::byte_serialize(file_name.as_bytes()).collect::<String>()
+        "attachment; filename=\"{safe_name}\"; filename*=UTF-8''{encoded_name}"
     )) {
         resp.headers_mut().insert(CONTENT_DISPOSITION, cd);
     }
@@ -497,28 +499,28 @@ async fn track_online_book(
 
 async fn get_tracked_toc(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path(id): Path<Uuid>,
     Query(q): Query<RefreshQuery>,
 ) -> ApiResult<Json<TrackedTocResponseDto>> {
     let toc = state
         .services
         .online
-        .get_tracked_toc(BookId(id), q.refresh)
+        .get_tracked_toc(&user, BookId(id), q.refresh)
         .await?;
     Ok(Json(toc))
 }
 
 async fn get_tracked_chapter(
     State(state): State<BookHttpState>,
-    WebAuth(_user): WebAuth,
+    WebAuth(user): WebAuth,
     Path((id, index)): Path<(Uuid, usize)>,
     Query(q): Query<RefreshQuery>,
 ) -> ApiResult<Json<TrackedChapterResponseDto>> {
     let ch = state
         .services
         .online
-        .get_tracked_chapter(BookId(id), index, q.refresh)
+        .get_tracked_chapter(&user, BookId(id), index, q.refresh)
         .await?;
     Ok(Json(ch))
 }
@@ -549,9 +551,7 @@ async fn sync_tracked_epub(
     Path(id): Path<Uuid>,
     Query(q): Query<SyncEpubQuery>,
 ) -> ApiResult<Json<BookSummaryDto>> {
-    if q.force {
-        require_admin(&user)?;
-    }
+    require_admin(&user)?;
     let book = state
         .services
         .online

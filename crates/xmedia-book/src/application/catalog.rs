@@ -392,14 +392,18 @@ impl BookCatalogService {
     pub async fn delete_book(&self, actor: &User, book_id: BookId) -> DomainResult<()> {
         require_admin(actor)?;
         let book = self.find_book(book_id).await?;
-        if let Some(storage_key) = book.source.storage_key() {
-            let _ = self.storage.delete_managed_book(storage_key).await;
-        }
-        if let Some(cover_key) = &book.cover_key {
-            let _ = self.storage.delete_cover(cover_key).await;
-        }
         self.readings.delete_by_book(book_id).await?;
         self.books.delete(book_id).await?;
+        if let Some(storage_key) = book.source.storage_key()
+            && let Err(err) = self.storage.delete_managed_book(storage_key).await
+        {
+            tracing::warn!(book_id = %book_id, error = %err, "failed to remove managed book file after DB deletion");
+        }
+        if let Some(cover_key) = &book.cover_key
+            && let Err(err) = self.storage.delete_cover(cover_key).await
+        {
+            tracing::warn!(book_id = %book_id, error = %err, "failed to remove book cover after DB deletion");
+        }
         if let Some(hook) = self
             .on_book_deleted
             .read()
@@ -476,6 +480,10 @@ impl BookCatalogService {
             None
         };
         Ok((stored, cover_key))
+    }
+
+    pub(crate) async fn delete_managed_book_file(&self, storage_key: &str) -> DomainResult<()> {
+        self.storage.delete_managed_book(storage_key).await
     }
 
     pub(crate) async fn save_cover_raw(
