@@ -709,3 +709,916 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod unit_tests {
+    use std::net::SocketAddr;
+
+    use crate::resolve_allow_private_ips_for_testing;
+
+    #[test]
+    fn resolve_allow_private_ips_for_testing_gates_strictly_on_loopback() {
+        let loopback_v4: SocketAddr = "127.0.0.1:8090".parse().unwrap();
+        let loopback_v6: SocketAddr = "[::1]:8090".parse().unwrap();
+        let wildcard_v4: SocketAddr = "0.0.0.0:8090".parse().unwrap();
+        let wildcard_v6: SocketAddr = "[::]:8090".parse().unwrap();
+        let lan_v4: SocketAddr = "192.168.1.5:8090".parse().unwrap();
+
+        for env_val in [None, Some(""), Some("0"), Some("true"), Some("yes")] {
+            assert!(!resolve_allow_private_ips_for_testing(loopback_v4, env_val));
+            assert!(!resolve_allow_private_ips_for_testing(loopback_v6, env_val));
+            assert!(!resolve_allow_private_ips_for_testing(wildcard_v4, env_val));
+            assert!(!resolve_allow_private_ips_for_testing(wildcard_v6, env_val));
+            assert!(!resolve_allow_private_ips_for_testing(lan_v4, env_val));
+        }
+
+        assert!(resolve_allow_private_ips_for_testing(
+            loopback_v4,
+            Some("1")
+        ));
+        assert!(resolve_allow_private_ips_for_testing(
+            loopback_v4,
+            Some(" 1 ")
+        ));
+        assert!(resolve_allow_private_ips_for_testing(
+            loopback_v6,
+            Some("1")
+        ));
+
+        assert!(!resolve_allow_private_ips_for_testing(
+            wildcard_v4,
+            Some("1")
+        ));
+        assert!(!resolve_allow_private_ips_for_testing(
+            wildcard_v6,
+            Some("1")
+        ));
+        assert!(!resolve_allow_private_ips_for_testing(lan_v4, Some("1")));
+    }
+}
+
+#[cfg(all(test, feature = "comic", feature = "music", feature = "video"))]
+mod gateway_seed_tests {
+    use axum::Router;
+    use axum::body::{Body, to_bytes};
+    use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+    use axum::http::{Request, StatusCode};
+    use axum::routing::get;
+    use tempfile::TempDir;
+    use tokio::net::TcpListener;
+    use tower::ServiceExt;
+    use xmedia_core::application::dto::{CreateUserInput, SetupAdminInput};
+    use xmedia_core::domain::user::UserRole;
+
+    use crate::{XMediaApp, XMediaConfig, XMediaInitOptions};
+
+    const PNG_1X1: &[u8] = &[
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
+        0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00,
+        0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+    ];
+
+    fn make_cfg(dir: &TempDir) -> XMediaConfig {
+        let db_path = dir.path().join("xmedia.db");
+        XMediaConfig {
+            data_dir: dir.path().to_path_buf(),
+            database_url: format!("sqlite:{}", db_path.display()),
+            secret: "gateway-seed-test-secret-0123456789".into(),
+            jwt_ttl_secs: 3600,
+            ffmpeg_bin: "__missing_ffmpeg__".into(),
+            external_web_dir: None,
+        }
+    }
+
+    async fn setup_admin_and_member(app_instance: &XMediaApp) -> (String, String) {
+        let admin_sess = app_instance
+            .auth
+            .setup_initial_admin(SetupAdminInput {
+                username: "admin".into(),
+                display_name: Some("Admin".into()),
+                password: "adminpassword123".into(),
+            })
+            .await
+            .unwrap();
+        let admin = app_instance
+            .auth
+            .authenticate_jwt(&admin_sess.token)
+            .await
+            .unwrap();
+        app_instance
+            .auth
+            .create_user(
+                &admin,
+                CreateUserInput {
+                    username: "member".into(),
+                    display_name: Some("Member".into()),
+                    password: "memberpassword123".into(),
+                    role: UserRole::Member,
+                },
+            )
+            .await
+            .unwrap();
+        let member_sess = app_instance
+            .auth
+            .login("member", "memberpassword123")
+            .await
+            .unwrap();
+        (admin_sess.token, member_sess.token)
+    }
+
+    async fn send_req(
+        router: &Router,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Body,
+        content_type: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(t) = token {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {t}"));
+        }
+        if let Some(ct) = content_type {
+            builder = builder.header(CONTENT_TYPE, ct);
+        }
+        let resp = router
+            .clone()
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json = if bytes.is_empty() {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+                serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+            })
+        };
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn import_seeds_authz_bodies_counts_idempotency_and_concurrency() {
+        let tmp = TempDir::new().unwrap();
+        let app_instance = XMediaApp::connect_and_init(make_cfg(&tmp)).await.unwrap();
+        let (admin_token, member_token) = setup_admin_and_member(&app_instance).await;
+        let app = &app_instance.router;
+
+        // Fresh startup must have 0 online sources
+        for domain in ["comic", "music", "video"] {
+            let (st, json) = send_req(
+                app,
+                "GET",
+                &format!("/api/v1/{domain}/sources"),
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+            assert_eq!(json.as_array().unwrap().len(), 0);
+        }
+
+        // Unauthenticated -> 401; non-admin -> 403 forbidden
+        for domain in ["comic", "music", "video"] {
+            let uri = format!("/api/v1/{domain}/sources/import-seeds");
+            let (st_unauth, _) = send_req(app, "POST", &uri, None, Body::empty(), None).await;
+            assert_eq!(st_unauth, StatusCode::UNAUTHORIZED);
+
+            let (st_member, json_member) = send_req(
+                app,
+                "POST",
+                &uri,
+                Some(&member_token),
+                Body::from("{}"),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_member, StatusCode::FORBIDDEN);
+            assert_eq!(json_member["error"]["code"], "forbidden");
+        }
+
+        // Malformed non-empty bodies -> 400 Bad Request
+        for bad_body in ["not json", "[1,2]", "123", "null", "\"text\""] {
+            let (st_bad, json_bad) = send_req(
+                app,
+                "POST",
+                "/api/v1/comic/sources/import-seeds",
+                Some(&admin_token),
+                Body::from(bad_body),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_bad, StatusCode::BAD_REQUEST, "body={bad_body}");
+            assert_eq!(json_bad["error"]["code"], "validation_error");
+        }
+
+        // Empty body (no Content-Type) on comic -> 200 OK, 5 seeds
+        let (st_comic, json_comic) = send_req(
+            app,
+            "POST",
+            "/api/v1/comic/sources/import-seeds",
+            Some(&admin_token),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_comic, StatusCode::OK);
+        assert_eq!(json_comic["imported_count"], 5);
+        assert_eq!(json_comic["updated_count"], 0);
+        assert_eq!(json_comic["sources"].as_array().unwrap().len(), 5);
+
+        // JSON {} body on music (4 seeds) and video (6 seeds)
+        for (domain, expected_count) in [("music", 4usize), ("video", 6usize)] {
+            let (st, json) = send_req(
+                app,
+                "POST",
+                &format!("/api/v1/{domain}/sources/import-seeds"),
+                Some(&admin_token),
+                Body::from("{}"),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+            assert_eq!(json["imported_count"], expected_count);
+            assert_eq!(json["updated_count"], 0);
+            assert_eq!(json["sources"].as_array().unwrap().len(), expected_count);
+        }
+
+        // Second call is idempotent (imported_count == 0, UUIDs preserved)
+        for (domain, expected_count) in [("comic", 5usize), ("music", 4usize), ("video", 6usize)] {
+            let (_, before) = send_req(
+                app,
+                "GET",
+                &format!("/api/v1/{domain}/sources"),
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            let before_ids: Vec<&str> = before
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["id"].as_str().unwrap())
+                .collect();
+
+            let (st2, rep2) = send_req(
+                app,
+                "POST",
+                &format!("/api/v1/{domain}/sources/import-seeds"),
+                Some(&admin_token),
+                Body::from("{}"),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st2, StatusCode::OK);
+            assert_eq!(rep2["imported_count"], 0);
+            assert_eq!(rep2["updated_count"], 0);
+            assert_eq!(rep2["sources"].as_array().unwrap().len(), expected_count);
+
+            let (_, after) = send_req(
+                app,
+                "GET",
+                &format!("/api/v1/{domain}/sources"),
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            let after_ids: Vec<&str> = after
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(after_ids, before_ids);
+        }
+
+        // Concurrent import-seeds on a fresh DB must not insert duplicate rows
+        let tmp_conc = TempDir::new().unwrap();
+        let conc_app = XMediaApp::connect_and_init(make_cfg(&tmp_conc))
+            .await
+            .unwrap();
+        let (conc_admin, _) = setup_admin_and_member(&conc_app).await;
+        let r = &conc_app.router;
+        let (r1, r2, r3, r4) = tokio::join!(
+            send_req(
+                r,
+                "POST",
+                "/api/v1/comic/sources/import-seeds",
+                Some(&conc_admin),
+                Body::empty(),
+                None,
+            ),
+            send_req(
+                r,
+                "POST",
+                "/api/v1/comic/sources/import-seeds",
+                Some(&conc_admin),
+                Body::from("{}"),
+                Some("application/json"),
+            ),
+            send_req(
+                r,
+                "POST",
+                "/api/v1/comic/sources/import-seeds",
+                Some(&conc_admin),
+                Body::empty(),
+                None,
+            ),
+            send_req(
+                r,
+                "POST",
+                "/api/v1/comic/sources/import-seeds",
+                Some(&conc_admin),
+                Body::from("{}"),
+                Some("application/json"),
+            ),
+        );
+        for (st, _) in [&r1, &r2, &r3, &r4] {
+            assert_eq!(*st, StatusCode::OK);
+        }
+        let total_imported: u64 = [&r1, &r2, &r3, &r4]
+            .iter()
+            .map(|(_, j)| j["imported_count"].as_u64().unwrap())
+            .sum();
+        assert_eq!(total_imported, 5);
+        let (_, listed) = send_req(
+            r,
+            "GET",
+            "/api/v1/comic/sources",
+            Some(&conc_admin),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(listed.as_array().unwrap().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn import_seeds_t2_f11_02_non_overwrite_and_db_reconnect_persistence() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = make_cfg(&tmp);
+        let expected_module_count: usize;
+        let disabled_comic_id: String;
+        let deleted_music_id: String;
+        let video_var_id: String;
+        let large_var = "V".repeat(64 * 1024);
+
+        {
+            let app_instance = XMediaApp::connect_and_init(cfg.clone()).await.unwrap();
+            expected_module_count = app_instance.enabled_modules.len();
+            let (admin_token, _) = setup_admin_and_member(&app_instance).await;
+            let app = &app_instance.router;
+
+            for domain in ["comic", "music", "video"] {
+                let (st, _) = send_req(
+                    app,
+                    "POST",
+                    &format!("/api/v1/{domain}/sources/import-seeds"),
+                    Some(&admin_token),
+                    Body::from("{}"),
+                    Some("application/json"),
+                )
+                .await;
+                assert_eq!(st, StatusCode::OK);
+            }
+
+            let (_, comic_list) = send_req(
+                app,
+                "GET",
+                "/api/v1/comic/sources",
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            let comic_arr = comic_list.as_array().unwrap();
+            let deleted_comic_id = comic_arr[0]["id"].as_str().unwrap().to_string();
+            disabled_comic_id = comic_arr[1]["id"].as_str().unwrap().to_string();
+
+            // T2-F11-02: Delete 1 seed and disable/mutate 1 seed
+            let (st_del, _) = send_req(
+                app,
+                "DELETE",
+                &format!("/api/v1/comic/sources/{deleted_comic_id}"),
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            assert!(st_del.is_success());
+
+            let (st_patch, _) = send_req(
+                app,
+                "PATCH",
+                &format!("/api/v1/comic/sources/{disabled_comic_id}"),
+                Some(&admin_token),
+                Body::from(
+                    serde_json::json!({
+                        "enabled": false,
+                        "weight": 99,
+                        "group_name": "Persisted"
+                    })
+                    .to_string(),
+                ),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_patch, StatusCode::OK);
+
+            // Re-call import-seeds -> restores deleted seed (1), preserves disabled seed untouched
+            let (st_reimp, reimp) = send_req(
+                app,
+                "POST",
+                "/api/v1/comic/sources/import-seeds",
+                Some(&admin_token),
+                Body::from("{}"),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_reimp, StatusCode::OK);
+            assert_eq!(reimp["imported_count"], 1);
+            assert_eq!(reimp["updated_count"], 0);
+            assert_eq!(reimp["sources"].as_array().unwrap().len(), 5);
+
+            // Delete 1 music source & set 64 KiB variable on 1 video source
+            let (_, music_list) = send_req(
+                app,
+                "GET",
+                "/api/v1/music/sources",
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            deleted_music_id = music_list[0]["id"].as_str().unwrap().to_string();
+            let (st_mdel, _) = send_req(
+                app,
+                "DELETE",
+                &format!("/api/v1/music/sources/{deleted_music_id}"),
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            assert!(st_mdel.is_success());
+
+            let (_, video_list) = send_req(
+                app,
+                "GET",
+                "/api/v1/video/sources",
+                Some(&admin_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            video_var_id = video_list[0]["id"].as_str().unwrap().to_string();
+            let (st_vpatch, _) = send_req(
+                app,
+                "PATCH",
+                &format!("/api/v1/video/sources/{video_var_id}"),
+                Some(&admin_token),
+                Body::from(serde_json::json!({ "variable": large_var }).to_string()),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_vpatch, StatusCode::OK);
+        }
+
+        // Reconnect fresh XMediaApp to the exact same SQLite DB & data_dir
+        let reopened = XMediaApp::connect_and_init(cfg).await.unwrap();
+        let app2 = &reopened.router;
+        let (st_login, login_json) = send_req(
+            app2,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Body::from(
+                serde_json::json!({ "username": "admin", "password": "adminpassword123" })
+                    .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        assert_eq!(st_login, StatusCode::OK);
+        let token2 = login_json["token"].as_str().unwrap();
+
+        // Default managed libraries intact
+        let (st_ov, ov_json) = send_req(
+            app2,
+            "GET",
+            "/api/v1/system/overview",
+            Some(token2),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_ov, StatusCode::OK);
+        assert_eq!(
+            ov_json["libraries"].as_array().unwrap().len(),
+            expected_module_count
+        );
+
+        // Comic mutations & restored seed persisted
+        let (_, comic_after) = send_req(
+            app2,
+            "GET",
+            "/api/v1/comic/sources",
+            Some(token2),
+            Body::empty(),
+            None,
+        )
+        .await;
+        let comic_arr2 = comic_after.as_array().unwrap();
+        assert_eq!(comic_arr2.len(), 5);
+        let disabled_entry = comic_arr2
+            .iter()
+            .find(|s| s["id"].as_str() == Some(&disabled_comic_id))
+            .expect("disabled comic seed must persist");
+        assert_eq!(disabled_entry["enabled"], false);
+        assert_eq!(disabled_entry["weight"], 99);
+        assert_eq!(disabled_entry["group_name"], "Persisted");
+
+        // Deleted music source remains deleted
+        let (_, music_after) = send_req(
+            app2,
+            "GET",
+            "/api/v1/music/sources",
+            Some(token2),
+            Body::empty(),
+            None,
+        )
+        .await;
+        let music_arr2 = music_after.as_array().unwrap();
+        assert_eq!(music_arr2.len(), 3);
+        assert!(
+            music_arr2
+                .iter()
+                .all(|s| s["id"].as_str() != Some(&deleted_music_id))
+        );
+
+        // 64 KiB variable persisted
+        let (st_var, var_json) = send_req(
+            app2,
+            "GET",
+            &format!("/api/v1/video/sources/{video_var_id}/variable"),
+            Some(token2),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_var, StatusCode::OK);
+        assert_eq!(var_json["variable"].as_str().unwrap(), large_var);
+    }
+
+    #[tokio::test]
+    async fn loopback_allow_private_ips_gating_through_gateway() {
+        let mock_router = Router::new()
+            .route(
+                "/search",
+                get(|| async {
+                    axum::Json(serde_json::json!({
+                        "items": [{
+                            "title": "Local Mock Comic",
+                            "url": "/comic/1",
+                            "cover": "/cover.png"
+                        }]
+                    }))
+                }),
+            )
+            .route(
+                "/cover.png",
+                get(|| async { ([(CONTENT_TYPE, "image/png")], PNG_1X1.to_vec()) }),
+            );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            axum::serve(listener, mock_router).await.unwrap();
+        });
+
+        let base_url = format!("http://{addr}");
+        let comic_source_json = serde_json::json!({
+            "bookSourceName": "Loopback Mock Comic",
+            "bookSourceUrl": base_url,
+            "bookSourceType": 2,
+            "searchUrl": format!("{base_url}/search?q={{{{key}}}}"),
+            "ruleSearch": {
+                "bookList": "$.items[*]",
+                "name": "$.title",
+                "bookUrl": "$.url",
+                "coverUrl": "$.cover"
+            }
+        })
+        .to_string();
+
+        // 1. Default allow_private_ips == false blocks loopback requests
+        {
+            let tmp_blocked = TempDir::new().unwrap();
+            let app_blocked = XMediaApp::connect_and_init(make_cfg(&tmp_blocked))
+                .await
+                .unwrap();
+            let (token, _) = setup_admin_and_member(&app_blocked).await;
+
+            let (st_imp, imp_json) = send_req(
+                &app_blocked.router,
+                "POST",
+                "/api/v1/comic/sources/import",
+                Some(&token),
+                Body::from(serde_json::json!({ "raw_json": comic_source_json }).to_string()),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_imp, StatusCode::OK);
+            let source_id = imp_json["sources"][0]["id"].as_str().unwrap();
+
+            let (st_search, search_json) = send_req(
+                &app_blocked.router,
+                "POST",
+                "/api/v1/comic/online/search",
+                Some(&token),
+                Body::from(serde_json::json!({ "keyword": "test" }).to_string()),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_search, StatusCode::OK);
+            assert!(search_json["results"].as_array().unwrap().is_empty());
+            assert!(!search_json["errors"].as_array().unwrap().is_empty());
+
+            let (st_proxy, _) = send_req(
+                &app_blocked.router,
+                "GET",
+                &format!(
+                    "/api/v1/comic/online/image-proxy?url={base_url}/cover.png&source_id={source_id}"
+                ),
+                Some(&token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            assert!(
+                st_proxy == StatusCode::BAD_REQUEST || st_proxy == StatusCode::FORBIDDEN,
+                "expected SSRF rejection, got {st_proxy}"
+            );
+
+            for proxy_path in [
+                format!("/api/v1/music/online/cover-proxy?url={base_url}/cover.png"),
+                format!("/api/v1/video/online/poster-proxy?url={base_url}/cover.png"),
+            ] {
+                let (st_dom_proxy, _) = send_req(
+                    &app_blocked.router,
+                    "GET",
+                    &proxy_path,
+                    Some(&token),
+                    Body::empty(),
+                    None,
+                )
+                .await;
+                assert!(
+                    st_dom_proxy == StatusCode::BAD_REQUEST
+                        || st_dom_proxy == StatusCode::FORBIDDEN,
+                    "expected SSRF rejection on {proxy_path}, got {st_dom_proxy}"
+                );
+            }
+        }
+
+        // 2. Opt-in allow_private_ips == true allows loopback mock server
+        {
+            let tmp_allowed = TempDir::new().unwrap();
+            let app_allowed = XMediaApp::connect_and_init_with_options(
+                make_cfg(&tmp_allowed),
+                XMediaInitOptions {
+                    allow_private_ips: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let (token, _) = setup_admin_and_member(&app_allowed).await;
+
+            let (st_imp, imp_json) = send_req(
+                &app_allowed.router,
+                "POST",
+                "/api/v1/comic/sources/import",
+                Some(&token),
+                Body::from(serde_json::json!({ "raw_json": comic_source_json }).to_string()),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_imp, StatusCode::OK);
+            let source_id = imp_json["sources"][0]["id"].as_str().unwrap();
+
+            let (st_search, search_json) = send_req(
+                &app_allowed.router,
+                "POST",
+                "/api/v1/comic/online/search",
+                Some(&token),
+                Body::from(serde_json::json!({ "keyword": "test" }).to_string()),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_search, StatusCode::OK);
+            assert_eq!(search_json["results"].as_array().unwrap().len(), 1);
+            assert_eq!(search_json["results"][0]["title"], "Local Mock Comic");
+
+            let proxy_resp = app_allowed
+                .router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!(
+                            "/api/v1/comic/online/image-proxy?url={base_url}/cover.png&source_id={source_id}"
+                        ))
+                        .header(AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(proxy_resp.status(), StatusCode::OK);
+            assert_eq!(
+                proxy_resp
+                    .headers()
+                    .get(CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok()),
+                Some("image/png")
+            );
+
+            for proxy_path in [
+                format!("/api/v1/music/online/cover-proxy?url={base_url}/cover.png"),
+                format!("/api/v1/video/online/poster-proxy?url={base_url}/cover.png"),
+            ] {
+                let dom_resp = app_allowed
+                    .router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("GET")
+                            .uri(&proxy_path)
+                            .header(AUTHORIZATION, format!("Bearer {token}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    dom_resp.status(),
+                    StatusCode::OK,
+                    "expected 200 OK on {proxy_path}"
+                );
+                assert_eq!(
+                    dom_resp
+                        .headers()
+                        .get(CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok()),
+                    Some("image/png")
+                );
+            }
+        }
+
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn startup_seed_sources_option_is_opt_in_and_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let cfg = make_cfg(&tmp);
+
+        // Default startup: seed_sources == false -> 0 sources
+        {
+            let app_default = XMediaApp::connect_and_init(cfg.clone()).await.unwrap();
+            let (token, _) = setup_admin_and_member(&app_default).await;
+            for domain in ["comic", "music", "video"] {
+                let (st, list) = send_req(
+                    &app_default.router,
+                    "GET",
+                    &format!("/api/v1/{domain}/sources"),
+                    Some(&token),
+                    Body::empty(),
+                    None,
+                )
+                .await;
+                assert_eq!(st, StatusCode::OK);
+                assert_eq!(list.as_array().unwrap().len(), 0);
+            }
+        }
+
+        // Reconnect with seed_sources: true -> populates all domain seeds
+        let disabled_id: String;
+        {
+            let app_seeded = XMediaApp::connect_and_init_with_options(
+                cfg.clone(),
+                XMediaInitOptions {
+                    seed_sources: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            let (_, login_json) = send_req(
+                &app_seeded.router,
+                "POST",
+                "/api/v1/auth/login",
+                None,
+                Body::from(
+                    serde_json::json!({ "username": "admin", "password": "adminpassword123" })
+                        .to_string(),
+                ),
+                Some("application/json"),
+            )
+            .await;
+            let token = login_json["token"].as_str().unwrap();
+
+            for (domain, expected) in [("comic", 5usize), ("music", 4usize), ("video", 6usize)] {
+                let (st, list) = send_req(
+                    &app_seeded.router,
+                    "GET",
+                    &format!("/api/v1/{domain}/sources"),
+                    Some(token),
+                    Body::empty(),
+                    None,
+                )
+                .await;
+                assert_eq!(st, StatusCode::OK);
+                assert_eq!(list.as_array().unwrap().len(), expected);
+            }
+
+            let (_, comic_list) = send_req(
+                &app_seeded.router,
+                "GET",
+                "/api/v1/comic/sources",
+                Some(token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            let del_id = comic_list[0]["id"].as_str().unwrap();
+            disabled_id = comic_list[1]["id"].as_str().unwrap().to_string();
+
+            send_req(
+                &app_seeded.router,
+                "DELETE",
+                &format!("/api/v1/comic/sources/{del_id}"),
+                Some(token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            send_req(
+                &app_seeded.router,
+                "PATCH",
+                &format!("/api/v1/comic/sources/{disabled_id}"),
+                Some(token),
+                Body::from(serde_json::json!({ "enabled": false }).to_string()),
+                Some("application/json"),
+            )
+            .await;
+        }
+
+        // Second startup with seed_sources: true -> restores missing, preserves disabled state
+        let app_seeded_again = XMediaApp::connect_and_init_with_options(
+            cfg,
+            XMediaInitOptions {
+                seed_sources: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (_, login_json2) = send_req(
+            &app_seeded_again.router,
+            "POST",
+            "/api/v1/auth/login",
+            None,
+            Body::from(
+                serde_json::json!({ "username": "admin", "password": "adminpassword123" })
+                    .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        let token2 = login_json2["token"].as_str().unwrap();
+
+        let (_, comic_after) = send_req(
+            &app_seeded_again.router,
+            "GET",
+            "/api/v1/comic/sources",
+            Some(token2),
+            Body::empty(),
+            None,
+        )
+        .await;
+        let arr = comic_after.as_array().unwrap();
+        assert_eq!(arr.len(), 5);
+        let disabled_entry = arr
+            .iter()
+            .find(|s| s["id"].as_str() == Some(&disabled_id))
+            .unwrap();
+        assert_eq!(disabled_entry["enabled"], false);
+    }
+}
