@@ -267,7 +267,7 @@ impl MediaDomainLifecycle for BookDomainLifecycle {
         let books = self.books.list_by_library(library_id).await?;
         let mut book_ids = Vec::with_capacity(books.len());
         for book in &books {
-            if let BookSource::ManagedUpload { storage_key } = &book.source {
+            if let Some(storage_key) = book.source.storage_key() {
                 let _ = self.storage.delete_managed_book(storage_key).await;
             }
             if let Some(cover_key) = &book.cover_key {

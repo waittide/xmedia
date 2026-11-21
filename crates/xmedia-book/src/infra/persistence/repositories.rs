@@ -922,6 +922,34 @@ impl BookSourceRepository for ToastyBookSourceRepository {
         Ok(())
     }
 
+    async fn update_existing(&self, source: &BookSourceRecord) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut rec) = BookSourceRecordModel::filter_by_id(source.id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        else {
+            return Ok(false);
+        };
+        rec.update()
+            .name(source.name.clone())
+            .source_url(source.source_url.clone())
+            .group_name(source.group_name.clone())
+            .enabled(source.enabled)
+            .weight(source.weight)
+            .source_type(source.source_type)
+            .raw_json(source.raw_json.clone())
+            .runtime_state(toasty::Json(source.runtime_state.clone()))
+            .last_test_ok(source.last_test_ok)
+            .last_test_msg(source.last_test_msg.clone())
+            .updated_at(source.updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(true)
+    }
+
     async fn update_runtime_state(
         &self,
         id: Uuid,
@@ -943,6 +971,103 @@ impl BookSourceRepository for ToastyBookSourceRepository {
                 .map_err(db_err)?;
         }
         Ok(())
+    }
+
+    async fn update_test_result(
+        &self,
+        id: Uuid,
+        runtime_state: SourceRuntimeState,
+        last_test_ok: bool,
+        last_test_msg: Option<String>,
+        updated_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        else {
+            return Ok(false);
+        };
+        rec.update()
+            .runtime_state(toasty::Json(runtime_state))
+            .last_test_ok(Some(last_test_ok))
+            .last_test_msg(last_test_msg)
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(true)
+    }
+
+    async fn update_weight_if_exists(
+        &self,
+        id: Uuid,
+        weight: i64,
+        updated_at: Timestamp,
+    ) -> DomainResult<Option<BookSourceRecord>> {
+        let mut db = self.db.clone();
+        let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        else {
+            return Ok(None);
+        };
+        let next_raw =
+            BookSourceRecord::sync_raw_json_fields(&rec.raw_json, None, Some(weight), None);
+        rec.update()
+            .weight(weight)
+            .raw_json(next_raw.clone())
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        let mut domain = Self::to_domain(rec);
+        domain.weight = weight;
+        domain.raw_json = next_raw;
+        domain.updated_at = updated_at;
+        Ok(Some(domain))
+    }
+
+    async fn update_batch_fields_if_exists(
+        &self,
+        id: Uuid,
+        enabled: Option<bool>,
+        group_name: Option<String>,
+        updated_at: Timestamp,
+    ) -> DomainResult<bool> {
+        let mut db = self.db.clone();
+        let Some(mut rec) = BookSourceRecordModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        else {
+            return Ok(false);
+        };
+        let next_enabled = enabled.unwrap_or(rec.enabled);
+        let next_group = group_name
+            .as_deref()
+            .map(|g| g.trim().to_string())
+            .unwrap_or_else(|| rec.group_name.clone());
+        let next_raw = BookSourceRecord::sync_raw_json_fields(
+            &rec.raw_json,
+            enabled,
+            None,
+            group_name.as_deref(),
+        );
+        rec.update()
+            .enabled(next_enabled)
+            .group_name(next_group)
+            .raw_json(next_raw)
+            .updated_at(updated_at)
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?;
+        Ok(true)
     }
 
     async fn delete(&self, id: Uuid) -> DomainResult<()> {

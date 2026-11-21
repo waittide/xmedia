@@ -21,6 +21,42 @@ pub struct BookSourceRecord {
     pub updated_at: Timestamp,
 }
 
+impl BookSourceRecord {
+    /// Synchronizes mutable top-level metadata (`enabled`, `weight`, `bookSourceGroup`)
+    /// into a Legado `raw_json` string so exported JSON stays consistent with DB state.
+    pub fn sync_raw_json_fields(
+        raw_json: &str,
+        enabled: Option<bool>,
+        weight: Option<i64>,
+        group_name: Option<&str>,
+    ) -> String {
+        let Ok(mut val) = serde_json::from_str::<serde_json::Value>(raw_json) else {
+            return raw_json.to_string();
+        };
+        let Some(obj) = val.as_object_mut() else {
+            return raw_json.to_string();
+        };
+        if let Some(en) = enabled {
+            obj.insert("enabled".into(), serde_json::Value::Bool(en));
+        }
+        if let Some(w) = weight {
+            obj.insert("weight".into(), serde_json::Value::from(w));
+        }
+        if let Some(g) = group_name {
+            let trimmed = g.trim();
+            if trimmed.is_empty() {
+                obj.remove("bookSourceGroup");
+            } else {
+                obj.insert(
+                    "bookSourceGroup".into(),
+                    serde_json::Value::String(trimmed.to_string()),
+                );
+            }
+        }
+        serde_json::to_string(&val).unwrap_or_else(|_| raw_json.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OnlineShelfBook {
     pub id: Uuid,
