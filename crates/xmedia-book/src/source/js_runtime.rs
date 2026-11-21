@@ -19,7 +19,9 @@ use crate::source::model::{
 use crate::source::rule::{RuleValue, eval_non_js_list, eval_non_js_single};
 
 const JS_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
-const JS_MAX_STACK_BYTES: usize = 2 * 1024 * 1024;
+// Keep QuickJS stack cap well below Linux's default 2 MiB Rust/Tokio worker thread stack
+// so deep JS recursion raises a catchable InternalError instead of triggering OS SIGSEGV.
+const JS_MAX_STACK_BYTES: usize = 384 * 1024;
 
 pub const MAX_TEMP_VARS_ENTRIES: usize = 512;
 pub const MAX_TEMP_VARS_BYTES: usize = 4 * 1024 * 1024;
@@ -465,7 +467,10 @@ impl LegadoJsSession {
                 let diag = b.diagnostics.clone();
                 let f = Function::new(ctx.clone(), move |url: String, title: String| {
                     let clean_url = url.trim().to_string();
-                    if !clean_url.is_empty() && !clean_url.starts_with("data:") {
+                    let is_safe_http = url::Url::parse(&clean_url)
+                        .ok()
+                        .is_some_and(|u| matches!(u.scheme(), "http" | "https"));
+                    if is_safe_http {
                         let mut g = diag.lock().unwrap_or_else(|e| e.into_inner());
                         if g.browser_urls.len() < 10 {
                             g.browser_urls.push(BrowserRedirectHint {

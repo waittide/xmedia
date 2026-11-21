@@ -532,6 +532,13 @@ struct ChapterProgressEvent {
     from_cache: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ChapterFetchOptions {
+    force_refresh: bool,
+    include_logs: bool,
+    allow_shared_cache_write: bool,
+}
+
 type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>>;
 
 pub struct BookOnlineService {
@@ -546,6 +553,7 @@ pub struct BookOnlineService {
     epub_sync_locks: AsyncLockMap<BookId>,
     pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>>,
     track_locks: AsyncLockMap<(Uuid, String)>,
+    source_state_locks: AsyncLockMap<Uuid>,
     downloads: Arc<RwLock<HashMap<Uuid, StoredDownloadJob>>>,
     allow_private_ips: bool,
 }
@@ -630,6 +638,7 @@ impl BookOnlineService {
             epub_sync_locks,
             pending_sync_gens,
             track_locks: Arc::new(Mutex::new(HashMap::new())),
+            source_state_locks: Arc::new(Mutex::new(HashMap::new())),
             downloads: Arc::new(RwLock::new(HashMap::new())),
             allow_private_ips,
         })
@@ -763,13 +772,42 @@ impl BookOnlineService {
         Ok(rec.runtime_state.variable)
     }
 
+    fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self
+            .source_state_locks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            guard
+                .entry(id)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
+    }
+
     async fn persist_runtime_state(
         &self,
         id: Uuid,
         new_state: SourceRuntimeState,
     ) -> DomainResult<()> {
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
+        let merged = if let Some(current_rec) = self.sources.find_by_id(id).await? {
+            let mut merged = current_rec.runtime_state;
+            merged.cookies.extend(new_state.cookies);
+            merged.cache.extend(new_state.cache);
+            merged.login_info.extend(new_state.login_info);
+            if !new_state.variable.is_empty() {
+                merged.variable = new_state.variable;
+            }
+            if !new_state.android_id.is_empty() {
+                merged.android_id = new_state.android_id;
+            }
+            merged
+        } else {
+            new_state
+        };
         self.sources
-            .update_runtime_state(id, new_state, Timestamp::now())
+            .update_runtime_state(id, merged, Timestamp::now())
             .await
     }
 
@@ -2009,11 +2047,10 @@ impl BookOnlineService {
         chapter_url: &str,
         book_ctx: BookJsContext,
         chapter_ctx: ChapterJsContext,
-        force_refresh: bool,
-        include_logs: bool,
+        opts: ChapterFetchOptions,
     ) -> DomainResult<OnlineContentResponseDto> {
         let source_id = rec.id;
-        if !force_refresh {
+        if !opts.force_refresh {
             let cache_dir = self.cache_dir.clone();
             let ch_url = chapter_url.to_string();
             let cached = tokio::task::spawn_blocking(move || {
@@ -2060,7 +2097,7 @@ impl BookOnlineService {
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_chapter_content");
         }
-        {
+        if opts.allow_shared_cache_write {
             let cache_dir = self.cache_dir.clone();
             let ch_url = chapter_url.to_string();
             let content_clone = out.data.clone();
@@ -2069,7 +2106,7 @@ impl BookOnlineService {
             })
             .await;
         }
-        if !include_logs {
+        if !opts.include_logs {
             out.diagnostics.logs.clear();
         }
 
@@ -2097,8 +2134,11 @@ impl BookOnlineService {
             chapter_url,
             book_ctx,
             chapter_ctx,
-            force_refresh,
-            actor.role.is_admin(),
+            ChapterFetchOptions {
+                force_refresh,
+                include_logs: actor.role.is_admin(),
+                allow_shared_cache_write: actor.role.is_admin(),
+            },
         )
         .await
     }
@@ -2782,8 +2822,11 @@ impl BookOnlineService {
                 &chapter_meta.url,
                 book_ctx,
                 chapter_ctx,
-                force_refresh,
-                false,
+                ChapterFetchOptions {
+                    force_refresh,
+                    include_logs: false,
+                    allow_shared_cache_write: true,
+                },
             )
             .await?;
 
@@ -3465,7 +3508,7 @@ impl BookOnlineService {
         let start = input.start_chapter.unwrap_or(0).min(all_chapters.len());
         let end = input
             .end_chapter
-            .map(|e| (e + 1).min(all_chapters.len()))
+            .map(|e| e.saturating_add(1).min(all_chapters.len()))
             .unwrap_or(all_chapters.len())
             .max(start);
         let selected: Vec<OnlineChapterItem> = all_chapters[start..end].to_vec();

@@ -125,7 +125,8 @@ pub struct Shelf {
 impl Shelf {
     pub fn new(user_id: UserId, name: impl Into<String>, is_favorite: bool) -> DomainResult<Self> {
         let name = name.into().trim().to_string();
-        if name.is_empty() || name.len() > 80 {
+        let char_len = name.chars().count();
+        if char_len == 0 || char_len > 80 {
             return Err(DomainError::Validation(
                 "shelf name must be between 1 and 80 characters".into(),
             ));
@@ -144,7 +145,8 @@ impl Shelf {
 
     pub fn rename(&mut self, name: impl Into<String>) -> DomainResult<()> {
         let trimmed = name.into().trim().to_string();
-        if trimmed.is_empty() || trimmed.len() > 80 {
+        let char_len = trimmed.chars().count();
+        if char_len == 0 || char_len > 80 {
             return Err(DomainError::Validation(
                 "shelf name must be between 1 and 80 characters".into(),
             ));

@@ -179,12 +179,13 @@ impl TrackedBookStore {
         book_id: BookId,
         chapter: &TrackedChapterFile,
     ) -> Result<u32, String> {
-        let dir = self.chapters_dir(book_id);
-        fs::create_dir_all(&dir).map_err(|e| format!("创建章节缓存目录失败: {e}"))?;
         let data = serde_json::to_vec(chapter).map_err(|e| format!("序列化章节失败: {e}"))?;
 
         let lock = self.lock_for(book_id);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        let dir = self.chapters_dir(book_id);
+        fs::create_dir_all(&dir).map_err(|e| format!("创建章节缓存目录失败: {e}"))?;
 
         write_atomic(&self.chapter_path(book_id, chapter.index), &data)?;
 
@@ -334,6 +335,8 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("创建临时文件 '{}' 失败: {e}", tmp_path.display()))?;
         file.write_all(data)
             .map_err(|e| format!("写入临时文件 '{}' 失败: {e}", tmp_path.display()))?;
+        file.sync_all()
+            .map_err(|e| format!("同步临时文件 '{}' 失败: {e}", tmp_path.display()))?;
     }
     fs::rename(&tmp_path, path)
         .map_err(|e| format!("原子替换文件 '{}' 失败: {e}", path.display()))?;

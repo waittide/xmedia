@@ -152,10 +152,7 @@ pub fn try_resolve_data_url(parsed: &ParsedLegadoUrl) -> Option<Result<HttpFetch
             .or_else(|_| BASE64_NO_PAD.decode(cleaned.trim_end_matches('=')))
             .map_err(|e| format!("data URL base64 解码失败: {e}"))
     } else {
-        Ok(form_urlencoded::parse(payload.as_bytes())
-            .next()
-            .map(|(k, _)| k.into_owned().into_bytes())
-            .unwrap_or_else(|| payload.as_bytes().to_vec()))
+        Ok(percent_decode_bytes(payload.as_bytes()))
     };
 
     let raw_bytes = match bytes {
@@ -252,6 +249,33 @@ pub fn merge_cookie_string(existing: &str, incoming: &str) -> String {
         .join("; ")
 }
 
+fn percent_decode_bytes(input: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'%'
+            && i + 2 < input.len()
+            && let (Some(hi), Some(lo)) = (hex_nibble(input[i + 1]), hex_nibble(input[i + 2]))
+        {
+            out.push((hi << 4) | lo);
+            i += 3;
+            continue;
+        }
+        out.push(input[i]);
+        i += 1;
+    }
+    out
+}
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Checks whether an IP address is private, loopback, link-local, transition, or otherwise non-public.
 pub fn is_restricted_ip(ip: IpAddr) -> bool {
     match ip {
@@ -272,6 +296,9 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
                 && s[4] == 0
                 && s[5] == 0;
             let is_nat64_local = s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0x0001;
+            let is_discard = s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0; // 100::/64
+            let is_benchmarking = s[0] == 0x2001 && s[1] == 0x0002 && s[2] == 0; // 2001:2::/48
+            let is_orchid = s[0] == 0x2001 && (0x0010..=0x002f).contains(&s[1]); // 2001:10::/28 & 2001:20::/28
             let is_6to4 = s[0] == 0x2002;
             let is_teredo = s[0] == 0x2001 && s[1] == 0x0000;
             let is_doc = s[0] == 0x2001 && s[1] == 0x0db8;
@@ -286,6 +313,9 @@ pub fn is_restricted_ip(ip: IpAddr) -> bool {
                 || is_ipv4_translated
                 || is_nat64_well_known
                 || is_nat64_local
+                || is_discard
+                || is_benchmarking
+                || is_orchid
                 || is_6to4
                 || is_teredo
                 || is_doc
@@ -307,6 +337,7 @@ fn is_restricted_ipv4(v4: Ipv4Addr) -> bool {
         || v4.is_unspecified()
         || (a == 100 && (64..=127).contains(&b)) // CGNAT 100.64.0.0/10
         || (a == 192 && b == 0 && c == 0) // IETF protocol assignments 192.0.0.0/24
+        || (a == 192 && b == 88 && c == 99) // 6to4 relay anycast 192.88.99.0/24
         || (a == 198 && (b == 18 || b == 19)) // Benchmarking 198.18.0.0/15
         || (a == 0)
         || (a >= 240)
@@ -467,6 +498,15 @@ pub fn ssrf_redirect_policy(allow_private_ips: bool, max_hops: usize) -> reqwest
                 "重定向次数超过上限 ({max_hops})"
             )));
         }
+        if let Some(prev) = attempt.previous().last()
+            && prev.scheme().eq_ignore_ascii_case("https")
+            && attempt.url().scheme().eq_ignore_ascii_case("http")
+        {
+            return attempt.error(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "禁止从 HTTPS 降级重定向至 HTTP",
+            ));
+        }
         if let Err(reason) = validate_target_url_static(attempt.url().as_str(), allow_private_ips) {
             return attempt.error(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -602,8 +642,11 @@ pub fn get_or_build_blocking_client(
     if let Some(ref proxy) = key.proxy_url {
         let p = reqwest::Proxy::all(proxy.as_str()).map_err(|e| format!("代理配置无效: {e}"))?;
         builder = builder.proxy(p);
-    } else if !key.allow_private_ips {
-        builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
+    } else {
+        builder = builder.no_proxy();
+        if !key.allow_private_ips {
+            builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
+        }
     }
     let client = builder
         .build()
@@ -652,8 +695,11 @@ pub fn get_or_build_async_client(
     if let Some(ref proxy) = key.proxy_url {
         let p = reqwest::Proxy::all(proxy.as_str()).map_err(|e| format!("代理配置无效: {e}"))?;
         builder = builder.proxy(p);
-    } else if !key.allow_private_ips {
-        builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
+    } else {
+        builder = builder.no_proxy();
+        if !key.allow_private_ips {
+            builder = builder.dns_resolver(Arc::new(SsrfSafeResolver));
+        }
     }
     let client = builder
         .build()
@@ -804,7 +850,26 @@ impl LegadoHttpClient {
         let mut has_ua = false;
         let mut has_cookie = false;
 
+        let is_forbidden_custom_header = |name: &str| {
+            matches!(
+                name.to_ascii_lowercase().as_str(),
+                "host"
+                    | "connection"
+                    | "keep-alive"
+                    | "proxy-authenticate"
+                    | "proxy-authorization"
+                    | "te"
+                    | "trailer"
+                    | "transfer-encoding"
+                    | "upgrade"
+                    | "content-length"
+            )
+        };
+
         for (k, v) in &self.default_headers {
+            if is_forbidden_custom_header(k) {
+                continue;
+            }
             if let (Ok(hn), Ok(hv)) = (
                 HeaderName::from_bytes(k.as_bytes()),
                 HeaderValue::from_str(v),
@@ -821,6 +886,9 @@ impl LegadoHttpClient {
 
         if let Some(serde_json::Value::Object(map)) = &parsed.options.headers {
             for (k, v) in map {
+                if is_forbidden_custom_header(k) {
+                    continue;
+                }
                 let val_str = match v {
                     serde_json::Value::String(s) => s.clone(),
                     other => other.to_string(),

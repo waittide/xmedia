@@ -103,13 +103,29 @@ impl RuleValue {
     }
 }
 
+const MAX_RULE_EVAL_DEPTH: usize = 32;
+const MAX_JSON_RECURSIVE_DEPTH: usize = 128;
+
 /// Evaluates a Legado rule to a single string (supports `<js>`, `@js:`, `{{...}}`, `##regex##rep`, `||`, `&&`, JSONPath, CSS/Legado shorthand).
 pub fn eval_rule_string(
     input: &RuleValue,
     rule: &str,
     base_url: &str,
-    mut js: Option<&mut LegadoJsSession>,
+    js: Option<&mut LegadoJsSession>,
 ) -> Result<String, String> {
+    eval_rule_string_depth(input, rule, base_url, js, 0)
+}
+
+fn eval_rule_string_depth(
+    input: &RuleValue,
+    rule: &str,
+    base_url: &str,
+    mut js: Option<&mut LegadoJsSession>,
+    depth: usize,
+) -> Result<String, String> {
+    if depth >= MAX_RULE_EVAL_DEPTH {
+        return Err(format!("规则递归嵌套深度超过上限 ({MAX_RULE_EVAL_DEPTH})"));
+    }
     let trimmed = rule.trim();
     if trimmed.is_empty() {
         return Ok(String::new());
@@ -120,7 +136,8 @@ pub fn eval_rule_string(
         let stage1 = if prefix_rule.is_empty() {
             input.clone()
         } else {
-            let s = eval_rule_string(input, prefix_rule, base_url, js.as_deref_mut())?;
+            let s =
+                eval_rule_string_depth(input, prefix_rule, base_url, js.as_deref_mut(), depth + 1)?;
             RuleValue::from_raw(s)
         };
         let js_session = js
@@ -130,7 +147,7 @@ pub fn eval_rule_string(
         if suffix_rule.is_empty() {
             return Ok(js_out.as_text());
         }
-        return eval_rule_string(&js_out, suffix_rule, base_url, js);
+        return eval_rule_string_depth(&js_out, suffix_rule, base_url, js, depth + 1);
     }
 
     // 2. Check Mustache interpolation `{{...}}`
@@ -143,7 +160,7 @@ pub fn eval_rule_string(
     // 3. Fallback (`||`) and concat (`&&`) outside quotes
     if let Some(parts) = split_top_level_op(trimmed, "||") {
         for part in parts {
-            let res = eval_rule_string(input, part, base_url, js.as_deref_mut())?;
+            let res = eval_rule_string_depth(input, part, base_url, js.as_deref_mut(), depth + 1)?;
             if !res.trim().is_empty() {
                 return Ok(res);
             }
@@ -153,7 +170,7 @@ pub fn eval_rule_string(
     if let Some(parts) = split_top_level_op(trimmed, "&&") {
         let mut out = Vec::new();
         for part in parts {
-            let res = eval_rule_string(input, part, base_url, js.as_deref_mut())?;
+            let res = eval_rule_string_depth(input, part, base_url, js.as_deref_mut(), depth + 1)?;
             if !res.trim().is_empty() {
                 out.push(res);
             }
@@ -172,8 +189,23 @@ pub fn eval_rule_list(
     input: &RuleValue,
     rule: &str,
     base_url: &str,
-    mut js: Option<&mut LegadoJsSession>,
+    js: Option<&mut LegadoJsSession>,
 ) -> Result<Vec<RuleValue>, String> {
+    eval_rule_list_depth(input, rule, base_url, js, 0)
+}
+
+fn eval_rule_list_depth(
+    input: &RuleValue,
+    rule: &str,
+    base_url: &str,
+    mut js: Option<&mut LegadoJsSession>,
+    depth: usize,
+) -> Result<Vec<RuleValue>, String> {
+    if depth >= MAX_RULE_EVAL_DEPTH {
+        return Err(format!(
+            "列表规则递归嵌套深度超过上限 ({MAX_RULE_EVAL_DEPTH})"
+        ));
+    }
     let trimmed = rule.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
@@ -184,7 +216,8 @@ pub fn eval_rule_list(
         let stage1 = if prefix_rule.is_empty() {
             input.clone()
         } else {
-            let s = eval_rule_string(input, prefix_rule, base_url, js.as_deref_mut())?;
+            let s =
+                eval_rule_string_depth(input, prefix_rule, base_url, js.as_deref_mut(), depth + 1)?;
             RuleValue::from_raw(s)
         };
         let js_session = js
@@ -194,13 +227,13 @@ pub fn eval_rule_list(
         if suffix_rule.is_empty() {
             return Ok(value_to_list(js_out));
         }
-        return eval_rule_list(&js_out, suffix_rule, base_url, js);
+        return eval_rule_list_depth(&js_out, suffix_rule, base_url, js, depth + 1);
     }
 
     // 2. Fallback `||`
     if let Some(parts) = split_top_level_op(trimmed, "||") {
         for part in parts {
-            let list = eval_rule_list(input, part, base_url, js.as_deref_mut())?;
+            let list = eval_rule_list_depth(input, part, base_url, js.as_deref_mut(), depth + 1)?;
             if !list.is_empty() {
                 return Ok(list);
             }
@@ -639,18 +672,30 @@ fn collect_recursive_field<'a>(
     key: &str,
     out: &mut Vec<&'a serde_json::Value>,
 ) {
+    collect_recursive_field_depth(node, key, out, 0);
+}
+
+fn collect_recursive_field_depth<'a>(
+    node: &'a serde_json::Value,
+    key: &str,
+    out: &mut Vec<&'a serde_json::Value>,
+    depth: usize,
+) {
+    if depth >= MAX_JSON_RECURSIVE_DEPTH {
+        return;
+    }
     match node {
         serde_json::Value::Object(map) => {
             if let Some(v) = map.get(key) {
                 out.push(v);
             }
             for v in map.values() {
-                collect_recursive_field(v, key, out);
+                collect_recursive_field_depth(v, key, out, depth + 1);
             }
         }
         serde_json::Value::Array(arr) => {
             for el in arr {
-                collect_recursive_field(el, key, out);
+                collect_recursive_field_depth(el, key, out, depth + 1);
             }
         }
         _ => {}
@@ -783,8 +828,9 @@ fn is_attr_extractor(s: &str) -> bool {
     if s.is_empty() || s.contains(' ') || s.contains('.') || s.contains('#') || s.contains('>') {
         return false;
     }
+    let lower = s.to_ascii_lowercase();
     matches!(
-        s.to_ascii_lowercase().as_str(),
+        lower.as_str(),
         "text"
             | "textnodes"
             | "owntext"
@@ -792,15 +838,26 @@ fn is_attr_extractor(s: &str) -> bool {
             | "all"
             | "href"
             | "src"
-            | "data-src"
-            | "data-original"
+            | "srcset"
             | "content"
             | "title"
             | "alt"
             | "value"
-    ) || s
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            | "id"
+            | "class"
+            | "name"
+            | "rel"
+            | "type"
+            | "style"
+            | "poster"
+            | "action"
+            | "target"
+            | "placeholder"
+            | "datetime"
+            | "lang"
+            | "property"
+    ) || lower.starts_with("data-")
+        || lower.starts_with("aria-")
 }
 
 fn extract_attr_from_element(el: ElementRef<'_>, attr: &str, base_url: &str) -> Option<String> {
