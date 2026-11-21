@@ -79,6 +79,7 @@ pub struct MusicOnlineService {
     pub(super) sources: Arc<dyn MusicSourceRepository>,
     pub(super) engine: MusicSourceEngine,
     pub(super) source_state_locks: AsyncLockMap<Uuid>,
+    pub(super) seed_import_lock: tokio::sync::Mutex<()>,
     pub(super) allow_private_ips: bool,
 }
 
@@ -96,6 +97,7 @@ impl MusicOnlineService {
             sources,
             engine,
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
         }
     }

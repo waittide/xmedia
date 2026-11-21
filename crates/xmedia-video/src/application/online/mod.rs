@@ -42,6 +42,7 @@ pub struct VideoOnlineService {
     engine: VideoSourceEngine,
     http_config: HttpClientConfig,
     source_state_locks: AsyncLockMap<Uuid>,
+    seed_import_lock: tokio::sync::Mutex<()>,
     allow_private_ips: bool,
 }
 
@@ -61,6 +62,7 @@ impl VideoOnlineService {
             engine,
             http_config,
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
         }
     }

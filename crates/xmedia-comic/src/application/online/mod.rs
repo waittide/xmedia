@@ -26,6 +26,7 @@ pub struct ComicOnlineService {
     sources: Arc<dyn ComicSourceRepository>,
     engine: ComicSourceEngine,
     source_state_locks: AsyncLockMap<Uuid>,
+    seed_import_lock: tokio::sync::Mutex<()>,
     allow_private_ips: bool,
 }
 
@@ -43,6 +44,7 @@ impl ComicOnlineService {
             sources,
             engine,
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
         }
     }
