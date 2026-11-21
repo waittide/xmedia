@@ -5,6 +5,7 @@ import {
   onBeforeUnmount,
   ref,
   shallowRef,
+  toRef,
   triggerRef,
   watch,
 } from 'vue'
@@ -13,8 +14,7 @@ import MdDialog from '@/components/ui/MdDialog.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
-import { buildEpubAssetUrl, toolApi } from '../api'
-import BookEditorCssPanel, { cssPresets } from './book-editor/BookEditorCssPanel.vue'
+import BookEditorCssPanel from './book-editor/BookEditorCssPanel.vue'
 import BookEditorFindReplaceBar from './book-editor/BookEditorFindReplaceBar.vue'
 import BookEditorHeader from './book-editor/BookEditorHeader.vue'
 import BookEditorProofreadPanel from './book-editor/BookEditorProofreadPanel.vue'
@@ -26,6 +26,7 @@ import {
   type ChapterRecord,
   type SurfaceMode,
 } from './book-editor/useBookEditorChapters'
+import { useBookEditorDocument } from './book-editor/useBookEditorDocument'
 import { useBookEditorFindReplace } from './book-editor/useBookEditorFindReplace'
 import {
   countNonWhitespace,
@@ -34,13 +35,7 @@ import {
   hydrateXhtmlForBrowser as hydrateXhtmlForBrowserRaw,
   serializeContainerToValidXhtml,
 } from './book-editor/xhtmlUtils'
-import type {
-  BookTextTransformOptions,
-  EditableBookChapterDto,
-  MediaFileDetail,
-  MediaFileEntry,
-  SaveBookChapterInput,
-} from '../types'
+import type { MediaFileDetail, MediaFileEntry } from '../types'
 
 const props = defineProps<{
   open: boolean
@@ -57,16 +52,7 @@ const dialogStore = useDialogStore()
 const snackbar = useSnackbarStore()
 const themeStore = useThemeStore()
 
-const loading = ref(false)
-const saving = ref(false)
-const converting = ref(false)
-const resegmenting = ref(false)
-const transforming = ref(false)
-const polishing = ref(false)
-const uploadingImage = ref(false)
 const errorMsg = ref<string | null>(null)
-const savedBadge = ref(false)
-
 const docFormat = ref<'txt' | 'epub'>('epub')
 const docTitle = ref('')
 const docAuthors = ref<string[]>([])
@@ -90,19 +76,17 @@ const previewSrcdoc = ref('')
 
 const wysiwygRef = ref<HTMLDivElement | null>(null)
 const sourceTextareaRef = ref<HTMLTextAreaElement | null>(null)
+const findBarRef = ref<InstanceType<typeof BookEditorFindReplaceBar> | null>(null)
+const epubImageInputRef = ref<HTMLInputElement | null>(null)
+
 let isComposing = false
 let idleSyncTimer: ReturnType<typeof setTimeout> | null = null
-let savedBadgeTimer: ReturnType<typeof setTimeout> | null = null
-let cssPreviewSyncTimer: ReturnType<typeof setTimeout> | null = null
 
 const tocResetKey = ref(0)
 const deleteSourceTxt = ref(false)
-const findBarRef = ref<InstanceType<typeof BookEditorFindReplaceBar> | null>(null)
-
 const proofreadPanelOpen = ref(false)
 const cssPanelOpen = ref(false)
 const transformScope = ref<'book' | 'chapter'>('book')
-const epubImageInputRef = ref<HTMLInputElement | null>(null)
 
 function showToast(msg: string): void {
   snackbar.show(msg)
@@ -251,6 +235,62 @@ const {
   showToast,
 })
 
+const {
+  loading,
+  saving,
+  converting,
+  resegmenting,
+  transforming,
+  polishing,
+  uploadingImage,
+  savedBadge,
+  applyCssPreset,
+  syncPrimaryCssDraftToStylesheets,
+  runBackendTextTransform,
+  onEpubImagePicked,
+  handlePolishInEditor,
+  handleResegmentTxt,
+  handleSaveInPlace,
+  handleConvertToEpub,
+} = useBookEditorDocument({
+  open: toRef(props, 'open'),
+  entry: toRef(props, 'entry'),
+  docFormat,
+  docTitle,
+  docAuthors,
+  docStylesheets,
+  forceHorizontalSpine,
+  primaryCssDraft,
+  chapters,
+  activeIndex,
+  activeTitle,
+  hasUnsavedEdits,
+  surfaceMode,
+  showLivePreview,
+  sourceBuffer,
+  previewSrcdoc,
+  wysiwygRef,
+  sourceTextareaRef,
+  currentRecord,
+  tocResetKey,
+  deleteSourceTxt,
+  transformScope,
+  errorMsg,
+  mapDtoList,
+  flushActiveSurfaceToRecord,
+  mountActiveChapterIntoSurface,
+  buildLivePreviewSrcdoc,
+  confirmResegment: () =>
+    dialogStore.confirm({
+      title: '重新切分章节',
+      message: '按新规则重新切分原 TXT 将覆盖当前未保存的修改，确定继续吗？',
+      danger: true,
+    }),
+  showToast,
+  onSaved: (detail) => emit('saved', detail),
+  onConverted: (detail, deleted) => emit('converted', detail, deleted),
+})
+
 function scheduleIdleMetricsUpdate(): void {
   clearIdleSyncTimer()
   idleSyncTimer = setTimeout(() => {
@@ -363,7 +403,6 @@ watch(
   },
 )
 
-// Formatting Commands
 function execWysiwygCmd(command: string, value?: string): void {
   if (surfaceMode.value !== 'wysiwyg' || !wysiwygRef.value) return
   wysiwygRef.value.focus()
@@ -417,338 +456,9 @@ function insertHorizontalRule(): void {
   }
 }
 
-function applyCssPreset(cssCode: string, label: string): void {
-  primaryCssDraft.value = cssCode
-  syncPrimaryCssDraftToStylesheets()
-  showToast(`已应用「${label}」排版样式预设`)
-}
-
-function syncPrimaryCssDraftToStylesheets(): void {
-  const next = [...docStylesheets.value]
-  if (next.length === 0) {
-    next.push(primaryCssDraft.value)
-  } else {
-    next[0] = primaryCssDraft.value
-  }
-  docStylesheets.value = next
-  hasUnsavedEdits.value = true
-  if (cssPreviewSyncTimer) clearTimeout(cssPreviewSyncTimer)
-  cssPreviewSyncTimer = setTimeout(() => {
-    cssPreviewSyncTimer = null
-    if (showLivePreview.value && currentRecord.value && props.open) {
-      flushActiveSurfaceToRecord()
-      previewSrcdoc.value = buildLivePreviewSrcdoc(
-        currentRecord.value.xhtmlBody,
-        currentRecord.value.sourceHref,
-      )
-    }
-  }, 160)
-}
-
-async function runBackendTextTransform(
-  options: BookTextTransformOptions,
-  summaryLabel: string,
-): Promise<void> {
-  if (transforming.value || chapters.value.length === 0) return
-  flushActiveSurfaceToRecord()
-  transforming.value = true
-  errorMsg.value = null
-  try {
-    const targetIndices =
-      transformScope.value === 'chapter' && !options.vertical_to_horizontal
-        ? [activeIndex.value]
-        : chapters.value.map((_, i) => i)
-
-    const inputDtos: EditableBookChapterDto[] = targetIndices.map((idx) => {
-      const ch = chapters.value[idx]!
-      return {
-        id: ch.key,
-        title: ch.title,
-        level: ch.level,
-        plain_text: ch.plainCache,
-        xhtml_body: ch.xhtmlBody,
-        has_rich_media: ch.hasRichMedia,
-        source_href: ch.sourceHref,
-      }
-    })
-
-    const res = await toolApi.transformBookContent(inputDtos, docStylesheets.value, options)
-    res.chapters.forEach((dto, pos) => {
-      const idx = targetIndices[pos]
-      const rec = idx !== undefined ? chapters.value[idx] : undefined
-      if (!rec) return
-      rec.title = dto.title
-      rec.xhtmlBody = dto.xhtml_body
-      rec.plainCache = extractPlainFromXhtml(dto.xhtml_body, dto.title)
-      rec.charCount = countNonWhitespace(rec.plainCache)
-      if (idx === activeIndex.value) {
-        activeTitle.value = rec.title
-      }
-    })
-
-    if (options.vertical_to_horizontal) {
-      docStylesheets.value = res.stylesheets
-      primaryCssDraft.value = res.stylesheets[0] ?? primaryCssDraft.value
-      forceHorizontalSpine.value = true
-    }
-
-    hasUnsavedEdits.value = true
-    triggerRef(chapters)
-    await mountActiveChapterIntoSurface()
-    showToast(`${summaryLabel}完成（共更新 ${res.changed_chapters} 章）`)
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    transforming.value = false
-  }
-}
-
 function triggerEpubImageUpload(): void {
   if (docFormat.value !== 'epub' || uploadingImage.value) return
   epubImageInputRef.value?.click()
-}
-
-async function onEpubImagePicked(ev: Event): Promise<void> {
-  const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file || !props.entry || !currentRecord.value) return
-
-  uploadingImage.value = true
-  errorMsg.value = null
-  try {
-    flushActiveSurfaceToRecord()
-    const inserted = await toolApi.uploadBookEpubImage(
-      props.entry.root_id,
-      props.entry.rel_path,
-      file,
-      currentRecord.value.sourceHref,
-    )
-    const browserUrl = buildEpubAssetUrl(
-      props.entry.root_id,
-      props.entry.rel_path,
-      inserted.asset_path,
-    )
-    const altText = escapeXml(file.name.replace(/\.[^.]+$/, '') || '插图')
-
-    if (surfaceMode.value === 'wysiwyg' && wysiwygRef.value) {
-      wysiwygRef.value.focus()
-      document.execCommand(
-        'insertHTML',
-        false,
-        `<figure><img src="${escapeXml(browserUrl)}" data-epub-src="${escapeXml(inserted.chapter_rel_href)}" alt="${altText}"/></figure><p><br/></p>`,
-      )
-      flushActiveSurfaceToRecord()
-    } else {
-      const snippet = `\n  <figure><img src="${escapeXml(inserted.chapter_rel_href)}" alt="${altText}"/></figure>\n`
-      if (sourceTextareaRef.value) {
-        const pos = sourceTextareaRef.value.selectionStart ?? sourceBuffer.value.length
-        sourceBuffer.value = `${sourceBuffer.value.slice(0, pos)}${snippet}${sourceBuffer.value.slice(pos)}`
-      } else {
-        sourceBuffer.value = `${sourceBuffer.value}${snippet}`
-      }
-      flushActiveSurfaceToRecord()
-    }
-
-    currentRecord.value.hasRichMedia = true
-    hasUnsavedEdits.value = true
-    triggerRef(chapters)
-    if (showLivePreview.value) {
-      previewSrcdoc.value = buildLivePreviewSrcdoc(
-        currentRecord.value.xhtmlBody,
-        currentRecord.value.sourceHref,
-      )
-    }
-    showToast('图片已写入 EPUB 资源包并插入当前章节')
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    uploadingImage.value = false
-  }
-}
-
-async function handlePolishInEditor(): Promise<void> {
-  if (!props.entry || docFormat.value !== 'epub' || polishing.value || saving.value) return
-  polishing.value = true
-  errorMsg.value = null
-  try {
-    if (hasUnsavedEdits.value && chapters.value.length > 0) {
-      await toolApi.saveBookContent(
-        props.entry.root_id,
-        props.entry.rel_path,
-        buildSavePayload(),
-        docStylesheets.value.length > 0 ? docStylesheets.value : undefined,
-        forceHorizontalSpine.value,
-      )
-      hasUnsavedEdits.value = false
-      forceHorizontalSpine.value = false
-    }
-    const res = await toolApi.polishBook(props.entry.root_id, props.entry.rel_path)
-    emit('saved', res.detail)
-    await loadDocument()
-    showToast(
-      res.removed_orphan_files > 0
-        ? `抛光完成：已生成内封简介页并清理 ${res.removed_orphan_files} 个冗余资源`
-        : '抛光完成：已更新内封简介页并同步双目录',
-    )
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    polishing.value = false
-  }
-}
-
-// Load, Save (In-Place Ctrl+S), Resegment & Convert
-let loadDocSeq = 0
-
-async function loadDocument(): Promise<void> {
-  if (!props.entry) return
-  const seq = ++loadDocSeq
-  loading.value = true
-  errorMsg.value = null
-  hasUnsavedEdits.value = false
-  savedBadge.value = false
-  tocResetKey.value += 1
-  forceHorizontalSpine.value = false
-
-  try {
-    const doc = await toolApi.getBookContent(props.entry.root_id, props.entry.rel_path)
-    if (seq !== loadDocSeq || !props.open) return
-    docFormat.value = doc.format
-    docTitle.value = doc.title
-    docAuthors.value = doc.authors
-    docStylesheets.value = doc.stylesheets ?? []
-    primaryCssDraft.value = doc.stylesheets?.[0] ?? cssPresets[0]!.css
-    chapters.value = mapDtoList(doc.chapters)
-    activeIndex.value = 0
-    surfaceMode.value = 'wysiwyg'
-    loading.value = false
-    await mountActiveChapterIntoSurface()
-  } catch (err) {
-    if (seq !== loadDocSeq) return
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-    chapters.value = []
-  } finally {
-    if (seq === loadDocSeq) {
-      loading.value = false
-    }
-  }
-}
-
-watch(
-  () => [props.open, props.entry?.rel_path] as const,
-  ([isOpen]) => {
-    if (isOpen && props.entry) {
-      deleteSourceTxt.value = false
-      void loadDocument()
-    } else if (!isOpen) {
-      loadDocSeq += 1
-      if (cssPreviewSyncTimer) {
-        clearTimeout(cssPreviewSyncTimer)
-        cssPreviewSyncTimer = null
-      }
-      chapters.value = []
-      docStylesheets.value = []
-      previewSrcdoc.value = ''
-      sourceBuffer.value = ''
-    }
-  },
-  { immediate: true },
-)
-
-async function handleResegmentTxt(
-  chapterRegex?: string,
-  volumeRegex?: string,
-): Promise<void> {
-  if (!props.entry || resegmenting.value) return
-  if (hasUnsavedEdits.value) {
-    const ok = await dialogStore.confirm({
-      title: '重新切分章节',
-      message: '按新规则重新切分原 TXT 将覆盖当前未保存的修改，确定继续吗？',
-      danger: true,
-    })
-    if (!ok) return
-  }
-  resegmenting.value = true
-  errorMsg.value = null
-  try {
-    const res = await toolApi.resegmentTxtBook(
-      props.entry.root_id,
-      props.entry.rel_path,
-      chapterRegex,
-      volumeRegex,
-    )
-    chapters.value = mapDtoList(res)
-    activeIndex.value = 0
-    hasUnsavedEdits.value = true
-    await mountActiveChapterIntoSurface()
-    showToast(`已重新切分为 ${res.length} 个章节`)
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    resegmenting.value = false
-  }
-}
-
-function buildSavePayload(): SaveBookChapterInput[] {
-  flushActiveSurfaceToRecord()
-  return chapters.value.map((ch, idx) => ({
-    title: ch.title.trim() || `第 ${idx + 1} 章`,
-    level: ch.level,
-    mode: 'xhtml',
-    plain_text: ch.plainCache,
-    xhtml_body: ch.xhtmlBody,
-    source_href: ch.sourceHref,
-  }))
-}
-
-async function handleSaveInPlace(): Promise<void> {
-  if (!props.entry || saving.value || chapters.value.length === 0) return
-  saving.value = true
-  errorMsg.value = null
-  try {
-    const updated = await toolApi.saveBookContent(
-      props.entry.root_id,
-      props.entry.rel_path,
-      buildSavePayload(),
-      docStylesheets.value.length > 0 ? docStylesheets.value : undefined,
-      forceHorizontalSpine.value,
-    )
-    hasUnsavedEdits.value = false
-    forceHorizontalSpine.value = false
-    savedBadge.value = true
-    if (savedBadgeTimer) clearTimeout(savedBadgeTimer)
-    savedBadgeTimer = setTimeout(() => {
-      savedBadge.value = false
-    }, 2200)
-    emit('saved', updated)
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    saving.value = false
-  }
-}
-
-async function handleConvertToEpub(): Promise<void> {
-  if (!props.entry || converting.value || chapters.value.length === 0) return
-  converting.value = true
-  errorMsg.value = null
-  try {
-    const res = await toolApi.convertTxtToEpub(
-      props.entry.root_id,
-      props.entry.rel_path,
-      buildSavePayload(),
-      deleteSourceTxt.value,
-      docStylesheets.value.length > 0 ? docStylesheets.value : undefined,
-    )
-    hasUnsavedEdits.value = false
-    emit('converted', res.detail, res.deleted_source_txt)
-    showToast(`已打包生成 EPUB：${res.detail.entry.file_name}`)
-  } catch (err) {
-    errorMsg.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    converting.value = false
-  }
 }
 
 async function requestClose(): Promise<void> {
@@ -802,8 +512,6 @@ watch(
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleWorkbenchKeydown)
   clearIdleSyncTimer()
-  if (savedBadgeTimer) clearTimeout(savedBadgeTimer)
-  if (cssPreviewSyncTimer) clearTimeout(cssPreviewSyncTimer)
 })
 </script>
 
@@ -845,7 +553,6 @@ onBeforeUnmount(() => {
         @change="onEpubImagePicked"
       />
 
-      <!-- Error Banner -->
       <div
         v-if="errorMsg"
         class="flex shrink-0 items-center justify-between gap-2 border-b border-[var(--md-sys-color-error)]/30 bg-[var(--md-sys-color-error-container)] px-4 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
@@ -860,7 +567,6 @@ onBeforeUnmount(() => {
         </button>
       </div>
 
-      <!-- Loading Skeleton -->
       <div
         v-if="loading"
         class="flex flex-1 flex-col items-center justify-center gap-2.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
@@ -869,7 +575,6 @@ onBeforeUnmount(() => {
         <span>正在加载书籍目录结构与样式…</span>
       </div>
 
-      <!-- 3-Column Workbench Body -->
       <div v-else class="relative flex min-h-0 flex-1 overflow-hidden">
         <BookEditorTocSidebar
           :chapters="chapters"
@@ -892,7 +597,6 @@ onBeforeUnmount(() => {
           @resegment-txt="handleResegmentTxt"
         />
 
-        <!-- Zero-Latency WYSIWYG / XHTML Editor -->
         <div class="flex min-w-0 flex-1 flex-col bg-[var(--md-sys-color-surface)]">
           <BookEditorToolbar
             :surface-mode="surfaceMode"
@@ -954,7 +658,6 @@ onBeforeUnmount(() => {
             @close="findBarOpen = false"
           />
 
-          <!-- Chapter Title Header Input -->
           <div class="flex shrink-0 items-center gap-3 border-b border-[var(--md-sys-color-outline-variant)]/60 px-6 py-2.5">
             <span class="shrink-0 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
               #{{ activeIndex + 1 }}
@@ -971,12 +674,8 @@ onBeforeUnmount(() => {
             </span>
           </div>
 
-          <!-- Editor Surface: Direct Click-to-Edit WYSIWYG vs XHTML Source -->
           <div class="relative min-h-0 flex-1 overflow-y-auto">
-            <div
-              v-show="surfaceMode === 'wysiwyg'"
-              class="mx-auto max-w-3xl px-6 py-6 sm:px-10"
-            >
+            <div v-show="surfaceMode === 'wysiwyg'" class="mx-auto max-w-3xl px-6 py-6 sm:px-10">
               <div
                 ref="wysiwygRef"
                 contenteditable="true"
@@ -1003,7 +702,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- Toggleable Real EPUB Stylesheet & Image Live Preview -->
         <aside
           v-if="showLivePreview"
           class="hidden w-[38%] max-w-xl shrink-0 flex-col border-l border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] lg:flex"
