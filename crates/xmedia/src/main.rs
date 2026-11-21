@@ -7,7 +7,10 @@ use clap::Parser;
 use tokio::net::TcpListener;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use xmedia::{DEFAULT_DEV_SECRET, XMediaApp, XMediaConfig};
+use xmedia::{
+    DEFAULT_DEV_SECRET, XMediaApp, XMediaConfig, XMediaInitOptions,
+    resolve_allow_private_ips_for_testing,
+};
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::infra::security::generate_random_secret_hex;
 
@@ -55,6 +58,10 @@ struct Cli {
     /// Optional external frontend build directory (`web/dist`) overriding embedded assets
     #[arg(long, env = "XMEDIA_WEB_DIR")]
     web_dir: Option<PathBuf>,
+
+    /// Seed curated online sources for enabled domains on startup (insert-if-missing)
+    #[arg(long, env = "XMEDIA_SEED_SOURCES", default_value_t = false)]
+    seed_sources: bool,
 }
 
 fn load_or_generate_secret(data_dir: &Path) -> anyhow::Result<String> {
@@ -132,8 +139,15 @@ async fn main() -> anyhow::Result<()> {
         format!("sqlite:{}", sqlite_path.display())
     });
 
+    let allow_private_ips = resolve_allow_private_ips_for_testing(
+        cli.bind,
+        std::env::var("XMEDIA_ALLOW_PRIVATE_IPS_FOR_TESTING")
+            .ok()
+            .as_deref(),
+    );
+
     info!("connecting database ({})", redact_db_url(&database_url));
-    let app = XMediaApp::connect_and_init_with_cors_origins(
+    let app = XMediaApp::connect_and_init_with_options(
         XMediaConfig {
             data_dir: cli.data_dir,
             database_url,
@@ -142,8 +156,12 @@ async fn main() -> anyhow::Result<()> {
             ffmpeg_bin: cli.ffmpeg_bin,
             external_web_dir: cli.web_dir,
         },
-        false,
-        &cli.cors_allow_origins,
+        XMediaInitOptions {
+            allow_permissive_cors: false,
+            cors_allow_origins: cli.cors_allow_origins,
+            allow_private_ips,
+            seed_sources: cli.seed_sources,
+        },
     )
     .await?;
 

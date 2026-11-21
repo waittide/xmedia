@@ -1,7 +1,9 @@
 pub mod gateway;
+pub mod seeds;
 pub mod static_files;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
@@ -31,6 +33,25 @@ use gateway::{FfmpegStatusCache, GatewayState, SseConnectionLimiter, core_api_ro
 
 pub const DEFAULT_DEV_SECRET: &str = "xmedia-change-this-secret-in-production";
 
+pub fn resolve_allow_private_ips_for_testing(bind: SocketAddr, env_val: Option<&str>) -> bool {
+    let requested = env_val.map(str::trim) == Some("1");
+    if !requested {
+        return false;
+    }
+    if !bind.ip().is_loopback() {
+        tracing::warn!(
+            %bind,
+            "ignoring XMEDIA_ALLOW_PRIVATE_IPS_FOR_TESTING=1 because bind address is not loopback"
+        );
+        return false;
+    }
+    tracing::warn!(
+        %bind,
+        "XMEDIA_ALLOW_PRIVATE_IPS_FOR_TESTING=1 enabled on loopback bind; SSRF private-IP checks are relaxed for testing"
+    );
+    true
+}
+
 #[derive(Debug, Clone)]
 pub struct XMediaConfig {
     pub data_dir: PathBuf,
@@ -39,6 +60,14 @@ pub struct XMediaConfig {
     pub jwt_ttl_secs: u64,
     pub ffmpeg_bin: String,
     pub external_web_dir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct XMediaInitOptions {
+    pub allow_permissive_cors: bool,
+    pub cors_allow_origins: Vec<String>,
+    pub allow_private_ips: bool,
+    pub seed_sources: bool,
 }
 
 pub struct XMediaApp {
@@ -51,20 +80,42 @@ pub struct XMediaApp {
 
 impl XMediaApp {
     pub async fn connect_and_init(cfg: XMediaConfig) -> anyhow::Result<Self> {
-        Self::connect_and_init_with_cors_origins(cfg, false, &[]).await
+        Self::connect_and_init_with_options(cfg, XMediaInitOptions::default()).await
     }
 
     pub async fn connect_and_init_with_cors(
         cfg: XMediaConfig,
         allow_permissive_cors: bool,
     ) -> anyhow::Result<Self> {
-        Self::connect_and_init_with_cors_origins(cfg, allow_permissive_cors, &[]).await
+        Self::connect_and_init_with_options(
+            cfg,
+            XMediaInitOptions {
+                allow_permissive_cors,
+                ..Default::default()
+            },
+        )
+        .await
     }
 
     pub async fn connect_and_init_with_cors_origins(
         cfg: XMediaConfig,
         allow_permissive_cors: bool,
         cors_allow_origins: &[String],
+    ) -> anyhow::Result<Self> {
+        Self::connect_and_init_with_options(
+            cfg,
+            XMediaInitOptions {
+                allow_permissive_cors,
+                cors_allow_origins: cors_allow_origins.to_vec(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn connect_and_init_with_options(
+        cfg: XMediaConfig,
+        opts: XMediaInitOptions,
     ) -> anyhow::Result<Self> {
         if cfg.secret == DEFAULT_DEV_SECRET || cfg.secret.trim().is_empty() {
             tracing::warn!(
@@ -164,12 +215,13 @@ impl XMediaApp {
         #[cfg(feature = "book")]
         {
             enabled_modules.push(MediaKind::Book);
-            let book_services = xmedia_book::init_book_module(
+            let book_services = xmedia_book::init_book_module_with_allow_private_ips(
                 db.clone(),
                 &cfg.data_dir,
                 libraries_repo.clone(),
                 &libraries,
                 events.clone(),
+                opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
             libraries
@@ -190,14 +242,25 @@ impl XMediaApp {
         #[cfg(feature = "comic")]
         {
             enabled_modules.push(MediaKind::Comic);
-            let comic_services = xmedia_comic::init_comic_module(
+            let comic_services = xmedia_comic::init_comic_module_with_allow_private_ips(
                 db.clone(),
                 &cfg.data_dir,
                 libraries_repo.clone(),
                 &libraries,
                 events.clone(),
+                opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if opts.seed_sources {
+                let report = seeds::seed_comic_sources(&comic_services)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                tracing::info!(
+                    imported = report.imported_count,
+                    total = report.sources.len(),
+                    "seeded curated comic sources"
+                );
+            }
             libraries
                 .ensure_managed_library(MediaKind::Comic)
                 .await
@@ -208,10 +271,9 @@ impl XMediaApp {
                 libraries.clone(),
                 comic_services,
             );
-            api_v1 = api_v1.nest(
-                "/comic",
-                xmedia_comic::http::rest_router(comic_state.clone()),
-            );
+            let comic_router = xmedia_comic::http::rest_router(comic_state.clone())
+                .merge(seeds::comic_seed_router(comic_state.clone()));
+            api_v1 = api_v1.nest("/comic", comic_router);
             root_protocols =
                 root_protocols.nest("/opds/comic", xmedia_comic::http::opds_router(comic_state));
         }
@@ -219,15 +281,26 @@ impl XMediaApp {
         #[cfg(feature = "music")]
         {
             enabled_modules.push(MediaKind::Music);
-            let music_services = xmedia_music::init_music_module(
+            let music_services = xmedia_music::init_music_module_with_allow_private_ips(
                 db.clone(),
                 &cfg.data_dir,
                 ffmpeg.clone(),
                 libraries_repo.clone(),
                 &libraries,
                 events.clone(),
+                opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if opts.seed_sources {
+                let report = seeds::seed_music_sources(&music_services)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                tracing::info!(
+                    imported = report.imported_count,
+                    total = report.sources.len(),
+                    "seeded curated music sources"
+                );
+            }
             libraries
                 .ensure_managed_library(MediaKind::Music)
                 .await
@@ -238,10 +311,9 @@ impl XMediaApp {
                 libraries.clone(),
                 music_services,
             );
-            api_v1 = api_v1.nest(
-                "/music",
-                xmedia_music::http::rest_router(music_state.clone()),
-            );
+            let music_router = xmedia_music::http::rest_router(music_state.clone())
+                .merge(seeds::music_seed_router(music_state.clone()));
+            api_v1 = api_v1.nest("/music", music_router);
             root_protocols =
                 root_protocols.nest("/rest", xmedia_music::http::subsonic_router(music_state));
         }
@@ -249,15 +321,26 @@ impl XMediaApp {
         #[cfg(feature = "video")]
         {
             enabled_modules.push(MediaKind::Video);
-            let video_services = xmedia_video::init_video_module(
+            let video_services = xmedia_video::init_video_module_with_allow_private_ips(
                 db.clone(),
                 &cfg.data_dir,
                 ffmpeg.clone(),
                 libraries_repo.clone(),
                 &libraries,
                 events.clone(),
+                opts.allow_private_ips,
             )
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if opts.seed_sources {
+                let report = seeds::seed_video_sources(&video_services)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                tracing::info!(
+                    imported = report.imported_count,
+                    total = report.sources.len(),
+                    "seeded curated video sources"
+                );
+            }
             libraries
                 .ensure_managed_library(MediaKind::Video)
                 .await
@@ -268,10 +351,12 @@ impl XMediaApp {
                 libraries.clone(),
                 video_services,
             );
-            api_v1 = api_v1.nest("/video", xmedia_video::http::rest_router(video_state));
+            let video_router = xmedia_video::http::rest_router(video_state.clone())
+                .merge(seeds::video_seed_router(video_state));
+            api_v1 = api_v1.nest("/video", video_router);
         }
 
-        let _ = db;
+        let _ = (db, opts.allow_private_ips, opts.seed_sources);
 
         let gateway_state = GatewayState {
             auth: auth.clone(),
@@ -302,10 +387,11 @@ impl XMediaApp {
             .nest("/api/v1", merged_api_v1)
             .merge(root_protocols)
             .fallback_service(spa_service);
-        if allow_permissive_cors {
+        if opts.allow_permissive_cors {
             router = router.layer(CorsLayer::permissive());
-        } else if !cors_allow_origins.is_empty() {
-            let parsed_origins: Vec<HeaderValue> = cors_allow_origins
+        } else if !opts.cors_allow_origins.is_empty() {
+            let parsed_origins: Vec<HeaderValue> = opts
+                .cors_allow_origins
                 .iter()
                 .map(|o| o.trim())
                 .filter(|o| !o.is_empty())
