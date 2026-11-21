@@ -15,6 +15,7 @@ import {
 } from 'vue-icons-plus/lu'
 import AppSelect, { type SelectOption } from '@/components/ui/AppSelect.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { useDomainStore } from '@/stores/domain'
 
 export type CollectionSortKey = 'count_desc' | 'count_asc' | 'name_asc' | 'updated_desc'
 export type CollectionViewMode = 'libraries' | 'collections' | 'chips'
@@ -107,6 +108,12 @@ const emit = defineEmits<{
   deleteCollection: [id: string]
   openChip: [key: string]
 }>()
+
+const domainStore = useDomainStore()
+const manageLibrariesTo = computed(() => ({
+  path: '/settings',
+  query: { tab: 'domain-libraries', domain: domainStore.activeDomain },
+}))
 
 const filterKeyword = ref('')
 const sortKey = ref<CollectionSortKey>('count_desc')
@@ -212,7 +219,7 @@ async function handleCreate(): Promise<void> {
 
         <RouterLink
           v-if="mode === 'libraries' && showManageLibraries"
-          to="/settings?tab=libraries"
+          :to="manageLibrariesTo"
           class="md-btn md-btn-sm md-btn-filled md-state !h-9"
         >
           <LuSettings class="h-3.5 w-3.5" />

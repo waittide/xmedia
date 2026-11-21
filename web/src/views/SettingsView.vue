@@ -155,17 +155,33 @@ function scrollActiveNavIntoView(smooth = false): void {
   })
 }
 
+function normalizeRouteQuery(): void {
+  const resolvedTab = resolveTabFromQuery()
+  const resolvedDomain = resolveDomainFromQuery()
+  activeTab.value = resolvedTab
+  activeDomain.value = resolvedDomain
+
+  const rawTab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  const rawDomain = typeof route.query.domain === 'string' ? route.query.domain : ''
+  const needsTabSync = Boolean(rawTab) && rawTab !== resolvedTab
+  const needsDomainSync = isDomainTab(resolvedTab)
+    ? rawDomain !== resolvedDomain
+    : Boolean(rawDomain)
+
+  if (needsTabSync || needsDomainSync) {
+    syncRoute(resolvedTab, resolvedDomain)
+  }
+}
+
 onMounted(() => {
+  normalizeRouteQuery()
   scrollActiveNavIntoView(false)
 })
 
 watch(
   () => [route.query.tab, route.query.domain] as const,
   () => {
-    activeTab.value = resolveTabFromQuery()
-    if (route.query.domain) {
-      activeDomain.value = resolveDomainFromQuery()
-    }
+    normalizeRouteQuery()
     scrollActiveNavIntoView(true)
   },
 )

@@ -22,6 +22,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
+import { ensureDomainLocale } from '@/router'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
@@ -155,6 +156,15 @@ async function ensureDomainSidebarLoaded(kind: MediaKind): Promise<void> {
 let sidebarLoadTimer: ReturnType<typeof setTimeout> | null = null
 
 watch(
+  () => route.path,
+  () => {
+    if (mainScrollRef.value) {
+      mainScrollRef.value.scrollTop = 0
+    }
+  },
+)
+
+watch(
   () => domainStore.activeDomain,
   (next) => {
     if (mainScrollRef.value) {
@@ -224,6 +234,7 @@ const sidebarToggleLabel = computed(() =>
 async function switchDomain(kind: MediaKind): Promise<void> {
   const alreadyInDomain = domainStore.activeDomain === kind && route.meta.domain === kind
   const target = alreadyInDomain ? `/${kind}` : domainStore.getLastRoute(kind)
+  await ensureDomainLocale(kind)
   domainStore.setActiveDomain(kind)
   mobileMenuOpen.value = false
   await router.push(target)
@@ -284,7 +295,6 @@ async function submitGlobalSearch(): Promise<void> {
     }
     if (q) nextQuery.q = q
     await router.push({ path: '/book/catalog', query: nextQuery })
-    await bookStore.fetchBooks()
   } else if (d === 'comic') {
     const q = comicSearchQuery.value.trim()
     searchInputRef.value?.blur()
@@ -309,7 +319,6 @@ function clearGlobalSearch(): void {
       delete nextQuery.q
       delete nextQuery.page
       void router.replace({ path: '/book/catalog', query: nextQuery })
-      void bookStore.fetchBooks()
     }
   } else if (d === 'comic') {
     comicSearchQuery.value = ''

@@ -165,6 +165,13 @@ function syncRouteQuery(): void {
 function selectTab(tab: CatalogTab): void {
   if (activeTab.value === tab) return
   activeTab.value = tab
+  if (tab === 'artists') {
+    selectedLibrary.value = ''
+    selectedGenre.value = ''
+    selectedTag.value = ''
+  } else if (tab === 'albums') {
+    selectedTag.value = ''
+  }
   syncRouteQuery()
   void fetchActiveTab()
 }

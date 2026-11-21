@@ -74,6 +74,7 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
   function isBookSectionActive(section: BookNavSection, id = ''): boolean {
     if (route.name === 'book-detail' && section === 'all') return true
     if (route.name !== 'book-catalog') return false
+    if (route.query.scope === 'online') return false
     if (bookStore.activeSection !== section) return false
     if (section === 'library') return bookStore.activeLibraryId === id
     if (section === 'shelf') return bookStore.activeShelfId === id
@@ -112,33 +113,43 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
   })
 
   const isAllMusicActive = computed(() => {
-    if (route.name === 'music-album-detail' || route.name === 'music-artist-detail') return true
     if (route.name !== 'music-songs') return false
+    if (route.query.tab === 'albums' || route.query.tab === 'artists') return false
     return !route.query.library && !route.query.genre && !route.query.tag
   })
 
   async function openMusicCatalog(extraQuery: Record<string, string> = {}): Promise<void> {
     onNavigate?.()
-    const tab =
+    const currentTab =
       route.name === 'music-songs' && typeof route.query.tab === 'string'
         ? route.query.tab
         : undefined
+    const hasFilter = Boolean(extraQuery.library || extraQuery.genre || extraQuery.tag)
+    let nextTab: string | undefined = currentTab
+    if (!hasFilter) {
+      nextTab = undefined
+    } else if (currentTab === 'artists') {
+      nextTab = undefined
+    } else if (currentTab === 'albums' && extraQuery.tag) {
+      nextTab = undefined
+    }
     await router.push({
       path: '/music/songs',
-      query: tab ? { tab, ...extraQuery } : extraQuery,
+      query: nextTab ? { tab: nextTab, ...extraQuery } : extraQuery,
     })
   }
 
   const isAllVideoActive = computed(() => {
-    if (route.name === 'video-show-detail') return true
     if (route.name !== 'video-catalog') return false
+    if (route.query.tab === 'shows') return false
     return !route.query.library && !route.query.genre && !route.query.tag
   })
 
   async function openVideoCatalog(extraQuery: Record<string, string> = {}): Promise<void> {
     onNavigate?.()
+    const hasFilter = Boolean(extraQuery.library || extraQuery.genre || extraQuery.tag)
     const tab =
-      route.name === 'video-catalog' && typeof route.query.tab === 'string'
+      hasFilter && route.name === 'video-catalog' && typeof route.query.tab === 'string'
         ? route.query.tab
         : undefined
     await router.push({

@@ -9,7 +9,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { MediaKind } from '@/types/api'
 
-function ensureDomainLocale(domain: MediaKind): Promise<void> {
+export function ensureDomainLocale(domain: MediaKind): Promise<void> {
   switch (domain) {
     case 'book':
       return ensureBookLocale()
@@ -360,6 +360,8 @@ export const router = createRouter({
             const query: Record<string, string> = { tab: 'domain-protocols' }
             if (to.query.tab === 'subsonic') {
               query.domain = 'music'
+            } else if (to.query.tab === 'opds') {
+              query.domain = 'book'
             }
             return { path: '/settings', query }
           },
@@ -461,8 +463,6 @@ router.beforeEach(async (to) => {
     }
   }
 
-  domainStore.syncFromPath(to.fullPath)
-
   if (routeDomain) {
     await ensureDomainLocale(routeDomain)
   } else if (to.name === 'settings') {
@@ -474,6 +474,8 @@ router.beforeEach(async (to) => {
     ])
     await Promise.all([...domains].map((d) => ensureDomainLocale(d)))
   }
+
+  domainStore.syncFromPath(to.fullPath)
 
   return true
 })
