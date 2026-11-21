@@ -227,14 +227,27 @@ async fn upload_book_epub_image(
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
             "root_id" => {
-                let text = field.text().await.unwrap_or_default();
+                let text = field.text().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!(
+                        "multipart text error: {e}"
+                    )))
+                })?;
                 root_id = Uuid::parse_str(text.trim()).ok();
             }
             "path" => {
-                rel_path = Some(field.text().await.unwrap_or_default());
+                let text = field.text().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!(
+                        "multipart text error: {e}"
+                    )))
+                })?;
+                rel_path = Some(text);
             }
             "chapter_source_href" => {
-                let text = field.text().await.unwrap_or_default();
+                let text = field.text().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!(
+                        "multipart text error: {e}"
+                    )))
+                })?;
                 if !text.trim().is_empty() {
                     chapter_source_href = Some(text.trim().to_string());
                 }

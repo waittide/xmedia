@@ -13,7 +13,7 @@ const SUB_EXTS: &[&str] = &["srt", "ass", "ssa", "vtt"];
 
 static RE_SRT_TIMING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(\d{1,2}):(\d{2}):(\d{2})[,.](\d{3})(.*)$",
+        r"^(?:(\d{1,2}):)?(\d{2}):(\d{2})[,.](\d{3})\s*-->\s*(?:(\d{1,2}):)?(\d{2}):(\d{2})[,.](\d{3})(.*)$",
     )
     .expect("valid srt timing regex")
 });
@@ -117,39 +117,43 @@ fn parse_subtitle_lang_and_forced(video_stem: &str, sub_filename: &str) -> (Opti
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(sub_filename);
-    let suffix = without_ext
-        .strip_prefix(video_stem)
-        .unwrap_or("")
-        .trim_start_matches(['.', '-', '_', ' ']);
+    let suffix = if without_ext
+        .get(..video_stem.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(video_stem))
+    {
+        without_ext[video_stem.len()..].trim_start_matches(['.', '-', '_', ' '])
+    } else {
+        ""
+    };
     if suffix.is_empty() {
         return (None, false);
     }
     let parts: Vec<&str> = suffix
-        .split(['.', '_', '-'])
+        .split(['.', '_', ' '])
         .filter(|s| !s.is_empty())
         .collect();
-    let forced = parts.iter().any(|p| p.eq_ignore_ascii_case("forced"));
+    let sub_tokens: Vec<String> = suffix
+        .split(['.', '_', '-', ' '])
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    let forced = sub_tokens.iter().any(|p| p == "forced");
+    let has_token = |candidates: &[&str]| {
+        parts
+            .iter()
+            .any(|p| candidates.iter().any(|c| p.eq_ignore_ascii_case(c)))
+            || sub_tokens.iter().any(|p| candidates.iter().any(|c| p == c))
+    };
 
-    let lower = suffix.to_ascii_lowercase();
-    let lang = if lower.contains("zh-cn")
-        || lower.contains("chs")
-        || lower.contains("sc")
-        || lower.contains("简体")
-        || lower.contains("gb")
-    {
+    let lang = if has_token(&["zh-cn", "zh-hans", "chs", "sc", "gb", "简体"]) {
         Some("zh-CN".to_string())
-    } else if lower.contains("zh-tw")
-        || lower.contains("cht")
-        || lower.contains("tc")
-        || lower.contains("繁体")
-        || lower.contains("big5")
-    {
+    } else if has_token(&["zh-tw", "zh-hk", "zh-hant", "cht", "tc", "big5", "繁体"]) {
         Some("zh-TW".to_string())
-    } else if lower.contains("zh") || lower.contains("chi") {
+    } else if has_token(&["zh", "chi", "zho"]) {
         Some("zh-CN".to_string())
-    } else if lower.contains("en") || lower.contains("eng") {
+    } else if has_token(&["en", "eng", "en-us", "en-gb"]) {
         Some("en".to_string())
-    } else if lower.contains("ja") || lower.contains("jpn") || lower.contains("jp") {
+    } else if has_token(&["ja", "jpn", "jp"]) {
         Some("ja".to_string())
     } else {
         parts
@@ -309,12 +313,20 @@ pub fn transform_subtitle_content(
             }
         } else if let Some(caps) = RE_SRT_TIMING.captures(raw_line) {
             if offset_ms != 0 {
-                let start_ms = caps[1].parse::<i64>().unwrap_or(0) * 3_600_000
+                let start_h = caps
+                    .get(1)
+                    .and_then(|m| m.as_str().parse::<i64>().ok())
+                    .unwrap_or(0);
+                let end_h = caps
+                    .get(5)
+                    .and_then(|m| m.as_str().parse::<i64>().ok())
+                    .unwrap_or(0);
+                let start_ms = start_h * 3_600_000
                     + caps[2].parse::<i64>().unwrap_or(0) * 60_000
                     + caps[3].parse::<i64>().unwrap_or(0) * 1_000
                     + caps[4].parse::<i64>().unwrap_or(0)
                     + offset_ms;
-                let end_ms = caps[5].parse::<i64>().unwrap_or(0) * 3_600_000
+                let end_ms = end_h * 3_600_000
                     + caps[6].parse::<i64>().unwrap_or(0) * 60_000
                     + caps[7].parse::<i64>().unwrap_or(0) * 1_000
                     + caps[8].parse::<i64>().unwrap_or(0)

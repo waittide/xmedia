@@ -1137,7 +1137,8 @@ impl MediaInspectorPort for VideoNfoInspector {
             let xml = render_video_nfo_xml(&meta);
             atomic_write_bytes(&nfo_target, xml.as_bytes())?;
 
-            // Keep Jellyfin `season.nfo` and `tvshow.nfo` synchronized when editing an archived episode
+            // Keep Jellyfin `season.nfo` and `tvshow.nfo` synchronized when editing an archived episode,
+            // preserving existing show/season-level fields rather than clobbering them with single-episode data.
             if meta.is_episode {
                 if let Some(parent) = p.parent() {
                     let season_nfo = parent.join("season.nfo");
@@ -1152,20 +1153,48 @@ impl MediaInspectorPort for VideoNfoInspector {
                         let s_xml = render_season_nfo_xml(
                             s_num,
                             s_title,
-                            meta.year,
+                            existing_season.year.or(meta.year),
                             existing_season.summary.as_deref(),
-                            meta.tmdb_id.as_deref(),
-                            meta.bangumi_id.as_deref(),
+                            existing_season
+                                .tmdb_id
+                                .as_deref()
+                                .or(meta.tmdb_id.as_deref()),
+                            existing_season
+                                .bangumi_id
+                                .as_deref()
+                                .or(meta.bangumi_id.as_deref()),
                         );
                         let _ = atomic_write_bytes(&season_nfo, s_xml.as_bytes());
                     }
                 }
                 if let Some(show_nfo) = find_show_nfo_for_episode(&p) {
-                    let mut existing_show = VideoFileMeta::default();
+                    let mut merged_show = VideoFileMeta::default();
                     if let Ok(raw) = std::fs::read(&show_nfo) {
-                        parse_nfo_into(&raw, &mut existing_show);
+                        parse_nfo_into(&raw, &mut merged_show);
                     }
-                    let show_xml = render_tvshow_nfo_xml(&meta, existing_show.summary.as_deref());
+                    if let Some(ref st) = meta.show_title
+                        && !st.trim().is_empty()
+                    {
+                        merged_show.show_title = Some(st.clone());
+                        merged_show.title = st.clone();
+                    }
+                    if merged_show.tmdb_id.is_none() {
+                        merged_show.tmdb_id = meta.tmdb_id.clone();
+                    }
+                    if merged_show.bangumi_id.is_none() {
+                        merged_show.bangumi_id = meta.bangumi_id.clone();
+                    }
+                    if merged_show.year.is_none() {
+                        merged_show.year = meta.year;
+                    }
+                    if merged_show.studio.is_none() {
+                        merged_show.studio = meta.studio.clone();
+                    }
+                    if merged_show.genres.is_empty() {
+                        merged_show.genres = meta.genres.clone();
+                    }
+                    let show_summary = merged_show.summary.clone();
+                    let show_xml = render_tvshow_nfo_xml(&merged_show, show_summary.as_deref());
                     let _ = atomic_write_bytes(&show_nfo, show_xml.as_bytes());
                 }
             }

@@ -301,8 +301,9 @@ pub fn optimize_music_cover(
     let before_bytes = raw.len() as u64;
     let img = image::load_from_memory(&raw)
         .map_err(|e| DomainError::Validation(format!("decode embedded cover failed: {e}")))?;
+    let (orig_w, orig_h) = (img.width(), img.height());
     let max_dim = max_dimension.clamp(300, 2400);
-    let resized = if img.width() > max_dim || img.height() > max_dim {
+    let resized = if orig_w > max_dim || orig_h > max_dim {
         img.resize(max_dim, max_dim, FilterType::Lanczos3)
     } else {
         img
@@ -316,7 +317,7 @@ pub fn optimize_music_cover(
     let after_bytes = out.len() as u64;
     let (w, h) = (resized.width(), resized.height());
 
-    if after_bytes >= before_bytes && w == resized.width() && before_bytes < 512 * 1024 {
+    if after_bytes >= before_bytes && w == orig_w && h == orig_h && before_bytes < 512 * 1024 {
         return Ok(MusicCoverOptimizeReportDto {
             had_cover: true,
             optimized: false,

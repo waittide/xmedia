@@ -342,13 +342,22 @@ pub fn render_template_target(
         .filter(|seg| !seg.is_empty() && seg != "." && seg != "..")
         .collect();
 
+    let fallback = {
+        let cleaned = sanitize_filename_component(fallback_stem);
+        if cleaned.is_empty() {
+            "Untitled".to_string()
+        } else {
+            cleaned
+        }
+    };
     if rendered_segments.is_empty() {
-        rendered_segments.push(sanitize_filename_component(fallback_stem));
+        rendered_segments.push(fallback.clone());
     }
 
     let final_stem = rendered_segments
         .pop()
-        .unwrap_or_else(|| sanitize_filename_component(fallback_stem));
+        .filter(|s| !s.is_empty())
+        .unwrap_or(fallback);
     let final_filename = if ext.trim().is_empty() {
         final_stem.clone()
     } else {

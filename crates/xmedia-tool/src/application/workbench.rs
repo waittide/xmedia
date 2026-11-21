@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -122,6 +122,7 @@ pub struct MediaWorkbenchService {
     ffmpeg: FfmpegToolkit,
     rename_history: Arc<RwLock<Vec<RenameHistoryBatchDto>>>,
     metadata_history: Arc<RwLock<Vec<MetadataHistoryBatchDto>>>,
+    root_locks: Arc<std::sync::Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl MediaWorkbenchService {
@@ -136,7 +137,17 @@ impl MediaWorkbenchService {
             ffmpeg,
             rename_history: Arc::new(RwLock::new(Vec::new())),
             metadata_history: Arc::new(RwLock::new(Vec::new())),
+            root_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    fn root_write_lock(&self, root_id: RootId) -> Arc<tokio::sync::Mutex<()>> {
+        let mut guard = self.root_locks.lock().unwrap_or_else(|e| e.into_inner());
+        Arc::clone(
+            guard
+                .entry(root_id.0)
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(()))),
+        )
     }
 
     async fn push_metadata_history(&self, batch: MetadataHistoryBatchDto) {
@@ -175,6 +186,7 @@ impl MediaWorkbenchService {
 
         let mut restored_count = 0usize;
         let mut failed_paths = Vec::new();
+        let mut remaining_records = Vec::new();
         for rec in batch.records.iter().rev() {
             let restore_patch = payload_to_restore_patch(&rec.previous);
             match self
@@ -182,13 +194,21 @@ impl MediaWorkbenchService {
                 .await
             {
                 Ok(_) => restored_count += 1,
-                Err(_) => failed_paths.push(rec.rel_path.clone()),
+                Err(_) => {
+                    failed_paths.push(rec.rel_path.clone());
+                    remaining_records.push(rec.clone());
+                }
             }
         }
+        remaining_records.reverse();
 
         if restored_count > 0 {
             let mut guard = self.metadata_history.write().await;
-            guard.retain(|b| b.batch_id != batch_id);
+            if remaining_records.is_empty() {
+                guard.retain(|b| b.batch_id != batch_id);
+            } else if let Some(existing) = guard.iter_mut().find(|b| b.batch_id == batch_id) {
+                existing.records = remaining_records;
+            }
         }
 
         Ok(UndoMetadataReportDto {
@@ -319,22 +339,28 @@ impl MediaWorkbenchService {
                     DomainError::NotFound(format!("rename history batch {batch_id} not found"))
                 })?
         };
+        let root_lock = self.root_write_lock(RootId(batch.root_id));
+        let _root_guard = root_lock.lock().await;
         let root = self.settings.find_root(RootId(batch.root_id)).await?;
         root.ensure_writable()?;
         let mut restored_count = 0usize;
         let mut skipped_conflicts = Vec::new();
+        let mut remaining_moves = Vec::new();
 
         for mv in batch.moves.iter().rev() {
             let Ok(cur) = resolve_existing_in_root(&root, &mv.to_rel_path) else {
                 skipped_conflicts.push(mv.to_rel_path.clone());
+                remaining_moves.push(mv.clone());
                 continue;
             };
             let Ok(orig) = resolve_target_in_root(&root, &mv.from_rel_path) else {
                 skipped_conflicts.push(mv.from_rel_path.clone());
+                remaining_moves.push(mv.clone());
                 continue;
             };
             if orig.exists() && orig != cur.abs_path {
                 skipped_conflicts.push(mv.from_rel_path.clone());
+                remaining_moves.push(mv.clone());
                 continue;
             }
             let cur_parent = cur.abs_path.parent().map(Path::to_path_buf);
@@ -343,6 +369,7 @@ impl MediaWorkbenchService {
             }
             if std::fs::rename(&cur.abs_path, &orig).is_err() {
                 skipped_conflicts.push(mv.to_rel_path.clone());
+                remaining_moves.push(mv.clone());
                 continue;
             }
             restored_count += 1;
@@ -355,7 +382,10 @@ impl MediaWorkbenchService {
                     if let Some(p) = comp_orig.parent() {
                         let _ = std::fs::create_dir_all(p);
                     }
-                    let _ = std::fs::rename(&comp_cur.abs_path, &comp_orig);
+                    if let Err(err) = std::fs::rename(&comp_cur.abs_path, &comp_orig) {
+                        tracing::warn!(from = %comp_to, to = %comp_from, error = %err, "failed to restore companion file during rename undo");
+                        skipped_conflicts.push(comp_to.clone());
+                    }
                 }
             }
 
@@ -363,10 +393,16 @@ impl MediaWorkbenchService {
                 cleanup_empty_parent_dirs(prev_dir, &root.path);
             }
         }
+        remaining_moves.reverse();
 
         if restored_count > 0 {
             let mut guard = self.rename_history.write().await;
-            guard.retain(|b| b.batch_id != batch_id);
+            if remaining_moves.is_empty() {
+                guard.retain(|b| b.batch_id != batch_id);
+            } else if let Some(existing) = guard.iter_mut().find(|b| b.batch_id == batch_id) {
+                existing.moved_count = remaining_moves.len();
+                existing.moves = remaining_moves;
+            }
         }
 
         Ok(UndoRenameReportDto {
@@ -1251,6 +1287,8 @@ impl MediaWorkbenchService {
     where
         F: FnMut(WorkbenchProgress) + Send,
     {
+        let root_lock = self.root_write_lock(root_id);
+        let _root_guard = root_lock.lock().await;
         let root = self.settings.find_root(root_id).await?;
         root.ensure_writable()?;
         let total = plans
@@ -1279,6 +1317,12 @@ impl MediaWorkbenchService {
                 }
             };
             let old_parent = src.abs_path.parent().map(Path::to_path_buf);
+            let src_stem_lower = src
+                .abs_path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
             let dst = match resolve_target_in_root(&root, &item.to_rel_path) {
                 Ok(d) => d,
                 Err(e) => {
@@ -1286,6 +1330,7 @@ impl MediaWorkbenchService {
                     break;
                 }
             };
+            let mut overwrite_backup: Option<PathBuf> = None;
             if dst.exists() && dst != src.abs_path {
                 if !item.will_overwrite {
                     first_err = Some(DomainError::Conflict(format!(
@@ -1301,26 +1346,38 @@ impl MediaWorkbenchService {
                     )));
                     break;
                 }
-                if let Err(e) = std::fs::remove_file(&dst) {
+                let backup_path = dst
+                    .with_file_name(format!(".xmedia_overwrite_{}.bak", Uuid::now_v7().simple()));
+                if let Err(e) = std::fs::rename(&dst, &backup_path) {
                     first_err = Some(DomainError::Storage(format!(
-                        "无法覆盖已有文件 '{}': {e}",
+                        "无法暂存待覆盖文件 '{}': {e}",
                         item.to_rel_path
                     )));
                     break;
                 }
+                overwrite_backup = Some(backup_path);
             }
             if let Some(parent) = dst.parent()
                 && let Err(e) = std::fs::create_dir_all(parent)
             {
+                if let Some(bak) = overwrite_backup.take() {
+                    let _ = std::fs::rename(&bak, &dst);
+                }
                 first_err = Some(DomainError::Storage(format!("failed creating folder: {e}")));
                 break;
             }
             if let Err(e) = std::fs::rename(&src.abs_path, &dst) {
+                if let Some(bak) = overwrite_backup.take() {
+                    let _ = std::fs::rename(&bak, &dst);
+                }
                 first_err = Some(DomainError::Storage(format!(
                     "failed renaming '{}' -> '{}': {e}",
                     item.from_rel_path, item.to_rel_path
                 )));
                 break;
+            }
+            if let Some(bak) = overwrite_backup {
+                let _ = std::fs::remove_file(&bak);
             }
             moved_count += 1;
 
@@ -1330,11 +1387,28 @@ impl MediaWorkbenchService {
                 if let Ok(comp_src) = resolve_existing_in_root(&root, comp_from)
                     && let Ok(comp_dst) = resolve_target_in_root(&root, comp_to)
                 {
-                    let is_shared_dir_sidecar = comp_src
+                    let comp_name = comp_src
                         .abs_path
                         .file_name()
                         .and_then(|s| s.to_str())
-                        .is_some_and(is_shared_dir_sidecar_name);
+                        .unwrap_or_default();
+                    let is_shared_dir_sidecar = is_shared_dir_sidecar_name(comp_name);
+                    let comp_parent = comp_src.abs_path.parent();
+                    let same_dir_stem_match = old_parent.as_deref() == comp_parent
+                        && !src_stem_lower.is_empty()
+                        && comp_name.to_ascii_lowercase().starts_with(&src_stem_lower);
+                    let ancestor_shared_match = is_shared_dir_sidecar
+                        && old_parent
+                            .as_deref()
+                            .is_some_and(|op| comp_parent.is_some_and(|cp| op.starts_with(cp)));
+                    if !same_dir_stem_match && !ancestor_shared_match {
+                        tracing::warn!(
+                            from = %comp_from,
+                            media = %item.from_rel_path,
+                            "ignoring unverified companion move outside media file scope"
+                        );
+                        continue;
+                    }
                     if !comp_dst.exists()
                         || (item.will_overwrite
                             && comp_dst.is_file()
@@ -1348,9 +1422,10 @@ impl MediaWorkbenchService {
                             let _ = std::fs::remove_file(&comp_dst);
                         }
                         if is_shared_dir_sidecar {
-                            let _ = std::fs::copy(&comp_src.abs_path, &comp_dst);
-                            migrated_shared_dirs
-                                .push((comp_src.abs_path.clone(), comp_dst.clone()));
+                            if std::fs::copy(&comp_src.abs_path, &comp_dst).is_ok() {
+                                migrated_shared_dirs
+                                    .push((comp_src.abs_path.clone(), comp_dst.clone()));
+                            }
                         } else if std::fs::rename(&comp_src.abs_path, &comp_dst).is_ok() {
                             moved_companions.push((comp_from.clone(), comp_to.clone()));
                         }

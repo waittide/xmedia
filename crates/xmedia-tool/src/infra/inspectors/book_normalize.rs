@@ -885,8 +885,15 @@ fn normalize_existing_epub(
                 .first()
                 .and_then(|fid| updated_manifest.iter().find(|m| &m.id == fid))
                 .is_some_and(|n| {
-                    let hl = n.href.to_ascii_lowercase();
-                    hl.contains("cover") || hl.ends_with("titlepage.xhtml")
+                    let stem = Path::new(&n.href)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    matches!(
+                        stem.as_str(),
+                        "cover" | "coverpage" | "cover-page" | "titlepage" | "title-page"
+                    )
                 }) {
                 1
             } else {
@@ -1077,19 +1084,29 @@ fn normalize_existing_epub(
             written.insert(key);
         }
 
-        writer
+        let mut buf_writer = writer
             .finish()
             .map_err(|e| DomainError::Storage(format!("epub finalize error: {e}")))?;
+        std::io::Write::flush(&mut buf_writer)
+            .map_err(|e| DomainError::Storage(format!("epub flush error: {e}")))?;
+        buf_writer
+            .get_ref()
+            .sync_all()
+            .map_err(|e| DomainError::Storage(format!("epub sync error: {e}")))?;
         Ok(())
     };
 
     let backup_path = if opts.keep_source {
+        let orig_perms = std::fs::metadata(epub_path).ok().map(|m| m.permissions());
         let backup = unique_orig_epub_backup_path(epub_path);
         let parent = epub_path.parent().unwrap_or_else(|| Path::new("."));
         let staging = parent.join(format!(".xmedia_norm_{}.tmp", Uuid::now_v7()));
         if let Err(err) = write_epub_to(&staging) {
             let _ = std::fs::remove_file(&staging);
             return Err(err);
+        }
+        if let Some(perms) = orig_perms {
+            let _ = std::fs::set_permissions(&staging, perms);
         }
         std::fs::rename(epub_path, &backup).map_err(|e| {
             let _ = std::fs::remove_file(&staging);

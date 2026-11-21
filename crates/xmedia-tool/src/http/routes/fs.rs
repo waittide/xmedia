@@ -219,20 +219,37 @@ async fn upload_artwork(
         let name = field.name().unwrap_or_default().to_string();
         match name.as_str() {
             "root_id" => {
-                let text = field.text().await.unwrap_or_default();
+                let text = field.text().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!(
+                        "multipart text error: {e}"
+                    )))
+                })?;
                 root_id = Uuid::parse_str(text.trim()).ok();
             }
             "path" => {
-                rel_path = Some(field.text().await.unwrap_or_default());
+                let text = field.text().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!(
+                        "multipart text error: {e}"
+                    )))
+                })?;
+                rel_path = Some(text);
             }
             "slot" => {
-                let s = field.text().await.unwrap_or_default();
+                let s = field.text().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!(
+                        "multipart text error: {e}"
+                    )))
+                })?;
                 if !s.trim().is_empty() {
                     slot = s.trim().to_string();
                 }
             }
             "kind" => {
-                let k = field.text().await.unwrap_or_default();
+                let k = field.text().await.map_err(|e| {
+                    ApiError(DomainError::Validation(format!(
+                        "multipart text error: {e}"
+                    )))
+                })?;
                 preferred_kind = serde_json::from_value(serde_json::Value::String(k)).ok();
             }
             "file" => {

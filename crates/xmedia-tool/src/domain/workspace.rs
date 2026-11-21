@@ -147,7 +147,8 @@ pub fn path_to_slash(path: &Path) -> String {
 }
 
 pub fn sanitize_relative_path(raw: &str) -> DomainResult<PathBuf> {
-    let trimmed = raw.trim().trim_start_matches(['/', '\\']);
+    let normalized = raw.trim().replace('\\', "/");
+    let trimmed = normalized.trim_start_matches('/');
     if trimmed.is_empty() {
         return Ok(PathBuf::new());
     }

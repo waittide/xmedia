@@ -254,7 +254,10 @@ fn compile_cached_user_regex(pattern: &str) -> DomainResult<Regex> {
             return Ok(re.clone());
         }
     }
-    let compiled = Regex::new(pattern)
+    let compiled = regex::RegexBuilder::new(pattern)
+        .size_limit(2 * 1024 * 1024)
+        .dfa_size_limit(2 * 1024 * 1024)
+        .build()
         .map_err(|e| DomainError::Validation(format!("无效的正则表达式: {e}")))?;
     let mut guard = BATCH_REGEX_CACHE.lock().unwrap_or_else(|e| e.into_inner());
     if guard.len() >= MAX_BATCH_REGEX_CACHE && !guard.contains_key(pattern) {
@@ -534,6 +537,26 @@ impl PreparedBatchMetadataEdit {
                         patch.writers = Some(toks);
                         changed = true;
                     }
+                } else if !c.writers.is_empty() {
+                    let mut next_writers = Vec::with_capacity(c.writers.len());
+                    let mut writers_changed = false;
+                    for w in &c.writers {
+                        if let Some(nw) = transform_str(
+                            w,
+                            replacer,
+                            replacer.is_some_and(|r| r.target_creator),
+                            zh,
+                        ) {
+                            next_writers.push(nw);
+                            writers_changed = true;
+                        } else {
+                            next_writers.push(w.clone());
+                        }
+                    }
+                    if writers_changed {
+                        patch.writers = Some(next_writers);
+                        changed = true;
+                    }
                 }
                 if let Some(p) = publisher_val
                     && c.publisher.as_deref() != Some(p.as_str())
@@ -719,6 +742,26 @@ impl PreparedBatchMetadataEdit {
                     let toks = split_tokens(cr);
                     if !toks.is_empty() && toks != v.directors {
                         patch.directors = Some(toks);
+                        changed = true;
+                    }
+                } else if !v.directors.is_empty() {
+                    let mut next_directors = Vec::with_capacity(v.directors.len());
+                    let mut directors_changed = false;
+                    for d in &v.directors {
+                        if let Some(nd) = transform_str(
+                            d,
+                            replacer,
+                            replacer.is_some_and(|r| r.target_creator),
+                            zh,
+                        ) {
+                            next_directors.push(nd);
+                            directors_changed = true;
+                        } else {
+                            next_directors.push(d.clone());
+                        }
+                    }
+                    if directors_changed {
+                        patch.directors = Some(next_directors);
                         changed = true;
                     }
                 }
