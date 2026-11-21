@@ -6036,6 +6036,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "xmedia-source"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "chardetng",
+ "encoding_rs",
+ "hex",
+ "jiff",
+ "md-5",
+ "regex",
+ "reqwest",
+ "rquickjs",
+ "scraper",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
+ "uuid",
+ "xmedia-core",
+]
+
+[[package]]
 name = "xmedia-tool"
 version = "0.1.0"
 dependencies = [

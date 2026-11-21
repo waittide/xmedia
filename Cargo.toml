@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/xmedia-core",
+    "crates/xmedia-source",
     "crates/xmedia-book",
     "crates/xmedia-comic",
     "crates/xmedia-music",
@@ -18,6 +19,7 @@ license = "MIT"
 
 [workspace.dependencies]
 xmedia-core = { path = "crates/xmedia-core" }
+xmedia-source = { path = "crates/xmedia-source" }
 xmedia-book = { path = "crates/xmedia-book" }
 xmedia-comic = { path = "crates/xmedia-comic" }
 xmedia-music = { path = "crates/xmedia-music" }
