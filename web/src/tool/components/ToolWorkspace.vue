@@ -194,6 +194,11 @@ let initialLoaded = false
 const settings = ref<PublicSettingsDto | null>(null)
 const initialLoadError = ref<string | null>(null)
 const loadingInitial = ref(false)
+const mainContentScrolled = ref(false)
+function onToolMainScroll(ev: Event): void {
+  const el = ev.target as HTMLElement | null
+  mainContentScrolled.value = Boolean(el && el.scrollTop > 4)
+}
 const domainNavMemory = ref<Record<MediaKind, { rootId: string; relPath: string }>>({
   book: { rootId: '', relPath: '' },
   comic: { rootId: '', relPath: '' },
@@ -2141,6 +2146,7 @@ onBeforeUnmount(() => {
       :search-query="searchQuery"
       :search-placeholder="domainLabels.searchPlaceholder"
       :status="status"
+      :scrolled="mainContentScrolled"
       @toggle-sidebar="toggleSidebar"
       @navigate-home="navigatePrimary('home')"
       @switch-domain="switchDomain"
@@ -2219,7 +2225,7 @@ onBeforeUnmount(() => {
         />
 
         <template v-else>
-          <div class="min-w-0 flex-1 overflow-y-auto">
+          <div class="min-w-0 flex-1 overflow-y-auto" @scroll.passive="onToolMainScroll">
           <div
             v-if="initialLoadError && !settings"
             role="alert"

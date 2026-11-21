@@ -290,7 +290,8 @@ onBeforeUnmount(unbindGlobalListeners)
           v-for="sw in QUICK_SWATCHES"
           :key="sw"
           type="button"
-          class="h-5 w-5 cursor-pointer rounded-full border border-black/15 transition hover:scale-110"
+          class="h-5 w-5 cursor-pointer rounded-full border border-[var(--md-sys-color-outline)]/40 transition hover:scale-110 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
+          :aria-label="sw"
           :style="{ backgroundColor: sw }"
           @click="selectSwatch(sw)"
         />

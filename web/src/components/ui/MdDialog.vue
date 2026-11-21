@@ -41,7 +41,7 @@ escapeStack.register(
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-[var(--md-sys-color-scrim)]/40 p-4 backdrop-blur-[2px]"
+        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-[var(--md-sys-color-scrim)]/32 p-4"
         @mousedown.self="closeOnBackdrop && emit('close')"
       >
         <Transition name="md-dialog" appear>
@@ -65,7 +65,7 @@ escapeStack.register(
                     <slot name="icon" />
                   </div>
                   <div class="min-w-0">
-                    <h3 class="md-title-large leading-snug tracking-tight">
+                    <h3 class="md-headline-small">
                       {{ title }}
                     </h3>
                     <p

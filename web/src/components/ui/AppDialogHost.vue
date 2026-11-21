@@ -32,7 +32,7 @@ watch(
     <Transition name="md-fade">
       <div
         v-if="dialogStore.active"
-        class="fixed inset-0 z-[var(--z-confirm)] flex items-center justify-center bg-[var(--md-sys-color-scrim)]/40 p-4 backdrop-blur-[2px]"
+        class="fixed inset-0 z-[var(--z-confirm)] flex items-center justify-center bg-[var(--md-sys-color-scrim)]/32 p-4"
         @mousedown.self="dialogStore.cancel()"
       >
         <Transition name="md-dialog" appear>
@@ -42,7 +42,7 @@ watch(
             class="w-full max-w-sm rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] p-6 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
             @submit.prevent="dialogStore.submit()"
           >
-            <h3 v-if="dialogStore.active.title" class="md-title-large mb-2 tracking-tight">
+            <h3 v-if="dialogStore.active.title" class="md-headline-small mb-2">
               {{ dialogStore.active.title }}
             </h3>
             <p class="md-body-medium text-[var(--md-sys-color-on-surface-variant)]">

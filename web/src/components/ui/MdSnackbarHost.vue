@@ -18,19 +18,19 @@ const snackbar = useSnackbarStore()
           :key="snackbar.current.id"
           role="status"
           aria-live="polite"
-          class="pointer-events-auto flex gap-2 overflow-hidden rounded-[var(--md-sys-shape-corner-xs)] py-2.5 pr-2 pl-4 shadow-[var(--md-sys-elevation-3)]"
+          class="pointer-events-auto flex gap-2 overflow-hidden rounded-[var(--md-sys-shape-corner-xs)] bg-[var(--md-sys-color-inverse-surface)] py-2.5 pr-2 pl-4 text-[var(--md-sys-color-inverse-on-surface)] shadow-[var(--md-sys-elevation-3)]"
           :class="[
             snackbar.current.message.includes('\n')
-              ? 'max-w-2xl items-start'
+              ? 'max-w-xl items-start'
               : 'min-h-12 max-w-lg items-center',
             snackbar.current.tone === 'error'
-              ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-              : 'bg-[var(--md-sys-color-inverse-surface)] text-[var(--md-sys-color-inverse-on-surface)]',
+              ? 'border-l-4 border-[var(--md-sys-color-error)]'
+              : '',
           ]"
         >
           <div
             v-if="snackbar.current.message.includes('\n')"
-            class="max-h-[60vh] min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed [tab-size:2]"
+            class="max-h-40 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed [tab-size:2]"
           >
             {{ snackbar.current.message }}
           </div>
@@ -40,12 +40,7 @@ const snackbar = useSnackbarStore()
             v-if="snackbar.current.actionLabel"
             type="button"
             :disabled="snackbar.runningAction"
-            class="md-state md-label-large inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 transition disabled:opacity-50"
-            :class="
-              snackbar.current.tone === 'error'
-                ? 'text-[var(--md-sys-color-on-error-container)]'
-                : 'text-[var(--md-sys-color-inverse-primary)]'
-            "
+            class="md-state md-focus-inverse md-label-large inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[var(--md-sys-color-inverse-primary)] transition disabled:opacity-38"
             @click="snackbar.triggerAction()"
           >
             <LuLoader2 v-if="snackbar.runningAction" class="h-3.5 w-3.5 animate-spin" />
@@ -54,7 +49,7 @@ const snackbar = useSnackbarStore()
 
           <button
             type="button"
-            class="md-state flex h-8 w-8 shrink-0 items-center justify-center rounded-full opacity-85 transition hover:opacity-100"
+            class="md-state md-focus-inverse flex h-8 w-8 shrink-0 items-center justify-center rounded-full opacity-85 transition hover:opacity-100"
             :aria-label="t('common.close')"
             @click="snackbar.dismiss()"
           >

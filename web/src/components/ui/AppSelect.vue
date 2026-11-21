@@ -217,15 +217,15 @@ onBeforeUnmount(unbindGlobalListeners)
     role="combobox"
     :aria-expanded="open"
     :disabled="disabled"
-    class="inline-flex cursor-pointer items-center justify-between gap-2 text-left text-xs transition outline-none select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)] disabled:cursor-not-allowed disabled:opacity-45"
+    class="inline-flex cursor-pointer items-center justify-between gap-2 text-left text-xs transition outline-none select-none focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)] disabled:cursor-not-allowed disabled:opacity-38"
     :class="[
       variant === 'inline'
         ? 'bg-transparent font-medium text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
         : variant === 'compact'
-          ? 'h-8 rounded-[var(--md-sys-shape-corner-sm)] border bg-[var(--md-sys-color-surface)] px-3 font-medium text-[var(--md-sys-color-on-surface)]'
+          ? 'h-8 rounded-[var(--md-sys-shape-corner-xs)] border bg-[var(--md-sys-color-surface)] px-3 font-medium text-[var(--md-sys-color-on-surface)]'
           : size === 'sm'
-            ? 'h-9 w-full rounded-[var(--md-sys-shape-corner-sm)] border bg-[var(--md-sys-color-surface)] px-3 font-medium text-[var(--md-sys-color-on-surface)]'
-            : 'h-10 w-full rounded-[var(--md-sys-shape-corner-sm)] border bg-[var(--md-sys-color-surface)] px-3.5 font-medium text-[var(--md-sys-color-on-surface)]',
+            ? 'h-9 w-full rounded-[var(--md-sys-shape-corner-xs)] border bg-[var(--md-sys-color-surface)] px-3 font-medium text-[var(--md-sys-color-on-surface)]'
+            : 'h-10 w-full rounded-[var(--md-sys-shape-corner-xs)] border bg-[var(--md-sys-color-surface)] px-3.5 font-medium text-[var(--md-sys-color-on-surface)]',
       variant !== 'inline' &&
         (open
           ? 'border-[var(--md-sys-color-primary)] ring-1 ring-[var(--md-sys-color-primary)]'
@@ -249,7 +249,7 @@ onBeforeUnmount(unbindGlobalListeners)
       ref="menuRef"
       role="listbox"
       :style="menuStyle"
-      class="z-[var(--z-popover)] overflow-hidden rounded-[var(--md-sys-shape-corner-sm)] bg-[var(--md-sys-color-surface-container)] p-1.5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+      class="z-[var(--z-popover)] overflow-hidden rounded-[var(--md-sys-shape-corner-xs)] bg-[var(--md-sys-color-surface-container)] p-1.5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
       @keydown="onMenuKeydown"
     >
       <div v-if="showSearchBox" class="relative mb-1.5 px-1 pt-0.5">

@@ -80,7 +80,7 @@ const rootsFolded = ref(false)
     >
       <button
         type="button"
-        class="group flex w-full flex-col items-center gap-1 py-1 text-[11px] font-medium outline-none"
+        class="md-state group flex w-full flex-col items-center gap-1 rounded-2xl py-1 text-xs font-medium"
         @click="emit('navigatePrimary', 'home')"
       >
         <span
@@ -107,7 +107,7 @@ const rootsFolded = ref(false)
 
       <button
         type="button"
-        class="group flex w-full flex-col items-center gap-1 py-1 text-[11px] font-medium outline-none"
+        class="md-state group flex w-full flex-col items-center gap-1 rounded-2xl py-1 text-xs font-medium"
         @click="emit('navigatePrimary', 'items')"
       >
         <span

@@ -80,6 +80,11 @@ const dragDepth = ref(0)
 const filePickerRef = ref<HTMLInputElement | null>(null)
 const folderPickerRef = ref<HTMLInputElement | null>(null)
 const mainScrollRef = ref<HTMLElement | null>(null)
+const isContentScrolled = ref(false)
+function onMainScroll(ev: Event): void {
+  const el = ev.target as HTMLElement | null
+  isContentScrolled.value = Boolean(el && el.scrollTop > 4)
+}
 const searchInputRef = ref<HTMLInputElement | null>(null)
 const accountMenuRef = ref<HTMLElement | null>(null)
 const uploadMenuRef = ref<HTMLElement | null>(null)
@@ -581,9 +586,14 @@ onBeforeUnmount(() => {
       </p>
     </div>
 
-    <!-- Full-Width MD3 Top App Bar -->
+    <!-- Full-Width MD3 Top App Bar (Scroll-triggered tonal transition) -->
     <header
-      class="safe-pt safe-px relative z-30 shrink-0 bg-[var(--md-sys-color-surface-container)] select-none"
+      class="safe-pt safe-px relative z-30 shrink-0 transition-colors duration-[var(--md-sys-motion-duration-short)] select-none"
+      :class="
+        isContentScrolled
+          ? 'bg-[var(--md-sys-color-surface-container)] shadow-[var(--md-sys-elevation-1)]'
+          : 'bg-[var(--md-sys-color-surface)] md:bg-[var(--md-sys-color-surface-container)]'
+      "
     >
       <div class="flex h-16 items-center justify-between gap-2.5 px-3 sm:gap-3 sm:px-4">
       <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Switcher -->
@@ -884,6 +894,7 @@ onBeforeUnmount(() => {
           ref="mainScrollRef"
           class="h-full overflow-y-auto"
           :class="!showMobileBottomNav && !showMusicBar ? 'safe-pb md:pb-0' : ''"
+          @scroll.passive="onMainScroll"
         >
           <RouterView v-slot="{ Component }">
             <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">

@@ -13,7 +13,7 @@ const props = withDefaults(
   {
     title: '',
     subtitle: '',
-    widthClass: 'w-full max-w-lg',
+    widthClass: 'w-full max-w-[400px]',
   },
 )
 
@@ -35,20 +35,20 @@ escapeStack.register(
     <Transition name="md-fade">
       <div
         v-if="open"
-        class="fixed inset-0 z-[var(--z-sheet)] flex justify-end bg-[var(--md-sys-color-scrim)]/35 backdrop-blur-[1px]"
+        class="fixed inset-0 z-[var(--z-sheet)] flex justify-end bg-[var(--md-sys-color-scrim)]/32"
         @mousedown.self="emit('close')"
       >
         <Transition name="md-sheet-right" appear>
           <aside
             role="dialog"
             aria-modal="true"
-            class="flex h-full flex-col overflow-hidden rounded-l-[28px] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
+            class="flex h-full flex-col overflow-hidden rounded-l-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-1)]"
             :class="widthClass"
           >
             <!-- Side Sheet Header -->
             <div class="flex items-start justify-between gap-3 px-6 pt-6 pb-4">
               <div class="min-w-0">
-                <h3 class="md-title-large leading-snug tracking-tight">
+                <h3 class="md-title-large">
                   {{ title }}
                 </h3>
                 <p

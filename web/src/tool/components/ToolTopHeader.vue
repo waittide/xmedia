@@ -32,6 +32,7 @@ const props = defineProps<{
   searchQuery: string
   searchPlaceholder: string
   status: ToolStatusDto | null
+  scrolled?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -96,7 +97,12 @@ defineExpose({ focusSearch })
 
 <template>
   <header
-    class="flex h-16 shrink-0 items-center justify-between gap-3 bg-[var(--md-sys-color-surface-container)] px-3 select-none sm:px-4"
+    class="flex h-16 shrink-0 items-center justify-between gap-3 px-3 transition-colors duration-[var(--md-sys-motion-duration-short)] select-none sm:px-4"
+    :class="
+      scrolled
+        ? 'bg-[var(--md-sys-color-surface-container)] shadow-[var(--md-sys-elevation-1)]'
+        : 'bg-[var(--md-sys-color-surface)] md:bg-[var(--md-sys-color-surface-container)]'
+    "
   >
     <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Button -->
     <div class="flex shrink-0 items-center gap-2">
@@ -112,7 +118,7 @@ defineExpose({ focusSearch })
 
       <button
         type="button"
-        class="md-state flex items-center gap-2.5 rounded-full py-1 pr-2.5 pl-1 text-left outline-none"
+        class="md-state flex items-center gap-2.5 rounded-full py-1 pr-2.5 pl-1 text-left"
         @click="emit('navigateHome')"
       >
         <div

@@ -275,7 +275,8 @@ onBeforeUnmount(unbindGlobalListeners)
         <button
           v-if="query"
           type="button"
-          class="absolute top-1/2 right-2 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
+          class="md-state absolute top-1/2 right-2 -translate-y-1/2 rounded-full p-0.5 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
+          :aria-label="resolvedClearText"
           @click="query = ''"
         >
           <LuX class="h-3.5 w-3.5" />
@@ -343,7 +344,7 @@ onBeforeUnmount(unbindGlobalListeners)
         </span>
         <button
           type="button"
-          class="cursor-pointer text-[11px] font-semibold text-[var(--md-sys-color-primary)] hover:underline"
+          class="md-state cursor-pointer rounded-full px-2 py-0.5 text-[11px] font-semibold text-[var(--md-sys-color-primary)] hover:underline"
           @click="clearAll"
         >
           {{ resolvedClearText }}
