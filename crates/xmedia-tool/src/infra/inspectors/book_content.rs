@@ -990,19 +990,27 @@ pub fn read_epub_internal_asset(
     let bytes = read_zip_bytes(&mut archive, &normalized).ok_or_else(|| {
         DomainError::NotFound(format!("epub internal asset '{normalized}' not found"))
     })?;
-    let guessed = mime_guess::from_path(&normalized).first_raw();
-    let mime_type = match guessed {
-        Some(m) if !m.starts_with("image/") => m.to_string(),
-        Some(m) => {
-            let sniffed = sniff_image_mime(&bytes);
-            if sniffed.starts_with("image/") {
-                sniffed.to_string()
-            } else {
-                m.to_string()
+    let mime_type =
+        if let Some(raster) = xmedia_core::infra::thumbnail::sniff_raster_image_mime(&bytes) {
+            raster.to_string()
+        } else {
+            let ext = Path::new(&normalized)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            match ext.as_str() {
+                "woff" => "font/woff".to_string(),
+                "woff2" => "font/woff2".to_string(),
+                "ttf" => "font/ttf".to_string(),
+                "otf" => "font/otf".to_string(),
+                _ => {
+                    return Err(DomainError::Validation(format!(
+                        "epub asset '{normalized}' is not an allowed raster image or font"
+                    )));
+                }
             }
-        }
-        None => sniff_image_mime(&bytes).to_string(),
-    };
+        };
     Ok(BinaryPayload { bytes, mime_type })
 }
 
@@ -3030,7 +3038,14 @@ mod tests {
 
         let report = polish_epub_book(&epub_path).unwrap();
         assert_eq!(report.removed_orphan_files, 0);
-        assert!(read_epub_internal_asset(&epub_path, "OEBPS/Text/第一章.xhtml").is_ok());
+        // Active XHTML must NOT be served via the raw epub-asset HTTP endpoint, while remaining
+        // intact inside the polished archive alongside its percent-encoded CJK image asset.
+        assert!(read_epub_internal_asset(&epub_path, "OEBPS/Text/第一章.xhtml").is_err());
+        {
+            let f = File::open(&epub_path).unwrap();
+            let mut archive = ZipArchive::new(BufReader::new(f)).unwrap();
+            assert!(archive.by_name("OEBPS/Text/第一章.xhtml").is_ok());
+        }
         assert!(read_epub_internal_asset(&epub_path, "OEBPS/Images/插图 1.png").is_ok());
     }
 }

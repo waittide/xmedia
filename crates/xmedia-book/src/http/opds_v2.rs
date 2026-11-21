@@ -1,7 +1,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -99,10 +99,17 @@ struct Opds2PubMeta {
 }
 
 fn opds2_response(feed: &Opds2Feed) -> Response {
-    let json = serde_json::to_vec(feed).unwrap_or_default();
+    let Ok(json) = serde_json::to_vec(feed) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to serialize OPDS2 feed",
+        )
+            .into_response();
+    };
     let mut res = (StatusCode::OK, Body::from(json)).into_response();
-    res.headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static(OPDS2_MIME));
+    let headers = res.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(OPDS2_MIME));
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     res
 }
 

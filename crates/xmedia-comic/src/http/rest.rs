@@ -386,13 +386,22 @@ pub fn respond_with_etag(content: PageContent, req_headers: &HeaderMap) -> Respo
 
     let mut res = Response::new(Body::from(content.bytes));
     *res.status_mut() = StatusCode::OK;
+    let headers = res.headers_mut();
     if let Ok(ct) = HeaderValue::from_str(&content.mime_type) {
-        res.headers_mut().insert(header::CONTENT_TYPE, ct);
+        headers.insert(header::CONTENT_TYPE, ct);
     }
     if let Ok(et) = HeaderValue::from_str(&content.etag) {
-        res.headers_mut().insert(header::ETAG, et);
+        headers.insert(header::ETAG, et);
     }
-    res.headers_mut().insert(
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:"),
+    );
+    headers.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=86400"),
     );

@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_SECURITY_POLICY, CONTENT_TYPE,
+    X_CONTENT_TYPE_OPTIONS,
 };
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::Response;
@@ -354,6 +355,10 @@ async fn online_cover_proxy(
     }
     resp.headers_mut()
         .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    resp.headers_mut().insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:"),
+    );
     resp.headers_mut().insert(
         CACHE_CONTROL,
         HeaderValue::from_static("private, max-age=86400"),

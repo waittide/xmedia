@@ -145,7 +145,7 @@ impl VideoDomainLifecycle {
                 .await
                 .ok();
             let poster_key = match poster_bytes {
-                Some(ref b) => self.storage.save_poster_bytes(b).await.ok(),
+                Some(ref b) => self.storage.save_generated_poster_bytes(b).await.ok(),
                 None => None,
             };
 
@@ -271,7 +271,7 @@ impl VideoDomainLifecycle {
                 .await
                 .ok();
             let poster_key = match poster_bytes {
-                Some(ref b) => self.storage.save_poster_bytes(b).await.ok(),
+                Some(ref b) => self.storage.save_generated_poster_bytes(b).await.ok(),
                 None => None,
             };
 
@@ -605,7 +605,10 @@ impl MediaDomainLifecycle for VideoDomainLifecycle {
                     )
                     .await
                 {
-                    self.storage.save_poster_bytes(&frame_bytes).await.ok()
+                    self.storage
+                        .save_generated_poster_bytes(&frame_bytes)
+                        .await
+                        .ok()
                 } else {
                     None
                 };

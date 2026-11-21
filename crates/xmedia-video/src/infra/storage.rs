@@ -164,6 +164,16 @@ impl VideoStoragePort for LocalVideoStorage {
         self.posters.store_cover_bytes_async(bytes.to_vec()).await
     }
 
+    async fn save_generated_poster_bytes(&self, bytes: &[u8]) -> DomainResult<String> {
+        if xmedia_core::infra::thumbnail::sniff_image_mime(bytes) == "image/svg+xml" {
+            return self
+                .posters
+                .store_trusted_svg_bytes_async(bytes.to_vec())
+                .await;
+        }
+        self.posters.store_cover_bytes_async(bytes.to_vec()).await
+    }
+
     async fn read_poster(&self, key: &str, max_size: Option<u32>) -> DomainResult<BinaryPayload> {
         self.posters
             .load_cover_async(key.to_string(), max_size)

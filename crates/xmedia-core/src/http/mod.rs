@@ -9,7 +9,8 @@ use axum::extract::multipart::Field;
 #[cfg(feature = "server")]
 use axum::extract::{FromRef, FromRequestParts};
 use axum::http::header::{
-    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE,
+    ACCEPT_RANGES, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE,
+    CONTENT_SECURITY_POLICY, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
 };
 #[cfg(feature = "server")]
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE, WWW_AUTHENTICATE};
@@ -436,6 +437,15 @@ pub fn into_range_http_response(
     if let Ok(ct) = HeaderValue::from_str(mime_type) {
         headers.insert(CONTENT_TYPE, ct);
     }
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if !as_attachment {
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'",
+            ),
+        );
+    }
     headers.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
     headers.insert(
         CACHE_CONTROL,
@@ -484,6 +494,13 @@ pub fn into_stream_http_response(
     if let Ok(ct) = HeaderValue::from_str(mime_type) {
         headers.insert(CONTENT_TYPE, ct);
     }
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if !as_attachment {
+        headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("sandbox; default-src 'none'; media-src 'self'"),
+        );
+    }
     headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
     if let Some(name) = filename {
         let disp_kind = if as_attachment {
@@ -510,12 +527,18 @@ pub fn into_stream_http_response(
 
 pub fn into_binary_cache_response(payload: BinaryPayload) -> Response {
     let mut res = (StatusCode::OK, Body::from(payload.bytes)).into_response();
+    let headers = res.headers_mut();
     if let Ok(ct) = HeaderValue::from_str(&payload.mime_type) {
-        res.headers_mut().insert(CONTENT_TYPE, ct);
+        headers.insert(CONTENT_TYPE, ct);
     }
-    res.headers_mut().insert(
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:"),
+    );
+    headers.insert(
         CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=604800"),
+        HeaderValue::from_static("private, max-age=604800"),
     );
     res
 }

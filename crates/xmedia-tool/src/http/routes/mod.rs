@@ -15,9 +15,11 @@ use std::time::{Duration, Instant};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, SET_COOKIE};
+use axum::http::header::{
+    CACHE_CONTROL, CONTENT_SECURITY_POLICY, CONTENT_TYPE, SET_COOKIE, X_CONTENT_TYPE_OPTIONS,
+};
 use axum::http::request::Parts;
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -65,6 +67,25 @@ pub(super) struct FileTargetQuery {
 
 pub(super) fn default_jpeg_quality() -> u8 {
     84
+}
+
+/// Applies strict anti-XSS sandboxing headers to binary asset endpoints (covers, EPUB internal
+/// assets, comic pages, scraper image proxy) so untrusted files can never execute scripts in
+/// the `xmedia-tool` origin even if navigated to directly.
+pub(super) fn apply_sandboxed_asset_headers(
+    headers: &mut HeaderMap,
+    mime_type: &str,
+    cache_control: &'static str,
+) {
+    if let Ok(ct) = HeaderValue::from_str(mime_type) {
+        headers.insert(CONTENT_TYPE, ct);
+    }
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    headers.insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'; img-src 'self' data:"),
+    );
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static(cache_control));
 }
 
 #[derive(Serialize)]

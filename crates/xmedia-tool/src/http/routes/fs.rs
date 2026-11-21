@@ -1,16 +1,17 @@
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use xmedia_core::domain::error::DomainError;
+use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
 use xmedia_core::http::{ApiError, ApiResult};
-use xmedia_core::infra::thumbnail::sniff_image_mime;
+use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
+
+use crate::http::routes::apply_sandboxed_asset_headers;
 
 use crate::application::batch_metadata::{
     BatchMetadataEditInput, BatchMetadataEditReportDto, MetadataHistoryBatchDto,
@@ -184,38 +185,19 @@ async fn get_artwork(
         )));
     };
     let mut res = (StatusCode::OK, Body::from(payload.bytes)).into_response();
-    if let Ok(ct) = HeaderValue::from_str(&payload.mime_type) {
-        res.headers_mut().insert(CONTENT_TYPE, ct);
-    }
-    res.headers_mut()
-        .insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    apply_sandboxed_asset_headers(res.headers_mut(), &payload.mime_type, "no-cache");
     Ok(res)
 }
 
-/// Prioritizes magic-byte sniffing over the client-supplied `Content-Type` header so spoofed
-/// headers cannot misclassify uploaded artwork bytes.
-fn detect_uploaded_artwork_mime(bytes: &[u8], client_mime: Option<&str>) -> String {
-    let sniffed = sniff_image_mime(bytes);
-    let has_known_magic = bytes.starts_with(&[0x89, b'P', b'N', b'G'])
-        || bytes.starts_with(&[0xFF, 0xD8, 0xFF])
-        || (bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
-        || bytes.starts_with(b"GIF8")
-        || bytes.starts_with(b"<svg")
-        || bytes.starts_with(b"<?xml");
-    if has_known_magic {
-        sniffed.to_string()
-    } else {
-        client_mime
-            .map(str::trim)
-            .filter(|m| {
-                matches!(
-                    *m,
-                    "image/jpeg" | "image/png" | "image/webp" | "image/gif" | "image/avif"
-                )
-            })
-            .unwrap_or(sniffed)
-            .to_string()
-    }
+/// Strictly sniffs magic bytes and rejects SVG, XML, HTML, or unknown non-image payloads so
+/// untrusted artwork uploads can never store active same-origin scripts.
+fn detect_uploaded_artwork_mime(bytes: &[u8], _client_mime: Option<&str>) -> DomainResult<String> {
+    let sniffed = sniff_raster_image_mime(bytes).ok_or_else(|| {
+        DomainError::Validation(
+            "unsupported artwork format; only raster images (PNG, JPEG, WebP, GIF, BMP, ICO, AVIF) are allowed".into(),
+        )
+    })?;
+    Ok(sniffed.to_string())
 }
 
 async fn upload_artwork(
@@ -272,7 +254,7 @@ async fn upload_artwork(
         .filter(|b| !b.is_empty())
         .ok_or_else(|| ApiError(DomainError::Validation("missing image file".into())))?;
 
-    let mime = detect_uploaded_artwork_mime(&bytes, file_mime.as_deref());
+    let mime = detect_uploaded_artwork_mime(&bytes, file_mime.as_deref())?;
 
     let detail = state
         .workbench
@@ -455,27 +437,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detect_uploaded_artwork_mime_trusts_magic_bytes_over_client_header() {
+    fn detect_uploaded_artwork_mime_trusts_magic_bytes_and_rejects_svg_or_unknown() {
         let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
         assert_eq!(
-            detect_uploaded_artwork_mime(&png, Some("image/jpeg")),
+            detect_uploaded_artwork_mime(&png, Some("image/jpeg")).unwrap(),
             "image/png"
         );
         assert_eq!(
-            detect_uploaded_artwork_mime(&png, Some("image/svg+xml")),
+            detect_uploaded_artwork_mime(&png, Some("image/svg+xml")).unwrap(),
             "image/png"
         );
 
         let jpeg = [0xFF, 0xD8, 0xFF, 0xE0];
         assert_eq!(
-            detect_uploaded_artwork_mime(&jpeg, Some("image/png")),
+            detect_uploaded_artwork_mime(&jpeg, Some("image/png")).unwrap(),
             "image/jpeg"
         );
 
-        // Unknown bytes must not trust arbitrary SVG header
-        assert_eq!(
-            detect_uploaded_artwork_mime(b"not-a-real-image", Some("image/svg+xml")),
-            "image/jpeg"
+        // SVG and unknown bytes must be rejected
+        assert!(
+            detect_uploaded_artwork_mime(b"<svg xmlns='http://www.w3.org/2000/svg'/>", None)
+                .is_err()
         );
+        assert!(detect_uploaded_artwork_mime(b"not-a-real-image", Some("image/svg+xml")).is_err());
+        assert!(detect_uploaded_artwork_mime(b"not-a-real-image", Some("image/jpeg")).is_err());
     }
 }

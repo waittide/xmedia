@@ -6,7 +6,7 @@ use tokio::task::JoinSet;
 use tracing::warn;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::library::MediaKind;
-use xmedia_core::infra::thumbnail::sniff_image_mime;
+use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
 use crate::application::settings::ToolSettingsService;
 use crate::application::webhook::notify_xmedia_rescan;
@@ -1661,14 +1661,12 @@ async fn download_image_bytes(
         }
         raw.extend_from_slice(&chunk);
     }
-    let sniffed = sniff_image_mime(&raw);
-    if sniffed == "image/svg+xml" {
-        return Err(DomainError::Validation("SVG artwork is not allowed".into()));
-    }
-    let mime = header_mime
-        .filter(|m| m.starts_with("image/") && !m.contains("svg"))
-        .unwrap_or_else(|| sniffed.to_string());
-    Ok((raw, mime))
+    let sniffed = sniff_raster_image_mime(&raw).ok_or_else(|| {
+        DomainError::Validation(
+            "downloaded artwork is not a valid raster image (SVG/HTML/unknown rejected)".into(),
+        )
+    })?;
+    Ok((raw, sniffed.to_string()))
 }
 
 fn apply_video_locked_fields(

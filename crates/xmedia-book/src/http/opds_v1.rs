@@ -52,8 +52,9 @@ pub fn router() -> Router<BookHttpState> {
 
 fn xml_response(mime: &'static str, body: String) -> Response {
     let mut res = (StatusCode::OK, Body::from(body)).into_response();
-    res.headers_mut()
-        .insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+    let headers = res.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(mime));
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     res
 }
 

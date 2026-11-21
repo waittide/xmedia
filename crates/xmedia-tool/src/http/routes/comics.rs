@@ -1,6 +1,5 @@
 use axum::extract::{Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -11,7 +10,7 @@ use xmedia_core::http::ApiResult;
 use crate::domain::media::MediaFileDetail;
 use crate::domain::workspace::RootId;
 use crate::http::ToolHttpState;
-use crate::http::routes::{FileTargetQuery, default_jpeg_quality};
+use crate::http::routes::{FileTargetQuery, apply_sandboxed_asset_headers, default_jpeg_quality};
 use crate::infra::inspectors::comic_ops::{
     BatchComicSeriesSyncInput, BatchComicSeriesSyncReportDto, ComicImageReencodeFormat,
     ComicOptimizeReportDto, ComicPagesSnapshotDto, MergeComicsReportDto, SaveComicPageInput,
@@ -54,12 +53,10 @@ async fn get_comic_page_image(
         .read_comic_page(RootId(q.root_id), &q.path, &q.entry, q.max_width)
         .await?;
     let mut resp = (StatusCode::OK, payload.bytes).into_response();
-    if let Ok(ct) = HeaderValue::from_str(&payload.mime_type) {
-        resp.headers_mut().insert(CONTENT_TYPE, ct);
-    }
-    resp.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=120"),
+    apply_sandboxed_asset_headers(
+        resp.headers_mut(),
+        &payload.mime_type,
+        "private, max-age=120",
     );
     Ok(resp)
 }

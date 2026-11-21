@@ -125,6 +125,12 @@ pub trait VideoStoragePort: Send + Sync {
 
     async fn save_poster_bytes(&self, bytes: &[u8]) -> DomainResult<String>;
 
+    /// Saves a server-generated poster (either an FFmpeg raster frame or a server-synthesized
+    /// SVG placeholder). Never call with untrusted user uploads or external library files.
+    async fn save_generated_poster_bytes(&self, bytes: &[u8]) -> DomainResult<String> {
+        self.save_poster_bytes(bytes).await
+    }
+
     async fn read_poster(&self, key: &str, max_size: Option<u32>) -> DomainResult<BinaryPayload>;
 
     async fn resolve_video_fs_path(

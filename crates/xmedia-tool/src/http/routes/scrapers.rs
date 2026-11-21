@@ -1,6 +1,5 @@
 use axum::extract::{Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -17,6 +16,7 @@ use crate::domain::scraper::{
 };
 use crate::domain::workspace::RootId;
 use crate::http::ToolHttpState;
+use crate::http::routes::apply_sandboxed_asset_headers;
 use crate::infra::scrape_cache::ScrapeCacheStatsDto;
 
 pub(super) fn router() -> Router<ToolHttpState> {
@@ -198,12 +198,6 @@ async fn proxy_scraper_image(
 ) -> ApiResult<Response> {
     let (bytes, mime) = state.scraping.proxy_scraper_image(&q.url).await?;
     let mut res = (StatusCode::OK, bytes).into_response();
-    if let Ok(hv) = HeaderValue::from_str(&mime) {
-        res.headers_mut().insert(CONTENT_TYPE, hv);
-    }
-    res.headers_mut().insert(
-        CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=86400"),
-    );
+    apply_sandboxed_asset_headers(res.headers_mut(), &mime, "private, max-age=86400");
     Ok(res)
 }

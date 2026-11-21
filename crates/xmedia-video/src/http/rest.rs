@@ -299,9 +299,18 @@ async fn get_subtitle_vtt(
         .get_subtitle_webvtt_with_offset(VideoId(id), &sub_id, q.offset_secs)
         .await?;
     let mut res = (StatusCode::OK, Body::from(vtt)).into_response();
-    res.headers_mut().insert(
+    let headers = res.headers_mut();
+    headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("text/vtt; charset=utf-8"),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'"),
     );
     Ok(res)
 }

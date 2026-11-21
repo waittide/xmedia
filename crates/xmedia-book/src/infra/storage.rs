@@ -134,6 +134,12 @@ impl BookStoragePort for LocalBookStorage {
     }
 
     async fn save_cover(&self, _book_id: BookId, cover: &CoverPayload) -> DomainResult<String> {
+        if cover.mime_type.eq_ignore_ascii_case("image/svg+xml") {
+            return self
+                .thumbnails
+                .store_trusted_svg_bytes_async(cover.bytes.to_vec())
+                .await;
+        }
         self.thumbnails
             .store_cover_bytes_async(cover.bytes.to_vec())
             .await

@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "server")]
-use image::ImageFormat;
-#[cfg(feature = "server")]
 use image::codecs::jpeg::JpegEncoder;
 #[cfg(feature = "server")]
 use image::imageops::FilterType;
+#[cfg(feature = "server")]
+use image::{ImageFormat, ImageReader, Limits};
 
 #[cfg(feature = "server")]
 use crate::application::ports::BinaryPayload;
@@ -23,6 +23,12 @@ use crate::infra::stream::sha256_hex;
 pub const THUMB_SIZE_BUCKETS: [u32; 3] = [240, 480, 960];
 #[cfg(feature = "server")]
 const THUMB_JPEG_QUALITY: u8 = 82;
+#[cfg(feature = "server")]
+pub const MAX_COVER_INPUT_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(feature = "server")]
+const MAX_COVER_IMAGE_DIM: u32 = 16_384;
+#[cfg(feature = "server")]
+const MAX_COVER_DECODE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
 
 #[cfg(feature = "server")]
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -62,20 +68,115 @@ fn image_has_transparency(img: &image::DynamicImage) -> bool {
     img.to_rgba8().pixels().any(|p| p.0[3] < 250)
 }
 
-pub fn sniff_image_mime(bytes: &[u8]) -> &'static str {
-    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
-        "image/png"
+/// Strict magic-byte sniffer that returns `Some(mime)` **only** for safe raster image formats
+/// (PNG, JPEG, WebP, GIF, BMP, ICO, AVIF). Returns `None` for SVG, XML, HTML, or unknown payloads.
+pub fn sniff_raster_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
     } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
-        "image/jpeg"
+        Some("image/jpeg")
     } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        "image/webp"
-    } else if bytes.starts_with(b"GIF8") {
-        "image/gif"
-    } else if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") {
+        Some("image/webp")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"BM") && bytes.len() >= 14 {
+        Some("image/bmp")
+    } else if bytes.starts_with(&[0x00, 0x00, 0x01, 0x00]) && bytes.len() >= 6 {
+        Some("image/x-icon")
+    } else if bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && matches!(&bytes[8..12], b"avif" | b"avis")
+    {
+        Some("image/avif")
+    } else {
+        None
+    }
+}
+
+fn looks_like_svg_or_xml(bytes: &[u8]) -> bool {
+    let mut slice = bytes;
+    if slice.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        slice = &slice[3..];
+    }
+    let trimmed = slice
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .map(|i| &slice[i..])
+        .unwrap_or(&[]);
+    let head_len = trimmed.len().min(512);
+    let head = String::from_utf8_lossy(&trimmed[..head_len]).to_ascii_lowercase();
+    head.starts_with("<svg")
+        || head.starts_with("<?xml")
+        || head.starts_with("<!doctype svg")
+        || head.contains("<svg")
+}
+
+pub fn sniff_image_mime(bytes: &[u8]) -> &'static str {
+    if let Some(raster) = sniff_raster_image_mime(bytes) {
+        raster
+    } else if looks_like_svg_or_xml(bytes) {
         "image/svg+xml"
     } else {
         "image/jpeg"
     }
+}
+
+#[cfg(feature = "server")]
+fn cover_decode_limits() -> Limits {
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_COVER_IMAGE_DIM);
+    limits.max_image_height = Some(MAX_COVER_IMAGE_DIM);
+    limits.max_alloc = Some(MAX_COVER_DECODE_ALLOC_BYTES);
+    limits
+}
+
+#[cfg(feature = "server")]
+fn decode_bounded_raster_image(bytes: &[u8]) -> DomainResult<image::DynamicImage> {
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| DomainError::Validation(format!("unreadable cover image: {e}")))?;
+    reader.limits(cover_decode_limits());
+    let (w, h) = reader
+        .into_dimensions()
+        .map_err(|e| DomainError::Validation(format!("invalid cover image dimensions: {e}")))?;
+    if w == 0 || h == 0 || w > MAX_COVER_IMAGE_DIM || h > MAX_COVER_IMAGE_DIM {
+        return Err(DomainError::Validation(format!(
+            "cover image dimensions {w}x{h} out of allowed bounds"
+        )));
+    }
+    let mut reader = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| DomainError::Validation(format!("unreadable cover image: {e}")))?;
+    reader.limits(cover_decode_limits());
+    reader
+        .decode()
+        .map_err(|e| DomainError::Validation(format!("invalid cover image payload: {e}")))
+}
+
+#[cfg(feature = "server")]
+fn validate_trusted_svg_bytes(bytes: &[u8]) -> DomainResult<()> {
+    if bytes.is_empty() || bytes.len() > 256 * 1024 {
+        return Err(DomainError::Validation(
+            "trusted SVG cover exceeds allowed size".into(),
+        ));
+    }
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| DomainError::Validation("trusted SVG cover must be UTF-8".into()))?;
+    let lower = text.to_ascii_lowercase();
+    if !lower.contains("<svg")
+        || lower.contains("<script")
+        || lower.contains("<foreignobject")
+        || lower.contains("<iframe")
+        || lower.contains("javascript:")
+        || lower.contains("onload=")
+        || lower.contains("onerror=")
+        || lower.contains("onclick=")
+    {
+        return Err(DomainError::Validation(
+            "unsafe SVG cover payload rejected".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "server")]
@@ -106,13 +207,46 @@ impl ThumbnailStore {
     }
 
     pub fn store_cover_bytes(&self, bytes: &[u8]) -> DomainResult<String> {
+        if bytes.is_empty() {
+            return Err(DomainError::Validation(
+                "cover image cannot be empty".into(),
+            ));
+        }
+        if bytes.len() > MAX_COVER_INPUT_BYTES {
+            return Err(DomainError::Validation(format!(
+                "cover image exceeds {} MiB limit",
+                MAX_COVER_INPUT_BYTES / (1024 * 1024)
+            )));
+        }
+        let mime = sniff_raster_image_mime(bytes).ok_or_else(|| {
+            DomainError::Validation(
+                "unsupported cover image format; only raster images (PNG, JPEG, WebP, GIF, BMP, ICO, AVIF) are allowed".into(),
+            )
+        })?;
+        // Verify dimensions via bounded header probe for formats supported by the `image` crate
+        // so corrupt/non-image or bomb payloads cannot be persisted.
+        if mime != "image/avif" {
+            let mut reader = ImageReader::new(Cursor::new(bytes))
+                .with_guessed_format()
+                .map_err(|e| DomainError::Validation(format!("unreadable cover image: {e}")))?;
+            reader.limits(cover_decode_limits());
+            let (w, h) = reader.into_dimensions().map_err(|e| {
+                DomainError::Validation(format!("invalid cover image dimensions: {e}"))
+            })?;
+            if w == 0 || h == 0 || w > MAX_COVER_IMAGE_DIM || h > MAX_COVER_IMAGE_DIM {
+                return Err(DomainError::Validation(format!(
+                    "cover image dimensions {w}x{h} out of allowed bounds"
+                )));
+            }
+        }
         let hash = sha256_hex(bytes);
-        let mime = sniff_image_mime(bytes);
         let ext = match mime {
             "image/png" => "png",
             "image/webp" => "webp",
             "image/gif" => "gif",
-            "image/svg+xml" => "svg",
+            "image/bmp" => "bmp",
+            "image/x-icon" => "ico",
+            "image/avif" => "avif",
             _ => "jpg",
         };
         let key = format!("{hash}.{ext}");
@@ -123,6 +257,30 @@ impl ThumbnailStore {
             })?;
         }
         Ok(key)
+    }
+
+    /// Stores a server-generated fallback SVG cover after validating that it contains no active
+    /// scripting constructs. Must never be called with untrusted user uploads or external files.
+    pub fn store_trusted_svg_bytes(&self, bytes: &[u8]) -> DomainResult<String> {
+        validate_trusted_svg_bytes(bytes)?;
+        let hash = sha256_hex(bytes);
+        let key = format!("{hash}.svg");
+        let dest = self.orig_dir.join(&key);
+        if !dest.exists() {
+            atomic_write_file(&dest, bytes).map_err(|e| {
+                DomainError::Storage(format!("failed to write cover {}: {e}", dest.display()))
+            })?;
+        }
+        Ok(key)
+    }
+
+    pub async fn store_trusted_svg_bytes_async(&self, bytes: Vec<u8>) -> DomainResult<String> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.store_trusted_svg_bytes(&bytes))
+            .await
+            .map_err(|e| {
+                DomainError::Storage(format!("store_trusted_svg_bytes task failed: {e}"))
+            })?
     }
 
     pub async fn store_cover_bytes_async(&self, bytes: Vec<u8>) -> DomainResult<String> {
@@ -167,7 +325,14 @@ impl ThumbnailStore {
         else {
             let orig_bytes = std::fs::read(&orig_path)
                 .map_err(|e| DomainError::Storage(format!("failed to read cover: {e}")))?;
-            let orig_mime = sniff_image_mime(&orig_bytes);
+            let orig_mime = if is_svg_key {
+                validate_trusted_svg_bytes(&orig_bytes)?;
+                "image/svg+xml"
+            } else {
+                sniff_raster_image_mime(&orig_bytes).ok_or_else(|| {
+                    DomainError::Validation("stored cover is not a valid raster image".into())
+                })?
+            };
             return Ok(BinaryPayload {
                 bytes: orig_bytes,
                 mime_type: orig_mime.to_string(),
@@ -193,16 +358,11 @@ impl ThumbnailStore {
 
         let orig_bytes = std::fs::read(&orig_path)
             .map_err(|e| DomainError::Storage(format!("failed to read cover: {e}")))?;
-        let orig_mime = sniff_image_mime(&orig_bytes);
+        let orig_mime = sniff_raster_image_mime(&orig_bytes).ok_or_else(|| {
+            DomainError::Validation("stored cover is not a valid raster image".into())
+        })?;
 
-        if orig_mime == "image/svg+xml" {
-            return Ok(BinaryPayload {
-                bytes: orig_bytes,
-                mime_type: orig_mime.to_string(),
-            });
-        }
-
-        match image::load_from_memory(&orig_bytes) {
+        match decode_bounded_raster_image(&orig_bytes) {
             Ok(img) => {
                 let resized = img.resize(bucket, bucket, FilterType::Lanczos3);
                 if image_has_transparency(&resized) {
@@ -231,10 +391,11 @@ impl ThumbnailStore {
                     mime_type: orig_mime.to_string(),
                 })
             }
-            Err(_) => Ok(BinaryPayload {
+            Err(_) if orig_mime == "image/avif" => Ok(BinaryPayload {
                 bytes: orig_bytes,
                 mime_type: orig_mime.to_string(),
             }),
+            Err(err) => Err(err),
         }
     }
 }
@@ -297,6 +458,29 @@ mod tests {
             .unwrap();
         assert_eq!(cached.mime_type, "image/jpeg");
         assert_eq!(cached.bytes, thumb.bytes);
+    }
+
+    #[test]
+    fn thumbnail_store_rejects_svg_and_non_image_payloads() {
+        let tmp = TempDir::new().unwrap();
+        let store = ThumbnailStore::new(tmp.path()).unwrap();
+
+        let svg = b"  <svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>";
+        assert!(store.store_cover_bytes(svg).is_err());
+        assert!(
+            store
+                .store_cover_bytes(b"<html><body>xss</body></html>")
+                .is_err()
+        );
+        assert!(store.store_cover_bytes(b"plain text").is_err());
+        assert!(store.store_trusted_svg_bytes(svg).is_err());
+
+        let safe_svg =
+            b"<svg xmlns='http://www.w3.org/2000/svg'><rect width='10' height='10'/></svg>";
+        let key = store.store_trusted_svg_bytes(safe_svg).unwrap();
+        assert!(key.ends_with(".svg"));
+        let loaded = store.load_cover(&key, None).unwrap();
+        assert_eq!(loaded.mime_type, "image/svg+xml");
     }
 
     #[test]
