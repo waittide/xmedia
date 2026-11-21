@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -21,11 +21,62 @@ use crate::source::rule::{RuleValue, eval_non_js_list, eval_non_js_single};
 const JS_MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const JS_MAX_STACK_BYTES: usize = 2 * 1024 * 1024;
 
+pub const MAX_TEMP_VARS_ENTRIES: usize = 512;
+pub const MAX_TEMP_VARS_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_MEMORY_CACHE_ENTRIES: usize = 512;
+pub const MAX_MEMORY_CACHE_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_PERSISTENT_CACHE_ENTRIES: usize = 512;
+pub const MAX_PERSISTENT_CACHE_BYTES: usize = 1024 * 1024;
+pub const MAX_VARIABLE_BYTES: usize = 256 * 1024;
+pub const MAX_LOGIN_INFO_ENTRIES: usize = 128;
+pub const MAX_LOGIN_INFO_BYTES: usize = 64 * 1024;
+pub const MAX_JS_HTTP_REQUESTS: usize = 32;
+
 static PROCESS_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 #[inline]
-fn now_mono_ms() -> u64 {
+pub(crate) fn now_mono_ms() -> u64 {
     PROCESS_EPOCH.elapsed().as_millis() as u64
+}
+
+fn push_diag_log(diag: &Arc<Mutex<ExecutionDiagnostics>>, msg: impl Into<String>) {
+    let clean = msg.into();
+    let trimmed = clean.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let mut g = diag.lock().unwrap_or_else(|e| e.into_inner());
+    if g.logs.len() < 100 {
+        g.logs.push(trimmed.to_string());
+    }
+}
+
+fn map_total_bytes(map: &HashMap<String, String>) -> usize {
+    map.iter().map(|(k, v)| k.len() + v.len()).sum()
+}
+
+fn insert_bounded_map(
+    map: &mut HashMap<String, String>,
+    key: String,
+    val: String,
+    max_entries: usize,
+    max_bytes: usize,
+) -> bool {
+    let is_new = !map.contains_key(&key);
+    if is_new && map.len() >= max_entries {
+        return false;
+    }
+    let current = map_total_bytes(map);
+    let old_bytes = map.get(&key).map(|v| key.len() + v.len()).unwrap_or(0);
+    let next = current
+        .saturating_sub(old_bytes)
+        .saturating_add(key.len())
+        .saturating_add(val.len());
+    if next > max_bytes {
+        return false;
+    }
+    map.insert(key, val);
+    true
 }
 
 #[derive(Clone)]
@@ -40,13 +91,18 @@ struct SharedBridgeState {
     source_name: String,
     source_url: String,
     login_ui_raw: String,
+    op_deadline_ms: Arc<AtomicU64>,
+    cancel_flag: Arc<AtomicBool>,
+    http_req_count: Arc<AtomicUsize>,
 }
 
 /// Reusable QuickJS sandbox session for one book source operation (compiles `jsLib` once).
 pub struct LegadoJsSession {
     _runtime: Runtime,
     context: Context,
-    deadline_ms: Arc<AtomicU64>,
+    eval_deadline_ms: Arc<AtomicU64>,
+    op_deadline_ms: Arc<AtomicU64>,
+    cancel_flag: Arc<AtomicBool>,
     timeout: Duration,
     bridge: SharedBridgeState,
 }
@@ -59,16 +115,48 @@ impl LegadoJsSession {
         diagnostics: Arc<Mutex<ExecutionDiagnostics>>,
         timeout: Duration,
     ) -> Result<Self, String> {
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let op_deadline_ms = Arc::new(AtomicU64::new(
+            now_mono_ms().saturating_add(timeout.as_millis() as u64),
+        ));
+        Self::new_with_control(
+            source,
+            http,
+            runtime_state,
+            diagnostics,
+            timeout,
+            op_deadline_ms,
+            cancel_flag,
+        )
+    }
+
+    pub fn new_with_control(
+        source: &LegadoBookSource,
+        http: LegadoHttpClient,
+        runtime_state: Arc<Mutex<SourceRuntimeState>>,
+        diagnostics: Arc<Mutex<ExecutionDiagnostics>>,
+        timeout: Duration,
+        op_deadline_ms: Arc<AtomicU64>,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
         let runtime = Runtime::new().map_err(|e| format!("初始化 QuickJS 运行时失败: {e}"))?;
         runtime.set_memory_limit(JS_MEMORY_LIMIT_BYTES);
         runtime.set_max_stack_size(JS_MAX_STACK_BYTES);
 
-        let deadline_ms = Arc::new(AtomicU64::new(
-            now_mono_ms().saturating_add(timeout.as_millis() as u64),
-        ));
-        let deadline_check = deadline_ms.clone();
+        let now = now_mono_ms();
+        let op_end = op_deadline_ms.load(Ordering::Relaxed);
+        let eval_end = now.saturating_add(timeout.as_millis() as u64).min(op_end);
+        let eval_deadline_ms = Arc::new(AtomicU64::new(eval_end));
+
+        let eval_check = eval_deadline_ms.clone();
+        let op_check = op_deadline_ms.clone();
+        let cancel_check = cancel_flag.clone();
         runtime.set_interrupt_handler(Some(Box::new(move || {
-            now_mono_ms() > deadline_check.load(Ordering::Relaxed)
+            if cancel_check.load(Ordering::Relaxed) {
+                return true;
+            }
+            let now = now_mono_ms();
+            now > eval_check.load(Ordering::Relaxed) || now > op_check.load(Ordering::Relaxed)
         })));
 
         let context =
@@ -85,12 +173,17 @@ impl LegadoJsSession {
             source_name: source.book_source_name.clone(),
             source_url: source.book_source_url.clone(),
             login_ui_raw: source.login_ui.clone().unwrap_or_default(),
+            op_deadline_ms: op_deadline_ms.clone(),
+            cancel_flag: cancel_flag.clone(),
+            http_req_count: Arc::new(AtomicUsize::new(0)),
         };
 
         let mut session = Self {
             _runtime: runtime,
             context,
-            deadline_ms,
+            eval_deadline_ms,
+            op_deadline_ms,
+            cancel_flag,
             timeout,
             bridge,
         };
@@ -101,6 +194,7 @@ impl LegadoJsSession {
         if let Some(ref js_lib) = source.js_lib
             && !js_lib.trim().is_empty()
         {
+            session.check_active()?;
             session.reset_deadline();
             session.context.with(|ctx| {
                 ctx.eval_with_options::<(), _>(js_lib.as_str(), sloppy_eval_options())
@@ -112,11 +206,34 @@ impl LegadoJsSession {
         Ok(session)
     }
 
+    pub fn check_active(&self) -> Result<(), String> {
+        if self.cancel_flag.load(Ordering::Relaxed) {
+            return Err("执行已取消 (interrupted)".into());
+        }
+        if now_mono_ms() > self.op_deadline_ms.load(Ordering::Relaxed) {
+            return Err("执行超过单次操作总超时上限 (interrupted)".into());
+        }
+        Ok(())
+    }
+
+    /// Refreshes the per-eval budget, clamped by the operation-wide `op_deadline_ms`.
     fn reset_deadline(&self) {
-        self.deadline_ms.store(
-            now_mono_ms().saturating_add(self.timeout.as_millis() as u64),
+        let op_end = self.op_deadline_ms.load(Ordering::Relaxed);
+        let eval_end = now_mono_ms()
+            .saturating_add(self.timeout.as_millis() as u64)
+            .min(op_end);
+        self.eval_deadline_ms.store(eval_end, Ordering::Relaxed);
+    }
+
+    /// Resets per-operation deadline and HTTP request counter when reusing a worker session
+    /// across independent chapters in batch downloads.
+    pub fn reset_operation_budget(&self, op_timeout: Duration) {
+        self.op_deadline_ms.store(
+            now_mono_ms().saturating_add(op_timeout.as_millis() as u64),
             Ordering::Relaxed,
         );
+        self.bridge.http_req_count.store(0, Ordering::Relaxed);
+        self.reset_deadline();
     }
 
     fn install_bridges(&mut self) -> Result<(), String> {
@@ -129,11 +246,33 @@ impl LegadoJsSession {
             {
                 let http = b.http.clone();
                 let base_ref = b.current_base_url.clone();
+                let diag = b.diagnostics.clone();
+                let op_dl = b.op_deadline_ms.clone();
+                let cancel = b.cancel_flag.clone();
+                let req_cnt = b.http_req_count.clone();
                 let f = Function::new(ctx.clone(), move |raw_url: String| -> String {
+                    if cancel.load(Ordering::Relaxed) || now_mono_ms() > op_dl.load(Ordering::Relaxed)
+                    {
+                        push_diag_log(&diag, "java.ajax 已中断：超过操作超时或已取消");
+                        return String::new();
+                    }
+                    let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+                    if count > MAX_JS_HTTP_REQUESTS {
+                        push_diag_log(
+                            &diag,
+                            format!(
+                                "java.ajax 请求被拒：超过单次操作 HTTP 请求上限 ({MAX_JS_HTTP_REQUESTS})"
+                            ),
+                        );
+                        return String::new();
+                    }
                     let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     match http.fetch(&raw_url, &base) {
                         Ok(res) => res.body,
-                        Err(_) => String::new(),
+                        Err(err) => {
+                            push_diag_log(&diag, format!("java.ajax 失败: {err}"));
+                            String::new()
+                        }
                     }
                 })
                 .map_err(|e| e.to_string())?;
@@ -143,7 +282,39 @@ impl LegadoJsSession {
             {
                 let http = b.http.clone();
                 let base_ref = b.current_base_url.clone();
+                let diag = b.diagnostics.clone();
+                let op_dl = b.op_deadline_ms.clone();
+                let cancel = b.cancel_flag.clone();
+                let req_cnt = b.http_req_count.clone();
                 let f = Function::new(ctx.clone(), move |raw_url: String| -> String {
+                    if cancel.load(Ordering::Relaxed) || now_mono_ms() > op_dl.load(Ordering::Relaxed)
+                    {
+                        let err = "java.connect 已中断：超过操作超时或已取消";
+                        push_diag_log(&diag, err);
+                        return serde_json::json!({
+                            "body": "",
+                            "code": 0,
+                            "url": raw_url,
+                            "headers": {},
+                            "error": err,
+                        })
+                        .to_string();
+                    }
+                    let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+                    if count > MAX_JS_HTTP_REQUESTS {
+                        let err = format!(
+                            "java.connect 请求被拒：超过单次操作 HTTP 请求上限 ({MAX_JS_HTTP_REQUESTS})"
+                        );
+                        push_diag_log(&diag, err.clone());
+                        return serde_json::json!({
+                            "body": "",
+                            "code": 0,
+                            "url": raw_url,
+                            "headers": {},
+                            "error": err,
+                        })
+                        .to_string();
+                    }
                     let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
                     match http.fetch(&raw_url, &base) {
                         Ok(res) => serde_json::json!({
@@ -153,14 +324,17 @@ impl LegadoJsSession {
                             "headers": res.headers,
                         })
                         .to_string(),
-                        Err(err) => serde_json::json!({
-                            "body": "",
-                            "code": 0,
-                            "url": raw_url,
-                            "headers": {},
-                            "error": err,
-                        })
-                        .to_string(),
+                        Err(err) => {
+                            push_diag_log(&diag, format!("java.connect 失败: {err}"));
+                            serde_json::json!({
+                                "body": "",
+                                "code": 0,
+                                "url": raw_url,
+                                "headers": {},
+                                "error": err,
+                            })
+                            .to_string()
+                        }
                     }
                 })
                 .map_err(|e| e.to_string())?;
@@ -308,10 +482,21 @@ impl LegadoJsSession {
             // Temp vars (`java.put` / `java.get`)
             {
                 let tv = b.temp_vars.clone();
+                let diag = b.diagnostics.clone();
                 let f = Function::new(ctx.clone(), move |k: String, v: String| -> String {
                     let mut g = tv.lock().unwrap_or_else(|e| e.into_inner());
-                    g.insert(k, v.clone());
-                    v
+                    if insert_bounded_map(
+                        &mut g,
+                        k,
+                        v.clone(),
+                        MAX_TEMP_VARS_ENTRIES,
+                        MAX_TEMP_VARS_BYTES,
+                    ) {
+                        v
+                    } else {
+                        push_diag_log(&diag, "java.put 写入被拒：临时变量超过配额上限");
+                        String::new()
+                    }
                 })
                 .map_err(|e| e.to_string())?;
                 globals.set("__x_put_temp", f).map_err(|e| e.to_string())?;
@@ -341,7 +526,18 @@ impl LegadoJsSession {
 
             {
                 let st = b.runtime_state.clone();
+                let diag = b.diagnostics.clone();
                 let f = Function::new(ctx.clone(), move |val: String| {
+                    if val.len() > MAX_VARIABLE_BYTES {
+                        push_diag_log(
+                            &diag,
+                            format!(
+                                "source.setVariable 写入被拒：超过 {} KiB 上限",
+                                MAX_VARIABLE_BYTES / 1024
+                            ),
+                        );
+                        return;
+                    }
                     st.lock().unwrap_or_else(|e| e.into_inner()).variable = val;
                 })
                 .map_err(|e| e.to_string())?;
@@ -364,8 +560,15 @@ impl LegadoJsSession {
 
             {
                 let st = b.runtime_state.clone();
+                let diag = b.diagnostics.clone();
                 let f = Function::new(ctx.clone(), move |raw: String| {
                     if let Ok(map) = serde_json::from_str::<HashMap<String, String>>(&raw) {
+                        if map.len() > MAX_LOGIN_INFO_ENTRIES
+                            || map_total_bytes(&map) > MAX_LOGIN_INFO_BYTES
+                        {
+                            push_diag_log(&diag, "source.putLoginInfo 写入被拒：登录信息超过配额上限");
+                            return;
+                        }
                         st.lock().unwrap_or_else(|e| e.into_inner()).login_info = map;
                     }
                 })
@@ -403,8 +606,11 @@ impl LegadoJsSession {
 
             {
                 let http = b.http.clone();
+                let diag = b.diagnostics.clone();
                 let f = Function::new(ctx.clone(), move |url: String, val: String| {
-                    http.set_cookie(&url, &val);
+                    if !http.set_cookie(&url, &val) {
+                        push_diag_log(&diag, "cookie.setCookie 写入被拒：Cookie 存储超过配额上限");
+                    }
                 })
                 .map_err(|e| e.to_string())?;
                 globals
@@ -441,11 +647,18 @@ impl LegadoJsSession {
 
             {
                 let st = b.runtime_state.clone();
+                let diag = b.diagnostics.clone();
                 let f = Function::new(ctx.clone(), move |k: String, v: String| {
-                    st.lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .cache
-                        .insert(k, v);
+                    let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
+                    if !insert_bounded_map(
+                        &mut g.cache,
+                        k,
+                        v,
+                        MAX_PERSISTENT_CACHE_ENTRIES,
+                        MAX_PERSISTENT_CACHE_BYTES,
+                    ) {
+                        push_diag_log(&diag, "cache.put 写入被拒：持久化缓存超过配额上限");
+                    }
                 })
                 .map_err(|e| e.to_string())?;
                 globals
@@ -477,8 +690,22 @@ impl LegadoJsSession {
 
             {
                 let mc = b.memory_cache.clone();
+                let diag = b.diagnostics.clone();
                 let f = Function::new(ctx.clone(), move |k: String, v: String| {
-                    mc.lock().unwrap_or_else(|e| e.into_inner()).insert(k, v);
+                    let mut g = mc.lock().unwrap_or_else(|e| e.into_inner());
+                    if v.is_empty() {
+                        g.remove(&k);
+                        return;
+                    }
+                    if !insert_bounded_map(
+                        &mut g,
+                        k,
+                        v,
+                        MAX_MEMORY_CACHE_ENTRIES,
+                        MAX_MEMORY_CACHE_BYTES,
+                    ) {
+                        push_diag_log(&diag, "cache.putMemory 写入被拒：内存缓存超过配额上限");
+                    }
                 })
                 .map_err(|e| e.to_string())?;
                 globals
@@ -799,6 +1026,7 @@ impl LegadoJsSession {
         input: &RuleValue,
         base_url: &str,
     ) -> Result<RuleValue, String> {
+        self.check_active()?;
         self.reset_deadline();
 
         {
@@ -848,6 +1076,7 @@ impl LegadoJsSession {
         action_js: Option<&str>,
         login_info: &HashMap<String, String>,
     ) -> Result<String, String> {
+        self.check_active()?;
         self.reset_deadline();
         let login_val = serde_json::to_value(login_info)
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));

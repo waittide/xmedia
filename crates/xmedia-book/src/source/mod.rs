@@ -6,13 +6,15 @@ pub mod rule;
 pub mod tracked_store;
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use regex::Regex;
 
 use crate::source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
-use crate::source::js_runtime::LegadoJsSession;
+use crate::source::js_runtime::{LegadoJsSession, now_mono_ms};
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
     OnlineChapterContent, OnlineChapterItem, SearchBookResult, SourceRuntimeState,
@@ -48,6 +50,33 @@ pub struct SourceCallOutput<T> {
 }
 
 #[derive(Debug, Clone)]
+pub struct SourceCallError {
+    pub message: String,
+    pub diagnostics: ExecutionDiagnostics,
+}
+
+impl SourceCallError {
+    pub fn new(message: impl Into<String>, diagnostics: ExecutionDiagnostics) -> Self {
+        Self {
+            message: message.into(),
+            diagnostics,
+        }
+    }
+}
+
+impl fmt::Display for SourceCallError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<SourceCallError> for String {
+    fn from(value: SourceCallError) -> Self {
+        value.message
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BookSourceEngine {
     http_config: HttpClientConfig,
     js_timeout: Duration,
@@ -62,14 +91,7 @@ impl Default for BookSourceEngine {
     }
 }
 
-#[cfg(test)]
-type SessionTuple = (
-    LegadoHttpClient,
-    Arc<Mutex<SourceRuntimeState>>,
-    Arc<Mutex<HashMap<String, String>>>,
-    Arc<Mutex<ExecutionDiagnostics>>,
-    LegadoJsSession,
-);
+type LazySessionPair = (ReusableWorkerSession, Arc<Mutex<HashMap<String, String>>>);
 
 /// Shared per-source context for batch operations (e.g. multi-chapter downloads).
 /// Reuses parsed `LegadoBookSource`, pooled `LegadoHttpClient`, cookies, and runtime state.
@@ -80,6 +102,7 @@ pub struct ReusableSourceContext {
     state_arc: Arc<Mutex<SourceRuntimeState>>,
     cookies_arc: Arc<Mutex<HashMap<String, String>>>,
     js_timeout: Duration,
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl ReusableSourceContext {
@@ -103,12 +126,17 @@ impl ReusableSourceContext {
 
     /// Creates a thread-local worker session that lazily initializes QuickJS at most once per worker.
     pub fn create_worker_session(&self) -> ReusableWorkerSession {
+        let op_deadline_ms = Arc::new(AtomicU64::new(
+            now_mono_ms().saturating_add(self.js_timeout.as_millis() as u64),
+        ));
         ReusableWorkerSession {
             source: Arc::clone(&self.source),
             http: self.http.clone(),
             state_arc: self.state_arc.clone(),
             diag_arc: Arc::new(Mutex::new(ExecutionDiagnostics::default())),
             js_timeout: self.js_timeout,
+            op_deadline_ms,
+            cancel_flag: self.cancel_flag.clone(),
             js: None,
             pending_search: None,
             pending_book: None,
@@ -133,6 +161,8 @@ pub struct ReusableWorkerSession {
     state_arc: Arc<Mutex<SourceRuntimeState>>,
     diag_arc: Arc<Mutex<ExecutionDiagnostics>>,
     js_timeout: Duration,
+    op_deadline_ms: Arc<AtomicU64>,
+    cancel_flag: Arc<AtomicBool>,
     js: Option<LegadoJsSession>,
     pending_search: Option<(String, u32)>,
     pending_book: Option<BookJsContext>,
@@ -140,6 +170,35 @@ pub struct ReusableWorkerSession {
 }
 
 impl ReusableWorkerSession {
+    /// Resets per-chapter deadline and JS HTTP request quota when a download worker
+    /// starts processing the next independent chapter.
+    pub fn reset_chapter_budget(&mut self) {
+        self.op_deadline_ms.store(
+            now_mono_ms().saturating_add(self.js_timeout.as_millis() as u64),
+            Ordering::Relaxed,
+        );
+        if let Some(ref js) = self.js {
+            js.reset_operation_budget(self.js_timeout);
+        }
+    }
+
+    fn check_active(&self) -> Result<(), String> {
+        if self.cancel_flag.load(Ordering::Relaxed) {
+            return Err("执行已取消 (interrupted)".into());
+        }
+        if now_mono_ms() > self.op_deadline_ms.load(Ordering::Relaxed) {
+            return Err("执行超过单次操作总超时上限 (interrupted)".into());
+        }
+        Ok(())
+    }
+
+    fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {
+        self.diag_arc
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     fn set_search_vars(&mut self, keyword: &str, page: u32) -> Result<(), String> {
         self.pending_search = Some((keyword.to_string(), page));
         if let Some(ref mut js) = self.js {
@@ -165,13 +224,16 @@ impl ReusableWorkerSession {
     }
 
     fn ensure_js(&mut self) -> Result<&mut LegadoJsSession, String> {
+        self.check_active()?;
         if self.js.is_none() {
-            let mut js = LegadoJsSession::new(
+            let mut js = LegadoJsSession::new_with_control(
                 &self.source,
                 self.http.clone(),
                 self.state_arc.clone(),
                 self.diag_arc.clone(),
                 self.js_timeout,
+                self.op_deadline_ms.clone(),
+                self.cancel_flag.clone(),
             )?;
             if let Some((ref kw, page)) = self.pending_search {
                 js.set_search_vars(kw, page)?;
@@ -193,6 +255,7 @@ impl ReusableWorkerSession {
         rule: &str,
         base_url: &str,
     ) -> Result<String, String> {
+        self.check_active()?;
         if rule_needs_js(rule) {
             let js = self.ensure_js()?;
             eval_rule_string(input, rule, base_url, Some(js))
@@ -207,6 +270,7 @@ impl ReusableWorkerSession {
         rule: &str,
         base_url: &str,
     ) -> Result<Vec<RuleValue>, String> {
+        self.check_active()?;
         if rule_needs_js(rule) {
             let js = self.ensure_js()?;
             eval_rule_list(input, rule, base_url, Some(js))
@@ -219,10 +283,18 @@ impl ReusableWorkerSession {
         let Some(rule) = rule_opt.map(str::trim).filter(|s| !s.is_empty()) else {
             return String::new();
         };
-        self.eval_string(input, rule, base_url)
-            .unwrap_or_default()
-            .trim()
-            .to_string()
+        match self.eval_string(input, rule, base_url) {
+            Ok(val) => val.trim().to_string(),
+            Err(err) => {
+                if rule_needs_js(rule) {
+                    let mut g = self.diag_arc.lock().unwrap_or_else(|e| e.into_inner());
+                    if g.logs.len() < 100 {
+                        g.logs.push(format!("字段规则求值失败: {err}"));
+                    }
+                }
+                String::new()
+            }
+        }
     }
 
     pub fn fetch_toc(
@@ -248,6 +320,7 @@ impl ReusableWorkerSession {
         const MAX_TOC_PAGES: usize = 30;
 
         while let Some(page_url) = next_url_opt.take() {
+            self.check_active()?;
             if visited.len() >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
                 break;
             }
@@ -257,6 +330,7 @@ impl ReusableWorkerSession {
             let items = self.eval_list(&raw_input, chapter_list_rule, &fetched.final_url)?;
 
             for item in items {
+                self.check_active()?;
                 let title =
                     self.eval_opt(&item, rule_toc.chapter_name.as_deref(), &fetched.final_url);
                 let url_raw =
@@ -330,6 +404,7 @@ impl ReusableWorkerSession {
         const MAX_CONTENT_PAGES: usize = 20;
 
         while let Some(page_url) = next_url_opt.take() {
+            self.check_active()?;
             if visited.len() >= MAX_CONTENT_PAGES || !visited.insert(page_url.clone()) {
                 break;
             }
@@ -433,7 +508,20 @@ impl BookSourceEngine {
     pub fn prepare_reusable_context(
         &self,
         source: Arc<LegadoBookSource>,
+        initial_state: SourceRuntimeState,
+    ) -> Result<ReusableSourceContext, String> {
+        self.prepare_reusable_context_with_cancel(
+            source,
+            initial_state,
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    pub fn prepare_reusable_context_with_cancel(
+        &self,
+        source: Arc<LegadoBookSource>,
         mut initial_state: SourceRuntimeState,
+        cancel_flag: Arc<AtomicBool>,
     ) -> Result<ReusableSourceContext, String> {
         initial_state.ensure_android_id(&source.book_source_url);
         let cookies_arc = Arc::new(Mutex::new(initial_state.cookies.clone()));
@@ -450,42 +538,17 @@ impl BookSourceEngine {
             state_arc,
             cookies_arc,
             js_timeout: self.js_timeout,
+            cancel_flag,
         })
-    }
-
-    #[cfg(test)]
-    fn build_session(
-        &self,
-        source: &LegadoBookSource,
-        mut initial_state: SourceRuntimeState,
-    ) -> Result<SessionTuple, String> {
-        initial_state.ensure_android_id(&source.book_source_url);
-        let cookies_arc = Arc::new(Mutex::new(initial_state.cookies.clone()));
-        let state_arc = Arc::new(Mutex::new(initial_state));
-        let diag_arc = Arc::new(Mutex::new(ExecutionDiagnostics::default()));
-
-        let http = LegadoHttpClient::new(
-            self.http_config.clone(),
-            cookies_arc.clone(),
-            source.header.as_deref(),
-            source.enabled_cookie_jar,
-        )?;
-        let js = LegadoJsSession::new(
-            source,
-            http.clone(),
-            state_arc.clone(),
-            diag_arc.clone(),
-            self.js_timeout,
-        )?;
-
-        Ok((http, state_arc, cookies_arc, diag_arc, js))
     }
 
     fn build_lazy_session(
         &self,
         source: &LegadoBookSource,
         mut initial_state: SourceRuntimeState,
-    ) -> Result<(ReusableWorkerSession, Arc<Mutex<HashMap<String, String>>>), String> {
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<LazySessionPair, String> {
         initial_state.ensure_android_id(&source.book_source_url);
         let cookies_arc = Arc::new(Mutex::new(initial_state.cookies.clone()));
         let state_arc = Arc::new(Mutex::new(initial_state));
@@ -497,6 +560,10 @@ impl BookSourceEngine {
             source.header.as_deref(),
             source.enabled_cookie_jar,
         )?;
+
+        let op_deadline_ms = Arc::new(AtomicU64::new(
+            now_mono_ms().saturating_add(op_timeout.as_millis() as u64),
+        ));
 
         Ok((
             ReusableWorkerSession {
@@ -505,6 +572,8 @@ impl BookSourceEngine {
                 state_arc,
                 diag_arc,
                 js_timeout: self.js_timeout,
+                op_deadline_ms,
+                cancel_flag,
                 js: None,
                 pending_search: None,
                 pending_book: None,
@@ -526,36 +595,6 @@ impl BookSourceEngine {
             .clone();
         let diag = diag_arc.lock().unwrap_or_else(|e| e.into_inner()).clone();
         (st, diag)
-    }
-
-    /// Evaluates a Legado `searchUrl` template (supporting `{{key}}`, `{{page}}`, `<js>...</js>`, `@js:`).
-    pub fn build_search_url(
-        &self,
-        source: &LegadoBookSource,
-        js: &mut LegadoJsSession,
-        keyword: &str,
-        page: u32,
-    ) -> Result<String, String> {
-        let raw_tpl = source
-            .search_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| format!("书源「{}」未配置 searchUrl", source.book_source_name))?;
-
-        let evaluated = if search_url_needs_js(raw_tpl) {
-            js.set_search_vars(keyword, page)?;
-            let input = RuleValue::Text(String::new());
-            eval_rule_string(&input, raw_tpl, &source.book_source_url, Some(js))?
-        } else {
-            substitute_simple_search_url(raw_tpl, keyword, page)
-        };
-
-        let trimmed = evaluated.trim();
-        if trimmed.is_empty() {
-            return Err("searchUrl 求值结果为空".into());
-        }
-        Ok(resolve_relative_url(trimmed, &source.book_source_url))
     }
 
     fn build_search_url_lazy(
@@ -595,67 +634,103 @@ impl BookSourceEngine {
         keyword: &str,
         page: u32,
     ) -> Result<SourceCallOutput<Vec<SearchBookResult>>, String> {
-        let rule_search = source
-            .rule_search
-            .as_ref()
-            .ok_or_else(|| format!("书源「{}」未配置 ruleSearch", source.book_source_name))?;
+        self.search_sync_with_control(
+            source,
+            state,
+            keyword,
+            page,
+            self.js_timeout,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .map_err(Into::into)
+    }
 
-        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
-        session.set_search_vars(keyword, page)?;
-        let search_url = self.build_search_url_lazy(source, &mut session, keyword, page)?;
-        let fetched = session.http.fetch(&search_url, &source.book_source_url)?;
-        let raw_input = RuleValue::from_raw(fetched.body);
+    pub fn search_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        keyword: &str,
+        page: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<SearchBookResult>>, SourceCallError> {
+        let rule_search = source.rule_search.as_ref().ok_or_else(|| {
+            SourceCallError::new(
+                format!("书源「{}」未配置 ruleSearch", source.book_source_name),
+                ExecutionDiagnostics::default(),
+            )
+        })?;
 
-        let book_list_rule = rule_search
-            .book_list
-            .as_deref()
-            .ok_or_else(|| "ruleSearch 缺少 bookList 规则".to_string())?;
-        let items = session.eval_list(&raw_input, book_list_rule, &fetched.final_url)?;
+        let (mut session, cookies_arc) = self
+            .build_lazy_session(source, state, op_timeout, cancel_flag)
+            .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
+        let res: Result<Vec<SearchBookResult>, String> = (|| {
+            session.set_search_vars(keyword, page)?;
+            let search_url = self.build_search_url_lazy(source, &mut session, keyword, page)?;
+            session.check_active()?;
+            let fetched = session.http.fetch(&search_url, &source.book_source_url)?;
+            let raw_input = RuleValue::from_raw(fetched.body);
 
-        let mut results = Vec::with_capacity(items.len());
-        for item in items {
-            let name = session.eval_opt(&item, rule_search.name.as_deref(), &fetched.final_url);
-            let book_url_raw =
-                session.eval_opt(&item, rule_search.book_url.as_deref(), &fetched.final_url);
-            if name.is_empty() || book_url_raw.is_empty() {
-                continue;
+            let book_list_rule = rule_search
+                .book_list
+                .as_deref()
+                .ok_or_else(|| "ruleSearch 缺少 bookList 规则".to_string())?;
+            let items = session.eval_list(&raw_input, book_list_rule, &fetched.final_url)?;
+
+            let mut results = Vec::with_capacity(items.len());
+            for item in items {
+                session.check_active()?;
+                let name = session.eval_opt(&item, rule_search.name.as_deref(), &fetched.final_url);
+                let book_url_raw =
+                    session.eval_opt(&item, rule_search.book_url.as_deref(), &fetched.final_url);
+                if name.is_empty() || book_url_raw.is_empty() {
+                    continue;
+                }
+                let author =
+                    session.eval_opt(&item, rule_search.author.as_deref(), &fetched.final_url);
+                let cover_raw =
+                    session.eval_opt(&item, rule_search.cover_url.as_deref(), &fetched.final_url);
+                let intro =
+                    session.eval_opt(&item, rule_search.intro.as_deref(), &fetched.final_url);
+                let kind = session.eval_opt(&item, rule_search.kind.as_deref(), &fetched.final_url);
+                let last_chapter = session.eval_opt(
+                    &item,
+                    rule_search.last_chapter.as_deref(),
+                    &fetched.final_url,
+                );
+                let word_count =
+                    session.eval_opt(&item, rule_search.word_count.as_deref(), &fetched.final_url);
+
+                let book_url = resolve_relative_url(&book_url_raw, &fetched.final_url);
+                let cover_url = (!cover_raw.is_empty())
+                    .then(|| resolve_relative_url(&cover_raw, &fetched.final_url));
+
+                results.push(SearchBookResult {
+                    name,
+                    author,
+                    book_url,
+                    cover_url,
+                    intro: (!intro.is_empty()).then_some(intro),
+                    kind: (!kind.is_empty()).then_some(kind),
+                    last_chapter: (!last_chapter.is_empty()).then_some(last_chapter),
+                    word_count: (!word_count.is_empty()).then_some(word_count),
+                });
             }
-            let author = session.eval_opt(&item, rule_search.author.as_deref(), &fetched.final_url);
-            let cover_raw =
-                session.eval_opt(&item, rule_search.cover_url.as_deref(), &fetched.final_url);
-            let intro = session.eval_opt(&item, rule_search.intro.as_deref(), &fetched.final_url);
-            let kind = session.eval_opt(&item, rule_search.kind.as_deref(), &fetched.final_url);
-            let last_chapter = session.eval_opt(
-                &item,
-                rule_search.last_chapter.as_deref(),
-                &fetched.final_url,
-            );
-            let word_count =
-                session.eval_opt(&item, rule_search.word_count.as_deref(), &fetched.final_url);
+            Ok(results)
+        })();
 
-            let book_url = resolve_relative_url(&book_url_raw, &fetched.final_url);
-            let cover_url = (!cover_raw.is_empty())
-                .then(|| resolve_relative_url(&cover_raw, &fetched.final_url));
-
-            results.push(SearchBookResult {
-                name,
-                author,
-                book_url,
-                cover_url,
-                intro: (!intro.is_empty()).then_some(intro),
-                kind: (!kind.is_empty()).then_some(kind),
-                last_chapter: (!last_chapter.is_empty()).then_some(last_chapter),
-                word_count: (!word_count.is_empty()).then_some(word_count),
-            });
+        match res {
+            Ok(results) => {
+                let (final_state, diagnostics) =
+                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                Ok(SourceCallOutput {
+                    data: results,
+                    state: final_state,
+                    diagnostics,
+                })
+            }
+            Err(err) => Err(SourceCallError::new(err, session.snapshot_diagnostics())),
         }
-
-        let (final_state, diagnostics) =
-            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
-        Ok(SourceCallOutput {
-            data: results,
-            state: final_state,
-            diagnostics,
-        })
     }
 
     /// Fetches book detail info (`ruleBookInfo`) and resolves `toc_url`.
@@ -666,114 +741,138 @@ impl BookSourceEngine {
         book_url: &str,
         fallback_hint: Option<&BookJsContext>,
     ) -> Result<SourceCallOutput<OnlineBookDetail>, String> {
-        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
-        if let Some(hint) = fallback_hint {
-            session.set_book_context(hint)?;
-        }
+        self.fetch_book_info_sync_with_control(
+            source,
+            state,
+            book_url,
+            fallback_hint,
+            self.js_timeout,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .map_err(Into::into)
+    }
 
-        let fetched = session.http.fetch(book_url, &source.book_source_url)?;
-        let mut info_input = RuleValue::from_raw(fetched.body);
+    pub fn fetch_book_info_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        book_url: &str,
+        fallback_hint: Option<&BookJsContext>,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineBookDetail>, SourceCallError> {
+        let (mut session, cookies_arc) = self
+            .build_lazy_session(source, state, op_timeout, cancel_flag)
+            .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
-        let Some(rule_info) = source.rule_book_info.as_ref() else {
-            let detail = OnlineBookDetail {
-                name: fallback_hint.map(|h| h.name.clone()).unwrap_or_default(),
-                author: fallback_hint.map(|h| h.author.clone()).unwrap_or_default(),
-                book_url: book_url.to_string(),
-                toc_url: fetched.final_url,
-                cover_url: fallback_hint.and_then(|h| h.cover_url.clone()),
-                intro: fallback_hint.and_then(|h| h.intro.clone()),
-                kind: None,
-                last_chapter: None,
-                word_count: None,
-            };
-            let (final_state, diagnostics) =
-                Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
-            return Ok(SourceCallOutput {
-                data: detail,
-                state: final_state,
-                diagnostics,
-            });
-        };
-
-        if let Some(ref init_rule) = rule_info.init
-            && !init_rule.trim().is_empty()
-        {
-            let init_out = session.eval_string(&info_input, init_rule, &fetched.final_url)?;
-            if !init_out.trim().is_empty() {
-                info_input = RuleValue::from_raw(init_out);
+        let res: Result<OnlineBookDetail, String> = (|| {
+            if let Some(hint) = fallback_hint {
+                session.set_book_context(hint)?;
             }
+            session.check_active()?;
+            let fetched = session.http.fetch(book_url, &source.book_source_url)?;
+            let mut info_input = RuleValue::from_raw(fetched.body);
+
+            let Some(rule_info) = source.rule_book_info.as_ref() else {
+                return Ok(OnlineBookDetail {
+                    name: fallback_hint.map(|h| h.name.clone()).unwrap_or_default(),
+                    author: fallback_hint.map(|h| h.author.clone()).unwrap_or_default(),
+                    book_url: book_url.to_string(),
+                    toc_url: fetched.final_url,
+                    cover_url: fallback_hint.and_then(|h| h.cover_url.clone()),
+                    intro: fallback_hint.and_then(|h| h.intro.clone()),
+                    kind: None,
+                    last_chapter: None,
+                    word_count: None,
+                });
+            };
+
+            if let Some(ref init_rule) = rule_info.init
+                && !init_rule.trim().is_empty()
+            {
+                let init_out = session.eval_string(&info_input, init_rule, &fetched.final_url)?;
+                if !init_out.trim().is_empty() {
+                    info_input = RuleValue::from_raw(init_out);
+                }
+            }
+
+            let name_extracted =
+                session.eval_opt(&info_input, rule_info.name.as_deref(), &fetched.final_url);
+            let author_extracted =
+                session.eval_opt(&info_input, rule_info.author.as_deref(), &fetched.final_url);
+            let cover_extracted = session.eval_opt(
+                &info_input,
+                rule_info.cover_url.as_deref(),
+                &fetched.final_url,
+            );
+            let intro_extracted =
+                session.eval_opt(&info_input, rule_info.intro.as_deref(), &fetched.final_url);
+            let kind_extracted =
+                session.eval_opt(&info_input, rule_info.kind.as_deref(), &fetched.final_url);
+            let last_chapter_extracted = session.eval_opt(
+                &info_input,
+                rule_info.last_chapter.as_deref(),
+                &fetched.final_url,
+            );
+            let word_count_extracted = session.eval_opt(
+                &info_input,
+                rule_info.word_count.as_deref(),
+                &fetched.final_url,
+            );
+            let toc_raw = session.eval_opt(
+                &info_input,
+                rule_info.toc_url.as_deref(),
+                &fetched.final_url,
+            );
+
+            let toc_url = if toc_raw.is_empty() {
+                fetched.final_url.clone()
+            } else {
+                resolve_relative_url(&toc_raw, &fetched.final_url)
+            };
+
+            Ok(OnlineBookDetail {
+                name: if !name_extracted.is_empty() {
+                    name_extracted
+                } else {
+                    fallback_hint.map(|h| h.name.clone()).unwrap_or_default()
+                },
+                author: if !author_extracted.is_empty() {
+                    author_extracted
+                } else {
+                    fallback_hint.map(|h| h.author.clone()).unwrap_or_default()
+                },
+                book_url: book_url.to_string(),
+                toc_url,
+                cover_url: if !cover_extracted.is_empty() {
+                    Some(resolve_relative_url(&cover_extracted, &fetched.final_url))
+                } else {
+                    fallback_hint.and_then(|h| h.cover_url.clone())
+                },
+                intro: if !intro_extracted.is_empty() {
+                    Some(intro_extracted)
+                } else {
+                    fallback_hint.and_then(|h| h.intro.clone())
+                },
+                kind: (!kind_extracted.is_empty()).then_some(kind_extracted),
+                last_chapter: (!last_chapter_extracted.is_empty())
+                    .then_some(last_chapter_extracted),
+                word_count: (!word_count_extracted.is_empty()).then_some(word_count_extracted),
+            })
+        })();
+
+        match res {
+            Ok(detail) => {
+                let (final_state, diagnostics) =
+                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                Ok(SourceCallOutput {
+                    data: detail,
+                    state: final_state,
+                    diagnostics,
+                })
+            }
+            Err(err) => Err(SourceCallError::new(err, session.snapshot_diagnostics())),
         }
-
-        let name_extracted =
-            session.eval_opt(&info_input, rule_info.name.as_deref(), &fetched.final_url);
-        let author_extracted =
-            session.eval_opt(&info_input, rule_info.author.as_deref(), &fetched.final_url);
-        let cover_extracted = session.eval_opt(
-            &info_input,
-            rule_info.cover_url.as_deref(),
-            &fetched.final_url,
-        );
-        let intro_extracted =
-            session.eval_opt(&info_input, rule_info.intro.as_deref(), &fetched.final_url);
-        let kind_extracted =
-            session.eval_opt(&info_input, rule_info.kind.as_deref(), &fetched.final_url);
-        let last_chapter_extracted = session.eval_opt(
-            &info_input,
-            rule_info.last_chapter.as_deref(),
-            &fetched.final_url,
-        );
-        let word_count_extracted = session.eval_opt(
-            &info_input,
-            rule_info.word_count.as_deref(),
-            &fetched.final_url,
-        );
-        let toc_raw = session.eval_opt(
-            &info_input,
-            rule_info.toc_url.as_deref(),
-            &fetched.final_url,
-        );
-
-        let toc_url = if toc_raw.is_empty() {
-            fetched.final_url.clone()
-        } else {
-            resolve_relative_url(&toc_raw, &fetched.final_url)
-        };
-
-        let detail = OnlineBookDetail {
-            name: if !name_extracted.is_empty() {
-                name_extracted
-            } else {
-                fallback_hint.map(|h| h.name.clone()).unwrap_or_default()
-            },
-            author: if !author_extracted.is_empty() {
-                author_extracted
-            } else {
-                fallback_hint.map(|h| h.author.clone()).unwrap_or_default()
-            },
-            book_url: book_url.to_string(),
-            toc_url,
-            cover_url: if !cover_extracted.is_empty() {
-                Some(resolve_relative_url(&cover_extracted, &fetched.final_url))
-            } else {
-                fallback_hint.and_then(|h| h.cover_url.clone())
-            },
-            intro: if !intro_extracted.is_empty() {
-                Some(intro_extracted)
-            } else {
-                fallback_hint.and_then(|h| h.intro.clone())
-            },
-            kind: (!kind_extracted.is_empty()).then_some(kind_extracted),
-            last_chapter: (!last_chapter_extracted.is_empty()).then_some(last_chapter_extracted),
-            word_count: (!word_count_extracted.is_empty()).then_some(word_count_extracted),
-        };
-
-        let (final_state, diagnostics) =
-            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
-        Ok(SourceCallOutput {
-            data: detail,
-            state: final_state,
-            diagnostics,
-        })
     }
 
     /// Fetches chapter list (`ruleToc`, supporting optional multi-page `nextTocUrl`).
@@ -784,15 +883,41 @@ impl BookSourceEngine {
         toc_url: &str,
         book_ctx: &BookJsContext,
     ) -> Result<SourceCallOutput<Vec<OnlineChapterItem>>, String> {
-        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
-        let chapters = session.fetch_toc(toc_url, book_ctx)?;
-        let (final_state, diagnostics) =
-            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
-        Ok(SourceCallOutput {
-            data: chapters,
-            state: final_state,
-            diagnostics,
-        })
+        self.fetch_toc_sync_with_control(
+            source,
+            state,
+            toc_url,
+            book_ctx,
+            self.js_timeout,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .map_err(Into::into)
+    }
+
+    pub fn fetch_toc_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        toc_url: &str,
+        book_ctx: &BookJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<OnlineChapterItem>>, SourceCallError> {
+        let (mut session, cookies_arc) = self
+            .build_lazy_session(source, state, op_timeout, cancel_flag)
+            .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
+        match session.fetch_toc(toc_url, book_ctx) {
+            Ok(chapters) => {
+                let (final_state, diagnostics) =
+                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                Ok(SourceCallOutput {
+                    data: chapters,
+                    state: final_state,
+                    diagnostics,
+                })
+            }
+            Err(err) => Err(SourceCallError::new(err, session.snapshot_diagnostics())),
+        }
     }
 
     /// Fetches a single chapter's content (`ruleContent`, supporting `nextContentUrl` pagination).
@@ -804,18 +929,48 @@ impl BookSourceEngine {
         book_ctx: &BookJsContext,
         chapter_ctx: &ChapterJsContext,
     ) -> Result<SourceCallOutput<OnlineChapterContent>, String> {
-        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
-        let data = session.fetch_chapter_content(chapter_url, book_ctx, chapter_ctx)?;
-        let (final_state, diagnostics) =
-            Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
-        Ok(SourceCallOutput {
-            data,
-            state: final_state,
-            diagnostics,
-        })
+        self.fetch_chapter_content_sync_with_control(
+            source,
+            state,
+            chapter_url,
+            book_ctx,
+            chapter_ctx,
+            self.js_timeout,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .map_err(Into::into)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn fetch_chapter_content_sync_with_control(
+        &self,
+        source: &LegadoBookSource,
+        state: SourceRuntimeState,
+        chapter_url: &str,
+        book_ctx: &BookJsContext,
+        chapter_ctx: &ChapterJsContext,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<OnlineChapterContent>, SourceCallError> {
+        let (mut session, cookies_arc) = self
+            .build_lazy_session(source, state, op_timeout, cancel_flag)
+            .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
+        match session.fetch_chapter_content(chapter_url, book_ctx, chapter_ctx) {
+            Ok(data) => {
+                let (final_state, diagnostics) =
+                    Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
+                Ok(SourceCallOutput {
+                    data,
+                    state: final_state,
+                    diagnostics,
+                })
+            }
+            Err(err) => Err(SourceCallError::new(err, session.snapshot_diagnostics())),
+        }
     }
 
     /// Runs a `loginUi` button action (`loginUrl` + `action` JS) and persists updated variables/cookies.
+    /// Merges submitted `login_info` into existing `state.login_info` rather than wiping omitted keys.
     pub fn run_login_action_sync(
         &self,
         source: &LegadoBookSource,
@@ -823,12 +978,20 @@ impl BookSourceEngine {
         login_info: HashMap<String, String>,
         action_js: Option<&str>,
     ) -> Result<SourceCallOutput<String>, String> {
-        state.login_info = login_info.clone();
-        let (mut session, cookies_arc) = self.build_lazy_session(source, state)?;
+        for (k, v) in login_info {
+            state.login_info.insert(k, v);
+        }
+        let merged_login = state.login_info.clone();
+        let (mut session, cookies_arc) = self.build_lazy_session(
+            source,
+            state,
+            self.js_timeout,
+            Arc::new(AtomicBool::new(false)),
+        )?;
         let login_url_js = source.login_url.as_deref().unwrap_or("");
         let out = session
             .ensure_js()?
-            .eval_login_script(login_url_js, action_js, &login_info)?;
+            .eval_login_script(login_url_js, action_js, &merged_login)?;
         let (final_state, diagnostics) =
             Self::finalize_state(&session.state_arc, &cookies_arc, &session.diag_arc);
         Ok(SourceCallOutput {
@@ -894,8 +1057,8 @@ pub fn clean_chapter_html_to_text(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::path::Path;
-    use std::time::Duration;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::{Duration, Instant};
 
     use axum::Router;
     use axum::routing::{get, post};
@@ -903,6 +1066,9 @@ mod tests {
     use super::*;
     use crate::source::http::{
         HttpClientConfig, parse_legado_url, try_resolve_data_url, validate_target_url,
+    };
+    use crate::source::js_runtime::{
+        MAX_JS_HTTP_REQUESTS, MAX_PERSISTENT_CACHE_BYTES, MAX_VARIABLE_BYTES,
     };
     use crate::source::model::{
         BookJsContext, ChapterJsContext, LegadoBookSource, SourceRuntimeState,
@@ -1337,48 +1503,210 @@ mod tests {
     }
 
     #[test]
-    fn real_user_book_source_json_parses_and_executes_jslib_and_login_actions() {
-        let user_path = Path::new("/data/home/下载/bookSource.json");
-        if !user_path.is_file() {
-            return;
-        }
-        let raw = std::fs::read_to_string(user_path).unwrap();
-        let parsed = LegadoBookSource::parse_json_batch(&raw).unwrap();
-        assert_eq!(parsed.len(), 1);
-        let (src, _) = &parsed[0];
-        assert!(src.book_source_name.contains("光遇聚合"));
-        assert!(!src.parse_login_ui().is_empty());
-
-        let engine = BookSourceEngine::default();
-        // Verify jsLib loads cleanly, checkEnv() == "安卓", searchUrl builds valid data:;base64 URL,
-        // and loginUi backup toggles (`ste('段评')`, `setSearchSource()`) persist variables cleanly!
-        let action_out = engine
+    fn js_bridge_enforces_container_quotas_and_preserves_diagnostics() {
+        let src = LegadoBookSource {
+            book_source_name: "QuotaTest".into(),
+            book_source_url: "https://example.com".into(),
+            login_url: Some(
+                r#"
+                function testQuotas() {
+                    var bigVar = 'v'.repeat(300 * 1024);
+                    source.setVariable(bigVar);
+                    var chunk = 'c'.repeat(200 * 1024);
+                    for (var i = 0; i < 10; i++) {
+                        cache.put('k' + i, chunk);
+                    }
+                    var tempBig = 't'.repeat(5 * 1024 * 1024);
+                    java.put('huge', tempBig);
+                    return java.get('huge').length + ':' + source.getVariable().length;
+                }
+                "#
+                .into(),
+            ),
+            ..Default::default()
+        };
+        let engine = BookSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        );
+        let out = engine
             .run_login_action_sync(
-                src,
+                &src,
                 SourceRuntimeState::default(),
-                HashMap::from([(
-                    "搜索来源(支持的平台请前往源变量中查看,多个来源用英文逗号分割)".to_string(),
-                    "番茄,七猫".to_string(),
-                )]),
-                Some("setSearchSource(); ste('段评'); checkEnv();"),
+                HashMap::new(),
+                Some("testQuotas()"),
+            )
+            .unwrap();
+        assert_eq!(out.data, "0:0");
+        assert!(out.state.variable.len() <= MAX_VARIABLE_BYTES);
+        let cache_bytes: usize = out.state.cache.iter().map(|(k, v)| k.len() + v.len()).sum();
+        assert!(
+            cache_bytes <= MAX_PERSISTENT_CACHE_BYTES,
+            "persistent cache exceeded quota: {cache_bytes}"
+        );
+        assert!(
+            out.diagnostics
+                .logs
+                .iter()
+                .any(|l| l.contains("配额") || l.contains("上限")),
+            "expected quota rejection logs, got {:?}",
+            out.diagnostics.logs
+        );
+    }
+
+    #[test]
+    fn js_sandbox_external_cancel_flag_interrupts_promptly_and_preserves_diagnostics() {
+        let src = LegadoBookSource {
+            book_source_name: "CancelTest".into(),
+            book_source_url: "https://example.com".into(),
+            search_url: Some("<js>java.log('before-loop'); while(true){}</js>".into()),
+            rule_search: Some(Default::default()),
+            ..Default::default()
+        };
+        let engine = BookSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(30),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_bg = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            cancel_bg.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let err = engine
+            .search_sync_with_control(
+                &src,
+                SourceRuntimeState::default(),
+                "test",
+                1,
+                Duration::from_secs(30),
+                cancel,
+            )
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "expected prompt cancellation, took {:?}",
+            started.elapsed()
+        );
+        assert!(
+            err.diagnostics.logs.iter().any(|l| l == "before-loop"),
+            "expected diagnostics preserved on error: {:?}",
+            err.diagnostics
+        );
+    }
+
+    #[tokio::test]
+    async fn js_sandbox_caps_http_requests_per_operation() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_c = hits.clone();
+        let app = Router::new().route(
+            "/ping",
+            get(move || {
+                let hits = hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    "ok"
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let src = LegadoBookSource {
+            book_source_name: "HttpCapTest".into(),
+            book_source_url: format!("http://{addr}"),
+            login_url: Some(format!(
+                r#"
+                function spam() {{
+                    var okCount = 0;
+                    for (var i = 0; i < 40; i++) {{
+                        if (java.ajax("http://{addr}/ping") === "ok") okCount++;
+                    }}
+                    return String(okCount);
+                }}
+                "#
+            )),
+            ..Default::default()
+        };
+        let engine = BookSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(10),
+        );
+        let out = tokio::task::spawn_blocking(move || {
+            engine.run_login_action_sync(
+                &src,
+                SourceRuntimeState::default(),
+                HashMap::new(),
+                Some("spam()"),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(out.data, MAX_JS_HTTP_REQUESTS.to_string());
+        assert_eq!(hits.load(Ordering::SeqCst), MAX_JS_HTTP_REQUESTS);
+        assert!(
+            out.diagnostics.logs.iter().any(|l| l.contains("上限")),
+            "expected HTTP cap warning in logs: {:?}",
+            out.diagnostics.logs
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn run_login_action_merges_login_info_without_wiping_existing_fields() {
+        let src = LegadoBookSource {
+            book_source_name: "LoginMergeTest".into(),
+            book_source_url: "https://example.com".into(),
+            login_url: Some(
+                "function check(){ return JSON.stringify(source.getLoginInfoMap()); }".into(),
+            ),
+            ..Default::default()
+        };
+        let engine = BookSourceEngine::default();
+        let mut initial = SourceRuntimeState::default();
+        initial.login_info.insert("username".into(), "alice".into());
+        initial
+            .login_info
+            .insert("password".into(), "s3cr3t".into());
+
+        let out = engine
+            .run_login_action_sync(
+                &src,
+                initial,
+                HashMap::from([("region".into(), "cn".into())]),
+                Some("check()"),
             )
             .unwrap();
 
-        assert_eq!(action_out.data, "安卓");
-        assert!(action_out.state.variable.contains("番茄,七猫"));
-        assert!(!action_out.diagnostics.toasts.is_empty());
-
-        // Verify searchUrl evaluation with persisted state
-        let (http, state_arc, cookies_arc, diag_arc, mut js) =
-            engine.build_session(src, action_out.state).unwrap();
-        let search_url = engine
-            .build_search_url(src, &mut js, "诡秘之主", 1)
-            .unwrap();
-        assert!(search_url.starts_with("data:;base64,"));
-        let resolved = http.fetch(&search_url, &src.book_source_url).unwrap();
-        let decoded_payload = String::from_utf8(hex::decode(&resolved.body).unwrap()).unwrap();
-        assert!(decoded_payload.contains("诡秘之主"));
-        assert!(decoded_payload.contains("番茄,七猫"));
-        let _ = (state_arc, cookies_arc, diag_arc);
+        assert_eq!(
+            out.state.login_info.get("username").map(String::as_str),
+            Some("alice")
+        );
+        assert_eq!(
+            out.state.login_info.get("password").map(String::as_str),
+            Some("s3cr3t")
+        );
+        assert_eq!(
+            out.state.login_info.get("region").map(String::as_str),
+            Some("cn")
+        );
+        assert!(
+            out.data.contains("alice") && out.data.contains("s3cr3t") && out.data.contains("cn")
+        );
     }
 }
