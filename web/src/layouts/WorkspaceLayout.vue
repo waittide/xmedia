@@ -651,9 +651,9 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Center: Unified MD3 Search Bar (sm+) -->
-      <form
+      <div
+        role="search"
         class="relative mx-auto hidden max-w-md flex-1 sm:block lg:max-w-lg"
-        @submit.prevent="submitGlobalSearch"
       >
         <LuSearch
           class="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
@@ -664,6 +664,7 @@ onBeforeUnmount(() => {
           type="text"
           :placeholder="searchPlaceholder"
           class="h-11 w-full rounded-full bg-[var(--md-sys-color-surface-container-high)] pr-14 pl-11 text-[13px] text-[var(--md-sys-color-on-surface)] placeholder-[var(--md-sys-color-on-surface-variant)] outline-none transition duration-200 focus:bg-[var(--md-sys-color-surface-container-lowest)] focus:shadow-[var(--md-sys-elevation-2)]"
+          @keydown.enter.prevent="submitGlobalSearch"
         />
         <button
           v-if="!activeSearchValue"
@@ -684,7 +685,7 @@ onBeforeUnmount(() => {
         >
           <LuX class="h-4 w-4" />
         </button>
-      </form>
+      </div>
 
       <!-- Right: Mobile Search Icon + Upload Menu + Background Tasks Ring Button + Theme + Avatar Menu -->
       <div class="flex shrink-0 items-center gap-1">

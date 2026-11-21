@@ -118,26 +118,63 @@ const quickNavItems = computed<QuickResultItem[]>(() => {
 
 const hasQuery = computed(() => query.value.trim().length > 0)
 
-const onlineBookSearchItem = computed<QuickResultItem | null>(() => {
-  const q = query.value.trim()
-  if (!q || !authStore.hasModule('book')) return null
-  return {
-    id: 'online-book-search',
-    group: 'book',
-    title: t('globalSearch.onlineBookSearchTitle', { query: q }),
-    subtitle: t('globalSearch.onlineBookSearchSubtitle'),
-    to: `/book/catalog?q=${encodeURIComponent(q)}&scope=online`,
+const ONLINE_DOMAIN_SEARCH_META: Record<
+  MediaKind,
+  { path: string; titleKey: string; subtitleKey: string; icon: Component }
+> = {
+  book: {
+    path: '/book/catalog',
+    titleKey: 'globalSearch.onlineBookSearchTitle',
+    subtitleKey: 'globalSearch.onlineBookSearchSubtitle',
     icon: LuGlobe,
-    domain: 'book',
+  },
+  comic: {
+    path: '/comic/series',
+    titleKey: 'globalSearch.onlineComicSearchTitle',
+    subtitleKey: 'globalSearch.onlineComicSearchSubtitle',
+    icon: LuLayers,
+  },
+  music: {
+    path: '/music/search',
+    titleKey: 'globalSearch.onlineMusicSearchTitle',
+    subtitleKey: 'globalSearch.onlineMusicSearchSubtitle',
+    icon: LuDisc3,
+  },
+  video: {
+    path: '/video/catalog',
+    titleKey: 'globalSearch.onlineVideoSearchTitle',
+    subtitleKey: 'globalSearch.onlineVideoSearchSubtitle',
+    icon: LuClapperboard,
+  },
+}
+
+const onlineSearchItems = computed<QuickResultItem[]>(() => {
+  const q = query.value.trim()
+  if (!q) return []
+  const order: MediaKind[] = ['book', 'comic', 'music', 'video']
+  const items: QuickResultItem[] = []
+  for (const kind of order) {
+    if (!authStore.hasModule(kind)) continue
+    const meta = ONLINE_DOMAIN_SEARCH_META[kind]
+    items.push({
+      id: `online-${kind}-search`,
+      group: kind,
+      title: t(meta.titleKey, { query: q }),
+      subtitle: t(meta.subtitleKey),
+      to: `${meta.path}?q=${encodeURIComponent(q)}&scope=online`,
+      icon: meta.icon,
+      domain: kind,
+    })
   }
+  return items
 })
 
 const flatItems = computed<QuickResultItem[]>(() => {
   if (!hasQuery.value) return quickNavItems.value
   if (loading.value && domainSections.value.length === 0) return []
   const items = domainSections.value.flatMap((sec) => sec.items)
-  if (onlineBookSearchItem.value && !loading.value) {
-    items.push(onlineBookSearchItem.value)
+  if (onlineSearchItems.value.length > 0 && !loading.value) {
+    items.push(...onlineSearchItems.value)
   }
   return items
 })
@@ -582,53 +619,57 @@ function handleKeydown(ev: KeyboardEvent): void {
                   </div>
                 </section>
 
-                <!-- Online Book Source Search Quick Action -->
-                <section v-if="onlineBookSearchItem && !loading" class="space-y-1">
+                <!-- Online Source Search Quick Actions -->
+                <section v-if="onlineSearchItems.length > 0 && !loading" class="space-y-1">
                   <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase">
                     <LuGlobe class="h-3.5 w-3.5" />
-                    <span>{{ t('globalSearch.onlineBookSources') }}</span>
+                    <span>{{ t('globalSearch.onlineSources') }}</span>
                   </div>
-                  <button
-                    type="button"
-                    :data-active="itemIndexById.get(onlineBookSearchItem.id) === activeIndex"
-                    class="md-state flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors"
-                    :class="
-                      itemIndexById.get(onlineBookSearchItem.id) === activeIndex
-                        ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                        : 'text-[var(--md-sys-color-on-surface)]'
-                    "
-                    @mouseenter="activeIndex = itemIndexById.get(onlineBookSearchItem.id) ?? 0"
-                    @click="selectItem(onlineBookSearchItem)"
-                  >
-                    <span
-                      class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
+                  <div class="space-y-0.5">
+                    <button
+                      v-for="item in onlineSearchItems"
+                      :key="item.id"
+                      type="button"
+                      :data-active="itemIndexById.get(item.id) === activeIndex"
+                      class="md-state flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors"
                       :class="
-                        itemIndexById.get(onlineBookSearchItem.id) === activeIndex
-                          ? 'bg-[var(--md-sys-color-on-secondary-container)]/10'
-                          : 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
+                        itemIndexById.get(item.id) === activeIndex
+                          ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+                          : 'text-[var(--md-sys-color-on-surface)]'
                       "
+                      @mouseenter="activeIndex = itemIndexById.get(item.id) ?? 0"
+                      @click="selectItem(item)"
                     >
-                      <LuGlobe class="h-4 w-4" />
-                    </span>
-                    <div class="min-w-0 flex-1">
-                      <p class="truncate text-[13px] font-medium">{{ onlineBookSearchItem.title }}</p>
-                      <p
-                        v-if="onlineBookSearchItem.subtitle"
-                        class="truncate text-[11px]"
+                      <span
+                        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
                         :class="
-                          itemIndexById.get(onlineBookSearchItem.id) === activeIndex
-                            ? 'opacity-80'
-                            : 'text-[var(--md-sys-color-on-surface-variant)]'
+                          itemIndexById.get(item.id) === activeIndex
+                            ? 'bg-[var(--md-sys-color-on-secondary-container)]/10'
+                            : 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
                         "
                       >
-                        {{ onlineBookSearchItem.subtitle }}
-                      </p>
-                    </div>
-                    <LuCornerDownLeft
-                      v-if="itemIndexById.get(onlineBookSearchItem.id) === activeIndex"
-                      class="h-3.5 w-3.5 shrink-0 opacity-75"
-                    />
-                  </button>
+                        <component :is="item.icon" class="h-4 w-4" />
+                      </span>
+                      <div class="min-w-0 flex-1">
+                        <p class="truncate text-[13px] font-medium">{{ item.title }}</p>
+                        <p
+                          v-if="item.subtitle"
+                          class="truncate text-[11px]"
+                          :class="
+                            itemIndexById.get(item.id) === activeIndex
+                              ? 'opacity-80'
+                              : 'text-[var(--md-sys-color-on-surface-variant)]'
+                          "
+                        >
+                          {{ item.subtitle }}
+                        </p>
+                      </div>
+                      <LuCornerDownLeft
+                        v-if="itemIndexById.get(item.id) === activeIndex"
+                        class="h-3.5 w-3.5 shrink-0 opacity-75"
+                      />
+                    </button>
+                  </div>
                 </section>
               </div>
 
