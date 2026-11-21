@@ -3,7 +3,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use xmedia_source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
+use xmedia_source::http::{
+    HttpClientConfig, LegadoHttpClient, LegadoUrlOptions, resolve_relative_url,
+};
 pub use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
 
@@ -74,6 +76,61 @@ fn substitute_simple_template(raw_tpl: &str, keyword: &str, page: u32) -> String
     out
 }
 
+fn substitute_static_explore_page(raw: &str, page: u32) -> String {
+    let page_str = page.to_string();
+    let mut out = String::with_capacity(raw.len() + 8);
+    let mut rest = raw;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        if after_open[..close].trim() == "page" {
+            out.push_str(&page_str);
+        } else {
+            out.push_str(&rest[open..open + 2 + close + 2]);
+        }
+        rest = &after_open[close + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn has_non_page_mustache(raw: &str) -> bool {
+    let mut rest = raw;
+    while let Some(open) = rest.find("{{") {
+        let after_open = &rest[open + 2..];
+        let Some(close) = after_open.find("}}") else {
+            return true;
+        };
+        if after_open[..close].trim() != "page" {
+            return true;
+        }
+        rest = &after_open[close + 2..];
+    }
+    false
+}
+
+fn resolve_literal_http_url(raw: &str, base_url: &str, label: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label} 不能为空"));
+    }
+    if split_js_pipeline(trimmed).is_some() {
+        return Err(format!("{label} 不允许包含 JS 脚本"));
+    }
+    if split_legado_url_and_raw_options(trimmed).is_some() {
+        return Err(format!("{label} 不允许附加请求选项"));
+    }
+    let resolved = resolve_relative_url(trimmed, base_url);
+    if !resolved.starts_with("http://") && !resolved.starts_with("https://") {
+        return Err(format!("{label} 必须是有效的 HTTP(S) URL: {resolved}"));
+    }
+    Ok(resolved)
+}
+
 fn pick_rule_field<'a>(
     primary: Option<&'a ComicSearchRule>,
     fallback: Option<&'a ComicSearchRule>,
@@ -91,7 +148,7 @@ fn pick_rule_field<'a>(
         })
 }
 
-fn split_legado_url_and_raw_options(input: &str) -> Option<(&str, &str)> {
+pub(super) fn split_legado_url_and_raw_options(input: &str) -> Option<(&str, &str)> {
     let trimmed = input.trim();
     if !trimmed.ends_with('}') {
         return None;
@@ -147,12 +204,16 @@ fn normalize_explore_url(raw_url: &str, base_url: &str) -> String {
     resolve_relative_url(trimmed, base_url)
 }
 
-fn resolve_relative_url_preserving_options(raw_url: &str, base_url: &str) -> String {
+pub(super) fn resolve_relative_url_preserving_options(raw_url: &str, base_url: &str) -> String {
     let trimmed = raw_url.trim();
     if let Some((url_part, opt_json)) = split_legado_url_and_raw_options(trimmed)
-        && serde_json::from_str::<serde_json::Value>(opt_json).is_ok()
+        && serde_json::from_str::<LegadoUrlOptions>(opt_json).is_ok()
     {
-        let resolved_part = resolve_relative_url(url_part, base_url);
+        let resolved_part = if url_part.trim().is_empty() {
+            base_url.to_string()
+        } else {
+            resolve_relative_url(url_part, base_url)
+        };
         return format!("{resolved_part},{opt_json}");
     }
     resolve_relative_url(trimmed, base_url)
@@ -226,6 +287,31 @@ fn parse_explore_text(raw: &str, base_url: &str) -> Vec<ExploreCategoryItem> {
     items
 }
 
+fn parse_explore_categories_in_session(
+    source: &ComicSourceSpec,
+    session: &mut ReusableComicSession,
+) -> Result<Vec<ExploreCategoryItem>, String> {
+    let Some(raw_explore) = source
+        .explore_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    let evaluated = if split_js_pipeline(raw_explore).is_some() {
+        session.set_search_vars("", 1)?;
+        session.eval_string(
+            &RuleValue::Text(String::new()),
+            raw_explore,
+            &source.source_url,
+        )?
+    } else {
+        raw_explore.to_string()
+    };
+    Ok(parse_explore_text(&evaluated, &source.source_url))
+}
+
 impl ComicSourceEngine {
     pub fn new(http_config: HttpClientConfig, js_timeout: Duration) -> Self {
         Self {
@@ -297,12 +383,17 @@ impl ComicSourceEngine {
         page: u32,
         label: &str,
     ) -> Result<String, String> {
+        let raw_had_options = split_legado_url_and_raw_options(raw_tpl).is_some();
         let evaluated = if template_needs_js(raw_tpl) {
             session.set_search_vars(keyword, page)?;
             let input = RuleValue::Text(String::new());
             session.eval_string(&input, raw_tpl, &source.source_url)?
         } else {
-            substitute_simple_template(raw_tpl, keyword, page)
+            let sub = substitute_simple_template(raw_tpl, keyword, page);
+            if !raw_had_options && split_legado_url_and_raw_options(sub.trim()).is_some() {
+                return Err(format!("{label} 模板参数不允许附加请求选项"));
+            }
+            sub
         };
 
         let trimmed = evaluated.trim();
@@ -317,7 +408,6 @@ impl ComicSourceEngine {
 
     fn eval_comic_list(
         &self,
-        source: &ComicSourceSpec,
         session: &mut ReusableComicSession,
         request_url: &str,
         primary_rule: Option<&ComicSearchRule>,
@@ -325,10 +415,7 @@ impl ComicSourceEngine {
         rule_label: &str,
     ) -> Result<Vec<ComicSearchResult>, String> {
         session.check_active()?;
-        let fetched = session
-            .inner
-            .http()
-            .fetch(request_url, &source.source_url)?;
+        let fetched = session.http_fetch(request_url)?;
         let raw_input = RuleValue::from_raw(fetched.body);
 
         let book_list_rule =
@@ -361,7 +448,8 @@ impl ComicSourceEngine {
             let last_chapter = session.eval_opt(&item, last_chapter_rule, &fetched.final_url);
             let word_count = session.eval_opt(&item, word_count_rule, &fetched.final_url);
 
-            let comic_url = resolve_relative_url(&comic_url_raw, &fetched.final_url);
+            let comic_url =
+                resolve_relative_url_preserving_options(&comic_url_raw, &fetched.final_url);
             let cover_url = (!cover_raw.is_empty())
                 .then(|| resolve_relative_url(&cover_raw, &fetched.final_url));
 
@@ -399,36 +487,24 @@ impl ComicSourceEngine {
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<ExploreCategoryItem>>, SourceCallError> {
-        let Some(raw_explore) = source
+        if source
             .explore_url
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
+            .is_none_or(str::is_empty)
+        {
             return Ok(SourceCallOutput {
                 data: Vec::new(),
                 state,
                 diagnostics: ExecutionDiagnostics::default(),
             });
-        };
+        }
 
         let mut session = self
             .build_lazy_session(source, state, op_timeout, cancel_flag)
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
-        let res: Result<Vec<ExploreCategoryItem>, String> = (|| {
-            let evaluated = if split_js_pipeline(raw_explore).is_some() {
-                session.set_search_vars("", 1)?;
-                session.eval_string(
-                    &RuleValue::Text(String::new()),
-                    raw_explore,
-                    &source.source_url,
-                )?
-            } else {
-                raw_explore.to_string()
-            };
-            Ok(parse_explore_text(&evaluated, &source.source_url))
-        })();
+        let res = parse_explore_categories_in_session(source, &mut session);
 
         match res {
             Ok(cats) => {
@@ -497,7 +573,6 @@ impl ComicSourceEngine {
             let search_url =
                 self.eval_url_template(source, &mut session, raw_tpl, keyword, page, "searchUrl")?;
             self.eval_comic_list(
-                source,
                 &mut session,
                 &search_url,
                 Some(rule_search),
@@ -525,6 +600,28 @@ impl ComicSourceEngine {
         state: SourceRuntimeState,
         explore_url: &str,
         page: u32,
+        op_timeout: Duration,
+        cancel_flag: Arc<AtomicBool>,
+    ) -> Result<SourceCallOutput<Vec<ComicSearchResult>>, SourceCallError> {
+        self.explore_sync_with_categories_and_control(
+            source,
+            state,
+            explore_url,
+            page,
+            None,
+            op_timeout,
+            cancel_flag,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn explore_sync_with_categories_and_control(
+        &self,
+        source: &ComicSourceSpec,
+        state: SourceRuntimeState,
+        explore_url: &str,
+        page: u32,
+        precomputed_categories: Option<&[ExploreCategoryItem]>,
         op_timeout: Duration,
         cancel_flag: Arc<AtomicBool>,
     ) -> Result<SourceCallOutput<Vec<ComicSearchResult>>, SourceCallError> {
@@ -556,11 +653,32 @@ impl ComicSourceEngine {
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
         let res: Result<Vec<ComicSearchResult>, String> = (|| {
-            session.set_search_vars("", page)?;
-            let resolved_url =
-                self.eval_url_template(source, &mut session, tpl, "", page, "exploreUrl")?;
+            let owned_categories;
+            let categories: &[ExploreCategoryItem] = match precomputed_categories {
+                Some(cats) => cats,
+                None => {
+                    owned_categories = parse_explore_categories_in_session(source, &mut session)?;
+                    &owned_categories
+                }
+            };
+            let is_configured_cat = categories.iter().any(|c| c.url == tpl);
+            let resolved_url = if is_configured_cat {
+                session.set_search_vars("", page)?;
+                self.eval_url_template(source, &mut session, tpl, "", page, "exploreUrl")?
+            } else {
+                if split_js_pipeline(tpl).is_some() {
+                    return Err("自定义 exploreUrl 不允许包含 JS 脚本".to_string());
+                }
+                if has_non_page_mustache(tpl) {
+                    return Err("自定义 exploreUrl 不允许包含动态模板表达式".to_string());
+                }
+                if split_legado_url_and_raw_options(tpl).is_some() {
+                    return Err("自定义 exploreUrl 不允许附加请求选项".to_string());
+                }
+                let substituted = substitute_static_explore_page(tpl, page);
+                resolve_literal_http_url(&substituted, &source.source_url, "exploreUrl")?
+            };
             self.eval_comic_list(
-                source,
                 &mut session,
                 &resolved_url,
                 source.rule_explore.as_ref(),
@@ -618,7 +736,7 @@ impl ComicSourceEngine {
                 session.set_comic_context(hint)?;
             }
             session.check_active()?;
-            let fetched = session.inner.http().fetch(comic_url, &source.source_url)?;
+            let fetched = session.http_fetch(comic_url)?;
             if fetched.status >= 400 {
                 return Err(format!("详情页请求失败: HTTP {}", fetched.status));
             }
@@ -694,10 +812,11 @@ impl ComicSourceEngine {
                 &fetched.final_url,
             );
 
-            let toc_url = if toc_raw.is_empty() {
+            let toc_trimmed = toc_raw.trim();
+            let toc_url = if toc_trimmed.is_empty() {
                 fetched.final_url.clone()
             } else {
-                resolve_relative_url(&toc_raw, &fetched.final_url)
+                resolve_relative_url_preserving_options(toc_trimmed, &fetched.final_url)
             };
 
             let reading_direction = parse_reading_direction_opt(&dir_extracted)

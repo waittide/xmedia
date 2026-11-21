@@ -8,10 +8,9 @@ use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
     ParsedSourceSummaryMeta, SourceRecordSnapshot, build_source_summary, compute_reorder_targets,
     dedup_preserve_order_uuids, format_export_batch_json, merge_login_info_preserving_masked,
-    merge_runtime_state,
 };
 
-use crate::domain::online::ComicSourceRecord;
+use crate::domain::online::{ComicSourceMetadataUpdate, ComicSourceRecord};
 use crate::source::model::{ComicSourceSpec, SourceRuntimeState};
 
 use super::ComicOnlineService;
@@ -92,19 +91,26 @@ impl ComicOnlineService {
         Ok(rec.runtime_state.variable)
     }
 
-    fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+    pub(super) fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
         get_or_insert_weak_lock(&self.source_state_locks, id)
     }
 
-    pub(super) async fn persist_runtime_state(
+    pub(super) async fn persist_runtime_state_with_base(
         &self,
         id: Uuid,
+        base_state: &SourceRuntimeState,
         new_state: SourceRuntimeState,
+        allow_login_info_override: bool,
     ) -> DomainResult<()> {
         let lock = self.source_state_lock_for(id);
         let _guard = lock.lock().await;
         let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged = merge_runtime_state(current, new_state);
+        let merged = merge_runtime_state_with_base(
+            base_state,
+            current,
+            new_state,
+            allow_login_info_override,
+        );
         self.sources
             .update_runtime_state(id, merged, Timestamp::now())
             .await
@@ -135,6 +141,8 @@ impl ComicOnlineService {
         let now = Timestamp::now();
         let mut persisted = Vec::with_capacity(targets.len());
         for (rec, target_weight) in targets {
+            let lock = self.source_state_lock_for(rec.id);
+            let _guard = lock.lock().await;
             if rec.weight != target_weight {
                 if let Some(updated) = self
                     .sources
@@ -143,8 +151,8 @@ impl ComicOnlineService {
                 {
                     persisted.push(updated);
                 }
-            } else {
-                persisted.push(rec);
+            } else if let Some(fresh) = self.sources.find_by_id(rec.id).await? {
+                persisted.push(fresh);
             }
         }
 
@@ -179,47 +187,57 @@ impl ComicOnlineService {
             let group_name = src.source_group.clone().unwrap_or_default();
             let key = (src.source_url.clone(), src.source_name.clone());
 
-            if let Some(mut rec) = existing_by_key.remove(&key) {
-                rec.group_name = group_name;
-                rec.enabled = src.enabled;
-                rec.weight = src.weight;
-                rec.source_type = src.source_type;
-                rec.raw_json = item_raw;
-                rec.updated_at = now;
-                self.sources.save(&rec).await?;
-                let summary = Self::record_to_summary(&rec, true);
-                if let Some(&pos) = out_by_id.get(&rec.id) {
-                    out[pos] = summary;
-                } else {
-                    updated_count += 1;
-                    out_by_id.insert(rec.id, out.len());
-                    out.push(summary);
-                }
-                existing_by_key.insert(key, rec);
-            } else {
-                let mut rt = SourceRuntimeState::default();
-                rt.ensure_android_id(&src.source_url);
-                let rec = ComicSourceRecord {
-                    id: Uuid::now_v7(),
-                    name: src.source_name.clone(),
-                    source_url: src.source_url.clone(),
-                    group_name,
+            if let Some(existing_rec) = existing_by_key.remove(&key) {
+                let id = existing_rec.id;
+                let lock = self.source_state_lock_for(id);
+                let _guard = lock.lock().await;
+                let patch = ComicSourceMetadataUpdate {
+                    name: existing_rec.name.clone(),
+                    source_url: existing_rec.source_url.clone(),
+                    group_name: group_name.clone(),
                     enabled: src.enabled,
                     weight: src.weight,
                     source_type: src.source_type,
-                    raw_json: item_raw,
-                    runtime_state: rt,
-                    last_test_ok: None,
-                    last_test_msg: None,
-                    created_at: now,
+                    raw_json: item_raw.clone(),
+                    variable: None,
                     updated_at: now,
                 };
-                self.sources.save(&rec).await?;
-                imported_count += 1;
-                out_by_id.insert(rec.id, out.len());
-                out.push(Self::record_to_summary(&rec, true));
-                existing_by_key.insert(key, rec);
+                if let Some(rec) = self.sources.update_metadata_if_exists(id, patch).await? {
+                    let summary = Self::record_to_summary(&rec, true);
+                    if let Some(&pos) = out_by_id.get(&rec.id) {
+                        out[pos] = summary;
+                    } else {
+                        updated_count += 1;
+                        out_by_id.insert(rec.id, out.len());
+                        out.push(summary);
+                    }
+                    existing_by_key.insert(key, rec);
+                    continue;
+                }
             }
+
+            let mut rt = SourceRuntimeState::default();
+            rt.ensure_android_id(&src.source_url);
+            let rec = ComicSourceRecord {
+                id: Uuid::now_v7(),
+                name: src.source_name.clone(),
+                source_url: src.source_url.clone(),
+                group_name,
+                enabled: src.enabled,
+                weight: src.weight,
+                source_type: src.source_type,
+                raw_json: item_raw,
+                runtime_state: rt,
+                last_test_ok: None,
+                last_test_msg: None,
+                created_at: now,
+                updated_at: now,
+            };
+            self.sources.save(&rec).await?;
+            imported_count += 1;
+            out_by_id.insert(rec.id, out.len());
+            out.push(Self::record_to_summary(&rec, true));
+            existing_by_key.insert(key, rec);
         }
 
         Ok(ImportComicSourcesReportDto {
@@ -236,10 +254,7 @@ impl ComicOnlineService {
         input: UpdateComicSourceInput,
     ) -> DomainResult<ComicSourceSummaryDto> {
         require_admin(actor)?;
-        let mut rec = self.load_source(id).await?;
-        let now = Timestamp::now();
-
-        if let Some(raw) = input.raw_json {
+        let parsed_raw = if let Some(raw) = input.raw_json {
             let mut batch =
                 ComicSourceSpec::parse_json_batch(&raw).map_err(DomainError::Validation)?;
             if batch.len() != 1 {
@@ -247,7 +262,17 @@ impl ComicOnlineService {
                     "编辑单条漫画源时仅支持提交 1 条漫画源 JSON".into(),
                 ));
             }
-            let (parsed, clean_raw) = batch.remove(0);
+            Some(batch.remove(0))
+        } else {
+            None
+        };
+
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
+        let mut rec = self.load_source(id).await?;
+        let now = Timestamp::now();
+
+        if let Some((parsed, clean_raw)) = parsed_raw {
             rec.name = parsed.source_name;
             rec.source_url = parsed.source_url;
             rec.group_name = parsed.source_group.unwrap_or_default();
@@ -273,19 +298,30 @@ impl ComicOnlineService {
                 input.group_name.as_deref(),
             );
         }
-        if let Some(v) = input.variable {
-            rec.runtime_state.variable = v;
-        }
-        rec.updated_at = now;
 
-        if !self.sources.update_existing(&rec).await? {
-            return Err(DomainError::NotFound(format!("未找到漫画源 {id}")));
-        }
-        Ok(Self::record_to_summary(&rec, true))
+        let patch = ComicSourceMetadataUpdate {
+            name: rec.name,
+            source_url: rec.source_url,
+            group_name: rec.group_name,
+            enabled: rec.enabled,
+            weight: rec.weight,
+            source_type: rec.source_type,
+            raw_json: rec.raw_json,
+            variable: input.variable,
+            updated_at: now,
+        };
+        let updated = self
+            .sources
+            .update_metadata_if_exists(id, patch)
+            .await?
+            .ok_or_else(|| DomainError::NotFound(format!("未找到漫画源 {id}")))?;
+        Ok(Self::record_to_summary(&updated, true))
     }
 
     pub async fn delete_source(&self, actor: &User, id: Uuid) -> DomainResult<()> {
         require_admin(actor)?;
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
         let _ = self.load_source(id).await?;
         self.sources.delete(id).await?;
         Ok(())
@@ -333,6 +369,8 @@ impl ComicOnlineService {
         let mut affected_count = 0usize;
 
         for id in unique_ids {
+            let lock = self.source_state_lock_for(id);
+            let _guard = lock.lock().await;
             match &input.action {
                 BatchComicSourceAction::Enable => {
                     if self
@@ -390,6 +428,7 @@ impl ComicOnlineService {
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
+        let base_state = prev_state.clone();
         let action_clone = action.clone();
 
         let out = tokio::task::spawn_blocking(move || {
@@ -399,7 +438,8 @@ impl ComicOnlineService {
         .map_err(|e| DomainError::Storage(format!("执行登录脚本线程失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        self.persist_runtime_state(id, out.state).await?;
+        self.persist_runtime_state_with_base(id, &base_state, out.state, true)
+            .await?;
         let refreshed = self.load_source(id).await?;
 
         Ok(LoginActionResponseDto {
@@ -407,5 +447,229 @@ impl ComicOnlineService {
             diagnostics: out.diagnostics,
             source: Self::record_to_summary(&refreshed, true),
         })
+    }
+}
+
+fn merge_map_with_base(
+    base: &HashMap<String, String>,
+    merged: &mut HashMap<String, String>,
+    updated: HashMap<String, String>,
+) {
+    for key in base.keys() {
+        if !updated.contains_key(key) && merged.get(key) == base.get(key) {
+            merged.remove(key);
+        }
+    }
+    for (key, value) in updated {
+        if base.get(&key) != Some(&value) {
+            merged.insert(key, value);
+        }
+    }
+}
+
+pub(super) fn merge_runtime_state_with_base(
+    base: &SourceRuntimeState,
+    current: Option<SourceRuntimeState>,
+    updated: SourceRuntimeState,
+    allow_login_info_override: bool,
+) -> SourceRuntimeState {
+    let Some(mut merged) = current else {
+        return updated;
+    };
+
+    merge_map_with_base(&base.cookies, &mut merged.cookies, updated.cookies);
+    merge_map_with_base(&base.cache, &mut merged.cache, updated.cache);
+
+    if updated.variable != base.variable {
+        merged.variable = updated.variable;
+    }
+    if updated.android_id != base.android_id && !updated.android_id.is_empty() {
+        merged.android_id = updated.android_id;
+    }
+    if allow_login_info_override {
+        merge_map_with_base(&base.login_info, &mut merged.login_info, updated.login_info);
+    }
+
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_state(
+        variable: &str,
+        login_info: &[(&str, &str)],
+        cookies: &[(&str, &str)],
+        cache: &[(&str, &str)],
+        android_id: &str,
+    ) -> SourceRuntimeState {
+        SourceRuntimeState {
+            variable: variable.to_string(),
+            login_info: login_info
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            cookies: cookies
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            cache: cache
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            android_id: android_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn merge_runtime_state_with_base_when_current_none_returns_updated() {
+        let base = sample_state("v1", &[("u", "a")], &[], &[], "d1");
+        let updated = sample_state("v2", &[("u", "b")], &[("c", "1")], &[], "d2");
+        let merged = merge_runtime_state_with_base(&base, None, updated.clone(), false);
+        assert_eq!(merged, updated);
+    }
+
+    #[test]
+    fn merge_runtime_state_with_base_preserves_concurrent_login_and_variable_when_unchanged() {
+        let base = sample_state(
+            "var_1",
+            &[("username", "alice_1"), ("apiToken", "secret_1")],
+            &[("sid", "s1")],
+            &[("k1", "v1")],
+            "dev1",
+        );
+        let current = sample_state(
+            "var_2",
+            &[("username", "bob_2"), ("apiToken", "secret_2")],
+            &[("sid", "s2"), ("other", "o2")],
+            &[("k1", "v2")],
+            "dev2",
+        );
+        let mut updated = base.clone();
+        updated
+            .login_info
+            .insert("username".into(), "mutated_by_non_login".into());
+
+        let merged = merge_runtime_state_with_base(&base, Some(current.clone()), updated, false);
+        assert_eq!(merged.variable, "var_2");
+        assert_eq!(merged.login_info, current.login_info);
+        assert_eq!(merged.cookies, current.cookies);
+        assert_eq!(merged.cache, current.cache);
+        assert_eq!(merged.android_id, "dev2");
+    }
+
+    #[test]
+    fn merge_runtime_state_with_base_applies_only_changed_variable_and_map_entries() {
+        let base = sample_state(
+            "var_1",
+            &[("username", "alice_1")],
+            &[
+                ("keep", "1"),
+                ("remove_ok", "r1"),
+                ("remove_conflict", "c1"),
+            ],
+            &[("k1", "v1")],
+            "dev1",
+        );
+        let current = sample_state(
+            "var_2",
+            &[("username", "bob_2")],
+            &[
+                ("keep", "1_concurrent"),
+                ("remove_ok", "r1"),
+                ("remove_conflict", "c2_modified"),
+                ("added_concurrent", "ac"),
+            ],
+            &[("k1", "v1_concurrent")],
+            "dev1",
+        );
+        let updated = sample_state(
+            "var_3",
+            &[("username", "stale_alice")],
+            &[("keep", "1"), ("added_by_op", "ao")],
+            &[("k1", "v1"), ("k2", "v2")],
+            "dev_new",
+        );
+
+        let merged = merge_runtime_state_with_base(&base, Some(current), updated, false);
+        assert_eq!(merged.variable, "var_3");
+        assert_eq!(merged.android_id, "dev_new");
+        assert_eq!(
+            merged.login_info.get("username").map(String::as_str),
+            Some("bob_2")
+        );
+        assert_eq!(
+            merged.cookies.get("keep").map(String::as_str),
+            Some("1_concurrent")
+        );
+        assert!(!merged.cookies.contains_key("remove_ok"));
+        assert_eq!(
+            merged.cookies.get("remove_conflict").map(String::as_str),
+            Some("c2_modified")
+        );
+        assert_eq!(
+            merged.cookies.get("added_concurrent").map(String::as_str),
+            Some("ac")
+        );
+        assert_eq!(
+            merged.cookies.get("added_by_op").map(String::as_str),
+            Some("ao")
+        );
+        assert_eq!(
+            merged.cache.get("k1").map(String::as_str),
+            Some("v1_concurrent")
+        );
+        assert_eq!(merged.cache.get("k2").map(String::as_str), Some("v2"));
+    }
+
+    #[test]
+    fn merge_runtime_state_with_base_allows_login_info_override_only_for_changed_keys() {
+        let base = sample_state(
+            "var_1",
+            &[
+                ("username", "alice_1"),
+                ("apiToken", "secret_1"),
+                ("drop", "d1"),
+            ],
+            &[],
+            &[],
+            "dev1",
+        );
+        let current = sample_state(
+            "var_2",
+            &[
+                ("username", "bob_2"),
+                ("apiToken", "secret_2"),
+                ("drop", "d1"),
+                ("extra", "e2"),
+            ],
+            &[],
+            &[],
+            "dev1",
+        );
+        let updated = sample_state(
+            "var_1",
+            &[("username", "charlie_3"), ("apiToken", "secret_1")],
+            &[],
+            &[],
+            "dev1",
+        );
+
+        let merged = merge_runtime_state_with_base(&base, Some(current), updated, true);
+        assert_eq!(merged.variable, "var_2");
+        assert_eq!(
+            merged.login_info.get("username").map(String::as_str),
+            Some("charlie_3")
+        );
+        assert_eq!(
+            merged.login_info.get("apiToken").map(String::as_str),
+            Some("secret_2")
+        );
+        assert!(!merged.login_info.contains_key("drop"));
+        assert_eq!(
+            merged.login_info.get("extra").map(String::as_str),
+            Some("e2")
+        );
     }
 }

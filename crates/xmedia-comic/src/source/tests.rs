@@ -1316,3 +1316,949 @@ async fn fetch_chapters_and_pages_stop_on_302_redirect_alias_cycle() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn explore_blocks_unmatched_js_mustache_options_and_non_http_while_allowing_configured_categories()
+ {
+    use axum::extract::Query;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(serde::Deserialize)]
+    struct ListQ {
+        p: Option<u32>,
+    }
+
+    let exfil_hits = Arc::new(AtomicUsize::new(0));
+    let exfil_hits_c = exfil_hits.clone();
+
+    let app = Router::new()
+        .route(
+            "/exfil",
+            get(move || {
+                let hits = exfil_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"Exfil","u":"/c/e"}]}"#))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/list",
+            get(|Query(q): Query<ListQ>| async move {
+                if q.p == Some(20) {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"CatOff20","u":"/c/20"}]}"#))
+                        .unwrap()
+                } else {
+                    Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::from("{}"))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/post_cat",
+            post(|body: String| async move {
+                if body.trim() == "page=2" {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"CatPost2","u":"/c/p2"}]}"#))
+                        .unwrap()
+                } else {
+                    Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::from("{}"))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/custom",
+            get(|Query(q): Query<ListQ>| async move {
+                let p = q.p.unwrap_or(0);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"items":[{{"t":"CustomP{p}","u":"/c/custom{p}"}}]}}"#
+                    )))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "ExploreGuardTest",
+        "sourceUrl": base,
+        "enabledExplore": true,
+        "exploreUrl": "JsOffset::/list?p={{(page - 1) * 20}}\nPostOpt::/post_cat,{\"method\":\"POST\",\"body\":\"page={{page}}\"}",
+        "ruleSearch": {
+            "bookList": "$.items[*]",
+            "name": "$.t",
+            "bookUrl": "$.u"
+        }
+    }))
+    .unwrap();
+
+    let mut initial_state = SourceRuntimeState {
+        variable: "ADMIN_SECRET".to_string(),
+        ..Default::default()
+    };
+    initial_state
+        .login_info
+        .insert("apiToken".into(), "TOP_SECRET_TOKEN".into());
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_c = base.clone();
+    let src_c = source.clone();
+    let st_c = initial_state.clone();
+    tokio::task::spawn_blocking(move || {
+        // 1. Configured categories still evaluate JS/options
+        let cats = engine
+            .parse_explore_categories(&src_c, st_c.clone())
+            .unwrap()
+            .data;
+        assert_eq!(cats.len(), 2);
+
+        let r_js = engine
+            .explore_sync_with_control(
+                &src_c,
+                st_c.clone(),
+                &cats[0].url,
+                2,
+                Duration::from_secs(10),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert_eq!(r_js.data[0].title, "CatOff20");
+
+        let r_post = engine
+            .explore_sync_with_control(
+                &src_c,
+                st_c.clone(),
+                &cats[1].url,
+                2,
+                Duration::from_secs(10),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert_eq!(r_post.data[0].title, "CatPost2");
+
+        // 2. Unmatched @js:, <js>, {{expr}}, ,{options}, and data: must ALL fail without touching QuickJS
+        let bad_inputs = [
+            format!("@js:source.setVariable('PWNED');java.toast('hi');java.ajax('{base_c}/exfil?v=' + source.getVariable());'{base_c}/exfil'"),
+            format!("<js>source.setVariable('PWNED');'{base_c}/exfil'</js>"),
+            format!("{base_c}/exfil?v={{{{source.getVariable()}}}}&k={{{{source.getLoginInfoMap().apiToken}}}}"),
+            format!("{base_c}/post_cat,{{\"method\":\"POST\",\"body\":\"page=2\"}}"),
+            "data:text/plain;base64,eyJpdGVtcyI6W119".to_string(),
+        ];
+        for bad in bad_inputs {
+            let err = engine
+                .explore_sync_with_control(
+                    &src_c,
+                    st_c.clone(),
+                    &bad,
+                    1,
+                    Duration::from_secs(10),
+                    Arc::new(AtomicBool::new(false)),
+                )
+                .expect_err(&format!("expected unmatched exploreUrl to fail: {bad}"));
+            assert!(
+                err.diagnostics.toasts.is_empty(),
+                "QuickJS should never execute for unmatched exploreUrl: {bad}"
+            );
+        }
+
+        // 3. Unmatched plain HTTP(S) URL with {{page}} substitutes {{page}} statically without QuickJS
+        let r_plain = engine
+            .explore_sync_with_control(
+                &src_c,
+                st_c,
+                &format!("{base_c}/custom?p={{{{page}}}}"),
+                3,
+                Duration::from_secs(10),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        assert_eq!(r_plain.data[0].title, "CustomP3");
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(exfil_hits.load(Ordering::SeqCst), 0);
+    server.abort();
+}
+
+#[tokio::test]
+async fn search_blocks_keyword_options_smuggling() {
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let post_hits = Arc::new(AtomicUsize::new(0));
+    let post_hits_c = post_hits.clone();
+
+    let app = Router::new().route(
+        "/s",
+        post(move || {
+            let hits = post_hits_c.clone();
+            async move {
+                hits.fetch_add(1, Ordering::SeqCst);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"items":[{"t":"Smuggled","u":"/c/s"}]}"#))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SearchSmuggle",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/s?q={{{{key}}}}"),
+        "ruleSearch": {
+            "bookList": "$.items[*]",
+            "name": "$.t",
+            "bookUrl": "$.u"
+        }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let err = tokio::task::spawn_blocking(move || {
+        engine.search_sync(
+            &source,
+            SourceRuntimeState::default(),
+            r#"x,{"method":"POST","body":"evil=1"}"#,
+            1,
+        )
+    })
+    .await
+    .unwrap()
+    .expect_err("keyword smuggling ,{options} should be rejected");
+    assert!(err.contains("选项"));
+    assert_eq!(post_hits.load(Ordering::SeqCst), 0);
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn reader_op_timeout_and_cancel_interrupt_paginated_chapters_and_pages() {
+    let app = Router::new()
+        .route(
+            "/detail_slow",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .body(Body::from("<h1>Slow</h1>"))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc1",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        r#"<ul><li><a href="/ch/1">Ch 1</a></li></ul><a class="next" href="/toc2">Next</a>"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc2",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(r#"<ul><li><a href="/ch/2">Ch 2</a></li></ul>"#))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch1",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(
+                        r#"<div id="imgs"><img src="/p1.jpg"></div><a class="next-page" href="/ch2">Next</a>"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch2",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(600)).await;
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html")
+                    .body(Body::from(r#"<div id="imgs"><img src="/p2.jpg"></div>"#))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SlowReader",
+        "sourceUrl": base,
+        "ruleDetail": { "name": "h1@text" },
+        "ruleToc": {
+            "chapterList": "ul li",
+            "chapterName": "a@text",
+            "chapterUrl": "a@href",
+            "nextTocUrl": "a.next@href"
+        },
+        "ruleContent": {
+            "content": "#imgs@html",
+            "nextContentUrl": "a.next-page@href"
+        }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_c = base.clone();
+    tokio::task::spawn_blocking(move || {
+        // Short op_timeout interrupts detail_slow
+        let t0 = std::time::Instant::now();
+        let err_det = engine
+            .fetch_detail_sync_with_control(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/detail_slow"),
+                None,
+                Duration::from_millis(220),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .expect_err("slow detail should time out");
+        assert!(
+            t0.elapsed() < Duration::from_secs(2),
+            "detail took too long: {}",
+            err_det.message
+        );
+
+        // Short op_timeout interrupts paginated /toc1 -> /toc2
+        let t1 = std::time::Instant::now();
+        let err_ch = engine
+            .fetch_chapters_sync_with_control(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/toc1"),
+                &ComicJsContext::default(),
+                Duration::from_millis(250),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .expect_err("slow paginated chapters should time out");
+        assert!(
+            t1.elapsed() < Duration::from_secs(2),
+            "chapters took too long: {}",
+            err_ch.message
+        );
+
+        // Pre-triggered cancel_flag interrupts paginated /ch1 -> /ch2 immediately
+        let cancel_pg = Arc::new(AtomicBool::new(true));
+        let err_pg = engine
+            .fetch_pages_sync_with_control(
+                &source,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch1"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+                Duration::from_secs(5),
+                cancel_pg,
+            )
+            .expect_err("cancelled pages should abort");
+        assert!(err_pg.message.contains("取消") || err_pg.message.contains("超时"));
+    })
+    .await
+    .unwrap();
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn extract_page_urls_html5_segmenter_blocks_inner_text_style_script_and_preserves_mixed_plain_urls()
+ {
+    let app = Router::new()
+        .route(
+            "/ch/wrapper-with-text",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html; charset=utf-8")
+                    .body(Body::from(
+                        r#"<div id="imgs">
+  <div class="notice">
+    Loading images, please wait
+  </div>
+  <p>
+    Page 1
+  </p>
+  <style>
+    .page { width: 100%; }
+  </style>
+  <script>
+    var ad = 1; var t = "</div>"; if (a < b) {}
+  </script>
+  <noscript>
+    Please enable JavaScript
+  </noscript>
+  <img src="/real1.jpg">
+</div>"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/loose-prose",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html; charset=utf-8")
+                    .body(Body::from(
+                        "Loading images, please wait\n<img src=\"/real1.jpg\">\nEnd of chapter",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/comment-inline",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/html; charset=utf-8")
+                    .body(Body::from(
+                        "<!-- comment -->/after_comment.jpg\n<!-->\n<img src=\"/ok.jpg\">\n/plain_after.jpg",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/entity-query",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/plain; charset=utf-8")
+                    .body(Body::from(
+                        "https://cdn.example/img?a=1&copy=2&lang=en\n<img src=\"/b.jpg\">",
+                    ))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let imgs_no_rule: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Html5NoRule",
+        "sourceUrl": base,
+        "ruleContent": { "content": "#imgs@html" }
+    }))
+    .unwrap();
+    let imgs_with_rule: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Html5WithRule",
+        "sourceUrl": base,
+        "ruleContent": {
+            "content": "#imgs@html",
+            "imageUrl": "@js:result + '?tok=1'"
+        }
+    }))
+    .unwrap();
+    let raw_js_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "RawJs",
+        "sourceUrl": base,
+        "ruleContent": { "content": "@js:result" }
+    }))
+    .unwrap();
+
+    let base_c = base.clone();
+    let (p_no, p_yes, p_loose, p_comment, p_entity) = tokio::task::spawn_blocking(move || {
+        let a = engine
+            .fetch_pages_sync(
+                &imgs_no_rule,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/wrapper-with-text"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let b = engine
+            .fetch_pages_sync(
+                &imgs_with_rule,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/wrapper-with-text"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let c = engine
+            .fetch_pages_sync(
+                &raw_js_src,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/loose-prose"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let d = engine
+            .fetch_pages_sync(
+                &raw_js_src,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/comment-inline"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        let e = engine
+            .fetch_pages_sync(
+                &raw_js_src,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/ch/entity-query"),
+                &ComicJsContext::default(),
+                &ComicChapterJsContext::default(),
+            )
+            .unwrap()
+            .data;
+        (a, b, c, d, e)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(p_no, vec![format!("{base}/real1.jpg")]);
+    assert_eq!(p_yes, vec![format!("{base}/real1.jpg?tok=1")]);
+    assert_eq!(p_loose, vec![format!("{base}/real1.jpg")]);
+    assert_eq!(
+        p_comment,
+        vec![
+            format!("{base}/after_comment.jpg"),
+            format!("{base}/ok.jpg"),
+            format!("{base}/plain_after.jpg"),
+        ]
+    );
+    assert_eq!(
+        p_entity,
+        vec![
+            "https://cdn.example/img?a=1&copy=2&lang=en".to_string(),
+            format!("{base}/b.jpg"),
+        ]
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn chapters_and_pages_support_post_options_pagination_relative_options_and_redirect_cycles() {
+    use axum::extract::Query;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(serde::Deserialize)]
+    struct PQuery {
+        p: Option<u32>,
+    }
+
+    let toc_p1_hits = Arc::new(AtomicUsize::new(0));
+    let ch_p1_hits = Arc::new(AtomicUsize::new(0));
+    let toc_p1_hits_c = toc_p1_hits.clone();
+    let ch_p1_hits_c = ch_p1_hits.clone();
+
+    let app = Router::new()
+        // Same-endpoint POST pagination for chapters + empty url part + relative options (JSON API)
+        .route(
+            "/toc/post",
+            post(|body: String| async move {
+                match body.trim() {
+                    "page=1" => Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"items":[{"t":"Post Ch 1","u":"/ch/post,{\"method\":\"POST\",\"body\":\"ch=1\"}"}],"next":",{\"method\":\"POST\",\"body\":\"page=2\"}"}"#,
+                        ))
+                        .unwrap(),
+                    "page=2" => Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"items":[{"t":"Post Ch 2","u":"/ch/post2"}],"next":"/toc/post2,{\"method\":\"POST\",\"body\":\"page=3\"}"}"#,
+                        ))
+                        .unwrap(),
+                    _ => Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(),
+                }
+            }),
+        )
+        .route(
+            "/toc/post2",
+            post(|body: String| async move {
+                if body.trim() == "page=3" {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"items":[{"t":"Post Ch 3","u":"/ch/post3"}],"next":"/toc/post,{\"method\":\"POST\",\"body\":\"page=1\"}"}"#,
+                        ))
+                        .unwrap()
+                } else {
+                    Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap()
+                }
+            }),
+        )
+        // Same-endpoint POST pagination for pages + chapterUrl POST options
+        .route(
+            "/ch/post",
+            post(|body: String| async move {
+                match body.trim() {
+                    "ch=1" | "page=1" => Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"imgs":["/post1.jpg"],"next":",{\"method\":\"POST\",\"body\":\"page=2\"}"}"#,
+                        ))
+                        .unwrap(),
+                    "page=2" => Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"imgs":["/post2.jpg"],"next":"/ch/post2,{\"method\":\"POST\",\"body\":\"page=3\"}"}"#,
+                        ))
+                        .unwrap(),
+                    _ => Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap(),
+                }
+            }),
+        )
+        .route(
+            "/ch/post2",
+            post(|body: String| async move {
+                if body.trim() == "page=3" {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"imgs":["/post3.jpg"],"next":"/ch/post,{\"method\":\"POST\",\"body\":\"ch=1\"}"}"#,
+                        ))
+                        .unwrap()
+                } else {
+                    Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap()
+                }
+            }),
+        )
+        // Search + detail returning relative ,{options} for bookUrl & tocUrl
+        .route(
+            "/search_opt",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"items":[{"t":"OptComic","u":"/detail_opt,{\"method\":\"POST\",\"body\":\"id=9\"}"}]}"#,
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/detail_opt",
+            post(|body: String| async move {
+                if body.trim() == "id=9" {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"title":"OptComicDetail","toc":"/toc/post,{\"method\":\"POST\",\"body\":\"page=1\"}"}"#,
+                        ))
+                        .unwrap()
+                } else {
+                    Response::builder().status(StatusCode::BAD_REQUEST).body(Body::empty()).unwrap()
+                }
+            }),
+        )
+        // Combined multi-hop 302 redirect cycle with query & fragment
+        .route(
+            "/toc/hop1",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/toc/hop2")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/hop2",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/toc/real?p=1#top")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/toc/real",
+            get(move |Query(q): Query<PQuery>| {
+                let hits = toc_p1_hits_c.clone();
+                async move {
+                    if q.p.unwrap_or(1) == 1 {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<ul><li><a href="/ch/1">RCh1</a></li></ul><a class="next" href="/toc/real?p=2">Next</a>"##,
+                            ))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<ul><li><a href="/ch/2">RCh2</a></li></ul><a class="next" href="/toc/hop1#frag">Back</a>"##,
+                            ))
+                            .unwrap()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/ch/hop1",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("location", "/ch/real?p=1#sec")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/ch/real",
+            get(move |Query(q): Query<PQuery>| {
+                let hits = ch_p1_hits_c.clone();
+                async move {
+                    if q.p.unwrap_or(1) == 1 {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<div id="imgs"><img src="/rp1.jpg"></div><a class="next-page" href="/ch/real?p=2">Next</a>"##,
+                            ))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "text/html")
+                            .body(Body::from(
+                                r##"<div id="imgs"><img src="/rp2.jpg"></div><a class="next-page" href="/ch/hop1#again">Back</a>"##,
+                            ))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let source: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "PostPaginationTest",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search_opt?q={{{{key}}}}"),
+        "ruleSearch": {
+            "bookList": "$.items[*]",
+            "name": "$.t",
+            "bookUrl": "$.u"
+        },
+        "ruleDetail": {
+            "name": "$.title",
+            "tocUrl": "$.toc"
+        },
+        "ruleToc": {
+            "chapterList": "$.items[*] || ul li",
+            "chapterName": "$.t || a@text",
+            "chapterUrl": "$.u || a@href",
+            "nextTocUrl": "$.next || a.next@href"
+        },
+        "ruleContent": {
+            "content": "$.imgs || #imgs@html",
+            "nextContentUrl": "$.next || a.next-page@href"
+        }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let base_c = base.clone();
+    let (search_res, detail_res, chapters_post, pages_post, chapters_redir, pages_redir) =
+        tokio::task::spawn_blocking(move || {
+            let sr = engine
+                .search_sync(&source, SourceRuntimeState::default(), "opt", 1)
+                .unwrap()
+                .data;
+            let dr = engine
+                .fetch_detail_sync(
+                    &source,
+                    SourceRuntimeState::default(),
+                    &sr[0].comic_url,
+                    None,
+                )
+                .unwrap()
+                .data;
+            let ch_post = engine
+                .fetch_chapters_sync(
+                    &source,
+                    SourceRuntimeState::default(),
+                    &dr.toc_url,
+                    &ComicJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            let pg_post = engine
+                .fetch_pages_sync(
+                    &source,
+                    SourceRuntimeState::default(),
+                    &ch_post[0].url,
+                    &ComicJsContext::default(),
+                    &ComicChapterJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            let ch_redir = engine
+                .fetch_chapters_sync(
+                    &source,
+                    SourceRuntimeState::default(),
+                    &format!("{base_c}/toc/hop1"),
+                    &ComicJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            let pg_redir = engine
+                .fetch_pages_sync(
+                    &source,
+                    SourceRuntimeState::default(),
+                    &format!("{base_c}/ch/hop1"),
+                    &ComicJsContext::default(),
+                    &ComicChapterJsContext::default(),
+                )
+                .unwrap()
+                .data;
+            (sr, dr, ch_post, pg_post, ch_redir, pg_redir)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        search_res[0].comic_url,
+        format!("{base}/detail_opt,{{\"method\":\"POST\",\"body\":\"id=9\"}}")
+    );
+    assert_eq!(detail_res.title, "OptComicDetail");
+    assert_eq!(
+        detail_res.toc_url,
+        format!("{base}/toc/post,{{\"method\":\"POST\",\"body\":\"page=1\"}}")
+    );
+
+    let ch_titles: Vec<&str> = chapters_post.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(ch_titles, vec!["Post Ch 1", "Post Ch 2", "Post Ch 3"]);
+    assert_eq!(
+        chapters_post[0].url,
+        format!("{base}/ch/post,{{\"method\":\"POST\",\"body\":\"ch=1\"}}")
+    );
+
+    assert_eq!(
+        pages_post,
+        vec![
+            format!("{base}/post1.jpg"),
+            format!("{base}/post2.jpg"),
+            format!("{base}/post3.jpg"),
+        ]
+    );
+
+    let redir_titles: Vec<&str> = chapters_redir.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(redir_titles, vec!["RCh1", "RCh2"]);
+    assert_eq!(toc_p1_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        pages_redir,
+        vec![format!("{base}/rp1.jpg"), format!("{base}/rp2.jpg")]
+    );
+    assert_eq!(ch_p1_hits.load(Ordering::SeqCst), 1);
+
+    server.abort();
+}

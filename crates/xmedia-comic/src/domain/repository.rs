@@ -7,7 +7,7 @@ use xmedia_core::domain::user::UserId;
 
 use crate::domain::chapter::Chapter;
 use crate::domain::id::{ChapterId, ComicBookmarkId, ComicShelfId, SeriesId};
-use crate::domain::online::ComicSourceRecord;
+use crate::domain::online::{ComicSourceMetadataUpdate, ComicSourceRecord};
 use crate::domain::reading::{
     ChapterProgress, ComicBookmark, ComicShelf, FavoriteSeries, SeriesReaderPref,
 };
@@ -101,6 +101,11 @@ pub trait ComicSourceRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<ComicSourceRecord>>;
     async fn save(&self, source: &ComicSourceRecord) -> DomainResult<()>;
     async fn update_existing(&self, source: &ComicSourceRecord) -> DomainResult<bool>;
+    async fn update_metadata_if_exists(
+        &self,
+        id: Uuid,
+        patch: ComicSourceMetadataUpdate,
+    ) -> DomainResult<Option<ComicSourceRecord>>;
     async fn update_runtime_state(
         &self,
         id: Uuid,

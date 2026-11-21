@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -20,9 +21,9 @@ use super::dto::{
     OnlineComicDetailResponseDto, OnlineComicExploreResponseDto, OnlineComicPageDto,
     OnlineComicPagesResponseDto, OnlineComicSearchResponseDto, SourceSearchErrorDto,
 };
-use super::helpers::build_image_proxy_url;
+use super::helpers::{CancelOnDrop, build_image_proxy_url};
 use super::{
-    COMIC_IMAGE_PROXY_MAX_BYTES, ComicOnlineService, SEARCH_MAX_CONCURRENCY,
+    COMIC_IMAGE_PROXY_MAX_BYTES, ComicOnlineService, READER_OP_TIMEOUT, SEARCH_MAX_CONCURRENCY,
     SEARCH_PER_SOURCE_TIMEOUT,
 };
 
@@ -108,6 +109,7 @@ impl ComicOnlineService {
                 };
                 let cancel_flag = Arc::new(AtomicBool::new(false));
                 let cancel_worker = cancel_flag.clone();
+                let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
                 let timed = tokio::time::timeout(
                     SEARCH_PER_SOURCE_TIMEOUT,
                     tokio::task::spawn_blocking(move || {
@@ -125,13 +127,19 @@ impl ComicOnlineService {
                 )
                 .await;
                 match timed {
-                    Ok(Ok(res)) => (sid, sname, prev_state_cmp, res),
-                    Ok(Err(e)) => (
-                        sid,
-                        sname,
-                        prev_state_cmp,
-                        Err(format!("搜索任务异常: {e}")),
-                    ),
+                    Ok(Ok(res)) => {
+                        cancel_guard.disarm();
+                        (sid, sname, prev_state_cmp, res)
+                    }
+                    Ok(Err(e)) => {
+                        cancel_guard.disarm();
+                        (
+                            sid,
+                            sname,
+                            prev_state_cmp,
+                            Err(format!("搜索任务异常: {e}")),
+                        )
+                    }
                     Err(_) => {
                         cancel_flag.store(true, Ordering::Relaxed);
                         (
@@ -157,7 +165,9 @@ impl ComicOnlineService {
                 match res {
                     Ok(out) => {
                         if out.state != prev_state
-                            && let Err(err) = self.persist_runtime_state(sid, out.state).await
+                            && let Err(err) = self
+                                .persist_runtime_state_with_base(sid, &prev_state, out.state, false)
+                                .await
                         {
                             tracing::warn!(source_id = %sid, error = %err, "failed to persist comic source runtime state after search");
                         }
@@ -207,71 +217,89 @@ impl ComicOnlineService {
             .filter(|s| !s.is_empty())
             .map(ToString::to_string);
 
-        let (categories, mut state, mut diag) = {
-            let eng = engine.clone();
-            let spec = parsed.clone();
-            let st = prev_state;
-            let out = tokio::task::spawn_blocking(move || {
-                eng.parse_explore_categories(&spec, st)
-                    .map_err(String::from)
-            })
-            .await
-            .map_err(|e| DomainError::Storage(format!("解析发现分类失败: {e}")))?
-            .map_err(DomainError::Validation)?;
-            (out.data, out.state, out.diagnostics)
-        };
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
+        let spec = parsed;
+        let explicit_url_owned = explicit_url;
+        let sname_c = sname.clone();
 
-        let target_url = explicit_url.or_else(|| categories.first().map(|c| c.url.clone()));
+        let timed = tokio::time::timeout(
+            SEARCH_PER_SOURCE_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                let total_start = Instant::now();
+                let remaining_budget = || {
+                    SEARCH_PER_SOURCE_TIMEOUT
+                        .saturating_sub(total_start.elapsed())
+                        .max(Duration::from_millis(1))
+                };
+                let cat_out = engine
+                    .parse_explore_categories_with_control(
+                        &spec,
+                        prev_state,
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    )
+                    .map_err(String::from)?;
+                let categories = cat_out.data;
+                let mut state = cat_out.state;
+                let mut diag = cat_out.diagnostics;
+                let target_url =
+                    explicit_url_owned.or_else(|| categories.first().map(|c| c.url.clone()));
 
-        let items = if let Some(ref url_to_fetch) = target_url {
-            let cancel_flag = Arc::new(AtomicBool::new(false));
-            let cancel_worker = cancel_flag.clone();
-            let spec = parsed;
-            let url_owned = url_to_fetch.clone();
-            let timed = tokio::time::timeout(
-                SEARCH_PER_SOURCE_TIMEOUT,
-                tokio::task::spawn_blocking(move || {
-                    engine
-                        .explore_sync_with_control(
+                let items = if let Some(ref url_to_fetch) = target_url {
+                    let out = engine
+                        .explore_sync_with_categories_and_control(
                             &spec,
                             state,
-                            &url_owned,
+                            url_to_fetch,
                             page_num,
-                            SEARCH_PER_SOURCE_TIMEOUT,
+                            Some(&categories),
+                            remaining_budget(),
                             cancel_worker,
                         )
-                        .map_err(String::from)
-                }),
-            )
-            .await;
-
-            match timed {
-                Ok(Ok(Ok(out))) => {
+                        .map_err(String::from)?;
                     state = out.state;
                     merge_diagnostics(&mut diag, &out.diagnostics);
                     out.data
                         .into_iter()
-                        .map(|c| to_search_item(source_id, sname.clone(), c))
+                        .map(|c| to_search_item(source_id, sname_c.clone(), c))
                         .collect()
-                }
-                Ok(Ok(Err(err))) => return Err(DomainError::Validation(err)),
-                Ok(Err(e)) => {
-                    return Err(DomainError::Storage(format!("发现列表任务异常: {e}")));
-                }
-                Err(_) => {
-                    cancel_flag.store(true, Ordering::Relaxed);
-                    return Err(DomainError::Validation(format!(
-                        "发现列表请求超时（超过 {} 秒）",
-                        SEARCH_PER_SOURCE_TIMEOUT.as_secs()
-                    )));
-                }
+                } else {
+                    Vec::new()
+                };
+
+                Ok::<_, String>((target_url, categories, items, state, diag))
+            }),
+        )
+        .await;
+
+        let (target_url, categories, items, state, mut diag) = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
             }
-        } else {
-            Vec::new()
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("发现列表任务异常: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "发现列表请求超时（超过 {} 秒）",
+                    SEARCH_PER_SOURCE_TIMEOUT.as_secs()
+                )));
+            }
         };
 
         if state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after explore");
         }
@@ -305,68 +333,113 @@ impl ComicOnlineService {
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let parsed_for_detail = parsed.clone();
-
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_detail_sync(
-                &parsed_for_detail,
-                prev_state,
-                &url_owned,
-                fallback_hint.as_ref(),
-            )
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取漫画详情失败: {e}")))?
-        .map_err(DomainError::Validation)?;
-
-        let mut chapters = Vec::new();
         let has_toc_rule = parsed
             .rule_toc
             .as_ref()
             .and_then(|t| t.chapter_list.as_deref())
             .is_some_and(|s| !s.trim().is_empty());
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        if has_toc_rule && !out.data.toc_url.trim().is_empty() {
-            let toc_url = out.data.toc_url.clone();
-            let comic_ctx = ComicJsContext {
-                name: out.data.title.clone(),
-                author: out.data.author.clone(),
-                book_url: out.data.comic_url.clone(),
-                toc_url: toc_url.clone(),
-                cover_url: out.data.cover_url.clone(),
-                intro: out.data.intro.clone(),
-                reading_direction: out.data.reading_direction.map(|d| d.as_str().to_string()),
-                dur_chapter_index: 0,
-                dur_chapter_title: String::new(),
-                custom_variable: String::new(),
-            };
-            let engine_toc = self.engine.clone();
-            let parsed_toc = parsed.clone();
-            let st_toc = out.state.clone();
-            match tokio::task::spawn_blocking(move || {
-                engine_toc.fetch_chapters_sync(&parsed_toc, st_toc, &toc_url, &comic_ctx)
-            })
-            .await
-            {
-                Ok(Ok(ch_out)) => {
-                    out.state = ch_out.state;
-                    merge_diagnostics(&mut out.diagnostics, &ch_out.diagnostics);
-                    chapters = ch_out.data;
+        let timed = tokio::time::timeout(
+            READER_OP_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                let total_start = Instant::now();
+                let remaining_budget = || {
+                    READER_OP_TIMEOUT
+                        .saturating_sub(total_start.elapsed())
+                        .max(Duration::from_millis(1))
+                };
+                let mut out = engine
+                    .fetch_detail_sync_with_control(
+                        &parsed_for_detail,
+                        prev_state,
+                        &url_owned,
+                        fallback_hint.as_ref(),
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    )
+                    .map_err(String::from)?;
+
+                let mut chapters = Vec::new();
+                if has_toc_rule && !out.data.toc_url.trim().is_empty() {
+                    let toc_url = out.data.toc_url.clone();
+                    let comic_ctx = ComicJsContext {
+                        name: out.data.title.clone(),
+                        author: out.data.author.clone(),
+                        book_url: out.data.comic_url.clone(),
+                        toc_url: toc_url.clone(),
+                        cover_url: out.data.cover_url.clone(),
+                        intro: out.data.intro.clone(),
+                        reading_direction: out
+                            .data
+                            .reading_direction
+                            .map(|d| d.as_str().to_string()),
+                        dur_chapter_index: 0,
+                        dur_chapter_title: String::new(),
+                        custom_variable: String::new(),
+                    };
+                    let st_toc = out.state.clone();
+                    match engine.fetch_chapters_sync_with_control(
+                        &parsed_for_detail,
+                        st_toc,
+                        &toc_url,
+                        &comic_ctx,
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    ) {
+                        Ok(ch_out) => {
+                            out.state = ch_out.state;
+                            merge_diagnostics(&mut out.diagnostics, &ch_out.diagnostics);
+                            chapters = ch_out.data;
+                        }
+                        Err(err) => {
+                            if cancel_worker.load(Ordering::Relaxed)
+                                || total_start.elapsed() >= READER_OP_TIMEOUT
+                            {
+                                return Err(format!(
+                                    "获取漫画详情超时（超过 {} 秒）",
+                                    READER_OP_TIMEOUT.as_secs()
+                                ));
+                            }
+                            out.diagnostics
+                                .logs
+                                .push(format!("fetch_detail chapters skipped: {}", err.message));
+                        }
+                    }
                 }
-                Ok(Err(err)) => {
-                    out.diagnostics
-                        .logs
-                        .push(format!("fetch_detail chapters skipped: {err}"));
-                }
-                Err(e) => {
-                    out.diagnostics
-                        .logs
-                        .push(format!("fetch_detail chapters task error: {e}"));
-                }
+                Ok::<_, String>((out, chapters))
+            }),
+        )
+        .await;
+
+        let (mut out, chapters) = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
             }
-        }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取漫画详情失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取漫画详情超时（超过 {} 秒）",
+                    READER_OP_TIMEOUT.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_detail");
         }
@@ -421,16 +494,53 @@ impl ComicOnlineService {
         let url_owned = toc_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_chapters_sync(&parsed, prev_state, &url_owned, &comic_ctx)
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取漫画章节列表失败: {e}")))?
-        .map_err(DomainError::Validation)?;
+        let timed = tokio::time::timeout(
+            READER_OP_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .fetch_chapters_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &url_owned,
+                        &comic_ctx,
+                        READER_OP_TIMEOUT,
+                        cancel_worker,
+                    )
+                    .map_err(String::from)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取漫画章节列表失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取漫画章节列表超时（超过 {} 秒）",
+                    READER_OP_TIMEOUT.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_chapters");
         }
@@ -469,16 +579,54 @@ impl ComicOnlineService {
         let url_owned = chapter_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_pages_sync(&parsed, prev_state, &url_owned, &comic_ctx, &chapter_ctx)
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取漫画页面列表失败: {e}")))?
-        .map_err(DomainError::Validation)?;
+        let timed = tokio::time::timeout(
+            READER_OP_TIMEOUT,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .fetch_pages_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &url_owned,
+                        &comic_ctx,
+                        &chapter_ctx,
+                        READER_OP_TIMEOUT,
+                        cancel_worker,
+                    )
+                    .map_err(String::from)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取漫画页面列表失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取漫画页面列表超时（超过 {} 秒）",
+                    READER_OP_TIMEOUT.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_pages");
         }

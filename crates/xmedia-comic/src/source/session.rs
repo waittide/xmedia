@@ -1,13 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use scraper::{Html, Selector};
-use xmedia_source::http::{LegadoHttpClient, resolve_relative_url};
+use xmedia_source::http::{
+    HttpFetchResult, LegadoHttpClient, LegadoUrlOptions, is_forbidden_custom_header,
+    parse_legado_url, resolve_relative_url,
+};
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::{RuleValue, cached_regex};
 
+use super::engine::{resolve_relative_url_preserving_options, split_legado_url_and_raw_options};
 use crate::source::model::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, ExecutionDiagnostics,
     OnlineComicChapter, SourceMetadata, SourceRuntimeState,
@@ -107,18 +111,34 @@ impl ReusableComicContext {
             cancel_flag,
         );
         inner.add_bootstrap_snippet(COMIC_JS_BOOTSTRAP);
-        ReusableComicSession { source, inner }
+        ReusableComicSession {
+            source,
+            inner,
+            op_deadline: Instant::now() + op_timeout,
+        }
     }
 }
 
 pub struct ReusableComicSession {
     pub(super) source: Arc<ComicSourceSpec>,
     pub(super) inner: ReusableSourceSession,
+    pub(super) op_deadline: Instant,
 }
 
 impl ReusableComicSession {
     pub(super) fn check_active(&self) -> Result<(), String> {
         self.inner.check_active()
+    }
+
+    pub(super) fn http_fetch(&self, raw_url: &str) -> Result<HttpFetchResult, String> {
+        self.check_active()?;
+        let remaining = self.op_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("执行超过单次操作总超时上限 (interrupted)".into());
+        }
+        self.inner
+            .http()
+            .fetch_with_timeout(raw_url, &self.source.source_url, Some(remaining))
     }
 
     pub(super) fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {
@@ -211,21 +231,21 @@ impl ReusableComicSession {
 
         let mut chapters = Vec::new();
         let mut next_url_opt = Some(toc_url.to_string());
-        let mut visited = HashSet::new();
+        let mut guard = PaginationCycleGuard::default();
         let mut pages_fetched = 0usize;
         const MAX_TOC_PAGES: usize = 30;
 
         while let Some(page_url) = next_url_opt.take() {
             self.check_active()?;
-            if pages_fetched >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
+            if pages_fetched >= MAX_TOC_PAGES {
                 break;
             }
+            let Some(req_key) = guard.try_begin(&page_url, &self.source.source_url) else {
+                break;
+            };
             pages_fetched += 1;
-            let fetched = self
-                .inner
-                .http()
-                .fetch(&page_url, &self.source.source_url)?;
-            if fetched.final_url != page_url && !visited.insert(fetched.final_url.clone()) {
+            let fetched = self.http_fetch(&page_url)?;
+            if !guard.record_fetched(&req_key, &fetched.final_url) {
                 break;
             }
             let mut raw_input = RuleValue::from_raw(fetched.body);
@@ -265,7 +285,7 @@ impl ReusableComicSession {
                 let resolved = if is_placeholder {
                     String::new()
                 } else {
-                    resolve_relative_url(trimmed_url, &fetched.final_url)
+                    resolve_relative_url_preserving_options(trimmed_url, &fetched.final_url)
                 };
 
                 chapters.push(OnlineComicChapter {
@@ -283,8 +303,9 @@ impl ReusableComicSession {
                 let next_raw = self.eval_opt(&raw_input, Some(next_rule), &fetched.final_url);
                 let next_trimmed = next_raw.trim();
                 if !is_placeholder_or_fragment_url(next_trimmed, &fetched.final_url) {
-                    let resolved_next = resolve_relative_url(next_trimmed, &fetched.final_url);
-                    if !visited.contains(&resolved_next) {
+                    let resolved_next =
+                        resolve_relative_url_preserving_options(next_trimmed, &fetched.final_url);
+                    if guard.can_enqueue(&resolved_next, &self.source.source_url) {
                         next_url_opt = Some(resolved_next);
                     }
                 }
@@ -316,21 +337,21 @@ impl ReusableComicSession {
         let mut pages = Vec::new();
         let mut seen_urls = HashSet::new();
         let mut next_url_opt = Some(chapter_url.to_string());
-        let mut visited_pages = HashSet::new();
+        let mut guard = PaginationCycleGuard::default();
         let mut pages_fetched = 0usize;
         const MAX_CONTENT_PAGES: usize = 20;
 
         while let Some(page_url) = next_url_opt.take() {
             self.check_active()?;
-            if pages_fetched >= MAX_CONTENT_PAGES || !visited_pages.insert(page_url.clone()) {
+            if pages_fetched >= MAX_CONTENT_PAGES {
                 break;
             }
+            let Some(req_key) = guard.try_begin(&page_url, &self.source.source_url) else {
+                break;
+            };
             pages_fetched += 1;
-            let fetched = self
-                .inner
-                .http()
-                .fetch(&page_url, &self.source.source_url)?;
-            if fetched.final_url != page_url && !visited_pages.insert(fetched.final_url.clone()) {
+            let fetched = self.http_fetch(&page_url)?;
+            if !guard.record_fetched(&req_key, &fetched.final_url) {
                 break;
             }
             let raw_input = RuleValue::from_raw(fetched.body);
@@ -361,8 +382,9 @@ impl ReusableComicSession {
                 let next_raw = self.eval_opt(&raw_input, Some(next_rule), &fetched.final_url);
                 let next_trimmed = next_raw.trim();
                 if !is_placeholder_or_fragment_url(next_trimmed, &fetched.final_url) {
-                    let resolved_next = resolve_relative_url(next_trimmed, &fetched.final_url);
-                    if !visited_pages.contains(&resolved_next) {
+                    let resolved_next =
+                        resolve_relative_url_preserving_options(next_trimmed, &fetched.final_url);
+                    if guard.can_enqueue(&resolved_next, &self.source.source_url) {
                         next_url_opt = Some(resolved_next);
                     }
                 }
@@ -407,40 +429,45 @@ impl ReusableComicSession {
             return normalize_extracted_urls(raw_candidates, base_url);
         }
 
-        // 2. Scan lines grouping contiguous HTML blocks / open `<...>` tags while preserving plain URL lines
+        // 2. HTML5-aware segmenter: coalesce HTML blocks for scraper while preserving verbatim
+        // top-level plain URLs and filtering stray top-level prose in mixed HTML mode.
+        let (segments, has_html_tokens) = segment_page_content(trimmed);
         let mut html_buf = String::new();
-        let mut in_open_tag = false;
-        let mut in_comment = false;
-        let mut quote: Option<char> = None;
 
-        for line in trimmed.lines() {
-            let l = line.trim();
-            if l.is_empty() {
-                continue;
-            }
-            let is_html_line = in_open_tag
-                || in_comment
-                || l.starts_with('<')
-                || l.to_ascii_lowercase().contains("<img");
-            if is_html_line {
-                if !html_buf.is_empty() {
-                    html_buf.push('\n');
+        for seg in segments {
+            match seg {
+                PageSegment::Html(slice) => {
+                    html_buf.push_str(slice);
                 }
-                html_buf.push_str(l);
-                update_html_scan_state(l, &mut in_open_tag, &mut in_comment, &mut quote);
-            } else {
-                self.flush_html_page_candidates(
-                    &mut html_buf,
-                    img_rule_opt,
-                    base_url,
-                    &mut raw_candidates,
-                );
-                self.push_page_candidate(
-                    l.to_string(),
-                    img_rule_opt,
-                    base_url,
-                    &mut raw_candidates,
-                );
+                PageSegment::TopLevelText(slice) => {
+                    if slice.trim().is_empty() {
+                        if !html_buf.is_empty() {
+                            html_buf.push_str(slice);
+                        }
+                        continue;
+                    }
+                    self.flush_html_page_candidates(
+                        &mut html_buf,
+                        img_rule_opt,
+                        base_url,
+                        &mut raw_candidates,
+                    );
+                    for line in slice.lines() {
+                        let l = line.trim();
+                        if l.is_empty() {
+                            continue;
+                        }
+                        if has_html_tokens && !looks_like_mixed_plain_url(l) {
+                            continue;
+                        }
+                        self.push_page_candidate(
+                            l.to_string(),
+                            img_rule_opt,
+                            base_url,
+                            &mut raw_candidates,
+                        );
+                    }
+                }
             }
         }
         self.flush_html_page_candidates(&mut html_buf, img_rule_opt, base_url, &mut raw_candidates);
@@ -485,60 +512,484 @@ impl ReusableComicSession {
     }
 }
 
-fn update_html_scan_state(
-    line: &str,
-    in_open_tag: &mut bool,
-    in_comment: &mut bool,
-    quote: &mut Option<char>,
-) {
-    let mut rest = line;
-    while !rest.is_empty() {
-        if *in_comment {
-            if let Some(end_idx) = rest.find("-->") {
-                *in_comment = false;
-                rest = &rest[end_idx + 3..];
-            } else {
-                break;
-            }
-            continue;
-        }
-        if *in_open_tag {
-            let mut closed_at = None;
-            for (idx, ch) in rest.char_indices() {
-                if let Some(q) = *quote {
-                    if ch == q {
-                        *quote = None;
-                    }
-                } else if ch == '"' || ch == '\'' {
-                    *quote = Some(ch);
-                } else if ch == '>' {
-                    closed_at = Some(idx + ch.len_utf8());
-                    break;
-                }
-            }
-            if let Some(next_start) = closed_at {
-                *in_open_tag = false;
-                *quote = None;
-                rest = &rest[next_start..];
-            } else {
-                break;
-            }
-            continue;
-        }
-        if let Some(lt_idx) = rest.find('<') {
-            let after_lt = &rest[lt_idx..];
-            if let Some(stripped) = after_lt.strip_prefix("<!--") {
-                *in_comment = true;
-                rest = stripped;
-            } else {
-                *in_open_tag = true;
-                *quote = None;
-                rest = &after_lt[1..];
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct CanonicalRequestKey {
+    url_no_frag: String,
+    method: String,
+    body: Option<String>,
+    headers: Vec<(String, String)>,
+    charset: Option<String>,
+}
+
+impl CanonicalRequestKey {
+    fn from_raw(raw_url: &str, source_url: &str) -> Self {
+        let parsed = parse_legado_url(raw_url);
+        let resolved = resolve_relative_url(&parsed.url, source_url);
+        let url_no_frag = strip_fragment(&resolved).to_string();
+        let method = parsed
+            .options
+            .method
+            .as_deref()
+            .unwrap_or("GET")
+            .trim()
+            .to_ascii_uppercase();
+        let body = if method != "GET" && method != "HEAD" {
+            match parsed.options.body {
+                Some(serde_json::Value::String(s)) => Some(s),
+                Some(serde_json::Value::Null) | None => None,
+                Some(other) => Some(other.to_string()),
             }
         } else {
-            break;
+            None
+        };
+        let mut headers = Vec::new();
+        if let Some(serde_json::Value::Object(map)) = parsed.options.headers {
+            for (k, v) in map {
+                if is_forbidden_custom_header(&k) {
+                    continue;
+                }
+                let val_str = match v {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                headers.push((k.to_ascii_lowercase(), val_str));
+            }
+            headers.sort();
+        }
+        let charset = parsed
+            .options
+            .charset
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty());
+        Self {
+            url_no_frag,
+            method,
+            body,
+            headers,
+            charset,
         }
     }
+
+    fn plain_get(url_no_frag: &str) -> Self {
+        Self {
+            url_no_frag: url_no_frag.to_string(),
+            method: "GET".to_string(),
+            body: None,
+            headers: Vec::new(),
+            charset: None,
+        }
+    }
+
+    fn is_plain_get_or_head(&self) -> bool {
+        matches!(self.method.as_str(), "GET" | "HEAD")
+            && self.body.is_none()
+            && self.headers.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RedirectTargetKey {
+    final_url: String,
+    method: String,
+    body: Option<String>,
+    headers: Vec<(String, String)>,
+}
+
+#[derive(Default)]
+struct PaginationCycleGuard {
+    visited_requests: HashSet<CanonicalRequestKey>,
+    visited_get_final_urls: HashSet<String>,
+    visited_redirect_targets: HashSet<RedirectTargetKey>,
+}
+
+impl PaginationCycleGuard {
+    fn try_begin(&mut self, page_url: &str, source_url: &str) -> Option<CanonicalRequestKey> {
+        let key = CanonicalRequestKey::from_raw(page_url, source_url);
+        self.visited_requests.insert(key.clone()).then_some(key)
+    }
+
+    fn record_fetched(&mut self, req_key: &CanonicalRequestKey, final_url: &str) -> bool {
+        let final_no_frag = strip_fragment(final_url).to_string();
+        if req_key.is_plain_get_or_head() {
+            if !self.visited_get_final_urls.insert(final_no_frag.clone()) {
+                return false;
+            }
+            if final_no_frag != req_key.url_no_frag {
+                self.visited_requests
+                    .insert(CanonicalRequestKey::plain_get(&final_no_frag));
+            }
+            true
+        } else if final_no_frag != req_key.url_no_frag {
+            if self.visited_get_final_urls.contains(&final_no_frag) {
+                return false;
+            }
+            self.visited_redirect_targets.insert(RedirectTargetKey {
+                final_url: final_no_frag,
+                method: req_key.method.clone(),
+                body: req_key.body.clone(),
+                headers: req_key.headers.clone(),
+            })
+        } else {
+            true
+        }
+    }
+
+    fn can_enqueue(&self, next_url: &str, source_url: &str) -> bool {
+        let next_key = CanonicalRequestKey::from_raw(next_url, source_url);
+        if self.visited_requests.contains(&next_key) {
+            return false;
+        }
+        if next_key.is_plain_get_or_head()
+            && self.visited_get_final_urls.contains(&next_key.url_no_frag)
+        {
+            return false;
+        }
+        true
+    }
+}
+
+fn strip_fragment(url: &str) -> &str {
+    url.split('#').next().unwrap_or(url)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageSegment<'a> {
+    Html(&'a str),
+    TopLevelText(&'a str),
+}
+
+fn is_html_token_start(slice: &str) -> bool {
+    let b = slice.as_bytes();
+    if b.len() < 2 || b[0] != b'<' {
+        return false;
+    }
+    if slice.starts_with("<!--") || b[1] == b'!' || b[1] == b'?' {
+        return true;
+    }
+    if b[1] == b'/' {
+        return b
+            .get(2)
+            .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'>');
+    }
+    b[1].is_ascii_alphabetic()
+}
+
+fn is_void_html_element(tag: &str) -> bool {
+    matches!(
+        tag,
+        "area"
+            | "base"
+            | "basefont"
+            | "bgsound"
+            | "br"
+            | "col"
+            | "embed"
+            | "frame"
+            | "hr"
+            | "img"
+            | "input"
+            | "keygen"
+            | "link"
+            | "meta"
+            | "param"
+            | "source"
+            | "track"
+            | "wbr"
+    )
+}
+
+fn is_raw_text_html_element(tag: &str) -> bool {
+    matches!(
+        tag,
+        "script" | "style" | "textarea" | "title" | "xmp" | "iframe" | "noembed" | "noframes"
+    )
+}
+
+fn apply_html5_implicit_close(stack: &mut Vec<String>, next_tag: &str) {
+    if matches!(
+        next_tag,
+        "address"
+            | "article"
+            | "aside"
+            | "blockquote"
+            | "details"
+            | "dialog"
+            | "dd"
+            | "div"
+            | "dl"
+            | "dt"
+            | "fieldset"
+            | "figcaption"
+            | "figure"
+            | "footer"
+            | "form"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "header"
+            | "hgroup"
+            | "hr"
+            | "li"
+            | "main"
+            | "menu"
+            | "nav"
+            | "ol"
+            | "p"
+            | "pre"
+            | "search"
+            | "section"
+            | "table"
+            | "ul"
+    ) && stack.last().is_some_and(|t| t == "p")
+    {
+        stack.pop();
+    }
+    if (next_tag == "li" && stack.last().is_some_and(|t| t == "li"))
+        || (matches!(next_tag, "dt" | "dd") && stack.last().is_some_and(|t| t == "dt" || t == "dd"))
+        || (matches!(next_tag, "td" | "th") && stack.last().is_some_and(|t| t == "td" || t == "th"))
+    {
+        stack.pop();
+    } else if next_tag == "tr" {
+        while stack
+            .last()
+            .is_some_and(|t| matches!(t.as_str(), "td" | "th" | "tr"))
+        {
+            stack.pop();
+        }
+    }
+}
+
+fn parse_tag_name(bytes: &[u8], start: usize) -> (String, usize) {
+    let mut end = start;
+    while end < bytes.len()
+        && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'-' || bytes[end] == b':')
+    {
+        end += 1;
+    }
+    let name = std::str::from_utf8(&bytes[start..end])
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    (name, end)
+}
+
+fn find_raw_text_end(bytes: &[u8], from: usize, tag_name: &str) -> Option<usize> {
+    let tag_bytes = tag_name.as_bytes();
+    let needle_len = 2 + tag_bytes.len();
+    let mut i = from;
+    while i + needle_len <= bytes.len() {
+        if bytes[i] == b'<'
+            && bytes[i + 1] == b'/'
+            && bytes[i + 2..i + needle_len].eq_ignore_ascii_case(tag_bytes)
+        {
+            let next_b = bytes.get(i + needle_len).copied();
+            if next_b.is_some_and(|b| b.is_ascii_whitespace() || b == b'>' || b == b'/') {
+                let mut j = i + needle_len;
+                while j < bytes.len() {
+                    if bytes[j] == b'>' {
+                        return Some(j + 1);
+                    }
+                    j += 1;
+                }
+                return Some(bytes.len());
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn segment_page_content(input: &str) -> (Vec<PageSegment<'_>>, bool) {
+    let bytes = input.as_bytes();
+    let mut segments = Vec::new();
+    let mut element_stack: Vec<String> = Vec::new();
+    let mut pos = 0usize;
+    let mut text_start = 0usize;
+    let mut html_start: Option<usize> = None;
+    let mut has_html_tokens = false;
+
+    while pos < bytes.len() {
+        let Some(rel_lt) = input[pos..].find('<') else {
+            break;
+        };
+        let lt_pos = pos + rel_lt;
+        if !is_html_token_start(&input[lt_pos..]) {
+            pos = lt_pos + 1;
+            continue;
+        }
+
+        has_html_tokens = true;
+        if html_start.is_none() {
+            if lt_pos > text_start {
+                segments.push(PageSegment::TopLevelText(&input[text_start..lt_pos]));
+            }
+            html_start = Some(lt_pos);
+        }
+
+        let tail = &input[lt_pos..];
+        if tail.starts_with("<!--") {
+            if tail.starts_with("<!-->") {
+                pos = lt_pos + 5;
+            } else if tail.starts_with("<!--->") {
+                pos = lt_pos + 6;
+            } else {
+                let comment_body = &input[lt_pos + 4..];
+                let end_std = comment_body.find("-->").map(|idx| lt_pos + 4 + idx + 3);
+                let end_bang = comment_body.find("--!>").map(|idx| lt_pos + 4 + idx + 4);
+                pos = match (end_std, end_bang) {
+                    (Some(a), Some(b)) => a.min(b),
+                    (Some(a), None) | (None, Some(a)) => a,
+                    (None, None) => bytes.len(),
+                };
+            }
+            if element_stack.is_empty()
+                && let Some(start) = html_start.take()
+            {
+                segments.push(PageSegment::Html(&input[start..pos]));
+                text_start = pos;
+            }
+        } else if tail.starts_with("<![CDATA[") {
+            pos = if let Some(rel_end) = input[lt_pos + 9..].find("]]>") {
+                lt_pos + 9 + rel_end + 3
+            } else {
+                bytes.len()
+            };
+            if element_stack.is_empty()
+                && let Some(start) = html_start.take()
+            {
+                segments.push(PageSegment::Html(&input[start..pos]));
+                text_start = pos;
+            }
+        } else if tail.starts_with("<!") || tail.starts_with("<?") {
+            pos = if let Some(rel_end) = input[lt_pos + 2..].find('>') {
+                lt_pos + 2 + rel_end + 1
+            } else {
+                bytes.len()
+            };
+            if element_stack.is_empty()
+                && let Some(start) = html_start.take()
+            {
+                segments.push(PageSegment::Html(&input[start..pos]));
+                text_start = pos;
+            }
+        } else if tail.starts_with("</") {
+            let (tag_name, name_end) = parse_tag_name(bytes, lt_pos + 2);
+            pos = if let Some(rel_gt) = input[name_end..].find('>') {
+                name_end + rel_gt + 1
+            } else {
+                bytes.len()
+            };
+            if !tag_name.is_empty()
+                && let Some(idx) = element_stack.iter().rposition(|t| t == &tag_name)
+            {
+                element_stack.truncate(idx);
+            }
+            if element_stack.is_empty()
+                && let Some(start) = html_start.take()
+            {
+                segments.push(PageSegment::Html(&input[start..pos]));
+                text_start = pos;
+            }
+        } else {
+            let (tag_name, attr_start) = parse_tag_name(bytes, lt_pos + 1);
+            let mut quote: Option<char> = None;
+            let mut last_non_ws: Option<u8> = None;
+            let mut closed_at: Option<usize> = None;
+            for (rel_idx, ch) in input[attr_start..].char_indices() {
+                if let Some(q) = quote {
+                    if ch == q {
+                        quote = None;
+                        last_non_ws = Some(q as u8);
+                    }
+                } else if ch == '"' || ch == '\'' {
+                    quote = Some(ch);
+                } else if ch == '>' {
+                    closed_at = Some(attr_start + rel_idx + 1);
+                    break;
+                } else if !ch.is_ascii_whitespace() {
+                    last_non_ws = Some(if ch.is_ascii() { ch as u8 } else { b'x' });
+                }
+            }
+            let Some(next_pos) = closed_at else {
+                break;
+            };
+            pos = next_pos;
+            let self_closing = last_non_ws == Some(b'/');
+
+            apply_html5_implicit_close(&mut element_stack, &tag_name);
+            let in_foreign = element_stack.iter().any(|t| t == "svg" || t == "math");
+
+            if is_void_html_element(&tag_name) || (self_closing && in_foreign) {
+                if element_stack.is_empty()
+                    && let Some(start) = html_start.take()
+                {
+                    segments.push(PageSegment::Html(&input[start..pos]));
+                    text_start = pos;
+                }
+            } else if is_raw_text_html_element(&tag_name) {
+                element_stack.push(tag_name.clone());
+                if let Some(end_pos) = find_raw_text_end(bytes, pos, &tag_name) {
+                    pos = end_pos;
+                    element_stack.pop();
+                } else {
+                    pos = bytes.len();
+                }
+                if element_stack.is_empty()
+                    && let Some(start) = html_start.take()
+                {
+                    segments.push(PageSegment::Html(&input[start..pos]));
+                    text_start = pos;
+                }
+            } else {
+                element_stack.push(tag_name);
+            }
+        }
+    }
+
+    if let Some(start) = html_start.take() {
+        if start < bytes.len() {
+            segments.push(PageSegment::Html(&input[start..]));
+        }
+    } else if text_start < bytes.len() {
+        segments.push(PageSegment::TopLevelText(&input[text_start..]));
+    }
+
+    (segments, has_html_tokens)
+}
+
+fn looks_like_mixed_plain_url(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.chars().any(char::is_whitespace) {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("data:") {
+        return true;
+    }
+    if let Some(rest) = trimmed.strip_prefix("//") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = trimmed.strip_prefix("../") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = trimmed.strip_prefix("./") {
+        return !rest.is_empty();
+    }
+    if let Some(rest) = trimmed.strip_prefix('/') {
+        return !rest.is_empty();
+    }
+    let path_part = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
+    if path_part.contains('/') {
+        return true;
+    }
+    path_part.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty()
+            && (2..=8).contains(&ext.len())
+            && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+    })
 }
 
 fn is_invalid_image_candidate(raw: &str) -> bool {
@@ -554,15 +1005,30 @@ fn is_invalid_image_candidate(raw: &str) -> bool {
 
 fn is_placeholder_or_fragment_url(raw_url: &str, final_url: &str) -> bool {
     let t = raw_url.trim();
-    if t.is_empty() || t == "#" || t.starts_with('#') {
+    if t.is_empty() {
         return true;
     }
-    let lower = t.to_ascii_lowercase();
+    let (url_part, has_valid_opts) = if let Some((part, opt_json)) =
+        split_legado_url_and_raw_options(t)
+        && serde_json::from_str::<LegadoUrlOptions>(opt_json).is_ok()
+    {
+        (part.trim(), true)
+    } else {
+        (t, false)
+    };
+    if url_part.is_empty() {
+        return !has_valid_opts;
+    }
+    if url_part == "#" || url_part.starts_with('#') {
+        return true;
+    }
+    let lower = url_part.to_ascii_lowercase();
     if lower.starts_with("javascript:") || lower.starts_with("about:") {
         return true;
     }
-    let final_no_frag = final_url.split('#').next().unwrap_or(final_url);
-    t.strip_prefix(final_no_frag)
+    let final_no_frag = strip_fragment(final_url);
+    url_part
+        .strip_prefix(final_no_frag)
         .is_some_and(|rest| rest.starts_with('#'))
 }
 

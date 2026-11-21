@@ -20,6 +20,19 @@ pub struct ComicSourceRecord {
     pub updated_at: Timestamp,
 }
 
+#[derive(Debug, Clone)]
+pub struct ComicSourceMetadataUpdate {
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+    pub raw_json: String,
+    pub variable: Option<String>,
+    pub updated_at: Timestamp,
+}
+
 impl ComicSourceRecord {
     /// Synchronizes mutable top-level metadata (`enabled`, `weight`, `group_name`)
     /// into `raw_json`, preserving `"bookSourceGroup"` when present without `"sourceGroup"`.

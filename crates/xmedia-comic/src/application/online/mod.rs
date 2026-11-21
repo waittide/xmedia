@@ -18,6 +18,7 @@ use helpers::AsyncLockMap;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
+const READER_OP_TIMEOUT: Duration = Duration::from_secs(45);
 const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 const COMIC_IMAGE_PROXY_MAX_BYTES: usize = 16 * 1024 * 1024;
 
