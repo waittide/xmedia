@@ -104,7 +104,7 @@ const domainTabItems = computed<{ value: MediaKind; label: string; icon: Compone
 
     <div class="grid grid-cols-1 gap-6 lg:grid-cols-[210px_minmax(0,1fr)]">
       <!-- Left Settings Category Rail (MD3 Full-Pill Active Indicator) -->
-      <nav class="flex gap-1 overflow-x-auto lg:flex-col">
+      <nav class="no-scrollbar -m-1 flex gap-1 overflow-x-auto p-1 lg:flex-col lg:overflow-visible">
         <button
           type="button"
           class="md-state flex h-10 shrink-0 items-center gap-2.5 rounded-full px-4 text-left text-[13px] font-medium"
