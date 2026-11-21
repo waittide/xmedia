@@ -1,21 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import {
-  LuArrowDown,
-  LuArrowUp,
-  LuBan,
-  LuCheck,
-  LuImage,
-  LuKey,
-  LuLayers,
-  LuLoader2,
-  LuSearch,
-  LuSlidersHorizontal,
-  LuSparkles,
-  LuZap,
-} from 'vue-icons-plus/lu'
-import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
-import { resolveScraperCoverUrl, toolApi } from '../../api'
+import { LuLoader2, LuSearch, LuSparkles } from 'vue-icons-plus/lu'
+import { toolApi } from '../../api'
 import { mergeScrapedClientSide } from '../../merger'
 import type {
   AggregateScrapeResponse,
@@ -35,6 +21,14 @@ import {
   type ApplyFillMode,
 } from '../inspector/useMetadataForm'
 import type { CandidatePreviewState } from './CandidateDetailPreviewPane.vue'
+import {
+  buildCandidateFallbackMeta,
+  buildLightMetadata,
+  candKey,
+} from './candidateMetaHelpers'
+import WorkbenchCandidateCard from './WorkbenchCandidateCard.vue'
+import WorkbenchMergedCard from './WorkbenchMergedCard.vue'
+import WorkbenchSearchHeader from './WorkbenchSearchHeader.vue'
 
 const MAX_DETAIL_CACHE = 128
 
@@ -85,11 +79,12 @@ const recentFlash = ref<string | null>(null)
 
 let hydratingFromDetail = false
 let searchRequestSeq = 0
+let providerLoadSeq = 0
+let pendingAutoSearch = false
 
 function getCachedDetail(key: string): ScrapedMetadata | undefined {
   const hit = detailCache.get(key)
   if (!hit) return undefined
-  // Refresh LRU order in place
   detailCache.delete(key)
   detailCache.set(key, hit)
   return hit
@@ -106,11 +101,6 @@ function setCachedDetail(key: string, value: ScrapedMetadata): void {
   }
   detailCache.set(key, value)
 }
-
-const fillModeOptions = [
-  { value: 'overwrite' as const, label: '覆盖' },
-  { value: 'fill_missing' as const, label: '仅补空' },
-]
 
 const targetTabs = computed<Array<{ value: ScrapeTargetKind; label: string }>>(() => {
   const kind = props.detail?.entry.media_kind
@@ -178,6 +168,23 @@ const providerCandidateCounts = computed<Record<string, number>>(() => {
   return counts
 })
 
+const configuredProviders = computed(() => providers.value.filter((p) => p.configured))
+
+const visibleCandidates = computed(() => {
+  if (activeSourceFilter.value === 'all') return candidates.value
+  return candidates.value.filter((c) => c.provider_id === activeSourceFilter.value)
+})
+
+const sourceCounts = computed(() => {
+  const m = new Map<string, { id: string; name: string; count: number }>()
+  for (const c of candidates.value) {
+    const existing = m.get(c.provider_id)
+    if (existing) existing.count += 1
+    else m.set(c.provider_id, { id: c.provider_id, name: c.provider_name, count: 1 })
+  }
+  return Array.from(m.values())
+})
+
 function isCoverUsable(url: string | null | undefined): boolean {
   const trimmed = url?.trim()
   return Boolean(trimmed && !brokenCoverUrls.value.has(trimmed))
@@ -191,33 +198,15 @@ function markCoverBroken(url: string | null | undefined): void {
   brokenCoverUrls.value = next
 }
 
-function buildLightMetadata(c: ScrapeCandidate): ScrapedMetadata {
-  return {
-    provider_id: c.provider_id,
-    external_id: c.external_id,
-    target: c.target,
-    title: c.title,
-    original_title: null,
-    series_or_album: null,
-    creators: c.subtitle ? [c.subtitle] : [],
-    illustrators_or_directors: [],
-    cast: [],
-    publisher_or_studio: null,
-    year: c.year,
-    published_date: null,
-    language: null,
-    isbn: null,
-    rating: null,
-    track_or_episode_number: null,
-    disc_or_season_number: null,
-    summary: c.summary,
-    genres: [],
-    tags: [],
-    cover_url: c.cover_url,
-    backdrop_url: null,
-    synced_lyrics: c.synced_lyrics,
-    plain_lyrics: c.plain_lyrics,
-  }
+function currentEntryKey(): string {
+  return props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''
+}
+
+function flashFeedback(label: string): void {
+  recentFlash.value = label
+  setTimeout(() => {
+    if (recentFlash.value === label) recentFlash.value = null
+  }, 1800)
 }
 
 function selectMergedPreview(): void {
@@ -234,12 +223,23 @@ function selectMergedPreview(): void {
   })
 }
 
-function currentEntryKey(): string {
-  return props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''
+async function resolveCandidateDetail(c: ScrapeCandidate): Promise<ScrapedMetadata | null> {
+  const key = candKey(c)
+  const cached = getCachedDetail(key)
+  if (cached) return cached
+  loadingDetailKey.value = key
+  try {
+    const meta = await toolApi.getScraperDetail(c.provider_id, c.external_id, c.target)
+    setCachedDetail(key, meta)
+    return meta
+  } catch {
+    const fallback = buildCandidateFallbackMeta(c)
+    setCachedDetail(key, fallback)
+    return fallback
+  } finally {
+    if (loadingDetailKey.value === key) loadingDetailKey.value = null
+  }
 }
-
-let providerLoadSeq = 0
-let pendingAutoSearch = false
 
 async function selectCandidatePreview(c: ScrapeCandidate): Promise<void> {
   const entryKey = currentEntryKey()
@@ -281,87 +281,6 @@ async function selectCandidatePreview(c: ScrapeCandidate): Promise<void> {
     fillMode: fillMode.value,
   })
 }
-
-watch(
-  () => props.selectedPreviewKey,
-  (val) => {
-    if (val === null) {
-      selectedKey.value = null
-    }
-  },
-)
-
-watch(fillMode, () => {
-  if (!selectedKey.value) return
-  if (selectedKey.value === '__merged__' && mergedMeta.value) {
-    selectMergedPreview()
-    return
-  }
-  const hit = candidates.value.find((c) => candKey(c) === selectedKey.value)
-  if (hit) {
-    const key = candKey(hit)
-    const cached = getCachedDetail(key)
-    emit('selectPreview', {
-      key,
-      isMerged: false,
-      sourceLabel: hit.provider_name,
-      meta: cached ?? buildLightMetadata(hit),
-      loading: loadingDetailKey.value === key,
-      fieldSources: null,
-      fillMode: fillMode.value,
-    })
-  }
-})
-
-watch(mergedResult, (next) => {
-  if (selectedKey.value !== '__merged__') return
-  if (next?.metadata) {
-    emit('selectPreview', {
-      key: '__merged__',
-      isMerged: true,
-      sourceLabel: '多源瀑布聚合结果',
-      meta: next.metadata,
-      loading: false,
-      fieldSources: next.field_sources,
-      fillMode: fillMode.value,
-    })
-  } else {
-    emit('selectPreview', null)
-  }
-})
-
-function flashFeedback(label: string): void {
-  recentFlash.value = label
-  setTimeout(() => {
-    if (recentFlash.value === label) {
-      recentFlash.value = null
-    }
-  }, 1800)
-}
-
-function candKey(c: ScrapeCandidate): string {
-  return `${c.provider_id}::${c.external_id}`
-}
-
-const configuredProviders = computed(() => providers.value.filter((p) => p.configured))
-
-const visibleCandidates = computed(() => {
-  if (activeSourceFilter.value === 'all') return candidates.value
-  return candidates.value.filter((c) => c.provider_id === activeSourceFilter.value)
-})
-
-const sourceCounts = computed(() => {
-  const m = new Map<string, { id: string; name: string; count: number }>()
-  for (const c of candidates.value) {
-    const existing = m.get(c.provider_id)
-    if (existing) {
-      existing.count += 1
-    } else {
-      m.set(c.provider_id, { id: c.provider_id, name: c.provider_name, count: 1 })
-    }
-  }
-  return Array.from(m.values())
-})
 
 async function loadProvidersForTarget(
   target: ScrapeTargetKind,
@@ -405,11 +324,8 @@ function toggleProvider(p: ProviderStatusDto): void {
 
 function toggleProviderIgnored(providerId: string): void {
   const next = new Set(ignoredProviderIds.value)
-  if (next.has(providerId)) {
-    next.delete(providerId)
-  } else {
-    next.add(providerId)
-  }
+  if (next.has(providerId)) next.delete(providerId)
+  else next.add(providerId)
   ignoredProviderIds.value = next
 }
 
@@ -425,12 +341,11 @@ async function moveActiveProviderOrder(idx: number, delta: -1 | 1): Promise<void
   list.splice(targetIdx, 0, moved!)
   enabledProviderIds.value = list
 
-  const reorderedProviders = [...providers.value].sort((a, b) => {
+  providers.value = [...providers.value].sort((a, b) => {
     const pa = list.indexOf(a.id)
     const pb = list.indexOf(b.id)
     return (pa === -1 ? 999 : pa) - (pb === -1 ? 999 : pb)
   })
-  providers.value = reorderedProviders
 
   const dom = props.detail?.entry.media_kind
   if (dom && props.settings) {
@@ -458,14 +373,8 @@ async function useCandidateForMerge(c: ScrapeCandidate): Promise<void> {
   const entryKey = currentEntryKey()
   const full = (await resolveCandidateDetail(c)) ?? buildLightMetadata(c)
   if (currentEntryKey() !== entryKey) return
-  selectedByProvider.value = {
-    ...selectedByProvider.value,
-    [c.provider_id]: c,
-  }
-  detailsByProvider.value = {
-    ...detailsByProvider.value,
-    [c.provider_id]: full,
-  }
+  selectedByProvider.value = { ...selectedByProvider.value, [c.provider_id]: c }
+  detailsByProvider.value = { ...detailsByProvider.value, [c.provider_id]: full }
   if (ignoredProviderIds.value.has(c.provider_id)) {
     const nextIgnored = new Set(ignoredProviderIds.value)
     nextIgnored.delete(c.provider_id)
@@ -473,6 +382,13 @@ async function useCandidateForMerge(c: ScrapeCandidate): Promise<void> {
   }
   selectMergedPreview()
   flashFeedback(`已将「${c.title}」设为 ${c.provider_name} 聚合代表`)
+}
+
+async function handleDirectApplyCandidate(c: ScrapeCandidate): Promise<void> {
+  const entryKey = currentEntryKey()
+  const meta = await resolveCandidateDetail(c)
+  if (!meta || currentEntryKey() !== entryKey) return
+  emit('directApply', meta, fillMode.value)
 }
 
 async function runSearch(): Promise<void> {
@@ -548,135 +464,54 @@ async function runSearch(): Promise<void> {
     if (reqSeq !== searchRequestSeq) return
     searchError.value = err instanceof Error ? err.message : String(err)
   } finally {
-    if (reqSeq === searchRequestSeq) {
-      searching.value = false
-    }
+    if (reqSeq === searchRequestSeq) searching.value = false
   }
 }
 
-const CN_NOVEL_PROVIDER_IDS = new Set([
-  'qidian',
-  'fanqie',
-  'qimao',
-  'zongheng',
-  'jjwxc',
-  'sfacg',
-  'ciweimao',
-  'faloo',
-])
-const MUSIC_PROVIDER_IDS = new Set([
-  'qq',
-  'qq_music',
-  'netease',
-  'kugou',
-  'kuwo',
-  'taihe',
-  'qishui',
-  'musicbrainz',
-  'itunes',
-  'lrclib',
-])
+watch(
+  () => props.selectedPreviewKey,
+  (val) => {
+    if (val === null) selectedKey.value = null
+  },
+)
 
-function buildCandidateFallbackMeta(c: ScrapeCandidate): ScrapedMetadata {
-  const creators: string[] = []
-  const genres: string[] = []
-  let seriesOrAlbum: string | null = null
-  let publisherOrStudio: string | null = null
-  let language: string | null = null
-
-  const sub = (c.subtitle ?? '').trim()
-  if (sub) {
-    const parts = sub
-      .split(' · ')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    if (CN_NOVEL_PROVIDER_IDS.has(c.provider_id)) {
-      if (parts[0]) creators.push(parts[0])
-      if (parts[1]) genres.push(parts[1])
-    } else if (MUSIC_PROVIDER_IDS.has(c.provider_id)) {
-      if (parts[0]) {
-        for (const a of parts[0]
-          .split(/[/、]/)
-          .map((s) => s.trim())
-          .filter(Boolean)) {
-          if (!creators.includes(a)) creators.push(a)
-        }
-      }
-      if (parts[1]) seriesOrAlbum = parts[1]
-    } else if (c.target === 'book' || c.target === 'comic') {
-      if (parts[0]) {
-        for (const a of parts[0]
-          .split(' / ')
-          .map((s) => s.trim())
-          .filter(Boolean)) {
-          if (!creators.includes(a)) creators.push(a)
-        }
-      }
-      if (parts[1]) publisherOrStudio = parts[1]
-    }
+watch(fillMode, () => {
+  if (!selectedKey.value) return
+  if (selectedKey.value === '__merged__' && mergedMeta.value) {
+    selectMergedPreview()
+    return
   }
-
-  if (CN_NOVEL_PROVIDER_IDS.has(c.provider_id)) {
-    if (!publisherOrStudio && c.provider_name.trim()) {
-      publisherOrStudio = c.provider_name.trim()
-    }
-    language = 'zh-CN'
+  const hit = candidates.value.find((c) => candKey(c) === selectedKey.value)
+  if (hit) {
+    const key = candKey(hit)
+    emit('selectPreview', {
+      key,
+      isMerged: false,
+      sourceLabel: hit.provider_name,
+      meta: getCachedDetail(key) ?? buildLightMetadata(hit),
+      loading: loadingDetailKey.value === key,
+      fieldSources: null,
+      fillMode: fillMode.value,
+    })
   }
+})
 
-  return {
-    provider_id: c.provider_id,
-    external_id: c.external_id,
-    target: c.target,
-    title: c.title || null,
-    original_title: null,
-    series_or_album: seriesOrAlbum,
-    creators,
-    illustrators_or_directors: [],
-    cast: [],
-    publisher_or_studio: publisherOrStudio,
-    year: c.year ?? null,
-    published_date: null,
-    language,
-    isbn: null,
-    rating: null,
-    track_or_episode_number: null,
-    disc_or_season_number: null,
-    summary: c.summary ?? null,
-    genres,
-    tags: [],
-    cover_url: c.cover_url ?? null,
-    backdrop_url: null,
-    synced_lyrics: c.synced_lyrics ?? null,
-    plain_lyrics: c.plain_lyrics ?? null,
+watch(mergedResult, (next) => {
+  if (selectedKey.value !== '__merged__') return
+  if (next?.metadata) {
+    emit('selectPreview', {
+      key: '__merged__',
+      isMerged: true,
+      sourceLabel: '多源瀑布聚合结果',
+      meta: next.metadata,
+      loading: false,
+      fieldSources: next.field_sources,
+      fillMode: fillMode.value,
+    })
+  } else {
+    emit('selectPreview', null)
   }
-}
-
-async function resolveCandidateDetail(c: ScrapeCandidate): Promise<ScrapedMetadata | null> {
-  const key = candKey(c)
-  const cached = getCachedDetail(key)
-  if (cached) return cached
-  loadingDetailKey.value = key
-  try {
-    const meta = await toolApi.getScraperDetail(c.provider_id, c.external_id, c.target)
-    setCachedDetail(key, meta)
-    return meta
-  } catch {
-    const fallback = buildCandidateFallbackMeta(c)
-    setCachedDetail(key, fallback)
-    return fallback
-  } finally {
-    if (loadingDetailKey.value === key) {
-      loadingDetailKey.value = null
-    }
-  }
-}
-
-async function handleDirectApplyCandidate(c: ScrapeCandidate): Promise<void> {
-  const entryKey = currentEntryKey()
-  const meta = await resolveCandidateDetail(c)
-  if (!meta || currentEntryKey() !== entryKey) return
-  emit('directApply', meta, fillMode.value)
-}
+})
 
 watch(
   () => (props.detail ? `${props.detail.entry.root_id}::${props.detail.entry.rel_path}` : ''),
@@ -717,9 +552,7 @@ watch(
     try {
       await loadProvidersForDetail(d)
     } finally {
-      if (currentEntryKey() === entryKey) {
-        hydratingFromDetail = false
-      }
+      if (currentEntryKey() === entryKey) hydratingFromDetail = false
     }
     if (currentEntryKey() === entryKey && pendingAutoSearch) {
       pendingAutoSearch = false
@@ -773,230 +606,44 @@ watch(
   },
 )
 
-function countPopulatedFields(meta: ScrapedMetadata): number {
-  let count = 0
-  if (meta.title) count += 1
-  if (meta.original_title && meta.original_title !== meta.title) count += 1
-  if (meta.creators.length > 0) count += 1
-  if (meta.illustrators_or_directors.length > 0) count += 1
-  if (meta.series_or_album) count += 1
-  if (meta.publisher_or_studio) count += 1
-  if (meta.published_date || meta.year) count += 1
-  if (meta.isbn) count += 1
-  if (meta.rating) count += 1
-  if (meta.language) count += 1
-  if (meta.disc_or_season_number) count += 1
-  if (meta.track_or_episode_number) count += 1
-  if (meta.cast.length > 0) count += 1
-  if (meta.genres.length > 0) count += 1
-  if (meta.tags.length > 0) count += 1
-  if (meta.summary) count += 1
-  if (meta.synced_lyrics || meta.plain_lyrics) count += 1
-  return count
-}
-
 defineExpose({
   runSearch,
 })
 </script>
 
 <template>
-  <aside
-    class="flex h-full min-h-0 flex-col bg-[var(--md-sys-color-surface-container-low)]/60"
-  >
-    <!-- Header & Search Bar -->
-    <div class="shrink-0 space-y-2.5 border-b border-[var(--md-sys-color-outline-variant)]/50 p-3">
-      <div class="flex items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-          <LuSparkles class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-          <span>在线候选源</span>
-          <span
-            v-if="candidates.length > 0"
-            class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            {{ candidates.length }}
-          </span>
-        </div>
-
-        <!-- Fill Mode Segmented Switcher -->
-        <MdSegmentedButton
-          v-model="fillMode"
-          :options="fillModeOptions"
-          size="sm"
-        />
-      </div>
-
-      <!-- Target Sub-Kind Switcher (Music / Video / Comic) -->
-      <MdSegmentedButton
-        v-if="detail && targetTabs.length > 1"
-        v-model="targetKind"
-        :options="targetTabs"
-        size="sm"
-      />
-
-      <!-- Search Inputs -->
-      <div class="flex gap-1.5">
-        <input
-          v-model="keyword"
-          type="text"
-          :disabled="!detail"
-          placeholder="标题 / 关键词 / ID…"
-          class="md-input h-8 min-w-0 flex-1 text-xs disabled:opacity-50"
-          @keydown.enter.prevent="runSearch"
-        />
-        <button
-          type="button"
-          :disabled="!canSearch || searching"
-          class="md-btn md-btn-sm md-btn-filled md-state shrink-0"
-          @click="runSearch"
-        >
-          <LuLoader2 v-if="searching" class="h-3.5 w-3.5 animate-spin" />
-          <LuSearch v-else class="h-3.5 w-3.5" />
-          <span>搜索</span>
-        </button>
-      </div>
-
-      <!-- Domain-Specific Secondary Query Inputs -->
-      <div v-if="detail?.entry.media_kind === 'book'" class="grid grid-cols-2 gap-1.5">
-        <input
-          v-model="artistOrAuthor"
-          type="text"
-          placeholder="作者 (可选)"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-        <input
-          v-model="isbn"
-          type="text"
-          placeholder="ISBN (可选)"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-      </div>
-
-      <div v-else-if="detail?.entry.media_kind === 'music'" class="grid grid-cols-5 gap-1.5">
-        <input
-          v-model="artistOrAuthor"
-          type="text"
-          placeholder="歌手 (可选)"
-          class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-        <input
-          v-model="albumOrSeries"
-          type="text"
-          placeholder="专辑 (可选)"
-          class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-        <input
-          v-model="yearInput"
-          type="text"
-          placeholder="年份"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-      </div>
-
-      <div
-        v-else-if="detail?.entry.media_kind === 'video' && targetKind === 'tv_show'"
-        class="grid grid-cols-3 gap-1.5"
-      >
-        <input
-          v-model="seasonInput"
-          type="text"
-          placeholder="季 (S)"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-        <input
-          v-model="episodeInput"
-          type="text"
-          placeholder="集 (E)"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-        <input
-          v-model="yearInput"
-          type="text"
-          placeholder="年份"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-      </div>
-
-      <div v-else-if="detail?.entry.media_kind === 'video'" class="grid grid-cols-2 gap-1.5">
-        <input
-          v-model="yearInput"
-          type="text"
-          placeholder="上映年份 (可选)"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px]"
-          @keydown.enter.prevent="runSearch"
-        />
-      </div>
-
-      <div v-else class="grid grid-cols-3 gap-1.5">
-        <input
-          v-model="artistOrAuthor"
-          type="text"
-          :disabled="!detail"
-          placeholder="作者/画师（可选）"
-          class="md-input col-span-2 h-7 !rounded-lg !px-2 text-[11px] disabled:opacity-50"
-          @keydown.enter.prevent="runSearch"
-        />
-        <input
-          v-model="yearInput"
-          type="text"
-          :disabled="!detail"
-          placeholder="年份"
-          class="md-input h-7 !rounded-lg !px-2 text-[11px] disabled:opacity-50"
-          @keydown.enter.prevent="runSearch"
-        />
-      </div>
-
-      <!-- Provider Toggle Chips -->
-      <div v-if="providers.length > 0" class="flex flex-wrap gap-1">
-        <button
-          v-for="p in providers"
-          :key="p.id"
-          type="button"
-          :title="p.description"
-          class="md-state inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition"
-          :class="
-            !p.configured
-              ? 'border-dashed border-[var(--md-sys-color-warning)]/55 bg-[var(--md-sys-color-warning-container)]/50 text-[var(--md-sys-color-on-warning-container)]'
-              : enabledProviderIds.includes(p.id)
-                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-                : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)]'
-          "
-          @click="toggleProvider(p)"
-        >
-          <span
-            v-if="p.configured && enabledProviderIds.includes(p.id)"
-            class="font-mono text-[9px] font-bold opacity-80"
-          >
-            #{{ enabledProviderIds.indexOf(p.id) + 1 }}
-          </span>
-          <LuKey v-else-if="!p.configured && p.requires_api_key" class="h-2.5 w-2.5" />
-          <span>{{ p.name }}</span>
-        </button>
-      </div>
-
-      <!-- Flash Feedback -->
-      <div
-        v-if="recentFlash"
-        class="flex items-center gap-1.5 rounded-xl bg-[var(--md-sys-color-success-container)] px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-success-container)]"
-      >
-        <LuCheck class="h-3 w-3 shrink-0" />
-        <span class="truncate">{{ recentFlash }}</span>
-      </div>
-      <div
-        v-if="searchError"
-        class="rounded-xl bg-[var(--md-sys-color-error-container)] px-2.5 py-1.5 text-[11px] text-[var(--md-sys-color-on-error-container)]"
-      >
-        {{ searchError }}
-      </div>
-    </div>
+  <aside class="flex h-full min-h-0 flex-col bg-[var(--md-sys-color-surface-container-low)]/60">
+    <WorkbenchSearchHeader
+      :detail="detail"
+      :candidates-count="candidates.length"
+      :fill-mode="fillMode"
+      :target-kind="targetKind"
+      :target-tabs="targetTabs"
+      :keyword="keyword"
+      :artist-or-author="artistOrAuthor"
+      :album-or-series="albumOrSeries"
+      :isbn="isbn"
+      :year-input="yearInput"
+      :season-input="seasonInput"
+      :episode-input="episodeInput"
+      :can-search="canSearch"
+      :searching="searching"
+      :providers="providers"
+      :enabled-provider-ids="enabledProviderIds"
+      :recent-flash="recentFlash"
+      :search-error="searchError"
+      @update:fill-mode="fillMode = $event"
+      @update:target-kind="targetKind = $event"
+      @update:keyword="keyword = $event"
+      @update:artist-or-author="artistOrAuthor = $event"
+      @update:album-or-series="albumOrSeries = $event"
+      @update:isbn="isbn = $event"
+      @update:year-input="yearInput = $event"
+      @update:season-input="seasonInput = $event"
+      @update:episode-input="episodeInput = $event"
+      @search="runSearch"
+      @toggle-provider="toggleProvider"
+    />
 
     <!-- Candidate Body -->
     <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto p-3">
@@ -1037,219 +684,26 @@ defineExpose({
       </div>
 
       <template v-else>
-        <!-- All-Muted Fallback Banner -->
-        <div
-          v-if="!mergedMeta && ignoredProviderIds.size > 0"
-          class="flex items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-warning-container)] px-3 py-2 text-[11px] text-[var(--md-sys-color-on-warning-container)]"
-        >
-          <span>已临时屏蔽全部命中源（{{ ignoredProviderIds.size }} 个）</span>
-          <button
-            type="button"
-            class="md-state rounded-full border border-current/35 px-2 py-0.5 text-[10px] font-semibold"
-            @click="clearIgnoredProviders"
-          >
-            恢复全部源
-          </button>
-        </div>
-
-        <!-- Multi-source Merged Quick Card -->
-        <div
-          v-if="mergedMeta"
-          class="cursor-pointer rounded-2xl border p-2.5 transition"
-          :class="
-            selectedKey === '__merged__'
-              ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/50 ring-1 ring-[var(--md-sys-color-primary)]/45'
-              : 'border-[var(--md-sys-color-primary)]/40 bg-[var(--md-sys-color-primary-container)]/25 hover:border-[var(--md-sys-color-primary)]/75'
-          "
-          @click="selectMergedPreview"
-        >
-          <div class="flex items-center justify-between gap-2">
-            <div class="flex items-center gap-1.5 text-[11px] font-bold text-[var(--md-sys-color-primary)]">
-              <LuLayers class="h-3.5 w-3.5" />
-              <span>多源瀑布聚合结果</span>
-              <span
-                class="rounded-full bg-[var(--md-sys-color-surface)]/85 px-1.5 py-0.5 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ countPopulatedFields(mergedMeta) }} 项字段
-              </span>
-            </div>
-            <span
-              v-if="selectedKey === '__merged__'"
-              class="rounded-full bg-[var(--md-sys-color-primary)] px-1.5 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-primary)]"
-            >
-              预览中
-            </span>
-          </div>
-
-          <div class="mt-2 flex items-start gap-2.5">
-            <!-- Merged Cover Thumbnail -->
-            <button
-              type="button"
-              class="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)]"
-              title="在右侧预览多源聚合结果"
-              @click.stop="selectMergedPreview()"
-            >
-              <img
-                v-if="isCoverUsable(mergedMeta.cover_url)"
-                :src="resolveScraperCoverUrl(mergedMeta.cover_url)"
-                alt=""
-                loading="lazy"
-                referrerpolicy="no-referrer"
-                class="h-full w-full object-cover"
-                @error="markCoverBroken(mergedMeta.cover_url)"
-              />
-              <div
-                v-else
-                class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--md-sys-color-on-surface-variant)]/55"
-              >
-                <LuImage class="h-3.5 w-3.5" />
-                <span class="text-[8px]">无图</span>
-              </div>
-            </button>
-
-            <div class="min-w-0 flex-1">
-              <div class="line-clamp-2 text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-                {{ mergedMeta.title || '—' }}
-              </div>
-              <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                <span v-if="mergedMeta.creators.length > 0" class="truncate">
-                  {{ mergedMeta.creators.join(' / ') }}
-                </span>
-                <span v-if="mergedMeta.publisher_or_studio" class="truncate opacity-80">
-                  {{ mergedMeta.publisher_or_studio }}
-                </span>
-                <span v-if="mergedMeta.published_date || mergedMeta.year" class="font-mono">
-                  {{ mergedMeta.published_date || mergedMeta.year }}
-                </span>
-              </div>
-
-              <!-- Action Bar -->
-              <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                <button
-                  type="button"
-                  class="md-state inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[10px] font-medium transition"
-                  :class="
-                    waterfallExpanded || ignoredProviderIds.size > 0
-                      ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-                      : 'border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-                  "
-                  title="调整各源优先级、临时屏蔽干扰源或切换单源聚合代表"
-                  @click.stop="waterfallExpanded = !waterfallExpanded; selectMergedPreview()"
-                >
-                  <LuSlidersHorizontal class="h-3 w-3" />
-                  <span>
-                    调源{{ ignoredProviderIds.size > 0 ? ` (-${ignoredProviderIds.size})` : '' }}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-primary)]/55 bg-[var(--md-sys-color-surface)] px-2.5 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-primary)] transition hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
-                  title="直接将聚合结果写入文件并保存"
-                  @click.stop="emit('directApply', mergedMeta, fillMode)"
-                >
-                  <LuZap class="h-3 w-3" />
-                  <span>直写</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Interactive Multi-Source Waterfall Priority & Mute Drawer -->
-          <div
-            v-if="waterfallExpanded"
-            class="mt-2.5 space-y-1.5 border-t border-[var(--md-sys-color-primary)]/25 pt-2"
-            @click.stop
-          >
-            <div class="flex items-center justify-between text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-              <span>按顺序互补填充，可上下调权、屏蔽干扰源或换选候选：</span>
-              <button
-                v-if="ignoredProviderIds.size > 0"
-                type="button"
-                class="shrink-0 font-semibold text-[var(--md-sys-color-primary)] hover:underline"
-                @click="clearIgnoredProviders"
-              >
-                全部恢复
-              </button>
-            </div>
-            <div class="space-y-1">
-              <div
-                v-for="(brief, idx) in orderedActiveBriefs"
-                :key="brief.id"
-                class="flex items-center justify-between gap-1.5 rounded-xl border px-2 py-1.5 text-[10px] transition"
-                :class="
-                  ignoredProviderIds.has(brief.id)
-                    ? 'border-dashed border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] opacity-55'
-                    : 'border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface)]'
-                "
-              >
-                <div class="min-w-0 flex-1">
-                  <div class="flex items-center gap-1">
-                    <span class="font-mono text-[9px] font-bold text-[var(--md-sys-color-primary)]">
-                      #{{ idx + 1 }}
-                    </span>
-                    <span
-                      class="font-semibold text-[var(--md-sys-color-on-surface)]"
-                      :class="ignoredProviderIds.has(brief.id) ? 'line-through' : ''"
-                    >
-                      {{ brief.name }}
-                    </span>
-                  </div>
-                  <div class="truncate text-[9px] text-[var(--md-sys-color-on-surface-variant)]">
-                    {{
-                      selectedByProvider[brief.id]?.title ||
-                      detailsByProvider[brief.id]?.title ||
-                      '未命中'
-                    }}
-                  </div>
-                </div>
-
-                <div class="flex shrink-0 items-center gap-0.5">
-                  <button
-                    v-if="(providerCandidateCounts[brief.id] ?? 0) > 1"
-                    type="button"
-                    class="rounded-full border border-[var(--md-sys-color-outline-variant)] px-1.5 py-0.5 text-[9px] font-medium text-[var(--md-sys-color-on-surface-variant)] hover:border-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-primary)]"
-                    title="筛选此源下的所有候选以便换选聚合条目"
-                    @click="activeSourceFilter = activeSourceFilter === brief.id ? 'all' : brief.id"
-                  >
-                    换选({{ providerCandidateCounts[brief.id] }})
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-full p-1 transition"
-                    :class="
-                      ignoredProviderIds.has(brief.id)
-                        ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-                        : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]'
-                    "
-                    :title="ignoredProviderIds.has(brief.id) ? '恢复此源参与聚合' : '临时屏蔽此源'"
-                    @click="toggleProviderIgnored(brief.id)"
-                  >
-                    <LuBan class="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="idx === 0"
-                    class="rounded-full p-1 text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)] disabled:opacity-30"
-                    title="提升优先级"
-                    @click="moveActiveProviderOrder(idx, -1)"
-                  >
-                    <LuArrowUp class="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="idx === orderedActiveBriefs.length - 1"
-                    class="rounded-full p-1 text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)] disabled:opacity-30"
-                    title="降低优先级"
-                    @click="moveActiveProviderOrder(idx, 1)"
-                  >
-                    <LuArrowDown class="h-3 w-3" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <WorkbenchMergedCard
+          :merged-meta="mergedMeta"
+          :selected="selectedKey === '__merged__'"
+          :waterfall-expanded="waterfallExpanded"
+          :ordered-active-briefs="orderedActiveBriefs"
+          :ignored-provider-ids="ignoredProviderIds"
+          :selected-by-provider="selectedByProvider"
+          :details-by-provider="detailsByProvider"
+          :provider-candidate-counts="providerCandidateCounts"
+          :active-source-filter="activeSourceFilter"
+          :broken-cover-urls="brokenCoverUrls"
+          @select-merged="selectMergedPreview"
+          @toggle-waterfall="waterfallExpanded = !waterfallExpanded; selectMergedPreview()"
+          @direct-apply="emit('directApply', $event, fillMode)"
+          @clear-ignored="clearIgnoredProviders"
+          @toggle-ignored="toggleProviderIgnored"
+          @move-order="moveActiveProviderOrder"
+          @filter-source="activeSourceFilter = $event"
+          @mark-cover-broken="markCoverBroken"
+        />
 
         <!-- Source Filter Bar -->
         <div v-if="sourceCounts.length > 1" class="flex flex-wrap gap-1">
@@ -1281,108 +735,20 @@ defineExpose({
           </button>
         </div>
 
-        <!-- Candidate Cards -->
-        <div
+        <WorkbenchCandidateCard
           v-for="c in visibleCandidates"
           :key="candKey(c)"
-          class="cursor-pointer rounded-2xl border p-2.5 transition"
-          :class="
-            selectedKey === candKey(c)
-              ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/35 ring-1 ring-[var(--md-sys-color-primary)]/40'
-              : 'border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] hover:border-[var(--md-sys-color-primary)]/50'
-          "
-          @click="selectCandidatePreview(c)"
-        >
-          <div class="flex items-start gap-2.5">
-            <!-- Cover Thumbnail -->
-            <button
-              type="button"
-              class="relative h-14 w-10 shrink-0 overflow-hidden rounded-lg border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container-high)]"
-              title="点击在右侧预览此候选详情"
-              @click.stop="selectCandidatePreview(c)"
-            >
-              <img
-                v-if="isCoverUsable(c.cover_url)"
-                :src="resolveScraperCoverUrl(c.cover_url)"
-                alt=""
-                loading="lazy"
-                referrerpolicy="no-referrer"
-                class="h-full w-full object-cover"
-                @error="markCoverBroken(c.cover_url)"
-              />
-              <div
-                v-else
-                class="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[var(--md-sys-color-on-surface-variant)]/50"
-              >
-                <LuImage class="h-3.5 w-3.5" />
-                <span class="text-[8px]">无图</span>
-              </div>
-            </button>
-
-            <!-- Candidate Info -->
-            <div class="min-w-0 flex-1">
-              <div class="flex items-start justify-between gap-1.5">
-                <button
-                  type="button"
-                  class="line-clamp-2 text-left text-xs font-bold text-[var(--md-sys-color-on-surface)] transition hover:text-[var(--md-sys-color-primary)]"
-                  title="点击在右侧预览此条目详情"
-                  @click.stop="selectCandidatePreview(c)"
-                >
-                  {{ c.title }}
-                </button>
-                <span
-                  class="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-semibold"
-                  :class="
-                    selectedKey === candKey(c)
-                      ? 'bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)]'
-                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-                  "
-                >
-                  {{ c.provider_name }}
-                </span>
-              </div>
-
-              <div class="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                <span v-if="c.subtitle" class="truncate">{{ c.subtitle }}</span>
-                <span v-if="c.year" class="font-mono">{{ c.year }}</span>
-              </div>
-
-              <!-- Quick Action Buttons -->
-              <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                <button
-                  v-if="!isProviderRepresentative(c)"
-                  type="button"
-                  :disabled="loadingDetailKey === candKey(c)"
-                  class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-primary)]/45 bg-[var(--md-sys-color-surface)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-primary)] transition hover:bg-[var(--md-sys-color-primary-container)] disabled:opacity-50"
-                  title="将此候选设为该数据源的聚合代表，并实时重算多源瀑布聚合结果"
-                  @click.stop="useCandidateForMerge(c)"
-                >
-                  <LuLayers class="h-3 w-3" />
-                  <span>用于聚合</span>
-                </button>
-                <span
-                  v-else-if="(providerCandidateCounts[c.provider_id] ?? 0) > 1"
-                  class="inline-flex items-center gap-0.5 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[9px] font-semibold text-[var(--md-sys-color-on-primary-container)]"
-                  title="当前已作为该数据源的聚合代表"
-                >
-                  <LuCheck class="h-2.5 w-2.5" />
-                  <span>聚合中</span>
-                </span>
-
-                <button
-                  type="button"
-                  :disabled="loadingDetailKey === candKey(c)"
-                  class="md-state inline-flex items-center gap-1 rounded-full border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-low)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)] transition hover:border-[var(--md-sys-color-success)] hover:text-[var(--md-sys-color-success)] disabled:opacity-50"
-                  title="直接写入磁盘（含封面），无需再点保存"
-                  @click.stop="handleDirectApplyCandidate(c)"
-                >
-                  <LuZap class="h-3 w-3" />
-                  <span>直写</span>
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+          :candidate="c"
+          :selected="selectedKey === candKey(c)"
+          :loading-detail="loadingDetailKey === candKey(c)"
+          :is-representative="isProviderRepresentative(c)"
+          :provider-candidate-count="providerCandidateCounts[c.provider_id] ?? 0"
+          :cover-usable="isCoverUsable(c.cover_url)"
+          @select-preview="selectCandidatePreview"
+          @use-for-merge="useCandidateForMerge"
+          @direct-apply="handleDirectApplyCandidate"
+          @mark-cover-broken="markCoverBroken"
+        />
       </template>
     </div>
   </aside>
