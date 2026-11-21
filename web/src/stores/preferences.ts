@@ -1,11 +1,12 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api, getStoredToken } from '@/api/client'
+import { api } from '@/api/client'
 import {
   DEFAULT_WORKSPACE_LAYOUT,
   sanitizeDomainLayout,
   sanitizeWorkspaceLayout,
 } from '@/config/workspaceLayout'
+import { useAuthStore } from '@/stores/auth'
 import { DARK_PALETTE_PRESETS, LIGHT_PALETTE_PRESETS } from '@/theme/catppuccin'
 import type {
   ComicReaderPreferences,
@@ -72,7 +73,9 @@ export function readStoredPreferencesRaw(): Partial<UserPreferences> {
   try {
     const raw = localStorage.getItem(PREFS_STORAGE_KEY)
     if (!raw) return {}
-    return JSON.parse(raw) as Partial<UserPreferences>
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return parsed as Partial<UserPreferences>
   } catch {
     return {}
   }
@@ -112,6 +115,8 @@ export const usePreferencesStore = defineStore('preferences', () => {
 
   let visualProvider: (() => VisualPreferencesSnapshot) | null = null
   let syncTimer: ReturnType<typeof setTimeout> | null = null
+  let sessionEpoch = 0
+  let dirtyPendingSync = false
 
   function registerVisualProvider(fn: () => VisualPreferencesSnapshot): void {
     visualProvider = fn
@@ -130,15 +135,55 @@ export const usePreferencesStore = defineStore('preferences', () => {
   }
 
   function persistLocal(): void {
-    localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(toUserPreferences()))
+    try {
+      localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(toUserPreferences()))
+    } catch {
+      // ignore storage quota/privacy errors
+    }
+  }
+
+  function clearPendingSync(): void {
+    if (syncTimer) {
+      clearTimeout(syncTimer)
+      syncTimer = null
+    }
+    dirtyPendingSync = false
   }
 
   function scheduleServerSync(): void {
-    if (!getStoredToken()) return
+    if (!useAuthStore().isAuthenticated) return
     if (syncTimer) clearTimeout(syncTimer)
+    dirtyPendingSync = true
+    const epoch = sessionEpoch
     syncTimer = setTimeout(() => {
+      syncTimer = null
+      if (epoch !== sessionEpoch || !useAuthStore().isAuthenticated) {
+        dirtyPendingSync = false
+        return
+      }
+      dirtyPendingSync = false
       void api.updatePreferences(toUserPreferences()).catch(() => {})
     }, 450)
+  }
+
+  function flushSyncOnPageHide(): void {
+    if (!dirtyPendingSync || !useAuthStore().isAuthenticated) return
+    clearPendingSync()
+    try {
+      void fetch('/api/v1/auth/preferences', {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(toUserPreferences()),
+        keepalive: true,
+      })
+    } catch {
+      // ignore unload errors
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('pagehide', flushSyncOnPageHide)
   }
 
   function persistAndSync(): void {
@@ -147,11 +192,22 @@ export const usePreferencesStore = defineStore('preferences', () => {
   }
 
   function hydrateDomainPreferences(prefs: UserPreferences): void {
+    clearPendingSync()
     if (prefs.book) reader.value = { ...DEFAULT_BOOK_PREFS, ...prefs.book }
     if (prefs.comic) comic.value = { ...DEFAULT_COMIC_PREFS, ...prefs.comic }
     if (prefs.music) playback.value = { ...DEFAULT_MUSIC_PREFS, ...prefs.music }
     if (prefs.video) video.value = { ...DEFAULT_VIDEO_PREFS, ...prefs.video }
     workspaceLayout.value = sanitizeWorkspaceLayout(prefs.workspace_layout)
+  }
+
+  function resetState(): void {
+    sessionEpoch += 1
+    clearPendingSync()
+    reader.value = { ...DEFAULT_BOOK_PREFS }
+    comic.value = { ...DEFAULT_COMIC_PREFS }
+    playback.value = { ...DEFAULT_MUSIC_PREFS }
+    video.value = { ...DEFAULT_VIDEO_PREFS }
+    workspaceLayout.value = sanitizeWorkspaceLayout(DEFAULT_WORKSPACE_LAYOUT)
   }
 
   function updateReaderPreferences(patch: Partial<ReaderPreferences>): void {
@@ -214,5 +270,6 @@ export const usePreferencesStore = defineStore('preferences', () => {
     updateVideoPreferences,
     updateDomainLayout,
     resetDomainLayout,
+    resetState,
   }
 })

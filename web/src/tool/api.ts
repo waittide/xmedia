@@ -73,18 +73,24 @@ type NdjsonStreamFrame<T> =
   | { type: 'done'; data: T }
   | { type: 'error'; message: string }
 
-const TOKEN_STORAGE_KEY = 'xmedia_tool.token'
+const LEGACY_TOKEN_STORAGE_KEY = 'xmedia_tool.token'
 
-export function getToolToken(): string | null {
-  return localStorage.getItem(TOKEN_STORAGE_KEY)
+function clearLegacyToolToken(): void {
+  try {
+    localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY)
+  } catch {
+    // ignore storage errors
+  }
 }
 
-export function setToolToken(token: string | null): void {
-  if (token) {
-    localStorage.setItem(TOKEN_STORAGE_KEY, token)
-  } else {
-    localStorage.removeItem(TOKEN_STORAGE_KEY)
-  }
+clearLegacyToolToken()
+
+export function getToolToken(): string | null {
+  return null
+}
+
+export function setToolToken(_token: string | null): void {
+  clearLegacyToolToken()
 }
 
 interface ToolRequestError extends Error {
@@ -94,10 +100,6 @@ interface ToolRequestError extends Error {
 
 function buildToolHeaders(init: RequestInit): Headers {
   const headers = new Headers(init.headers)
-  const token = getToolToken()
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
@@ -108,7 +110,7 @@ async function fetchToolResponse(path: string, init: RequestInit = {}): Promise<
   return fetch(`/api/v1/tool${path}`, {
     ...init,
     headers: buildToolHeaders(init),
-    credentials: 'same-origin',
+    credentials: 'include',
   })
 }
 
@@ -235,6 +237,28 @@ async function toolStreamRequest<T>(
   return finalData as T
 }
 
+const SCRAPER_IMAGE_PROXY_DOMAINS = [
+  'doubanio.com',
+  'xinhuashudian.com',
+  'nhentai.net',
+  'hanime1.me',
+  'hembed.com',
+  'hanime1.com',
+] as const
+
+function needsScraperImageProxy(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+    const host = parsed.hostname.toLowerCase()
+    return SCRAPER_IMAGE_PROXY_DOMAINS.some(
+      (domain) => host === domain || host.endsWith(`.${domain}`),
+    )
+  } catch {
+    return false
+  }
+}
+
 export function buildArtworkUrl(
   rootId: string,
   relPath: string,
@@ -251,10 +275,6 @@ export function buildArtworkUrl(
   if (slot) {
     params.set('slot', slot)
   }
-  const tok = getToolToken()
-  if (tok) {
-    params.set('token', tok)
-  }
   return `/api/v1/tool/files/artwork?${params.toString()}`
 }
 
@@ -264,30 +284,13 @@ export function buildEpubAssetUrl(rootId: string, relPath: string, assetPath: st
     path: relPath,
     asset: assetPath,
   })
-  const tok = getToolToken()
-  if (tok) {
-    params.set('token', tok)
-  }
   return `/api/v1/tool/books/epub-asset?${params.toString()}`
 }
 
 export function resolveScraperCoverUrl(rawUrl: string | null | undefined): string {
   if (!rawUrl) return ''
-  if (
-    rawUrl.includes('.doubanio.com/') ||
-    rawUrl.includes('.xinhuashudian.com/') ||
-    rawUrl.includes('://xinhuashudian.com/') ||
-    rawUrl.includes('.nhentai.net/') ||
-    rawUrl.includes('://nhentai.net/') ||
-    rawUrl.includes('hanime1.me/') ||
-    rawUrl.includes('.hembed.com/') ||
-    rawUrl.includes('.hanime1.com/')
-  ) {
+  if (needsScraperImageProxy(rawUrl)) {
     const params = new URLSearchParams({ url: rawUrl })
-    const tok = getToolToken()
-    if (tok) {
-      params.set('token', tok)
-    }
     return `/api/v1/tool/scrapers/image-proxy?${params.toString()}`
   }
   return rawUrl
@@ -303,8 +306,13 @@ export const toolApi = {
       method: 'POST',
       body: JSON.stringify({ password }),
     })
-    setToolToken(res.token)
+    clearLegacyToolToken()
     return res.token
+  },
+
+  async lock(): Promise<void> {
+    clearLegacyToolToken()
+    await toolRequest<{ ok: boolean }>('/auth/lock', { method: 'POST' })
   },
 
   getSettings(): Promise<PublicSettingsDto> {

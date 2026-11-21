@@ -3,6 +3,7 @@ import { defineStore, storeToRefs } from 'pinia'
 import {
   applyResolvedPaletteToDom,
   DARK_PALETTE_PRESETS,
+  DEFAULT_ACCENT_MODE,
   LIGHT_PALETTE_PRESETS,
   resolvePalette,
   type AccentMode,
@@ -49,6 +50,7 @@ export const useThemeStore = defineStore('theme', () => {
   const themeMode = ref<ThemeMode>(initial.theme_mode)
   const lightPreset = ref<string>(initial.light_preset)
   const darkPreset = ref<string>(initial.dark_preset)
+  const darkFlavor = ref(initial.dark_flavor ?? 'mocha')
   const accentMode = ref<AccentMode>(initial.accent_mode)
   const accent = ref<CatppuccinAccent>(initial.accent)
   const customAccent = ref<string>(initial.custom_accent ?? '#3b82f6')
@@ -66,7 +68,7 @@ export const useThemeStore = defineStore('theme', () => {
     theme_mode: themeMode.value,
     light_preset: lightPreset.value,
     dark_preset: darkPreset.value,
-    dark_flavor: 'mocha',
+    dark_flavor: darkFlavor.value,
     accent_mode: accentMode.value,
     accent: accent.value,
     custom_accent: customAccent.value,
@@ -134,12 +136,13 @@ export const useThemeStore = defineStore('theme', () => {
     themeMode.value = prefs.theme_mode
     lightPreset.value = prefs.light_preset || 'material-you-light'
     darkPreset.value = prefs.dark_preset || 'material-you-dark'
+    if (prefs.dark_flavor) darkFlavor.value = prefs.dark_flavor
     accentMode.value =
       prefs.accent_mode === 'preset' ||
       prefs.accent_mode === 'catppuccin' ||
       prefs.accent_mode === 'custom'
         ? prefs.accent_mode
-        : 'catppuccin'
+        : DEFAULT_ACCENT_MODE
     accent.value = prefs.accent
     if (prefs.custom_accent) customAccent.value = prefs.custom_accent
     if (prefs.custom_light) customLight.value = { ...prefs.custom_light }
@@ -218,8 +221,10 @@ export const useThemeStore = defineStore('theme', () => {
   function resetPalettesToDefault(): void {
     lightPreset.value = 'material-you-light'
     darkPreset.value = 'material-you-dark'
-    accentMode.value = 'catppuccin'
+    darkFlavor.value = 'mocha'
+    accentMode.value = DEFAULT_ACCENT_MODE
     accent.value = 'blue'
+    customAccent.value = '#3b82f6'
     customLight.value = { ...DEFAULT_CUSTOM_LIGHT }
     customDark.value = { ...DEFAULT_CUSTOM_DARK }
     applyVisualChange()

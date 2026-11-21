@@ -1,8 +1,15 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { getStoredToken } from '@/api/client'
+import { ApiRequestError, api } from '@/api/client'
 import { invalidateHomeCache } from '@/config/homeCache'
+import { useAuthStore } from '@/stores/auth'
 import type { MediaKind } from '@/types/api'
+
+const VALID_MEDIA_KINDS = new Set<MediaKind>(['book', 'comic', 'music', 'video'])
+
+function isValidMediaKind(kind: unknown): kind is MediaKind {
+  return typeof kind === 'string' && VALID_MEDIA_KINDS.has(kind as MediaKind)
+}
 
 interface SseEventFrame {
   event:
@@ -81,8 +88,14 @@ export const useEventsStore = defineStore('events', () => {
   let eventSource: EventSource | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let reconnectAttempts = 0
+  let consecutiveUnopenedErrors = 0
   let intentionalDisconnect = false
   let waitingForOnline = false
+  let authProbeInFlight = false
+
+  function isAuthenticated(): boolean {
+    return useAuthStore().isAuthenticated
+  }
 
   function isOffline(): boolean {
     return typeof navigator !== 'undefined' && navigator.onLine === false
@@ -110,7 +123,7 @@ export const useEventsStore = defineStore('events', () => {
 
   function handleOnline(): void {
     clearOnlineListener()
-    if (intentionalDisconnect || !getStoredToken()) return
+    if (intentionalDisconnect || !isAuthenticated()) return
     reconnectAttempts = 0
     connect()
   }
@@ -128,7 +141,7 @@ export const useEventsStore = defineStore('events', () => {
   }
 
   function scheduleReconnect(): void {
-    if (intentionalDisconnect || !getStoredToken()) return
+    if (intentionalDisconnect || !isAuthenticated()) return
     clearReconnectTimer()
     if (isOffline()) {
       waitForOnline()
@@ -138,7 +151,7 @@ export const useEventsStore = defineStore('events', () => {
     reconnectAttempts += 1
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null
-      if (intentionalDisconnect || !getStoredToken()) return
+      if (intentionalDisconnect || !isAuthenticated()) return
       if (isOffline()) {
         waitForOnline()
         return
@@ -147,7 +160,30 @@ export const useEventsStore = defineStore('events', () => {
     }, delay)
   }
 
+  async function probeAuthOrReconnect(): Promise<void> {
+    if (authProbeInFlight || intentionalDisconnect || !isAuthenticated()) return
+    authProbeInFlight = true
+    try {
+      await api.me()
+      if (!intentionalDisconnect && isAuthenticated()) {
+        scheduleReconnect()
+      }
+    } catch (err) {
+      if (err instanceof ApiRequestError && (err.status === 401 || err.status === 403)) {
+        disconnect()
+        useAuthStore().clearLocalSession()
+        return
+      }
+      if (!intentionalDisconnect && isAuthenticated()) {
+        scheduleReconnect()
+      }
+    } finally {
+      authProbeInFlight = false
+    }
+  }
+
   function bumpDomain(kind: MediaKind): void {
+    if (!isValidMediaKind(kind)) return
     invalidateHomeCache(kind)
     domainRefreshTick.value[kind] += 1
   }
@@ -172,26 +208,36 @@ export const useEventsStore = defineStore('events', () => {
     intentionalDisconnect = false
     clearReconnectTimer()
     clearOnlineListener()
-    const token = getStoredToken()
-    if (!token || eventSource) return
+    if (!isAuthenticated()) return
+    if (eventSource) {
+      if (eventSource.readyState === EventSource.CLOSED) {
+        closeEventSource()
+      } else {
+        return
+      }
+    }
     if (isOffline()) {
       waitForOnline()
       return
     }
 
-    const es = new EventSource(`/api/v1/events/stream?token=${encodeURIComponent(token)}`)
+    const es = new EventSource('/api/v1/events/stream', { withCredentials: true })
     eventSource = es
+    let openedOnce = false
 
     es.onopen = () => {
       if (eventSource !== es) return
+      openedOnce = true
       connected.value = true
       reconnectAttempts = 0
+      consecutiveUnopenedErrors = 0
     }
 
     es.onmessage = (ev) => {
       if (eventSource !== es) return
       try {
         const msg = JSON.parse(String(ev.data)) as SseEventFrame
+        if (!isValidMediaKind(msg.media_kind)) return
         if (msg.event === 'library_scan_started' && msg.library_id) {
           const prev = scanTasks.value[msg.library_id]
           scanTasks.value[msg.library_id] = {
@@ -257,6 +303,13 @@ export const useEventsStore = defineStore('events', () => {
     es.onerror = () => {
       if (eventSource !== es) return
       closeEventSource()
+      if (!openedOnce) {
+        consecutiveUnopenedErrors += 1
+        if (consecutiveUnopenedErrors >= 2) {
+          void probeAuthOrReconnect()
+          return
+        }
+      }
       scheduleReconnect()
     }
   }
@@ -264,6 +317,7 @@ export const useEventsStore = defineStore('events', () => {
   function disconnect(): void {
     intentionalDisconnect = true
     reconnectAttempts = 0
+    consecutiveUnopenedErrors = 0
     clearReconnectTimer()
     clearOnlineListener()
     closeEventSource()

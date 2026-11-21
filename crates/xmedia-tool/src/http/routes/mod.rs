@@ -36,12 +36,15 @@ use xmedia_core::http::ApiResult;
 
 use crate::application::workbench::WorkbenchProgress;
 use crate::http::ToolHttpState;
-use crate::http::auth::{build_tool_session_cookie, extract_tool_token, require_tool_auth};
+use crate::http::auth::{
+    build_tool_clear_cookie, build_tool_session_cookie, extract_tool_token, require_tool_auth,
+};
 
 pub fn tool_api_router(state: ToolHttpState) -> Router<ToolHttpState> {
     let public_routes = Router::new()
         .route("/status", get(get_tool_status))
-        .route("/auth/unlock", post(unlock_tool));
+        .route("/auth/unlock", post(unlock_tool))
+        .route("/auth/lock", post(lock_tool));
 
     let protected_routes = Router::new()
         .merge(settings::router())
@@ -169,6 +172,13 @@ async fn unlock_tool(
     let mut res = (StatusCode::OK, Json(UnlockResponse { token })).into_response();
     res.headers_mut().insert(SET_COOKIE, cookie);
     Ok(res)
+}
+
+async fn lock_tool() -> Response {
+    let mut res = (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response();
+    res.headers_mut()
+        .insert(SET_COOKIE, build_tool_clear_cookie());
+    res
 }
 
 struct MpscByteStream {

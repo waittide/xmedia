@@ -1,6 +1,5 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { getStoredToken } from '@/api/client'
 import { invalidateHomeCache } from '@/config/homeCache'
 import { i18n } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
@@ -97,6 +96,25 @@ class UploadAbortedError extends Error {
   }
 }
 
+let fallbackTaskSeq = 0
+
+function generateUploadTaskId(): string {
+  const cryptoObj = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') {
+    return cryptoObj.randomUUID()
+  }
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    const bytes = new Uint8Array(16)
+    cryptoObj.getRandomValues(bytes)
+    bytes[6] = (bytes[6]! & 0x0f) | 0x40
+    bytes[8] = (bytes[8]! & 0x3f) | 0x80
+    const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  fallbackTaskSeq += 1
+  return `upload-${Date.now().toString(36)}-${fallbackTaskSeq}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 function sendUploadXhr<T>(
   url: string,
   formData: FormData,
@@ -110,10 +128,6 @@ function sendUploadXhr<T>(
     const xhr = new XMLHttpRequest()
     xhr.open('POST', url)
     xhr.withCredentials = true
-    const token = getStoredToken()
-    if (token) {
-      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-    }
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable && options.onProgress) {
         options.onProgress(ev.loaded, ev.total)
@@ -417,8 +431,15 @@ export const useUploadStore = defineStore('uploads', () => {
 
   let runningCount = 0
   let queueEpoch = 0
-  const pendingJobs: Array<{ taskId: string; epoch: number; execute: () => Promise<void> }> = []
-  const activeXhrs = new Map<string, XMLHttpRequest>()
+  let nextAttemptId = 0
+  const pendingJobs: Array<{
+    taskId: string
+    epoch: number
+    attemptId: number
+    execute: () => Promise<void>
+  }> = []
+  const activeXhrs = new Map<string, { attemptId: number; xhr: XMLHttpRequest }>()
+  const taskAttempts = new Map<string, number>()
   const taskPayloads = new Map<string, StoredUploadPayload>()
 
   const activeCount = computed(
@@ -449,40 +470,70 @@ export const useUploadStore = defineStore('uploads', () => {
     while (runningCount < MAX_CONCURRENT_UPLOADS && pendingJobs.length > 0) {
       const next = pendingJobs.shift()
       if (!next || next.epoch !== queueEpoch) continue
+      if (taskAttempts.get(next.taskId) !== next.attemptId) continue
       const task = tasks.value.find((t) => t.id === next.taskId)
       if (!task || task.status !== 'queued') continue
+      const runEpoch = next.epoch
       runningCount += 1
       void next.execute().finally(() => {
-        runningCount = Math.max(0, runningCount - 1)
-        pumpUploadQueue()
+        if (runEpoch === queueEpoch) {
+          runningCount = Math.max(0, runningCount - 1)
+          pumpUploadQueue()
+        }
       })
     }
   }
 
-  function scheduleExecution(task: UploadTask, execute: (epoch: number) => Promise<void>): void {
+  function scheduleExecution(
+    task: UploadTask,
+    execute: (epoch: number, attemptId: number) => Promise<void>,
+  ): void {
     const epoch = queueEpoch
+    const attemptId = ++nextAttemptId
+    taskAttempts.set(task.id, attemptId)
     pendingJobs.push({
       taskId: task.id,
       epoch,
+      attemptId,
       execute: async () => {
-        if (epoch !== queueEpoch || task.status !== 'queued') return
+        if (
+          epoch !== queueEpoch ||
+          taskAttempts.get(task.id) !== attemptId ||
+          task.status !== 'queued'
+        ) {
+          return
+        }
         task.status = 'uploading'
-        await execute(epoch)
+        await execute(epoch, attemptId)
       },
     })
     pumpUploadQueue()
   }
 
-  async function executePayload(task: UploadTask, payload: StoredUploadPayload, epoch: number): Promise<void> {
+  async function executePayload(
+    task: UploadTask,
+    payload: StoredUploadPayload,
+    epoch: number,
+    attemptId: number,
+  ): Promise<void> {
     const authStore = useAuthStore()
+    const isStale = () => epoch !== queueEpoch || taskAttempts.get(task.id) !== attemptId
     const onProgress = (loaded: number, total: number) => {
-      if (epoch !== queueEpoch || task.status !== 'uploading') return
+      if (isStale() || task.status !== 'uploading') return
       task.uploadedBytes = loaded
       task.totalBytes = total
       task.progress = Math.round((loaded / Math.max(1, total)) * 100)
     }
     const onXhrCreated = (xhr: XMLHttpRequest) => {
-      activeXhrs.set(task.id, xhr)
+      if (isStale()) {
+        try {
+          xhr.abort()
+        } catch {
+          // ignore
+        }
+        return
+      }
+      activeXhrs.set(task.id, { attemptId, xhr })
     }
     const onUnauthorized = () => {
       authStore.clearLocalSession()
@@ -498,6 +549,7 @@ export const useUploadStore = defineStore('uploads', () => {
           fd,
           { onProgress, onXhrCreated, onUnauthorized },
         )
+        if (isStale()) return
         if (!res.uploaded || res.uploaded.length === 0) {
           throw new Error('No book files were imported')
         }
@@ -522,6 +574,7 @@ export const useUploadStore = defineStore('uploads', () => {
           uploaded?: { series_id: string }[]
           series_id?: string
         }>('/api/v1/comic/upload', fd, { onProgress, onXhrCreated, onUnauthorized })
+        if (isStale()) return
         const resolvedSeriesId = res.uploaded?.[0]?.series_id ?? res.series_id
         if (!resolvedSeriesId) {
           throw new Error('No comic archive was imported')
@@ -540,6 +593,7 @@ export const useUploadStore = defineStore('uploads', () => {
           uploaded_tracks?: { id: string }[]
           attached_lyrics_count?: number
         }>('/api/v1/music/tracks/upload', fd, { onProgress, onXhrCreated, onUnauthorized })
+        if (isStale()) return
         const trackCount = res.uploaded_tracks?.length ?? 0
         const lyricCount = res.attached_lyrics_count ?? 0
         if (trackCount === 0 && lyricCount === 0) {
@@ -557,10 +611,11 @@ export const useUploadStore = defineStore('uploads', () => {
         for (const f of payload.files) fd.append('files', f, f.name)
         const res = await sendUploadXhr<{
           uploaded_videos?: { id: string }[]
-          attached_subtitles?: number
+          attached_subtitles_count?: number
         }>('/api/v1/video/upload', fd, { onProgress, onXhrCreated, onUnauthorized })
+        if (isStale()) return
         const videoCount = res.uploaded_videos?.length ?? 0
-        const subCount = res.attached_subtitles ?? 0
+        const subCount = res.attached_subtitles_count ?? 0
         if (videoCount === 0 && subCount === 0) {
           throw new Error('No video files or matching subtitles were imported')
         }
@@ -575,7 +630,7 @@ export const useUploadStore = defineStore('uploads', () => {
         notifyCatalogChanged('video')
       }
     } catch (err) {
-      if (epoch !== queueEpoch) return
+      if (isStale()) return
       if (err instanceof UploadAbortedError || task.status === 'cancelled') {
         task.status = 'cancelled'
         task.error = undefined
@@ -586,7 +641,10 @@ export const useUploadStore = defineStore('uploads', () => {
         task.canRetry = taskPayloads.has(task.id)
       }
     } finally {
-      activeXhrs.delete(task.id)
+      const current = activeXhrs.get(task.id)
+      if (current && current.attemptId === attemptId) {
+        activeXhrs.delete(task.id)
+      }
     }
   }
 
@@ -596,7 +654,7 @@ export const useUploadStore = defineStore('uploads', () => {
     totalBytes: number,
   ): void {
     const task: UploadTask = {
-      id: crypto.randomUUID(),
+      id: generateUploadTaskId(),
       label,
       mediaKind: payload.kind,
       status: 'queued',
@@ -607,7 +665,7 @@ export const useUploadStore = defineStore('uploads', () => {
     }
     taskPayloads.set(task.id, payload)
     tasks.value.unshift(task)
-    scheduleExecution(task, (epoch) => executePayload(task, payload, epoch))
+    scheduleExecution(task, (epoch, attemptId) => executePayload(task, payload, epoch, attemptId))
   }
 
   function enqueueFiles(fileList: FileList | File[], options?: UploadEnqueueOptions): void {
@@ -691,6 +749,7 @@ export const useUploadStore = defineStore('uploads', () => {
     const task = tasks.value.find((t) => t.id === taskId)
     if (!task || (task.status !== 'queued' && task.status !== 'uploading')) return
 
+    taskAttempts.set(taskId, ++nextAttemptId)
     task.status = 'cancelled'
     task.error = undefined
     task.canRetry = taskPayloads.has(taskId)
@@ -701,11 +760,11 @@ export const useUploadStore = defineStore('uploads', () => {
       }
     }
 
-    const xhr = activeXhrs.get(taskId)
-    if (xhr) {
+    const active = activeXhrs.get(taskId)
+    if (active) {
       activeXhrs.delete(taskId)
       try {
-        xhr.abort()
+        active.xhr.abort()
       } catch {
         // ignore
       }
@@ -724,7 +783,14 @@ export const useUploadStore = defineStore('uploads', () => {
     task.error = undefined
     task.targetRoute = undefined
     collapsed.value = false
-    scheduleExecution(task, (epoch) => executePayload(task, payload, epoch))
+    scheduleExecution(task, (epoch, attemptId) => executePayload(task, payload, epoch, attemptId))
+  }
+
+  function removeTask(taskId: string): void {
+    cancelTask(taskId)
+    taskAttempts.delete(taskId)
+    taskPayloads.delete(taskId)
+    tasks.value = tasks.value.filter((t) => t.id !== taskId)
   }
 
   function clearCompleted(): void {
@@ -732,6 +798,7 @@ export const useUploadStore = defineStore('uploads', () => {
     for (const t of tasks.value) {
       if (t.status === 'completed') {
         taskPayloads.delete(t.id)
+        taskAttempts.delete(t.id)
       } else {
         remaining.push(t)
       }
@@ -743,20 +810,23 @@ export const useUploadStore = defineStore('uploads', () => {
     if (activeCount.value === 0) {
       tasks.value = []
       taskPayloads.clear()
+      taskAttempts.clear()
     }
   }
 
   function resetState(): void {
     queueEpoch += 1
+    runningCount = 0
     pendingJobs.length = 0
-    for (const xhr of activeXhrs.values()) {
+    for (const active of activeXhrs.values()) {
       try {
-        xhr.abort()
+        active.xhr.abort()
       } catch {
         // ignore
       }
     }
     activeXhrs.clear()
+    taskAttempts.clear()
     taskPayloads.clear()
     tasks.value = []
     collapsed.value = false
@@ -774,6 +844,7 @@ export const useUploadStore = defineStore('uploads', () => {
     enqueueFiles,
     cancelTask,
     retryTask,
+    removeTask,
     notifyCatalogChanged,
     clearCompleted,
     dismissAll,

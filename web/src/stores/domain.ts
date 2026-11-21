@@ -12,7 +12,12 @@ const DEFAULT_ROUTES: Record<MediaKind, string> = {
 }
 
 export const useDomainStore = defineStore('domain', () => {
-  const saved = localStorage.getItem(DOMAIN_KEY) as MediaKind | null
+  let saved: MediaKind | null = null
+  try {
+    saved = localStorage.getItem(DOMAIN_KEY) as MediaKind | null
+  } catch {
+    saved = null
+  }
   const activeDomain = ref<MediaKind>(
     saved && ['book', 'comic', 'music', 'video'].includes(saved) ? saved : 'book',
   )
@@ -20,7 +25,11 @@ export const useDomainStore = defineStore('domain', () => {
 
   function setActiveDomain(next: MediaKind): void {
     activeDomain.value = next
-    localStorage.setItem(DOMAIN_KEY, next)
+    try {
+      localStorage.setItem(DOMAIN_KEY, next)
+    } catch {
+      // ignore storage errors
+    }
   }
 
   function getLastRoute(kind: MediaKind): string {
@@ -55,7 +64,13 @@ export const useDomainStore = defineStore('domain', () => {
   }
 
   function resetRoutes(): void {
+    activeDomain.value = 'book'
     lastDomainRoute.value = { ...DEFAULT_ROUTES }
+    try {
+      localStorage.removeItem(DOMAIN_KEY)
+    } catch {
+      // ignore storage errors
+    }
   }
 
   return {

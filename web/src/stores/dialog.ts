@@ -100,6 +100,22 @@ export const useDialogStore = defineStore('dialog', () => {
     activateNext()
   }
 
+  function resetState(): void {
+    const pending: DialogState[] = []
+    if (active.value) {
+      pending.push(active.value)
+      active.value = null
+    }
+    if (queue.value.length > 0) {
+      pending.push(...queue.value)
+      queue.value = []
+    }
+    inputValue.value = ''
+    for (const item of pending) {
+      item.resolve(item.mode === 'confirm' ? false : null)
+    }
+  }
+
   return {
     active,
     queue,
@@ -108,5 +124,6 @@ export const useDialogStore = defineStore('dialog', () => {
     prompt,
     submit,
     cancel,
+    resetState,
   }
 })

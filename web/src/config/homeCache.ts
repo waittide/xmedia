@@ -19,6 +19,7 @@ type HomeCacheMap = { [K in MediaKind]?: { data: DomainHomeMap[K]; updatedAt: nu
 type HomeInflightMap = { [K in MediaKind]?: Promise<DomainHomeMap[K]> }
 
 let currentUserKey = 'anon'
+let cacheEpoch = 0
 const cacheByUser: Record<string, HomeCacheMap> = {}
 const inflightByUser: Record<string, HomeInflightMap> = {}
 
@@ -30,6 +31,7 @@ export function setHomeCacheUser(userId: string | null | undefined): void {
 }
 
 export function clearHomeCache(): void {
+  cacheEpoch += 1
   for (const k of Object.keys(cacheByUser)) {
     delete cacheByUser[k]
   }
@@ -43,6 +45,7 @@ export function invalidateHomeCache(kind?: MediaKind): void {
     clearHomeCache()
     return
   }
+  cacheEpoch += 1
   for (const bucket of Object.values(cacheByUser)) {
     delete bucket[kind]
   }
@@ -58,6 +61,7 @@ export function fetchHomeOverview<K extends MediaKind>(
 ): Promise<DomainHomeMap[K]> {
   const { force = false, maxAgeMs = 15_000 } = options
   const userKey = currentUserKey
+  const reqEpoch = cacheEpoch
   const userCache = (cacheByUser[userKey] ??= {})
   const userInflight = (inflightByUser[userKey] ??= {})
 
@@ -76,14 +80,18 @@ export function fetchHomeOverview<K extends MediaKind>(
     else if (kind === 'music') data = await musicApi.homeOverview()
     else data = await videoApi.homeOverview()
 
-    const bucket = (cacheByUser[userKey] ??= {})
-    ;(bucket as Record<MediaKind, { data: unknown; updatedAt: number }>)[kind] = {
-      data,
-      updatedAt: Date.now(),
+    if (reqEpoch === cacheEpoch && userKey === currentUserKey) {
+      const bucket = (cacheByUser[userKey] ??= {})
+      ;(bucket as Record<MediaKind, { data: unknown; updatedAt: number }>)[kind] = {
+        data,
+        updatedAt: Date.now(),
+      }
     }
     return data as DomainHomeMap[K]
   })().finally(() => {
-    delete inflightByUser[userKey]?.[kind]
+    if (inflightByUser[userKey]?.[kind] === req) {
+      delete inflightByUser[userKey]?.[kind]
+    }
   })
 
   ;(userInflight as Record<MediaKind, Promise<unknown>>)[kind] = req

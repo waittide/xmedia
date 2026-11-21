@@ -16,7 +16,6 @@ import {
   CATPPUCCIN_ACCENT_HEX,
   CATPPUCCIN_ACCENTS,
   DARK_PALETTE_PRESETS,
-  DEFAULT_ACCENT_MODE,
   LIGHT_PALETTE_PRESETS,
   chooseContrastText,
   normalizeHex,
@@ -113,7 +112,6 @@ function onCustomTokenInput(
 
 function handleResetDefaults(): void {
   themeStore.resetPalettesToDefault()
-  themeStore.setAccentMode(DEFAULT_ACCENT_MODE)
 }
 </script>
 

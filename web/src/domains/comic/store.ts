@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
 import { api } from './api'
+import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
 import { useUploadStore } from '@/stores/uploads'
 import type {
@@ -32,8 +33,10 @@ export const useSidebarStore = defineStore('comicSidebar', () => {
   const pencillers = ref<TaxonomyCountDto[]>([])
   const bookmarks = ref<ComicBookmarkItemDto[]>([])
   const loading = ref(false)
+  let fetchSeq = 0
 
   async function refresh(): Promise<void> {
+    const seq = ++fetchSeq
     loading.value = true
     try {
       const [libs, sh, tax, bms] = await Promise.all([
@@ -42,6 +45,7 @@ export const useSidebarStore = defineStore('comicSidebar', () => {
         api.taxonomyOverview(),
         api.listAllBookmarks().catch(() => []),
       ])
+      if (seq !== fetchSeq) return
       libraries.value = libs
       shelves.value = sh
       tags.value = tax.tags
@@ -50,18 +54,22 @@ export const useSidebarStore = defineStore('comicSidebar', () => {
       pencillers.value = tax.pencillers
       bookmarks.value = bms
     } finally {
-      loading.value = false
+      if (seq === fetchSeq) {
+        loading.value = false
+      }
     }
   }
 
   watch(
     () => [uploadStore.catalogVersion, eventsStore.domainRefreshTick.comic],
     () => {
+      if (!useAuthStore().isAuthenticated) return
       void refresh().catch(() => {})
     },
   )
 
   function resetState(): void {
+    fetchSeq += 1
     libraries.value = []
     shelves.value = []
     tags.value = []

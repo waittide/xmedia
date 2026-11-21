@@ -57,14 +57,15 @@ export const DEFAULT_WORKSPACE_LAYOUT: WorkspaceLayoutPreferences = {
 }
 
 function normalizeList(
-  items: readonly string[] | undefined,
+  items: readonly unknown[] | undefined,
   pool: readonly string[],
 ): string[] {
-  if (!items) return []
+  if (!Array.isArray(items)) return []
   const allowed = new Set(pool)
   const seen = new Set<string>()
   const out: string[] = []
   for (const raw of items) {
+    if (typeof raw !== 'string') continue
     const clean = raw.trim()
     if (!clean || !allowed.has(clean) || seen.has(clean)) continue
     seen.add(clean)

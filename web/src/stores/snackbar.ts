@@ -75,11 +75,18 @@ export const useSnackbarStore = defineStore('snackbar', () => {
     }
   }
 
+  function resetState(): void {
+    clearTimer()
+    current.value = null
+    runningAction.value = false
+  }
+
   return {
     current,
     runningAction,
     show,
     dismiss,
     triggerAction,
+    resetState,
   }
 })

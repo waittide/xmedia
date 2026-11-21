@@ -21,21 +21,32 @@ export function useHomeOverview<K extends MediaKind>(
 ) {
   const overview = ref(peekHomeCache(domain)) as Ref<DomainHomeMap[K] | null>
   const loading = ref<boolean>(overview.value === null)
+  const error = ref<string | null>(null)
 
   let viewActive = true
   let dirtyWhileInactive = false
+  let loadSeq = 0
 
   async function loadHome(force = false): Promise<void> {
+    const seq = ++loadSeq
     if (!overview.value) loading.value = true
+    error.value = null
     try {
-      overview.value = await fetchHomeOverview(domain, { force })
+      const data = await fetchHomeOverview(domain, { force })
+      if (seq !== loadSeq) return
+      overview.value = data
+    } catch (err) {
+      if (seq !== loadSeq) return
+      error.value = err instanceof Error ? err.message : String(err)
     } finally {
-      loading.value = false
+      if (seq === loadSeq) {
+        loading.value = false
+      }
     }
   }
 
   async function refreshPage(): Promise<void> {
-    await Promise.all([loadHome(true), options.refreshSidebar()])
+    await Promise.allSettled([loadHome(true), options.refreshSidebar()])
   }
 
   onMounted(() => {
@@ -68,6 +79,7 @@ export function useHomeOverview<K extends MediaKind>(
   return {
     overview,
     loading,
+    error,
     loadHome,
     refreshPage,
   }

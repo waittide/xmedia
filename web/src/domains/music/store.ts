@@ -1,5 +1,6 @@
 import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
 import { api } from './api'
 import type {
@@ -23,8 +24,10 @@ export const useMusicStore = defineStore('music', () => {
   const albums = ref<AlbumDto[]>([])
   const globalSearchQuery = ref('')
   const catalogVersion = ref(0)
+  let sidebarSeq = 0
 
   async function refreshSidebar(): Promise<void> {
+    const seq = ++sidebarSeq
     const [libs, pls, gs, tgs, ars, als] = await Promise.allSettled([
       api.listLibraries(),
       api.listPlaylists(),
@@ -33,6 +36,7 @@ export const useMusicStore = defineStore('music', () => {
       api.listArtists({ size: 24 }),
       api.listAlbums({ type: 'newest', size: 24 }),
     ])
+    if (seq !== sidebarSeq) return
     if (libs.status === 'fulfilled') libraries.value = libs.value
     if (pls.status === 'fulfilled') playlists.value = pls.value
     if (gs.status === 'fulfilled') genres.value = gs.value
@@ -95,12 +99,14 @@ export const useMusicStore = defineStore('music', () => {
   watch(
     () => eventsStore.domainRefreshTick.music,
     () => {
+      if (!useAuthStore().isAuthenticated) return
       bumpCatalogVersion()
       void refreshSidebar().catch(() => {})
     },
   )
 
   function resetState(): void {
+    sidebarSeq += 1
     libraries.value = []
     playlists.value = []
     genres.value = []
@@ -108,7 +114,6 @@ export const useMusicStore = defineStore('music', () => {
     artists.value = []
     albums.value = []
     globalSearchQuery.value = ''
-    catalogVersion.value = 0
   }
 
   return {

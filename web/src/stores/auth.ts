@@ -1,6 +1,6 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api, getStoredToken, setStoredToken } from '@/api/client'
+import { ApiRequestError, api, setStoredToken } from '@/api/client'
 import { setHomeCacheUser } from '@/config/homeCache'
 import { resetAllSessionState } from '@/stores/sessionReset'
 import { useThemeStore } from '@/stores/theme'
@@ -34,18 +34,24 @@ export const useAuthStore = defineStore('auth', () => {
         const [cap, status] = await Promise.all([api.capabilities(), api.setupStatus()])
         capabilities.value = cap
         needsSetup.value = status.needs_setup
-        if (!status.needs_setup && getStoredToken()) {
+        if (!status.needs_setup) {
           try {
             const me = await api.me()
             user.value = me
             setHomeCacheUser(me.id)
             themeStore.hydrateFromUser(me.preferences)
-          } catch {
-            clearLocalSession()
+          } catch (err) {
+            if (err instanceof ApiRequestError && (err.status === 401 || err.status === 403)) {
+              if (user.value !== null) {
+                clearLocalSession()
+              } else {
+                setStoredToken(null)
+              }
+            }
           }
         }
-      } finally {
         initialized.value = true
+      } finally {
         bootstrapPromise = null
       }
     })()
@@ -70,7 +76,6 @@ export const useAuthStore = defineStore('auth', () => {
   }): Promise<void> {
     const session = await api.setupAdmin(payload)
     resetAllSessionState()
-    setStoredToken(session.token)
     needsSetup.value = false
     applyAuthenticatedUser(session.user)
   }
@@ -78,7 +83,6 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(username: string, password: string): Promise<void> {
     const session = await api.login({ username, password })
     resetAllSessionState()
-    setStoredToken(session.token)
     applyAuthenticatedUser(session.user)
   }
 
@@ -99,7 +103,6 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function applySession(session: AuthSessionDto): void {
-    setStoredToken(session.token)
     needsSetup.value = false
     applyAuthenticatedUser(session.user)
   }

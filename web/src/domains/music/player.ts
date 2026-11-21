@@ -1,6 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
-import { getStoredToken } from '@/api/client'
+import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { api, buildCoverUrl, buildStreamUrl, canPlayFormatNatively } from './api'
 import type { PlayMode, StructuredLyricsDto, TrackDto, TranscodeProfile } from './types'
@@ -563,10 +563,11 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function scheduleQueueSync(): void {
-    if (!getStoredToken()) return
+    if (!useAuthStore().isAuthenticated) return
     if (queueSyncTimer) clearTimeout(queueSyncTimer)
     queueSyncTimer = setTimeout(() => {
       queueSyncTimer = null
+      if (!useAuthStore().isAuthenticated) return
       void api
         .savePlayQueue({
           track_ids: queue.value.map((t) => t.id),
@@ -578,8 +579,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function flushQueueOnPageHide(): void {
-    const token = getStoredToken()
-    if (!token || queue.value.length === 0) return
+    if (!useAuthStore().isAuthenticated || queue.value.length === 0) return
     if (queueSyncTimer) {
       clearTimeout(queueSyncTimer)
       queueSyncTimer = null
@@ -587,9 +587,9 @@ export const usePlayerStore = defineStore('player', () => {
     try {
       void fetch('/api/v1/music/play-queue', {
         method: 'PUT',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           track_ids: queue.value.map((t) => t.id),

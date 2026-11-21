@@ -9,7 +9,17 @@ import type {
   UserRole,
 } from '@/types/api'
 
-const TOKEN_STORAGE_KEY = 'xmedia.jwt'
+const LEGACY_TOKEN_STORAGE_KEY = 'xmedia.jwt'
+
+function clearLegacyStoredToken(): void {
+  try {
+    localStorage.removeItem(LEGACY_TOKEN_STORAGE_KEY)
+  } catch {
+    // ignore storage errors
+  }
+}
+
+clearLegacyStoredToken()
 
 let unauthorizedHandler: (() => void) | null = null
 
@@ -18,23 +28,15 @@ export function setUnauthorizedHandler(handler: () => void): void {
 }
 
 export function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_STORAGE_KEY)
+  return null
 }
 
-export function setStoredToken(token: string | null): void {
-  if (token) {
-    localStorage.setItem(TOKEN_STORAGE_KEY, token)
-  } else {
-    localStorage.removeItem(TOKEN_STORAGE_KEY)
-  }
+export function setStoredToken(_token: string | null): void {
+  clearLegacyStoredToken()
 }
 
 export function withAuthToken(rawUrl: string | null | undefined): string {
-  if (!rawUrl) return ''
-  const token = getStoredToken()
-  if (!token) return rawUrl
-  const sep = rawUrl.includes('?') ? '&' : '?'
-  return `${rawUrl}${sep}token=${encodeURIComponent(token)}`
+  return rawUrl || ''
 }
 
 export class ApiRequestError extends Error {
@@ -54,10 +56,6 @@ export async function requestJson<T>(
   suppressAuthRedirect = false,
 ): Promise<T> {
   const headers = new Headers(init.headers)
-  const token = getStoredToken()
-  if (token && !headers.has('Authorization')) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
@@ -72,17 +70,20 @@ export async function requestJson<T>(
     let code = 'http_error'
     let message = res.statusText || `HTTP ${res.status}`
     try {
-      const data = (await res.json()) as {
-        error?: { code?: string; message?: string } | string
-        code?: string
+      const contentType = res.headers.get('content-type') ?? ''
+      if (contentType.includes('application/json')) {
+        const data = (await res.json()) as {
+          error?: { code?: string; message?: string } | string
+          code?: string
+        }
+        if (typeof data.error === 'string') {
+          message = data.error
+        } else if (data.error) {
+          if (data.error.code) code = data.error.code
+          if (data.error.message) message = data.error.message
+        }
+        if (data.code) code = data.code
       }
-      if (typeof data.error === 'string') {
-        message = data.error
-      } else if (data.error) {
-        if (data.error.code) code = data.error.code
-        if (data.error.message) message = data.error.message
-      }
-      if (data.code) code = data.code
     } catch {
       // ignore non-json body
     }
@@ -91,6 +92,7 @@ export async function requestJson<T>(
       res.status === 401 &&
       !suppressAuthRedirect &&
       path !== '/auth/login' &&
+      path !== '/auth/setup' &&
       path !== '/auth/password'
     ) {
       unauthorizedHandler?.()
@@ -103,54 +105,19 @@ export async function requestJson<T>(
     return undefined as T
   }
 
-  return (await res.json()) as T
-}
-
-export function uploadWithXhr<T>(
-  url: string,
-  formData: FormData,
-  onProgress?: (loaded: number, total: number) => void,
-): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', url)
-    xhr.withCredentials = true
-    const token = getStoredToken()
-    if (token) {
-      xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-    }
-    xhr.upload.onprogress = (ev) => {
-      if (ev.lengthComputable && onProgress) {
-        onProgress(ev.loaded, ev.total)
-      }
-    }
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          resolve(JSON.parse(xhr.responseText) as T)
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err)))
-        }
-      } else {
-        if (xhr.status === 401) {
-          unauthorizedHandler?.()
-        }
-        let message = `HTTP ${xhr.status}`
-        try {
-          const parsed = JSON.parse(xhr.responseText) as {
-            error?: { message?: string } | string
-          }
-          if (typeof parsed.error === 'string') message = parsed.error
-          else if (parsed.error?.message) message = parsed.error.message
-        } catch {
-          // ignore
-        }
-        reject(new Error(message))
-      }
-    }
-    xhr.onerror = () => reject(new Error('Network error during upload'))
-    xhr.send(formData)
-  })
+  const text = await res.text()
+  if (!text.trim()) {
+    return undefined as T
+  }
+  const contentType = res.headers.get('content-type') ?? ''
+  if (contentType && !contentType.includes('json')) {
+    throw new ApiRequestError(res.status, 'invalid_response', 'Expected JSON response from server')
+  }
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new ApiRequestError(res.status, 'invalid_json', 'Malformed JSON response from server')
+  }
 }
 
 export const api = {
@@ -159,10 +126,14 @@ export const api = {
 
   setupStatus: () => requestJson<{ needs_setup: boolean }>('/auth/setup-status', {}, true),
   setupAdmin: (payload: { username: string; display_name?: string; password: string }) =>
-    requestJson<AuthSessionDto>('/auth/setup', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
+    requestJson<AuthSessionDto>(
+      '/auth/setup',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+      true,
+    ),
   login: (payload: { username: string; password: string }) =>
     requestJson<AuthSessionDto>(
       '/auth/login',

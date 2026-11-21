@@ -7,10 +7,12 @@ import { useThemeStore } from '@/stores/theme'
 import { setToolToken, toolApi } from './api'
 import ToolWorkspace from './components/ToolWorkspace.vue'
 import { useToolText } from './i18n'
+import { useToolTaskStore } from './tasks'
 import type { ToolStatusDto } from './types'
 
 // Initialize Catppuccin palette & dark/light class immediately
 useThemeStore()
+const taskStore = useToolTaskStore()
 const txt = useToolText()
 
 const booting = ref(true)
@@ -19,18 +21,27 @@ const status = ref<ToolStatusDto | null>(null)
 const passwordInput = ref('')
 const unlocking = ref(false)
 const unlockError = ref<string | null>(null)
+let statusInFlight: Promise<void> | null = null
 
-async function fetchStatus(): Promise<void> {
-  booting.value = true
-  bootError.value = null
-  try {
-    status.value = await toolApi.getStatus()
-  } catch (err) {
-    status.value = null
-    bootError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    booting.value = false
+async function fetchStatus(silent = false): Promise<void> {
+  if (statusInFlight) return statusInFlight
+  if (!silent || !status.value) {
+    booting.value = true
   }
+  bootError.value = null
+  const task = (async () => {
+    try {
+      status.value = await toolApi.getStatus()
+    } catch (err) {
+      status.value = null
+      bootError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      booting.value = false
+      statusInFlight = null
+    }
+  })()
+  statusInFlight = task
+  return task
 }
 
 async function handleUnlock(): Promise<void> {
@@ -49,12 +60,19 @@ async function handleUnlock(): Promise<void> {
 }
 
 async function handleLock(): Promise<void> {
+  taskStore.resetState()
   setToolToken(null)
+  try {
+    await toolApi.lock()
+  } catch {
+    // ignore lock network error and still refresh status
+  }
   await fetchStatus()
 }
 
 function handleUnauthorized(): void {
-  void fetchStatus()
+  taskStore.resetState()
+  void fetchStatus(true)
 }
 
 onMounted(() => {
@@ -110,7 +128,7 @@ onBeforeUnmount(() => {
       <button
         type="button"
         class="md-btn md-btn-filled md-state w-full"
-        @click="fetchStatus"
+        @click="fetchStatus()"
       >
         <LuRefreshCw class="h-3.5 w-3.5" />
         <span>{{ txt.boot.retry }}</span>

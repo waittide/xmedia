@@ -463,6 +463,15 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     entries.value = entries.value.filter((e) => e.status === 'running' || e.status === 'queued')
   }
 
+  function resetState(): void {
+    pendingScrapeBatchIds.length = 0
+    for (const item of entries.value) {
+      item.cancelled = true
+      clearTaskTimer(item.id)
+    }
+    entries.value = []
+  }
+
   const persistentTasks = computed(() => entries.value.filter((e) => !e.ephemeral))
 
   const activeCount = computed(
@@ -528,5 +537,6 @@ export const useToolTaskStore = defineStore('tool-tasks', () => {
     removeTask,
     clearCompleted,
     dismissAll,
+    resetState,
   }
 })

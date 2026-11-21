@@ -4,7 +4,21 @@ import zhCN from './zh-CN'
 import enUS from './en-US'
 import type { LocaleCode } from '@/types/api'
 
-const saved = (localStorage.getItem('xmedia.locale') as LocaleCode | null) || 'zh-CN'
+const SUPPORTED_LOCALES = new Set<LocaleCode>(['zh-CN', 'en-US'])
+
+function readSavedLocale(): LocaleCode {
+  try {
+    const raw = localStorage.getItem('xmedia.locale')
+    if (raw && SUPPORTED_LOCALES.has(raw as LocaleCode)) {
+      return raw as LocaleCode
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return 'zh-CN'
+}
+
+const saved: LocaleCode = readSavedLocale()
 
 export const i18n = createI18n({
   legacy: false,
@@ -45,25 +59,30 @@ function commitLocaleSwitch(code: LocaleCode): void {
 }
 
 export function setAppLocale(code: LocaleCode): void {
-  targetLocale = code
-  localStorage.setItem('xmedia.locale', code)
-  document.documentElement.lang = code
+  const normalized: LocaleCode = SUPPORTED_LOCALES.has(code) ? code : 'zh-CN'
+  targetLocale = normalized
+  try {
+    localStorage.setItem('xmedia.locale', normalized)
+  } catch {
+    // ignore storage errors
+  }
+  document.documentElement.lang = normalized
 
   const pending: Promise<void>[] = []
   for (const handle of domainHandles) {
-    if (handle.isActive() && !handle.hasLocale(code)) {
-      pending.push(handle.loadLocale(code))
+    if (handle.isActive() && !handle.hasLocale(normalized)) {
+      pending.push(handle.loadLocale(normalized))
     }
   }
 
   if (pending.length === 0) {
-    commitLocaleSwitch(code)
+    commitLocaleSwitch(normalized)
     return
   }
 
   void Promise.all(pending).then(() => {
-    if (targetLocale !== code) return
-    commitLocaleSwitch(code)
+    if (targetLocale !== normalized) return
+    commitLocaleSwitch(normalized)
   })
 }
 
@@ -71,42 +90,48 @@ export function createDomainI18n(loaders: DomainLocaleLoaders) {
   const inst = createI18n({
     legacy: false,
     locale: targetLocale,
-    fallbackLocale: targetLocale,
+    fallbackLocale: 'en-US',
     missingWarn: false,
     fallbackWarn: false,
     messages: {} as Record<string, Record<string, string>>,
   })
 
   const loadedLocales = new Set<LocaleCode>()
+  const failedLocales = new Set<LocaleCode>()
   const inflight = new Map<LocaleCode, Promise<void>>()
   const revision = ref(0)
   let activated = false
 
   function loadLocale(loc: LocaleCode): Promise<void> {
+    const safeLoc: LocaleCode = SUPPORTED_LOCALES.has(loc) ? loc : 'zh-CN'
     activated = true
-    if (loadedLocales.has(loc)) {
-      if (loc === targetLocale && inst.global.locale.value !== loc) {
-        inst.global.locale.value = loc
+    if (loadedLocales.has(safeLoc)) {
+      if (safeLoc === targetLocale && inst.global.locale.value !== safeLoc) {
+        inst.global.locale.value = safeLoc
       }
       return Promise.resolve()
     }
-    const existing = inflight.get(loc)
+    const existing = inflight.get(safeLoc)
     if (existing) return existing
 
-    const req = loaders[loc]()
+    failedLocales.delete(safeLoc)
+    const req = loaders[safeLoc]()
       .then((mod) => {
-        inst.global.setLocaleMessage(loc, mod.default as never)
-        loadedLocales.add(loc)
-        if (loc === targetLocale) {
-          inst.global.locale.value = loc
+        inst.global.setLocaleMessage(safeLoc, mod.default as never)
+        loadedLocales.add(safeLoc)
+        if (safeLoc === targetLocale) {
+          inst.global.locale.value = safeLoc
         }
         revision.value += 1
       })
+      .catch(() => {
+        failedLocales.add(safeLoc)
+      })
       .finally(() => {
-        inflight.delete(loc)
+        inflight.delete(safeLoc)
       })
 
-    inflight.set(loc, req)
+    inflight.set(safeLoc, req)
     return req
   }
 
@@ -127,7 +152,7 @@ export function createDomainI18n(loaders: DomainLocaleLoaders) {
   const translate = (key: string, named?: Record<string, unknown>): string => {
     // Track revision so any late-loaded locale re-renders reactively without stale keys.
     void revision.value
-    if (!loadedLocales.has(targetLocale)) {
+    if (!loadedLocales.has(targetLocale) && !failedLocales.has(targetLocale)) {
       void loadLocale(targetLocale)
     }
     return named ? inst.global.t(key, named) : inst.global.t(key)

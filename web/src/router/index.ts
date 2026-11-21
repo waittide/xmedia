@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getStoredToken, setUnauthorizedHandler } from '@/api/client'
+import { setUnauthorizedHandler } from '@/api/client'
 import { ensureBookLocale } from '@/domains/book/i18n'
 import { ensureComicLocale } from '@/domains/comic/i18n'
 import { ensureMusicLocale } from '@/domains/music/i18n'
@@ -25,9 +25,9 @@ export function ensureDomainLocale(domain: MediaKind): Promise<void> {
 function resolvePreferredDomain(
   preferred: MediaKind,
   enabled: MediaKind[],
-): MediaKind {
+): MediaKind | null {
   if (enabled.includes(preferred)) return preferred
-  return enabled[0] ?? 'book'
+  return enabled[0] ?? null
 }
 
 export const router = createRouter({
@@ -415,27 +415,37 @@ router.beforeEach(async (to) => {
   await appClient.bootstrap()
 
   if (appClient.isStandaloneApp) {
-    if (!auth.isAuthenticated && !getStoredToken()) {
-      const session = await appClient.fetchAutoSession()
-      auth.applySession(session)
-    }
-
-    if (!auth.initialized) {
+    try {
       await auth.bootstrap()
+    } catch {
+      // transient startup error; allow auto-session attempt below
     }
 
     if (!auth.isAuthenticated) {
-      const session = await appClient.fetchAutoSession()
-      auth.applySession(session)
-      auth.initialized = false
-      await auth.bootstrap()
+      try {
+        const session = await appClient.fetchAutoSession()
+        auth.applySession(session)
+        if (!auth.initialized) {
+          await auth.bootstrap().catch(() => {})
+        }
+      } catch {
+        if (!to.meta.public) {
+          return { name: 'login' }
+        }
+      }
     }
 
     if (to.name === 'login' || to.name === 'setup') {
       return '/'
     }
   } else {
-    await auth.bootstrap()
+    try {
+      await auth.bootstrap()
+    } catch {
+      if (!auth.isAuthenticated && !to.meta.public) {
+        return { name: 'login' }
+      }
+    }
 
     if (auth.needsSetup) {
       if (to.name !== 'setup') return { name: 'setup' }
@@ -458,8 +468,11 @@ router.beforeEach(async (to) => {
   const routeDomain = to.meta.domain as MediaKind | undefined
   if (routeDomain && !auth.hasModule(routeDomain)) {
     const fallback = resolvePreferredDomain(domainStore.activeDomain, auth.enabledModules)
-    if (fallback !== routeDomain) {
+    if (fallback && fallback !== routeDomain) {
       return `/${fallback}`
+    }
+    if (!fallback && to.name !== 'settings') {
+      return { name: 'settings' }
     }
   }
 

@@ -1,4 +1,4 @@
-import { api as coreApi, getStoredToken, requestJson, withAuthToken } from '@/api/client'
+import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
 import type { CoreLibraryDto } from '@/types/api'
 import type {
   ShowDetailDto,
@@ -56,8 +56,6 @@ export function buildVideoStreamUrl(
   startSecs?: number,
 ): string {
   const sp = new URLSearchParams()
-  const token = getStoredToken()
-  if (token) sp.set('token', token)
   sp.set('quality', quality)
   if (audioStream !== undefined && audioStream !== null) {
     sp.set('audio_stream', String(audioStream))

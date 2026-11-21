@@ -1,5 +1,6 @@
 import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
 import { api } from './api'
 import type {
@@ -25,14 +26,16 @@ export const useVideoStore = defineStore('video', () => {
   let lastSidebarLoadedAt = 0
   let sidebarDirtyAfterInFlight = false
   let sidebarDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  let sidebarEpoch = 0
 
-  async function runSidebarFetch(): Promise<void> {
+  async function runSidebarFetch(epoch: number): Promise<void> {
     const [libsRes, shelvesRes, videosRes, showsRes] = await Promise.allSettled([
       api.listLibraries(),
       api.listShelves(),
       api.listVideos(),
       api.listShows(),
     ])
+    if (epoch !== sidebarEpoch) return
     if (libsRes.status === 'fulfilled') libraries.value = libsRes.value
     if (shelvesRes.status === 'fulfilled') shelves.value = shelvesRes.value
     if (showsRes.status === 'fulfilled') shows.value = showsRes.value
@@ -80,9 +83,12 @@ export const useVideoStore = defineStore('video', () => {
     if (!force && lastSidebarLoadedAt > 0 && Date.now() - lastSidebarLoadedAt < SIDEBAR_CACHE_TTL_MS) {
       return
     }
-    const task = runSidebarFetch().finally(() => {
-      sidebarInFlight = null
-      if (sidebarDirtyAfterInFlight) {
+    const epoch = sidebarEpoch
+    const task = runSidebarFetch(epoch).finally(() => {
+      if (sidebarInFlight === task) {
+        sidebarInFlight = null
+      }
+      if (epoch === sidebarEpoch && sidebarDirtyAfterInFlight) {
         sidebarDirtyAfterInFlight = false
         void refreshSidebar(true).catch(() => {})
       }
@@ -134,12 +140,15 @@ export const useVideoStore = defineStore('video', () => {
   watch(
     () => eventsStore.domainRefreshTick.video,
     () => {
+      if (!useAuthStore().isAuthenticated) return
       bumpCatalogVersion()
       scheduleRefreshSidebar()
     },
   )
 
   function resetState(): void {
+    sidebarEpoch += 1
+    sidebarInFlight = null
     if (sidebarDebounceTimer) {
       clearTimeout(sidebarDebounceTimer)
       sidebarDebounceTimer = null
@@ -151,7 +160,6 @@ export const useVideoStore = defineStore('video', () => {
     shows.value = []
     genres.value = []
     tags.value = []
-    catalogVersion.value = 0
   }
 
   return {

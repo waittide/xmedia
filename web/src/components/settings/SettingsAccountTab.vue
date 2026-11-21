@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuCheck, LuCopy, LuRotateCw } from 'vue-icons-plus/lu'
-import { api, setStoredToken } from '@/api/client'
+import { api } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
@@ -33,7 +33,6 @@ async function submitPasswordChange(): Promise<void> {
       current_password: currentPwd.value,
       new_password: nextPwd.value,
     })
-    setStoredToken(session.token)
     authStore.setUser(session.user)
     currentPwd.value = ''
     nextPwd.value = ''

@@ -1,4 +1,4 @@
-import { api as coreApi, getStoredToken, requestJson, withAuthToken } from '@/api/client'
+import { api as coreApi, requestJson, withAuthToken } from '@/api/client'
 import type { CoreLibraryDto } from '@/types/api'
 import type {
   AlbumDetailDto,
@@ -73,9 +73,7 @@ export function buildStreamUrl(
   timeOffsetSecs = 0,
   sourceFormat?: AudioFormat,
 ): string {
-  const token = getStoredToken() || ''
   const sp = new URLSearchParams()
-  if (token) sp.set('token', token)
 
   let isTranscoded = profile !== 'raw'
   if (profile === 'raw') {
