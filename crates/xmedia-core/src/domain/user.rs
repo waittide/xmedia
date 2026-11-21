@@ -103,6 +103,48 @@ pub struct CustomPaletteTokens {
     pub subtext: String,
 }
 
+fn is_valid_hex_color(raw: &str) -> bool {
+    let Some(hex) = raw.strip_prefix('#') else {
+        return false;
+    };
+    matches!(hex.len(), 3 | 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn sanitize_hex_color(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if is_valid_hex_color(trimmed) {
+        Some(trimmed.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+impl CustomPaletteTokens {
+    pub fn normalize(&mut self) -> bool {
+        let Some(canvas) = sanitize_hex_color(&self.canvas) else {
+            return false;
+        };
+        let Some(shell) = sanitize_hex_color(&self.shell) else {
+            return false;
+        };
+        let Some(surface) = sanitize_hex_color(&self.surface) else {
+            return false;
+        };
+        let Some(text) = sanitize_hex_color(&self.text) else {
+            return false;
+        };
+        let Some(subtext) = sanitize_hex_color(&self.subtext) else {
+            return false;
+        };
+        self.canvas = canvas;
+        self.shell = shell;
+        self.surface = surface;
+        self.text = text;
+        self.subtext = subtext;
+        true
+    }
+}
+
 // --- Book Reader Preferences ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -702,7 +744,17 @@ impl UserPreferences {
         normalize_non_empty(&mut self.light_preset, DEFAULT_LIGHT_PRESET, 64);
         normalize_non_empty(&mut self.dark_preset, DEFAULT_DARK_PRESET, 64);
         normalize_non_empty(&mut self.accent_mode, DEFAULT_ACCENT_MODE, 32);
-        normalize_opt_string(&mut self.custom_accent, 32);
+        self.custom_accent = self.custom_accent.as_deref().and_then(sanitize_hex_color);
+        if let Some(ref mut light) = self.custom_light
+            && !light.normalize()
+        {
+            self.custom_light = None;
+        }
+        if let Some(ref mut dark) = self.custom_dark
+            && !dark.normalize()
+        {
+            self.custom_dark = None;
+        }
         self.book.normalize();
         self.comic.normalize();
         self.music.normalize();
@@ -764,6 +816,11 @@ impl User {
     ) -> DomainResult<Self> {
         let username = Self::validate_username(username.into())?;
         let display_name = display_name.into().trim().to_string();
+        if display_name.chars().count() > 128 {
+            return Err(DomainError::Validation(
+                "display name cannot exceed 128 characters".into(),
+            ));
+        }
         let display_name = if display_name.is_empty() {
             username.clone()
         } else {
@@ -823,9 +880,9 @@ impl User {
     ) -> DomainResult<()> {
         if let Some(name) = display_name {
             let trimmed = name.trim();
-            if trimmed.is_empty() {
+            if trimmed.is_empty() || trimmed.chars().count() > 128 {
                 return Err(DomainError::Validation(
-                    "display name cannot be empty".into(),
+                    "display name must be between 1 and 128 characters".into(),
                 ));
             }
             self.display_name = trimmed.to_string();

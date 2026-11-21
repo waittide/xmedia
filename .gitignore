@@ -9,5 +9,10 @@
 *.db-shm
 *.db-wal
 .DS_Store
+.env
+.env.*
+.secret
+*.pem
+*.key
 /apps/xmedia-app/target
 /apps/xmedia-app/gen

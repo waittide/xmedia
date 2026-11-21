@@ -30,7 +30,7 @@ pub enum ByteRangeSpec {
 
 impl ByteRangeSpec {
     pub fn is_partial(self) -> bool {
-        !matches!(self, Self::Full)
+        matches!(self, Self::FromTo { .. } | Self::Suffix { .. })
     }
 }
 

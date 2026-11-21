@@ -603,17 +603,23 @@ fn paths_overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }
 
-/// Parses a colon- or comma-separated mount allowlist string into canonicalized prefixes.
+/// Parses a platform path-list or comma-separated mount allowlist string into canonicalized prefixes.
 pub fn parse_allowed_mount_prefixes(raw_allowlist: &str) -> Vec<PathBuf> {
-    raw_allowlist
-        .split([':', ','])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|p| {
-            let pb = PathBuf::from(p);
-            pb.canonicalize().unwrap_or(pb)
-        })
-        .collect()
+    let mut out = Vec::new();
+    for part in raw_allowlist.split(',') {
+        let trimmed = part.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        for pb in std::env::split_paths(trimmed) {
+            if pb.as_os_str().is_empty() {
+                continue;
+            }
+            let canon = pb.canonicalize().unwrap_or(pb);
+            out.push(canon);
+        }
+    }
+    out
 }
 
 /// Validates that `canonical_path` falls under at least one allowed prefix when non-empty.
@@ -624,10 +630,9 @@ fn verify_mount_prefixes(canonical_path: &Path, prefixes: &[PathBuf]) -> DomainR
     if prefixes.iter().any(|p| canonical_path.starts_with(p)) {
         return Ok(());
     }
-    Err(DomainError::Forbidden(format!(
-        "mount path '{}' is outside XMEDIA_ALLOWED_MOUNT_PREFIXES",
-        canonical_path.display()
-    )))
+    Err(DomainError::Forbidden(
+        "mount path is outside the configured allowed mount prefixes".into(),
+    ))
 }
 
 #[cfg(test)]

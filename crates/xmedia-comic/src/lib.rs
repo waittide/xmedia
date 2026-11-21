@@ -452,8 +452,8 @@ mod tests {
             .unwrap();
         assert_ne!(managed_dm.series_id, local_dm.id);
 
-        // 6. Verify DELETE /api/v1/comic/chapters/{id} decrements count and removes empty series
-        let del_ch1 = app
+        // 6. Verify DELETE rejects query-string ?token= and accepts Authorization Bearer
+        let del_query_rejected = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -462,6 +462,20 @@ mod tests {
                         "/api/v1/comic/chapters/{}?token={}",
                         up1.chapter_id, session.token
                     ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(del_query_rejected.status(), StatusCode::UNAUTHORIZED);
+
+        let del_ch1 = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/v1/comic/chapters/{}", up1.chapter_id))
+                    .header("authorization", format!("Bearer {}", session.token))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -481,10 +495,8 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!(
-                        "/api/v1/comic/chapters/{}?token={}",
-                        _up2.chapter_id, session.token
-                    ))
+                    .uri(format!("/api/v1/comic/chapters/{}", _up2.chapter_id))
+                    .header("authorization", format!("Bearer {}", session.token))
                     .body(Body::empty())
                     .unwrap(),
             )

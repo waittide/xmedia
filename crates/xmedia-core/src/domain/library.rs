@@ -156,7 +156,8 @@ impl Library {
 
     fn validate_name(raw: String) -> DomainResult<String> {
         let trimmed = raw.trim().to_string();
-        if trimmed.is_empty() || trimmed.len() > 128 {
+        let char_len = trimmed.chars().count();
+        if char_len == 0 || char_len > 128 {
             return Err(DomainError::Validation(
                 "library name must be between 1 and 128 characters".into(),
             ));

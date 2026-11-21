@@ -7,6 +7,24 @@ use crate::domain::error::{DomainError, DomainResult};
 
 const WINDOW_BYTES: usize = 65_536;
 
+fn read_window(file: &mut File, buf: &mut [u8], path: &Path) -> DomainResult<usize> {
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                return Err(DomainError::Storage(format!(
+                    "failed reading '{}': {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+    Ok(filled)
+}
+
 /// Computes a fast, path- and timestamp-independent content fingerprint:
 /// `BLAKE3(size_le || head_64KB || tail_64KB)`.
 pub fn fast_content_fingerprint(path: &Path) -> DomainResult<(u64, String)> {
@@ -25,16 +43,16 @@ pub fn fast_content_fingerprint(path: &Path) -> DomainResult<(u64, String)> {
             .unwrap_or(WINDOW_BYTES)
             .min(WINDOW_BYTES)
     ];
-    let n = file.read(&mut head).unwrap_or(0);
+    let n = read_window(&mut file, &mut head, path)?;
     hasher.update(&head[..n]);
 
     if size > WINDOW_BYTES as u64 {
         let tail_offset = size.saturating_sub(WINDOW_BYTES as u64);
-        if file.seek(SeekFrom::Start(tail_offset)).is_ok() {
-            let mut tail = vec![0_u8; WINDOW_BYTES];
-            let tn = file.read(&mut tail).unwrap_or(0);
-            hasher.update(&tail[..tn]);
-        }
+        file.seek(SeekFrom::Start(tail_offset))
+            .map_err(|e| DomainError::Storage(format!("cannot seek '{}': {e}", path.display())))?;
+        let mut tail = vec![0_u8; WINDOW_BYTES];
+        let tn = read_window(&mut file, &mut tail, path)?;
+        hasher.update(&tail[..tn]);
     }
 
     Ok((size, hasher.finalize().to_hex().to_string()))

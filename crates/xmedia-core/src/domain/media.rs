@@ -68,7 +68,9 @@ impl<T> PagedResult<T> {
     }
 
     pub fn has_next(&self) -> bool {
-        u64::from(self.page).saturating_mul(u64::from(self.page_size)) < self.total
+        self.page >= 1
+            && self.page_size > 0
+            && u64::from(self.page).saturating_mul(u64::from(self.page_size)) < self.total
     }
 
     pub fn has_prev(&self) -> bool {

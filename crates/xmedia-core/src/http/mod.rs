@@ -129,6 +129,22 @@ pub type ApiResult<T> = Result<T, ApiError>;
 
 #[cfg(feature = "server")]
 fn is_https_request(headers: &HeaderMap) -> bool {
+    if let Ok(explicit) = std::env::var("XMEDIA_COOKIE_SECURE") {
+        let trimmed = explicit.trim();
+        if trimmed.eq_ignore_ascii_case("true") || trimmed == "1" {
+            return true;
+        }
+        if trimmed.eq_ignore_ascii_case("false") || trimmed == "0" {
+            return false;
+        }
+    }
+    let trust_proxy = std::env::var("XMEDIA_TRUST_PROXY").ok().is_some_and(|v| {
+        let t = v.trim();
+        t.eq_ignore_ascii_case("true") || t == "1"
+    });
+    if !trust_proxy {
+        return false;
+    }
     headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
@@ -179,11 +195,13 @@ pub fn extract_request_token(parts: &Parts) -> Option<String> {
         .headers
         .get(AUTHORIZATION)
         .and_then(|h| h.to_str().ok())
-        && let Some(bearer) = raw_auth.strip_prefix("Bearer ")
     {
-        let trimmed = bearer.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
+        let trimmed_hdr = raw_auth.trim();
+        if trimmed_hdr.len() >= 7 && trimmed_hdr[..7].eq_ignore_ascii_case("bearer ") {
+            let trimmed = trimmed_hdr[7..].trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
         }
     }
 
@@ -202,7 +220,12 @@ pub fn extract_request_token(parts: &Parts) -> Option<String> {
         }
     }
 
-    if let Some(query) = parts.uri.query() {
+    // Only allow `?token=` query parameter on safe read-only GET/HEAD routes (e.g. media/SSE streams).
+    if matches!(
+        parts.method,
+        axum::http::Method::GET | axum::http::Method::HEAD
+    ) && let Some(query) = parts.uri.query()
+    {
         for (k, v) in form_urlencoded::parse(query.as_bytes()) {
             if k == "token" && !v.trim().is_empty() {
                 return Some(v.trim().to_string());
@@ -338,9 +361,11 @@ pub fn parse_http_range_spec(headers: &HeaderMap) -> ByteRangeSpec {
     let Ok(raw) = header_val.to_str() else {
         return ByteRangeSpec::Malformed;
     };
-    let Some(spec) = raw.trim().strip_prefix("bytes=") else {
+    let trimmed = raw.trim();
+    if trimmed.len() < 6 || !trimmed[..6].eq_ignore_ascii_case("bytes=") {
         return ByteRangeSpec::Malformed;
-    };
+    }
+    let spec = &trimmed[6..];
     let Some(first) = spec.split(',').next() else {
         return ByteRangeSpec::Malformed;
     };
@@ -421,15 +446,20 @@ pub fn into_range_http_response(
     as_attachment: bool,
     duration_secs: Option<u32>,
 ) -> Response {
-    let status = if is_partial {
+    let effective_partial = is_partial && range_stream.total_size > 0;
+    let status = if effective_partial {
         StatusCode::PARTIAL_CONTENT
     } else {
         StatusCode::OK
     };
-    let content_len = range_stream
-        .end_inclusive
-        .saturating_sub(range_stream.start)
-        .saturating_add(1);
+    let content_len = if range_stream.total_size == 0 {
+        0
+    } else {
+        range_stream
+            .end_inclusive
+            .saturating_sub(range_stream.start)
+            .saturating_add(1)
+    };
 
     let body = Body::from_stream(range_stream.stream);
     let mut res = (status, body).into_response();
@@ -454,7 +484,7 @@ pub fn into_range_http_response(
     if let Ok(len_val) = HeaderValue::from_str(&content_len.to_string()) {
         headers.insert(CONTENT_LENGTH, len_val);
     }
-    if is_partial
+    if effective_partial
         && let Ok(range_val) = HeaderValue::from_str(&format!(
             "bytes {}-{}/{}",
             range_stream.start, range_stream.end_inclusive, range_stream.total_size
@@ -652,12 +682,17 @@ pub async fn stream_multipart_field_to_temp_file_in_dir(
         )))
     })?;
     let path = temp_dir.join(file_name);
+    // Declare guard before file handle so on Windows `file` is dropped and closed
+    // before `guard`'s Drop removes the temporary file.
+    let mut guard = TempUploadFile {
+        path: path.clone(),
+        size: 0,
+    };
     let mut file = tokio::fs::File::create(&path).await.map_err(|e| {
         ApiError(DomainError::Storage(format!(
             "failed to create temp upload file: {e}"
         )))
     })?;
-    let mut guard = TempUploadFile { path, size: 0 };
 
     while let Some(chunk) = field
         .chunk()

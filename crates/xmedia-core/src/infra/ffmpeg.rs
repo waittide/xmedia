@@ -43,17 +43,25 @@ impl FfmpegToolkit {
 
     pub fn from_ffmpeg_bin(ffmpeg_bin: impl Into<String>) -> Self {
         let ffmpeg = ffmpeg_bin.into();
-        let ffprobe = if ffmpeg == "ffmpeg" {
-            "ffprobe".to_string()
-        } else if let Some(parent) = Path::new(&ffmpeg).parent() {
-            let candidate = parent.join("ffprobe");
-            if candidate.exists() {
+        let default_probe = if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        };
+        let ffprobe = if ffmpeg == "ffmpeg" || ffmpeg == "ffmpeg.exe" {
+            default_probe.to_string()
+        } else if let Some(parent) = Path::new(&ffmpeg)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+        {
+            let candidate = parent.join(default_probe);
+            if candidate.is_file() {
                 candidate.to_string_lossy().to_string()
             } else {
-                "ffprobe".to_string()
+                default_probe.to_string()
             }
         } else {
-            "ffprobe".to_string()
+            default_probe.to_string()
         };
         Self::new(ffmpeg, ffprobe)
     }
@@ -350,14 +358,28 @@ impl FfmpegToolkit {
                 if buf.capacity() < CHUNK_SIZE / 2 {
                     buf.reserve(CHUNK_SIZE);
                 }
-                match stdout.read_buf(&mut buf).await {
+                let read_res = tokio::select! {
+                    biased;
+                    _ = tx.closed() => {
+                        debug!("client disconnected while waiting on ffmpeg stdout, terminating process");
+                        let _ = child.kill().await;
+                        break;
+                    }
+                    res = stdout.read_buf(&mut buf) => res,
+                };
+                match read_res {
                     Ok(0) => {
                         let _ = child.wait().await;
                         break;
                     }
                     Ok(_) => {
                         let chunk = buf.split().freeze();
-                        if tx.send(Ok(chunk)).await.is_err() {
+                        let send_ok = tokio::select! {
+                            biased;
+                            _ = tx.closed() => false,
+                            res = tx.send(Ok(chunk)) => res.is_ok(),
+                        };
+                        if !send_ok {
                             debug!("client disconnected, terminating ffmpeg process");
                             let _ = child.kill().await;
                             break;

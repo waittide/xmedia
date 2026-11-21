@@ -85,18 +85,41 @@ pub async fn open_file_range_stream_spec(
     spec: ByteRangeSpec,
 ) -> DomainResult<ByteRangeStream> {
     let mut file = tokio::fs::File::open(path).await.map_err(|e| {
-        DomainError::Storage(format!("failed to open media file {}: {e}", path.display()))
+        if e.kind() == std::io::ErrorKind::NotFound {
+            DomainError::NotFound("media file not found".into())
+        } else {
+            DomainError::Storage(format!("failed to open media file {}: {e}", path.display()))
+        }
     })?;
     let meta = file.metadata().await.map_err(|e| {
         DomainError::Storage(format!("failed to stat media file {}: {e}", path.display()))
     })?;
+    if !meta.is_file() {
+        return Err(DomainError::NotFound(
+            "media path is not a regular file".into(),
+        ));
+    }
     let total_size = meta.len();
     if total_size == 0 {
-        return Err(DomainError::Storage("media file is empty".into()));
+        return match spec {
+            ByteRangeSpec::Full | ByteRangeSpec::Malformed => {
+                let (_tx, rx) = mpsc::channel::<DomainResult<Bytes>>(1);
+                Ok(ByteRangeStream {
+                    stream: MpscByteStream::into_boxed(rx),
+                    start: 0,
+                    end_inclusive: 0,
+                    total_size: 0,
+                })
+            }
+            ByteRangeSpec::FromTo { .. } | ByteRangeSpec::Suffix { .. } => {
+                Err(DomainError::RangeNotSatisfiable { total_size: 0 })
+            }
+        };
     }
 
     let (start, end_inclusive) = match spec {
-        ByteRangeSpec::Full => (0, total_size - 1),
+        // RFC 9110 §14.1.2: malformed Range headers are ignored and served as full 200 OK.
+        ByteRangeSpec::Full | ByteRangeSpec::Malformed => (0, total_size - 1),
         ByteRangeSpec::FromTo {
             start: s,
             end_inclusive: maybe_end,
@@ -116,9 +139,6 @@ pub async fn open_file_range_stream_spec(
             }
             let take_len = last_bytes.min(total_size);
             (total_size - take_len, total_size - 1)
-        }
-        ByteRangeSpec::Malformed => {
-            return Err(DomainError::RangeNotSatisfiable { total_size });
         }
     };
 
@@ -179,12 +199,26 @@ pub async fn move_or_copy_file(src: &Path, dest: &Path) -> DomainResult<u64> {
         })?;
     }
     if tokio::fs::rename(src, dest).await.is_err() {
-        tokio::fs::copy(src, dest).await.map_err(|e| {
-            DomainError::Storage(format!(
+        let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+        let file_name = dest
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("staged");
+        let staged = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::now_v7()));
+        if let Err(e) = tokio::fs::copy(src, &staged).await {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(DomainError::Storage(format!(
                 "failed to copy uploaded file to {}: {e}",
                 dest.display()
-            ))
-        })?;
+            )));
+        }
+        if let Err(e) = tokio::fs::rename(&staged, dest).await {
+            let _ = tokio::fs::remove_file(&staged).await;
+            return Err(DomainError::Storage(format!(
+                "failed to finalize uploaded file {}: {e}",
+                dest.display()
+            )));
+        }
         let _ = tokio::fs::remove_file(src).await;
     }
     let meta = tokio::fs::metadata(dest).await.map_err(|e| {
