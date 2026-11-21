@@ -1,21 +1,27 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import {
-  LuCheckCircle2,
+  LuArrowDownToLine,
+  LuArrowUpToLine,
   LuDownload,
   LuFlaskConical,
   LuKeyRound,
   LuLoader2,
+  LuMoreVertical,
+  LuPencil,
   LuPlus,
+  LuSearch,
   LuTrash2,
   LuUpload,
-  LuXCircle,
+  LuX,
 } from 'vue-icons-plus/lu'
 import AppSwitch from '@/components/ui/AppSwitch.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { onlineBookApi, type BookSourceSummaryDto } from '../onlineApi'
 import OnlineSourceDebugSheet from './OnlineSourceDebugSheet.vue'
+import OnlineSourceEditSheet from './OnlineSourceEditSheet.vue'
 import OnlineSourceLoginModal from './OnlineSourceLoginModal.vue'
 
 const props = defineProps<{
@@ -26,6 +32,7 @@ const emit = defineEmits<{
   refresh: []
 }>()
 
+const router = useRouter()
 const snackbar = useSnackbarStore()
 const dialogStore = useDialogStore()
 
@@ -35,9 +42,116 @@ const importing = ref(false)
 const importError = ref<string | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
+const searchQuery = ref('')
+const statusFilter = ref<'all' | 'enabled' | 'disabled'>('all')
+const groupFilter = ref<string>('__all__')
+
 const busyId = ref<string | null>(null)
 const loginModalSource = ref<BookSourceSummaryDto | null>(null)
+const editSheetSource = ref<BookSourceSummaryDto | null>(null)
 const debugSheetSource = ref<BookSourceSummaryDto | null>(null)
+
+// Floating MD3 overflow menu state
+const openMenuSourceId = ref<string | null>(null)
+const menuPos = ref<{ top: number; left: number }>({ top: 0, left: 0 })
+
+const openMenuSource = computed(
+  () => props.sources.find((s) => s.id === openMenuSourceId.value) ?? null,
+)
+
+const availableGroups = computed(() => {
+  const set = new Set<string>()
+  for (const s of props.sources) {
+    const g = s.group_name.trim()
+    if (g) set.add(g)
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
+
+const filteredSources = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  return props.sources.filter((s) => {
+    if (statusFilter.value === 'enabled' && !s.enabled) return false
+    if (statusFilter.value === 'disabled' && s.enabled) return false
+    if (groupFilter.value !== '__all__' && s.group_name.trim() !== groupFilter.value) return false
+    if (!q) return true
+    return (
+      s.name.toLowerCase().includes(q) ||
+      s.source_url.toLowerCase().includes(q) ||
+      s.group_name.toLowerCase().includes(q) ||
+      (s.comment ?? '').toLowerCase().includes(q)
+    )
+  })
+})
+
+function closeMenu(): void {
+  openMenuSourceId.value = null
+}
+
+function toggleSourceMenu(src: BookSourceSummaryDto, ev: MouseEvent): void {
+  if (openMenuSourceId.value === src.id) {
+    closeMenu()
+    return
+  }
+  const btn = ev.currentTarget as HTMLElement | null
+  if (!btn) return
+  const rect = btn.getBoundingClientRect()
+  const menuWidth = 176
+  const hasLogin = src.has_login_url || src.login_ui.length > 0
+  const estimatedHeight = hasLogin ? 320 : 280
+  const left = Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12))
+  const fitsBelow = rect.bottom + 6 + estimatedHeight <= window.innerHeight - 12
+  const top = fitsBelow
+    ? rect.bottom + 6
+    : Math.max(12, rect.top - 6 - estimatedHeight)
+  menuPos.value = { top, left }
+  openMenuSourceId.value = src.id
+}
+
+function onGlobalKeydown(ev: KeyboardEvent): void {
+  if (ev.key === 'Escape' && openMenuSourceId.value) {
+    closeMenu()
+  }
+}
+
+function onGlobalScrollOrResize(): void {
+  if (openMenuSourceId.value) {
+    closeMenu()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('resize', onGlobalScrollOrResize)
+  window.addEventListener('scroll', onGlobalScrollOrResize, true)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('resize', onGlobalScrollOrResize)
+  window.removeEventListener('scroll', onGlobalScrollOrResize, true)
+})
+
+function formatSourceHost(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl)
+    return u.host || rawUrl
+  } catch {
+    return rawUrl
+  }
+}
+
+function statusDotClass(src: BookSourceSummaryDto): string {
+  if (src.last_test_ok === true) return 'bg-[var(--md-sys-color-success)]'
+  if (src.last_test_ok === false) return 'bg-[var(--md-sys-color-error)]'
+  return 'bg-[var(--md-sys-color-outline)]/55'
+}
+
+function statusDotTitle(src: BookSourceSummaryDto): string {
+  if (src.last_test_ok === true) return src.last_test_msg || '最近测试通过'
+  if (src.last_test_ok === false) return src.last_test_msg || '最近测试失败'
+  return '尚未调试测试'
+}
 
 function triggerFileImport(): void {
   fileInputRef.value?.click()
@@ -92,7 +206,51 @@ async function handleToggleEnabled(src: BookSourceSummaryDto, nextVal: boolean):
   }
 }
 
+async function handlePinSource(src: BookSourceSummaryDto, position: 'top' | 'bottom'): Promise<void> {
+  closeMenu()
+  const weights = props.sources.map((s) => s.weight)
+  const targetWeight =
+    position === 'top'
+      ? (weights.length > 0 ? Math.max(...weights) : 0) + 10
+      : (weights.length > 0 ? Math.min(...weights) : 0) - 10
+
+  busyId.value = src.id
+  try {
+    await onlineBookApi.updateSource(src.id, { weight: targetWeight })
+    snackbar.show({
+      message: position === 'top' ? `已置顶「${src.name}」` : `已置底「${src.name}」`,
+    })
+    emit('refresh')
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    busyId.value = null
+  }
+}
+
+function handleOpenLogin(src: BookSourceSummaryDto): void {
+  closeMenu()
+  loginModalSource.value = src
+}
+
+function handleSearchWithSource(src: BookSourceSummaryDto): void {
+  closeMenu()
+  void router.push({
+    path: '/book/catalog',
+    query: { scope: 'online', source: src.id },
+  })
+}
+
+function handleOpenDebug(src: BookSourceSummaryDto): void {
+  closeMenu()
+  debugSheetSource.value = src
+}
+
 async function handleDeleteSource(src: BookSourceSummaryDto): Promise<void> {
+  closeMenu()
   const ok = await dialogStore.confirm({
     title: '删除书源',
     message: `确定删除书源「${src.name}」吗？该书源的本地章节缓存也将一并清理。`,
@@ -124,11 +282,27 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
 
 <template>
   <div class="space-y-4">
-    <!-- Top Actions -->
-    <div class="flex flex-wrap items-center justify-between gap-2">
-      <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-        导入 Legado JSON 书源
-      </p>
+    <!-- Top Toolbar: Search + Import Actions -->
+    <div class="flex flex-wrap items-center justify-between gap-2.5">
+      <div class="relative min-w-[13rem] flex-1 sm:max-w-xs">
+        <LuSearch
+          class="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
+        />
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="搜索书源名称、分组或网址…"
+          class="md-input w-full py-1.5 pr-8 pl-9 text-xs"
+        />
+        <button
+          v-if="searchQuery"
+          type="button"
+          class="absolute top-1/2 right-2 -translate-y-1/2 rounded-full p-0.5 text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-highest)]"
+          @click="searchQuery = ''"
+        >
+          <LuX class="h-3.5 w-3.5" />
+        </button>
+      </div>
 
       <div class="flex items-center gap-2">
         <input
@@ -144,7 +318,7 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
           @click="triggerFileImport"
         >
           <LuUpload class="h-3.5 w-3.5" />
-          <span>上传 JSON 文件</span>
+          <span>上传 JSON</span>
         </button>
         <button
           type="button"
@@ -152,9 +326,56 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
           @click="showImportBox = !showImportBox"
         >
           <LuPlus class="h-3.5 w-3.5" />
-          <span>粘贴导入书源</span>
+          <span>粘贴导入</span>
         </button>
       </div>
+    </div>
+
+    <!-- Filter Chips (Status + Groups) -->
+    <div v-if="props.sources.length > 0" class="flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'all' && groupFilter === '__all__' ? 'md-chip-selected' : ''"
+        @click="
+          statusFilter = 'all';
+          groupFilter = '__all__'
+        "
+      >
+        全部 ({{ props.sources.length }})
+      </button>
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'enabled' ? 'md-chip-selected' : ''"
+        @click="statusFilter = statusFilter === 'enabled' ? 'all' : 'enabled'"
+      >
+        已启用 ({{ props.sources.filter((s) => s.enabled).length }})
+      </button>
+      <button
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="statusFilter === 'disabled' ? 'md-chip-selected' : ''"
+        @click="statusFilter = statusFilter === 'disabled' ? 'all' : 'disabled'"
+      >
+        已禁用 ({{ props.sources.filter((s) => !s.enabled).length }})
+      </button>
+
+      <span
+        v-if="availableGroups.length > 0"
+        class="mx-1 h-3.5 w-px bg-[var(--md-sys-color-outline-variant)]"
+      />
+
+      <button
+        v-for="grp in availableGroups"
+        :key="grp"
+        type="button"
+        class="md-chip md-state !h-7 !rounded-full !px-3 !text-xs"
+        :class="groupFilter === grp ? 'md-chip-selected' : ''"
+        @click="groupFilter = groupFilter === grp ? '__all__' : grp"
+      >
+        {{ grp }}
+      </button>
     </div>
 
     <!-- Paste Import Box -->
@@ -205,118 +426,199 @@ function handleSourceUpdated(updated: BookSourceSummaryDto): void {
       </p>
     </div>
 
-    <!-- Sources List -->
-    <div v-else class="space-y-2.5">
+    <!-- Empty Filter Result -->
+    <div
+      v-else-if="filteredSources.length === 0"
+      class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-12 text-center"
+    >
+      <p class="text-sm font-medium text-[var(--md-sys-color-on-surface)]">没有匹配的书源</p>
+      <button
+        type="button"
+        class="md-btn md-btn-sm md-btn-text md-state mt-2"
+        @click="
+          searchQuery = '';
+          statusFilter = 'all';
+          groupFilter = '__all__'
+        "
+      >
+        清除筛选条件
+      </button>
+    </div>
+
+    <!-- Minimal MD3 Source Cards (inspired by legado-with-MD3) -->
+    <div v-else class="space-y-2">
       <div
-        v-for="src in props.sources"
+        v-for="src in filteredSources"
         :key="src.id"
-        class="md-card-filled space-y-2.5 p-4 transition"
+        class="flex items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-4 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container-high)]/75"
         :class="!src.enabled ? 'opacity-65' : ''"
       >
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <span class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-                {{ src.name }}
-              </span>
-              <span
-                v-if="src.group_name"
-                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ src.group_name }}
-              </span>
-              <span
-                v-if="src.cookie_hosts.length > 0"
-                class="rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
-              >
-                已存 Cookie ({{ src.cookie_hosts.length }})
-              </span>
-              <span
-                v-if="src.last_test_ok === true"
-                :title="src.last_test_msg || '测试通过'"
-                class="inline-flex max-w-xs items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
-              >
-                <LuCheckCircle2 class="h-3 w-3 shrink-0" />
-                <span class="truncate">{{ src.last_test_msg || '测试通过' }}</span>
-              </span>
-              <span
-                v-else-if="src.last_test_ok === false"
-                :title="src.last_test_msg || '测试失败'"
-                class="inline-flex max-w-xs items-center gap-1 rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-error-container)]"
-              >
-                <LuXCircle class="h-3 w-3 shrink-0" />
-                <span class="truncate">{{ src.last_test_msg || '测试失败' }}</span>
-              </span>
-            </div>
-            <p class="mt-0.5 truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              {{ src.source_url }}
-            </p>
-            <p
-              v-if="src.comment"
-              class="mt-1 line-clamp-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+        <!-- Left: Source Name + Status Dot & Compact Meta -->
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2">
+            <span class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+              {{ src.name }}
+            </span>
+            <span
+              v-if="src.group_name"
+              class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
             >
-              {{ src.comment }}
-            </p>
+              {{ src.group_name }}
+            </span>
           </div>
 
-          <!-- Controls -->
-          <div class="flex shrink-0 flex-wrap items-center gap-1.5">
-            <AppSwitch
-              :model-value="src.enabled"
-              :disabled="busyId === src.id"
-              :title="src.enabled ? '禁用书源' : '启用书源'"
-              @update:model-value="(val) => handleToggleEnabled(src, val)"
+          <div class="mt-1.5 flex items-center gap-2">
+            <span
+              class="h-2.5 w-2.5 shrink-0 rounded-full"
+              :class="statusDotClass(src)"
+              :title="statusDotTitle(src)"
             />
-
-            <button
-              v-if="src.has_login_url || src.login_ui.length > 0"
-              type="button"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
-              title="打开书源登录面板"
-              @click="loginModalSource = src"
+            <span class="truncate font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              {{ formatSourceHost(src.source_url) }}
+            </span>
+            <span
+              v-if="src.cookie_hosts.length > 0"
+              class="shrink-0 text-[10px] text-[var(--md-sys-color-on-surface-variant)]/85"
             >
-              <LuKeyRound class="h-3.5 w-3.5" />
-              <span>登录</span>
-            </button>
-
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-outlined md-state"
-              title="打开书源规则调试器，指定关键词测试各条规则"
-              @click="debugSheetSource = src"
-            >
-              <LuFlaskConical class="h-3.5 w-3.5" />
-              <span>测试</span>
-            </button>
-
-            <a
-              :href="onlineBookApi.exportSourceUrl(src.id)"
-              :download="`${src.name}.json`"
-              class="md-icon-btn md-icon-btn-sm md-state"
-              title="导出书源 JSON"
-            >
-              <LuDownload class="h-4 w-4" />
-            </a>
-
-            <button
-              type="button"
-              :disabled="busyId === src.id"
-              class="md-icon-btn md-icon-btn-sm md-state !text-[var(--md-sys-color-error)] hover:bg-[var(--md-sys-color-error-container)]/50"
-              title="删除书源"
-              @click="handleDeleteSource(src)"
-            >
-              <LuTrash2 class="h-4 w-4" />
-            </button>
+              · Cookie({{ src.cookie_hosts.length }})
+            </span>
           </div>
+        </div>
+
+        <!-- Right: Switch + Edit + Overflow Menu -->
+        <div class="flex shrink-0 items-center gap-1.5">
+          <AppSwitch
+            :model-value="src.enabled"
+            :disabled="busyId === src.id"
+            :title="src.enabled ? '禁用书源' : '启用书源'"
+            @update:model-value="(val) => handleToggleEnabled(src, val)"
+          />
+
+          <button
+            type="button"
+            class="md-icon-btn md-icon-btn-sm md-state"
+            title="编辑书源"
+            @click="editSheetSource = src"
+          >
+            <LuPencil class="h-4 w-4" />
+          </button>
+
+          <button
+            type="button"
+            class="md-icon-btn md-icon-btn-sm md-state"
+            :aria-expanded="openMenuSourceId === src.id"
+            aria-haspopup="menu"
+            title="更多操作"
+            @click.stop="toggleSourceMenu(src, $event)"
+          >
+            <LuMoreVertical class="h-4 w-4" />
+          </button>
         </div>
       </div>
     </div>
+
+    <!-- Teleported MD3 Overflow Menu -->
+    <Teleport to="body">
+      <div
+        v-if="openMenuSource"
+        class="fixed inset-0 z-[var(--z-popover,60)]"
+        @mousedown="closeMenu"
+      >
+        <div
+          role="menu"
+          class="fixed w-44 space-y-0.5 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-1.5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+          :style="{ top: `${menuPos.top}px`, left: `${menuPos.left}px` }"
+          @mousedown.stop
+        >
+          <button
+            type="button"
+            role="menuitem"
+            class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium"
+            @click="handlePinSource(openMenuSource, 'top')"
+          >
+            <LuArrowUpToLine class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+            <span>置顶</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium"
+            @click="handlePinSource(openMenuSource, 'bottom')"
+          >
+            <LuArrowDownToLine class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+            <span>置底</span>
+          </button>
+
+          <button
+            v-if="openMenuSource.has_login_url || openMenuSource.login_ui.length > 0"
+            type="button"
+            role="menuitem"
+            class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium"
+            @click="handleOpenLogin(openMenuSource)"
+          >
+            <LuKeyRound class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+            <span>登录</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium"
+            @click="handleSearchWithSource(openMenuSource)"
+          >
+            <LuSearch class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+            <span>搜索</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium"
+            @click="handleOpenDebug(openMenuSource)"
+          >
+            <LuFlaskConical class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+            <span>调试</span>
+          </button>
+
+          <a
+            role="menuitem"
+            :href="onlineBookApi.exportSourceUrl(openMenuSource.id)"
+            :download="`${openMenuSource.name}.json`"
+            class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium"
+            @click="closeMenu"
+          >
+            <LuDownload class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+            <span>导出 JSON</span>
+          </a>
+
+          <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/50" />
+
+          <button
+            type="button"
+            role="menuitem"
+            class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-error)]"
+            @click="handleDeleteSource(openMenuSource)"
+          >
+            <LuTrash2 class="h-4 w-4" />
+            <span>删除</span>
+          </button>
+        </div>
+      </div>
+    </Teleport>
 
     <OnlineSourceLoginModal
       :open="loginModalSource !== null"
       :source="loginModalSource"
       @close="loginModalSource = null"
       @updated="handleSourceUpdated"
+    />
+
+    <OnlineSourceEditSheet
+      :open="editSheetSource !== null"
+      :source="editSheetSource"
+      @close="editSheetSource = null"
+      @saved="emit('refresh')"
     />
 
     <OnlineSourceDebugSheet

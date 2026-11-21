@@ -40,6 +40,11 @@ const dialogStore = useDialogStore()
 
 const showFilters = ref(false)
 const searchScope = ref<CatalogSearchScope>(route.query.scope === 'online' ? 'online' : 'local')
+const onlineSourceId = computed(() =>
+  typeof route.query.source === 'string' && route.query.source.trim()
+    ? route.query.source.trim()
+    : null,
+)
 let syncingRouteQuery = false
 
 const showSearchScopeSwitch = computed(
@@ -351,6 +356,7 @@ async function refreshPage(): Promise<void> {
     <OnlineBookSearchSection
       v-if="searchScope === 'online'"
       :keyword="catalogStore.keyword"
+      :initial-source-id="onlineSourceId"
       @update:keyword="handleOnlineKeywordUpdate"
     />
 

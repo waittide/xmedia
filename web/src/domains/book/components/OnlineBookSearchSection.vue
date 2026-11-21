@@ -28,6 +28,7 @@ import {
 
 const props = defineProps<{
   keyword: string
+  initialSourceId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -68,6 +69,15 @@ const modalTrackedJob = computed<OnlineDownloadJobDto | null>(() => {
 })
 
 watch(
+  () => props.initialSourceId,
+  (nextId) => {
+    if (nextId && sources.value.some((s) => s.id === nextId)) {
+      selectedSourceIds.value = [nextId]
+    }
+  },
+)
+
+watch(
   () => props.keyword,
   (next) => {
     const trimmed = next.trim()
@@ -91,6 +101,9 @@ async function initData(): Promise<void> {
       bookApi.searchBooks({ page: 1, page_size: 200 }).catch(() => null),
     ])
     sources.value = srcList
+    if (props.initialSourceId && srcList.some((s) => s.id === props.initialSourceId)) {
+      selectedSourceIds.value = [props.initialSourceId]
+    }
     if (existingPage) {
       const map: Record<string, string> = {}
       for (const b of existingPage.items) {

@@ -316,6 +316,9 @@ export const onlineBookApi = {
   exportSourceUrl: (id: string): string =>
     withAuthToken(`/api/v1/book/sources/${encodeURIComponent(id)}/export`),
 
+  fetchSourceJson: (id: string): Promise<Record<string, unknown>> =>
+    requestJson(`/book/sources/${encodeURIComponent(id)}/export`),
+
   runLoginAction: (
     id: string,
     loginInfo: Record<string, string>,
