@@ -232,11 +232,40 @@ impl ScrapeMetadataCache {
                 if std::fs::write(&tmp_path, &bytes).is_ok() {
                     if std::fs::rename(&tmp_path, &final_path).is_err() {
                         let _ = std::fs::remove_file(&tmp_path);
+                    } else if seq.is_multiple_of(64) {
+                        Self::prune_disk_cache(dir, 2048);
                     }
                 } else {
                     let _ = std::fs::remove_file(&tmp_path);
                 }
             }
+        }
+    }
+
+    fn prune_disk_cache(dir: &std::path::Path, max_entries: usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut files: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            if let Ok(meta) = entry.metadata()
+                && meta.is_file()
+            {
+                let mtime = meta.modified().unwrap_or(UNIX_EPOCH);
+                files.push((p, mtime));
+            }
+        }
+        if files.len() <= max_entries {
+            return;
+        }
+        files.sort_by_key(|(_, mtime)| *mtime);
+        let remove_count = files.len().saturating_sub(max_entries);
+        for (path, _) in files.into_iter().take(remove_count) {
+            let _ = std::fs::remove_file(path);
         }
     }
 
@@ -281,14 +310,22 @@ impl ScrapeMetadataCache {
             }
             total_entries += 1;
             total_bytes += meta.len();
-            if ttl_ms > 0
-                && let Ok(modified) = meta.modified()
-                && let Ok(mod_ms) = modified
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                && now.saturating_sub(mod_ms) < ttl_ms
-            {
-                valid_entries += 1;
+            if ttl_ms > 0 {
+                let created_ms = std::fs::read(&p)
+                    .ok()
+                    .and_then(|b| {
+                        serde_json::from_slice::<CachedEnvelope<serde_json::Value>>(&b).ok()
+                    })
+                    .map(|e| e.created_at_ms)
+                    .or_else(|| {
+                        meta.modified()
+                            .ok()
+                            .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as u64)
+                    });
+                if created_ms.is_some_and(|ts| now.saturating_sub(ts) < ttl_ms) {
+                    valid_entries += 1;
+                }
             }
         }
 

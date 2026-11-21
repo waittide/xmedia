@@ -540,7 +540,11 @@ impl ScraperProviderPort for TaiheMusicProvider {
 
         let mut lrc_raw: Option<String> = None;
         if let Some(lrc_url) = normalize_cover_url(&song.lyric)
-            && let Ok(r) = client.get(&lrc_url).send().await
+            && crate::infra::scrapers::http_client::validate_artwork_http_url(&lrc_url, false)
+                .is_ok()
+            && let Ok(lrc_client) =
+                crate::infra::scrapers::http_client::build_ssrf_safe_http_client(creds, false)
+            && let Ok(r) = lrc_client.get(&lrc_url).send().await
             && r.status().is_success()
         {
             lrc_raw = read_response_text(r, UTF_8).await.ok();

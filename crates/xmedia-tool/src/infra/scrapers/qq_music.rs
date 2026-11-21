@@ -683,6 +683,12 @@ impl ScraperProviderPort for QqMusicProvider {
                 .send()
                 .await
                 .map_err(|e| DomainError::Storage(format!("QQ音乐 album detail failed: {e}")))?;
+            if !resp.status().is_success() {
+                return Err(DomainError::Storage(format!(
+                    "QQ音乐 album detail returned HTTP {}",
+                    resp.status().as_u16()
+                )));
+            }
             let env: QqAlbumDetailEnvelope = read_json_response(resp, "QQ音乐 album").await?;
             if env.album.code != 0 {
                 return Err(DomainError::NotFound(format!(
@@ -728,6 +734,12 @@ impl ScraperProviderPort for QqMusicProvider {
 
         let detail_resp = detail_res
             .map_err(|e| DomainError::Storage(format!("QQ音乐 song detail failed: {e}")))?;
+        if !detail_resp.status().is_success() {
+            return Err(DomainError::Storage(format!(
+                "QQ音乐 song detail returned HTTP {}",
+                detail_resp.status().as_u16()
+            )));
+        }
         let detail_env: QqSongDetailEnvelope =
             read_json_response(detail_resp, "QQ音乐 song detail").await?;
         if detail_env.songinfo.code != 0 {

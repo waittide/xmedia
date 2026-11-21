@@ -482,7 +482,7 @@ impl ScraperProviderPort for NeteaseMusicProvider {
                 .or(song.duration)
                 .filter(|&ms| ms > 0)
                 .map(|ms| (ms / 1000) as u32);
-            let pop_votes = song.pop.unwrap_or(0.0).max(0.0) as u32 * 25;
+            let pop_votes = (song.pop.unwrap_or(0.0).max(0.0) as u32).saturating_mul(25);
 
             let score = score_music_candidate(
                 query,

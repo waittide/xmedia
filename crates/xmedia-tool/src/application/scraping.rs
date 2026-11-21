@@ -898,14 +898,26 @@ impl ScrapingOrchestratorService {
                     if only_fill_missing && already_has {
                         continue;
                     }
-                    if let Some(u) = url_opt.map(str::trim).filter(|s| !s.is_empty())
-                        && let Ok((bytes, mime)) =
-                            download_image_bytes(&client, u, self.allow_private_artwork_ips).await
-                    {
-                        detail = self
-                            .workbench
-                            .write_artwork(root_id, rel_path, &bytes, &mime, slot, Some(media_kind))
-                            .await?;
+                    if let Some(u) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
+                        match download_image_bytes(&client, u, self.allow_private_artwork_ips).await
+                        {
+                            Ok((bytes, mime)) => {
+                                detail = self
+                                    .workbench
+                                    .write_artwork(
+                                        root_id,
+                                        rel_path,
+                                        &bytes,
+                                        &mime,
+                                        slot,
+                                        Some(media_kind),
+                                    )
+                                    .await?;
+                            }
+                            Err(err) => {
+                                warn!("failed downloading video {slot} artwork '{u}': {err}");
+                            }
+                        }
                     }
                 }
             } else {
@@ -916,25 +928,34 @@ impl ScrapingOrchestratorService {
                     && !cover_url.trim().is_empty()
                 {
                     let need_embedded = !(only_fill_missing && already_has_cover);
-                    if (need_embedded || (media_kind == MediaKind::Music && write_album_cover))
-                        && let Ok((bytes, mime)) =
-                            download_image_bytes(&client, cover_url, self.allow_private_artwork_ips)
-                                .await
-                    {
-                        if need_embedded {
-                            detail = self
-                                .workbench
-                                .write_artwork(
-                                    root_id,
-                                    rel_path,
-                                    &bytes,
-                                    &mime,
-                                    "cover",
-                                    Some(media_kind),
-                                )
-                                .await?;
+                    if need_embedded || (media_kind == MediaKind::Music && write_album_cover) {
+                        match download_image_bytes(
+                            &client,
+                            cover_url,
+                            self.allow_private_artwork_ips,
+                        )
+                        .await
+                        {
+                            Ok((bytes, mime)) => {
+                                if need_embedded {
+                                    detail = self
+                                        .workbench
+                                        .write_artwork(
+                                            root_id,
+                                            rel_path,
+                                            &bytes,
+                                            &mime,
+                                            "cover",
+                                            Some(media_kind),
+                                        )
+                                        .await?;
+                                }
+                                cached_cover_download = Some((bytes, mime));
+                            }
+                            Err(err) => {
+                                warn!("failed downloading cover artwork '{cover_url}': {err}");
+                            }
                         }
-                        cached_cover_download = Some((bytes, mime));
                     }
                 }
             }
@@ -960,26 +981,33 @@ impl ScrapingOrchestratorService {
                     && !detail.entry.extension.eq_ignore_ascii_case("epub")
                     && let Ok(root) = self.settings.find_root(root_id).await
                     && let Ok(dst_sb) = resolve_existing_in_root(&root, &plan.to_rel_path)
-                    && let Some(dst_dir) = dst_sb.abs_path.parent()
-                    && dst_dir != root.path
-                    && dst_dir
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|n| !is_generic_book_folder(n))
-                    && dir_has_single_book(dst_dir)
                 {
-                    let stem_opf = dst_sb.abs_path.with_extension("opf");
-                    let calibre_opf = dst_dir.join("metadata.opf");
-                    if stem_opf.is_file() && !calibre_opf.exists() {
-                        let _ = std::fs::rename(&stem_opf, &calibre_opf);
-                    }
-                    for ext in ["jpg", "jpeg", "png", "webp"] {
-                        let stem_cov = dst_sb.abs_path.with_extension(ext);
-                        let calibre_cov = dst_dir.join(format!("cover.{ext}"));
-                        if stem_cov.is_file() && !calibre_cov.exists() {
-                            let _ = std::fs::rename(&stem_cov, &calibre_cov);
+                    let root_path = root.path.clone();
+                    let dst_abs = dst_sb.abs_path.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Some(dst_dir) = dst_abs.parent()
+                            && dst_dir != root_path
+                            && dst_dir
+                                .file_name()
+                                .and_then(|s| s.to_str())
+                                .is_some_and(|n| !is_generic_book_folder(n))
+                            && dir_has_single_book(dst_dir)
+                        {
+                            let stem_opf = dst_abs.with_extension("opf");
+                            let calibre_opf = dst_dir.join("metadata.opf");
+                            if stem_opf.is_file() && !calibre_opf.exists() {
+                                let _ = std::fs::rename(&stem_opf, &calibre_opf);
+                            }
+                            for ext in ["jpg", "jpeg", "png", "webp"] {
+                                let stem_cov = dst_abs.with_extension(ext);
+                                let calibre_cov = dst_dir.join(format!("cover.{ext}"));
+                                if stem_cov.is_file() && !calibre_cov.exists() {
+                                    let _ = std::fs::rename(&stem_cov, &calibre_cov);
+                                }
+                            }
                         }
-                    }
+                    })
+                    .await;
                 }
                 detail = self
                     .workbench
@@ -1052,7 +1080,7 @@ impl ScrapingOrchestratorService {
 
         // For Comics (Komga/Kavita convention): write series-level `cover.*` in the dedicated
         // series directory AFTER organizing, without injecting an extra page into each chapter CBZ.
-        if apply_cover && media_kind == MediaKind::Comic {
+        if effective_apply_cover && media_kind == MediaKind::Comic {
             let parent_dir_name = Path::new(&detail.entry.rel_path)
                 .parent()
                 .and_then(|p| p.file_name())
@@ -1255,6 +1283,25 @@ impl ScrapingOrchestratorService {
             }
         }
 
+        let will_replace_poster = !skip_poster
+            && scraped
+                .cover_url
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|u| downloaded_images.contains_key(u));
+        let will_replace_fanart = !skip_fanart
+            && scraped
+                .backdrop_url
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|u| downloaded_images.contains_key(u));
+        let will_replace_thumb = !skip_thumb
+            && scraped
+                .episode_still_url
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|u| downloaded_images.contains_key(u));
+
         // 4. Perform filesystem move, subtitle migration, 3-tier NFO generation & Jellyfin artwork writes
         let root_path_buf = root.path.clone();
         let src_abs = src_sandbox.abs_path.clone();
@@ -1294,7 +1341,7 @@ impl ScrapingOrchestratorService {
                         let _ = std::fs::rename(&comp_abs, &sub_dst);
                     }
                 } else if dst_abs_clone != src_abs {
-                    // Preserve existing local poster/fanart/thumb when online download isn't replacing that slot
+                    // Preserve existing local poster/fanart/thumb whenever no replacement was downloaded
                     let image_ext = |p_lower: &str| -> &'static str {
                         if p_lower.ends_with(".png") {
                             "png"
@@ -1304,28 +1351,31 @@ impl ScrapingOrchestratorService {
                             "jpg"
                         }
                     };
-                    if lower.contains("-poster.") && skip_poster {
+                    let mut should_remove_old = true;
+                    if lower.contains("-poster.") && !will_replace_poster {
                         let target_poster_dir = if meta.is_episode { &show_dir } else { &dst_dir };
                         let migrated =
                             target_poster_dir.join(format!("poster.{}", image_ext(&lower)));
-                        if !migrated.exists() {
-                            let _ = std::fs::copy(&comp_abs, &migrated);
+                        if !migrated.exists() && std::fs::copy(&comp_abs, &migrated).is_err() {
+                            should_remove_old = false;
                         }
-                    } else if lower.contains("-fanart.") && skip_fanart {
+                    } else if lower.contains("-fanart.") && !will_replace_fanart {
                         let target_fan_dir = if meta.is_episode { &show_dir } else { &dst_dir };
                         let migrated = target_fan_dir.join(format!("fanart.{}", image_ext(&lower)));
-                        if !migrated.exists() {
-                            let _ = std::fs::copy(&comp_abs, &migrated);
+                        if !migrated.exists() && std::fs::copy(&comp_abs, &migrated).is_err() {
+                            should_remove_old = false;
                         }
-                    } else if lower.contains("-thumb.") && skip_thumb {
+                    } else if lower.contains("-thumb.") && !will_replace_thumb {
                         let migrated =
                             dst_dir.join(format!("{target_stem}-thumb.{}", image_ext(&lower)));
-                        if !migrated.exists() {
-                            let _ = std::fs::copy(&comp_abs, &migrated);
+                        if !migrated.exists() && std::fs::copy(&comp_abs, &migrated).is_err() {
+                            should_remove_old = false;
                         }
                     }
                     // Clean up flat legacy sidecars (`<old>.nfo`, `<old>-poster.*`, `<old>-fanart.*`, `<old>-thumb.*`)
-                    let _ = std::fs::remove_file(&comp_abs);
+                    if should_remove_old {
+                        let _ = std::fs::remove_file(&comp_abs);
+                    }
                 }
             }
 
@@ -1718,13 +1768,21 @@ fn apply_video_locked_fields(
 
 fn has_lrc_timestamps(text: &str) -> bool {
     text.lines().any(|line| {
-        let b = line.trim_start().as_bytes();
-        b.len() >= 6
-            && b[0] == b'['
-            && b[1].is_ascii_digit()
-            && b[2].is_ascii_digit()
-            && b[3] == b':'
-            && b[4].is_ascii_digit()
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix('[') else {
+            return false;
+        };
+        let Some((min_part, after_colon)) = rest.split_once(':') else {
+            return false;
+        };
+        if min_part.is_empty()
+            || min_part.len() > 4
+            || !min_part.bytes().all(|b| b.is_ascii_digit())
+        {
+            return false;
+        }
+        let sec_bytes = after_colon.as_bytes();
+        sec_bytes.len() >= 2 && sec_bytes[0].is_ascii_digit() && sec_bytes[1].is_ascii_digit()
     })
 }
 

@@ -27,9 +27,9 @@ use crate::infra::scrapers::cn_novel_common::{
 
 pub struct KuwoMusicProvider;
 
-const KW_SEARCH_URL: &str = "http://search.kuwo.cn/r.s";
+const KW_SEARCH_URL: &str = "https://search.kuwo.cn/r.s";
 const KW_SONG_LRC_URL: &str = "https://m.kuwo.cn/newh5/singles/songinfoandlrc";
-const KW_NEWLYRIC_URL: &str = "http://newlyric.kuwo.cn/newlyric.lrc";
+const KW_NEWLYRIC_URL: &str = "https://newlyric.kuwo.cn/newlyric.lrc";
 const KW_PIC_WEB_URL: &str = "https://artistpicserver.kuwo.cn/pic.web";
 const YEELION_KEY: &[u8] = b"yeelion";
 

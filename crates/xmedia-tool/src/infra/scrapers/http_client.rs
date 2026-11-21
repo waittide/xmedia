@@ -288,8 +288,11 @@ pub fn get_or_build_http_client(
         .map_err(|e| DomainError::Storage(format!("failed building HTTP client: {e}")))?;
 
     let mut guard = HTTP_CLIENT_CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if guard.len() >= MAX_CACHED_HTTP_CLIENTS && !guard.contains_key(&key) {
-        guard.clear();
+    if guard.len() >= MAX_CACHED_HTTP_CLIENTS
+        && !guard.contains_key(&key)
+        && let Some(evict_key) = guard.keys().next().cloned()
+    {
+        guard.remove(&evict_key);
     }
     Ok(guard.entry(key).or_insert(client).clone())
 }

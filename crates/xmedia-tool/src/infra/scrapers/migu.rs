@@ -620,9 +620,13 @@ impl ScraperProviderPort for MiguMusicProvider {
             alb_env.resource.into_iter().next()
         };
 
+        let lrc_client =
+            crate::infra::scrapers::http_client::build_ssrf_safe_http_client(creds, false).ok();
         let lrc_fut = async {
             let u = lrc_url_opt.as_deref()?;
-            let r = client.get(u).send().await.ok()?;
+            crate::infra::scrapers::http_client::validate_artwork_http_url(u, false).ok()?;
+            let c = lrc_client.as_ref()?;
+            let r = c.get(u).send().await.ok()?;
             if !r.status().is_success() {
                 return None;
             }

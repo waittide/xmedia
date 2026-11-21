@@ -19,13 +19,13 @@ use crate::infra::scrapers::cn_novel_common::{
 
 pub struct KugouMusicProvider;
 
-const KG_SONG_SEARCH_URL: &str = "http://mobilecdn.kugou.com/api/v3/search/song";
-const KG_ALBUM_SEARCH_URL: &str = "http://mobilecdn.kugou.com/api/v3/search/album";
-const KG_ALBUM_INFO_URL: &str = "http://mobilecdn.kugou.com/api/v3/album/info";
-const KG_ALBUM_SONG_URL: &str = "http://mobilecdn.kugou.com/api/v3/album/song";
-const KG_SONG_INFO_URL: &str = "http://m.kugou.com/app/i/getSongInfo.php";
-const KG_LYRIC_SEARCH_URL: &str = "http://krcs.kugou.com/search";
-const KG_LYRIC_DOWNLOAD_URL: &str = "http://lyrics.kugou.com/download";
+const KG_SONG_SEARCH_URL: &str = "https://mobilecdn.kugou.com/api/v3/search/song";
+const KG_ALBUM_SEARCH_URL: &str = "https://mobilecdn.kugou.com/api/v3/search/album";
+const KG_ALBUM_INFO_URL: &str = "https://mobilecdn.kugou.com/api/v3/album/info";
+const KG_ALBUM_SONG_URL: &str = "https://mobilecdn.kugou.com/api/v3/album/song";
+const KG_SONG_INFO_URL: &str = "https://m.kugou.com/app/i/getSongInfo.php";
+const KG_LYRIC_SEARCH_URL: &str = "https://krcs.kugou.com/search";
+const KG_LYRIC_DOWNLOAD_URL: &str = "https://lyrics.kugou.com/download";
 
 #[derive(Debug, Deserialize, Default)]
 pub(crate) struct KgSongSearchItem {

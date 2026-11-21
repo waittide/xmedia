@@ -40,9 +40,6 @@ static RE_NBG_COVER: LazyLock<Regex> = LazyLock::new(|| {
 static RE_MAINPIC_IMG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)<div[^>]+id="mainpic"[^>]*>.*?<img[^>]+src="([^"]+)""#).unwrap()
 });
-static RE_INTRO_DIV: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?is)<div[^>]+id="link-report"[^>]*>(.*?)</div>\s*<style|(?:<div[^>]+class="[^"]*\bintro\b[^"]*"[^>]*>(.*?)</div>)"#).unwrap()
-});
 static RE_SINGLE_INTRO: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?is)<div[^>]+class="[^"]*\bintro\b[^"]*"[^>]*>(.*?)</div>"#).unwrap()
 });
@@ -242,7 +239,6 @@ pub(crate) fn parse_douban_subject_html(
         });
         &tail[..end]
     } else {
-        let _ = &*RE_INTRO_DIV;
         html
     };
     let summary = RE_SINGLE_INTRO

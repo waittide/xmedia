@@ -261,13 +261,16 @@ fn extract_balanced_json_after(html: &str, marker: &str) -> Option<String> {
 }
 
 async fn resolve_qishui_direct_id(
-    client: &reqwest::Client,
+    creds: &ProviderCredentials,
     raw: &str,
     is_album: bool,
 ) -> Option<String> {
     let trimmed = raw.trim();
     if let Some(m) = RE_QS_SHORT_URL.find(trimmed)
-        && let Ok(resp) = client
+        && crate::infra::scrapers::http_client::validate_artwork_http_url(m.as_str(), false).is_ok()
+        && let Ok(safe_client) =
+            crate::infra::scrapers::http_client::build_ssrf_safe_http_client(creds, false)
+        && let Ok(resp) = safe_client
             .get(m.as_str())
             .header(reqwest::header::REFERER, QS_REFERER)
             .send()
@@ -465,7 +468,7 @@ impl ScraperProviderPort for QishuiMusicProvider {
         let is_album = target == ScrapeTargetKind::MusicAlbum;
         let client = build_browser_http_client(creds, false)?;
 
-        if let Some(direct_id) = resolve_qishui_direct_id(&client, &query.keyword, is_album).await
+        if let Some(direct_id) = resolve_qishui_direct_id(creds, &query.keyword, is_album).await
             && let Ok(detail) = self.fetch_detail(&direct_id, target, "zh-CN", creds).await
             && let Some(title) = detail.title
         {

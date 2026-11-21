@@ -225,7 +225,7 @@ impl ScraperProviderPort for K17Provider {
 
         let client = build_browser_http_client(creds, true)?;
         let resp = client
-            .get("http://api.ali.17k.com/v2/book/search")
+            .get("https://api.ali.17k.com/v2/book/search")
             .query(&[
                 ("app_key", K17_PUBLIC_APP_KEY),
                 ("key", kw),
