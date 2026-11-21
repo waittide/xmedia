@@ -165,4 +165,11 @@ export default {
     scanCompleted: 'Scanned {scanned} · +{added} new · {updated} updated · {missing} missing',
     scanFailed: 'Scan failed: {message}',
   },
+  online: {
+    scopeLocal: 'Local Library',
+    scopeOnline: 'Online Sources',
+    searchPlaceholder: 'Search online tracks or artists…',
+    allSources: 'All Sources',
+    noResults: 'No matching online tracks found',
+  },
 }

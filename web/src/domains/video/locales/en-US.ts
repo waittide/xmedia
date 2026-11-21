@@ -130,4 +130,12 @@ export default {
     scanCompleted: 'Scanned {scanned} · +{added} new · {updated} updated · {missing} missing',
     scanFailed: 'Scan failed: {message}',
   },
+  online: {
+    scopeLocal: 'Local Library',
+    scopeOnline: 'Online Sources',
+    searchPlaceholder: 'Search online videos…',
+    allSources: 'All Sources',
+    allCategories: 'All Categories',
+    noResults: 'No matching online videos found',
+  },
 }

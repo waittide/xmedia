@@ -177,4 +177,13 @@ export default {
     save: '保存',
     delete: '删除',
   },
+  online: {
+    scopeLocal: '本地漫画库',
+    scopeOnline: '在线漫画源',
+    searchPlaceholder: '搜索在线漫画…',
+    allSources: '全部漫画源',
+    chaptersCount: '共 {count} 话',
+    pagesCount: '共 {count} 页',
+    noResults: '未找到匹配的在线漫画',
+  },
 }

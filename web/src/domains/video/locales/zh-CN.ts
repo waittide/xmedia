@@ -130,4 +130,12 @@ export default {
     scanCompleted: '扫描 {scanned} 项 · 新增 {added} · 更新 {updated} · 缺失 {missing}',
     scanFailed: '扫描失败：{message}',
   },
+  online: {
+    scopeLocal: '本地影视库',
+    scopeOnline: '在线影视源',
+    searchPlaceholder: '搜索在线影视…',
+    allSources: '全部影视源',
+    allCategories: '全部分类',
+    noResults: '未找到匹配的在线影视',
+  },
 }

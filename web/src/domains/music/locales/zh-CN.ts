@@ -165,4 +165,11 @@ export default {
     scanCompleted: '扫描 {scanned} 项 · 新增 {added} · 更新 {updated} · 缺失 {missing}',
     scanFailed: '扫描失败：{message}',
   },
+  online: {
+    scopeLocal: '本地曲库',
+    scopeOnline: '在线音乐源',
+    searchPlaceholder: '搜索在线歌曲、歌手…',
+    allSources: '全部音乐源',
+    noResults: '未找到匹配的在线歌曲',
+  },
 }

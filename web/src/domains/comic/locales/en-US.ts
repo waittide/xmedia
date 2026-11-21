@@ -177,4 +177,13 @@ export default {
     save: 'Save',
     delete: 'Delete',
   },
+  online: {
+    scopeLocal: 'Local Library',
+    scopeOnline: 'Online Sources',
+    searchPlaceholder: 'Search online comics…',
+    allSources: 'All Sources',
+    chaptersCount: '{count} chapters',
+    pagesCount: '{count} pages',
+    noResults: 'No matching online comics found',
+  },
 }
