@@ -543,6 +543,11 @@ impl ReusableSourceSession {
         Ok(())
     }
 
+    pub fn remaining_budget(&self) -> Duration {
+        let deadline = self.op_deadline_ms.load(Ordering::Relaxed);
+        Duration::from_millis(deadline.saturating_sub(now_mono_ms()))
+    }
+
     pub fn reset_operation_budget(&mut self, op_timeout: Duration) {
         self.op_timeout = op_timeout;
         self.op_deadline_ms.store(
