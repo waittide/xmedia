@@ -116,9 +116,9 @@ export const LIGHT_PALETTE_PRESETS: readonly PalettePreset[] = [
     kind: 'light',
     defaultAccent: '#0b57d0',
     tokens: {
-      canvas: '#fdfcff',
-      shell: '#f0f4f9',
-      surface: '#dfe3ec',
+      canvas: '#ffffff',
+      shell: '#f3f6fc',
+      surface: '#e3e8f2',
       text: '#1b1b1f',
       subtext: '#44474f',
     },
@@ -752,11 +752,11 @@ export function computeMd3ColorScheme(resolved: ResolvedPalette, isDark: boolean
     const tintedDeep = mixHex(rawDeep, safeTint, 0.94)
 
     surfaceBright = mixHex(surface, '#ffffff', 0.35)
-    containerLowest = mixHex(surface, '#ffffff', 0.22)
-    containerLow = mixHex(surface, tintedDeep, 0.78)
-    containerDefault = mixHex(surface, tintedDeep, 0.56)
-    containerHigh = mixHex(surface, tintedDeep, 0.32)
-    containerHighest = mixHex(surface, tintedDeep, 0.1)
+    containerLowest = mixHex(surface, '#ffffff', 0.15)
+    containerLow = mixHex(surface, tintedDeep, 0.84)
+    containerDefault = mixHex(surface, tintedDeep, 0.66)
+    containerHigh = mixHex(surface, tintedDeep, 0.44)
+    containerHighest = mixHex(surface, tintedDeep, 0.22)
     surfaceDim = mixHex(tintedDeep, resolved.text, 0.92)
   }
 

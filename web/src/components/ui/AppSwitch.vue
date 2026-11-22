@@ -38,9 +38,9 @@ function toggle(): void {
     class="group/switch md-touch-target md-label-medium inline-flex min-h-10 cursor-pointer items-center gap-2.5 text-[var(--md-sys-color-on-surface)] select-none focus-visible:outline-none disabled:cursor-not-allowed disabled:text-[color-mix(in_srgb,var(--md-sys-color-on-surface)_38%,transparent)]"
     @click="toggle"
   >
-    <!-- MD3 Switch Track (52x32dp official spec) -->
+    <!-- Refined MD3 Switch Track (44x26dp sleek visual inside 48dp accessible hit area) -->
     <span
-      class="relative inline-flex h-8 w-[52px] shrink-0 items-center rounded-full border-2 transition-colors duration-200 group-focus-visible/switch:outline-3 group-focus-visible/switch:outline-offset-2 group-focus-visible/switch:outline-[var(--md-sys-color-secondary)]"
+      class="relative inline-flex h-[26px] w-11 shrink-0 items-center rounded-full border-[1.5px] transition-colors duration-200 group-focus-visible/switch:outline-3 group-focus-visible/switch:outline-offset-2 group-focus-visible/switch:outline-[var(--md-sys-color-secondary)]"
       :class="
         disabled
           ? modelValue
@@ -48,22 +48,22 @@ function toggle(): void {
             : 'border-[color-mix(in_srgb,var(--md-sys-color-on-surface)_12%,transparent)] bg-[color-mix(in_srgb,var(--md-sys-color-surface-container-highest)_12%,transparent)]'
           : modelValue
             ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary)]'
-            : 'border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface-container-highest)]'
+            : 'border-[var(--md-sys-color-outline)] bg-[var(--md-sys-color-surface-container-high)]'
       "
     >
-      <!-- Dynamic Thumb (16dp off / 24dp on) + MD3 40dp State Layer Halo -->
+      <!-- Dynamic Thumb (14dp off / 20dp on) + MD3 State Layer Halo -->
       <span
         class="relative flex items-center justify-center rounded-full transition-all duration-200 ease-[var(--md-sys-motion-easing-standard)]"
         :class="
           modelValue
             ? [
-                'h-6 w-6 translate-x-[22px] group-active/switch:scale-110',
+                'h-5 w-5 translate-x-[20px] group-active/switch:scale-105',
                 disabled
                   ? 'bg-[var(--md-sys-color-surface)] text-[color-mix(in_srgb,var(--md-sys-color-on-surface)_38%,transparent)]'
                   : 'bg-[var(--md-sys-color-on-primary)] text-[var(--md-sys-color-primary)] shadow-xs',
               ]
             : [
-                'h-4 w-4 translate-x-1.5 group-active/switch:h-5 group-active/switch:w-5',
+                'h-3.5 w-3.5 translate-x-[4px] group-active/switch:h-4 group-active/switch:w-4',
                 disabled
                   ? 'bg-[color-mix(in_srgb,var(--md-sys-color-on-surface)_38%,transparent)]'
                   : 'bg-[var(--md-sys-color-outline)] group-hover/switch:bg-[var(--md-sys-color-on-surface-variant)]',
@@ -73,14 +73,14 @@ function toggle(): void {
         <span
           v-if="!disabled"
           aria-hidden="true"
-          class="pointer-events-none absolute -inset-2.5 rounded-full opacity-0 transition-opacity duration-150 group-hover/switch:opacity-[0.08] group-focus-visible/switch:opacity-[0.10] group-active/switch:opacity-[0.12]"
+          class="pointer-events-none absolute -inset-2 rounded-full opacity-0 transition-opacity duration-150 group-hover/switch:opacity-[0.08] group-focus-visible/switch:opacity-[0.10] group-active/switch:opacity-[0.12]"
           :class="
             modelValue
               ? 'bg-[var(--md-sys-color-primary)]'
               : 'bg-[var(--md-sys-color-on-surface)]'
           "
         />
-        <LuCheck v-if="modelValue" class="h-4 w-4 stroke-[2.75]" />
+        <LuCheck v-if="modelValue" class="h-3.5 w-3.5 stroke-[2.75]" />
       </span>
     </span>
     <span v-if="label">{{ label }}</span>

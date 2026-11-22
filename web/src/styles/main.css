@@ -412,7 +412,7 @@ a,
   .md-btn-outlined {
     background-color: transparent;
     color: var(--md-sys-color-primary);
-    border: 1px solid var(--md-sys-color-outline);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline) 60%, transparent);
   }
 
   .md-btn-text {
@@ -479,8 +479,8 @@ a,
     font-size: 0.75rem;
     font-weight: 500;
     color: var(--md-sys-color-on-surface-variant);
-    border: 1px solid var(--md-sys-color-outline-variant);
-    background-color: transparent;
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 85%, transparent);
+    background-color: var(--md-sys-color-surface-container-lowest);
     cursor: pointer;
     user-select: none;
     white-space: nowrap;
@@ -493,41 +493,43 @@ a,
     font-weight: 600;
   }
 
-  /* MD3 Card Variants (12px corner radius, distinct tonal & elevation roles) */
+  /* MD3 Card Variants (Clean minimalist tonal hierarchy with subtle hairline separation) */
   .md-card-filled {
-    background-color: var(--md-sys-color-surface-container-highest);
-    border-radius: var(--md-sys-shape-corner-md);
+    background-color: var(--md-sys-color-surface-container-low);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 45%, transparent);
+    border-radius: var(--md-sys-shape-corner-lg);
   }
 
   .md-card-elevated {
-    background-color: var(--md-sys-color-surface-container-low);
-    border-radius: var(--md-sys-shape-corner-md);
+    background-color: var(--md-sys-color-surface-container-lowest);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 35%, transparent);
+    border-radius: var(--md-sys-shape-corner-lg);
     box-shadow: var(--md-sys-elevation-1);
   }
 
   .md-card-outlined {
     background-color: var(--md-sys-color-surface);
-    border: 1px solid var(--md-sys-color-outline-variant);
-    border-radius: var(--md-sys-shape-corner-md);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 75%, transparent);
+    border-radius: var(--md-sys-shape-corner-lg);
   }
 
   /* Harmonized legacy card-soft: tonal surface instead of harsh box borders */
   .card-soft {
     background-color: var(--md-sys-color-surface-container-low);
-    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 55%, transparent);
+    border: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 45%, transparent);
     transition:
       background-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
       border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
       box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
   }
 
-  /* MD3 Outlined Text Field */
+  /* MD3 Outlined Text Field (harmonized 12px shape & calm border) */
   .md-input {
     padding-inline: 0.875rem;
-    background-color: var(--md-sys-color-surface);
+    background-color: var(--md-sys-color-surface-container-lowest);
     color: var(--md-sys-color-on-surface);
-    border: 1px solid var(--md-sys-color-outline);
-    border-radius: var(--md-sys-shape-corner-xs);
+    border: 1px solid var(--md-sys-color-outline-variant);
+    border-radius: var(--md-sys-shape-corner-md);
     outline: none;
     caret-color: var(--md-sys-color-primary);
     transition:
@@ -541,7 +543,7 @@ a,
   }
 
   .md-input:hover:not(:disabled):not(:focus) {
-    border-color: var(--md-sys-color-on-surface);
+    border-color: var(--md-sys-color-outline);
   }
 
   .md-input:focus {

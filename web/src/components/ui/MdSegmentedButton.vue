@@ -95,7 +95,7 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
   <div
     role="radiogroup"
     :aria-label="ariaLabel || undefined"
-    class="max-w-full items-center overflow-hidden rounded-full border border-[var(--md-sys-color-outline)] bg-transparent"
+    class="max-w-full items-center overflow-hidden rounded-full border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-lowest)]/65"
     :class="[fullWidth ? 'flex w-full' : 'inline-flex', disabled ? 'opacity-38' : '']"
   >
     <button
@@ -118,10 +118,10 @@ function onKeydown(ev: KeyboardEvent, currentIdx: number): void {
           : fullWidth
             ? 'md-label-large h-10 gap-1.5 px-2.5'
             : 'md-label-large h-10 gap-1.5 px-4',
-        idx > 0 ? 'border-l border-[var(--md-sys-color-outline)]' : '',
+        idx > 0 ? 'border-l border-[var(--md-sys-color-outline-variant)]/80' : '',
         modelValue === opt.value
           ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-          : 'text-[var(--md-sys-color-on-surface)]',
+          : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]',
       ]"
       @click="selectOption(opt)"
       @keydown="onKeydown($event, idx)"
