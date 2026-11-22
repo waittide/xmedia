@@ -18,7 +18,7 @@ use crate::source::model::{
     ExecutionDiagnostics, OnlineVideoCategory, OnlineVideoDetail, OnlineVideoEpisode,
     OnlineVideoPlayGroup, OnlineVideoPlayResult, OnlineVideoSubtitle, OnlineVideoSummary,
     SourceCallError, SourceCallOutput, SourceMetadata, SourceRuntimeState, VideoJsContext,
-    VideoSourceFormat, VideoSourceSpec, parse_header_json_map,
+    VideoSourceFormat, VideoSourceSpec,
 };
 
 #[derive(Debug, Clone)]
@@ -773,6 +773,9 @@ impl VideoSourceEngine {
             if source.effective_format() == VideoSourceFormat::ApplecmsV10
                 || source.rule_play.is_none()
             {
+                if !is_http_url(&resolved_input_play) {
+                    return Err("未能解析出有效的 HTTP(S) 视频流地址".into());
+                }
                 let stype = applecms::infer_stream_type(&resolved_input_play).to_string();
                 return Ok(OnlineVideoPlayResult {
                     stream_url: resolved_input_play,
@@ -822,8 +825,8 @@ impl VideoSourceEngine {
                 resolved_input_play.clone()
             };
             let stream_url = resolve_relative_url(stream_raw.trim(), &eval_base_url);
-            if stream_url.is_empty() {
-                return Err("未能解析出有效视频流地址".into());
+            if stream_url.is_empty() || !is_http_url(&stream_url) {
+                return Err("未能解析出有效的 HTTP(S) 视频流地址".into());
             }
 
             let raw_type = non_empty_opt(session.eval_opt(
@@ -837,12 +840,6 @@ impl VideoSourceEngine {
                 _ => applecms::infer_stream_type(&stream_url).to_string(),
             };
 
-            let extra_headers_applied = headers_applied
-                || rule_play
-                    .headers
-                    .as_deref()
-                    .is_some_and(|r| !parse_header_json_map(Some(r)).is_empty());
-
             let subtitles = if let Some(ref sub_rule) = rule_play.subtitles
                 && !sub_rule.trim().is_empty()
             {
@@ -855,7 +852,7 @@ impl VideoSourceEngine {
                 stream_url,
                 proxy_stream_url: String::new(),
                 stream_type,
-                headers_applied: extra_headers_applied,
+                headers_applied,
                 subtitles,
             })
         })();
@@ -915,6 +912,16 @@ impl VideoSourceEngine {
             diagnostics,
         })
     }
+}
+
+fn is_http_url(u: &str) -> bool {
+    let trimmed = u.trim();
+    trimmed
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+        || trimmed
+            .get(..8)
+            .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
 }
 
 fn non_empty_opt(s: String) -> Option<String> {
@@ -1086,6 +1093,10 @@ fn collect_subtitle_object(
     if clean_url.is_empty() {
         return;
     }
+    let resolved_url = resolve_relative_url(clean_url, base_url);
+    if !is_http_url(&resolved_url) {
+        return;
+    }
     let label = obj
         .get("label")
         .and_then(|v| v.as_str())
@@ -1102,7 +1113,7 @@ fn collect_subtitle_object(
     out.push(OnlineVideoSubtitle {
         label,
         lang,
-        url: resolve_relative_url(clean_url, base_url),
+        url: resolved_url,
         proxy_url: None,
     });
 }
@@ -1147,12 +1158,15 @@ fn collect_subtitles_from_text(raw: &str, base_url: &str, out: &mut Vec<OnlineVi
         return;
     }
     if looks_like_subtitle_url(trimmed) {
-        out.push(OnlineVideoSubtitle {
-            label: format!("字幕 {}", out.len() + 1),
-            lang: None,
-            url: resolve_relative_url(trimmed, base_url),
-            proxy_url: None,
-        });
+        let resolved_url = resolve_relative_url(trimmed, base_url);
+        if is_http_url(&resolved_url) {
+            out.push(OnlineVideoSubtitle {
+                label: format!("字幕 {}", out.len() + 1),
+                lang: None,
+                url: resolved_url,
+                proxy_url: None,
+            });
+        }
     }
 }
 

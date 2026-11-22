@@ -1226,3 +1226,223 @@ async fn video_js_pipeline_url_blocks_option_injection_and_mutation_while_restor
     assert_eq!(pwned_hits.load(Ordering::SeqCst), 0);
     srv.abort();
 }
+
+#[tokio::test]
+async fn rule_play_sanitizes_dangerous_schemes_and_merges_header_with_media_header() {
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use axum::{Router, routing::get};
+
+    use crate::source::engine::VideoSourceEngine;
+    use crate::source::model::SourceRuntimeState;
+
+    let app = Router::new()
+        .route(
+            "/play/js-stream",
+            get(|| async { r#"{"stream":"javascript:alert(1)"}"# }),
+        )
+        .route(
+            "/play/data-stream",
+            get(|| async { r#"{"stream":"data:text/html,<script>alert(1)</script>"}"# }),
+        )
+        .route(
+            "/play/file-stream",
+            get(|| async { r#"{"stream":"file:///etc/passwd"}"# }),
+        )
+        .route(
+            "/play/vb-stream",
+            get(|| async { r#"{"stream":"vbscript:msgbox(1)"}"# }),
+        )
+        .route(
+            "/play/mixed-subs",
+            get(|| async {
+                serde_json::json!({
+                    "stream": "https://cdn.example/master.m3u8",
+                    "subs": [
+                        { "label": "XSS1", "url": "javascript:alert(1)" },
+                        { "label": "XSS2", "url": "data:text/html,<script>alert(1)</script>" },
+                        { "label": "LFI", "url": "file:///etc/passwd" },
+                        { "label": "VBS", "url": "vbscript:msgbox(1)" },
+                        { "label": "OK", "url": "https://cdn.example/sub.vtt" },
+                        { "label": "REL", "url": "/subs/rel.srt" }
+                    ],
+                    "textSubs": [
+                        "javascript:evil.vtt",
+                        "data:text/vtt,evil.vtt",
+                        "file:///etc/sub.vtt",
+                        "https://cdn.example/text-ok.vtt"
+                    ]
+                })
+                .to_string()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // 1. header + mediaHeader merging (case-insensitive override, null skipped)
+    let merged_spec: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "MergedHeaderVideo",
+        "sourceUrl": "https://video.example",
+        "header": r#"{"Cookie":"sid=1","X-Global":"g1","Referer":"https://base.example","Drop":null}"#,
+        "mediaHeader": r#"{"referer":"https://cdn.example","X-Media":"m1"}"#
+    }))
+    .unwrap();
+    let merged_headers = merged_spec.parse_media_header_map();
+    assert_eq!(
+        merged_headers.get("Cookie").map(String::as_str),
+        Some("sid=1")
+    );
+    assert_eq!(
+        merged_headers.get("X-Global").map(String::as_str),
+        Some("g1")
+    );
+    assert_eq!(
+        merged_headers.get("X-Media").map(String::as_str),
+        Some("m1")
+    );
+    assert_eq!(
+        merged_headers.get("referer").map(String::as_str),
+        Some("https://cdn.example")
+    );
+    assert!(!merged_headers.contains_key("Referer"));
+    assert!(!merged_headers.contains_key("Drop"));
+
+    let origin_c = origin.clone();
+    tokio::task::spawn_blocking(move || {
+        let engine = VideoSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        // 2. AppleCMS / no-rulePlay rejects non-HTTP(S) playUrl
+        let apple_spec: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "AppleSchemeCheck",
+            "sourceUrl": origin_c,
+            "apiUrl": format!("{origin_c}/api.php/provide/vod/"),
+            "sourceFormat": "applecms_v10"
+        }))
+        .unwrap();
+        for bad in [
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                engine
+                    .resolve_play_sync_with_control(
+                        &apple_spec,
+                        SourceRuntimeState::default(),
+                        bad,
+                        None,
+                        Duration::from_secs(5),
+                        cancel.clone(),
+                    )
+                    .is_err(),
+                "expected rejection for {bad}"
+            );
+        }
+
+        // 3. rulePlay rejects dangerous streamUrl schemes
+        let make_rule_spec =
+            |sub_rule: &str, rule_headers: Option<&str>, media_header: Option<&str>| {
+                VideoSourceSpec::parse_json_batch(
+                    &serde_json::json!({
+                        "sourceName": "RulePlaySanitize",
+                        "sourceUrl": origin_c,
+                        "sourceFormat": "rule",
+                        "mediaHeader": media_header,
+                        "rulePlay": {
+                            "requestUrl": "{{playUrl}}",
+                            "streamUrl": "$.stream",
+                            "headers": rule_headers,
+                            "subtitles": sub_rule
+                        }
+                    })
+                    .to_string(),
+                )
+                .unwrap()
+                .remove(0)
+                .0
+            };
+
+        let spec = make_rule_spec("$.subs", Some(r#"{"X-Rule-Only":"1"}"#), None);
+        for path in [
+            "/play/js-stream",
+            "/play/data-stream",
+            "/play/file-stream",
+            "/play/vb-stream",
+        ] {
+            let err = engine
+                .resolve_play_sync_with_control(
+                    &spec,
+                    SourceRuntimeState::default(),
+                    path,
+                    None,
+                    Duration::from_secs(5),
+                    cancel.clone(),
+                )
+                .expect_err("non-HTTP(S) stream_url must be rejected");
+            assert!(
+                err.message.contains("HTTP(S)"),
+                "unexpected error for {path}: {}",
+                err.message
+            );
+        }
+
+        // 4. rulePlay drops dangerous subtitle schemes from JSON objects while keeping https:// + relative
+        //    and does not claim headers_applied=true when only unpropagated rulePlay.headers is set.
+        let ok_res = engine
+            .resolve_play_sync_with_control(
+                &spec,
+                SourceRuntimeState::default(),
+                "/play/mixed-subs",
+                None,
+                Duration::from_secs(5),
+                cancel.clone(),
+            )
+            .unwrap()
+            .data;
+        assert_eq!(ok_res.stream_url, "https://cdn.example/master.m3u8");
+        assert!(!ok_res.headers_applied);
+        assert_eq!(ok_res.subtitles.len(), 2);
+        assert_eq!(ok_res.subtitles[0].label, "OK");
+        assert_eq!(ok_res.subtitles[0].url, "https://cdn.example/sub.vtt");
+        assert_eq!(ok_res.subtitles[1].label, "REL");
+        assert_eq!(ok_res.subtitles[1].url, format!("{origin_c}/subs/rel.srt"));
+
+        // 5. Text subtitle list also drops dangerous schemes and mediaHeader sets headers_applied=true.
+        let text_sub_spec = make_rule_spec(
+            "$.textSubs",
+            None,
+            Some(r#"{"Referer":"https://cdn.example"}"#),
+        );
+        let text_res = engine
+            .resolve_play_sync_with_control(
+                &text_sub_spec,
+                SourceRuntimeState::default(),
+                "/play/mixed-subs",
+                None,
+                Duration::from_secs(5),
+                cancel,
+            )
+            .unwrap()
+            .data;
+        assert!(text_res.headers_applied);
+        assert_eq!(text_res.subtitles.len(), 1);
+        assert_eq!(text_res.subtitles[0].url, "https://cdn.example/text-ok.vtt");
+    })
+    .await
+    .unwrap();
+
+    srv.abort();
+}

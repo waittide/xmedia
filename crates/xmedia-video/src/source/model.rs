@@ -294,8 +294,14 @@ impl VideoSourceSpec {
         parse_concurrent_rate(self.concurrent_rate.as_deref())
     }
 
+    /// Merges `header` and `mediaHeader` (`mediaHeader` overrides case-insensitively on conflicts).
     pub fn parse_media_header_map(&self) -> HashMap<String, String> {
-        parse_header_json_map(self.effective_media_header())
+        let mut merged = parse_header_json_map(self.header.as_deref());
+        for (k, v) in parse_header_json_map(self.media_header.as_deref()) {
+            merged.retain(|existing_k, _| !existing_k.eq_ignore_ascii_case(&k));
+            merged.insert(k, v);
+        }
+        merged
     }
 
     pub fn parse_request_header_map(&self) -> HashMap<String, String> {
@@ -340,14 +346,17 @@ pub fn parse_header_json_map(raw: Option<&str>) -> HashMap<String, String> {
     };
     if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(raw) {
         for (k, v) in map {
-            match v {
-                serde_json::Value::String(s) => {
-                    out.insert(k, s);
-                }
-                other => {
-                    out.insert(k, other.to_string());
-                }
+            let key_trimmed = k.trim();
+            if key_trimmed.is_empty() {
+                continue;
             }
+            let val_str = match v {
+                serde_json::Value::String(s) => s,
+                serde_json::Value::Null => continue,
+                other => other.to_string(),
+            };
+            out.retain(|existing_k: &String, _| !existing_k.eq_ignore_ascii_case(key_trimmed));
+            out.insert(key_trimmed.to_string(), val_str);
         }
     }
     out
