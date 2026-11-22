@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { LuTrash2, LuPlay, LuVolume2 } from 'vue-icons-plus/lu'
+import { LuDisc3, LuTrash2, LuPlay, LuVolume2 } from 'vue-icons-plus/lu'
 import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import { useDialogStore } from '@/stores/dialog'
+import { buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
 import { resolveOnlineItemCoverUrl, usePlayerStore, type PlayerQueueItem } from '../player'
-import CoverImage from './CoverImage.vue'
 
 const { t } = useI18n()
 const dialogStore = useDialogStore()
@@ -20,6 +21,7 @@ const queueSubtitle = computed(() =>
 
 function itemTitle(item: PlayerQueueItem): string {
   if (item.kind === 'local') return item.track.title
+  if (item.kind === 'remote') return item.song.title
   return item.resolved?.track.title || item.track.title
 }
 
@@ -27,14 +29,18 @@ function itemSubtitle(item: PlayerQueueItem): string {
   if (item.kind === 'local') {
     return [item.track.artist_name, item.track.album_title].filter(Boolean).join(' · ')
   }
+  if (item.kind === 'remote') {
+    return [item.song.artist, item.song.album].filter(Boolean).join(' · ')
+  }
   const artist = item.resolved?.track.artist || item.track.artist
   const album = item.resolved?.track.album ?? item.track.album
   return [artist, album].filter(Boolean).join(' · ')
 }
 
-function itemCoverSrc(item: PlayerQueueItem): string | null | undefined {
+function itemCoverSrc(item: PlayerQueueItem): string | null {
   if (item.kind === 'online') return resolveOnlineItemCoverUrl(item)
-  return undefined
+  if (item.kind === 'remote') return item.song.cover_url ?? null
+  return item.track.cover_key ? buildCoverUrl(item.track.id, 80) : null
 }
 
 async function handleClearQueue(): Promise<void> {
@@ -104,13 +110,13 @@ async function handleClearQueue(): Promise<void> {
             : ''
         "
       >
-        <CoverImage
+        <MediaCoverImage
           :src="itemCoverSrc(item)"
-          :cover-id="item.kind === 'local' ? item.track.id : null"
-          :has-cover="item.kind === 'local' ? Boolean(item.track.cover_key) : false"
-          :size="80"
+          :alt="itemTitle(item)"
+          aspect-class="h-10 w-10 shrink-0"
           rounded="rounded-lg"
-          class="h-10 w-10 shrink-0 cursor-pointer"
+          :fallback-icon="LuDisc3"
+          class="cursor-pointer"
           @click="playerStore.playAtIndex(idx)"
         />
 

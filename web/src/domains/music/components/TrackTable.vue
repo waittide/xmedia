@@ -1,29 +1,32 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
-  LuPlay,
-  LuPause,
+  LuDisc3,
+  LuDownload,
   LuHeart,
-  LuMoreHorizontal,
   LuListPlus,
+  LuMoreHorizontal,
+  LuPause,
+  LuPlay,
   LuPlus,
   LuTag,
-  LuDownload,
   LuTrash2,
   LuVolume2,
 } from 'vue-icons-plus/lu'
+import { MdIconButton, MdMenu, MdMenuItem, MediaCoverImage } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime as formatDuration } from '@/utils/format'
-import { api, buildDownloadUrl } from '../api'
+import { api, buildCoverUrl, buildDownloadUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { TrackDto } from '../types'
-import CoverImage from './CoverImage.vue'
+
+const MAX_INLINE_TAGS = 2
 
 const props = withDefaults(
   defineProps<{
@@ -31,16 +34,20 @@ const props = withDefaults(
     showAlbum?: boolean
     showCover?: boolean
     removable?: boolean
+    /** Render inline disc header rows when tracks span multiple discs while keeping a single unified queue. */
+    groupByDisc?: boolean
   }>(),
   {
     showAlbum: true,
     showCover: true,
     removable: false,
+    groupByDisc: false,
   },
 )
 
 const emit = defineEmits<{
   remove: [index: number]
+  'tags-updated': [payload: { trackId: string; tags: string[] }]
 }>()
 
 const { t } = useI18n()
@@ -52,15 +59,36 @@ const musicStore = useMusicStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
 
-const activeMenuTrackId = ref<string | null>(null)
-const activeMenuRowIndex = computed<number>(() =>
-  activeMenuTrackId.value ? props.tracks.findIndex((t) => t.id === activeMenuTrackId.value) : -1,
-)
-const activeMenuTrack = computed<TrackDto | null>(() =>
-  activeMenuRowIndex.value >= 0 ? (props.tracks[activeMenuRowIndex.value] ?? null) : null,
-)
-const menuPos = ref<{ top: string; left: string }>({ top: '0px', left: '0px' })
-const menuRef = ref<HTMLDivElement | null>(null)
+type TableEntry =
+  | { kind: 'disc'; disc: number }
+  | { kind: 'track'; track: TrackDto; index: number }
+
+const tableEntries = computed<TableEntry[]>(() => {
+  if (!props.groupByDisc) {
+    return props.tracks.map((track, index) => ({ kind: 'track', track, index }))
+  }
+  const discNums = new Set(props.tracks.map((tr) => tr.disc_number ?? 1))
+  if (discNums.size <= 1) {
+    return props.tracks.map((track, index) => ({ kind: 'track', track, index }))
+  }
+  const out: TableEntry[] = []
+  let prevDisc: number | null = null
+  props.tracks.forEach((track, index) => {
+    const disc = track.disc_number ?? 1
+    if (disc !== prevDisc) {
+      out.push({ kind: 'disc', disc })
+      prevDisc = disc
+    }
+    out.push({ kind: 'track', track, index })
+  })
+  return out
+})
+
+const columnCount = computed(() => (props.showAlbum ? 6 : 5))
+
+function isCurrentTrack(tr: TrackDto): boolean {
+  return playerStore.currentTrack?.kind === 'local' && playerStore.currentTrack.id === tr.id
+}
 
 function formatQuality(tr: TrackDto): string {
   const fmt = tr.format.toUpperCase()
@@ -73,45 +101,41 @@ function formatQuality(tr: TrackDto): string {
   return fmt
 }
 
+function visibleTags(tr: TrackDto): string[] {
+  return (tr.tags ?? []).slice(0, MAX_INLINE_TAGS)
+}
+
+function overflowTagCount(tr: TrackDto): number {
+  return Math.max(0, (tr.tags?.length ?? 0) - MAX_INLINE_TAGS)
+}
+
 function handlePlayRow(idx: number): void {
   const clicked = props.tracks[idx]
   if (!clicked) return
-  if (playerStore.currentTrack?.id === clicked.id) {
+  if (isCurrentTrack(clicked)) {
     void playerStore.togglePlay()
   } else {
     playerStore.playQueue(props.tracks, idx)
   }
 }
 
-async function openRowMenu(ev: MouseEvent, track: TrackDto): Promise<void> {
-  ev.stopPropagation()
-  if (activeMenuTrackId.value === track.id) {
-    activeMenuTrackId.value = null
-    return
+async function handleToggleStar(track: TrackDto): Promise<void> {
+  try {
+    await musicStore.toggleTrackStar(track)
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
-  const rect = (ev.currentTarget as HTMLElement).getBoundingClientRect()
-  const vw = window.innerWidth
-  const vh = window.innerHeight
-  const menuW = 224
-  const estH = 220
-  const left = Math.min(rect.right - menuW, Math.max(8, vw - menuW - 8))
-  const top = rect.bottom + estH > vh ? Math.max(8, rect.top - estH) : rect.bottom + 4
-  menuPos.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px` }
-  activeMenuTrackId.value = track.id
+}
 
-  await nextTick()
-  if (activeMenuTrackId.value !== track.id || !menuRef.value) return
-  const measured = menuRef.value.getBoundingClientRect()
-  const finalLeft = Math.min(rect.right - measured.width, Math.max(8, vw - measured.width - 8))
-  const finalTop =
-    rect.bottom + measured.height + 8 > vh
-      ? Math.max(8, rect.top - measured.height - 4)
-      : rect.bottom + 4
-  menuPos.value = { top: `${Math.round(finalTop)}px`, left: `${Math.round(finalLeft)}px` }
+function handleEnqueueNext(track: TrackDto): void {
+  playerStore.enqueueNext(track)
+  snackbarStore.show(t('online.playNextToast'))
 }
 
 async function createPlaylistWithTrack(track: TrackDto): Promise<void> {
-  activeMenuTrackId.value = null
   const name = await dialogStore.prompt({
     title: t('playlist.createTitle'),
     message: t('playlist.createPrompt'),
@@ -122,21 +146,26 @@ async function createPlaylistWithTrack(track: TrackDto): Promise<void> {
     await api.createPlaylist({ name: name.trim(), track_ids: [track.id] })
     await musicStore.refreshSidebar()
   } catch (err) {
-    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
 }
 
 async function addToExistingPlaylist(playlistId: string, track: TrackDto): Promise<void> {
-  activeMenuTrackId.value = null
   try {
     await musicStore.addTrackToPlaylist(playlistId, track.id)
+    snackbarStore.show(t('common.addedToQueue'))
   } catch (err) {
-    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
 }
 
 async function editTrackTags(track: TrackDto): Promise<void> {
-  activeMenuTrackId.value = null
   const raw = await dialogStore.prompt({
     title: globalT('musicTags.editPromptTitle'),
     message: globalT('musicTags.editPromptMessage'),
@@ -150,15 +179,18 @@ async function editTrackTags(track: TrackDto): Promise<void> {
     .filter(Boolean)
   try {
     const updated = await api.setTrackTags(track.id, nextTags)
-    track.tags = updated.tags
+    emit('tags-updated', { trackId: track.id, tags: updated.tags })
+    musicStore.bumpCatalogVersion()
     await musicStore.refreshSidebar()
   } catch (err) {
-    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
 }
 
 async function confirmDeleteTrack(track: TrackDto): Promise<void> {
-  activeMenuTrackId.value = null
   const confirmed = await dialogStore.confirm({
     title: t('common.deleteTrackConfirmTitle'),
     message: t('common.deleteTrackConfirm', { title: track.title }),
@@ -171,298 +203,277 @@ async function confirmDeleteTrack(track: TrackDto): Promise<void> {
     musicStore.bumpCatalogVersion()
     await musicStore.refreshSidebar()
   } catch (err) {
-    snackbarStore.show({ message: err instanceof Error ? err.message : String(err), tone: 'error' })
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
 }
 
-function handleOutside(ev: MouseEvent): void {
-  if (activeMenuTrackId.value === null) return
-  if (menuRef.value?.contains(ev.target as Node)) return
-  activeMenuTrackId.value = null
+function triggerDownload(trackId: string): void {
+  const url = buildDownloadUrl(trackId)
+  const link = document.createElement('a')
+  link.href = url
+  link.rel = 'noopener'
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
 }
-
-function handleKeydown(ev: KeyboardEvent): void {
-  if (ev.key === 'Escape' && activeMenuTrackId.value !== null) {
-    activeMenuTrackId.value = null
-  }
-}
-
-onMounted(() => {
-  document.addEventListener('mousedown', handleOutside)
-  window.addEventListener('keydown', handleKeydown)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', handleOutside)
-  window.removeEventListener('keydown', handleKeydown)
-})
 </script>
 
 <template>
-  <div
-    class="md-card-filled overflow-x-auto border border-[var(--md-sys-color-outline-variant)]/50"
-  >
-    <table class="w-full border-collapse text-left text-xs">
+  <div class="overflow-hidden rounded-corner-lg bg-surface-container-low">
+    <table class="w-full table-fixed border-collapse text-left">
       <thead>
-        <tr
-          class="border-b border-[var(--md-sys-color-outline-variant)]/60 text-[11px] font-semibold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          <th class="w-11 px-3 py-3 text-center">{{ t('catalog.colIndex') }}</th>
-          <th class="px-3 py-3">{{ t('catalog.colTitle') }}</th>
-          <th v-if="showAlbum" class="hidden px-3 py-3 md:table-cell">{{ t('catalog.colAlbum') }}</th>
-          <th class="hidden px-3 py-3 lg:table-cell">{{ t('catalog.colQuality') }}</th>
-          <th class="w-20 px-3 py-3 text-right">{{ t('catalog.colDuration') }}</th>
-          <th class="w-20 px-3 py-3 text-right"></th>
+        <tr class="text-label-medium border-b border-outline-variant/60 text-on-surface-variant">
+          <th class="w-11 px-2 py-3 text-center sm:px-3">{{ t('catalog.colIndex') }}</th>
+          <th class="px-2 py-3 sm:px-3">{{ t('catalog.colTitle') }}</th>
+          <th v-if="showAlbum" class="hidden w-44 px-3 py-3 lg:table-cell">
+            {{ t('catalog.colAlbum') }}
+          </th>
+          <th class="hidden w-28 px-3 py-3 xl:table-cell">{{ t('catalog.colQuality') }}</th>
+          <th class="hidden w-16 px-3 py-3 text-right sm:table-cell">
+            {{ t('catalog.colDuration') }}
+          </th>
+          <th class="w-20 px-2 py-3 text-right sm:w-24 sm:px-3" />
         </tr>
       </thead>
-      <tbody class="divide-y divide-[var(--md-sys-color-outline-variant)]/35">
-        <tr
-          v-for="(tr, idx) in tracks"
-          :key="`${tr.id}-${idx}`"
-          class="group cursor-pointer transition hover:bg-[var(--md-sys-color-surface-container-high)]/60"
-          :class="
-            playerStore.currentTrack?.id === tr.id
-              ? 'bg-[var(--md-sys-color-secondary-container)]/55'
-              : ''
-          "
+      <tbody class="divide-y divide-outline-variant/35">
+        <template
+          v-for="entry in tableEntries"
+          :key="entry.kind === 'disc' ? `disc-${entry.disc}` : `${entry.track.id}-${entry.index}`"
         >
-          <td class="px-3 py-2.5 text-center" @click="handlePlayRow(idx)">
-            <button
-              type="button"
-              :aria-label="
-                playerStore.currentTrack?.id === tr.id && playerStore.isPlaying
-                  ? t('player.pause')
-                  : t('player.play')
-              "
-              class="inline-flex h-7 w-7 items-center justify-center rounded-full"
-            >
-              <LuPause
-                v-if="playerStore.currentTrack?.id === tr.id && playerStore.isPlaying"
-                class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]"
-              />
-              <LuVolume2
-                v-else-if="playerStore.currentTrack?.id === tr.id"
-                class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]"
-              />
-              <template v-else>
-                <span class="text-[var(--md-sys-color-on-surface-variant)] group-hover:hidden">
-                  {{ tr.track_number ?? idx + 1 }}
-                </span>
-                <LuPlay
-                  class="hidden h-3.5 w-3.5 fill-current text-[var(--md-sys-color-on-surface)] group-hover:block"
-                />
-              </template>
-            </button>
-          </td>
+          <tr v-if="entry.kind === 'disc'" class="bg-surface-container/70">
+            <td :colspan="columnCount" class="text-label-large px-4 py-2 text-on-surface-variant">
+              {{ t('catalog.discHeader', { disc: entry.disc }) }}
+            </td>
+          </tr>
 
-          <td class="px-3 py-2.5" @click="handlePlayRow(idx)">
-            <div class="flex items-center gap-3">
-              <CoverImage
-                v-if="showCover"
-                :cover-id="tr.id"
-                :has-cover="Boolean(tr.cover_key)"
-                :size="96"
-                rounded="rounded-lg"
-                class="h-10 w-10 shrink-0"
-              />
-              <div class="min-w-0">
-                <div class="flex items-center gap-1.5">
+          <tr
+            v-else
+            class="group cursor-pointer transition-colors duration-150 ease-standard hover:bg-surface-container-high/60"
+            :class="isCurrentTrack(entry.track) ? 'bg-secondary-container/50' : ''"
+            @click="handlePlayRow(entry.index)"
+          >
+            <td class="w-11 px-2 py-2.5 text-center sm:px-3">
+              <button
+                type="button"
+                :aria-label="
+                  isCurrentTrack(entry.track) && playerStore.isPlaying
+                    ? t('player.pause')
+                    : t('player.play')
+                "
+                class="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-corner-full"
+                @click.stop="handlePlayRow(entry.index)"
+              >
+                <LuPause
+                  v-if="isCurrentTrack(entry.track) && playerStore.isPlaying"
+                  class="h-4 w-4 text-primary"
+                  aria-hidden="true"
+                />
+                <LuVolume2
+                  v-else-if="isCurrentTrack(entry.track)"
+                  class="h-4 w-4 text-primary"
+                  aria-hidden="true"
+                />
+                <template v-else>
                   <span
-                    class="truncate font-semibold"
-                    :class="
-                      playerStore.currentTrack?.id === tr.id
-                        ? 'text-[var(--md-sys-color-primary)]'
-                        : 'text-[var(--md-sys-color-on-surface)]'
-                    "
+                    class="text-body-small tabular-nums text-on-surface-variant group-focus-within:hidden group-hover:hidden"
                   >
-                    {{ tr.title }}
+                    {{ entry.track.track_number ?? entry.index + 1 }}
                   </span>
-                  <span
-                    v-if="tr.has_lyrics"
-                    class="md-label-small shrink-0 rounded bg-[var(--md-sys-color-primary-container)] px-1 py-0.2 font-bold text-[var(--md-sys-color-on-primary-container)]"
-                  >
-                    LRC
-                  </span>
-                </div>
-                <div
-                  class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  <button
-                    type="button"
-                    class="truncate text-left hover:text-[var(--md-sys-color-primary)] hover:underline"
-                    @click.stop="router.push(`/music/artists/${tr.artist_id}`)"
-                  >
-                    {{ tr.artist_name }}
-                  </button>
-                  <button
-                    v-for="tg in tr.tags ?? []"
-                    :key="tg"
-                    type="button"
-                    class="md-label-small rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.2 text-[var(--md-sys-color-on-surface-variant)] transition hover:bg-[var(--md-sys-color-secondary-container)] hover:text-[var(--md-sys-color-on-secondary-container)]"
-                    @click.stop="router.push({ path: '/music/songs', query: { tag: tg } })"
-                  >
-                    #{{ tg }}
-                  </button>
+                  <LuPlay
+                    class="hidden h-4 w-4 fill-current text-on-surface group-focus-within:block group-hover:block"
+                    aria-hidden="true"
+                  />
+                </template>
+              </button>
+            </td>
+
+            <td class="px-2 py-2.5 sm:px-3">
+              <div class="flex min-w-0 items-center gap-3">
+                <MediaCoverImage
+                  v-if="showCover"
+                  :src="entry.track.cover_key ? buildCoverUrl(entry.track.id, 96) : null"
+                  :alt="entry.track.title"
+                  aspect-class="h-10 w-10 shrink-0"
+                  rounded="rounded-corner-sm"
+                  bg-class="bg-surface-container-high"
+                  :fallback-icon="LuDisc3"
+                  fallback-icon-class="h-4 w-4 text-on-surface-variant/60"
+                />
+                <div class="min-w-0 flex-1 overflow-hidden">
+                  <div class="flex min-w-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      class="text-title-small min-w-0 cursor-pointer truncate text-left transition-colors duration-150 hover:text-primary"
+                      :class="isCurrentTrack(entry.track) ? 'text-primary' : 'text-on-surface'"
+                      :title="entry.track.title"
+                      @click.stop="handlePlayRow(entry.index)"
+                    >
+                      {{ entry.track.title }}
+                    </button>
+                    <span
+                      v-if="entry.track.has_lyrics"
+                      class="text-label-small shrink-0 rounded-corner-xs bg-primary-container px-1.5 py-0.5 text-on-primary-container"
+                    >
+                      LRC
+                    </span>
+                  </div>
+                  <div class="text-body-small mt-0.5 flex min-w-0 items-center gap-1.5 text-on-surface-variant">
+                    <button
+                      type="button"
+                      class="min-w-0 cursor-pointer truncate text-left hover:text-primary hover:underline"
+                      @click.stop="
+                        router.push({ path: '/music/library', query: { artist: entry.track.artist_id } })
+                      "
+                    >
+                      {{ entry.track.artist_name }}
+                    </button>
+                    <button
+                      v-for="tg in visibleTags(entry.track)"
+                      :key="tg"
+                      type="button"
+                      class="text-label-small hidden shrink-0 cursor-pointer rounded-corner-xs bg-surface-container-high px-1.5 py-0.5 text-on-surface-variant transition-colors hover:bg-secondary-container hover:text-on-secondary-container sm:inline-flex"
+                      @click.stop="
+                        router.push({ path: '/music/library', query: { view: 'tracks', tag: tg } })
+                      "
+                    >
+                      #{{ tg }}
+                    </button>
+                    <span
+                      v-if="overflowTagCount(entry.track) > 0"
+                      class="text-label-small hidden shrink-0 text-on-surface-variant sm:inline"
+                    >
+                      +{{ overflowTagCount(entry.track) }}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
-          </td>
+            </td>
 
-          <td v-if="showAlbum" class="hidden max-w-[14rem] px-3 py-2.5 md:table-cell">
-            <button
-              type="button"
-              class="max-w-full truncate text-left text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)] hover:underline"
-              @click.stop="router.push(`/music/albums/${tr.album_id}`)"
-            >
-              {{ tr.album_title }}
-            </button>
-          </td>
-
-          <td class="hidden px-3 py-2.5 lg:table-cell">
-            <span
-              class="inline-flex items-center rounded-md px-1.5 py-0.5 font-mono text-[10px] font-semibold"
-              :class="
-                tr.is_lossless
-                  ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-                  : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-              "
-            >
-              {{ formatQuality(tr) }}
-            </span>
-          </td>
-
-          <td
-            class="px-3 py-2.5 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            {{ formatDuration(tr.duration_secs) }}
-          </td>
-
-          <td class="px-3 py-2.5 text-right">
-            <div class="inline-flex items-center justify-end gap-0.5">
+            <td v-if="showAlbum" class="hidden w-44 px-3 py-2.5 lg:table-cell">
               <button
                 type="button"
-                class="md-icon-btn md-icon-btn-sm md-state"
-                :aria-label="tr.starred_at ? t('common.unfavorite') : t('common.favorite')"
-                :aria-pressed="Boolean(tr.starred_at)"
-                @click.stop="musicStore.toggleTrackStar(tr)"
+                class="text-body-small block max-w-full cursor-pointer truncate text-left text-on-surface-variant hover:text-primary hover:underline"
+                :title="entry.track.album_title"
+                @click.stop="router.push(`/music/item/${encodeURIComponent(entry.track.album_id)}`)"
               >
-                <LuHeart
-                  class="h-3.5 w-3.5"
-                  :class="
-                    tr.starred_at
-                      ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
-                      : 'text-[var(--md-sys-color-on-surface-variant)]'
+                {{ entry.track.album_title }}
+              </button>
+            </td>
+
+            <td class="hidden w-28 px-3 py-2.5 xl:table-cell">
+              <span
+                class="text-label-small inline-flex max-w-full items-center truncate rounded-corner-xs px-1.5 py-0.5 font-mono"
+                :class="
+                  entry.track.is_lossless
+                    ? 'bg-primary-container text-on-primary-container'
+                    : 'bg-surface-container-high text-on-surface-variant'
+                "
+              >
+                {{ formatQuality(entry.track) }}
+              </span>
+            </td>
+
+            <td
+              class="text-body-small hidden w-16 px-3 py-2.5 text-right font-mono tabular-nums text-on-surface-variant sm:table-cell"
+            >
+              {{ formatDuration(entry.track.duration_secs) }}
+            </td>
+
+            <td class="w-20 px-2 py-2.5 text-right sm:w-24 sm:px-3" @click.stop>
+              <div class="inline-flex items-center justify-end gap-0.5">
+                <MdIconButton
+                  size="sm"
+                  variant="standard"
+                  :selected="Boolean(entry.track.starred_at)"
+                  :aria-label="
+                    entry.track.starred_at ? t('common.unfavorite') : t('common.favorite')
                   "
-                />
-              </button>
+                  @click="handleToggleStar(entry.track)"
+                >
+                  <LuHeart
+                    class="h-4 w-4"
+                    :class="entry.track.starred_at ? 'fill-current text-tertiary' : ''"
+                  />
+                </MdIconButton>
 
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state"
-                :aria-label="t('common.moreActions')"
-                :aria-expanded="activeMenuTrackId === tr.id"
-                aria-haspopup="menu"
-                @click="openRowMenu($event, tr)"
-              >
-                <LuMoreHorizontal class="h-4 w-4" />
-              </button>
-            </div>
-          </td>
-        </tr>
+                <MdMenu placement="bottom-end" :min-width="220" :aria-label="t('common.moreActions')">
+                  <template #trigger="{ toggle, triggerAttrs }">
+                    <MdIconButton
+                      v-bind="triggerAttrs"
+                      size="sm"
+                      variant="standard"
+                      :icon="LuMoreHorizontal"
+                      :aria-label="t('common.moreActions')"
+                      @click="toggle"
+                    />
+                  </template>
+
+                  <MdMenuItem
+                    :icon="LuListPlus"
+                    :label="t('common.addToQueue')"
+                    @select="handleEnqueueNext(entry.track)"
+                  />
+
+                  <MdMenuItem
+                    v-if="authStore.isAdmin"
+                    :icon="LuTag"
+                    :label="globalT('musicTags.editTags')"
+                    @select="editTrackTags(entry.track)"
+                  />
+
+                  <MdMenuItem
+                    :icon="LuPlus"
+                    :label="t('nav.newPlaylist')"
+                    @select="createPlaylistWithTrack(entry.track)"
+                  />
+
+                  <div
+                    v-if="musicStore.playlists.length > 0"
+                    class="my-1 max-h-36 overflow-y-auto border-t border-outline-variant pt-1"
+                  >
+                    <MdMenuItem
+                      v-for="pl in musicStore.playlists"
+                      :key="pl.id"
+                      :label="`+ ${pl.name}`"
+                      :trailing-text="String(pl.track_count)"
+                      @select="addToExistingPlaylist(pl.id, entry.track)"
+                    />
+                  </div>
+
+                  <MdMenuItem
+                    :icon="LuDownload"
+                    :label="t('common.download')"
+                    @select="triggerDownload(entry.track.id)"
+                  />
+
+                  <div
+                    v-if="removable || authStore.isAdmin"
+                    class="my-1 border-t border-outline-variant pt-1"
+                  >
+                    <MdMenuItem
+                      v-if="removable"
+                      :icon="LuTrash2"
+                      :label="t('playlist.removeTrack')"
+                      destructive
+                      @select="emit('remove', entry.index)"
+                    />
+                    <MdMenuItem
+                      v-if="authStore.isAdmin"
+                      :icon="LuTrash2"
+                      :label="t('common.delete')"
+                      destructive
+                      @select="confirmDeleteTrack(entry.track)"
+                    />
+                  </div>
+                </MdMenu>
+              </div>
+            </td>
+          </tr>
+        </template>
       </tbody>
     </table>
   </div>
-
-  <Teleport to="body">
-    <Transition name="md-fade">
-      <div
-        v-if="activeMenuTrack"
-        ref="menuRef"
-        role="menu"
-        :style="menuPos"
-        class="fixed z-[var(--z-popover)] w-56 rounded-2xl border border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container-high)] p-1.5 text-xs text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
-      >
-        <button
-          type="button"
-          role="menuitem"
-          class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="playerStore.enqueueNext(activeMenuTrack); activeMenuTrackId = null"
-        >
-          <LuListPlus class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
-          <span>{{ t('common.addToQueue') }}</span>
-        </button>
-
-        <button
-          v-if="authStore.isAdmin"
-          type="button"
-          role="menuitem"
-          class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="editTrackTags(activeMenuTrack)"
-        >
-          <LuTag class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-          <span>{{ globalT('musicTags.editTags') }}</span>
-        </button>
-
-        <button
-          type="button"
-          role="menuitem"
-          class="md-state flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="createPlaylistWithTrack(activeMenuTrack)"
-        >
-          <LuPlus class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
-          <span>{{ t('nav.newPlaylist') }}</span>
-        </button>
-
-        <div
-          v-if="musicStore.playlists.length > 0"
-          class="my-1 max-h-28 overflow-y-auto border-t border-[var(--md-sys-color-outline-variant)]/50 pt-1"
-        >
-          <button
-            v-for="pl in musicStore.playlists"
-            :key="pl.id"
-            type="button"
-            role="menuitem"
-            class="md-state flex w-full items-center justify-between rounded-xl px-3 py-1.5 text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-            @click="addToExistingPlaylist(pl.id, activeMenuTrack)"
-          >
-            <span class="truncate">+ {{ pl.name }}</span>
-            <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              {{ pl.track_count }}
-            </span>
-          </button>
-        </div>
-
-        <a
-          :href="buildDownloadUrl(activeMenuTrack.id)"
-          role="menuitem"
-          class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left"
-          @click="activeMenuTrackId = null"
-        >
-          <LuDownload class="h-3.5 w-3.5 text-[var(--md-sys-color-on-surface-variant)]" />
-          <span>{{ t('common.download') }}</span>
-        </a>
-
-        <button
-          v-if="removable && activeMenuRowIndex >= 0"
-          type="button"
-          role="menuitem"
-          class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)]"
-          @click="emit('remove', activeMenuRowIndex); activeMenuTrackId = null"
-        >
-          <LuTrash2 class="h-3.5 w-3.5" />
-          <span>{{ t('playlist.removeTrack') }}</span>
-        </button>
-        <button
-          v-if="authStore.isAdmin"
-          type="button"
-          role="menuitem"
-          class="md-state mt-0.5 flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[var(--md-sys-color-error)]"
-          @click="confirmDeleteTrack(activeMenuTrack)"
-        >
-          <LuTrash2 class="h-3.5 w-3.5" />
-          <span>{{ t('common.delete') }}</span>
-        </button>
-      </div>
-    </Transition>
-  </Teleport>
 </template>

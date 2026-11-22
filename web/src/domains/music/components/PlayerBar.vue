@@ -17,19 +17,20 @@ import {
   LuChevronUp,
   LuBookmark,
   LuCheck,
+  LuDisc3,
   LuLoader2,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import MdBadge from '@/components/ui/MdBadge.vue'
+import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useDialogStore } from '@/stores/dialog'
 import { formatTime } from '@/utils/format'
-import { api } from '../api'
+import { api, buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { TranscodeProfile } from '../types'
-import CoverImage from './CoverImage.vue'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -260,12 +261,17 @@ onBeforeUnmount(() => {
             :aria-label="t('player.openLyrics')"
             @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
           >
-            <CoverImage
-              :src="playerStore.currentTrack.kind === 'online' ? playerStore.currentTrack.cover_url : undefined"
-              :cover-id="playerStore.currentTrack.cover_id"
-              :has-cover="Boolean(playerStore.currentTrack.cover_key)"
-              :size="160"
+            <MediaCoverImage
+              :src="
+                playerStore.currentTrack.kind === 'local'
+                  ? playerStore.currentTrack.cover_key && playerStore.currentTrack.cover_id
+                    ? buildCoverUrl(playerStore.currentTrack.cover_id, 160)
+                    : null
+                  : playerStore.currentTrack.cover_url
+              "
+              :alt="playerStore.currentTrack.title"
               rounded="rounded-xl"
+              :fallback-icon="LuDisc3"
               class="h-full w-full"
             />
             <span

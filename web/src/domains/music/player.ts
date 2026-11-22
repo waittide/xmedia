@@ -1,5 +1,6 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
+import type { SubsonicSongDto } from '@/api/appHost'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
@@ -12,6 +13,7 @@ import {
   type OnlineMusicResolvedTrackDto,
   type OnlineMusicTrackDto,
 } from './onlineApi'
+import { buildRemoteSubsonicStreamUrl } from './onlineTrackRef'
 import type { PlayMode, StructuredLyricsDto, TrackDto, TranscodeProfile } from './types'
 
 export interface LocalQueueItem {
@@ -33,10 +35,18 @@ export interface OnlineQueueItem {
   activeBitrate: number | null
 }
 
-export type PlayerQueueItem = LocalQueueItem | OnlineQueueItem
+export interface RemoteQueueItem {
+  kind: 'remote'
+  key: string
+  source_id: string
+  source_name: string
+  song: SubsonicSongDto
+}
+
+export type PlayerQueueItem = LocalQueueItem | OnlineQueueItem | RemoteQueueItem
 
 export interface PlayerTrackDisplay {
-  kind: 'local' | 'online'
+  kind: 'local' | 'online' | 'remote'
   id: string
   title: string
   artist_name: string
@@ -56,6 +66,10 @@ export interface PlayerTrackDisplay {
 export function buildOnlineTrackKey(track: OnlineMusicTrackDto): string {
   const fallback = track.detail_url || track.play_url || track.url_id || track.title
   return `online:${track.source_id}:${track.track_id || ''}:${fallback}`
+}
+
+export function buildRemoteSongKey(sourceId: string, songId: string): string {
+  return `remote:${sourceId}:${songId}`
 }
 
 export function resolveOnlineItemCoverUrl(item: OnlineQueueItem): string | null {
@@ -101,6 +115,20 @@ function makeOnlineQueueItem(track: OnlineMusicTrackDto): OnlineQueueItem {
     selectedQuality: pickDefaultOnlineQuality(track.qualities),
     activeFormat: track.format ?? null,
     activeBitrate: null,
+  }
+}
+
+function makeRemoteQueueItem(
+  sourceId: string,
+  sourceName: string,
+  song: SubsonicSongDto,
+): RemoteQueueItem {
+  return {
+    kind: 'remote',
+    key: buildRemoteSongKey(sourceId, song.id),
+    source_id: sourceId,
+    source_name: sourceName,
+    song,
   }
 }
 
@@ -177,7 +205,13 @@ export const usePlayerStore = defineStore('player', () => {
     return item?.kind === 'online' ? item : null
   })
 
+  const currentRemoteItem = computed<RemoteQueueItem | null>(() => {
+    const item = currentItem.value
+    return item?.kind === 'remote' ? item : null
+  })
+
   const isCurrentOnline = computed<boolean>(() => currentItem.value?.kind === 'online')
+  const isCurrentRemote = computed<boolean>(() => currentItem.value?.kind === 'remote')
 
   const currentTrack = computed<PlayerTrackDisplay | null>(() => {
     const item = currentItem.value
@@ -199,6 +233,26 @@ export const usePlayerStore = defineStore('player', () => {
         starred_at: tr.starred_at,
         source_id: null,
         source_name: null,
+        qualities: [],
+      }
+    }
+    if (item.kind === 'remote') {
+      const song = item.song
+      return {
+        kind: 'remote',
+        id: item.key,
+        title: song.title,
+        artist_name: song.artist,
+        album_title: song.album || '',
+        duration_secs: song.duration ?? 0,
+        cover_id: null,
+        cover_key: null,
+        cover_url: song.cover_url ?? null,
+        artist_id: null,
+        album_id: null,
+        starred_at: null,
+        source_id: item.source_id,
+        source_name: item.source_name,
         qualities: [],
       }
     }
@@ -244,6 +298,11 @@ export const usePlayerStore = defineStore('player', () => {
   const qualitySummary = computed<string>(() => {
     const item = currentItem.value
     if (!item) return ''
+    if (item.kind === 'remote') {
+      const fmt = (item.song.suffix || '').toUpperCase()
+      if (fmt && item.song.bit_rate) return `${fmt} ${item.song.bit_rate}k`
+      return fmt
+    }
     if (item.kind === 'online') {
       const fmt = (item.activeFormat || item.track.format || '').toUpperCase()
       const bitrate = item.activeBitrate
@@ -393,6 +452,14 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function fetchLyricsFor(item: PlayerQueueItem): Promise<void> {
     const targetKey = item.key
+    if (item.kind === 'remote') {
+      if (currentItem.value?.key === targetKey) {
+        lyrics.value = null
+        lyricsLoadedTrackId = targetKey
+        lyricsLoading.value = false
+      }
+      return
+    }
     if (item.kind === 'online' && item.resolved) {
       if (currentItem.value?.key === targetKey) {
         lyrics.value = item.resolved.lyrics ?? null
@@ -549,6 +616,56 @@ export const usePlayerStore = defineStore('player', () => {
       }
       if (seq === loadSeq) {
         scheduleQueueSync()
+      }
+      return
+    }
+
+    if (item.kind === 'remote') {
+      onlineResolving.value = false
+      playbackError.value = null
+      syncAudioGain()
+      currentStreamIsTranscoded.value = false
+      streamOffsetSecs.value = 0
+      currentTimeSecs.value = startAtSecs
+      rawAudioDuration.value = 0
+      bufferedRatio.value = 0
+      clearPendingSeek()
+
+      const streamUrl =
+        item.song.stream_url || buildRemoteSubsonicStreamUrl(item.source_id, item.song.id)
+      audio.src = streamUrl
+      audio.load()
+
+      if (startAtSecs > 0) {
+        const handler = (): void => {
+          clearPendingSeek()
+          if (seq === loadSeq && currentItem.value?.key === targetKey) {
+            audio.currentTime = startAtSecs
+          }
+        }
+        pendingSeekHandler = handler
+        audio.addEventListener('loadedmetadata', handler, { once: true })
+      }
+
+      if (lyricsLoadedTrackId !== targetKey) {
+        lyrics.value = null
+        lyricsLoadedTrackId = targetKey
+        lyricsLoading.value = false
+      }
+      updateMediaSession(currentTrack.value)
+
+      if (autoPlay) {
+        try {
+          await audio.play()
+          if (seq !== loadSeq) return
+        } catch (err) {
+          if (seq !== loadSeq) return
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          const msg = err instanceof Error ? err.message : String(err)
+          playbackError.value = msg
+          isPlaying.value = false
+          useSnackbarStore().show({ message: msg, tone: 'error' })
+        }
       }
       return
     }
@@ -804,7 +921,12 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function playOnlineTrackNow(track: OnlineMusicTrackDto): void {
+    playOnlineTrackAt(track, 0)
+  }
+
+  function playOnlineTrackAt(track: OnlineMusicTrackDto, startAtSecs = 0): void {
     const targetKey = buildOnlineTrackKey(track)
+    const resumeAt = Math.max(0, startAtSecs)
     const existingIdx = queue.value.findIndex((item) => item.key === targetKey)
     if (existingIdx >= 0) {
       if (currentIndex.value >= 0 && currentIndex.value !== existingIdx) {
@@ -814,7 +936,7 @@ export const usePlayerStore = defineStore('player', () => {
       currentIndex.value = existingIdx
       shufflePool = shufflePool.filter((i) => i !== existingIdx)
       scrobbledCurrent = false
-      void loadAndPlayCurrent(0, true)
+      void loadAndPlayCurrent(resumeAt, true)
     } else if (queue.value.length > 0) {
       const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
       if (currentIndex.value >= 0) {
@@ -826,10 +948,128 @@ export const usePlayerStore = defineStore('player', () => {
       queue.value.splice(insertAt, 0, makeOnlineQueueItem(track))
       currentIndex.value = insertAt
       scrobbledCurrent = false
-      void loadAndPlayCurrent(0, true)
+      void loadAndPlayCurrent(resumeAt, true)
     } else {
-      playOnlineTracks([track], 0)
+      queueEpoch += 1
+      queueHadLocalOnClear = false
+      queue.value = [makeOnlineQueueItem(track)]
+      currentIndex.value = 0
+      scrobbledCurrent = false
+      resetShuffleAndHistory()
+      void loadAndPlayCurrent(resumeAt, true)
     }
+  }
+
+  function playRemoteSongs(
+    sourceId: string,
+    sourceName: string,
+    songs: SubsonicSongDto[],
+    startIndex = 0,
+    startAtSecs = 0,
+  ): void {
+    if (songs.length === 0) return
+    queueEpoch += 1
+    queueHadLocalOnClear = false
+    queue.value = songs.map((song) => makeRemoteQueueItem(sourceId, sourceName, song))
+    currentIndex.value = Math.max(0, Math.min(songs.length - 1, startIndex))
+    scrobbledCurrent = false
+    resetShuffleAndHistory()
+    void loadAndPlayCurrent(Math.max(0, startAtSecs), true)
+  }
+
+  function shuffleAndPlayRemoteSongs(
+    sourceId: string,
+    sourceName: string,
+    songs: SubsonicSongDto[],
+  ): void {
+    if (songs.length === 0) return
+    const copy = [...songs]
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      const tmp = copy[i]!
+      copy[i] = copy[j]!
+      copy[j] = tmp
+    }
+    themeStore.updatePlaybackPreferences({ play_mode: 'shuffle' })
+    playRemoteSongs(sourceId, sourceName, copy, 0, 0)
+  }
+
+  function playRemoteSongAt(
+    sourceId: string,
+    sourceName: string,
+    song: SubsonicSongDto,
+    startAtSecs = 0,
+  ): void {
+    const targetKey = buildRemoteSongKey(sourceId, song.id)
+    const resumeAt = Math.max(0, startAtSecs)
+    const existingIdx = queue.value.findIndex((item) => item.key === targetKey)
+    if (existingIdx >= 0) {
+      if (currentIndex.value >= 0 && currentIndex.value !== existingIdx) {
+        playHistory.push(currentIndex.value)
+        if (playHistory.length > 200) playHistory.shift()
+      }
+      currentIndex.value = existingIdx
+      shufflePool = shufflePool.filter((i) => i !== existingIdx)
+      scrobbledCurrent = false
+      void loadAndPlayCurrent(resumeAt, true)
+    } else if (queue.value.length > 0) {
+      const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
+      if (currentIndex.value >= 0) {
+        playHistory.push(currentIndex.value)
+        if (playHistory.length > 200) playHistory.shift()
+      }
+      playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
+      shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
+      queue.value.splice(insertAt, 0, makeRemoteQueueItem(sourceId, sourceName, song))
+      currentIndex.value = insertAt
+      scrobbledCurrent = false
+      void loadAndPlayCurrent(resumeAt, true)
+    } else {
+      playRemoteSongs(sourceId, sourceName, [song], 0, resumeAt)
+    }
+  }
+
+  function enqueueTracks(tracks: TrackDto[]): void {
+    if (tracks.length === 0) return
+    if (queue.value.length === 0) {
+      playQueue(tracks, 0)
+      return
+    }
+    for (const tr of tracks) {
+      queue.value.push(makeLocalQueueItem(tr))
+    }
+    scheduleQueueSync()
+  }
+
+  function enqueueRemoteSong(sourceId: string, sourceName: string, song: SubsonicSongDto): void {
+    if (queue.value.length === 0) {
+      playRemoteSongs(sourceId, sourceName, [song], 0, 0)
+      return
+    }
+    const key = buildRemoteSongKey(sourceId, song.id)
+    if (queue.value.some((item) => item.key === key)) return
+    queue.value.push(makeRemoteQueueItem(sourceId, sourceName, song))
+  }
+
+  function enqueueRemoteSongNext(
+    sourceId: string,
+    sourceName: string,
+    song: SubsonicSongDto,
+  ): void {
+    if (queue.value.length === 0) {
+      playRemoteSongs(sourceId, sourceName, [song], 0, 0)
+      return
+    }
+    const insertAt = currentIndex.value >= 0 ? currentIndex.value + 1 : queue.value.length
+    playHistory = playHistory.map((i) => (i >= insertAt ? i + 1 : i))
+    shufflePool = shufflePool.map((i) => (i >= insertAt ? i + 1 : i))
+    shufflePool.push(insertAt)
+    queue.value.splice(insertAt, 0, makeRemoteQueueItem(sourceId, sourceName, song))
+  }
+
+  function isRemoteSongInQueue(sourceId: string, songId: string): boolean {
+    const key = buildRemoteSongKey(sourceId, songId)
+    return queue.value.some((item) => item.key === key)
   }
 
   function enqueueNext(track: TrackDto): void {
@@ -1212,7 +1452,9 @@ export const usePlayerStore = defineStore('player', () => {
     currentItem,
     currentLocalTrack,
     currentOnlineItem,
+    currentRemoteItem,
     isCurrentOnline,
+    isCurrentRemote,
     currentTrack,
     isPlaying,
     onlineResolving,
@@ -1241,10 +1483,18 @@ export const usePlayerStore = defineStore('player', () => {
     playTrackNow,
     playTrackAt,
     playOnlineTrackNow,
+    playOnlineTrackAt,
+    playRemoteSongs,
+    shuffleAndPlayRemoteSongs,
+    playRemoteSongAt,
+    enqueueTracks,
     enqueueNext,
     enqueueOnlineTrackNext,
     enqueueOnlineTrack,
     isOnlineTrackInQueue,
+    enqueueRemoteSong,
+    enqueueRemoteSongNext,
+    isRemoteSongInQueue,
     pause,
     togglePlay,
     retryCurrentPlayback,

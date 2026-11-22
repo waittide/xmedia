@@ -245,6 +245,7 @@ export const onlineMusicApi = {
     sourceIds?: string[],
     page = 1,
     limit = 20,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineMusicSearchResponseDto> =>
     requestJson('/music/online/search', {
       method: 'POST',
@@ -254,6 +255,7 @@ export const onlineMusicApi = {
         page,
         limit,
       }),
+      signal: options?.signal,
     }),
 
   explore: (
@@ -261,6 +263,7 @@ export const onlineMusicApi = {
     exploreUrl?: string | null,
     page = 1,
     limit = 20,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineMusicExploreResponseDto> =>
     requestJson('/music/online/explore', {
       method: 'POST',
@@ -270,6 +273,7 @@ export const onlineMusicApi = {
         page,
         limit,
       }),
+      signal: options?.signal,
     }),
 
   fetchTrackInfo: (payload: {
@@ -324,7 +328,7 @@ export const onlineMusicApi = {
 export const musicSourceAdapter: OnlineSourceManagerAdapter<MusicSourceSummaryDto> = {
   domain: 'music',
   exportFilePrefix: 'xmedia-music-sources',
-  searchRoutePath: '/music/search',
+  searchRoutePath: '/music/library',
   listSources: onlineMusicApi.listSources,
   importSources: onlineMusicApi.importSources,
   importSeeds: onlineMusicApi.importSeeds,

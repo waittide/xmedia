@@ -13,9 +13,11 @@ import {
   LuHeart,
   LuLoader2,
   LuMic2,
+  LuDisc3,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
+import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
 import { stripAriaModalOnLeave } from '@/utils/dom'
@@ -25,7 +27,6 @@ import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { TranscodeProfile } from '../types'
-import CoverImage from './CoverImage.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -188,12 +189,18 @@ function navigateAndClose(path: string): void {
           <!-- Left Artwork & Player Column -->
           <div class="flex min-h-0 flex-col items-center justify-center md:col-span-5">
             <div class="w-full max-w-xs sm:max-w-sm">
-              <CoverImage
-                :src="playerStore.currentTrack.kind === 'online' ? playerStore.currentTrack.cover_url : undefined"
-                :cover-id="playerStore.currentTrack.cover_id"
-                :has-cover="Boolean(playerStore.currentTrack.cover_key)"
-                :size="640"
+              <MediaCoverImage
+                :src="
+                  playerStore.currentTrack.kind === 'local'
+                    ? playerStore.currentTrack.cover_key && playerStore.currentTrack.cover_id
+                      ? buildCoverUrl(playerStore.currentTrack.cover_id, 640)
+                      : null
+                    : playerStore.currentTrack.cover_url
+                "
+                :alt="playerStore.currentTrack.title"
+                loading="eager"
                 rounded="rounded-3xl"
+                :fallback-icon="LuDisc3"
                 class="album-shadow w-full"
               />
 

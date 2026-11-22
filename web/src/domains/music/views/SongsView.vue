@@ -1,17 +1,41 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
-import { LuPlay, LuShuffle, LuSearch, LuHeart, LuX, LuGlobe, LuMusic } from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
-import { useSnackbarStore } from '@/stores/snackbar'
+import {
+  LuClock,
+  LuDisc3,
+  LuHeart,
+  LuListMusic,
+  LuMic,
+  LuMusic,
+  LuPlay,
+  LuRadio,
+  LuRefreshCw,
+  LuShuffle,
+  LuTag,
+} from 'vue-icons-plus/lu'
+import { DomainLibraryTemplate } from '@/components/domain'
+import {
+  MdButton,
+  MdChip,
+  MdIconButton,
+  MdSelect,
+  type MdTabItem,
+  type SelectOption,
+} from '@/components/ui'
+import { useSourceFilter, type LibraryTab, type SourceScope } from '@/sources'
 import { useUploadStore } from '@/stores/uploads'
 import { api } from '../api'
 import AlbumCard from '../components/AlbumCard.vue'
-import CoverImage from '../components/CoverImage.vue'
+import ArtistCard from '../components/ArtistCard.vue'
+import LibraryArtistPanel from '../components/LibraryArtistPanel.vue'
+import LibraryCollectionsPanel from '../components/LibraryCollectionsPanel.vue'
+import LibraryContinuePanel from '../components/LibraryContinuePanel.vue'
+import LibraryFavoritesPanel from '../components/LibraryFavoritesPanel.vue'
+import LibraryPlaylistPanel from '../components/LibraryPlaylistPanel.vue'
 import OnlineMusicSearchSection from '../components/OnlineMusicSearchSection.vue'
+import RemoteSubsonicSection from '../components/RemoteSubsonicSection.vue'
 import TrackTable from '../components/TrackTable.vue'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
@@ -26,8 +50,13 @@ import type {
   TrackSortField,
 } from '../types'
 
-type CatalogTab = 'songs' | 'albums' | 'artists'
-type CatalogScope = 'local' | 'online'
+type MusicViewMode = 'items' | 'tracks' | 'artists' | 'genres' | 'tags'
+
+const VALID_TABS: readonly LibraryTab[] = ['all', 'continue', 'favorites', 'collections']
+const VALID_VIEWS: readonly MusicViewMode[] = ['items', 'tracks', 'artists', 'genres', 'tags']
+const TRACKS_PAGE_SIZE = 50
+const ALBUMS_PAGE_SIZE = 36
+const ARTISTS_PAGE_SIZE = 48
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
@@ -36,52 +65,132 @@ const router = useRouter()
 const musicStore = useMusicStore()
 const playerStore = usePlayerStore()
 const uploadStore = useUploadStore()
-const snackbarStore = useSnackbarStore()
-let fetchSeq = 0
-let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
-let syncingRouteQuery = false
+const sourceFilter = useSourceFilter('music')
 
-function resolveTabFromQuery(): CatalogTab {
-  const q = route.query.tab
-  if (q === 'albums' || q === 'artists') return q
-  return 'songs'
+const onlineSearchRef = ref<InstanceType<typeof OnlineMusicSearchSection> | null>(null)
+const remoteSearchRef = ref<InstanceType<typeof RemoteSubsonicSection> | null>(null)
+const continuePanelRef = ref<InstanceType<typeof LibraryContinuePanel> | null>(null)
+const favoritesPanelRef = ref<InstanceType<typeof LibraryFavoritesPanel> | null>(null)
+
+function readSingleQuery(key: string): string {
+  const raw = route.query[key]
+  if (typeof raw === 'string') return raw.trim()
+  if (Array.isArray(raw)) {
+    const first = raw.find((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    return first ? first.trim() : ''
+  }
+  return ''
 }
 
-const searchScope = ref<CatalogScope>(route.query.scope === 'online' ? 'online' : 'local')
-const onlineSourceId = computed(() =>
-  typeof route.query.source === 'string' && route.query.source.trim()
-    ? route.query.source.trim()
-    : null,
-)
-const activeTab = ref<CatalogTab>(resolveTabFromQuery())
-const selectedLibrary = ref(typeof route.query.library === 'string' ? route.query.library : '')
-const selectedGenre = ref(typeof route.query.genre === 'string' ? route.query.genre : '')
-const selectedTag = ref(typeof route.query.tag === 'string' ? route.query.tag : '')
-const search = ref('')
+const activeScope = computed<SourceScope>(() => sourceFilter.filter.value.scope)
+const activeSourceId = computed<string | null>(() => sourceFilter.filter.value.sourceId)
 
-// Songs state
+const activeArtistId = computed(() =>
+  activeScope.value === 'local' ? readSingleQuery('artist') : '',
+)
+const activeCollectionId = computed(() =>
+  activeScope.value === 'local' && !activeArtistId.value ? readSingleQuery('collection') : '',
+)
+const isSubDetailView = computed(
+  () => Boolean(activeArtistId.value || activeCollectionId.value),
+)
+
+const activeTab = computed<LibraryTab>(() => {
+  const raw = readSingleQuery('tab') as LibraryTab
+  if (VALID_TABS.includes(raw)) {
+    if (activeScope.value !== 'local' && raw === 'collections') return 'all'
+    return raw
+  }
+  return 'all'
+})
+
+const activeView = computed<MusicViewMode>(() => {
+  const raw = readSingleQuery('view') as MusicViewMode
+  if (VALID_VIEWS.includes(raw)) return raw
+  if (readSingleQuery('tag')) return 'tracks'
+  return 'items'
+})
+
+const selectedLibrary = computed(() => readSingleQuery('library'))
+const selectedGenre = computed(() => readSingleQuery('genre'))
+const selectedTag = computed(() => readSingleQuery('tag'))
+const committedQuery = computed(() => readSingleQuery('q'))
+
+const currentPage = computed(() => {
+  const n = Number(readSingleQuery('page'))
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 1
+})
+
+const tracksSortKey = computed(() => {
+  const sort = readSingleQuery('sort')
+  const order = readSingleQuery('order')
+  if (sort) {
+    const validOrder = order === 'asc' || order === 'desc' ? order : 'asc'
+    return `${sort}:${validOrder}`
+  }
+  return 'created_at:desc'
+})
+
+const albumListType = computed<AlbumListType>(() => {
+  const sort = readSingleQuery('sort') as AlbumListType
+  const allowed: AlbumListType[] = [
+    'newest',
+    'recent',
+    'frequent',
+    'random',
+    'starred',
+    'alphabeticalByName',
+    'alphabeticalByArtist',
+    'byYear',
+    'byGenre',
+  ]
+  return allowed.includes(sort) ? sort : 'newest'
+})
+
+const artistRoleFilter = ref<ArtistRoleFilter>('all')
+
+// Local search input synced with URL `q`
+const searchInput = ref(committedQuery.value)
+const filterSheetOpen = ref(false)
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
+let fetchSeq = 0
+
+// Local view data state
+const loading = ref(false)
+const fetchError = ref<string | null>(null)
 const tracks = ref<TrackDto[]>([])
 const tracksTotal = ref(0)
-const tracksPage = ref(1)
-const tracksPageSize = 50
-const tracksSortKey = ref('created_at:desc')
-
-// Albums state
 const albums = ref<AlbumDto[]>([])
 const albumsTotal = ref(0)
-const albumsPage = ref(1)
-const albumsPageSize = 36
-const albumListType = ref<AlbumListType>('newest')
-
-// Artists state
 const artists = ref<ArtistDto[]>([])
 const artistsTotal = ref(0)
-const artistsPage = ref(1)
-const artistsPageSize = 48
-const artistRoleFilter = ref<ArtistRoleFilter>('all')
-const artistsTotalPages = computed(() => Math.max(1, Math.ceil(artistsTotal.value / artistsPageSize)))
 
-const loading = ref(false)
+const isLocalCatalogMode = computed(
+  () => activeScope.value === 'local' && activeTab.value === 'all' && !isSubDetailView.value,
+)
+
+const tabs = computed<MdTabItem<string>[]>(() => {
+  if (isSubDetailView.value) return []
+  const base: MdTabItem<string>[] = [
+    { value: 'all', label: t('nav.all'), icon: LuMusic },
+    { value: 'continue', label: t('nav.continueListening'), icon: LuClock },
+    { value: 'favorites', label: t('nav.favorites'), icon: LuHeart },
+  ]
+  if (activeScope.value === 'local') {
+    base.push({ value: 'collections', label: t('nav.collections'), icon: LuListMusic })
+  }
+  return base
+})
+
+const viewChips = computed<Array<{ value: MusicViewMode; label: string; icon: typeof LuDisc3 }>>(
+  () => [
+    { value: 'items', label: t('nav.albums'), icon: LuDisc3 },
+    { value: 'tracks', label: t('nav.songs'), icon: LuMusic },
+    { value: 'artists', label: t('nav.artists'), icon: LuMic },
+    { value: 'genres', label: t('nav.genres'), icon: LuRadio },
+    { value: 'tags', label: t('nav.tags'), icon: LuTag },
+  ],
+)
 
 const activeLibraryName = computed(() => {
   if (!selectedLibrary.value) return ''
@@ -89,23 +198,46 @@ const activeLibraryName = computed(() => {
 })
 
 const pageTitle = computed(() => {
+  if (activeScope.value === 'online') return t('online.scopeOnline')
+  if (activeScope.value === 'remote') return globalT('remote.subsonicTab')
   if (activeLibraryName.value) return activeLibraryName.value
   if (selectedTag.value) return `#${selectedTag.value}`
   if (selectedGenre.value) return selectedGenre.value
-  return t('nav.all')
+  return t('nav.library')
 })
 
-const pageSubtitle = computed(() => {
-  if (activeTab.value === 'albums') {
-    return t('common.albumsCount', { count: albumsTotal.value })
-  }
-  if (activeTab.value === 'artists') {
-    return t('common.artistsCount', { count: artistsTotal.value })
-  }
-  return t('common.tracksCount', { count: tracksTotal.value })
+const headerCount = computed<number | null>(() => {
+  if (!isLocalCatalogMode.value) return null
+  if (activeView.value === 'tracks') return tracksTotal.value
+  if (activeView.value === 'items') return albumsTotal.value
+  if (activeView.value === 'artists') return artistsTotal.value
+  if (activeView.value === 'genres') return filteredGenres.value.length
+  if (activeView.value === 'tags') return filteredTags.value.length
+  return null
 })
 
-const libraryOptions = computed(() => [
+const activeFilterCount = computed(() => {
+  if (!isLocalCatalogMode.value) return 0
+  let count = 0
+  if (selectedLibrary.value) count += 1
+  if (selectedGenre.value) count += 1
+  if (selectedTag.value) count += 1
+  return count
+})
+
+const filteredGenres = computed(() => {
+  const needle = searchInput.value.trim().toLowerCase()
+  if (!needle) return musicStore.genres
+  return musicStore.genres.filter((g) => g.name.toLowerCase().includes(needle))
+})
+
+const filteredTags = computed(() => {
+  const needle = searchInput.value.trim().toLowerCase()
+  if (!needle) return musicStore.tags
+  return musicStore.tags.filter((tg) => tg.name.toLowerCase().includes(needle))
+})
+
+const libraryOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('catalog.allLibraries') },
   ...musicStore.libraries.map((l) => ({
     value: l.id,
@@ -114,16 +246,16 @@ const libraryOptions = computed(() => [
   })),
 ])
 
-const genreOptions = computed(() => [
+const genreOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('catalog.allGenres') },
   ...musicStore.genres.map((g) => ({
     value: g.name,
     label: g.name,
-    badge: activeTab.value === 'albums' ? g.album_count : g.song_count,
+    badge: activeView.value === 'items' ? g.album_count : g.song_count,
   })),
 ])
 
-const tagOptions = computed(() => [
+const tagOptions = computed<SelectOption[]>(() => [
   { value: '', label: globalT('musicTags.allTagsFilter') },
   ...musicStore.tags.map((tg) => ({
     value: tg.name,
@@ -132,7 +264,7 @@ const tagOptions = computed(() => [
   })),
 ])
 
-const trackSortOptions = computed(() => [
+const trackSortOptions = computed<SelectOption[]>(() => [
   { value: 'created_at:desc', label: t('catalog.sortCreatedDesc') },
   { value: 'title:asc', label: t('catalog.sortTitleAsc') },
   { value: 'artist:asc', label: t('catalog.sortArtistAsc') },
@@ -141,7 +273,7 @@ const trackSortOptions = computed(() => [
   { value: 'duration:desc', label: t('catalog.sortDurationDesc') },
 ])
 
-const albumTypeOptions = computed(() => [
+const albumTypeOptions = computed<SelectOption[]>(() => [
   { value: 'newest', label: t('catalog.albumSortNewest') },
   { value: 'recent', label: t('catalog.albumSortRecent') },
   { value: 'frequent', label: t('catalog.albumSortFrequent') },
@@ -151,659 +283,631 @@ const albumTypeOptions = computed(() => [
   { value: 'starred', label: t('catalog.albumSortStarred') },
 ])
 
-const artistRoleOptions = computed(() => [
+const artistRoleOptions = computed<SelectOption[]>(() => [
   { value: 'all', label: t('catalog.artistRoleAll') },
   { value: 'album_artist', label: t('catalog.artistRoleAlbum') },
   { value: 'track_artist', label: t('catalog.artistRoleTrack') },
 ])
 
-const searchScopeOptions = computed(
-  () =>
-    [
-      { value: 'local', label: t('online.scopeLocal'), icon: LuMusic },
-      { value: 'online', label: t('online.scopeOnline'), icon: LuGlobe },
-    ] as const,
-)
-
-const catalogTabOptions = computed(
-  () =>
-    [
-      { value: 'songs', label: t('nav.songs') },
-      { value: 'albums', label: t('nav.albums') },
-      { value: 'artists', label: t('nav.artists') },
-    ] as const,
-)
-
-const tracksTotalPages = computed(() => Math.max(1, Math.ceil(tracksTotal.value / tracksPageSize)))
-const albumsTotalPages = computed(() => Math.max(1, Math.ceil(albumsTotal.value / albumsPageSize)))
-
-function syncRouteQuery(): void {
-  const nextQuery: Record<string, string> = {}
-  if (activeTab.value !== 'songs') nextQuery.tab = activeTab.value
-  if (selectedLibrary.value) nextQuery.library = selectedLibrary.value
-  if (selectedGenre.value) nextQuery.genre = selectedGenre.value
-  if (selectedTag.value) nextQuery.tag = selectedTag.value
-  syncingRouteQuery = true
-  void router.replace({ path: '/music/songs', query: nextQuery }).finally(() => {
-    syncingRouteQuery = false
-  })
-}
-
-function syncOnlineRouteQuery(kw?: string, sourceId?: string | null): void {
-  const nextQuery: Record<string, string> = { scope: 'online' }
-  const nextSource = sourceId !== undefined ? sourceId : onlineSourceId.value
-  if (nextSource) nextQuery.source = nextSource
-  const nextKw = (kw !== undefined ? kw : musicStore.globalSearchQuery).trim()
-  if (nextKw) nextQuery.q = nextKw
-  syncingRouteQuery = true
-  void router.replace({ path: '/music/songs', query: nextQuery }).finally(() => {
-    syncingRouteQuery = false
-  })
-}
-
-function switchSearchScope(next: CatalogScope): void {
-  if (next === searchScope.value) return
-  searchScope.value = next
-  if (next === 'online') {
-    syncOnlineRouteQuery()
-  } else {
-    syncRouteQuery()
-    void fetchActiveTab()
+const activePagination = computed(() => {
+  if (!isLocalCatalogMode.value) {
+    return { page: 1, pageSize: 24, total: null as number | null, totalPages: 1 }
   }
-}
-
-function handleOnlineKeywordUpdate(kw: string): void {
-  if (musicStore.globalSearchQuery !== kw) {
-    musicStore.globalSearchQuery = kw
-  }
-  syncOnlineRouteQuery(kw)
-}
-
-function handleOnlineSourceUpdate(sourceId: string | null): void {
-  syncOnlineRouteQuery(undefined, sourceId)
-}
-
-function selectTab(tab: CatalogTab): void {
-  if (activeTab.value === tab) return
-  activeTab.value = tab
-  if (tab === 'artists') {
-    selectedLibrary.value = ''
-    selectedGenre.value = ''
-    selectedTag.value = ''
-  } else if (tab === 'albums') {
-    selectedTag.value = ''
-  }
-  syncRouteQuery()
-  void fetchActiveTab()
-}
-
-function clearScopeFilters(): void {
-  selectedLibrary.value = ''
-  selectedGenre.value = ''
-  selectedTag.value = ''
-  tracksPage.value = 1
-  albumsPage.value = 1
-  syncRouteQuery()
-  void fetchActiveTab()
-}
-
-async function fetchSongs(): Promise<void> {
-  const seq = ++fetchSeq
-  loading.value = true
-  try {
-    const [field, order] = tracksSortKey.value.split(':') as [TrackSortField, SortOrder]
-    const res = await api.queryTracks({
-      library_id: selectedLibrary.value || undefined,
-      genre: selectedGenre.value || undefined,
-      tag: selectedTag.value || undefined,
-      search: search.value.trim() || undefined,
-      sort_by: field,
-      sort_order: order,
-      page: tracksPage.value,
-      page_size: tracksPageSize,
-    })
-    if (seq !== fetchSeq) return
-    tracks.value = res.items
-    tracksTotal.value = res.total
-  } catch (err) {
-    if (seq !== fetchSeq) return
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    if (seq === fetchSeq) {
-      loading.value = false
+  if (activeView.value === 'tracks') {
+    return {
+      page: currentPage.value,
+      pageSize: TRACKS_PAGE_SIZE,
+      total: tracksTotal.value,
+      totalPages: Math.max(1, Math.ceil(tracksTotal.value / TRACKS_PAGE_SIZE)),
     }
   }
-}
-
-async function fetchAlbums(): Promise<void> {
-  const seq = ++fetchSeq
-  loading.value = true
-  try {
-    const res = await api.listAlbums({
-      type: albumListType.value,
-      library_id: selectedLibrary.value || undefined,
-      genre: selectedGenre.value || undefined,
-      search: search.value.trim() || undefined,
-      offset: (albumsPage.value - 1) * albumsPageSize,
-      size: albumsPageSize,
-    })
-    if (seq !== fetchSeq) return
-    albums.value = res.items
-    albumsTotal.value = res.total
-  } catch (err) {
-    if (seq !== fetchSeq) return
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    if (seq === fetchSeq) {
-      loading.value = false
+  if (activeView.value === 'items') {
+    return {
+      page: currentPage.value,
+      pageSize: ALBUMS_PAGE_SIZE,
+      total: albumsTotal.value,
+      totalPages: Math.max(1, Math.ceil(albumsTotal.value / ALBUMS_PAGE_SIZE)),
     }
   }
-}
-
-async function fetchArtists(): Promise<void> {
-  const seq = ++fetchSeq
-  loading.value = true
-  try {
-    const res = await api.listArtists({
-      search: search.value.trim() || undefined,
-      role: artistRoleFilter.value,
-      offset: (artistsPage.value - 1) * artistsPageSize,
-      size: artistsPageSize,
-    })
-    if (seq !== fetchSeq) return
-    artists.value = res.items
-    artistsTotal.value = res.total
-  } catch (err) {
-    if (seq !== fetchSeq) return
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    if (seq === fetchSeq) {
-      loading.value = false
+  if (activeView.value === 'artists') {
+    return {
+      page: currentPage.value,
+      pageSize: ARTISTS_PAGE_SIZE,
+      total: artistsTotal.value,
+      totalPages: Math.max(1, Math.ceil(artistsTotal.value / ARTISTS_PAGE_SIZE)),
     }
   }
-}
+  return { page: 1, pageSize: 24, total: null as number | null, totalPages: 1 }
+})
 
-function scheduleSearchFetch(target: 'songs' | 'albums' | 'artists'): void {
-  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-  searchDebounceTimer = setTimeout(() => {
-    searchDebounceTimer = null
-    if (target === 'songs') {
-      tracksPage.value = 1
-      void fetchSongs()
-    } else if (target === 'albums') {
-      albumsPage.value = 1
-      void fetchAlbums()
+const isLocalCatalogEmpty = computed(() => {
+  if (!isLocalCatalogMode.value || loading.value || fetchError.value) return false
+  if (activeView.value === 'tracks') return tracks.value.length === 0
+  if (activeView.value === 'items') return albums.value.length === 0
+  if (activeView.value === 'artists') return artists.value.length === 0
+  if (activeView.value === 'genres') return filteredGenres.value.length === 0
+  if (activeView.value === 'tags') return filteredTags.value.length === 0
+  return false
+})
+
+const searchPlaceholder = computed(() => {
+  if (activeScope.value === 'online') return t('online.searchPlaceholder')
+  if (activeScope.value === 'remote') return globalT('remote.subsonicSearchPlaceholder')
+  return t('common.filterPlaceholder')
+})
+
+function updateQuery(patch: Record<string, string | null | undefined>, resetPage = false): void {
+  const next: LocationQueryRaw = {}
+  for (const [k, v] of Object.entries(route.query)) {
+    if (v !== undefined && v !== null) next[k] = v
+  }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === null || v === undefined || v === '') {
+      delete next[k]
     } else {
-      artistsPage.value = 1
-      void fetchArtists()
+      next[k] = v
     }
-  }, 220)
+  }
+  if (resetPage) {
+    delete next.page
+  }
+  void router.replace({ path: '/music/library', query: next })
 }
 
-onBeforeUnmount(() => {
-  if (searchDebounceTimer) {
+function handleTabChange(nextTab: string): void {
+  const tab = nextTab as LibraryTab
+  updateQuery(
+    {
+      tab: tab === 'all' ? null : tab,
+      artist: null,
+      collection: null,
+    },
+    true,
+  )
+}
+
+function handleViewChange(nextView: MusicViewMode): void {
+  const patch: Record<string, string | null> = {
+    view: nextView === 'items' ? null : nextView,
+    sort: null,
+    order: null,
+  }
+  if (nextView === 'artists' || nextView === 'genres' || nextView === 'tags') {
+    patch.library = null
+    patch.genre = null
+    patch.tag = null
+  } else if (nextView === 'items') {
+    patch.tag = null
+  }
+  updateQuery(patch, true)
+}
+
+function handleSelectGenre(name: string): void {
+  updateQuery({ genre: name, view: 'items' }, true)
+}
+
+function handleSelectTag(name: string): void {
+  updateQuery({ tag: name, view: 'tracks' }, true)
+}
+
+function handleLibraryFilterChange(val: string): void {
+  updateQuery({ library: val || null }, true)
+}
+
+function handleGenreFilterChange(val: string): void {
+  updateQuery({ genre: val || null }, true)
+}
+
+function handleTagFilterChange(val: string): void {
+  updateQuery({ tag: val || null }, true)
+}
+
+function handleTrackSortChange(val: string): void {
+  const [sort, order] = val.split(':')
+  updateQuery(
+    {
+      sort: sort === 'created_at' && order === 'desc' ? null : sort || null,
+      order: sort === 'created_at' && order === 'desc' ? null : order || null,
+    },
+    true,
+  )
+}
+
+function handleAlbumSortChange(val: string): void {
+  updateQuery({ sort: val === 'newest' ? null : val, order: null }, true)
+}
+
+function handleArtistRoleChange(val: string): void {
+  artistRoleFilter.value = val as ArtistRoleFilter
+  updateQuery({}, true)
+  void fetchLocalCatalog()
+}
+
+function resetAllFilters(): void {
+  updateQuery({ library: null, genre: null, tag: null, sort: null, order: null }, true)
+}
+
+function clearDebounce(): void {
+  if (searchDebounceTimer !== null) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
   }
-})
+}
 
-async function fetchActiveTab(): Promise<void> {
-  if (activeTab.value === 'albums') {
-    await fetchAlbums()
-  } else if (activeTab.value === 'artists') {
-    await fetchArtists()
-  } else {
-    await fetchSongs()
+function handleSearchInputUpdate(val: string): void {
+  searchInput.value = val
+  clearDebounce()
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    const trimmed = searchInput.value.trim()
+    if (trimmed !== committedQuery.value) {
+      updateQuery({ q: trimmed || null }, true)
+    }
+  }, 320)
+}
+
+function handleSearchSubmit(val: string): void {
+  clearDebounce()
+  const trimmed = val.trim()
+  if (trimmed !== committedQuery.value) {
+    updateQuery({ q: trimmed || null }, true)
+  } else if (activeScope.value === 'online' && activeTab.value === 'all') {
+    void onlineSearchRef.value?.submitSearch()
+  } else if (activeScope.value === 'remote' && activeTab.value === 'all') {
+    remoteSearchRef.value?.reload()
+  } else if (isLocalCatalogMode.value) {
+    void fetchLocalCatalog()
   }
 }
 
-function handleFilterChange(): void {
-  tracksPage.value = 1
-  albumsPage.value = 1
-  syncRouteQuery()
-  void fetchActiveTab()
+function handleSearchClear(): void {
+  clearDebounce()
+  searchInput.value = ''
+  updateQuery({ q: null }, true)
+  if (activeScope.value === 'online' && activeTab.value === 'all') {
+    onlineSearchRef.value?.clearSearch()
+  }
 }
+
+function handlePageChange(nextPage: number): void {
+  updateQuery({ page: nextPage > 1 ? String(nextPage) : null })
+}
+
+function handleOnlineKeywordUpdate(kw: string): void {
+  searchInput.value = kw
+  if (kw.trim() !== committedQuery.value) {
+    updateQuery({ q: kw.trim() || null })
+  }
+}
+
+function handleSourceIdUpdate(sourceId: string | null): void {
+  void sourceFilter.setSource(sourceId)
+}
+
+function clearArtist(): void {
+  updateQuery({ artist: null, view: 'artists' }, true)
+}
+
+function clearCollection(): void {
+  updateQuery({ collection: null, tab: 'collections' }, true)
+}
+
+async function fetchLocalCatalog(): Promise<void> {
+  if (!isLocalCatalogMode.value) return
+  if (activeView.value === 'genres' || activeView.value === 'tags') {
+    fetchError.value = null
+    loading.value = false
+    if (musicStore.genres.length === 0 && musicStore.tags.length === 0) {
+      await musicStore.refreshSidebar()
+    }
+    return
+  }
+
+  const seq = ++fetchSeq
+  loading.value = true
+  fetchError.value = null
+  try {
+    if (activeView.value === 'tracks') {
+      const [field, order] = tracksSortKey.value.split(':') as [TrackSortField, SortOrder]
+      const res = await api.queryTracks({
+        library_id: selectedLibrary.value || undefined,
+        genre: selectedGenre.value || undefined,
+        tag: selectedTag.value || undefined,
+        search: committedQuery.value || undefined,
+        sort_by: field,
+        sort_order: order,
+        page: currentPage.value,
+        page_size: TRACKS_PAGE_SIZE,
+      })
+      if (seq !== fetchSeq) return
+      tracks.value = res.items
+      tracksTotal.value = res.total
+    } else if (activeView.value === 'items') {
+      const res = await api.listAlbums({
+        type: albumListType.value,
+        library_id: selectedLibrary.value || undefined,
+        genre: selectedGenre.value || undefined,
+        search: committedQuery.value || undefined,
+        offset: (currentPage.value - 1) * ALBUMS_PAGE_SIZE,
+        size: ALBUMS_PAGE_SIZE,
+      })
+      if (seq !== fetchSeq) return
+      albums.value = res.items
+      albumsTotal.value = res.total
+    } else if (activeView.value === 'artists') {
+      const res = await api.listArtists({
+        search: committedQuery.value || undefined,
+        role: artistRoleFilter.value,
+        offset: (currentPage.value - 1) * ARTISTS_PAGE_SIZE,
+        size: ARTISTS_PAGE_SIZE,
+      })
+      if (seq !== fetchSeq) return
+      artists.value = res.items
+      artistsTotal.value = res.total
+    }
+  } catch (err) {
+    if (seq !== fetchSeq) return
+    fetchError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    if (seq === fetchSeq) {
+      loading.value = false
+    }
+  }
+}
+
+async function handleRefresh(): Promise<void> {
+  if (activeTab.value === 'continue') {
+    await continuePanelRef.value?.refresh()
+    return
+  }
+  if (activeTab.value === 'favorites') {
+    await favoritesPanelRef.value?.refresh()
+    return
+  }
+  if (activeScope.value === 'online') {
+    await onlineSearchRef.value?.retryInit()
+    return
+  }
+  if (activeScope.value === 'remote') {
+    remoteSearchRef.value?.reload()
+    return
+  }
+  await Promise.allSettled([musicStore.refreshSidebar(), fetchLocalCatalog()])
+}
+
+function handleTagsUpdated(payload: { trackId: string; tags: string[] }): void {
+  tracks.value = tracks.value.map((tr) =>
+    tr.id === payload.trackId ? { ...tr, tags: payload.tags } : tr,
+  )
+}
+
+watch(committedQuery, (next) => {
+  if (next !== searchInput.value.trim()) {
+    searchInput.value = next
+  }
+})
 
 watch(
-  () =>
-    [
-      route.query.scope,
-      route.query.q,
-      route.query.tab,
-      route.query.library,
-      route.query.genre,
-      route.query.tag,
-    ] as const,
-  ([qScope, qVal, qTab, qLib, qGenre, qTag], prev) => {
-    if (syncingRouteQuery) return
-    const nextScope: CatalogScope = qScope === 'online' ? 'online' : 'local'
-    const scopeChanged = nextScope !== searchScope.value
-    searchScope.value = nextScope
-
-    if (nextScope === 'online') {
-      if (qVal !== prev?.[1] || scopeChanged) {
-        const nextQ = typeof qVal === 'string' ? qVal : ''
-        if (musicStore.globalSearchQuery !== nextQ) {
-          musicStore.globalSearchQuery = nextQ
-        }
-      }
-      return
-    }
-
-    const nextTab: CatalogTab = qTab === 'albums' || qTab === 'artists' ? qTab : 'songs'
-    const nextLib = typeof qLib === 'string' ? qLib : ''
-    const nextGenre = typeof qGenre === 'string' ? qGenre : ''
-    const nextTag = typeof qTag === 'string' ? qTag : ''
-    const changed =
-      scopeChanged ||
-      nextTab !== activeTab.value ||
-      nextLib !== selectedLibrary.value ||
-      nextGenre !== selectedGenre.value ||
-      nextTag !== selectedTag.value
-    activeTab.value = nextTab
-    selectedLibrary.value = nextLib
-    selectedGenre.value = nextGenre
-    selectedTag.value = nextTag
-    if (changed) {
-      tracksPage.value = 1
-      albumsPage.value = 1
-      void fetchActiveTab()
+  () => [
+    activeScope.value,
+    activeTab.value,
+    activeView.value,
+    activeArtistId.value,
+    activeCollectionId.value,
+    selectedLibrary.value,
+    selectedGenre.value,
+    selectedTag.value,
+    committedQuery.value,
+    tracksSortKey.value,
+    albumListType.value,
+    currentPage.value,
+  ],
+  () => {
+    if (isLocalCatalogMode.value) {
+      void fetchLocalCatalog()
     }
   },
+  { immediate: true },
 )
-
-async function refreshPage(): Promise<void> {
-  await Promise.all([musicStore.refreshSidebar(), fetchActiveTab()])
-}
-
-onMounted(() => {
-  if (route.query.scope === 'online') {
-    searchScope.value = 'online'
-    const q = typeof route.query.q === 'string' ? route.query.q : ''
-    if (musicStore.globalSearchQuery !== q) {
-      musicStore.globalSearchQuery = q
-    }
-  } else {
-    searchScope.value = 'local'
-    void fetchActiveTab()
-  }
-})
 
 watch(
   () => [musicStore.catalogVersion, uploadStore.versionCounter],
   () => {
-    if (searchScope.value === 'local') {
-      void fetchActiveTab()
+    if (isLocalCatalogMode.value) {
+      void fetchLocalCatalog()
     }
   },
 )
+
+onMounted(() => {
+  if (musicStore.libraries.length === 0 && musicStore.genres.length === 0) {
+    void musicStore.refreshSidebar()
+  }
+})
+
+onBeforeUnmount(clearDebounce)
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-5 px-6 py-7 sm:px-8">
-    <!-- Top Header & Quick Play -->
-    <div class="flex flex-wrap items-center justify-between gap-4">
-      <div class="flex items-center gap-3">
-        <div>
-          <div class="flex items-center gap-2">
-            <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
-              {{ searchScope === 'online' ? t('online.scopeOnline') : pageTitle }}
-            </h1>
-            <button
-              v-if="searchScope === 'local' && (selectedLibrary || selectedGenre || selectedTag)"
-              type="button"
-              class="md-chip md-chip-selected md-state"
-              @click="clearScopeFilters"
-            >
-              <span>{{ t('nav.all') }}</span>
-              <LuX class="h-3 w-3" />
-            </button>
-          </div>
-          <p
-            v-if="searchScope === 'local'"
-            class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            {{ pageSubtitle }}
-          </p>
-        </div>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-2">
-        <MdSegmentedButton
-          :model-value="searchScope"
-          :options="searchScopeOptions"
-          size="sm"
-          :show-check="false"
-          @update:model-value="switchSearchScope($event)"
+  <div class="px-4 py-6 sm:px-6 lg:px-8">
+    <DomainLibraryTemplate
+      domain="music"
+      :title="pageTitle"
+      :count="headerCount"
+      :show-scope-bar="true"
+      :show-search="!isSubDetailView"
+      :search-query="searchInput"
+      :search-placeholder="searchPlaceholder"
+      :tabs="tabs"
+      :active-tab="activeTab"
+      :loading="isLocalCatalogMode ? loading : false"
+      :skeleton-mode="activeView === 'tracks' ? 'list' : 'grid'"
+      skeleton-aspect="square"
+      :error="isLocalCatalogMode ? fetchError : null"
+      :empty="isLocalCatalogEmpty"
+      :page="activePagination.page"
+      :page-size="activePagination.pageSize"
+      :total="activePagination.total"
+      :total-pages="activePagination.totalPages"
+      :filter-sheet-open="filterSheetOpen"
+      :active-filter-count="activeFilterCount"
+      @update:search-query="handleSearchInputUpdate"
+      @search-submit="handleSearchSubmit"
+      @search-clear="handleSearchClear"
+      @update:active-tab="handleTabChange"
+      @update:page="handlePageChange"
+      @update:filter-sheet-open="filterSheetOpen = $event"
+      @reset-filters="resetAllFilters"
+      @retry="fetchLocalCatalog"
+    >
+      <!-- Local Catalog Dimension Chips + Active Filter Chips -->
+      <template v-if="isLocalCatalogMode" #toolbar-chips>
+        <MdChip
+          v-for="chip in viewChips"
+          :key="chip.value"
+          variant="filter"
+          :icon="chip.icon"
+          :label="chip.label"
+          :selected="activeView === chip.value"
+          hide-check
+          @click="handleViewChange(chip.value)"
         />
-        <template v-if="searchScope === 'local'">
-          <template v-if="activeTab === 'songs' && tracks.length > 0">
-            <button
-              type="button"
-              class="md-btn md-btn-filled md-btn-sm md-state"
-              @click="playerStore.playQueue(tracks, 0)"
-            >
-              <LuPlay class="h-3.5 w-3.5 fill-current" />
-              <span>{{ t('common.playAll') }}</span>
-            </button>
-            <button
-              type="button"
-              class="md-btn md-btn-tonal md-btn-sm md-state"
-              @click="playerStore.shuffleAndPlay(tracks)"
-            >
-              <LuShuffle class="h-3.5 w-3.5" />
-              <span>{{ t('common.shufflePlay') }}</span>
-            </button>
-          </template>
-          <RefreshButton size="md" :action="refreshPage" />
+        <MdChip
+          v-if="selectedLibrary && activeLibraryName"
+          variant="input"
+          :label="activeLibraryName"
+          selected
+          removable
+          hide-check
+          @remove="handleLibraryFilterChange('')"
+        />
+        <MdChip
+          v-if="selectedGenre"
+          variant="input"
+          :label="selectedGenre"
+          selected
+          removable
+          hide-check
+          @remove="handleGenreFilterChange('')"
+        />
+        <MdChip
+          v-if="selectedTag"
+          variant="input"
+          :label="`#${selectedTag}`"
+          selected
+          removable
+          hide-check
+          @remove="handleTagFilterChange('')"
+        />
+      </template>
+
+      <!-- Compact Trailing Controls -->
+      <template v-if="isLocalCatalogMode" #toolbar-trailing>
+        <template v-if="activeView === 'tracks' && tracks.length > 0">
+          <MdButton
+            variant="tonal"
+            size="sm"
+            :icon="LuPlay"
+            @click="playerStore.playQueue(tracks, 0)"
+          >
+            {{ t('common.playAll') }}
+          </MdButton>
+          <MdIconButton
+            size="sm"
+            variant="standard"
+            :icon="LuShuffle"
+            :aria-label="t('common.shufflePlay')"
+            :tooltip="t('common.shufflePlay')"
+            @click="playerStore.shuffleAndPlay(tracks)"
+          />
         </template>
-      </div>
-    </div>
-
-    <OnlineMusicSearchSection
-      v-if="searchScope === 'online'"
-      :keyword="musicStore.globalSearchQuery"
-      :initial-source-id="onlineSourceId"
-      @update:keyword="handleOnlineKeywordUpdate"
-      @update:source-id="handleOnlineSourceUpdate"
-    />
-
-    <template v-else>
-      <!-- Songs / Albums / Artists Tabs -->
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <MdSegmentedButton
-          :model-value="activeTab"
-          :options="catalogTabOptions"
-          size="md"
-          @update:model-value="selectTab($event)"
+        <MdIconButton
+          size="sm"
+          variant="standard"
+          :icon="LuRefreshCw"
+          :loading="loading"
+          :aria-label="globalT('common.refresh')"
+          :tooltip="globalT('common.refresh')"
+          @click="handleRefresh"
         />
-      </div>
+      </template>
 
-      <!-- 1. SONGS TAB -->
-      <template v-if="activeTab === 'songs'">
-      <div
-        class="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
-        :class="musicStore.tags.length > 0 || selectedTag ? 'lg:grid-cols-5' : 'lg:grid-cols-4'"
-      >
-        <div class="relative">
-          <LuSearch
-            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-          />
-          <input
-            v-model="search"
-            type="text"
-            :placeholder="t('common.filterPlaceholder')"
-            class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
-            @input="scheduleSearchFetch('songs')"
-          />
-        </div>
-
-        <AppSelect
-          v-model="selectedLibrary"
-          :options="libraryOptions"
-          @change="handleFilterChange"
-        />
-
-        <AppSelect
-          v-model="selectedGenre"
-          :options="genreOptions"
-          searchable
-          @change="handleFilterChange"
-        />
-
-        <AppSelect
-          v-if="musicStore.tags.length > 0 || selectedTag"
-          v-model="selectedTag"
-          :options="tagOptions"
-          searchable
-          @change="handleFilterChange"
-        />
-
-        <AppSelect
-          v-model="tracksSortKey"
-          :options="trackSortOptions"
-          @change="tracksPage = 1; fetchSongs()"
-        />
-      </div>
-
-      <div
-        v-if="tracks.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('common.noResults') }}
-      </div>
-      <TrackTable v-else :tracks="tracks" />
-
-      <div
-        v-if="tracksTotalPages > 1"
-        class="flex items-center justify-between pt-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        <span>
-          {{ t('common.pageInfo', { page: tracksPage, totalPages: tracksTotalPages, total: tracksTotal }) }}
-        </span>
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            :disabled="tracksPage <= 1"
-            class="md-btn md-btn-outlined md-btn-sm md-state"
-            @click="tracksPage -= 1; fetchSongs()"
-          >
-            {{ t('common.prevPage') }}
-          </button>
-          <button
-            type="button"
-            :disabled="tracksPage >= tracksTotalPages"
-            class="md-btn md-btn-outlined md-btn-sm md-state"
-            @click="tracksPage += 1; fetchSongs()"
-          >
-            {{ t('common.nextPage') }}
-          </button>
-        </div>
-      </div>
-    </template>
-
-    <!-- 2. ALBUMS TAB -->
-    <template v-else-if="activeTab === 'albums'">
-      <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-        <div class="relative">
-          <LuSearch
-            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-          />
-          <input
-            v-model="search"
-            type="text"
-            :placeholder="t('common.filterPlaceholder')"
-            class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
-            @input="scheduleSearchFetch('albums')"
-          />
-        </div>
-
-        <AppSelect
-          v-model="selectedLibrary"
-          :options="libraryOptions"
-          @change="handleFilterChange"
-        />
-
-        <AppSelect
-          v-model="selectedGenre"
-          :options="genreOptions"
-          searchable
-          @change="handleFilterChange"
-        />
-
-        <AppSelect
-          v-model="albumListType"
-          :options="albumTypeOptions"
-          @change="albumsPage = 1; fetchAlbums()"
-        />
-      </div>
-
-      <div
-        v-if="albums.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('common.noResults') }}
-      </div>
-      <div v-else class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-        <AlbumCard v-for="al in albums" :key="al.id" :album="al" />
-      </div>
-
-      <div
-        v-if="albumsTotalPages > 1"
-        class="flex items-center justify-between pt-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        <span>
-          {{ t('common.pageInfo', { page: albumsPage, totalPages: albumsTotalPages, total: albumsTotal }) }}
-        </span>
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            :disabled="albumsPage <= 1"
-            class="md-btn md-btn-outlined md-btn-sm md-state"
-            @click="albumsPage -= 1; fetchAlbums()"
-          >
-            {{ t('common.prevPage') }}
-          </button>
-          <button
-            type="button"
-            :disabled="albumsPage >= albumsTotalPages"
-            class="md-btn md-btn-outlined md-btn-sm md-state"
-            @click="albumsPage += 1; fetchAlbums()"
-          >
-            {{ t('common.nextPage') }}
-          </button>
-        </div>
-      </div>
-    </template>
-
-    <!-- 3. ARTISTS TAB -->
-    <template v-else>
-      <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:max-w-xl">
-        <div class="relative">
-          <LuSearch
-            class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-          />
-          <input
-            v-model="search"
-            type="text"
-            :placeholder="t('common.filterPlaceholder')"
-            class="md-input h-9 w-full pl-8.5 pr-3 text-xs placeholder-[var(--md-sys-color-on-surface-variant)]"
-            @input="scheduleSearchFetch('artists')"
-          />
-        </div>
-
-        <AppSelect
-          v-model="artistRoleFilter"
-          :options="artistRoleOptions"
-          @change="artistsPage = 1; fetchArtists()"
-        />
-      </div>
-
-      <div
-        v-if="artists.length === 0 && !loading"
-        class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ t('common.noResults') }}
-      </div>
-
-      <div v-else class="grid grid-cols-2 gap-3.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-        <div
-          v-for="ar in artists"
-          :key="ar.id"
-          role="link"
-          tabindex="0"
-          :aria-label="ar.name"
-          class="group relative flex cursor-pointer flex-col items-center rounded-2xl p-3 text-center transition hover:bg-[var(--md-sys-color-surface-container)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
-          @click="router.push(`/music/artists/${ar.id}`)"
-          @keydown.enter.self="router.push(`/music/artists/${ar.id}`)"
-          @keydown.space.self.prevent="router.push(`/music/artists/${ar.id}`)"
-        >
-          <div class="relative mb-3 w-3/4">
-            <CoverImage
-              :cover-id="ar.id"
-              :has-cover="Boolean(ar.cover_key)"
-              :size="280"
-              rounded="rounded-full"
-              class="album-shadow"
+      <!-- Responsive Filter Sheet (only for local catalog) -->
+      <template v-if="isLocalCatalogMode && (activeView === 'items' || activeView === 'tracks' || activeView === 'artists')" #filter-sheet>
+        <div class="space-y-4">
+          <div v-if="activeView === 'items' || activeView === 'tracks'" class="space-y-1.5">
+            <label class="text-label-medium text-on-surface-variant">
+              {{ t('catalog.allLibraries') }}
+            </label>
+            <MdSelect
+              :model-value="selectedLibrary"
+              :options="libraryOptions"
+              @update:model-value="handleLibraryFilterChange"
             />
-            <button
-              type="button"
-              :aria-label="ar.starred_at ? t('common.unfavorite') : t('common.favorite')"
-              :aria-pressed="Boolean(ar.starred_at)"
-              class="md-icon-btn md-icon-btn-sm md-state absolute right-0 bottom-0 h-7 w-7 border border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface)] shadow-[var(--md-sys-elevation-1)] transition hover:scale-110"
-              @click.stop="musicStore.toggleArtistStar(ar)"
-            >
-              <LuHeart
-                class="h-3.5 w-3.5"
-                :class="
-                  ar.starred_at
-                    ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
-                    : 'text-[var(--md-sys-color-on-surface-variant)]'
-                "
-              />
-            </button>
           </div>
 
-          <h3 class="w-full truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-            {{ ar.name }}
-          </h3>
-          <p class="mt-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('common.albumsCount', { count: ar.album_count }) }} ·
-            {{ t('common.tracksCount', { count: ar.track_count }) }}
-          </p>
-          <div class="mt-1.5 flex flex-wrap justify-center gap-1">
-            <span
-              v-if="ar.is_album_artist"
-              class="md-label-small rounded-md bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 font-semibold text-[var(--md-sys-color-on-primary-container)]"
-            >
-              {{ t('catalog.badgeAlbumArtist') }}
-            </span>
-            <span
-              v-if="ar.is_track_artist && !ar.is_album_artist"
-              class="md-label-small rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 font-medium text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ t('catalog.badgeTrackArtist') }}
-            </span>
+          <div v-if="activeView === 'items' || activeView === 'tracks'" class="space-y-1.5">
+            <label class="text-label-medium text-on-surface-variant">
+              {{ t('nav.genres') }}
+            </label>
+            <MdSelect
+              :model-value="selectedGenre"
+              :options="genreOptions"
+              searchable
+              @update:model-value="handleGenreFilterChange"
+            />
+          </div>
+
+          <div v-if="activeView === 'tracks'" class="space-y-1.5">
+            <label class="text-label-medium text-on-surface-variant">
+              {{ t('nav.tags') }}
+            </label>
+            <MdSelect
+              :model-value="selectedTag"
+              :options="tagOptions"
+              searchable
+              @update:model-value="handleTagFilterChange"
+            />
+          </div>
+
+          <div v-if="activeView === 'tracks'" class="space-y-1.5">
+            <label class="text-label-medium text-on-surface-variant">
+              {{ globalT('common.sort') }}
+            </label>
+            <MdSelect
+              :model-value="tracksSortKey"
+              :options="trackSortOptions"
+              @update:model-value="handleTrackSortChange"
+            />
+          </div>
+
+          <div v-else-if="activeView === 'items'" class="space-y-1.5">
+            <label class="text-label-medium text-on-surface-variant">
+              {{ globalT('common.sort') }}
+            </label>
+            <MdSelect
+              :model-value="albumListType"
+              :options="albumTypeOptions"
+              @update:model-value="handleAlbumSortChange"
+            />
+          </div>
+
+          <div v-else-if="activeView === 'artists'" class="space-y-1.5">
+            <label class="text-label-medium text-on-surface-variant">
+              {{ t('nav.artists') }}
+            </label>
+            <MdSelect
+              :model-value="artistRoleFilter"
+              :options="artistRoleOptions"
+              @update:model-value="handleArtistRoleChange"
+            />
           </div>
         </div>
-      </div>
+      </template>
 
-      <div
-        v-if="artistsTotalPages > 1"
-        class="flex items-center justify-between pt-2 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        <span>
-          {{ t('common.pageInfo', { page: artistsPage, totalPages: artistsTotalPages, total: artistsTotal }) }}
-        </span>
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            :disabled="artistsPage <= 1"
-            class="md-btn md-btn-outlined md-btn-sm md-state"
-            @click="artistsPage -= 1; fetchArtists()"
-          >
-            {{ t('common.prevPage') }}
-          </button>
-          <button
-            type="button"
-            :disabled="artistsPage >= artistsTotalPages"
-            class="md-btn md-btn-outlined md-btn-sm md-state"
-            @click="artistsPage += 1; fetchArtists()"
-          >
-            {{ t('common.nextPage') }}
-          </button>
+      <!-- Main Body Routing by Sub-Detail / Tab / Scope / View -->
+      <LibraryArtistPanel
+        v-if="activeArtistId"
+        :artist-id="activeArtistId"
+        @back="clearArtist"
+      />
+
+      <LibraryPlaylistPanel
+        v-else-if="activeCollectionId"
+        :playlist-id="activeCollectionId"
+        @back="clearCollection"
+        @deleted="clearCollection"
+      />
+
+      <LibraryContinuePanel
+        v-else-if="activeTab === 'continue'"
+        ref="continuePanelRef"
+        :scope="activeScope"
+        :source-id="activeSourceId"
+        :query="searchInput"
+      />
+
+      <LibraryFavoritesPanel
+        v-else-if="activeTab === 'favorites'"
+        ref="favoritesPanelRef"
+        :scope="activeScope"
+        :source-id="activeSourceId"
+        :query="searchInput"
+      />
+
+      <LibraryCollectionsPanel
+        v-else-if="activeScope === 'local' && activeTab === 'collections'"
+        :query="searchInput"
+      />
+
+      <OnlineMusicSearchSection
+        v-else-if="activeScope === 'online'"
+        ref="onlineSearchRef"
+        :keyword="committedQuery"
+        :initial-source-id="activeSourceId"
+        :show-search-input="false"
+        @update:keyword="handleOnlineKeywordUpdate"
+        @update:source-id="handleSourceIdUpdate"
+      />
+
+      <RemoteSubsonicSection
+        v-else-if="activeScope === 'remote'"
+        ref="remoteSearchRef"
+        :keyword="committedQuery"
+        :selected-source-id="activeSourceId"
+        @update:source-id="handleSourceIdUpdate"
+      />
+
+      <!-- Local Catalog Views (items=Albums | tracks | artists | genres | tags) -->
+      <template v-else>
+        <TrackTable
+          v-if="activeView === 'tracks'"
+          :tracks="tracks"
+          @tags-updated="handleTagsUpdated"
+        />
+
+        <div
+          v-else-if="activeView === 'items'"
+          class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+        >
+          <AlbumCard v-for="al in albums" :key="al.id" :album="al" />
         </div>
-      </div>
-    </template>
-    </template>
+
+        <div
+          v-else-if="activeView === 'artists'"
+          class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+        >
+          <ArtistCard v-for="ar in artists" :key="ar.id" :artist="ar" />
+        </div>
+
+        <div
+          v-else-if="activeView === 'genres'"
+          class="flex flex-wrap gap-2"
+        >
+          <MdChip
+            v-for="genre in filteredGenres"
+            :key="genre.name"
+            variant="assist"
+            :icon="LuRadio"
+            :label="`${genre.name} (${genre.song_count})`"
+            @click="handleSelectGenre(genre.name)"
+          />
+        </div>
+
+        <div
+          v-else-if="activeView === 'tags'"
+          class="flex flex-wrap gap-2"
+        >
+          <MdChip
+            v-for="tg in filteredTags"
+            :key="tg.name"
+            variant="assist"
+            :icon="LuTag"
+            :label="`#${tg.name} (${tg.song_count})`"
+            @click="handleSelectTag(tg.name)"
+          />
+        </div>
+      </template>
+    </DomainLibraryTemplate>
   </div>
 </template>

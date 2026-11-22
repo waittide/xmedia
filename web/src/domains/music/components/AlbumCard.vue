@@ -1,100 +1,135 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
-import { LuHeart, LuPlay } from 'vue-icons-plus/lu'
-import { api } from '../api'
+import { computed, ref } from 'vue'
+import { RouterLink } from 'vue-router'
+import { LuDisc3, LuHeart, LuLoader2, LuPlay } from 'vue-icons-plus/lu'
+import { MdIconButton, MediaCoverImage } from '@/components/ui'
+import { useSnackbarStore } from '@/stores/snackbar'
+import { api, buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { AlbumDto } from '../types'
-import CoverImage from './CoverImage.vue'
 
 const props = defineProps<{
   album: AlbumDto
 }>()
 
 const { t } = useI18n()
-const router = useRouter()
 const musicStore = useMusicStore()
 const playerStore = usePlayerStore()
+const snackbarStore = useSnackbarStore()
+
+const playingLoading = ref(false)
+
+const coverSrc = computed(() =>
+  props.album.cover_key ? buildCoverUrl(props.album.id, 320) : null,
+)
+const albumTo = computed(() => `/music/item/${encodeURIComponent(props.album.id)}`)
+const artistTo = computed(() => ({
+  path: '/music/library',
+  query: { artist: props.album.album_artist_id },
+}))
 
 async function quickPlayAlbum(ev: MouseEvent): Promise<void> {
+  ev.preventDefault()
   ev.stopPropagation()
-  const detail = await api.getAlbum(props.album.id)
-  playerStore.playQueue(detail.tracks, 0)
+  if (playingLoading.value) return
+  playingLoading.value = true
+  try {
+    const detail = await api.getAlbum(props.album.id)
+    if (detail.tracks.length > 0) {
+      playerStore.playQueue(detail.tracks, 0)
+    }
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    playingLoading.value = false
+  }
 }
 
 async function onStar(ev: MouseEvent): Promise<void> {
+  ev.preventDefault()
   ev.stopPropagation()
-  await musicStore.toggleAlbumStar(props.album)
+  try {
+    await musicStore.toggleAlbumStar(props.album)
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 </script>
 
 <template>
-  <div
-    role="link"
-    tabindex="0"
-    :aria-label="album.title"
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
-    @click="router.push(`/music/albums/${album.id}`)"
-    @keydown.enter.self="router.push(`/music/albums/${album.id}`)"
-    @keydown.space.self.prevent="router.push(`/music/albums/${album.id}`)"
-  >
-    <div class="relative mb-2.5">
-      <CoverImage
-        :cover-id="album.id"
-        :has-cover="Boolean(album.cover_key)"
-        :size="320"
+  <article class="group relative flex flex-col text-on-surface">
+    <div
+      class="album-shadow relative overflow-hidden rounded-corner-md bg-surface-container-high transition-shadow duration-200 ease-standard group-hover:shadow-elevation-1"
+    >
+      <MediaCoverImage
+        :src="coverSrc"
         :alt="album.title"
-        rounded="rounded-2xl"
-        class="album-shadow"
+        aspect-class="aspect-square"
+        rounded="rounded-corner-md"
+        bg-class="bg-surface-container-high"
+        :fallback-icon="LuDisc3"
+        fallback-icon-class="h-10 w-10 text-on-surface-variant/50"
       >
         <div
-          class="absolute inset-0 flex items-end justify-between bg-gradient-to-t from-black/55 via-transparent to-transparent p-2.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+          class="pointer-events-none absolute inset-0 z-[2] flex items-end justify-between bg-gradient-to-t from-scrim/60 via-transparent to-transparent p-2 opacity-0 transition-opacity duration-150 ease-standard group-focus-within:opacity-100 group-hover:opacity-100"
         >
-          <button
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state bg-black/45 text-white backdrop-blur-sm hover:scale-105 hover:text-white"
+          <MdIconButton
+            size="sm"
+            variant="standard"
+            :selected="Boolean(album.starred_at)"
             :aria-label="album.starred_at ? t('common.unfavorite') : t('common.favorite')"
-            :aria-pressed="Boolean(album.starred_at)"
+            class="pointer-events-auto relative z-20 bg-scrim/45 text-white hover:text-white"
             @click="onStar"
           >
             <LuHeart
               class="h-4 w-4"
-              :class="
-                album.starred_at
-                  ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
-                  : ''
-              "
+              :class="album.starred_at ? 'fill-current text-tertiary' : ''"
             />
-          </button>
+          </MdIconButton>
 
           <button
             type="button"
-            class="md-state flex h-10 w-10 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105"
+            :disabled="playingLoading"
+            :aria-busy="playingLoading || undefined"
             :title="t('common.playAll')"
             :aria-label="t('common.playAll')"
+            class="md-state pointer-events-auto relative z-20 flex h-10 w-10 cursor-pointer items-center justify-center rounded-corner-full bg-primary text-on-primary shadow-elevation-2 transition-transform duration-150 ease-standard hover:scale-105 disabled:opacity-60"
             @click="quickPlayAlbum"
           >
-            <LuPlay class="ml-0.5 h-4 w-4 fill-current" />
+            <LuLoader2 v-if="playingLoading" class="h-4 w-4 animate-spin" aria-hidden="true" />
+            <LuPlay v-else class="ml-0.5 h-4 w-4 fill-current" aria-hidden="true" />
           </button>
         </div>
-      </CoverImage>
+      </MediaCoverImage>
     </div>
 
-    <h3 class="truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-      {{ album.title }}
-    </h3>
-    <div
-      class="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-    >
-      <button
-        type="button"
-        class="truncate text-left hover:text-[var(--md-sys-color-primary)] hover:underline"
-        @click.stop="router.push(`/music/artists/${album.album_artist_id}`)"
+    <div class="mt-2 min-w-0">
+      <RouterLink
+        :to="albumTo"
+        class="block outline-none after:absolute after:inset-0 after:rounded-corner-md focus-visible:after:outline-3 focus-visible:after:outline-offset-2 focus-visible:after:outline-secondary"
       >
-        {{ album.album_artist_name }}
-      </button>
-      <span v-if="album.year" class="shrink-0">{{ album.year }}</span>
+        <h3 class="text-title-small truncate text-on-surface" :title="album.title">
+          {{ album.title }}
+        </h3>
+      </RouterLink>
+
+      <div class="text-body-small mt-0.5 flex items-center justify-between gap-1.5 text-on-surface-variant">
+        <RouterLink
+          :to="artistTo"
+          class="relative z-10 min-w-0 truncate hover:text-primary hover:underline"
+        >
+          {{ album.album_artist_name }}
+        </RouterLink>
+        <span v-if="album.year" class="shrink-0 tabular-nums">{{ album.year }}</span>
+      </div>
     </div>
-  </div>
+  </article>
 </template>
