@@ -312,11 +312,8 @@ impl BookSourceEngine {
         let res: Result<Vec<SearchBookResult>, String> = (|| {
             session.set_search_vars(keyword, page)?;
             let search_url = self.build_search_url_lazy(source, &mut session, keyword, page)?;
+            let fetched = session.fetch_http(&search_url, &source.book_source_url)?;
             session.check_active()?;
-            let fetched = session
-                .inner
-                .http()
-                .fetch(&search_url, &source.book_source_url)?;
             let raw_input = RuleValue::from_raw(fetched.body);
 
             let book_list_rule = rule_search
@@ -416,11 +413,8 @@ impl BookSourceEngine {
             if let Some(hint) = fallback_hint {
                 session.set_book_context(hint)?;
             }
+            let fetched = session.fetch_http(book_url, &source.book_source_url)?;
             session.check_active()?;
-            let fetched = session
-                .inner
-                .http()
-                .fetch(book_url, &source.book_source_url)?;
             let mut info_input = RuleValue::from_raw(fetched.body);
 
             let Some(rule_info) = source.rule_book_info.as_ref() else {

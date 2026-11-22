@@ -1248,3 +1248,448 @@ async fn book_online_search_enforces_cancel_on_future_drop() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn book_online_non_search_and_test_enforce_cancel_on_future_drop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let step1_entered = Arc::new(tokio::sync::Notify::new());
+    let step2_hits = Arc::new(AtomicUsize::new(0));
+    let toc2_hits = Arc::new(AtomicUsize::new(0));
+    let content2_hits = Arc::new(AtomicUsize::new(0));
+
+    let s1_search = step1_entered.clone();
+    let s1_book = step1_entered.clone();
+    let s1_toc = step1_entered.clone();
+    let s1_content = step1_entered.clone();
+    let step2_hits_c = step2_hits.clone();
+    let toc2_hits_c = toc2_hits.clone();
+    let content2_hits_c = content2_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/search1",
+            get(move || {
+                let notify = s1_search.clone();
+                async move {
+                    notify.notify_waiters();
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    r#"{"items":[{"name":"Book","url":"/book1"}]}"#
+                }
+            }),
+        )
+        .route(
+            "/book1",
+            get(move || {
+                let notify = s1_book.clone();
+                async move {
+                    notify.notify_waiters();
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    r#"{"name":"Book","tocUrl":"/toc1"}"#
+                }
+            }),
+        )
+        .route(
+            "/toc1",
+            get(move || {
+                let notify = s1_toc.clone();
+                async move {
+                    notify.notify_waiters();
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    r#"{"chapters":[{"title":"Ch1","url":"/content1"}],"next":"/toc2"}"#
+                }
+            }),
+        )
+        .route(
+            "/toc2",
+            get(move || {
+                let hits = toc2_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"chapters":[{"title":"Ch2","url":"/content2"}]}"#
+                }
+            }),
+        )
+        .route(
+            "/content1",
+            get(move || {
+                let notify = s1_content.clone();
+                async move {
+                    notify.notify_waiters();
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    r#"{"title":"Ch1","body":"Page1","next":"/content2"}"#
+                }
+            }),
+        )
+        .route(
+            "/content2",
+            get(move || {
+                let hits = content2_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"title":"Ch1","body":"Page2"}"#
+                }
+            }),
+        )
+        .route(
+            "/step2",
+            get(move || {
+                let hits = step2_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"ok":true}"#
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("book_drop_non_search.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_book_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+    let users = Arc::new(ToastyUserRepository::new(db.clone()));
+    let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let security = Arc::new(SecurityManager::new("book-drop-non-search-secret"));
+    let tokens = Arc::new(JwtTokenService::new("book-drop-non-search-secret", 3600));
+    let events = Arc::new(BroadcastEventHub::default());
+    let auth_svc = Arc::new(AuthService::new(
+        users,
+        security,
+        tokens,
+        lifecycles.clone(),
+    ));
+    let lib_svc = Arc::new(LibraryService::new(
+        libs_repo.clone(),
+        events.clone(),
+        lifecycles,
+    ));
+    let book_services = crate::init_book_module_with_allow_private_ips(
+        db,
+        tmp.path(),
+        libs_repo,
+        &lib_svc,
+        events,
+        true,
+    )
+    .unwrap();
+    let admin = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "password123".into(),
+        })
+        .await
+        .unwrap();
+    let state = BookHttpState::new(auth_svc, lib_svc, book_services);
+    let app = Router::new().nest("/api/v1/book", rest_router(state));
+
+    let src_json = serde_json::json!([{
+        "bookSourceName": "DropBookNonSearchSource",
+        "bookSourceUrl": base,
+        "searchUrl": format!("{base}/search1?q={{{{key}}}}"),
+        "ruleSearch": {
+            "bookList": "$.items[*]",
+            "name": "@js:java.ajax(baseUrl.replace('/search1', '/step2')); 'Book'",
+            "bookUrl": "$.url"
+        },
+        "ruleBookInfo": {
+            "name": "@js:java.ajax(baseUrl.replace('/book1', '/step2')); 'Book'",
+            "tocUrl": "$.tocUrl"
+        },
+        "ruleToc": {
+            "chapterList": "$.chapters[*]",
+            "chapterName": "$.title",
+            "chapterUrl": "$.url",
+            "nextTocUrl": "$.next"
+        },
+        "ruleContent": {
+            "title": "$.title",
+            "content": "$.body",
+            "nextContentUrl": "$.next"
+        }
+    }]);
+    let imp_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/sources/import")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({ "raw_json": src_json.to_string() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(imp_res.status(), StatusCode::OK);
+    let imp_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(imp_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let sid = imp_body["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for (uri, payload) in [
+        (
+            "/api/v1/book/online/book-info",
+            serde_json::json!({ "source_id": sid, "book_url": format!("{base}/book1") }),
+        ),
+        (
+            "/api/v1/book/online/toc",
+            serde_json::json!({ "source_id": sid, "toc_url": format!("{base}/toc1") }),
+        ),
+        (
+            "/api/v1/book/online/content",
+            serde_json::json!({ "source_id": sid, "chapter_url": format!("{base}/content1") }),
+        ),
+        (
+            &format!("/api/v1/book/sources/{sid}/test") as &str,
+            serde_json::json!({ "mode": "full", "keyword": "drop" }),
+        ),
+    ] {
+        {
+            let fut = app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", admin.token))
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            );
+            tokio::pin!(fut);
+            tokio::select! {
+                _ = &mut fut => panic!("{uri} completed before drop"),
+                _ = step1_entered.notified() => {}
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(320)).await;
+        assert_eq!(
+            step2_hits.load(Ordering::SeqCst),
+            0,
+            "dropping {uri} mid-flight must abort before step2 java.ajax"
+        );
+        assert_eq!(
+            toc2_hits.load(Ordering::SeqCst),
+            0,
+            "dropping {uri} mid-flight must abort before toc2 page"
+        );
+        assert_eq!(
+            content2_hits.load(Ordering::SeqCst),
+            0,
+            "dropping {uri} mid-flight must abort before content2 page"
+        );
+    }
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn book_online_non_search_enforces_timeout_on_stalled_upstream() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use xmedia_core::domain::error::DomainError;
+
+    use crate::infra::persistence::repositories::{
+        ToastyBookSourceRepository, ToastyOnlineShelfRepository,
+    };
+
+    let after_hits = Arc::new(AtomicUsize::new(0));
+    let after_hits_c = after_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/hop1",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(90)).await;
+                r#"{"name":"Book","tocUrl":"/toc1"}"#
+            }),
+        )
+        .route(
+            "/toc1",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(90)).await;
+                r#"{"chapters":[{"title":"Ch1","url":"/content1"}],"next":"/stall"}"#
+            }),
+        )
+        .route(
+            "/content1",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(90)).await;
+                r#"{"title":"Ch1","body":"Page1","next":"/stall"}"#
+            }),
+        )
+        .route(
+            "/stall",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                r#"{"chapters":[{"title":"Late","url":"/c2"}],"body":"LateBody"}"#
+            }),
+        )
+        .route(
+            "/after",
+            get(move || {
+                let hits = after_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"ok":true}"#
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("book_timeout.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_book_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+    let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
+    let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let security = Arc::new(SecurityManager::new("book-timeout-secret"));
+    let tokens = Arc::new(JwtTokenService::new("book-timeout-secret", 3600));
+    let events = Arc::new(BroadcastEventHub::default());
+    let auth_svc = Arc::new(AuthService::new(
+        users_repo,
+        security,
+        tokens,
+        lifecycles.clone(),
+    ));
+    let lib_svc = Arc::new(LibraryService::new(
+        libs_repo.clone(),
+        events.clone(),
+        lifecycles,
+    ));
+    let book_services =
+        init_book_module(db.clone(), tmp.path(), libs_repo, &lib_svc, events).unwrap();
+    let admin_session = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "adminpassword123".into(),
+        })
+        .await
+        .unwrap();
+    let admin = auth_svc
+        .authenticate_jwt(&admin_session.token)
+        .await
+        .unwrap();
+
+    let sources_repo = Arc::new(ToastyBookSourceRepository::new(db.clone()));
+    let shelves_repo = Arc::new(ToastyOnlineShelfRepository::new(db));
+    let engine = BookSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(5),
+    );
+    let svc = BookOnlineService::with_engine(
+        sources_repo,
+        shelves_repo,
+        tmp.path(),
+        book_services.catalog.clone(),
+        engine,
+        true,
+    )
+    .unwrap()
+    .with_timeouts(Duration::from_millis(120), Duration::from_millis(160));
+
+    let raw_src = serde_json::json!([{
+        "bookSourceName": "StalledMultiPageBook",
+        "bookSourceUrl": base,
+        "ruleBookInfo": {
+            "init": format!("@js:java.ajax('{base}/stall')"),
+            "name": format!("@js:java.ajax('{base}/after'); 'Book'"),
+            "tocUrl": "$.tocUrl"
+        },
+        "ruleToc": {
+            "chapterList": "$.chapters[*]",
+            "chapterName": "$.title",
+            "chapterUrl": "$.url",
+            "nextTocUrl": "$.next"
+        },
+        "ruleContent": {
+            "title": "$.title",
+            "content": "$.body",
+            "nextContentUrl": "$.next"
+        }
+    }]);
+    let imported = svc
+        .import_sources(&admin, &raw_src.to_string())
+        .await
+        .unwrap();
+    let sid = imported.sources[0].id;
+
+    let t_start = std::time::Instant::now();
+    let info_err = svc
+        .fetch_book_info(&admin, sid, &format!("{base}/hop1"), None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(info_err, DomainError::Validation(ref m) if m.contains("超时")),
+        "expected timeout error for book_info, got {info_err:?}"
+    );
+
+    let toc_err = svc
+        .fetch_toc(
+            &admin,
+            sid,
+            &format!("{base}/toc1"),
+            BookJsContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(toc_err, DomainError::Validation(ref m) if m.contains("超时")),
+        "expected timeout error for toc, got {toc_err:?}"
+    );
+
+    let content_err = svc
+        .fetch_chapter_content(
+            &admin,
+            sid,
+            &format!("{base}/content1"),
+            BookJsContext::default(),
+            ChapterJsContext::default(),
+            true,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(content_err, DomainError::Validation(ref m) if m.contains("超时")),
+        "expected timeout error for content, got {content_err:?}"
+    );
+
+    assert!(
+        t_start.elapsed() < Duration::from_secs(1),
+        "all 3 timed-out book calls should finish well under 2s stall, took {:?}",
+        t_start.elapsed()
+    );
+    assert_eq!(after_hits.load(Ordering::SeqCst), 0);
+
+    srv.abort();
+}

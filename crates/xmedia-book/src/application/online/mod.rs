@@ -31,6 +31,7 @@ use helpers::{AsyncLockMap, StoredDownloadJob};
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
+const DETAIL_OP_TIMEOUT: Duration = Duration::from_secs(45);
 const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
 const DEFAULT_DOWNLOAD_CONCURRENCY: usize = 4;
 const DEFAULT_DOWNLOAD_MIN_INTERVAL_MS: u64 = 40;
@@ -56,6 +57,8 @@ pub struct BookOnlineService {
     seed_import_lock: tokio::sync::Mutex<()>,
     downloads: Arc<RwLock<HashMap<Uuid, StoredDownloadJob>>>,
     allow_private_ips: bool,
+    op_timeout: Duration,
+    detail_timeout: Duration,
 }
 
 impl BookOnlineService {
@@ -151,7 +154,16 @@ impl BookOnlineService {
             seed_import_lock: tokio::sync::Mutex::new(()),
             downloads: Arc::new(RwLock::new(HashMap::new())),
             allow_private_ips,
+            op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
+            detail_timeout: DETAIL_OP_TIMEOUT,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timeouts(mut self, op_timeout: Duration, detail_timeout: Duration) -> Self {
+        self.op_timeout = op_timeout;
+        self.detail_timeout = detail_timeout;
+        self
     }
 
     /// Removes in-memory synchronization locks and generation counters for a deleted book.

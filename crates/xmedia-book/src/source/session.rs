@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::engine::{apply_content_replace_regex, clean_chapter_html_to_text};
-use crate::source::http::{LegadoHttpClient, resolve_relative_url};
+use crate::source::http::{HttpFetchResult, LegadoHttpClient, resolve_relative_url};
 use crate::source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineChapterContent,
@@ -141,6 +141,21 @@ impl ReusableWorkerSession {
         self.inner.check_active()
     }
 
+    pub(super) fn fetch_http(
+        &self,
+        target_url: &str,
+        base_url: &str,
+    ) -> Result<HttpFetchResult, String> {
+        self.check_active()?;
+        let remaining = self.inner.remaining_budget();
+        if remaining.is_zero() {
+            return Err("执行超过单次操作总超时上限 (interrupted)".into());
+        }
+        self.inner
+            .http()
+            .fetch_with_timeout(target_url, base_url, Some(remaining))
+    }
+
     pub(super) fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {
         self.inner.snapshot_diagnostics()
     }
@@ -231,10 +246,8 @@ impl ReusableWorkerSession {
             if visited.len() >= MAX_TOC_PAGES || !visited.insert(page_url.clone()) {
                 break;
             }
-            let fetched = self
-                .inner
-                .http()
-                .fetch(&page_url, &self.source.book_source_url)?;
+            let fetched = self.fetch_http(&page_url, &self.source.book_source_url)?;
+            self.check_active()?;
             let raw_input = RuleValue::from_raw(fetched.body);
 
             let items = self.eval_list(&raw_input, chapter_list_rule, &fetched.final_url)?;
@@ -317,10 +330,8 @@ impl ReusableWorkerSession {
             if visited.len() >= MAX_CONTENT_PAGES || !visited.insert(page_url.clone()) {
                 break;
             }
-            let fetched = self
-                .inner
-                .http()
-                .fetch(&page_url, &self.source.book_source_url)?;
+            let fetched = self.fetch_http(&page_url, &self.source.book_source_url)?;
+            self.check_active()?;
             let raw_input = RuleValue::from_raw(fetched.body);
 
             if pages_html.is_empty()

@@ -20,7 +20,7 @@ use super::helpers::{
     CancelOnDrop, CancelTasksOnDrop, ChapterFetchOptions, read_cached_chapter_at,
     write_cached_chapter_at,
 };
-use super::{BookOnlineService, SEARCH_MAX_CONCURRENCY, SEARCH_PER_SOURCE_TIMEOUT};
+use super::{BookOnlineService, SEARCH_MAX_CONCURRENCY};
 
 impl BookOnlineService {
     pub async fn search(
@@ -51,6 +51,7 @@ impl BookOnlineService {
         sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
         let page_num = page.max(1);
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
+        let op_timeout = self.op_timeout;
 
         let mut handles = Vec::with_capacity(sources.len());
         let mut cancel_all_guard = CancelTasksOnDrop::new();
@@ -84,7 +85,7 @@ impl BookOnlineService {
                 let cancel_worker = cancel_for_task.clone();
                 let mut cancel_guard = CancelOnDrop::new(cancel_for_task.clone());
                 let timed = tokio::time::timeout(
-                    SEARCH_PER_SOURCE_TIMEOUT,
+                    op_timeout,
                     tokio::task::spawn_blocking(move || {
                         engine
                             .search_sync_with_control(
@@ -92,7 +93,7 @@ impl BookOnlineService {
                                 state,
                                 &kw_owned,
                                 page_num,
-                                SEARCH_PER_SOURCE_TIMEOUT,
+                                op_timeout,
                                 cancel_worker,
                             )
                             .map_err(Into::into)
@@ -119,10 +120,7 @@ impl BookOnlineService {
                             sid,
                             sname,
                             prev_state_cmp,
-                            Err(format!(
-                                "搜索超时（超过 {} 秒）",
-                                SEARCH_PER_SOURCE_TIMEOUT.as_secs()
-                            )),
+                            Err(format!("搜索超时（超过 {} 秒）", op_timeout.as_secs())),
                         )
                     }
                 }
@@ -187,17 +185,53 @@ impl BookOnlineService {
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
+        let detail_timeout = self.detail_timeout;
         let engine = self.engine.clone();
         let url_owned = book_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_book_info_sync(&parsed, prev_state, &url_owned, fallback_hint.as_ref())
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取书籍详情失败: {e}")))?
-        .map_err(DomainError::Validation)?;
+        let timed = tokio::time::timeout(
+            detail_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .fetch_book_info_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &url_owned,
+                        fallback_hint.as_ref(),
+                        detail_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取书籍详情失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取书籍详情超时（超过 {} 秒）",
+                    detail_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
             && let Err(err) = self
@@ -257,17 +291,53 @@ impl BookOnlineService {
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
+        let detail_timeout = self.detail_timeout;
         let engine = self.engine.clone();
         let url_owned = toc_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_toc_sync(&parsed, prev_state, &url_owned, &book_ctx)
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取目录失败: {e}")))?
-        .map_err(DomainError::Validation)?;
+        let timed = tokio::time::timeout(
+            detail_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .fetch_toc_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &url_owned,
+                        &book_ctx,
+                        detail_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取目录失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取目录超时（超过 {} 秒）",
+                    detail_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
             && let Err(err) = self
@@ -338,24 +408,55 @@ impl BookOnlineService {
         let parsed: LegadoBookSource = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("书源 JSON 无效: {e}")))?;
 
+        let detail_timeout = self.detail_timeout;
         let engine = self.engine.clone();
         let url_owned = chapter_url.to_string();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let ch_idx = chapter_ctx.index;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_chapter_content_sync(
-                &parsed,
-                prev_state,
-                &url_owned,
-                &book_ctx,
-                &chapter_ctx,
-            )
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取章节正文失败: {e}")))?
-        .map_err(DomainError::Validation)?;
+        let timed = tokio::time::timeout(
+            detail_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .fetch_chapter_content_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &url_owned,
+                        &book_ctx,
+                        &chapter_ctx,
+                        detail_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取章节正文失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取章节正文超时（超过 {} 秒）",
+                    detail_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
             && let Err(err) = self

@@ -17,6 +17,7 @@ use crate::source::model::{
 };
 
 use super::dto::{SourceDebugStepDto, SourceTestInput, SourceTestMode, SourceTestReportDto};
+use super::helpers::CancelOnDrop;
 use super::{BookOnlineService, SOURCE_TEST_TOTAL_TIMEOUT};
 
 impl BookOnlineService {
@@ -130,6 +131,7 @@ impl BookOnlineService {
         let kw_clone = effective_keyword.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
         let timed_res = tokio::time::timeout(
             SOURCE_TEST_TOTAL_TIMEOUT,
@@ -569,8 +571,12 @@ impl BookOnlineService {
         .await;
 
         let (maybe_final_state, report) = match timed_res {
-            Ok(Ok((final_state, report))) => (Some(final_state), report),
+            Ok(Ok((final_state, report))) => {
+                cancel_guard.disarm();
+                (Some(final_state), report)
+            }
             Ok(Err(e)) => {
+                cancel_guard.disarm();
                 return Err(DomainError::Storage(format!("测试书源线程失败: {e}")));
             }
             Err(_) => {
