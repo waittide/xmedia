@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, ref, toRef } from 'vue'
+import { computed, reactive, ref, toRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuArrowRight,
+  LuChevronDown,
+  LuChevronUp,
   LuFilm,
   LuFolderTree,
   LuPlay,
@@ -13,8 +15,14 @@ import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
 import { useOnlineSourceDebug } from '@/components/online-sources/useOnlineSourceDebug'
-import type { SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
+import {
+  MdButton,
+  MdChip,
+  MediaCoverImage,
+  type SegmentedOption,
+} from '@/components/ui'
 import { useSnackbarStore } from '@/stores/snackbar'
+import { useVideoI18n } from '../i18n'
 import {
   onlineVideoApi,
   resolveOnlineVideoPosterUrl,
@@ -27,6 +35,8 @@ import {
   type VideoSourceTestReportDto,
 } from '../onlineApi'
 
+const EPISODE_PREVIEW_LIMIT = 12
+
 const props = defineProps<{
   open: boolean
   source: VideoSourceSummaryDto | null
@@ -37,8 +47,10 @@ const emit = defineEmits<{
   tested: []
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const { t: videoT } = useVideoI18n()
 const snackbar = useSnackbarStore()
+const isZh = computed(() => locale.value.startsWith('zh'))
 
 type ResultTab = 'timeline' | 'categories' | 'search' | 'detail' | 'play'
 
@@ -58,6 +70,9 @@ const lastPlayUrl = ref('')
 const lastGroupName = ref('')
 const pendingPayload = ref<VideoSourceTestInput | null>(null)
 const pendingPreserve = ref(false)
+const expandedGroups = reactive<Record<string, boolean>>({})
+
+const defaultDebugKeyword = computed(() => videoT('player.debugDefaultKeyword'))
 
 const {
   mode,
@@ -78,7 +93,7 @@ const {
   source: toRef(props, 'source'),
   defaultMode: 'full',
   defaultTab: 'timeline',
-  defaultKeyword: '电影',
+  defaultKeyword: defaultDebugKeyword.value,
   runTest: async (sourceId, signal) => {
     const val = queryInput.value.trim()
     const payload: VideoSourceTestInput = pendingPayload.value ?? { mode: mode.value }
@@ -105,6 +120,9 @@ const {
     lastGroupName.value = ''
     pendingPayload.value = null
     pendingPreserve.value = false
+    for (const k of Object.keys(expandedGroups)) {
+      delete expandedGroups[k]
+    }
   },
   onReportReady: (res, preferredTab) => {
     const prev = pendingPreserve.value ? report.value : null
@@ -167,7 +185,7 @@ function handleModeChange(nextMode: VideoSourceTestMode): void {
   } else if (nextMode === 'play' && lastPlayUrl.value) {
     queryInput.value = lastPlayUrl.value
   } else if ((nextMode === 'full' || nextMode === 'search') && props.source) {
-    queryInput.value = props.source.check_keyword?.trim() || '电影'
+    queryInput.value = props.source.check_keyword?.trim() || defaultDebugKeyword.value
   }
 }
 
@@ -180,7 +198,7 @@ const hasQuickHint = computed(() => {
 })
 
 const inputPlaceholder = computed(() => {
-  const kw = props.source?.check_keyword?.trim() || '电影'
+  const kw = props.source?.check_keyword?.trim() || defaultDebugKeyword.value
   if (mode.value === 'full' || mode.value === 'search') {
     return t('onlineSources.debug.keywordPlaceholder', { keyword: kw })
   }
@@ -256,6 +274,13 @@ async function handleDebugEpisode(ep: OnlineVideoEpisode, groupName: string): Pr
   await executeTest('play')
 }
 
+function visibleGroupEpisodes(groupName: string, episodes: OnlineVideoEpisode[]): OnlineVideoEpisode[] {
+  if (expandedGroups[groupName] || episodes.length <= EPISODE_PREVIEW_LIMIT) {
+    return episodes
+  }
+  return episodes.slice(0, EPISODE_PREVIEW_LIMIT)
+}
+
 async function copyDebugReport(): Promise<void> {
   if (!report.value || !props.source) return
   const r = report.value
@@ -303,38 +328,30 @@ async function copyDebugReport(): Promise<void> {
     @copy-report="copyDebugReport"
   >
     <template #quick-hints>
-      <button
+      <MdChip
         v-if="source?.check_keyword && (mode === 'full' || mode === 'search')"
-        type="button"
-        class="md-state rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword })"
         @click="queryInput = source.check_keyword!"
-      >
-        {{ t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword }) }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastCategoryId && mode === 'browse'"
-        type="button"
-        class="md-state rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastCategoryHint')"
         @click="queryInput = lastCategoryId"
-      >
-        {{ t('onlineSources.debug.lastCategoryHint') }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="(lastDetailUrl || lastVideoId) && mode === 'detail'"
-        type="button"
-        class="md-state max-w-xs truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastDetailHint')"
         @click="queryInput = lastDetailUrl || lastVideoId"
-      >
-        {{ t('onlineSources.debug.lastDetailHint') }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastPlayUrl && mode === 'play'"
-        type="button"
-        class="md-state max-w-xs truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastPlayHint')"
         @click="queryInput = lastPlayUrl"
-      >
-        {{ t('onlineSources.debug.lastPlayHint') }}
-      </button>
+      />
     </template>
 
     <template #tab-content>
@@ -342,22 +359,19 @@ async function copyDebugReport(): Promise<void> {
       <div v-if="activeTab === 'categories' && report" class="flex flex-col gap-2">
         <div
           v-if="report.categories.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptyCategories') }}
         </div>
-        <div v-else class="flex flex-wrap gap-2">
-          <button
+        <div v-else class="flex flex-wrap gap-1.5">
+          <MdChip
             v-for="cat in report.categories"
             :key="cat.id"
-            type="button"
+            variant="assist"
+            :label="`${cat.name} (#${cat.id})`"
             :disabled="running"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
             @click="handleBrowseCategory(cat)"
-          >
-            <span>{{ cat.name }}</span>
-            <span class="font-mono text-[10px] opacity-70">#{{ cat.id }}</span>
-          </button>
+          />
         </div>
       </div>
 
@@ -365,12 +379,12 @@ async function copyDebugReport(): Promise<void> {
       <div v-else-if="activeTab === 'search' && report" class="flex flex-col gap-2.5">
         <div
           v-if="report.search_items.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptySearch') }}
         </div>
         <template v-else>
-          <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          <p class="text-body-small text-on-surface-variant">
             {{
               t('onlineSources.debug.searchSummary', {
                 total: report.result_count,
@@ -381,53 +395,50 @@ async function copyDebugReport(): Promise<void> {
           <div
             v-for="(item, idx) in report.search_items"
             :key="`${item.vod_id}-${item.detail_url}-${idx}`"
-            class="flex items-start gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3.5"
+            class="flex items-start gap-3 rounded-corner-lg bg-surface-container p-3.5"
           >
-            <div class="h-20 w-14 shrink-0 overflow-hidden rounded-lg bg-[var(--md-sys-color-surface-container-high)]">
-              <img
-                v-if="resolveOnlineVideoPosterUrl(item.proxy_cover_url, item.cover_url, source?.id)"
-                :src="resolveOnlineVideoPosterUrl(item.proxy_cover_url, item.cover_url, source?.id)"
+            <div class="w-14 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
+              <MediaCoverImage
+                :src="resolveOnlineVideoPosterUrl(item.proxy_cover_url, item.cover_url, source?.id) || null"
                 :alt="item.title"
-                class="h-full w-full object-cover"
-                loading="lazy"
+                aspect-class="aspect-[2/3]"
+                rounded="rounded-corner-sm"
+                :fallback-icon="LuFilm"
+                fallback-icon-class="h-5 w-5 text-on-surface-variant/50"
               />
-              <div
-                v-else
-                class="flex h-full w-full items-center justify-center text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ t('onlineSources.debug.noCover') }}
-              </div>
             </div>
 
             <div class="min-w-0 flex-1 space-y-1">
               <div class="flex flex-wrap items-start justify-between gap-2">
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                <div class="flex flex-wrap items-baseline gap-1.5">
+                  <span class="text-label-small font-mono text-on-surface-variant">
                     #{{ idx + 1 }}
                   </span>
-                  <span class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+                  <span class="text-title-small text-on-surface">
                     {{ item.title }}
                   </span>
-                  <span v-if="item.remarks" class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                  <span v-if="item.remarks" class="text-body-small text-on-surface-variant">
                     · {{ item.remarks }}
                   </span>
                 </div>
-                <button
-                  type="button"
+                <MdButton
+                  variant="tonal"
+                  size="sm"
                   :disabled="running"
-                  class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
                   @click="handleDebugVideoItem(item)"
                 >
                   <span>{{ t('onlineSources.debug.debugDetailBtn') }}</span>
-                  <LuArrowRight class="h-3.5 w-3.5" />
-                </button>
+                  <template #trailing>
+                    <LuArrowRight class="h-3.5 w-3.5" aria-hidden="true" />
+                  </template>
+                </MdButton>
               </div>
-              <div class="flex flex-wrap gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="text-body-small flex flex-wrap gap-1.5 text-on-surface-variant">
                 <span v-if="item.type_name">{{ item.type_name }}</span>
                 <span v-if="item.year">{{ item.year }}</span>
                 <span v-if="item.area">{{ item.area }}</span>
               </div>
-              <p class="break-all font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]/85">
+              <p class="text-label-small break-all font-mono text-on-surface-variant">
                 {{ item.detail_url || item.vod_id }}
               </p>
             </div>
@@ -439,31 +450,31 @@ async function copyDebugReport(): Promise<void> {
       <div v-else-if="activeTab === 'detail' && report" class="flex flex-col gap-3">
         <div
           v-if="!report.video_detail"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptyDetail') }}
         </div>
         <template v-else>
-          <div class="flex flex-col gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4 text-xs">
-            <div class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+          <div class="flex flex-col gap-2 rounded-corner-lg bg-surface-container p-4">
+            <div class="text-title-medium text-on-surface">
               {{ report.video_detail.title }}
             </div>
-            <div class="flex flex-wrap gap-2 text-[var(--md-sys-color-on-surface-variant)]">
+            <div class="text-body-small flex flex-wrap gap-2 text-on-surface-variant">
               <span v-if="report.video_detail.year">{{ report.video_detail.year }}</span>
               <span v-if="report.video_detail.area">{{ report.video_detail.area }}</span>
               <span v-if="report.video_detail.director">{{ report.video_detail.director }}</span>
               <span v-if="report.video_detail.actors">{{ report.video_detail.actors }}</span>
             </div>
-            <p v-if="report.video_detail.intro" class="leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
+            <p v-if="report.video_detail.intro" class="text-body-small text-on-surface-variant">
               {{ report.video_detail.intro }}
             </p>
           </div>
 
           <div
             v-if="report.video_detail.play_groups.length > 0"
-            class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4"
+            class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4"
           >
-            <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+            <h4 class="text-title-small text-on-surface">
               {{ t('onlineSources.debug.playGroupsTitle') }}
             </h4>
             <div
@@ -471,20 +482,35 @@ async function copyDebugReport(): Promise<void> {
               :key="group.name"
               class="flex flex-col gap-2"
             >
-              <div class="text-xs font-medium text-[var(--md-sys-color-primary)]">
+              <div class="text-label-large text-primary">
                 {{ group.name }} ({{ group.episodes.length }})
               </div>
-              <div class="flex flex-wrap gap-1.5">
-                <button
-                  v-for="ep in group.episodes.slice(0, 40)"
+              <div class="flex flex-wrap items-center gap-1.5">
+                <MdChip
+                  v-for="ep in visibleGroupEpisodes(group.name, group.episodes)"
                   :key="`${group.name}-${ep.index}-${ep.play_url}`"
-                  type="button"
+                  variant="assist"
+                  :label="ep.name"
                   :disabled="running"
-                  class="md-btn md-btn-sm md-btn-outlined md-state"
                   @click="handleDebugEpisode(ep, group.name)"
+                />
+                <MdButton
+                  v-if="group.episodes.length > EPISODE_PREVIEW_LIMIT"
+                  variant="text"
+                  size="sm"
+                  :icon="expandedGroups[group.name] ? LuChevronUp : LuChevronDown"
+                  @click="expandedGroups[group.name] = !expandedGroups[group.name]"
                 >
-                  {{ ep.name }}
-                </button>
+                  {{
+                    expandedGroups[group.name]
+                      ? isZh
+                        ? '收起'
+                        : 'Show less'
+                      : isZh
+                        ? `展开全部 (${group.episodes.length})`
+                        : `Show all (${group.episodes.length})`
+                  }}
+                </MdButton>
               </div>
             </div>
           </div>
@@ -495,39 +521,42 @@ async function copyDebugReport(): Promise<void> {
       <div v-else-if="activeTab === 'play' && report" class="flex flex-col gap-3">
         <div
           v-if="!report.play_result"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptyPlay') }}
         </div>
         <div
           v-else
-          class="flex flex-col gap-2.5 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4 text-xs"
+          class="text-body-small flex flex-col gap-2.5 rounded-corner-lg bg-surface-container p-4 text-on-surface"
         >
-          <div class="flex flex-wrap gap-3">
+          <div class="flex flex-wrap gap-4">
             <span>
               {{ t('onlineSources.debug.streamTypeLabel') }}:
-              <strong class="font-mono">{{ report.play_result.stream_type }}</strong>
+              <span class="text-label-large font-mono">{{ report.play_result.stream_type }}</span>
             </span>
             <span>
               {{ t('onlineSources.debug.headersAppliedLabel') }}:
-              <strong>
+              <span class="text-label-large">
                 {{
                   report.play_result.headers_applied
                     ? t('onlineSources.debug.yes')
                     : t('onlineSources.debug.no')
                 }}
-              </strong>
+              </span>
             </span>
           </div>
-          <div class="break-all font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+          <div class="text-label-small break-all font-mono text-on-surface-variant">
             {{ t('onlineSources.debug.streamUrlLabel') }}: {{ report.play_result.stream_url }}
           </div>
-          <div class="break-all font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('onlineSources.debug.proxyStreamUrlLabel') }}: {{ report.play_result.proxy_stream_url }}
+          <div class="text-label-small break-all font-mono text-on-surface-variant">
+            {{ t('onlineSources.debug.proxyStreamUrlLabel') }}:
+            {{ report.play_result.proxy_stream_url }}
           </div>
           <div v-if="report.play_result.subtitles.length > 0" class="pt-1">
-            <div class="font-semibold">{{ t('onlineSources.debug.subtitlesTitle') }}</div>
-            <ul class="mt-1 space-y-1 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+            <div class="text-label-large text-on-surface">
+              {{ t('onlineSources.debug.subtitlesTitle') }}
+            </div>
+            <ul class="text-label-small mt-1 space-y-1 font-mono text-on-surface-variant">
               <li v-for="(sub, sIdx) in report.play_result.subtitles" :key="sIdx">
                 [{{ sub.lang || 'sub' }}] {{ sub.label }}: {{ sub.url }}
               </li>

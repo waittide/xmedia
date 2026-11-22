@@ -1,27 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  LuAlertCircle,
-  LuArrowLeft,
-  LuPlay,
-  LuPause,
-  LuSkipBack,
-  LuSkipForward,
-  LuVolume2,
-  LuVolumeX,
-  LuMaximize,
-  LuPictureInPicture2,
-  LuDownload,
-  LuLoader2,
-  LuRefreshCw,
-} from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppSlider from '@/components/ui/AppSlider.vue'
-import { useEscapeStack } from '@/composables/useEscapeStack'
+import type { SelectOption } from '@/components/ui'
 import { usePlayerStore } from '@/domains/music/player'
 import { useThemeStore } from '@/stores/theme'
-import { formatTime } from '@/utils/format'
+import { formatDuration } from '@/utils/format'
 import {
   api,
   buildPosterUrl,
@@ -29,41 +12,18 @@ import {
   buildVideoDownloadUrl,
   buildVideoStreamUrl,
 } from '../api'
+import VideoPlayerShell, { type VideoPlayerEpisodeItem } from '../components/VideoPlayerShell.vue'
+import {
+  clearVideoMediaSession,
+  loadStoredVideoMuted,
+  loadStoredVideoVolume,
+  persistVideoAudioPrefs,
+  setVideoMediaSessionState,
+  updateVideoMediaSession,
+} from '../composables/useVideoPlayerCore'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
-import type { VideoDetailDto, VideoQualityProfile } from '../types'
-
-const VOLUME_STORAGE_KEY = 'xmedia.video.volume'
-const MUTED_STORAGE_KEY = 'xmedia.video.muted'
-
-function loadStoredVolume(): number {
-  try {
-    const raw = window.localStorage.getItem(VOLUME_STORAGE_KEY)
-    if (raw === null) return 0.95
-    const parsed = Number.parseFloat(raw)
-    if (!Number.isFinite(parsed)) return 0.95
-    return Math.max(0, Math.min(1, parsed))
-  } catch {
-    return 0.95
-  }
-}
-
-function loadStoredMuted(): boolean {
-  try {
-    return window.localStorage.getItem(MUTED_STORAGE_KEY) === 'true'
-  } catch {
-    return false
-  }
-}
-
-function persistAudioPrefs(vol: number, isMuted: boolean): void {
-  try {
-    window.localStorage.setItem(VOLUME_STORAGE_KEY, String(vol))
-    window.localStorage.setItem(MUTED_STORAGE_KEY, String(isMuted))
-  } catch {
-    // ignore storage quota / privacy mode errors
-  }
-}
+import type { VideoDetailDto, VideoQualityProfile, VideoSummaryDto } from '../types'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -72,10 +32,11 @@ const themeStore = useThemeStore()
 const musicPlayerStore = usePlayerStore()
 const videoStore = useVideoStore()
 
-const stageRef = ref<HTMLDivElement | null>(null)
+const shellRef = ref<InstanceType<typeof VideoPlayerShell> | null>(null)
 const videoEl = ref<HTMLVideoElement | null>(null)
 
 const detail = ref<VideoDetailDto | null>(null)
+const siblingVideos = ref<VideoSummaryDto[]>([])
 const quality = ref<VideoQualityProfile>(themeStore.video.default_quality || 'auto')
 const selectedAudioStream = ref<number | null>(null)
 const selectedSubtitleId = ref<string>('off')
@@ -86,22 +47,21 @@ const isBuffering = ref(false)
 const loadError = ref<string | null>(null)
 
 const isPlaying = ref(false)
-const muted = ref(loadStoredMuted())
-const volume = ref(loadStoredVolume())
+const muted = ref(loadStoredVideoMuted())
+const volume = ref(loadStoredVideoVolume())
 const streamOffsetSecs = ref(0)
 const currentTimeSecs = ref(0)
 const rawDurationSecs = ref(0)
-const hudVisible = ref(true)
 
-const pipSupported = computed(
-  () => typeof document !== 'undefined' && Boolean(document.pictureInPictureEnabled),
-)
-
-let hudHideTimer: ReturnType<typeof setTimeout> | null = null
 let progressSaveTimer: ReturnType<typeof setInterval> | null = null
 let pendingLoadedMetadataHandler: (() => void) | null = null
 let exitPersisted = false
 let initRequestSeq = 0
+
+const activeShelfId = computed(() => {
+  const raw = route.query.shelf
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null
+})
 
 const isTranscodedStream = computed(() => {
   if (!detail.value) return false
@@ -134,7 +94,22 @@ const activeSubtitleUrl = computed(() => {
   )
 })
 
-const qualityOptions = computed(() => [
+const headerTitle = computed(() => detail.value?.video.title || '')
+
+const headerSubtitle = computed(() => {
+  const v = detail.value?.video
+  if (!v) return ''
+  const parts: string[] = []
+  if (v.show_title) parts.push(v.show_title)
+  if (v.season_number != null && v.episode_number != null) {
+    parts.push(
+      `S${String(v.season_number).padStart(2, '0')}E${String(v.episode_number).padStart(2, '0')}`,
+    )
+  }
+  return parts.join(' · ')
+})
+
+const qualityOptions = computed<SelectOption[]>(() => [
   { value: 'auto', label: t('player.qualityAuto') },
   { value: 'direct', label: t('player.qualityDirect') },
   { value: 'p1080', label: t('player.quality1080p') },
@@ -142,9 +117,8 @@ const qualityOptions = computed(() => [
   { value: 'p480', label: t('player.quality480p') },
 ])
 
-const audioOptions = computed(() => {
+const audioOptions = computed<SelectOption[]>(() => {
   const streams = detail.value?.audio_streams ?? []
-  if (streams.length === 0) return []
   return streams.map((s, idx) => {
     const parts = [
       s.title || s.language?.toUpperCase() || `${t('player.audioTrack')} #${idx + 1}`,
@@ -158,7 +132,7 @@ const audioOptions = computed(() => {
   })
 })
 
-const subtitleOptions = computed(() => [
+const subtitleOptions = computed<SelectOption[]>(() => [
   { value: 'off', label: t('player.subtitleOff') },
   ...(detail.value?.subtitles ?? []).map((sub) => ({
     value: sub.id,
@@ -166,138 +140,57 @@ const subtitleOptions = computed(() => [
   })),
 ])
 
-const speedOptions = [
-  { value: '0.75', label: '0.75x' },
-  { value: '1', label: '1.0x' },
-  { value: '1.25', label: '1.25x' },
-  { value: '1.5', label: '1.5x' },
-  { value: '2', label: '2.0x' },
-]
+const currentSiblingIndex = computed(() => {
+  const curId = detail.value?.video.id
+  if (!curId || siblingVideos.value.length === 0) return -1
+  return siblingVideos.value.findIndex((v) => v.id === curId)
+})
 
-function revealHud(): void {
-  hudVisible.value = true
-  if (hudHideTimer) clearTimeout(hudHideTimer)
-  hudHideTimer = setTimeout(() => {
-    if (isPlaying.value) {
-      hudVisible.value = false
+const prevEpisodeId = computed<string | null>(() => {
+  if (activeShelfId.value && currentSiblingIndex.value > 0) {
+    return siblingVideos.value[currentSiblingIndex.value - 1]?.id ?? null
+  }
+  return detail.value?.prev_episode_id ?? null
+})
+
+const nextEpisodeId = computed<string | null>(() => {
+  if (
+    activeShelfId.value &&
+    currentSiblingIndex.value >= 0 &&
+    currentSiblingIndex.value + 1 < siblingVideos.value.length
+  ) {
+    return siblingVideos.value[currentSiblingIndex.value + 1]?.id ?? null
+  }
+  return detail.value?.next_episode_id ?? null
+})
+
+const episodeDrawerItems = computed<VideoPlayerEpisodeItem[]>(() => {
+  const curId = detail.value?.video.id
+  return siblingVideos.value.map((v) => {
+    const epCode =
+      v.season_number != null && v.episode_number != null
+        ? `S${String(v.season_number).padStart(2, '0')}E${String(v.episode_number).padStart(2, '0')}`
+        : ''
+    const dur = v.duration_secs > 0 ? formatDuration(v.duration_secs) : ''
+    return {
+      id: v.id,
+      label: epCode ? `${epCode} · ${v.title}` : v.title,
+      subtitle: dur || undefined,
+      active: v.id === curId,
+      watched: Boolean(v.progress?.completed),
     }
-  }, 3200)
-}
+  })
+})
+
+const downloadUrl = computed(() =>
+  detail.value ? buildVideoDownloadUrl(detail.value.video.id) : null,
+)
 
 function clearPendingSeekHandler(): void {
   if (pendingLoadedMetadataHandler && videoEl.value) {
     videoEl.value.removeEventListener('loadedmetadata', pendingLoadedMetadataHandler)
   }
   pendingLoadedMetadataHandler = null
-}
-
-function setMediaSessionAction(
-  action: MediaSessionAction,
-  handler: MediaSessionActionHandler | null,
-): void {
-  if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || !navigator.mediaSession) {
-    return
-  }
-  try {
-    navigator.mediaSession.setActionHandler(action, handler)
-  } catch {
-    // ignore unsupported MediaSession actions
-  }
-}
-
-function setMediaSessionPlaybackState(state: MediaSessionPlaybackState): void {
-  if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || !navigator.mediaSession) {
-    return
-  }
-  try {
-    navigator.mediaSession.playbackState = state
-  } catch {
-    // ignore
-  }
-}
-
-function updateMediaSession(d: VideoDetailDto): void {
-  if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || !navigator.mediaSession) {
-    return
-  }
-  if (typeof MediaMetadata !== 'undefined') {
-    const posterPath = buildPosterUrl(d.video.poster_key, 512)
-    const artwork: MediaImage[] = posterPath
-      ? [{ src: new URL(posterPath, window.location.origin).href, sizes: '512x512' }]
-      : []
-    const album =
-      d.video.season_number != null
-        ? t('catalog.seasonHeader', { season: d.video.season_number })
-        : undefined
-    try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: d.video.title,
-        artist: d.video.show_title || undefined,
-        album,
-        artwork,
-      })
-    } catch {
-      // ignore invalid metadata errors
-    }
-  }
-
-  setMediaSessionAction('play', () => {
-    const el = videoEl.value
-    if (el && el.paused) {
-      musicPlayerStore.pause()
-      void el.play().catch(() => {
-        isPlaying.value = false
-      })
-    }
-  })
-  setMediaSessionAction('pause', () => {
-    videoEl.value?.pause()
-  })
-  setMediaSessionAction('seekbackward', (details) => {
-    const offset = details?.seekOffset && details.seekOffset > 0 ? details.seekOffset : 10
-    seekTo(currentTimeSecs.value - offset)
-  })
-  setMediaSessionAction('seekforward', (details) => {
-    const offset = details?.seekOffset && details.seekOffset > 0 ? details.seekOffset : 10
-    seekTo(currentTimeSecs.value + offset)
-  })
-  setMediaSessionAction('seekto', (details) => {
-    if (typeof details?.seekTime === 'number') {
-      seekTo(details.seekTime)
-    }
-  })
-  setMediaSessionAction(
-    'previoustrack',
-    d.prev_episode_id ? () => goToPrevEpisode() : null,
-  )
-  setMediaSessionAction(
-    'nexttrack',
-    d.next_episode_id ? () => goToNextEpisode() : null,
-  )
-}
-
-function clearMediaSession(): void {
-  if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || !navigator.mediaSession) {
-    return
-  }
-  const actions: MediaSessionAction[] = [
-    'play',
-    'pause',
-    'seekbackward',
-    'seekforward',
-    'seekto',
-    'previoustrack',
-    'nexttrack',
-  ]
-  for (const action of actions) {
-    setMediaSessionAction(action, null)
-  }
-  try {
-    navigator.mediaSession.metadata = null
-  } catch {
-    // ignore
-  }
-  setMediaSessionPlaybackState('none')
 }
 
 function stopAndClearVideoElement(): void {
@@ -310,6 +203,56 @@ function stopAndClearVideoElement(): void {
     el.load()
   } catch {
     // ignore cleanup errors
+  }
+}
+
+function syncMediaSession(d: VideoDetailDto): void {
+  updateVideoMediaSession({
+    title: d.video.title,
+    artist: d.video.show_title || undefined,
+    album:
+      d.video.season_number != null
+        ? t('catalog.seasonHeader', { season: d.video.season_number })
+        : undefined,
+    posterUrl: buildPosterUrl(d.video.poster_key, 512),
+    onPlay: () => {
+      const el = videoEl.value
+      if (el && el.paused) {
+        musicPlayerStore.pause()
+        void el.play().catch(() => {
+          isPlaying.value = false
+        })
+      }
+    },
+    onPause: () => {
+      videoEl.value?.pause()
+    },
+    onSeekBy: (delta) => seekTo(currentTimeSecs.value + delta),
+    onSeekTo: (target) => seekTo(target),
+    onPrev: prevEpisodeId.value ? () => goToPrevEpisode() : null,
+    onNext: nextEpisodeId.value ? () => goToNextEpisode() : null,
+  })
+}
+
+async function loadSiblingQueue(d: VideoDetailDto, reqSeq: number): Promise<void> {
+  try {
+    if (activeShelfId.value) {
+      const shelf = await api.getShelf(activeShelfId.value)
+      if (reqSeq !== initRequestSeq) return
+      siblingVideos.value = shelf.videos
+      syncMediaSession(d)
+      return
+    }
+    if (d.video.show_id) {
+      const show = await api.getShow(d.video.show_id)
+      if (reqSeq !== initRequestSeq) return
+      siblingVideos.value = show.seasons.flatMap((sg) => sg.episodes)
+      syncMediaSession(d)
+      return
+    }
+    siblingVideos.value = []
+  } catch {
+    // ignore non-fatal sidebar queue errors
   }
 }
 
@@ -365,10 +308,9 @@ async function initVideo(): Promise<void> {
   loadingVideo.value = true
   isBuffering.value = false
   loadError.value = null
-  hudVisible.value = true
   musicPlayerStore.pause()
 
-  const id = String(route.params.id || '')
+  const id = String(route.params.id || '').trim()
   if (!id) {
     loadError.value = t('player.loadErrorDesc')
     loadingVideo.value = false
@@ -379,7 +321,8 @@ async function initVideo(): Promise<void> {
     const d = await api.getVideo(id)
     if (reqSeq !== initRequestSeq) return
     detail.value = d
-    updateMediaSession(d)
+    syncMediaSession(d)
+    void loadSiblingQueue(d, reqSeq)
 
     const savedProg = d.video.progress
     if (savedProg?.selected_audio_stream != null) {
@@ -396,17 +339,22 @@ async function initVideo(): Promise<void> {
       selectedSubtitleId.value = defSub ? defSub.id : 'off'
     }
 
+    const qStartRaw = typeof route.query.t === 'string' ? Number.parseFloat(route.query.t) : Number.NaN
     const resumePos =
-      savedProg && !savedProg.completed && savedProg.position_secs > 3 ? savedProg.position_secs : 0
+      Number.isFinite(qStartRaw) && qStartRaw > 0
+        ? qStartRaw
+        : savedProg && !savedProg.completed && savedProg.position_secs > 3
+          ? savedProg.position_secs
+          : 0
+
     loadStreamAt(resumePos, true)
-    revealHud()
+    shellRef.value?.showHud()
   } catch (err) {
     if (reqSeq !== initRequestSeq) return
     detail.value = null
     isPlaying.value = false
     isBuffering.value = false
     loadError.value = err instanceof Error && err.message ? err.message : t('player.loadErrorDesc')
-    hudVisible.value = true
   } finally {
     if (reqSeq === initRequestSeq) {
       loadingVideo.value = false
@@ -454,7 +402,6 @@ function togglePlay(): void {
   } else {
     el.pause()
   }
-  revealHud()
 }
 
 function seekTo(targetSecs: number): void {
@@ -492,8 +439,7 @@ function onSubtitleChange(val: string): void {
   void persistProgress()
 }
 
-function onSpeedChange(val: string): void {
-  const rate = Number.parseFloat(val) || 1.0
+function onPlaybackRateChange(rate: number): void {
   playbackRate.value = rate
   if (videoEl.value) videoEl.value.playbackRate = rate
   themeStore.updateVideoPreferences({ playback_rate: rate })
@@ -507,7 +453,7 @@ function setVolume(val: number): void {
     videoEl.value.volume = clamped
     videoEl.value.muted = muted.value
   }
-  persistAudioPrefs(volume.value, muted.value)
+  persistVideoAudioPrefs(volume.value, muted.value)
 }
 
 function adjustVolume(delta: number): void {
@@ -526,54 +472,22 @@ function toggleMute(): void {
     videoEl.value.volume = volume.value
     videoEl.value.muted = muted.value
   }
-  persistAudioPrefs(volume.value, muted.value)
+  persistVideoAudioPrefs(volume.value, muted.value)
 }
 
-async function toggleFullscreen(): Promise<void> {
-  if (!stageRef.value) return
-  try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen()
-    } else {
-      await stageRef.value.requestFullscreen()
-    }
-  } catch {
-    // ignore fullscreen permission errors
-  }
-}
-
-async function togglePip(): Promise<void> {
-  const el = videoEl.value
-  if (
-    !el ||
-    !document.pictureInPictureEnabled ||
-    typeof el.requestPictureInPicture !== 'function'
-  ) {
-    return
-  }
-  try {
-    if (document.pictureInPictureElement) {
-      await document.exitPictureInPicture()
-    } else if (el.readyState >= 1) {
-      await el.requestPictureInPicture()
-    }
-  } catch {
-    // ignore unsupported / rejected Picture-in-Picture requests
-  }
+function navigateToVideo(videoId: string): void {
+  if (!videoId || videoId === detail.value?.video.id) return
+  void persistProgress()
+  const query = activeShelfId.value ? { shelf: activeShelfId.value } : undefined
+  void router.replace({ path: `/video/play/${encodeURIComponent(videoId)}`, query })
 }
 
 function goToPrevEpisode(): void {
-  const prevId = detail.value?.prev_episode_id
-  if (!prevId) return
-  void persistProgress()
-  void router.replace(`/video/watch/${prevId}`)
+  if (prevEpisodeId.value) navigateToVideo(prevEpisodeId.value)
 }
 
 function goToNextEpisode(): void {
-  const nextId = detail.value?.next_episode_id
-  if (!nextId) return
-  void persistProgress()
-  void router.replace(`/video/watch/${nextId}`)
+  if (nextEpisodeId.value) navigateToVideo(nextEpisodeId.value)
 }
 
 function onTimeUpdate(): void {
@@ -592,14 +506,12 @@ function onVideoPlay(): void {
   isPlaying.value = true
   isBuffering.value = false
   musicPlayerStore.pause()
-  setMediaSessionPlaybackState('playing')
-  revealHud()
+  setVideoMediaSessionState('playing')
 }
 
 function onVideoPause(): void {
   isPlaying.value = false
-  hudVisible.value = true
-  setMediaSessionPlaybackState('paused')
+  setVideoMediaSessionState('paused')
   if (exitPersisted || videoEl.value?.ended) return
   void persistProgress()
 }
@@ -607,10 +519,10 @@ function onVideoPause(): void {
 function onVideoEnded(): void {
   isPlaying.value = false
   isBuffering.value = false
-  setMediaSessionPlaybackState('paused')
+  setVideoMediaSessionState('paused')
   void persistProgress(true, { bumpCatalog: true })
-  if (themeStore.video.autoplay_next && detail.value?.next_episode_id) {
-    void router.replace(`/video/watch/${detail.value.next_episode_id}`)
+  if (themeStore.video.autoplay_next && nextEpisodeId.value) {
+    navigateToVideo(nextEpisodeId.value)
   }
 }
 
@@ -619,13 +531,9 @@ function onVideoError(): void {
   isPlaying.value = false
   isBuffering.value = false
   loadError.value = t('player.loadErrorDesc')
-  hudVisible.value = true
 }
 
 function goBack(): void {
-  if (document.fullscreenElement) {
-    void document.exitFullscreen().catch(() => {})
-  }
   if (!exitPersisted) {
     exitPersisted = true
     void persistProgress(undefined, { bumpCatalog: true })
@@ -633,7 +541,12 @@ function goBack(): void {
   if (window.history.state?.back) {
     router.back()
   } else if (detail.value?.video.show_id) {
-    void router.push(`/video/shows/${detail.value.video.show_id}`)
+    void router.push(`/video/item/${encodeURIComponent(detail.value.video.show_id)}`)
+  } else if (detail.value?.video.id) {
+    void router.push({
+      path: `/video/item/${encodeURIComponent(detail.value.video.id)}`,
+      query: { kind: 'movie' },
+    })
   } else {
     void router.push('/video')
   }
@@ -662,71 +575,6 @@ function flushVideoProgressOnPageHide(): void {
   }
 }
 
-const escapeStack = useEscapeStack()
-escapeStack.register(
-  () => !document.fullscreenElement,
-  () => {
-    goBack()
-  },
-)
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  if (target.isContentEditable) return true
-  const tag = target.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-}
-
-function isDropdownOrDialogOpen(target: EventTarget | null): boolean {
-  if (typeof document !== 'undefined') {
-    if (document.querySelector('[role="listbox"], [aria-modal="true"]')) return true
-  }
-  if (target instanceof HTMLElement) {
-    const role = target.getAttribute('role')
-    if (role === 'combobox' || role === 'listbox' || role === 'option') return true
-  }
-  return false
-}
-
-function onKeydown(ev: KeyboardEvent): void {
-  if (isEditableTarget(ev.target) || isDropdownOrDialogOpen(ev.target)) return
-  if (ev.ctrlKey || ev.metaKey || ev.altKey) return
-
-  if (ev.code === 'Space') {
-    ev.preventDefault()
-    togglePlay()
-  } else if (ev.code === 'ArrowRight') {
-    ev.preventDefault()
-    seekTo(currentTimeSecs.value + 10)
-    revealHud()
-  } else if (ev.code === 'ArrowLeft') {
-    ev.preventDefault()
-    seekTo(currentTimeSecs.value - 10)
-    revealHud()
-  } else if (ev.code === 'ArrowUp') {
-    ev.preventDefault()
-    adjustVolume(0.05)
-    revealHud()
-  } else if (ev.code === 'ArrowDown') {
-    ev.preventDefault()
-    adjustVolume(-0.05)
-    revealHud()
-  } else if (ev.key === 'm' || ev.key === 'M') {
-    ev.preventDefault()
-    toggleMute()
-    revealHud()
-  } else if (ev.key === 'f' || ev.key === 'F') {
-    ev.preventDefault()
-    void toggleFullscreen()
-  } else if (ev.key === 'p' || ev.key === 'P') {
-    ev.preventDefault()
-    void togglePip()
-  } else if ((ev.key === 'n' || ev.key === 'N') && detail.value?.next_episode_id) {
-    ev.preventDefault()
-    goToNextEpisode()
-  }
-}
-
 onMounted(() => {
   musicPlayerStore.pause()
   if (videoEl.value) {
@@ -734,7 +582,6 @@ onMounted(() => {
     videoEl.value.muted = muted.value
   }
   void initVideo()
-  window.addEventListener('keydown', onKeydown)
   window.addEventListener('pagehide', flushVideoProgressOnPageHide)
   progressSaveTimer = setInterval(() => {
     if (isPlaying.value) {
@@ -744,16 +591,14 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  initRequestSeq++
+  initRequestSeq += 1
   if (!exitPersisted) {
     exitPersisted = true
     void persistProgress(undefined, { bumpCatalog: true })
   }
   stopAndClearVideoElement()
-  clearMediaSession()
-  if (hudHideTimer) clearTimeout(hudHideTimer)
+  clearVideoMediaSession()
   if (progressSaveTimer) clearInterval(progressSaveTimer)
-  window.removeEventListener('keydown', onKeydown)
   window.removeEventListener('pagehide', flushVideoProgressOnPageHide)
 })
 
@@ -766,21 +611,60 @@ watch(
 </script>
 
 <template>
-  <div
-    ref="stageRef"
-    class="md-scheme-dark relative flex h-dvh w-screen flex-col justify-between overflow-hidden bg-black text-white select-none"
-    @mousemove="revealHud"
-    @touchstart.passive="revealHud"
-    @click.self="togglePlay"
+  <VideoPlayerShell
+    ref="shellRef"
+    :title="headerTitle"
+    :subtitle="headerSubtitle"
+    :back-label="t('player.back')"
+    :loading="loadingVideo"
+    :loading-text="t('player.loading')"
+    :buffering="isBuffering"
+    :error="loadError"
+    :error-title="t('player.loadErrorTitle')"
+    :show-retry="true"
+    :is-playing="isPlaying"
+    :current-time="currentTimeSecs"
+    :duration="totalDurationSecs"
+    :volume="volume"
+    :muted="muted"
+    :playback-rate="playbackRate"
+    :has-prev="Boolean(prevEpisodeId)"
+    :has-next="Boolean(nextEpisodeId)"
+    :show-footer="Boolean(detail)"
+    :header-select-value="quality"
+    :header-select-options="detail ? qualityOptions : []"
+    :header-select-aria-label="t('player.quality')"
+    :quality-value="quality"
+    :quality-options="detail ? qualityOptions : []"
+    :audio-value="String(selectedAudioStream ?? detail?.audio_streams[0]?.stream_index ?? 0)"
+    :audio-options="audioOptions"
+    :subtitle-value="selectedSubtitleId"
+    :subtitle-options="subtitleOptions"
+    :download-url="downloadUrl"
+    :episodes="episodeDrawerItems"
+    :video-element="videoEl"
+    @back="goBack"
+    @retry="initVideo"
+    @toggle-play="togglePlay"
+    @seek="seekTo"
+    @seek-delta="seekTo(currentTimeSecs + $event)"
+    @prev="goToPrevEpisode"
+    @next="goToNextEpisode"
+    @update:volume="setVolume"
+    @adjust-volume="adjustVolume"
+    @toggle-mute="toggleMute"
+    @update:playback-rate="onPlaybackRateChange"
+    @header-select-change="onQualityChange"
+    @update:quality="onQualityChange"
+    @update:audio="onAudioStreamChange"
+    @update:subtitle="onSubtitleChange"
+    @select-episode="navigateToVideo"
   >
-    <!-- HTML5 Video Stage -->
     <video
       ref="videoEl"
       class="h-full w-full bg-black object-contain"
       crossorigin="use-credentials"
       playsinline
-      @click="togglePlay"
-      @dblclick="toggleFullscreen"
       @loadstart="isBuffering = true"
       @waiting="isBuffering = true"
       @canplay="isBuffering = false"
@@ -802,237 +686,5 @@ watch(
         default
       />
     </video>
-
-    <!-- Loading / Buffering Overlay -->
-    <div
-      v-if="(loadingVideo || isBuffering) && !loadError"
-      class="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-black/35"
-    >
-      <div
-        class="flex items-center gap-3 rounded-full bg-[var(--md-sys-color-surface-container-high)]/90 px-5 py-3 text-xs font-semibold text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
-      >
-        <LuLoader2 class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
-        <span>{{ t('player.loading') }}</span>
-      </div>
-    </div>
-
-    <!-- Error & Retry Overlay -->
-    <div
-      v-if="loadError"
-      class="absolute inset-0 z-30 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs"
-    >
-      <div
-        class="flex w-full max-w-md flex-col items-center rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] p-6 text-center text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)]"
-      >
-        <div
-          class="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
-        >
-          <LuAlertCircle class="h-6 w-6" />
-        </div>
-        <h2 class="text-base font-bold">{{ t('player.loadErrorTitle') }}</h2>
-        <p class="mt-1.5 text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
-          {{ loadError }}
-        </p>
-        <div class="mt-5 flex items-center gap-2.5">
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="goBack"
-          >
-            <LuArrowLeft class="h-3.5 w-3.5" />
-            <span>{{ t('player.back') }}</span>
-          </button>
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-filled md-state"
-            @click="initVideo"
-          >
-            <LuRefreshCw class="h-3.5 w-3.5" />
-            <span>{{ t('player.retry') }}</span>
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Top HUD Overlay -->
-    <header
-      class="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center justify-between gap-2 bg-gradient-to-b from-black/80 via-black/40 to-transparent px-4 py-3 transition-opacity duration-200 sm:gap-4 sm:px-8 sm:py-4"
-      :class="hudVisible || loadingVideo || loadError ? 'opacity-100' : 'pointer-events-none opacity-0'"
-    >
-      <div class="flex min-w-0 items-center gap-3">
-        <button
-          type="button"
-          class="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3.5 py-2 text-xs font-semibold text-white backdrop-blur-md transition hover:bg-white/25"
-          @click="goBack"
-        >
-          <LuArrowLeft class="h-4 w-4" />
-          <span>{{ t('player.back') }}</span>
-        </button>
-
-        <div v-if="detail" class="min-w-0">
-          <h1 class="truncate text-sm font-bold text-white sm:text-base">
-            {{ detail.video.title }}
-          </h1>
-          <p v-if="detail.video.show_title" class="truncate text-[11px] text-white/70">
-            {{ detail.video.show_title }}
-            <span v-if="detail.video.season_number != null && detail.video.episode_number != null">
-              · S{{ String(detail.video.season_number).padStart(2, '0') }}E{{ String(detail.video.episode_number).padStart(2, '0') }}
-            </span>
-          </p>
-        </div>
-      </div>
-
-      <div v-if="detail" class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-        <div v-if="audioOptions.length > 1" class="w-32 sm:w-44">
-          <AppSelect
-            :model-value="String(selectedAudioStream ?? detail.audio_streams[0]?.stream_index ?? 0)"
-            :options="audioOptions"
-            variant="compact"
-            :teleport-to="stageRef"
-            @change="onAudioStreamChange"
-          />
-        </div>
-
-        <div v-if="subtitleOptions.length > 1" class="w-28 sm:w-40">
-          <AppSelect
-            :model-value="selectedSubtitleId"
-            :options="subtitleOptions"
-            variant="compact"
-            :teleport-to="stageRef"
-            @change="onSubtitleChange"
-          />
-        </div>
-
-        <div class="w-28 sm:w-40">
-          <AppSelect
-            :model-value="quality"
-            :options="qualityOptions"
-            variant="compact"
-            :teleport-to="stageRef"
-            @change="onQualityChange"
-          />
-        </div>
-
-        <div class="hidden w-24 sm:block">
-          <AppSelect
-            :model-value="String(playbackRate)"
-            :options="speedOptions"
-            variant="compact"
-            :teleport-to="stageRef"
-            @change="onSpeedChange"
-          />
-        </div>
-
-        <a
-          :href="buildVideoDownloadUrl(detail.video.id)"
-          class="rounded-full bg-white/15 p-2 text-white backdrop-blur-md transition hover:bg-white/25"
-          :title="t('common.download')"
-        >
-          <LuDownload class="h-4 w-4" />
-        </a>
-      </div>
-    </header>
-
-    <!-- Bottom HUD Overlay -->
-    <footer
-      v-if="detail && !loadError"
-      class="absolute inset-x-0 bottom-0 z-20 space-y-2.5 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-5 pt-8 pb-5 transition-opacity duration-200 sm:px-8"
-      :class="hudVisible ? 'opacity-100' : 'pointer-events-none opacity-0'"
-    >
-      <!-- Seek Slider -->
-      <div class="flex items-center gap-3">
-        <span class="w-14 text-right font-mono text-xs text-white/85">
-          {{ formatTime(currentTimeSecs) }}
-        </span>
-        <div class="flex-1">
-          <AppSlider
-            :model-value="currentTimeSecs"
-            :min="0"
-            :max="Math.max(1, totalDurationSecs)"
-            :step="0.5"
-            commit-on-release
-            aria-label="Video timeline"
-            @change="seekTo($event)"
-          />
-        </div>
-        <span class="w-14 font-mono text-xs text-white/85">
-          {{ formatTime(totalDurationSecs) }}
-        </span>
-      </div>
-
-      <!-- Controls Row -->
-      <div class="flex items-center justify-between gap-4">
-        <div class="flex items-center gap-2 sm:gap-3">
-          <button
-            v-if="detail?.prev_episode_id"
-            type="button"
-            class="inline-flex items-center gap-1 rounded-full bg-white/15 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md hover:bg-white/25"
-            @click="goToPrevEpisode"
-          >
-            <LuSkipBack class="h-3.5 w-3.5 fill-current" />
-            <span class="hidden sm:inline">{{ t('player.prevEpisode') }}</span>
-          </button>
-
-          <button
-            type="button"
-            class="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105"
-            @click="togglePlay"
-          >
-            <LuPause v-if="isPlaying" class="h-5 w-5 fill-current" />
-            <LuPlay v-else class="ml-0.5 h-5 w-5 fill-current" />
-          </button>
-
-          <button
-            v-if="detail?.next_episode_id"
-            type="button"
-            class="inline-flex items-center gap-1 rounded-full bg-white/15 px-3 py-1.5 text-xs font-semibold text-white backdrop-blur-md hover:bg-white/25"
-            @click="goToNextEpisode"
-          >
-            <span class="hidden sm:inline">{{ t('player.nextEpisode') }}</span>
-            <LuSkipForward class="h-3.5 w-3.5 fill-current" />
-          </button>
-
-          <div class="hidden w-32 items-center gap-2 sm:flex">
-            <button
-              type="button"
-              class="rounded-lg p-1.5 text-white/85 hover:bg-white/15"
-              @click="toggleMute"
-            >
-              <LuVolumeX v-if="muted || volume === 0" class="h-4 w-4" />
-              <LuVolume2 v-else class="h-4 w-4" />
-            </button>
-            <AppSlider
-              :model-value="muted ? 0 : volume"
-              :min="0"
-              :max="1"
-              :step="0.02"
-              aria-label="Volume"
-              @update:model-value="setVolume($event)"
-            />
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2">
-          <button
-            v-if="pipSupported"
-            type="button"
-            class="rounded-xl bg-white/15 p-2 text-white backdrop-blur-md transition hover:bg-white/25"
-            :title="t('player.pip')"
-            @click="togglePip"
-          >
-            <LuPictureInPicture2 class="h-4 w-4" />
-          </button>
-
-          <button
-            type="button"
-            class="rounded-xl bg-white/15 p-2 text-white backdrop-blur-md transition hover:bg-white/25"
-            :title="t('player.fullscreen')"
-            @click="toggleFullscreen"
-          >
-            <LuMaximize class="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    </footer>
-  </div>
+  </VideoPlayerShell>
 </template>
