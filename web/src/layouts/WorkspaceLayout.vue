@@ -42,7 +42,6 @@ import { useVideoStore } from '@/domains/video/store'
 
 import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
 import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
-import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import MdBadge from '@/components/ui/MdBadge.vue'
 import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
@@ -77,7 +76,6 @@ const mobileMenuOpen = ref(false)
 const accountMenuOpen = ref(false)
 const uploadMenuOpen = ref(false)
 const tasksDrawerOpen = ref(false)
-const layoutCustomizerOpen = ref(false)
 const commandPaletteOpen = ref(false)
 const dragDepth = ref(0)
 
@@ -960,7 +958,6 @@ onBeforeUnmount(() => {
         :domain-tabs="domainTabs"
         @close-mobile="mobileMenuOpen = false"
         @switch-domain="switchDomain"
-        @open-customizer="layoutCustomizerOpen = true"
       />
 
       <!-- Main Route Viewport (Outer rounded clip avoids scroll-layer corner artifacts) -->
@@ -1042,14 +1039,6 @@ onBeforeUnmount(() => {
     <BackgroundTasksDrawer
       :open="tasksDrawerOpen"
       @close="tasksDrawerOpen = false"
-    />
-
-    <!-- Sidebar Layout Customizer Modal -->
-    <LayoutCustomizerModal
-      :open="layoutCustomizerOpen"
-      :domain="domainStore.activeDomain"
-      initial-tab="sidebar"
-      @close="layoutCustomizerOpen = false"
     />
 
     <!-- Cross-Domain Quick Search / Command Palette (⌘K) -->

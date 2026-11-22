@@ -386,7 +386,11 @@ export function useWorkspaceSidebar(onCloseMobile: () => void) {
     const configuredKeys = prefsStore.workspaceLayout[dom].sidebar_groups
     return configuredKeys
       .map((key) => buildDomainSidebarGroup(dom, key))
-      .filter((g): g is SidebarGroupDescriptor => g !== null)
+      .filter(
+        (g): g is SidebarGroupDescriptor =>
+          g !== null &&
+          (g.items.length > 0 || g.overviewActive || creatingGroupId.value === g.id),
+      )
   })
 
   function toggleCreateForGroup(group: SidebarGroupDescriptor): void {

@@ -120,7 +120,12 @@ const statCards = computed<StatCardItem[]>(() => {
 
 <template>
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-7 sm:px-8">
-    <HomeStatCards domain="comic" :cards="statCards" :on-refresh="refreshPage" />
+    <HomeStatCards
+      v-if="overview && overview.stats.series_count > 0"
+      domain="comic"
+      :cards="statCards"
+      :on-refresh="refreshPage"
+    />
 
     <!-- Cold-Load Skeleton -->
     <HomeSkeleton v-if="loading && !overview" />

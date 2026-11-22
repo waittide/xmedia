@@ -7,7 +7,6 @@ import {
   LuFolderPlus,
   LuLoader2,
   LuRefreshCw,
-  LuSlidersHorizontal,
   LuTrash2,
   LuX,
 } from 'vue-icons-plus/lu'
@@ -27,7 +26,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   closeMobile: []
   switchDomain: [kind: MediaKind]
-  openCustomizer: []
 }>()
 
 const asideRef = ref<HTMLElement | null>(null)
@@ -167,16 +165,6 @@ watch(creatingGroupId, async (id) => {
       >
         <component :is="group.icon" class="h-[18px] w-[18px] shrink-0" />
       </button>
-
-      <button
-        type="button"
-        class="md-icon-btn md-state mt-1"
-        :title="t('layoutCustomizer.customizeSidebar')"
-        :aria-label="t('layoutCustomizer.customizeSidebar')"
-        @click="emit('openCustomizer')"
-      >
-        <LuSlidersHorizontal class="h-[18px] w-[18px] shrink-0" />
-      </button>
     </nav>
 
     <!-- EXPANDED MODE: Authentic MD3 Navigation Drawer (Full-Pill Active Indicator) -->
@@ -197,21 +185,15 @@ watch(creatingGroupId, async (id) => {
         <span class="truncate">{{ item.label }}</span>
       </button>
 
-      <div class="mt-2 flex items-center justify-between px-3 pt-1 md:mt-4 md:pt-2">
+      <div
+        v-if="activeSidebarGroups.length > 0"
+        class="mt-2 flex items-center px-3 pt-1 md:mt-4 md:pt-2"
+      >
         <span
           class="text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase"
         >
           {{ t(`app.domains.${domainStore.activeDomain}`) }}
         </span>
-        <button
-          type="button"
-          class="md-state inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-          :title="t('layoutCustomizer.customizeSidebar')"
-          @click="emit('openCustomizer')"
-        >
-          <LuSlidersHorizontal class="h-3 w-3" />
-          <span>{{ t('layoutCustomizer.customizeSidebar') }}</span>
-        </button>
       </div>
 
       <div

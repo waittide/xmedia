@@ -140,7 +140,12 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
 
 <template>
   <div class="mx-auto max-w-7xl space-y-10 px-6 py-7 sm:px-8">
-    <HomeStatCards domain="video" :cards="statCards" :on-refresh="refreshPage" />
+    <HomeStatCards
+      v-if="overview && overview.total_videos > 0"
+      domain="video"
+      :cards="statCards"
+      :on-refresh="refreshPage"
+    />
 
     <!-- Cold-Load Skeleton -->
     <HomeSkeleton v-if="loading && !overview" />

@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, type Component } from 'vue'
+import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuSlidersHorizontal } from 'vue-icons-plus/lu'
-import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
 import type { MediaKind } from '@/types/api'
 
@@ -22,7 +20,8 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
-const customizerOpen = ref(false)
+
+const hasNonZeroStat = computed(() => props.cards.some((card) => card.value > 0))
 
 const cardsGridClass = computed(() => {
   const n = props.cards.length
@@ -33,17 +32,9 @@ const cardsGridClass = computed(() => {
 </script>
 
 <template>
-  <section class="space-y-2.5">
-    <div class="flex items-center justify-end gap-1.5">
+  <section v-if="cards.length > 0 && hasNonZeroStat" class="space-y-2.5">
+    <div class="flex items-center justify-end">
       <RefreshButton variant="ghost" :action="onRefresh" />
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-text md-state !h-7 !px-2.5 !text-[11px] !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
-        @click="customizerOpen = true"
-      >
-        <LuSlidersHorizontal class="h-3.5 w-3.5" />
-        <span>{{ t('layoutCustomizer.customizeCards') }}</span>
-      </button>
     </div>
 
     <div class="grid gap-3.5" :class="cardsGridClass">
@@ -74,12 +65,5 @@ const cardsGridClass = computed(() => {
         </div>
       </button>
     </div>
-
-    <LayoutCustomizerModal
-      :open="customizerOpen"
-      :domain="domain"
-      initial-tab="cards"
-      @close="customizerOpen = false"
-    />
   </section>
 </template>
