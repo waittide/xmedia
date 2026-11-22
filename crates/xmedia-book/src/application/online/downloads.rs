@@ -34,12 +34,20 @@ impl BookOnlineService {
     pub async fn start_download(
         self: &Arc<Self>,
         actor: &User,
-        input: StartDownloadInput,
+        mut input: StartDownloadInput,
     ) -> DomainResult<OnlineDownloadJobDto> {
         if input.import_to_library || input.book_id.is_some() {
             require_admin(actor)?;
         }
         let src = self.load_source_for_actor(actor, input.source_id).await?;
+        input.book_url = Self::validate_caller_http_url(&input.book_url, &src.raw_json)?;
+        input.toc_url = Self::validate_caller_http_url(&input.toc_url, &src.raw_json)?;
+        if let Some(ref cover_url) = input.cover_url
+            && !cover_url.trim().is_empty()
+        {
+            let clean_cover = Self::validate_caller_http_url(cover_url, &src.raw_json)?;
+            input.cover_url = Some(clean_cover);
+        }
 
         if let Some(bid) = input.book_id {
             let book = self.catalog.find_book_raw(BookId(bid)).await?;

@@ -6,7 +6,12 @@ use std::time::Duration;
 use regex::Regex;
 
 use super::session::{ReusableSourceContext, ReusableWorkerSession};
-use crate::source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
+use crate::source::http::{
+    HttpClientConfig, LegadoHttpClient, json_structure_signature, resolve_relative_url,
+    resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
+    split_legado_url_template_and_options, substitute_legado_options_vars,
+    substitute_legado_url_template_vars, substitute_url_part_vars,
+};
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
     OnlineChapterContent, OnlineChapterItem, SearchBookResult, SourceRuntimeState,
@@ -67,30 +72,10 @@ fn search_url_needs_js(raw_tpl: &str) -> bool {
     false
 }
 
-fn substitute_simple_search_url(raw_tpl: &str, keyword: &str, page: u32) -> String {
+fn substitute_simple_search_url(raw_tpl: &str, keyword: &str, page: u32) -> Result<String, String> {
     let page_str = page.to_string();
-    let mut out = String::with_capacity(raw_tpl.len() + keyword.len());
-    let mut rest = raw_tpl;
-    while let Some(open) = rest.find("{{") {
-        out.push_str(&rest[..open]);
-        let after_open = &rest[open + 2..];
-        let Some(close) = after_open.find("}}") else {
-            out.push_str(&rest[open..]);
-            return out;
-        };
-        match after_open[..close].trim() {
-            "key" => out.push_str(keyword),
-            "page" => out.push_str(&page_str),
-            other => {
-                out.push_str("{{");
-                out.push_str(other);
-                out.push_str("}}");
-            }
-        }
-        rest = &after_open[close + 2..];
-    }
-    out.push_str(rest);
-    out
+    substitute_legado_url_template_vars(raw_tpl, &[("key", keyword), ("page", &page_str)], None)
+        .map_err(|e| e.to_string())
 }
 
 impl BookSourceEngine {
@@ -182,18 +167,66 @@ impl BookSourceEngine {
             .ok_or_else(|| format!("书源「{}」未配置 searchUrl", source.book_source_name))?;
 
         let evaluated = if search_url_needs_js(raw_tpl) {
-            session.set_search_vars(keyword, page)?;
-            let input = RuleValue::Text(String::new());
-            session.eval_string(&input, raw_tpl, &source.book_source_url)?
+            let (url_tpl, opt_tpl) = split_legado_url_template_and_options(raw_tpl);
+            if let Some(raw_opts) = opt_tpl {
+                let page_str = page.to_string();
+                let rendered_url = if search_url_needs_js(url_tpl) {
+                    session.set_search_vars(keyword, page)?;
+                    let input = RuleValue::Text(String::new());
+                    session.eval_string(&input, url_tpl, &source.book_source_url)?
+                } else {
+                    substitute_url_part_vars(
+                        url_tpl,
+                        &[("key", keyword), ("page", &page_str)],
+                        None,
+                    )
+                };
+                let rendered_opts = if search_url_needs_js(raw_opts) {
+                    let expected_sig = serde_json::from_str::<serde_json::Value>(raw_opts)
+                        .ok()
+                        .map(|v| json_structure_signature(&v));
+                    session.set_search_vars(keyword, page)?;
+                    let input = RuleValue::Text(String::new());
+                    let out_opts =
+                        session.eval_string(&input, raw_opts, &source.book_source_url)?;
+                    let parsed_out: serde_json::Value = serde_json::from_str(out_opts.trim())
+                        .map_err(|e| format!("searchUrl 请求配置 JS 求值后 JSON 无效: {e}"))?;
+                    if let Some(sig) = expected_sig
+                        && json_structure_signature(&parsed_out) != sig
+                    {
+                        return Err("searchUrl 请求配置 JSON 结构在模板求值后发生异常变化".into());
+                    }
+                    out_opts
+                } else {
+                    substitute_legado_options_vars(
+                        raw_opts,
+                        &[("key", keyword), ("page", &page_str)],
+                    )
+                    .map_err(|e| e.to_string())?
+                };
+                format!("{rendered_url},{rendered_opts}")
+            } else {
+                session.set_search_vars(keyword, page)?;
+                let input = RuleValue::Text(String::new());
+                let out = session.eval_string(&input, raw_tpl, &source.book_source_url)?;
+                let (_, post_opts) = split_legado_url_and_raw_options(&out);
+                if post_opts.is_some() && !raw_tpl.contains("@js:") && !raw_tpl.contains("<js>") {
+                    return Err("searchUrl 不允许通过模板变量注入请求配置".into());
+                }
+                out
+            }
         } else {
-            substitute_simple_search_url(raw_tpl, keyword, page)
+            substitute_simple_search_url(raw_tpl, keyword, page)?
         };
 
         let trimmed = evaluated.trim();
         if trimmed.is_empty() {
             return Err("searchUrl 求值结果为空".into());
         }
-        Ok(resolve_relative_url(trimmed, &source.book_source_url))
+        Ok(resolve_relative_url_preserving_options(
+            trimmed,
+            &source.book_source_url,
+        ))
     }
 
     /// Searches books from one Legado book source.

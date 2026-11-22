@@ -53,9 +53,18 @@ impl BookOnlineService {
     pub async fn add_to_shelf(
         &self,
         actor: &User,
-        input: AddOnlineShelfInput,
+        mut input: AddOnlineShelfInput,
     ) -> DomainResult<OnlineShelfBookDto> {
         let src = self.load_source_for_actor(actor, input.source_id).await?;
+        input.book_url = Self::validate_caller_http_url(&input.book_url, &src.raw_json)?;
+        if !input.toc_url.trim().is_empty() {
+            input.toc_url = Self::validate_caller_http_url(&input.toc_url, &src.raw_json)?;
+        }
+        if let Some(ref cover_url) = input.cover_url
+            && !cover_url.trim().is_empty()
+        {
+            input.cover_url = Some(Self::validate_caller_http_url(cover_url, &src.raw_json)?);
+        }
         let user_id = actor.id;
         let existing_list = self.shelves.list_by_user(user_id).await?;
         let now = Timestamp::now();
@@ -127,18 +136,29 @@ impl BookOnlineService {
             return Err(DomainError::Forbidden("无权操作他人在线书架".into()));
         }
 
-        if let Some(source_id) = input.source_id {
+        let effective_src = if let Some(source_id) = input.source_id {
             let src = self.load_source(source_id).await?;
             if !src.enabled {
                 return Err(DomainError::Validation("目标书源未启用".into()));
             }
             rec.source_id = source_id;
-        }
+            Some(src)
+        } else {
+            self.sources.find_by_id(rec.source_id).await?
+        };
+        let raw_json_ref = effective_src
+            .as_ref()
+            .map(|s| s.raw_json.as_str())
+            .unwrap_or("");
         if let Some(book_url) = input.book_url {
-            rec.book_url = book_url;
+            rec.book_url = Self::validate_caller_http_url(&book_url, raw_json_ref)?;
         }
         if let Some(toc_url) = input.toc_url {
-            rec.toc_url = toc_url;
+            rec.toc_url = if toc_url.trim().is_empty() {
+                String::new()
+            } else {
+                Self::validate_caller_http_url(&toc_url, raw_json_ref)?
+            };
         }
         if let Some(idx) = input.current_chapter_index {
             rec.current_chapter_index = idx;

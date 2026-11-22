@@ -976,3 +976,129 @@ async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtim
 
     server_handle.abort();
 }
+
+#[tokio::test]
+async fn caller_supplied_book_urls_reject_legado_options_and_data_urls_with_400() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("book_url_guard_test.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_book_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+    let users = Arc::new(ToastyUserRepository::new(db.clone()));
+    let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let security = Arc::new(SecurityManager::new("book-url-guard-secret"));
+    let tokens = Arc::new(JwtTokenService::new("book-url-guard-secret", 3600));
+    let events = Arc::new(BroadcastEventHub::default());
+    let auth_svc = Arc::new(AuthService::new(
+        users.clone(),
+        security,
+        tokens,
+        lifecycles.clone(),
+    ));
+    let lib_svc = Arc::new(LibraryService::new(
+        libs_repo.clone(),
+        events.clone(),
+        lifecycles,
+    ));
+    let book_services = crate::init_book_module_with_allow_private_ips(
+        db.clone(),
+        tmp.path(),
+        libs_repo,
+        &lib_svc,
+        events,
+        true,
+    )
+    .unwrap();
+    let admin = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "password123".into(),
+        })
+        .await
+        .unwrap();
+    let state = BookHttpState::new(auth_svc, lib_svc, book_services);
+    let app = Router::new().nest("/api/v1/book", rest_router(state));
+
+    let src_json = serde_json::json!([{
+        "bookSourceName": "GuardSource",
+        "bookSourceUrl": "https://book-guard.example",
+        "searchUrl": "/search?q={{key}}",
+        "ruleSearch": { "bookList": "$.items", "name": "$.name", "bookUrl": "$.url" }
+    }]);
+    let imp_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/sources/import")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({ "raw_json": src_json.to_string() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(imp_res.status(), StatusCode::OK);
+    let imp_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(imp_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let sid = imp_body["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for bad_url in [
+        "https://book-guard.example/b/1,{\"method\":\"POST\",\"headers\":{\"X-Evil\":\"1\"}}",
+        "data:text/html,<h1>evil</h1>",
+    ] {
+        for (uri, payload) in [
+            (
+                "/api/v1/book/online/book-info",
+                serde_json::json!({ "source_id": sid, "book_url": bad_url }),
+            ),
+            (
+                "/api/v1/book/online/toc",
+                serde_json::json!({ "source_id": sid, "toc_url": bad_url }),
+            ),
+            (
+                "/api/v1/book/online/content",
+                serde_json::json!({ "source_id": sid, "chapter_url": bad_url }),
+            ),
+            (
+                "/api/v1/book/online/downloads",
+                serde_json::json!({
+                    "source_id": sid,
+                    "book_name": "Evil",
+                    "book_url": bad_url,
+                    "toc_url": "https://book-guard.example/toc/1",
+                    "format": "txt"
+                }),
+            ),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {}", admin.token))
+                        .body(Body::from(payload.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::BAD_REQUEST,
+                "expected 400 on {uri} for {bad_url}"
+            );
+        }
+    }
+}

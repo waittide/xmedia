@@ -203,6 +203,13 @@ impl BookOnlineService {
         })
     }
 
+    pub(super) fn validate_caller_http_url(raw: &str, raw_json: &str) -> DomainResult<String> {
+        let base = serde_json::from_str::<LegadoBookSource>(raw_json)
+            .ok()
+            .map(|s| s.book_source_url);
+        xmedia_source::http::resolve_literal_http_url(raw, base.as_deref())
+    }
+
     pub async fn fetch_book_info(
         &self,
         actor: &User,
@@ -211,7 +218,16 @@ impl BookOnlineService {
         fallback_hint: Option<BookJsContext>,
     ) -> DomainResult<OnlineBookDetailResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        self.fetch_book_info_internal(rec, book_url, fallback_hint, actor.role.is_admin())
+        let clean_book_url = Self::validate_caller_http_url(book_url, &rec.raw_json)?;
+        if let Some(ref hint) = fallback_hint {
+            if !hint.book_url.trim().is_empty() {
+                Self::validate_caller_http_url(&hint.book_url, &rec.raw_json)?;
+            }
+            if !hint.toc_url.trim().is_empty() {
+                Self::validate_caller_http_url(&hint.toc_url, &rec.raw_json)?;
+            }
+        }
+        self.fetch_book_info_internal(rec, &clean_book_url, fallback_hint, actor.role.is_admin())
             .await
     }
 
@@ -264,7 +280,14 @@ impl BookOnlineService {
         book_ctx: BookJsContext,
     ) -> DomainResult<OnlineTocResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
-        self.fetch_toc_internal(rec, toc_url, book_ctx, actor.role.is_admin())
+        let clean_toc_url = Self::validate_caller_http_url(toc_url, &rec.raw_json)?;
+        if !book_ctx.book_url.trim().is_empty() {
+            Self::validate_caller_http_url(&book_ctx.book_url, &rec.raw_json)?;
+        }
+        if !book_ctx.toc_url.trim().is_empty() {
+            Self::validate_caller_http_url(&book_ctx.toc_url, &rec.raw_json)?;
+        }
+        self.fetch_toc_internal(rec, &clean_toc_url, book_ctx, actor.role.is_admin())
             .await
     }
 
@@ -358,9 +381,19 @@ impl BookOnlineService {
         force_refresh: bool,
     ) -> DomainResult<OnlineContentResponseDto> {
         let rec = self.load_source_for_actor(actor, source_id).await?;
+        let clean_chapter_url = Self::validate_caller_http_url(chapter_url, &rec.raw_json)?;
+        if !book_ctx.book_url.trim().is_empty() {
+            Self::validate_caller_http_url(&book_ctx.book_url, &rec.raw_json)?;
+        }
+        if !book_ctx.toc_url.trim().is_empty() {
+            Self::validate_caller_http_url(&book_ctx.toc_url, &rec.raw_json)?;
+        }
+        if !chapter_ctx.url.trim().is_empty() {
+            Self::validate_caller_http_url(&chapter_ctx.url, &rec.raw_json)?;
+        }
         self.fetch_chapter_content_internal(
             rec,
-            chapter_url,
+            &clean_chapter_url,
             book_ctx,
             chapter_ctx,
             ChapterFetchOptions {

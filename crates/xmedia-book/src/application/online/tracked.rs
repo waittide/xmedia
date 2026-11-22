@@ -74,10 +74,19 @@ impl BookOnlineService {
     pub async fn track_online_book(
         self: &Arc<Self>,
         actor: &User,
-        input: TrackOnlineBookInput,
+        mut input: TrackOnlineBookInput,
     ) -> DomainResult<BookSummaryDto> {
         require_admin(actor)?;
         let src = self.load_source(input.source_id).await?;
+        input.book_url = Self::validate_caller_http_url(&input.book_url, &src.raw_json)?;
+        if !input.toc_url.trim().is_empty() {
+            input.toc_url = Self::validate_caller_http_url(&input.toc_url, &src.raw_json)?;
+        }
+        if let Some(ref cover_url) = input.cover_url
+            && !cover_url.trim().is_empty()
+        {
+            input.cover_url = Some(Self::validate_caller_http_url(cover_url, &src.raw_json)?);
+        }
 
         // Serialize concurrent track requests for the same (source_id, book_url) to prevent duplicate Books.
         let tlock = self.track_lock_for(input.source_id, &input.book_url);
@@ -613,10 +622,22 @@ impl BookOnlineService {
         self: &Arc<Self>,
         actor: &User,
         book_id: BookId,
-        input: SwitchTrackedSourceInput,
+        mut input: SwitchTrackedSourceInput,
     ) -> DomainResult<TrackedTocResponseDto> {
         require_admin(actor)?;
         let new_src = self.load_source(input.source_id).await?;
+        input.book_url = Self::validate_caller_http_url(&input.book_url, &new_src.raw_json)?;
+        if !input.toc_url.trim().is_empty() {
+            input.toc_url = Self::validate_caller_http_url(&input.toc_url, &new_src.raw_json)?;
+        }
+        if let Some(ref cover_url) = input.cover_url
+            && !cover_url.trim().is_empty()
+        {
+            input.cover_url = Some(Self::validate_caller_http_url(
+                cover_url,
+                &new_src.raw_json,
+            )?);
+        }
         let book_snapshot = self.catalog.find_book_raw(book_id).await?;
 
         if !book_snapshot.source.is_online_tracked() {

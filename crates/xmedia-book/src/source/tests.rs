@@ -661,3 +661,97 @@ fn run_login_action_merges_login_info_without_wiping_existing_fields() {
     );
     assert!(out.data.contains("alice") && out.data.contains("s3cr3t") && out.data.contains("cn"));
 }
+
+#[test]
+fn search_url_template_encodes_keyword_and_blocks_legado_options_json_injection() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Captured {
+        targets: Vec<String>,
+        bodies: Vec<String>,
+        has_injected_header: bool,
+    }
+
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let cap_clone = captured.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap();
+            let req_str = String::from_utf8_lossy(&buf[..n]).to_string();
+            let (head, body) = req_str.split_once("\r\n\r\n").unwrap_or((&req_str, ""));
+            let first_line = head.lines().next().unwrap_or("");
+            let target = first_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("")
+                .to_string();
+            let has_injected = head
+                .lines()
+                .any(|l| l.to_ascii_lowercase().starts_with("x-injected:"));
+            {
+                let mut g = cap_clone.lock().unwrap();
+                g.targets.push(target);
+                g.bodies.push(body.to_string());
+                if has_injected {
+                    g.has_injected_header = true;
+                }
+            }
+            let payload = r#"{"items":[]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+        }
+    });
+
+    let cfg = HttpClientConfig {
+        allow_private_ips: true,
+        ..Default::default()
+    };
+    let engine = BookSourceEngine::new(cfg, Duration::from_secs(2));
+    let src = LegadoBookSource {
+        book_source_name: "InjectTestBook".into(),
+        book_source_url: format!("http://{addr}"),
+        search_url: Some(
+            "/search?q={{key}}&p={{page}},{\"method\":\"POST\",\"body\":\"kw={{key}}&p={{page}}\"}"
+                .into(),
+        ),
+        rule_search: Some(crate::source::model::LegadoSearchRule {
+            book_list: Some("$.items[*]".into()),
+            name: Some("$.name".into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    engine
+        .search_sync(
+            &src,
+            SourceRuntimeState::default(),
+            "hello world&injected=1",
+            1,
+        )
+        .unwrap();
+    let poison = "x\",\"headers\":{\"X-Injected\":\"pwned\"},\"z\":\"";
+    engine
+        .search_sync(&src, SourceRuntimeState::default(), poison, 2)
+        .unwrap();
+
+    server.join().unwrap();
+    let cap = captured.lock().unwrap();
+    assert!(!cap.has_injected_header, "X-Injected header leaked!");
+    assert_eq!(cap.targets[0], "/search?q=hello%20world%26injected%3D1&p=1");
+    assert_eq!(cap.bodies[0], "kw=hello%20world%26injected%3D1&p=1");
+    assert!(cap.targets[1].contains("q=x%22"));
+    assert!(!cap.targets[1].contains("X-Injected\":\"pwned"));
+}
