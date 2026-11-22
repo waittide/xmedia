@@ -158,6 +158,7 @@ const { t } = useI18n()
     <template #footer>
       <button
         type="button"
+        :disabled="props.saving"
         class="md-btn md-btn-text md-state"
         @click="emit('close')"
       >

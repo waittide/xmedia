@@ -207,6 +207,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
   const variableText = ref('')
   const initialVariableText = ref('')
   let loadSeq = 0
+  let saveSeq = 0
 
   const jsonValidation = computed<{ valid: boolean; error: string | null }>(() => {
     if (activeTab.value !== options.jsonTabId && !jsonDirty.value) {
@@ -303,6 +304,8 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
   watch(
     () => [options.open.value, options.source.value?.id] as const,
     ([isOpen]) => {
+      saveSeq += 1
+      saving.value = false
       if (isOpen && options.source.value) {
         void loadSourceRaw(options.source.value)
       } else {
@@ -372,6 +375,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
       finalObj = options.buildMergedObject()
     }
 
+    const seq = ++saveSeq
     saving.value = true
     try {
       const patch: UpdateSourcePatch = {
@@ -384,6 +388,7 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
         patch.variable = variableText.value
       }
       const updated = await options.adapter.updateSource(targetId, patch)
+      if (seq !== saveSeq || !options.open.value || options.source.value?.id !== targetId) return
       snackbar.show({
         message: t('onlineSources.edit.savedMsg', { name: updated.name }),
       })
@@ -394,9 +399,12 @@ export function useOnlineSourceEdit<S extends OnlineSourceSummaryDto, T extends 
         options.onClose()
       }
     } catch (err) {
+      if (seq !== saveSeq || !options.open.value || options.source.value?.id !== targetId) return
       snackbar.show({ message: extractApiError(err), tone: 'error' })
     } finally {
-      saving.value = false
+      if (seq === saveSeq) {
+        saving.value = false
+      }
     }
   }
 
