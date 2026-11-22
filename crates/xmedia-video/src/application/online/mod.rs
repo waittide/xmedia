@@ -1,6 +1,7 @@
 mod browse;
 mod debug;
 mod dto;
+mod items;
 mod sources;
 
 use std::collections::HashMap;
@@ -17,6 +18,7 @@ use crate::domain::repository::VideoSourceRepository;
 use crate::source::VideoSourceEngine;
 
 pub use dto::*;
+pub use items::VideoOnlineSourceDirectory;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);

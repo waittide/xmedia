@@ -3899,3 +3899,187 @@ async fn video_proxies_strip_static_range_from_source_media_headers() {
 
     srv.abort();
 }
+
+async fn send_json_with_method(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    let req = if let Some(b) = body {
+        builder = builder.header(header::CONTENT_TYPE, "application/json");
+        builder.body(Body::from(b.to_string())).unwrap()
+    } else {
+        builder.body(Body::empty()).unwrap()
+    };
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let val = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, val)
+}
+
+#[tokio::test]
+async fn online_video_items_favorites_episode_progress_and_availability_e2e() {
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let src_json = serde_json::json!({
+        "sourceName": "Test Video Source",
+        "sourceUrl": "https://video-item.test",
+        "sourceGroup": "Test",
+        "sourceType": 1,
+        "apiUrl": "https://video-item.test/api.php/provide/vod"
+    });
+    let (st_imp, imp_val) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 1. Upsert online video with episode + play-line (unit_group) + watch position in seconds
+    let (st_put, item) = send_json_with_method(
+        &app,
+        "PUT",
+        "/api/v1/video/online/items",
+        &member_tok,
+        Some(serde_json::json!({
+            "source_id": source_id,
+            "item_key": "https://video-item.test/vod/101",
+            "title": "Spirited Away Series",
+            "subtitle": "2024 · Anime",
+            "cover_url": "https://video-item.test/poster.jpg",
+            "kind": "anime",
+            "extra": { "vod_id": "101", "remarks": "12 Episodes" },
+            "favorite": true,
+            "progress": {
+                "unit_index": 1,
+                "unit_key": "https://video-item.test/play/101-2.m3u8",
+                "unit_title": "EP 02",
+                "unit_group": "HD Line 1",
+                "position": 600.0,
+                "duration": 1200.0,
+                "total_units": 12,
+                "completed": false
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_put, StatusCode::OK);
+    let item_id = item["id"].as_str().unwrap().to_string();
+    assert_eq!(item["media_kind"], "video");
+    assert_eq!(item["source_name"], "Test Video Source");
+    assert_eq!(item["availability"], "ok");
+    assert_eq!(item["progress"]["unit_group"], "HD Line 1");
+    assert!((item["progress_ratio"].as_f64().unwrap() - (1.5 / 12.0)).abs() < 1e-6);
+
+    // 2. Lookup & Continue/Favorites queries
+    let (st_lk, lk) = post_json(
+        &app,
+        "/api/v1/video/online/items/lookup",
+        &member_tok,
+        serde_json::json!({
+            "items": [
+                { "source_id": source_id, "item_key": "https://video-item.test/vod/101" }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(st_lk, StatusCode::OK);
+    assert_eq!(lk["total"], 1);
+
+    let (st_cont, cont) = send_json_with_method(
+        &app,
+        "GET",
+        "/api/v1/video/online/items?view=continue",
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_cont, StatusCode::OK);
+    assert_eq!(cont["total"], 1);
+    assert_eq!(cont["items"][0]["id"], item_id);
+
+    // 3. Switch play line / episode via PUT /{id}/progress
+    let (st_prog, prog) = send_json_with_method(
+        &app,
+        "PUT",
+        &format!("/api/v1/video/online/items/{item_id}/progress"),
+        &member_tok,
+        Some(serde_json::json!({
+            "unit_index": 2,
+            "unit_key": "https://video-item.test/play/101-3.m3u8",
+            "unit_title": "EP 03",
+            "unit_group": "Backup Line",
+            "position": 300.0,
+            "duration": 1200.0,
+            "total_units": 12,
+            "completed": false
+        })),
+    )
+    .await;
+    assert_eq!(st_prog, StatusCode::OK);
+    assert_eq!(prog["progress"]["unit_group"], "Backup Line");
+    assert_eq!(prog["progress"]["unit_index"], 2);
+
+    // 4. Disable source -> source_disabled
+    let (st_dis, _) = patch_json(
+        &app,
+        &format!("/api/v1/video/sources/{source_id}"),
+        &admin_tok,
+        serde_json::json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(st_dis, StatusCode::OK);
+
+    let (st_get, got) = send_json_with_method(
+        &app,
+        "GET",
+        &format!("/api/v1/video/online/items/{item_id}"),
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_get, StatusCode::OK);
+    assert_eq!(got["availability"], "source_disabled");
+
+    // 5. Clear progress removes from continue view; delete returns 204
+    let (st_clr, _) = send_json_with_method(
+        &app,
+        "DELETE",
+        &format!("/api/v1/video/online/items/{item_id}/progress"),
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_clr, StatusCode::OK);
+
+    let (st_cont2, cont2) = send_json_with_method(
+        &app,
+        "GET",
+        "/api/v1/video/online/items?view=continue",
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_cont2, StatusCode::OK);
+    assert_eq!(cont2["total"], 0);
+
+    let (st_del, _) = send_json_with_method(
+        &app,
+        "DELETE",
+        &format!("/api/v1/video/online/items/{item_id}"),
+        &member_tok,
+        None,
+    )
+    .await;
+    assert_eq!(st_del, StatusCode::NO_CONTENT);
+}

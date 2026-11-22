@@ -52,6 +52,11 @@ pub fn router() -> Router<VideoHttpState> {
         .route("/online/stream-proxy", get(online_stream_proxy))
         .route("/online/hls-proxy", get(online_hls_proxy))
         .route("/online/subtitle-proxy", get(online_subtitle_proxy))
+        // Per-user online video favorites & episode playback progress
+        .nest(
+            "/online/items",
+            xmedia_core::http::online_items::online_items_router(),
+        )
 }
 
 fn default_page() -> u32 {

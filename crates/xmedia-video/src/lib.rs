@@ -10,16 +10,19 @@ use std::time::Duration;
 
 use toasty::Db;
 use xmedia_core::application::library::LibraryService;
+use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_core::infra::persistence::repositories::ToastyOnlineLibraryItemRepository;
 use xmedia_source::http::HttpClientConfig;
 
 use application::VideoServices;
 use application::catalog::VideoCatalogService;
 use application::lifecycle::VideoDomainLifecycle;
-use application::online::VideoOnlineService;
+use application::online::{VideoOnlineService, VideoOnlineSourceDirectory};
 use application::streaming::VideoStreamingService;
 use application::watch::VideoWatchService;
 use infra::media_engine::FfmpegVideoEngine;
@@ -61,6 +64,7 @@ pub fn init_video_module_with_allow_private_ips(
 ) -> DomainResult<VideoServices> {
     let catalog_repo = Arc::new(ToastyVideoCatalogRepository::new(db.clone()));
     let watch_repo = Arc::new(ToastyVideoWatchRepository::new(db.clone()));
+    let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
     let source_repo = Arc::new(ToastyVideoSourceRepository::new(db));
 
     let storage = Arc::new(LocalVideoStorage::new(data_dir)?);
@@ -106,9 +110,14 @@ pub fn init_video_module_with_allow_private_ips(
         Duration::from_secs(45),
     );
     let online = Arc::new(VideoOnlineService::with_engine(
-        source_repo,
+        source_repo.clone(),
         source_engine,
         allow_private_ips,
+    ));
+    let online_items = Arc::new(OnlineLibraryService::new(
+        MediaKind::Video,
+        online_items_repo,
+        Arc::new(VideoOnlineSourceDirectory::new(source_repo)),
     ));
 
     Ok(VideoServices::new(
@@ -117,6 +126,7 @@ pub fn init_video_module_with_allow_private_ips(
         streaming,
         ingest,
         online,
+        online_items,
     ))
 }
 

@@ -13,6 +13,7 @@ use lifecycle::VideoDomainLifecycle;
 use online::VideoOnlineService;
 use streaming::VideoStreamingService;
 use watch::VideoWatchService;
+use xmedia_core::application::online_items::OnlineLibraryService;
 
 #[derive(Clone)]
 pub struct VideoServices {
@@ -21,6 +22,8 @@ pub struct VideoServices {
     pub streaming: Arc<VideoStreamingService>,
     pub ingest: Arc<VideoDomainLifecycle>,
     pub online: Arc<VideoOnlineService>,
+    /// Per-user favorites / episode watch progress of online videos.
+    pub online_items: Arc<OnlineLibraryService>,
 }
 
 impl VideoServices {
@@ -30,6 +33,7 @@ impl VideoServices {
         streaming: Arc<VideoStreamingService>,
         ingest: Arc<VideoDomainLifecycle>,
         online: Arc<VideoOnlineService>,
+        online_items: Arc<OnlineLibraryService>,
     ) -> Self {
         Self {
             catalog,
@@ -37,6 +41,7 @@ impl VideoServices {
             streaming,
             ingest,
             online,
+            online_items,
         }
     }
 }
