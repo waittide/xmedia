@@ -497,6 +497,16 @@ fn substitute_static_explore_placeholders(raw: &str, page: u32, limit: u32) -> S
     out
 }
 
+pub(crate) fn is_http_url(u: &str) -> bool {
+    let trimmed = u.trim();
+    trimmed
+        .get(..7)
+        .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+        || trimmed
+            .get(..8)
+            .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+}
+
 fn resolve_literal_http_url(raw: &str, base_url: &str, label: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -1460,7 +1470,7 @@ impl MusicSourceEngine {
                 .play_url
                 .as_deref()
                 .map(str::trim)
-                .filter(|s| s.starts_with("http://") || s.starts_with("https://"))
+                .filter(|s| is_http_url(s))
                 .and_then(|s| resolve_literal_http_url(s, &source.source_url, "playUrl").ok());
             let has_rule_headers = rule
                 .headers
@@ -1546,6 +1556,11 @@ impl MusicSourceEngine {
                     return Err("未能从 ruleStream 解析出有效音频流地址".into());
                 }
                 let resolved_stream = resolve_relative_url(stream_trimmed, &fetched.final_url);
+                if !is_http_url(&resolved_stream) {
+                    return Err(format!(
+                        "解析到的音频流地址不是有效的 HTTP(S) URL: {resolved_stream}"
+                    ));
+                }
 
                 let format = eval_rule_or_literal(
                     &mut session,
@@ -1618,6 +1633,11 @@ impl MusicSourceEngine {
                 }
                 let final_url =
                     resolve_relative_url_preserving_options(trimmed, &source.source_url);
+                if !is_http_url(&final_url) {
+                    return Err(format!(
+                        "解析到的音频流地址不是有效的 HTTP(S) URL: {final_url}"
+                    ));
+                }
                 let format = eval_rule_or_literal(
                     &mut session,
                     &empty_input,

@@ -4058,3 +4058,340 @@ async fn music_online_browse_enforces_timeout_on_stalled_upstream() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn music_stream_sanitizes_dangerous_schemes_and_aligns_headers_applied_with_proxy() {
+    use std::sync::atomic::AtomicBool;
+
+    let origin_app = Router::new()
+        .route(
+            "/stream/js",
+            get(|| async { r#"{"url":"javascript:alert(1)"}"# }),
+        )
+        .route(
+            "/stream/data",
+            get(|| async { r#"{"url":"data:text/plain,evil"}"# }),
+        )
+        .route(
+            "/stream/file",
+            get(|| async { r#"{"url":"file:///etc/passwd"}"# }),
+        )
+        .route(
+            "/stream/vb",
+            get(|| async { r#"{"url":"vbscript:msgbox(1)"}"# }),
+        )
+        .route(
+            "/stream/upper",
+            get(|| async { r#"{"url":"HTTPS://cdn.example/upper.mp3"}"# }),
+        )
+        .route(
+            "/stream/ok",
+            get(|| async { r#"{"url":"https://cdn.example/ok.mp3"}"# }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    // 1. parse_media_headers skips empty trimmed keys, Null values, and deduplicates case-insensitively
+    let hdr_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "HeaderSanitizeMusic",
+        "sourceUrl": base,
+        "header": serde_json::json!({
+            "": "blank",
+            "   ": "spaces",
+            "X-Null": null,
+            "X-Test": "from-header",
+            "x-test": "dup-lower"
+        }).to_string(),
+        "mediaHeader": serde_json::json!({
+            " ": "ignored",
+            "X-Null-Media": null,
+            "X-TEST": "from-media"
+        }).to_string()
+    }))
+    .unwrap();
+    let parsed_hdrs = hdr_spec.parse_media_headers();
+    assert_eq!(parsed_hdrs.len(), 1);
+    assert_eq!(
+        parsed_hdrs.get("X-TEST").map(String::as_str),
+        Some("from-media")
+    );
+
+    // 2. Engine resolve_stream_sync_with_control rejects dangerous schemes in both requestUrl and direct modes
+    let base_c = base.clone();
+    let engine_out = tokio::task::spawn_blocking(move || {
+        let engine = MusicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let req_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "ReqStreamSanitize",
+            "sourceUrl": base_c,
+            "ruleStream": {
+                "requestUrl": "{{detailUrl}}",
+                "streamUrl": "$.url"
+            }
+        }))
+        .unwrap();
+        for path in ["/stream/js", "/stream/data", "/stream/file", "/stream/vb"] {
+            let ctx = MusicTrackContext {
+                track_id: "t1".into(),
+                detail_url: Some(format!("{base_c}{path}")),
+                ..Default::default()
+            };
+            let err = engine
+                .resolve_stream_sync_with_control(
+                    &req_spec,
+                    SourceRuntimeState::default(),
+                    &ctx,
+                    None,
+                    Duration::from_secs(5),
+                    cancel.clone(),
+                )
+                .expect_err("dangerous stream_url scheme must be rejected");
+            assert!(
+                err.message.contains("HTTP(S)"),
+                "unexpected error for {path}: {}",
+                err.message
+            );
+        }
+
+        // Case-insensitive HTTPS:// must be accepted
+        let upper_ctx = MusicTrackContext {
+            track_id: "t1".into(),
+            detail_url: Some(format!("{base_c}/stream/upper")),
+            ..Default::default()
+        };
+        let upper_res = engine
+            .resolve_stream_sync_with_control(
+                &req_spec,
+                SourceRuntimeState::default(),
+                &upper_ctx,
+                None,
+                Duration::from_secs(5),
+                cancel.clone(),
+            )
+            .unwrap()
+            .data;
+        assert_eq!(upper_res.stream_url, "https://cdn.example/upper.mp3");
+
+        // Direct/template ruleStream without requestUrl must also reject dangerous schemes
+        let tpl_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "TplStreamSanitize",
+            "sourceUrl": base_c,
+            "ruleStream": {
+                "streamUrl": "@js:track.urlId"
+            }
+        }))
+        .unwrap();
+        for bad in [
+            "javascript:alert(1)",
+            "data:text/plain,evil",
+            "file:///etc/passwd",
+        ] {
+            let ctx = MusicTrackContext {
+                track_id: "t1".into(),
+                url_id: Some(bad.into()),
+                ..Default::default()
+            };
+            let err = engine
+                .resolve_stream_sync_with_control(
+                    &tpl_spec,
+                    SourceRuntimeState::default(),
+                    &ctx,
+                    None,
+                    Duration::from_secs(5),
+                    cancel.clone(),
+                )
+                .expect_err("direct/template non-HTTP(S) stream_url must be rejected");
+            assert!(
+                err.message.contains("HTTP(S)"),
+                "unexpected error for {bad}: {}",
+                err.message
+            );
+        }
+    })
+    .await;
+    engine_out.unwrap();
+
+    // 3. HTTP REST endpoints: track-info drops non-HTTP(S) stream_url, stream returns 400,
+    //    and headers_applied accurately reflects audio-proxy custom headers.
+    let h = setup_online_test_harness(true).await;
+
+    let import_src = |raw: serde_json::Value| {
+        let app = h.app.clone();
+        let token = h.admin_token.clone();
+        async move {
+            let (st, _, b) = send_json(
+                &app,
+                "POST",
+                "/sources/import",
+                &token,
+                Some(serde_json::json!({ "raw_json": raw.to_string() })),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+            let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+            v["sources"][0]["id"].as_str().unwrap().to_string()
+        }
+    };
+
+    // 3a. Source with only ruleStream.headers (not propagated by audio-proxy) -> headers_applied: false
+    let sid_rule_hdr_only = import_src(serde_json::json!({
+        "sourceName": "RuleHeaderOnlyMusic",
+        "sourceUrl": base,
+        "ruleStream": {
+            "requestUrl": format!("{base}/stream/{{{{trackId}}}}"),
+            "streamUrl": "$.url",
+            "headers": r#"{"X-Rule-Only":"1"}"#
+        }
+    }))
+    .await;
+
+    for bad_id in ["js", "data", "file", "vb"] {
+        let (st_info, _, b_info) = send_json(
+            &h.app,
+            "POST",
+            "/online/track-info",
+            &h.member_token,
+            Some(serde_json::json!({
+                "source_id": sid_rule_hdr_only,
+                "track_id": bad_id,
+                "title": "Bad",
+                "artist": "Attacker"
+            })),
+        )
+        .await;
+        assert_eq!(st_info, StatusCode::OK);
+        let info_v: serde_json::Value = serde_json::from_slice(&b_info).unwrap();
+        assert!(
+            info_v["stream_url"].is_null(),
+            "track-info must drop non-HTTP(S) stream_url for {bad_id}, got: {}",
+            info_v["stream_url"]
+        );
+        assert!(
+            info_v["proxy_stream_url"].is_null(),
+            "track-info must drop proxy_stream_url for {bad_id}, got: {}",
+            info_v["proxy_stream_url"]
+        );
+
+        let (st_stream, _, _) = send_json(
+            &h.app,
+            "POST",
+            "/online/stream",
+            &h.member_token,
+            Some(serde_json::json!({
+                "source_id": sid_rule_hdr_only,
+                "track_id": bad_id
+            })),
+        )
+        .await;
+        assert_eq!(st_stream, StatusCode::BAD_REQUEST);
+    }
+
+    let (st_ok, _, b_ok) = send_json(
+        &h.app,
+        "POST",
+        "/online/stream",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": sid_rule_hdr_only,
+            "track_id": "ok"
+        })),
+    )
+    .await;
+    assert_eq!(st_ok, StatusCode::OK);
+    let ok_v: serde_json::Value = serde_json::from_slice(&b_ok).unwrap();
+    assert_eq!(ok_v["headers_applied"], false);
+
+    let (st_dbg, _, b_dbg) = send_json(
+        &h.app,
+        "POST",
+        &format!("/sources/{sid_rule_hdr_only}/test"),
+        &h.admin_token,
+        Some(serde_json::json!({ "mode": "stream", "track_id": "ok" })),
+    )
+    .await;
+    assert_eq!(st_dbg, StatusCode::OK);
+    let dbg_v: serde_json::Value = serde_json::from_slice(&b_dbg).unwrap();
+    assert_eq!(dbg_v["stream_probe"]["headers_applied"], false);
+
+    // 3b. Source with empty/null header entries -> headers_applied: false
+    let sid_empty_hdr = import_src(serde_json::json!({
+        "sourceName": "EmptyHeaderMusic",
+        "sourceUrl": base,
+        "header": serde_json::json!({ "": "blank", "X-Null": null }).to_string(),
+        "ruleStream": {
+            "requestUrl": format!("{base}/stream/ok"),
+            "streamUrl": "$.url"
+        }
+    }))
+    .await;
+    let (st_emp, _, b_emp) = send_json(
+        &h.app,
+        "POST",
+        "/online/stream",
+        &h.member_token,
+        Some(serde_json::json!({ "source_id": sid_empty_hdr, "track_id": "ok" })),
+    )
+    .await;
+    assert_eq!(st_emp, StatusCode::OK);
+    let emp_v: serde_json::Value = serde_json::from_slice(&b_emp).unwrap();
+    assert_eq!(emp_v["headers_applied"], false);
+
+    // 3c. Source with forbidden/range-only header entries -> headers_applied: false
+    let sid_forbid_hdr = import_src(serde_json::json!({
+        "sourceName": "ForbiddenOnlyHeaderMusic",
+        "sourceUrl": base,
+        "header": serde_json::json!({ "Host": "spoof.test", "Range": "bytes=0-1" }).to_string(),
+        "ruleStream": {
+            "requestUrl": format!("{base}/stream/ok"),
+            "streamUrl": "$.url"
+        }
+    }))
+    .await;
+    let (st_forbid, _, b_forbid) = send_json(
+        &h.app,
+        "POST",
+        "/online/stream",
+        &h.member_token,
+        Some(serde_json::json!({ "source_id": sid_forbid_hdr, "track_id": "ok" })),
+    )
+    .await;
+    assert_eq!(st_forbid, StatusCode::OK);
+    let forbid_v: serde_json::Value = serde_json::from_slice(&b_forbid).unwrap();
+    assert_eq!(forbid_v["headers_applied"], false);
+
+    // 3d. Source with valid proxy-forwarded mediaHeader -> headers_applied: true
+    let sid_real_hdr = import_src(serde_json::json!({
+        "sourceName": "RealMediaHeaderMusic",
+        "sourceUrl": base,
+        "mediaHeader": serde_json::json!({ "Referer": "https://music.example.test/" }).to_string(),
+        "ruleStream": {
+            "requestUrl": format!("{base}/stream/ok"),
+            "streamUrl": "$.url"
+        }
+    }))
+    .await;
+    let (st_real, _, b_real) = send_json(
+        &h.app,
+        "POST",
+        "/online/stream",
+        &h.member_token,
+        Some(serde_json::json!({ "source_id": sid_real_hdr, "track_id": "ok" })),
+    )
+    .await;
+    assert_eq!(st_real, StatusCode::OK);
+    let real_v: serde_json::Value = serde_json::from_slice(&b_real).unwrap();
+    assert_eq!(real_v["headers_applied"], true);
+
+    srv.abort();
+}

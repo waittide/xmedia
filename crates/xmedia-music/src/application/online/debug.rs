@@ -12,6 +12,7 @@ use xmedia_source::crud::{
 };
 
 use crate::domain::catalog::StructuredLyrics;
+use crate::source::engine::is_http_url;
 use crate::source::model::{
     ExecutionDiagnostics, MusicSourceSpec, MusicSourceTestMode, MusicTrackContext,
     OnlineMusicTrackItem,
@@ -56,6 +57,7 @@ impl MusicOnlineService {
         let effective_keyword = raw_input.clone().unwrap_or_else(|| default_kw.clone());
         let mode = input.mode;
         let engine = self.engine.clone();
+        let headers_applied = Self::has_effective_proxy_headers(&parsed);
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let kw_clone = effective_keyword.clone();
@@ -345,8 +347,7 @@ impl MusicOnlineService {
                             let elapsed_ms = t0.elapsed().as_millis() as u64;
                             state = out.state;
                             merge_diagnostics(&mut all_diag, &out.diagnostics);
-                            let valid_url = out.data.stream_url.starts_with("http://")
-                                || out.data.stream_url.starts_with("https://");
+                            let valid_url = is_http_url(&out.data.stream_url);
                             let summary = if valid_url {
                                 format!(
                                     "流解析成功 ({}{})",
@@ -370,7 +371,7 @@ impl MusicOnlineService {
                                     format: Some(out.data.format),
                                     bitrate: out.data.bitrate,
                                     expires_in_secs: out.data.expires_in_secs,
-                                    headers_applied: !out.data.headers.is_empty(),
+                                    headers_applied,
                                 });
                             }
                             steps.push(SourceDebugStepDto {
@@ -417,9 +418,7 @@ impl MusicOnlineService {
                             state = out.state;
                             merge_diagnostics(&mut all_diag, &out.diagnostics);
                             cover_resolved = out.data.clone();
-                            let ok = cover_resolved.as_deref().is_some_and(|u| {
-                                u.starts_with("http://") || u.starts_with("https://")
-                            });
+                            let ok = cover_resolved.as_deref().is_some_and(is_http_url);
                             let summary = if ok {
                                 "封面 URL 解析成功".into()
                             } else {

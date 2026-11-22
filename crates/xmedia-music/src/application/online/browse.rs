@@ -9,7 +9,7 @@ use xmedia_core::domain::user::User;
 use xmedia_source::rate_limit::get_or_insert_rate_limiter;
 
 use crate::domain::catalog::StructuredLyrics;
-use crate::source::engine::url_encode_component;
+use crate::source::engine::{is_http_url, url_encode_component};
 use crate::source::model::{
     ExecutionDiagnostics, MusicSourceSpec, MusicTrackContext, OnlineMusicTrackItem,
 };
@@ -23,7 +23,7 @@ use super::{CancelOnDrop, CancelTasksOnDrop, MusicOnlineService, SEARCH_MAX_CONC
 
 pub(super) fn build_proxy_cover_url(source_id: Uuid, cover_url: &str) -> Option<String> {
     let trimmed = cover_url.trim();
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+    if is_http_url(trimmed) {
         Some(format!(
             "/api/v1/music/online/cover-proxy?url={}&source_id={source_id}",
             url_encode_component(trimmed)
@@ -582,7 +582,7 @@ impl MusicOnlineService {
         }
 
         let (stream_url, proxy_stream_url, format, bitrate, expires_in_secs) =
-            if let Some(s) = resolved_stream {
+            if let Some(s) = resolved_stream.filter(|s| is_http_url(&s.stream_url)) {
                 let proxy = build_proxy_stream_url(source_id, &s.stream_url);
                 (
                     Some(s.stream_url),
@@ -633,6 +633,7 @@ impl MusicOnlineService {
             .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
+        let headers_applied = Self::has_effective_proxy_headers(&parsed);
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
@@ -686,14 +687,13 @@ impl MusicOnlineService {
         }
 
         let stream_url = out.data.stream_url.trim().to_string();
-        if !stream_url.starts_with("http://") && !stream_url.starts_with("https://") {
+        if !is_http_url(&stream_url) {
             return Err(DomainError::Validation(format!(
                 "解析到的音频流地址不是有效的 HTTP(S) URL: {stream_url}"
             )));
         }
 
         let proxy_stream_url = build_proxy_stream_url(source_id, &stream_url);
-        let headers_applied = !out.data.headers.is_empty();
 
         Ok(OnlineMusicStreamResponseDto {
             source_id,

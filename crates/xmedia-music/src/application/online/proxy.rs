@@ -164,6 +164,12 @@ fn parse_total_size_from_content_range(header: Option<&HeaderValue>) -> u64 {
 }
 
 impl MusicOnlineService {
+    pub(super) fn has_effective_proxy_headers(spec: &MusicSourceSpec) -> bool {
+        let mut merged = spec.parse_media_headers();
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        !build_sanitized_headers(&merged).is_empty()
+    }
+
     async fn build_source_media_headers(
         &self,
         actor: &User,

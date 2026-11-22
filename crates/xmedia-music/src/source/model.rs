@@ -287,12 +287,17 @@ impl MusicSourceSpec {
         };
         if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(s) {
             for (k, v) in map {
+                let key_trimmed = k.trim();
+                if key_trimmed.is_empty() {
+                    continue;
+                }
                 let val_str = match v {
                     serde_json::Value::String(s) => s,
                     serde_json::Value::Null => continue,
                     other => other.to_string(),
                 };
-                out.insert(k, val_str);
+                out.retain(|existing_k: &String, _| !existing_k.eq_ignore_ascii_case(key_trimmed));
+                out.insert(key_trimmed.to_string(), val_str);
             }
         }
         out
