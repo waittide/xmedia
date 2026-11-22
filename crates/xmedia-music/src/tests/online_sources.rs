@@ -3215,6 +3215,33 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
                     vec![(chunk1, 0), (chunk2, 5)],
                 )
             }),
+        )
+        .route(
+            "/audio/disguised-large-ws-svg.bin",
+            get(|| async {
+                let chunk1 = vec![b' '; 4600];
+                let chunk2 = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_vec();
+                music_delayed_chunked_response(
+                    Some("application/octet-stream"),
+                    vec![(chunk1, 0), (chunk2, 5)],
+                )
+            }),
+        )
+        .route(
+            "/audio/disguised-utf16le-ws-svg.bin",
+            get(|| async {
+                let mut payload = vec![0xFFu8, 0xFE];
+                for _ in 0..2400 {
+                    payload.extend_from_slice(&u16::from(b' ').to_le_bytes());
+                }
+                for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".encode_utf16() {
+                    payload.extend_from_slice(&u.to_le_bytes());
+                }
+                music_delayed_chunked_response(
+                    Some("application/octet-stream"),
+                    vec![(payload[..4200].to_vec(), 0), (payload[4200..].to_vec(), 5)],
+                )
+            }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3375,6 +3402,8 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
         "/audio/disguised-utf16le-svg.bin",
         "/audio/disguised-utf16be-svg.bin",
         "/audio/disguised-large-comment-svg.bin",
+        "/audio/disguised-large-ws-svg.bin",
+        "/audio/disguised-utf16le-ws-svg.bin",
     ] {
         let (st_px, _, _) = send_json(
             &h.app,

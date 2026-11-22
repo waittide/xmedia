@@ -14,7 +14,8 @@ use xmedia_source::http::{
 };
 use xmedia_source::proxy::{
     MEDIA_PROLOG_SNIFF_MAX_BYTES, has_enough_media_sniff_bytes,
-    has_unclosed_leading_xml_or_comment, looks_like_html_or_svg_bytes, strip_bom_and_ascii_ws,
+    has_unclosed_leading_xml_or_comment, is_only_bom_or_whitespace, looks_like_html_or_svg_bytes,
+    strip_bom_and_ascii_ws,
 };
 
 pub const MAX_M3U8_BYTES: usize = 8 * 1024 * 1024;
@@ -162,7 +163,7 @@ pub async fn read_sniff_prefix_with_context(
             continue;
         }
         buf.extend_from_slice(&chunk);
-        if has_unclosed_leading_xml_or_comment(&buf) {
+        if has_unclosed_leading_xml_or_comment(&buf) || is_only_bom_or_whitespace(&buf) {
             if buf.len() >= max_sniff_bytes.max(MEDIA_PROLOG_SNIFF_MAX_BYTES) {
                 break;
             }
@@ -172,9 +173,23 @@ pub async fn read_sniff_prefix_with_context(
             break;
         }
         if might_be_text_or_partial_hls {
+            let hls_ready = if is_partial {
+                is_partial_hls_playlist_range_candidate(ct_lower, final_url, &buf)
+            } else {
+                let stripped = strip_bom_and_ascii_ws(&buf);
+                let has_full_tag = stripped.starts_with(b"#EXTM3U")
+                    || stripped.starts_with(b"#EXT-X-")
+                    || stripped.starts_with(b"#EXTINF:");
+                let ct_or_path_hls = ct_lower.contains("mpegurl")
+                    || final_url.path().to_ascii_lowercase().ends_with(".m3u8")
+                    || final_url.path().to_ascii_lowercase().ends_with(".m3u");
+                has_full_tag
+                    || (ct_or_path_hls
+                        && has_enough_media_sniff_bytes(&buf, SNIFF_MIN_NON_WS_BYTES))
+            };
             if has_binary_media_magic_or_null(&buf)
                 || looks_like_html_bytes(&buf)
-                || is_partial_hls_playlist_range_candidate(ct_lower, final_url, &buf)
+                || hls_ready
                 || (is_utf16_bom_prefix(&buf)
                     && has_enough_media_sniff_bytes(&buf, SNIFF_MIN_NON_WS_BYTES))
             {

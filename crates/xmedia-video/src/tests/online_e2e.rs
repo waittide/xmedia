@@ -2917,6 +2917,44 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
                         .to_vec();
                 delayed_chunked_response("application/octet-stream", vec![(chunk1, 0), (chunk2, 5)])
             }),
+        )
+        .route(
+            "/large-ws-svg.bin",
+            get(|| async {
+                let chunk1 = vec![b' '; 4600];
+                let chunk2 =
+                    b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+                        .to_vec();
+                delayed_chunked_response("application/octet-stream", vec![(chunk1, 0), (chunk2, 5)])
+            }),
+        )
+        .route(
+            "/utf16le-ws-svg.bin",
+            get(|| async {
+                let mut payload = vec![0xFFu8, 0xFE];
+                for _ in 0..2400 {
+                    payload.extend_from_slice(&u16::from(b' ').to_le_bytes());
+                }
+                for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".encode_utf16() {
+                    payload.extend_from_slice(&u.to_le_bytes());
+                }
+                delayed_chunked_response(
+                    "application/octet-stream",
+                    vec![(payload[..4200].to_vec(), 0), (payload[4200..].to_vec(), 5)],
+                )
+            }),
+        )
+        .route(
+            "/live",
+            get(|| async {
+                delayed_chunked_response(
+                    "text/plain",
+                    vec![
+                        (b"#EXT".to_vec(), 0),
+                        (b"M3U\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n".to_vec(), 5),
+                    ],
+                )
+            }),
         );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2957,13 +2995,15 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
     .await;
     assert_eq!(st_stream_hls, StatusCode::BAD_REQUEST);
 
-    // I2-GAP-05: UTF-16LE/BE SVG and >4KB HTML comment + SVG rejected on stream-proxy & hls-proxy
+    // I2-GAP-05 + GAP-05: UTF-16LE/BE SVG, >4KB HTML comment + SVG, and >4KB pure whitespace + SVG rejected on stream-proxy & hls-proxy
     for endpoint in ["stream-proxy", "hls-proxy"] {
         for path in [
             "/utf16le-svg.bin",
             "/utf16le-1byte-svg.bin",
             "/utf16be-svg.bin",
             "/large-comment-svg.bin",
+            "/large-ws-svg.bin",
+            "/utf16le-ws-svg.bin",
         ] {
             let encoded = urlencoding_param(&format!("{origin}{path}"));
             let (st, _, _) = get_bytes_with_auth(
@@ -2980,6 +3020,36 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
             );
         }
     }
+
+    // GAP-02: chunked b"#EXT" + b"M3U\n..." (200 OK, text/plain) must rewrite in hls-proxy and reject in stream-proxy
+    let encoded_live = urlencoding_param(&format!("{origin}/live"));
+    let (st_live_hls, hdrs_live_hls, body_live_hls) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_live}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_live_hls, StatusCode::OK);
+    assert!(
+        hdrs_live_hls
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .contains("mpegurl")
+    );
+    let rewritten_live = String::from_utf8(body_live_hls).unwrap();
+    assert!(rewritten_live.starts_with("#EXTM3U\n"));
+    assert!(rewritten_live.contains("/api/v1/video/online/hls-proxy?url="));
+
+    let (st_live_stream, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/stream-proxy?url={encoded_live}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_live_stream, StatusCode::BAD_REQUEST);
 
     srv.abort();
 }

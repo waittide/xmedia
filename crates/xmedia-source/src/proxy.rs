@@ -206,6 +206,15 @@ fn strip_leading_xml_prolog_and_comments(mut cur: &[u8]) -> (&[u8], bool) {
     }
 }
 
+pub fn is_only_bom_or_whitespace(buf: &[u8]) -> bool {
+    if matches!(buf, [0xEF] | [0xEF, 0xBB] | [0xFF] | [0xFE]) {
+        return true;
+    }
+    let decoded = decode_utf16_bom_prefix(buf);
+    let view = decoded.as_deref().unwrap_or(buf);
+    strip_bom_and_ascii_ws(view).is_empty()
+}
+
 /// Returns `true` when `buf` begins with an unclosed XML processing instruction or HTML comment
 /// (including after UTF-8/UTF-16 BOM and leading ASCII whitespace).
 pub fn has_unclosed_leading_xml_or_comment(buf: &[u8]) -> bool {

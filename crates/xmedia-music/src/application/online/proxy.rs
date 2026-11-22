@@ -19,7 +19,7 @@ use xmedia_source::http::{
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, DEFAULT_IMAGE_PROXY_TIMEOUT_SECS, MEDIA_PROLOG_SNIFF_MAX_BYTES,
     fetch_validated_image_bytes_with_config, has_enough_media_sniff_bytes,
-    has_unclosed_leading_xml_or_comment, looks_like_html_or_svg_bytes,
+    has_unclosed_leading_xml_or_comment, is_only_bom_or_whitespace, looks_like_html_or_svg_bytes,
 };
 
 use super::MusicOnlineService;
@@ -138,11 +138,12 @@ async fn read_audio_sniff_prefix(
             continue;
         }
         buf.extend_from_slice(&chunk);
-        let sniff_limit = if has_unclosed_leading_xml_or_comment(&buf) {
-            max_sniff_bytes.max(MEDIA_PROLOG_SNIFF_MAX_BYTES)
-        } else {
-            max_sniff_bytes
-        };
+        let sniff_limit =
+            if has_unclosed_leading_xml_or_comment(&buf) || is_only_bom_or_whitespace(&buf) {
+                max_sniff_bytes.max(MEDIA_PROLOG_SNIFF_MAX_BYTES)
+            } else {
+                max_sniff_bytes
+            };
         if buf.len() >= sniff_limit
             || has_enough_media_sniff_bytes(&buf, AUDIO_SNIFF_MIN_NON_WS_BYTES)
         {
