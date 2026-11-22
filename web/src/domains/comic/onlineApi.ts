@@ -252,6 +252,7 @@ export const onlineComicApi = {
     keyword: string,
     sourceIds?: string[],
     page = 1,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineComicSearchResponseDto> =>
     requestJson('/comic/online/search', {
       method: 'POST',
@@ -260,12 +261,14 @@ export const onlineComicApi = {
         source_ids: sourceIds && sourceIds.length > 0 ? sourceIds : null,
         page,
       }),
+      signal: options?.signal,
     }),
 
   explore: (
     sourceId: string,
     exploreUrl?: string | null,
     page = 1,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineComicExploreResponseDto> =>
     requestJson('/comic/online/explore', {
       method: 'POST',
@@ -274,12 +277,14 @@ export const onlineComicApi = {
         explore_url: exploreUrl ?? null,
         page,
       }),
+      signal: options?.signal,
     }),
 
   fetchDetail: (
     sourceId: string,
     comicUrl: string,
     fallbackHint?: Partial<ComicSearchResult> | null,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineComicDetailResponseDto> =>
     requestJson('/comic/online/detail', {
       method: 'POST',
@@ -288,12 +293,14 @@ export const onlineComicApi = {
         comic_url: comicUrl,
         fallback_hint: fallbackHint ?? null,
       }),
+      signal: options?.signal,
     }),
 
   fetchChapters: (
     sourceId: string,
     tocUrl: string,
     comic?: Partial<OnlineComicDetail> | null,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineComicChaptersResponseDto> =>
     requestJson('/comic/online/chapters', {
       method: 'POST',
@@ -302,6 +309,7 @@ export const onlineComicApi = {
         toc_url: tocUrl,
         comic: comic ?? undefined,
       }),
+      signal: options?.signal,
     }),
 
   fetchPages: (
@@ -311,6 +319,7 @@ export const onlineComicApi = {
     options?: {
       comic?: Partial<OnlineComicDetail> | null
       chapter?: Partial<OnlineComicChapter> | null
+      signal?: AbortSignal
     },
   ): Promise<OnlineComicPagesResponseDto> =>
     requestJson('/comic/online/pages', {
@@ -322,6 +331,7 @@ export const onlineComicApi = {
         comic: options?.comic ?? undefined,
         chapter: options?.chapter ?? undefined,
       }),
+      signal: options?.signal,
     }),
 }
 

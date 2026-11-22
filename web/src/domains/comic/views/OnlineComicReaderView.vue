@@ -44,10 +44,18 @@ const webtoonWidth = ref<number>(theme.comic.webtoon_width)
 
 let loadSeq = 0
 let detailSeq = 0
+let pageAbortController: AbortController | null = null
+let detailAbortController: AbortController | null = null
 let unmounted = false
 let userOverrodeMode = false
 let syncingUrl = false
 let syncUrlSeq = 0
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException
+    ? err.name === 'AbortError'
+    : err instanceof Error && err.name === 'AbortError'
+}
 
 function readQueryParam(keys: string[]): string {
   for (const k of keys) {
@@ -234,21 +242,29 @@ async function hydrateChaptersInBackground(
   comicUrl: string,
   tocUrlHint?: string,
 ): Promise<void> {
+  detailAbortController?.abort()
+  const controller = new AbortController()
+  detailAbortController = controller
   const seq = ++detailSeq
   try {
-    const detailRes = await onlineComicApi.fetchDetail(sourceId, comicUrl, {
-      title: ctx.value?.title,
-      author: ctx.value?.author,
-      comic_url: comicUrl,
-      cover_url: ctx.value?.coverUrl ?? null,
-    })
+    const detailRes = await onlineComicApi.fetchDetail(
+      sourceId,
+      comicUrl,
+      {
+        title: ctx.value?.title,
+        author: ctx.value?.author,
+        comic_url: comicUrl,
+        cover_url: ctx.value?.coverUrl ?? null,
+      },
+      { signal: controller.signal },
+    )
     if (unmounted || seq !== detailSeq) return
 
     let loadedChapters = detailRes.chapters ?? []
     const effectiveTocUrl = detailRes.detail.toc_url?.trim() || tocUrlHint?.trim() || ''
     if (loadedChapters.length === 0 && effectiveTocUrl) {
       const tocRes = await onlineComicApi
-        .fetchChapters(sourceId, effectiveTocUrl, detailRes.detail)
+        .fetchChapters(sourceId, effectiveTocUrl, detailRes.detail, { signal: controller.signal })
         .catch(() => null)
       if (unmounted || seq !== detailSeq) return
       if (tocRes) loadedChapters = tocRes.chapters ?? []
@@ -287,6 +303,10 @@ async function hydrateChaptersInBackground(
     }
   } catch {
     // Background metadata enrichment must never disrupt direct chapter reading
+  } finally {
+    if (detailAbortController === controller) {
+      detailAbortController = null
+    }
   }
 }
 
@@ -296,6 +316,9 @@ async function openChapter(
   seamlessToast = false,
 ): Promise<void> {
   if (!ctx.value) return
+  pageAbortController?.abort()
+  const controller = new AbortController()
+  pageAbortController = controller
   const seq = ++loadSeq
   loading.value = true
   loadError.value = null
@@ -331,6 +354,7 @@ async function openChapter(
             }
           : undefined,
         chapter: chapterObj ?? undefined,
+        signal: controller.signal,
       },
     )
     if (unmounted || seq !== loadSeq) return
@@ -361,15 +385,24 @@ async function openChapter(
       snackbar.show(t('reader.switchedToChapter', { title: label }))
     }
   } catch (err) {
-    if (unmounted || seq !== loadSeq) return
+    if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== loadSeq) return
     pages.value = []
     hasContent.value = false
     loadError.value = err instanceof Error ? err.message : String(err)
     loading.value = false
+  } finally {
+    if (pageAbortController === controller) {
+      pageAbortController = null
+    }
   }
 }
 
 async function initReader(): Promise<void> {
+  pageAbortController?.abort()
+  pageAbortController = null
+  detailAbortController?.abort()
+  detailAbortController = null
+
   const hydrated = hydrateContextFromRoute()
   const seq = ++loadSeq
   loadError.value = null
@@ -393,9 +426,16 @@ async function initReader(): Promise<void> {
   hydratePreferencesFromTheme(activeDirection.value)
 
   if (!hydrated.chapterUrl && hydrated.comicUrl) {
+    const controller = new AbortController()
+    detailAbortController = controller
     loading.value = true
     try {
-      const detailRes = await onlineComicApi.fetchDetail(hydrated.sourceId, hydrated.comicUrl)
+      const detailRes = await onlineComicApi.fetchDetail(
+        hydrated.sourceId,
+        hydrated.comicUrl,
+        undefined,
+        { signal: controller.signal },
+      )
       if (unmounted || seq !== loadSeq) return
 
       let loadedChapters = detailRes.chapters ?? []
@@ -405,6 +445,7 @@ async function initReader(): Promise<void> {
           hydrated.sourceId,
           effectiveTocUrl,
           detailRes.detail,
+          { signal: controller.signal },
         )
         if (unmounted || seq !== loadSeq) return
         loadedChapters = tocRes.chapters ?? []
@@ -443,9 +484,13 @@ async function initReader(): Promise<void> {
       }
       await openChapter(targetChapter.url, resolvedIdx >= 0 ? resolvedIdx : 0, false)
     } catch (err) {
-      if (unmounted || seq !== loadSeq) return
+      if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== loadSeq) return
       loading.value = false
       loadError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      if (detailAbortController === controller) {
+        detailAbortController = null
+      }
     }
     return
   }
@@ -544,6 +589,10 @@ onBeforeUnmount(() => {
   unmounted = true
   loadSeq += 1
   detailSeq += 1
+  pageAbortController?.abort()
+  pageAbortController = null
+  detailAbortController?.abort()
+  detailAbortController = null
 })
 
 watch(

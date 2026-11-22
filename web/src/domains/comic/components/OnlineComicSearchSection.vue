@@ -70,8 +70,16 @@ const exploreError = ref<string | null>(null)
 let initSeq = 0
 let searchSeq = 0
 let exploreSeq = 0
+let searchAbortController: AbortController | null = null
+let exploreAbortController: AbortController | null = null
 let unmounted = false
 let pendingEmittedSourceId: string | null | undefined = undefined
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException
+    ? err.name === 'AbortError'
+    : err instanceof Error && err.name === 'AbortError'
+}
 
 const enabledSources = computed(() => sources.value.filter((s) => s.enabled))
 
@@ -165,6 +173,8 @@ watch(
     }
 
     if (hasSearched.value || lastSearchKeyword.value) {
+      searchAbortController?.abort()
+      searchAbortController = null
       hasSearched.value = false
       lastSearchKeyword.value = ''
       searchResults.value = []
@@ -221,6 +231,10 @@ onBeforeUnmount(() => {
   initSeq += 1
   searchSeq += 1
   exploreSeq += 1
+  searchAbortController?.abort()
+  searchAbortController = null
+  exploreAbortController?.abort()
+  exploreAbortController = null
 })
 
 function toggleSourceFilter(id: string): void {
@@ -243,6 +257,8 @@ function toggleSourceFilter(id: string): void {
   if (activeExploreSourceId.value) {
     void runExplore(activeExploreSourceId.value, null, 1, 'replace')
   } else {
+    exploreAbortController?.abort()
+    exploreAbortController = null
     exploreSeq += 1
     exploreCategories.value = []
     exploreItems.value = []
@@ -268,6 +284,8 @@ function clearSourceFilter(): void {
   if (activeExploreSourceId.value) {
     void runExplore(activeExploreSourceId.value, null, 1, 'replace')
   } else {
+    exploreAbortController?.abort()
+    exploreAbortController = null
     exploreSeq += 1
     exploreCategories.value = []
     exploreItems.value = []
@@ -283,6 +301,9 @@ async function runExplore(
   mode: 'replace' | 'append',
 ): Promise<void> {
   if (mode === 'append' && (exploring.value || loadingMoreExplore.value)) return
+  exploreAbortController?.abort()
+  const controller = new AbortController()
+  exploreAbortController = controller
   const seq = ++exploreSeq
   if (mode === 'append') {
     loadingMoreExplore.value = true
@@ -294,7 +315,9 @@ async function runExplore(
   }
 
   try {
-    const res = await onlineComicApi.explore(sourceId, exploreUrl, page)
+    const res = await onlineComicApi.explore(sourceId, exploreUrl, page, {
+      signal: controller.signal,
+    })
     if (unmounted || seq !== exploreSeq) return
     explorePage.value = res.page || page
     if (res.categories.length > 0 || !exploreUrl) {
@@ -313,13 +336,16 @@ async function runExplore(
       hasMoreExplore.value = res.items.length > 0
     }
   } catch (err) {
-    if (unmounted || seq !== exploreSeq) return
+    if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== exploreSeq) return
     exploreError.value = err instanceof Error ? err.message : String(err)
     if (mode === 'replace') {
       exploreItems.value = []
       hasMoreExplore.value = false
     }
   } finally {
+    if (exploreAbortController === controller) {
+      exploreAbortController = null
+    }
     if (!unmounted && seq === exploreSeq) {
       exploring.value = false
       loadingMoreExplore.value = false
@@ -336,6 +362,8 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
 
   if (!kw || enabledSources.value.length === 0) {
     if (!kw) {
+      searchAbortController?.abort()
+      searchAbortController = null
       hasSearched.value = false
       lastSearchKeyword.value = ''
       searchResults.value = []
@@ -353,6 +381,9 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
   const srcIds =
     mode === 'replace' && page === 1 ? [...selectedSourceIds.value] : [...lastSearchSourceIds.value]
 
+  searchAbortController?.abort()
+  const controller = new AbortController()
+  searchAbortController = controller
   const seq = ++searchSeq
   lastSearchKeyword.value = kw
   lastSearchSourceIds.value = srcIds
@@ -369,7 +400,7 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
   }
 
   try {
-    const res = await onlineComicApi.search(kw, srcIds, page)
+    const res = await onlineComicApi.search(kw, srcIds, page, { signal: controller.signal })
     if (unmounted || seq !== searchSeq) return
     searchPage.value = res.page || page
 
@@ -388,7 +419,7 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
     searchErrors.value = res.errors ?? []
     searchToasts.value = res.toasts ?? []
   } catch (err) {
-    if (unmounted || seq !== searchSeq) return
+    if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== searchSeq) return
     const msg = err instanceof Error ? err.message : String(err)
     if (mode === 'replace') {
       searchResults.value = []
@@ -406,6 +437,9 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
       tone: 'error',
     })
   } finally {
+    if (searchAbortController === controller) {
+      searchAbortController = null
+    }
     if (!unmounted && seq === searchSeq) {
       searching.value = false
       loadingMore.value = false

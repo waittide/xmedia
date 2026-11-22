@@ -40,7 +40,14 @@ const orderAsc = ref(true)
 const chapterQuery = ref('')
 
 let loadSeq = 0
+let detailAbortController: AbortController | null = null
 let unmounted = false
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException
+    ? err.name === 'AbortError'
+    : err instanceof Error && err.name === 'AbortError'
+}
 
 function readQueryParam(keys: string[]): string {
   for (const k of keys) {
@@ -103,6 +110,9 @@ function hydrateParams(): { sourceId: string; comicUrl: string } {
 
 async function loadDetail(): Promise<void> {
   const { sourceId, comicUrl } = hydrateParams()
+  detailAbortController?.abort()
+  const controller = new AbortController()
+  detailAbortController = controller
   const seq = ++loadSeq
   errorMessage.value = null
 
@@ -116,18 +126,25 @@ async function loadDetail(): Promise<void> {
 
   loading.value = true
   try {
-    const res = await onlineComicApi.fetchDetail(sourceId, comicUrl, {
-      title: fallbackCtx.value?.title,
-      author: fallbackCtx.value?.author,
-      comic_url: comicUrl,
-      cover_url: fallbackCtx.value?.coverUrl ?? null,
-      intro: fallbackCtx.value?.intro ?? null,
-    })
+    const res = await onlineComicApi.fetchDetail(
+      sourceId,
+      comicUrl,
+      {
+        title: fallbackCtx.value?.title,
+        author: fallbackCtx.value?.author,
+        comic_url: comicUrl,
+        cover_url: fallbackCtx.value?.coverUrl ?? null,
+        intro: fallbackCtx.value?.intro ?? null,
+      },
+      { signal: controller.signal },
+    )
     if (unmounted || seq !== loadSeq) return
 
     let loadedChapters = res.chapters ?? []
     if (loadedChapters.length === 0 && res.detail.toc_url?.trim()) {
-      const tocRes = await onlineComicApi.fetchChapters(sourceId, res.detail.toc_url, res.detail)
+      const tocRes = await onlineComicApi.fetchChapters(sourceId, res.detail.toc_url, res.detail, {
+        signal: controller.signal,
+      })
       if (unmounted || seq !== loadSeq) return
       loadedChapters = tocRes.chapters ?? []
     }
@@ -153,9 +170,12 @@ async function loadDetail(): Promise<void> {
       // ignore storage errors
     }
   } catch (err) {
-    if (unmounted || seq !== loadSeq) return
+    if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== loadSeq) return
     errorMessage.value = err instanceof Error ? err.message : String(err)
   } finally {
+    if (detailAbortController === controller) {
+      detailAbortController = null
+    }
     if (!unmounted && seq === loadSeq) {
       loading.value = false
     }
@@ -170,6 +190,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   unmounted = true
   loadSeq += 1
+  detailAbortController?.abort()
+  detailAbortController = null
 })
 
 watch(
