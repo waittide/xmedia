@@ -340,7 +340,7 @@ export const onlineComicApi = {
 export const comicSourceAdapter: OnlineSourceManagerAdapter<ComicSourceSummaryDto> = {
   domain: 'comic',
   exportFilePrefix: 'xmedia-comic-sources',
-  searchRoutePath: '/comic/series',
+  searchRoutePath: '/comic/library',
   listSources: onlineComicApi.listSources,
   importSources: onlineComicApi.importSources,
   importSeeds: onlineComicApi.importSeeds,

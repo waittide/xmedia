@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { useComicI18n as useI18n } from '@/domains/comic/i18n'
-import MdDialog from '@/components/ui/MdDialog.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
+import { MdButton, MdDialog, MdSelect, MdTextField } from '@/components/ui'
 import { api } from '@/domains/comic/api'
+import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import type { ChapterItemDto, ChapterKind } from '@/domains/comic/types'
+import { useSnackbarStore } from '@/stores/snackbar'
 
 const props = defineProps<{
   open: boolean
@@ -17,6 +17,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const snackbar = useSnackbarStore()
+
 const kind = ref<ChapterKind>('chapter')
 const number = ref('1')
 const volumeNumber = ref('')
@@ -35,7 +37,7 @@ watch(
       summary.value = ch.summary
     }
   },
-  { immediate: true }
+  { immediate: true },
 )
 
 const kindOptions = computed(() => [
@@ -44,23 +46,39 @@ const kindOptions = computed(() => [
   { value: 'special', label: t('metadata.chapterKindSpecial') },
 ])
 
+const parsedNumber = computed(() => {
+  const raw = number.value.trim()
+  if (!raw) return Number.NaN
+  return Number.parseFloat(raw)
+})
+
+const numberError = computed(() =>
+  !Number.isFinite(parsedNumber.value) ? t('metadata.invalidChapterNumber') : false,
+)
+
+const canSave = computed(() => Boolean(props.chapter && Number.isFinite(parsedNumber.value) && !saving.value))
+
 async function onSave(): Promise<void> {
-  if (!props.chapter) return
+  if (!props.chapter || !Number.isFinite(parsedNumber.value) || saving.value) return
   saving.value = true
   try {
-    const numVal = Number.parseFloat(number.value)
     const volVal = volumeNumber.value.trim()
       ? Number.parseFloat(volumeNumber.value.trim())
       : null
     await api.updateChapterMetadata(props.chapter.id, {
       kind: kind.value,
-      number: Number.isFinite(numVal) ? numVal : props.chapter.number,
+      number: parsedNumber.value,
       volume_number: volVal !== null && Number.isFinite(volVal) ? volVal : null,
       title: title.value.trim(),
       summary: summary.value,
     })
     emit('saved')
     emit('close')
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
     saving.value = false
   }
@@ -71,15 +89,15 @@ async function onSave(): Promise<void> {
   <MdDialog
     :open="open"
     :title="t('metadata.editChapterTitle')"
-    max-width="max-w-lg"
+    size="md"
     @close="emit('close')"
   >
-    <div class="space-y-4">
-      <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+    <form class="space-y-4" @submit.prevent="onSave">
+      <div class="space-y-1.5">
+        <span class="text-label-medium block text-on-surface-variant">
           {{ t('metadata.chapterKind') }}
-        </label>
-        <AppSelect
+        </span>
+        <MdSelect
           :model-value="kind"
           :options="kindOptions"
           @update:model-value="kind = $event as ChapterKind"
@@ -87,71 +105,45 @@ async function onSave(): Promise<void> {
       </div>
 
       <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            {{ t('metadata.chapterNumber') }}
-          </label>
-          <input
-            v-model="number"
-            type="number"
-            step="0.1"
-            class="md-input h-10 w-full text-sm"
-          />
-        </div>
-        <div>
-          <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            {{ t('metadata.volumeNumber') }}
-          </label>
-          <input
-            v-model="volumeNumber"
-            type="number"
-            step="0.1"
-            class="md-input h-10 w-full text-sm"
-          />
-        </div>
-      </div>
-
-      <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ t('metadata.title') }}
-        </label>
-        <input
-          v-model="title"
-          type="text"
-          class="md-input h-10 w-full text-sm"
+        <MdTextField
+          v-model="number"
+          type="number"
+          :label="t('metadata.chapterNumber')"
+          :error="numberError"
+          required
+        />
+        <MdTextField
+          v-model="volumeNumber"
+          type="number"
+          :label="t('metadata.volumeNumber')"
         />
       </div>
 
-      <div>
-        <label class="mb-1 block text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
+      <MdTextField v-model="title" :label="t('metadata.title')" />
+
+      <div class="space-y-1.5">
+        <label
+          for="comic-chapter-summary"
+          class="text-label-medium block text-on-surface-variant"
+        >
           {{ t('metadata.summary') }}
         </label>
         <textarea
+          id="comic-chapter-summary"
           v-model="summary"
           rows="3"
-          class="md-input w-full py-2.5 text-sm"
+          class="md-input text-body-medium w-full py-2.5"
         />
       </div>
-    </div>
+    </form>
 
     <template #footer>
-      <div class="ml-auto flex items-center gap-2">
-        <button
-          type="button"
-          class="md-btn md-btn-text md-state"
-          @click="emit('close')"
-        >
-          {{ t('metadata.cancel') }}
-        </button>
-        <button
-          type="button"
-          :disabled="saving"
-          class="md-btn md-btn-filled md-state"
-          @click="onSave"
-        >
-          {{ t('metadata.save') }}
-        </button>
-      </div>
+      <MdButton variant="text" :disabled="saving" @click="emit('close')">
+        {{ t('metadata.cancel') }}
+      </MdButton>
+      <MdButton variant="filled" :loading="saving" :disabled="!canSave" @click="onSave">
+        {{ t('metadata.save') }}
+      </MdButton>
     </template>
   </MdDialog>
 </template>

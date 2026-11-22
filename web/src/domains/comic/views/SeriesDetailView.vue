@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
   LuArrowUpDown,
   LuBookOpen,
@@ -10,27 +10,42 @@ import {
   LuCheckCheck,
   LuChevronDown,
   LuChevronRight,
-  LuHeart,
   LuImage,
   LuPencil,
   LuPlay,
+  LuRefreshCw,
   LuTrash2,
   LuUpload,
 } from 'vue-icons-plus/lu'
+import {
+  MediaDetailTemplate,
+  type MediaDetailSpec,
+  type MediaDetailTag,
+} from '@/components/domain'
+import {
+  AppCheckbox,
+  MdButton,
+  MdCard,
+  MdDialog,
+  MdEmptyState,
+  MdMenuItem,
+  MdTextField,
+} from '@/components/ui'
 import { api, withAuthUrl } from '@/domains/comic/api'
+import ChapterMetadataModal from '@/domains/comic/components/ChapterMetadataModal.vue'
+import ComicChapterRow from '@/domains/comic/components/ComicChapterRow.vue'
+import SeriesMetadataModal from '@/domains/comic/components/SeriesMetadataModal.vue'
+import { useComicI18n as useI18n } from '@/domains/comic/i18n'
+import { useSidebarStore } from '@/domains/comic/store'
+import type { ChapterItemDto, SeriesDetailDto, ShelfDetailDto } from '@/domains/comic/types'
+import { libraryRoute, parseItemRef, playRoute } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
-import { useSidebarStore } from '@/domains/comic/store'
-import { useUploadStore } from '@/stores/uploads'
-import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import MdDialog from '@/components/ui/MdDialog.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
-import SeriesMetadataModal from '@/domains/comic/components/SeriesMetadataModal.vue'
-import ChapterMetadataModal from '@/domains/comic/components/ChapterMetadataModal.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
-import type { ChapterItemDto, SeriesDetailDto, ShelfDetailDto } from '@/domains/comic/types'
+import { useUploadStore } from '@/stores/uploads'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
@@ -41,8 +56,10 @@ const upload = useUploadStore()
 
 const detail = ref<SeriesDetailDto | null>(null)
 const loading = ref(true)
+const loadError = ref<string | null>(null)
 const orderAsc = ref(true)
 const groupByVolume = ref(true)
+const chapterQuery = ref('')
 const collapsedVolumes = ref<Record<string, boolean>>({})
 
 const editSeriesOpen = ref(false)
@@ -50,44 +67,147 @@ const editingChapter = ref<ChapterItemDto | null>(null)
 const shelfModalOpen = ref(false)
 const allShelves = ref<ShelfDetailDto[]>([])
 const selectedShelfIds = ref<string[]>([])
+const savingShelves = ref(false)
 
 const coverInputRef = ref<HTMLInputElement | null>(null)
 const chapterUploadRef = ref<HTMLInputElement | null>(null)
+let detailSeq = 0
 
-const seriesId = computed(() => String(route.params.id))
+const seriesId = computed(() => {
+  const parsed = parseItemRef(route, 'comic')
+  if (parsed && parsed.scope === 'local') return parsed.id
+  return typeof route.params.id === 'string' ? route.params.id : ''
+})
+
 watch(seriesId, () => {
   collapsedVolumes.value = {}
+  chapterQuery.value = ''
 })
+
 const isManagedSeries = computed(() =>
   sidebarStore.libraries.some(
-    (l) => l.id === detail.value?.series.library_id && l.kind === 'managed_upload'
-  )
+    (l) => l.id === detail.value?.series.library_id && l.kind === 'managed_upload',
+  ),
 )
 
-async function loadDetail(): Promise<void> {
-  loading.value = true
-  try {
-    detail.value = await api.getSeriesDetail(seriesId.value)
-  } finally {
-    loading.value = false
+const statusLabel = computed(() => {
+  const s = detail.value?.series.status
+  if (s === 'completed') return t('series.statusCompleted')
+  if (s === 'hiatus') return t('series.statusHiatus')
+  return t('series.statusOngoing')
+})
+
+const directionLabel = computed(() => {
+  const dir = detail.value?.series.reading_direction
+  if (dir === 'ltr') return t('series.directionLtr')
+  if (dir === 'webtoon') return t('series.directionWebtoon')
+  return t('series.directionRtl')
+})
+
+const heroSubtitle = computed(() => {
+  if (!detail.value) return ''
+  const s = detail.value.series
+  const creators = [...s.writers, ...s.pencillers].filter(Boolean)
+  const parts: string[] = []
+  if (creators.length > 0) parts.push(creators.join(' · '))
+  parts.push(statusLabel.value)
+  if (s.year) parts.push(String(s.year))
+  return parts.join(' · ')
+})
+
+const overallProgressPercent = computed<number | null>(() => {
+  if (!detail.value) return null
+  const total = detail.value.series.chapter_count
+  if (total <= 0) return null
+  if (detail.value.completed_chapters <= 0 && !detail.value.continue_reading) return null
+  return Math.min(100, Math.round((detail.value.completed_chapters / total) * 100))
+})
+
+const allCompleted = computed(
+  () =>
+    Boolean(
+      detail.value &&
+        detail.value.series.chapter_count > 0 &&
+        detail.value.completed_chapters >= detail.value.series.chapter_count,
+    ),
+)
+
+const primaryActionLabel = computed(() => {
+  if (!detail.value) return t('series.startReading')
+  if (detail.value.continue_reading) {
+    return t('series.continueChapter', {
+      chapter: detail.value.continue_reading.chapter_number,
+      page: detail.value.continue_reading.current_page,
+    })
   }
-}
+  return t('series.startReading')
+})
 
-async function refreshPage(): Promise<void> {
-  await Promise.all([loadDetail(), sidebarStore.refresh()])
-}
-
-onMounted(loadDetail)
-watch([seriesId, () => upload.catalogVersion], loadDetail)
-
-const sortedChapters = computed<ChapterItemDto[]>(() => {
+const detailTags = computed<MediaDetailTag[]>(() => {
   if (!detail.value) return []
-  const list = [...detail.value.chapters]
-  return orderAsc.value ? list : list.reverse()
+  const s = detail.value.series
+  const out: MediaDetailTag[] = []
+  for (const genre of s.genres) {
+    out.push({ label: genre, value: `g:${genre}`, to: libraryRoute('comic', { genre }) })
+  }
+  for (const tag of s.tags) {
+    out.push({ label: `#${tag}`, value: `t:${tag}`, to: libraryRoute('comic', { tag }) })
+  }
+  for (const writer of s.writers) {
+    out.push({
+      label: `${t('series.writers')}: ${writer}`,
+      value: `w:${writer}`,
+      to: libraryRoute('comic', { writer }),
+    })
+  }
+  for (const penciller of s.pencillers) {
+    out.push({
+      label: `${t('series.pencillers')}: ${penciller}`,
+      value: `p:${penciller}`,
+      to: libraryRoute('comic', { penciller }),
+    })
+  }
+  return out
+})
+
+const detailSpecs = computed<MediaDetailSpec[]>(() => {
+  if (!detail.value) return []
+  const s = detail.value.series
+  const specs: MediaDetailSpec[] = [
+    { label: t('series.specStatus'), value: statusLabel.value },
+    { label: t('series.specDirection'), value: directionLabel.value },
+    {
+      label: t('series.specProgress'),
+      value: `${detail.value.completed_chapters} / ${s.chapter_count}`,
+    },
+  ]
+  if (s.year) specs.push({ label: t('series.specYear'), value: String(s.year) })
+  if (s.age_rating) specs.push({ label: t('series.specAgeRating'), value: s.age_rating })
+  if (s.publisher) specs.push({ label: t('series.specPublisher'), value: s.publisher })
+  if (s.alt_titles.length > 0) {
+    specs.push({ label: t('series.specAltTitles'), value: s.alt_titles.join(' / ') })
+  }
+  if (auth.isAdmin && s.source_dir) {
+    specs.push({ label: t('series.specSourceDir'), value: s.source_dir, mono: true })
+  }
+  return specs
+})
+
+const filteredSortedChapters = computed<ChapterItemDto[]>(() => {
+  if (!detail.value) return []
+  const q = chapterQuery.value.trim().toLowerCase()
+  const base = orderAsc.value ? [...detail.value.chapters] : [...detail.value.chapters].reverse()
+  if (!q) return base
+  return base.filter(
+    (ch) =>
+      ch.title.toLowerCase().includes(q) ||
+      ch.number_label.toLowerCase().includes(q) ||
+      chapterKindBadge(ch).toLowerCase().includes(q),
+  )
 })
 
 const hasAnyVolumes = computed(() =>
-  Boolean(detail.value?.chapters.some((c) => c.volume_number !== null))
+  Boolean(detail.value?.chapters.some((c) => c.volume_number !== null)),
 )
 
 interface VolumeGroup {
@@ -99,7 +219,7 @@ interface VolumeGroup {
 
 const volumeGroups = computed<VolumeGroup[]>(() => {
   const groups = new Map<string, VolumeGroup>()
-  for (const ch of sortedChapters.value) {
+  for (const ch of filteredSortedChapters.value) {
     const key = ch.volume_number !== null ? String(ch.volume_number) : 'unassigned'
     let group = groups.get(key)
     if (!group) {
@@ -119,31 +239,51 @@ const volumeGroups = computed<VolumeGroup[]>(() => {
   return Array.from(groups.values())
 })
 
-function toggleVolumeCollapse(key: string): void {
-  collapsedVolumes.value[key] = !collapsedVolumes.value[key]
+function showError(err: unknown): void {
+  snackbar.show({
+    message: err instanceof Error ? err.message : String(err),
+    tone: 'error',
+  })
 }
 
-function primaryReadAction(): void {
-  if (!detail.value) return
-  if (detail.value.continue_reading) {
-    router.push(
-      '/comic/read/' +
-        detail.value.continue_reading.chapter_id +
-        '?page=' +
-        detail.value.continue_reading.current_page
-    )
+async function loadDetail(): Promise<void> {
+  const id = seriesId.value
+  if (!id) {
+    detail.value = null
+    loading.value = false
+    loadError.value = t('series.detailLoadFailed')
     return
   }
-  const first = detail.value.chapters.find((c) => !c.is_missing)
-  if (first) {
-    router.push('/comic/read/' + first.id + '?page=1')
+  const seq = ++detailSeq
+  loading.value = true
+  loadError.value = null
+  try {
+    const res = await api.getSeriesDetail(id)
+    if (seq !== detailSeq) return
+    detail.value = res
+  } catch (err) {
+    if (seq !== detailSeq) return
+    loadError.value = err instanceof Error ? err.message : t('series.detailLoadFailed')
+  } finally {
+    if (seq === detailSeq) {
+      loading.value = false
+    }
   }
 }
 
-function openChapter(ch: ChapterItemDto): void {
-  if (ch.is_missing) return
-  const startPage = ch.current_page > 0 && !ch.is_completed ? ch.current_page : 1
-  router.push('/comic/read/' + ch.id + '?page=' + startPage)
+async function refreshPage(): Promise<void> {
+  await Promise.allSettled([loadDetail(), sidebarStore.refresh()])
+}
+
+onMounted(() => {
+  void loadDetail()
+})
+watch([seriesId, () => upload.catalogVersion], () => {
+  void loadDetail()
+})
+
+function toggleVolumeCollapse(key: string): void {
+  collapsedVolumes.value[key] = !collapsedVolumes.value[key]
 }
 
 function chapterKindBadge(ch: ChapterItemDto): string {
@@ -152,18 +292,69 @@ function chapterKindBadge(ch: ChapterItemDto): string {
   return t('series.kindChapter', { num: ch.number_label })
 }
 
+function chapterProgressPercent(ch: ChapterItemDto): number | null {
+  if (ch.is_completed) return 100
+  if (ch.current_page <= 0 || ch.page_count <= 0) return null
+  return Math.min(100, Math.round((ch.current_page / ch.page_count) * 100))
+}
+
+function primaryReadAction(): void {
+  if (!detail.value) return
+  if (detail.value.continue_reading) {
+    void router.push(
+      playRoute(
+        { scope: 'local', domain: 'comic', id: detail.value.continue_reading.chapter_id },
+        {
+          position: detail.value.continue_reading.current_page,
+          duration: detail.value.continue_reading.total_pages,
+        },
+      ),
+    )
+    return
+  }
+  const first = detail.value.chapters.find((c) => !c.is_missing)
+  if (first) {
+    void router.push(
+      playRoute(
+        { scope: 'local', domain: 'comic', id: first.id },
+        { position: 1, duration: first.page_count },
+      ),
+    )
+  }
+}
+
+function openChapter(ch: ChapterItemDto): void {
+  if (ch.is_missing) return
+  const startPage = ch.current_page > 0 && !ch.is_completed ? ch.current_page : 1
+  void router.push(
+    playRoute(
+      { scope: 'local', domain: 'comic', id: ch.id },
+      { position: startPage, duration: ch.page_count },
+    ),
+  )
+}
+
 async function toggleFavorite(): Promise<void> {
   if (!detail.value) return
   const next = !detail.value.is_favorite
-  await api.setFavorite(detail.value.series.id, next)
   detail.value.is_favorite = next
+  try {
+    await api.setFavorite(detail.value.series.id, next)
+  } catch (err) {
+    detail.value.is_favorite = !next
+    showError(err)
+  }
 }
 
 async function openShelfDialog(): Promise<void> {
   if (!detail.value) return
-  allShelves.value = await api.listShelves()
-  selectedShelfIds.value = [...detail.value.shelf_ids]
-  shelfModalOpen.value = true
+  try {
+    allShelves.value = await api.listShelves()
+    selectedShelfIds.value = [...detail.value.shelf_ids]
+    shelfModalOpen.value = true
+  } catch (err) {
+    showError(err)
+  }
 }
 
 function setShelfChecked(id: string, checked: boolean): void {
@@ -175,31 +366,50 @@ function setShelfChecked(id: string, checked: boolean): void {
 }
 
 async function saveShelvesSelection(): Promise<void> {
-  if (!detail.value) return
-  await api.setSeriesShelves(detail.value.series.id, selectedShelfIds.value)
-  detail.value.shelf_ids = [...selectedShelfIds.value]
-  shelfModalOpen.value = false
-  await sidebarStore.refresh()
+  if (!detail.value || savingShelves.value) return
+  savingShelves.value = true
+  try {
+    await api.setSeriesShelves(detail.value.series.id, selectedShelfIds.value)
+    detail.value.shelf_ids = [...selectedShelfIds.value]
+    shelfModalOpen.value = false
+    await sidebarStore.refresh()
+  } catch (err) {
+    showError(err)
+  } finally {
+    savingShelves.value = false
+  }
 }
 
 async function onSeriesMetadataSaved(): Promise<void> {
-  await Promise.all([loadDetail(), sidebarStore.refresh()])
+  await Promise.allSettled([loadDetail(), sidebarStore.refresh()])
 }
 
 async function toggleChapterRead(ch: ChapterItemDto): Promise<void> {
-  await api.setChapterCompleted(ch.id, !ch.is_completed)
-  await loadDetail()
+  try {
+    await api.setChapterCompleted(ch.id, !ch.is_completed)
+    await loadDetail()
+  } catch (err) {
+    showError(err)
+  }
 }
 
 async function handleMarkPreviousRead(ch: ChapterItemDto): Promise<void> {
-  await api.markPreviousRead(ch.id)
-  await loadDetail()
+  try {
+    await api.markPreviousRead(ch.id)
+    await loadDetail()
+  } catch (err) {
+    showError(err)
+  }
 }
 
 async function handleMarkSeriesRead(completed: boolean): Promise<void> {
   if (!detail.value) return
-  await api.markSeriesRead(detail.value.series.id, completed)
-  await loadDetail()
+  try {
+    await api.markSeriesRead(detail.value.series.id, completed)
+    await loadDetail()
+  } catch (err) {
+    showError(err)
+  }
 }
 
 async function handleMarkVolumeRead(volNum: number): Promise<void> {
@@ -208,10 +418,7 @@ async function handleMarkVolumeRead(volNum: number): Promise<void> {
     await api.markVolumeRead(detail.value.series.id, volNum, true)
     await loadDetail()
   } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
+    showError(err)
   }
 }
 
@@ -226,10 +433,7 @@ async function onPickCover(ev: Event): Promise<void> {
     await api.uploadSeriesCover(detail.value.series.id, file)
     await loadDetail()
   } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
+    showError(err)
   } finally {
     input.value = ''
   }
@@ -252,9 +456,13 @@ async function handleDeleteSeries(): Promise<void> {
     confirmText: t('common.delete'),
   })
   if (!ok) return
-  await api.deleteSeries(detail.value.series.id)
-  upload.notifyCatalogChanged()
-  router.replace('/comic/series')
+  try {
+    await api.deleteSeries(detail.value.series.id)
+    upload.notifyCatalogChanged()
+    await router.replace(libraryRoute('comic'))
+  } catch (err) {
+    showError(err)
+  }
 }
 
 async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
@@ -267,580 +475,354 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
     confirmText: t('common.delete'),
   })
   if (!ok) return
-  await api.deleteChapter(ch.id)
-  await sidebarStore.refresh()
   try {
-    detail.value = await api.getSeriesDetail(seriesId.value)
-    upload.notifyCatalogChanged()
-  } catch {
-    await router.replace('/comic/series')
-    upload.notifyCatalogChanged()
+    await api.deleteChapter(ch.id)
+    await sidebarStore.refresh()
+    try {
+      detail.value = await api.getSeriesDetail(seriesId.value)
+      upload.notifyCatalogChanged()
+    } catch {
+      upload.notifyCatalogChanged()
+      await router.replace(libraryRoute('comic'))
+    }
+  } catch (err) {
+    showError(err)
   }
 }
 </script>
 
 <template>
-  <div v-if="detail" class="mx-auto max-w-6xl space-y-10 p-6 sm:p-8">
-    <!-- Widescreen Hero Section -->
-    <section
-      class="md-card-filled flex flex-col gap-8 rounded-3xl border border-[var(--md-sys-color-outline-variant)]/50 p-6 shadow-[var(--md-sys-elevation-1)] md:flex-row md:p-8"
+  <div class="px-4 py-6 sm:px-6 md:px-8">
+    <input
+      v-if="auth.isAdmin && isManagedSeries"
+      ref="chapterUploadRef"
+      type="file"
+      multiple
+      accept=".cbz,.zip,.epub"
+      class="hidden"
+      @change="onUploadChaptersToSeries"
+    />
+    <input
+      v-if="auth.isAdmin"
+      ref="coverInputRef"
+      type="file"
+      accept="image/*"
+      class="hidden"
+      @change="onPickCover"
+    />
+
+    <MediaDetailTemplate
+      :title="detail?.series.title || ''"
+      :subtitle="heroSubtitle"
+      :cover="detail?.cover_url ? withAuthUrl(detail.cover_url) : null"
+      aspect="poster"
+      cover-style="book"
+      :fallback-icon="LuBookOpen"
+      :show-back="true"
+      :back-label="t('series.backToLibrary')"
+      :back-to="libraryRoute('comic')"
+      :progress-percent="overallProgressPercent"
+      :progress-label="
+        detail
+          ? t('series.progressChapters', {
+              done: detail.completed_chapters,
+              total: detail.series.chapter_count,
+            })
+          : ''
+      "
+      :primary-action-label="primaryActionLabel"
+      :primary-action-icon="LuPlay"
+      :primary-action-disabled="!detail || detail.chapters.length === 0"
+      :secondary-action-label="t('series.addToShelf')"
+      :secondary-action-icon="LuBookmark"
+      :show-favorite="Boolean(detail)"
+      :favorite="Boolean(detail?.is_favorite)"
+      :description="detail?.series.summary || null"
+      :tags="detailTags"
+      :specs="detailSpecs"
+      :specs-title="t('series.specsTitle')"
+      :loading="loading && !detail"
+      :error="loadError"
+      @primary-action="primaryReadAction"
+      @secondary-action="openShelfDialog"
+      @toggle-favorite="toggleFavorite"
+      @retry="loadDetail"
     >
-      <!-- 3D Book-Shadow Cover -->
-      <div class="mx-auto w-48 shrink-0 md:mx-0 md:w-56">
-        <div
-          class="book-shadow aspect-[2/3] w-full overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)]"
-        >
-          <img
-            v-if="detail.cover_url"
-            :src="withAuthUrl(detail.cover_url)"
-            :alt="detail.series.title"
-            class="h-full w-full object-cover"
-          />
-          <div
-            v-else
-            class="flex h-full w-full items-center justify-center text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            <LuBookOpen class="h-12 w-12 opacity-40" />
-          </div>
-        </div>
-      </div>
+      <template v-if="detail" #overflow-menu="{ close }">
+        <MdMenuItem
+          v-if="auth.isAdmin && isManagedSeries"
+          :label="t('series.uploadToSeries')"
+          :icon="LuUpload"
+          @select="
+            close();
+            chapterUploadRef?.click()
+          "
+        />
+        <MdMenuItem
+          :label="allCompleted ? t('series.markAllUnread') : t('series.markAllRead')"
+          :icon="LuCheckCheck"
+          @select="
+            close();
+            handleMarkSeriesRead(!allCompleted)
+          "
+        />
+        <MdMenuItem
+          v-if="auth.isAdmin"
+          :label="t('series.editMetadata')"
+          :icon="LuPencil"
+          @select="
+            close();
+            editSeriesOpen = true
+          "
+        />
+        <MdMenuItem
+          v-if="auth.isAdmin"
+          :label="t('series.changeCover')"
+          :icon="LuImage"
+          @select="
+            close();
+            coverInputRef?.click()
+          "
+        />
+        <MdMenuItem
+          :label="globalT('common.refresh')"
+          :icon="LuRefreshCw"
+          @select="
+            close();
+            refreshPage()
+          "
+        />
+      </template>
 
-      <!-- Series Info & Actions -->
-      <div class="flex min-w-0 flex-1 flex-col justify-between space-y-5">
-        <div class="space-y-3.5">
-          <!-- Meta Badges -->
-          <div class="flex flex-wrap items-center gap-2 text-xs">
-            <span
-              class="rounded-full bg-[var(--md-sys-color-primary-container)] px-3 py-1 font-semibold text-[var(--md-sys-color-on-primary-container)]"
-            >
-              {{
-                detail.series.status === 'completed'
-                  ? t('series.statusCompleted')
-                  : detail.series.status === 'hiatus'
-                    ? t('series.statusHiatus')
-                    : t('series.statusOngoing')
-              }}
-            </span>
-            <span
-              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{
-                detail.series.reading_direction === 'ltr'
-                  ? t('series.directionLtr')
-                  : detail.series.reading_direction === 'webtoon'
-                    ? t('series.directionWebtoon')
-                    : t('series.directionRtl')
-              }}
-            </span>
-            <span
-              v-if="detail.series.year"
-              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ detail.series.year }}
-            </span>
-            <span
-              v-if="detail.series.age_rating"
-              class="rounded-full bg-[var(--md-sys-color-warning-container)] px-3 py-1 font-semibold text-[var(--md-sys-color-on-warning-container)]"
-            >
-              {{ detail.series.age_rating }}
-            </span>
-            <span
-              v-if="detail.series.publisher"
-              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ detail.series.publisher }}
-            </span>
-          </div>
+      <template v-if="detail && auth.isAdmin" #overflow-danger="{ close }">
+        <MdMenuItem
+          :label="t('series.deleteSeries')"
+          :icon="LuTrash2"
+          destructive
+          @select="
+            close();
+            handleDeleteSeries()
+          "
+        />
+      </template>
 
-          <div>
-            <h1
-              class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)] sm:text-3xl"
+      <!-- Chapters Section -->
+      <section v-if="detail" class="space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="flex items-center gap-2.5">
+            <h2 class="text-title-large text-on-surface">
+              {{ t('series.chaptersHeader') }}
+            </h2>
+            <span
+              class="text-label-medium rounded-corner-full bg-surface-container-high px-2.5 py-0.5 tabular-nums text-on-surface-variant"
             >
-              {{ detail.series.title }}
-            </h1>
-            <p
-              v-if="detail.series.alt_titles.length > 0"
-              class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ detail.series.alt_titles.join(' / ') }}
-            </p>
+              {{ detail.completed_chapters }} / {{ detail.series.chapter_count }}
+            </span>
           </div>
 
-          <!-- Clickable Writer & Penciller Filter Pills -->
-          <div
-            v-if="detail.series.writers.length > 0 || detail.series.pencillers.length > 0"
-            class="flex flex-wrap items-center gap-2"
-          >
-            <button
-              v-for="w in detail.series.writers"
-              :key="'w-' + w"
-              type="button"
-              class="md-chip md-state !rounded-full !bg-[var(--md-sys-color-surface)] !text-[var(--md-sys-color-on-surface)] hover:!border-[var(--md-sys-color-primary)] hover:!text-[var(--md-sys-color-primary)]"
-              @click="router.push({ path: '/comic/series', query: { writer: w } })"
-            >
-              {{ t('series.writers') }}: {{ w }}
-            </button>
-            <button
-              v-for="p in detail.series.pencillers"
-              :key="'p-' + p"
-              type="button"
-              class="md-chip md-state !rounded-full !bg-[var(--md-sys-color-surface)] !text-[var(--md-sys-color-on-surface)] hover:!border-[var(--md-sys-color-primary)] hover:!text-[var(--md-sys-color-primary)]"
-              @click="router.push({ path: '/comic/series', query: { penciller: p } })"
-            >
-              {{ t('series.pencillers') }}: {{ p }}
-            </button>
-          </div>
+          <div class="flex flex-wrap items-center gap-2.5">
+            <div v-if="detail.chapters.length > 10" class="w-48">
+              <MdTextField
+                v-model="chapterQuery"
+                type="search"
+                size="sm"
+                clearable
+                :placeholder="t('series.filterChaptersPlaceholder')"
+              />
+            </div>
 
-          <!-- Summary -->
-          <p
-            class="text-sm leading-relaxed whitespace-pre-line text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            {{ detail.series.summary || t('series.summaryEmpty') }}
-          </p>
-
-          <!-- Genres & Tags -->
-          <div
-            v-if="detail.series.genres.length > 0 || detail.series.tags.length > 0"
-            class="flex flex-wrap gap-1.5 pt-1"
-          >
-            <button
-              v-for="g in detail.series.genres"
-              :key="'g-' + g"
-              type="button"
-              class="md-chip md-chip-selected md-state"
-              @click="router.push({ path: '/comic/series', query: { genre: g } })"
-            >
-              {{ g }}
-            </button>
-            <button
-              v-for="tag in detail.series.tags"
-              :key="'t-' + tag"
-              type="button"
-              class="md-chip md-state"
-              @click="router.push({ path: '/comic/series', query: { tag } })"
-            >
-              #{{ tag }}
-            </button>
-          </div>
-        </div>
-
-        <!-- Primary Capsule Button + Circular Action Buttons -->
-        <div class="flex flex-wrap items-center gap-2.5 pt-2">
-          <button
-            type="button"
-            :disabled="detail.chapters.length === 0"
-            class="md-btn md-btn-filled md-state !h-11 !px-6 text-sm shadow-[var(--md-sys-elevation-1)]"
-            @click="primaryReadAction"
-          >
-            <LuPlay class="h-4 w-4 fill-current" />
-            <span>
-              {{
-                detail.continue_reading
-                  ? t('series.continueChapter', {
-                      chapter: detail.continue_reading.chapter_number,
-                      page: detail.continue_reading.current_page,
-                    })
-                  : t('series.startReading')
-              }}
-            </span>
-          </button>
-
-          <!-- Circular Action Buttons -->
-          <button
-            type="button"
-            :title="detail.is_favorite ? t('series.favoriteRemove') : t('series.favoriteAdd')"
-            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)]"
-            :class="
-              detail.is_favorite
-                ? '!border-[var(--md-sys-color-error)]/40 !bg-[var(--md-sys-color-error-container)] !text-[var(--md-sys-color-on-error-container)]'
-                : 'hover:!border-[var(--md-sys-color-error)]/50 hover:!text-[var(--md-sys-color-error)]'
-            "
-            @click="toggleFavorite"
-          >
-            <LuHeart class="h-4.5 w-4.5" :class="{ 'fill-current': detail.is_favorite }" />
-          </button>
-
-          <button
-            type="button"
-            :title="t('series.addToShelf')"
-            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)]"
-            :class="
-              detail.shelf_ids.length > 0
-                ? '!border-[var(--md-sys-color-primary)]/40 !bg-[var(--md-sys-color-primary-container)] !text-[var(--md-sys-color-on-primary-container)]'
-                : 'hover:!border-[var(--md-sys-color-primary)]/50 hover:!text-[var(--md-sys-color-primary)]'
-            "
-            @click="openShelfDialog"
-          >
-            <LuBookmark class="h-4.5 w-4.5" :class="{ 'fill-current': detail.shelf_ids.length > 0 }" />
-          </button>
-
-          <template v-if="auth.isAdmin && isManagedSeries">
-            <input
-              ref="chapterUploadRef"
-              type="file"
-              multiple
-              accept=".cbz,.zip,.epub"
-              class="hidden"
-              @change="onUploadChaptersToSeries"
+            <AppCheckbox
+              v-if="hasAnyVolumes"
+              v-model="groupByVolume"
+              :label="t('series.groupByVolume')"
             />
-            <button
-              type="button"
-              :title="t('series.uploadToSeries')"
-              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
-              @click="chapterUploadRef?.click()"
+
+            <MdButton
+              variant="outlined"
+              size="sm"
+              :icon="LuArrowUpDown"
+              @click="orderAsc = !orderAsc"
             >
-              <LuUpload class="h-4.5 w-4.5" />
-            </button>
-          </template>
-
-          <button
-            type="button"
-            :title="
-              detail.completed_chapters >= detail.series.chapter_count && detail.series.chapter_count > 0
-                ? t('series.markAllUnread')
-                : t('series.markAllRead')
-            "
-            class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
-            @click="
-              handleMarkSeriesRead(
-                !(detail.completed_chapters >= detail.series.chapter_count && detail.series.chapter_count > 0)
-              )
-            "
-          >
-            <LuCheckCheck class="h-4.5 w-4.5" />
-          </button>
-
-          <template v-if="auth.isAdmin">
-            <button
-              type="button"
-              :title="t('series.editMetadata')"
-              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
-              @click="editSeriesOpen = true"
-            >
-              <LuPencil class="h-4 w-4" />
-            </button>
-
-            <input
-              ref="coverInputRef"
-              type="file"
-              accept="image/*"
-              class="hidden"
-              @change="onPickCover"
-            />
-            <button
-              type="button"
-              :title="t('series.changeCover')"
-              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-primary)]/50"
-              @click="coverInputRef?.click()"
-            >
-              <LuImage class="h-4 w-4" />
-            </button>
-
-            <button
-              type="button"
-              :title="t('series.deleteSeries')"
-              class="md-icon-btn md-state border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface)] hover:!border-[var(--md-sys-color-error)]/60 hover:!text-[var(--md-sys-color-error)]"
-              @click="handleDeleteSeries"
-            >
-              <LuTrash2 class="h-4 w-4" />
-            </button>
-          </template>
-
-          <RefreshButton size="md" :action="refreshPage" :busy="loading" />
-        </div>
-      </div>
-    </section>
-
-    <!-- Volumes / Chapters List Section -->
-    <section class="space-y-4">
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <div class="flex items-center gap-3">
-          <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
-            {{ t('series.chaptersHeader') }}
-          </h2>
-          <span
-            class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            {{ detail.completed_chapters }} / {{ detail.series.chapter_count }}
-          </span>
+              {{ orderAsc ? t('series.orderAsc') : t('series.orderDesc') }}
+            </MdButton>
+          </div>
         </div>
 
-        <div class="flex items-center gap-4">
-          <AppCheckbox
-            v-if="hasAnyVolumes"
-            v-model="groupByVolume"
-            :label="t('series.groupByVolume')"
-          />
+        <MdEmptyState
+          v-if="filteredSortedChapters.length === 0"
+          compact
+          :icon="LuBookOpen"
+          :title="t('series.noMatchingChapters')"
+        />
 
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="orderAsc = !orderAsc"
-          >
-            <LuArrowUpDown class="h-3.5 w-3.5" />
-            <span>{{ orderAsc ? t('series.orderAsc') : t('series.orderDesc') }}</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Volume Grouped Mode -->
-      <div v-if="hasAnyVolumes && groupByVolume" class="space-y-4">
-        <div
-          v-for="group in volumeGroups"
-          :key="group.key"
-          class="md-card-filled overflow-hidden border border-[var(--md-sys-color-outline-variant)]/50"
-        >
-          <div
-            class="flex cursor-pointer items-center justify-between bg-[var(--md-sys-color-surface-container)] px-4 py-3"
-            @click="toggleVolumeCollapse(group.key)"
+        <!-- Volume Grouped Mode -->
+        <div v-else-if="hasAnyVolumes && groupByVolume" class="space-y-3">
+          <MdCard
+            v-for="group in volumeGroups"
+            :key="group.key"
+            variant="filled"
+            padding="none"
+            class="overflow-hidden"
           >
             <div
-              class="flex items-center gap-2 text-sm font-bold text-[var(--md-sys-color-on-surface)]"
+              class="flex cursor-pointer items-center justify-between gap-2 bg-surface-container-high/60 px-4 py-2.5"
+              @click="toggleVolumeCollapse(group.key)"
             >
-              <LuChevronRight v-if="collapsedVolumes[group.key]" class="h-4 w-4" />
-              <LuChevronDown v-else class="h-4 w-4" />
-              <span>{{ group.title }}</span>
-              <span class="text-xs font-normal text-[var(--md-sys-color-on-surface-variant)]">
-                ({{ group.chapters.length }})
-              </span>
-            </div>
-            <button
-              v-if="group.volumeNumber !== null"
-              type="button"
-              class="md-btn md-btn-sm md-btn-text md-state"
-              @click.stop="handleMarkVolumeRead(group.volumeNumber)"
-            >
-              {{ t('series.markVolumeRead') }}
-            </button>
-          </div>
-
-          <div
-            v-if="!collapsedVolumes[group.key]"
-            class="divide-y divide-[var(--md-sys-color-outline-variant)]/45"
-          >
-            <div
-              v-for="ch in group.chapters"
-              :key="ch.id"
-              class="group flex items-center justify-between gap-4 px-4 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container)]"
-              :class="ch.is_missing ? 'opacity-50' : 'cursor-pointer'"
-              @click="openChapter(ch)"
-            >
-              <div class="min-w-0 flex-1 space-y-1">
-                <div class="flex flex-wrap items-center gap-2">
-                  <span
-                    class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)]"
-                  >
-                    {{ chapterKindBadge(ch) }}
-                  </span>
-                  <span
-                    class="truncate text-sm font-semibold"
-                    :class="
-                      ch.is_completed
-                        ? 'text-[var(--md-sys-color-on-surface-variant)]'
-                        : 'text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]'
-                    "
-                  >
-                    {{ ch.title }}
-                  </span>
-                  <span
-                    v-if="ch.is_completed"
-                    class="rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
-                  >
-                    {{ t('series.completedBadge') }}
-                  </span>
-                  <span
-                    v-if="ch.is_missing"
-                    class="rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-error-container)]"
-                  >
-                    {{ t('series.missingBadge') }}
-                  </span>
-                </div>
-
-                <div
-                  class="flex items-center gap-3 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  <span>{{ t('series.pagesCount', { count: ch.page_count }) }}</span>
-                  <span
-                    v-if="ch.current_page > 0 && !ch.is_completed"
-                    class="font-medium text-[var(--md-sys-color-primary)]"
-                  >
-                    {{ t('series.readProgress', { page: ch.current_page, total: ch.page_count }) }}
-                  </span>
-                  <div
-                    v-if="ch.current_page > 0 || ch.is_completed"
-                    class="h-1 w-24 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
-                  >
-                    <div
-                      class="h-full rounded-full bg-[var(--md-sys-color-primary)]"
-                      :style="{
-                        width:
-                          (ch.is_completed
-                            ? 100
-                            : Math.min(100, Math.round((ch.current_page / Math.max(1, ch.page_count)) * 100))) + '%',
-                      }"
-                    />
-                  </div>
-                </div>
+              <div class="flex items-center gap-2 text-title-small text-on-surface">
+                <LuChevronRight v-if="collapsedVolumes[group.key]" class="h-4 w-4" aria-hidden="true" />
+                <LuChevronDown v-else class="h-4 w-4" aria-hidden="true" />
+                <span>{{ group.title }}</span>
+                <span class="text-body-small tabular-nums text-on-surface-variant">
+                  ({{ group.chapters.length }})
+                </span>
               </div>
 
-              <!-- Row Action Buttons -->
-              <div class="flex shrink-0 items-center gap-1" @click.stop>
-                <button
-                  type="button"
-                  :title="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
-                  class="md-icon-btn md-icon-btn-sm md-state"
-                  :class="ch.is_completed ? '!text-[var(--md-sys-color-success)]' : ''"
-                  @click="toggleChapterRead(ch)"
-                >
-                  <LuCheck class="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  :title="t('series.markPrevRead')"
-                  class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-primary)]"
-                  @click="handleMarkPreviousRead(ch)"
-                >
-                  <LuCheckCheck class="h-4 w-4" />
-                </button>
-                <button
-                  v-if="auth.isAdmin"
-                  type="button"
-                  :title="t('series.editChapter')"
-                  class="md-icon-btn md-icon-btn-sm md-state"
-                  @click="editingChapter = ch"
-                >
-                  <LuPencil class="h-3.5 w-3.5" />
-                </button>
-                <button
-                  v-if="auth.isAdmin"
-                  type="button"
-                  :title="t('series.deleteChapter')"
-                  class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
-                  @click="handleDeleteChapter(ch)"
-                >
-                  <LuTrash2 class="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Flat Chapter List Mode -->
-      <div
-        v-else
-        class="md-card-filled divide-y divide-[var(--md-sys-color-outline-variant)]/45 overflow-hidden border border-[var(--md-sys-color-outline-variant)]/50"
-      >
-        <div
-          v-for="ch in sortedChapters"
-          :key="ch.id"
-          class="group flex items-center justify-between gap-4 px-5 py-3.5 transition hover:bg-[var(--md-sys-color-surface-container)]"
-          :class="ch.is_missing ? 'opacity-50' : 'cursor-pointer'"
-          @click="openChapter(ch)"
-        >
-          <div class="min-w-0 flex-1 space-y-1">
-            <div class="flex flex-wrap items-center gap-2">
-              <span
-                class="rounded-md bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)]"
+              <MdButton
+                v-if="group.volumeNumber !== null"
+                variant="text"
+                size="sm"
+                @click.stop="handleMarkVolumeRead(group.volumeNumber)"
               >
-                {{ chapterKindBadge(ch) }}
-              </span>
-              <span
-                class="truncate text-sm font-semibold"
-                :class="
-                  ch.is_completed
-                    ? 'text-[var(--md-sys-color-on-surface-variant)]'
-                    : 'text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]'
+                {{ t('series.markVolumeRead') }}
+              </MdButton>
+            </div>
+
+            <div
+              v-if="!collapsedVolumes[group.key]"
+              class="divide-y divide-outline-variant/50"
+            >
+              <ComicChapterRow
+                v-for="ch in group.chapters"
+                :key="ch.id"
+                :badge="chapterKindBadge(ch)"
+                :title="ch.title || chapterKindBadge(ch)"
+                :meta-text="t('series.pagesCount', { count: ch.page_count })"
+                :progress-text="
+                  ch.current_page > 0 && !ch.is_completed
+                    ? t('series.readProgress', { page: ch.current_page, total: ch.page_count })
+                    : ''
                 "
+                :progress-percent="chapterProgressPercent(ch)"
+                :completed="ch.is_completed"
+                :completed-label="t('series.completedBadge')"
+                :missing="ch.is_missing"
+                :missing-label="t('series.missingBadge')"
+                :active="detail.continue_reading?.chapter_id === ch.id"
+                :menu-aria-label="t('series.chapterActions')"
+                @open="openChapter(ch)"
               >
-                {{ ch.title }}
-              </span>
-              <span
-                v-if="ch.is_completed"
-                class="rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-success-container)]"
-              >
-                {{ t('series.completedBadge') }}
-              </span>
-              <span
-                v-if="ch.is_missing"
-                class="rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-error-container)]"
-              >
-                {{ t('series.missingBadge') }}
-              </span>
+                <template #menu="{ close }">
+                  <MdMenuItem
+                    :label="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
+                    :icon="LuCheck"
+                    @select="
+                      close();
+                      toggleChapterRead(ch)
+                    "
+                  />
+                  <MdMenuItem
+                    :label="t('series.markPrevRead')"
+                    :icon="LuCheckCheck"
+                    @select="
+                      close();
+                      handleMarkPreviousRead(ch)
+                    "
+                  />
+                  <MdMenuItem
+                    v-if="auth.isAdmin"
+                    :label="t('series.editChapter')"
+                    :icon="LuPencil"
+                    @select="
+                      close();
+                      editingChapter = ch
+                    "
+                  />
+                  <MdMenuItem
+                    v-if="auth.isAdmin"
+                    :label="t('series.deleteChapter')"
+                    :icon="LuTrash2"
+                    destructive
+                    @select="
+                      close();
+                      handleDeleteChapter(ch)
+                    "
+                  />
+                </template>
+              </ComicChapterRow>
             </div>
-
-            <div
-              class="flex items-center gap-3 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              <span>{{ t('series.pagesCount', { count: ch.page_count }) }}</span>
-              <span
-                v-if="ch.current_page > 0 && !ch.is_completed"
-                class="font-medium text-[var(--md-sys-color-primary)]"
-              >
-                {{ t('series.readProgress', { page: ch.current_page, total: ch.page_count }) }}
-              </span>
-              <div
-                v-if="ch.current_page > 0 || ch.is_completed"
-                class="h-1 w-24 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
-              >
-                <div
-                  class="h-full rounded-full bg-[var(--md-sys-color-primary)]"
-                  :style="{
-                    width:
-                      (ch.is_completed
-                        ? 100
-                        : Math.min(100, Math.round((ch.current_page / Math.max(1, ch.page_count)) * 100))) + '%',
-                  }"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div class="flex shrink-0 items-center gap-1" @click.stop>
-            <button
-              type="button"
-              :title="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
-              class="md-icon-btn md-icon-btn-sm md-state"
-              :class="ch.is_completed ? '!text-[var(--md-sys-color-success)]' : ''"
-              @click="toggleChapterRead(ch)"
-            >
-              <LuCheck class="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              :title="t('series.markPrevRead')"
-              class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-primary)]"
-              @click="handleMarkPreviousRead(ch)"
-            >
-              <LuCheckCheck class="h-4 w-4" />
-            </button>
-            <button
-              v-if="auth.isAdmin"
-              type="button"
-              :title="t('series.editChapter')"
-              class="md-icon-btn md-icon-btn-sm md-state"
-              @click="editingChapter = ch"
-            >
-              <LuPencil class="h-3.5 w-3.5" />
-            </button>
-            <button
-              v-if="auth.isAdmin"
-              type="button"
-              :title="t('series.deleteChapter')"
-              class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
-              @click="handleDeleteChapter(ch)"
-            >
-              <LuTrash2 class="h-3.5 w-3.5" />
-            </button>
-          </div>
+          </MdCard>
         </div>
-      </div>
-    </section>
+
+        <!-- Flat Chapter List Mode (reusing exact same ComicChapterRow) -->
+        <MdCard v-else variant="filled" padding="none" class="overflow-hidden">
+          <div class="divide-y divide-outline-variant/50">
+            <ComicChapterRow
+              v-for="ch in filteredSortedChapters"
+              :key="ch.id"
+              :badge="chapterKindBadge(ch)"
+              :title="ch.title || chapterKindBadge(ch)"
+              :meta-text="t('series.pagesCount', { count: ch.page_count })"
+              :progress-text="
+                ch.current_page > 0 && !ch.is_completed
+                  ? t('series.readProgress', { page: ch.current_page, total: ch.page_count })
+                  : ''
+              "
+              :progress-percent="chapterProgressPercent(ch)"
+              :completed="ch.is_completed"
+              :completed-label="t('series.completedBadge')"
+              :missing="ch.is_missing"
+              :missing-label="t('series.missingBadge')"
+              :active="detail.continue_reading?.chapter_id === ch.id"
+              :menu-aria-label="t('series.chapterActions')"
+              @open="openChapter(ch)"
+            >
+              <template #menu="{ close }">
+                <MdMenuItem
+                  :label="ch.is_completed ? t('series.markUnread') : t('series.markRead')"
+                  :icon="LuCheck"
+                  @select="
+                    close();
+                    toggleChapterRead(ch)
+                  "
+                />
+                <MdMenuItem
+                  :label="t('series.markPrevRead')"
+                  :icon="LuCheckCheck"
+                  @select="
+                    close();
+                    handleMarkPreviousRead(ch)
+                  "
+                />
+                <MdMenuItem
+                  v-if="auth.isAdmin"
+                  :label="t('series.editChapter')"
+                  :icon="LuPencil"
+                  @select="
+                    close();
+                    editingChapter = ch
+                  "
+                />
+                <MdMenuItem
+                  v-if="auth.isAdmin"
+                  :label="t('series.deleteChapter')"
+                  :icon="LuTrash2"
+                  destructive
+                  @select="
+                    close();
+                    handleDeleteChapter(ch)
+                  "
+                />
+              </template>
+            </ComicChapterRow>
+          </div>
+        </MdCard>
+      </section>
+    </MediaDetailTemplate>
 
     <!-- Modals -->
     <SeriesMetadataModal
       :open="editSeriesOpen"
-      :series="detail.series"
+      :series="detail?.series ?? null"
       @close="editSeriesOpen = false"
       @saved="onSeriesMetadataSaved"
     />
@@ -855,20 +837,17 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
     <MdDialog
       :open="shelfModalOpen"
       :title="t('shelves.selectShelvesTitle')"
-      max-width="max-w-md"
+      size="sm"
       @close="shelfModalOpen = false"
     >
-      <div class="space-y-3">
-        <p
-          v-if="allShelves.length === 0"
-          class="text-sm text-[var(--md-sys-color-on-surface-variant)]"
-        >
+      <div class="space-y-2.5">
+        <p v-if="allShelves.length === 0" class="text-body-medium text-on-surface-variant">
           {{ t('shelves.emptyShelves') }}
         </p>
         <div
           v-for="sh in allShelves"
           :key="sh.shelf.id"
-          class="rounded-xl border border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)] p-3"
+          class="rounded-corner-md bg-surface-container-low p-3"
         >
           <AppCheckbox
             :model-value="selectedShelfIds.includes(sh.shelf.id)"
@@ -878,23 +857,19 @@ async function handleDeleteChapter(ch: ChapterItemDto): Promise<void> {
           />
         </div>
       </div>
+
       <template #footer>
-        <div class="ml-auto flex items-center gap-2">
-          <button
-            type="button"
-            class="md-btn md-btn-text md-state"
-            @click="shelfModalOpen = false"
-          >
-            {{ t('common.cancel') }}
-          </button>
-          <button
-            type="button"
-            class="md-btn md-btn-filled md-state"
-            @click="saveShelvesSelection"
-          >
-            {{ t('common.save') }}
-          </button>
-        </div>
+        <MdButton variant="text" :disabled="savingShelves" @click="shelfModalOpen = false">
+          {{ t('common.cancel') }}
+        </MdButton>
+        <MdButton
+          variant="filled"
+          :loading="savingShelves"
+          :disabled="savingShelves"
+          @click="saveShelvesSelection"
+        >
+          {{ t('common.save') }}
+        </MdButton>
       </template>
     </MdDialog>
   </div>

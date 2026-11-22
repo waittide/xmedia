@@ -1,18 +1,31 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
   LuArrowUpDown,
   LuBookOpen,
-  LuChevronLeft,
   LuPlay,
-  LuSearch,
+  LuRefreshCw,
+  LuRotateCcw,
+  LuSettings2,
+  LuTrash2,
 } from 'vue-icons-plus/lu'
-import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
 import {
-  ONLINE_COMIC_CTX_KEY,
+  MediaDetailTemplate,
+  type MediaDetailSpec,
+  type MediaDetailTag,
+} from '@/components/domain'
+import {
+  MdButton,
+  MdCard,
+  MdEmptyState,
+  MdMenuItem,
+  MdTextField,
+} from '@/components/ui'
+import ComicChapterRow from '@/domains/comic/components/ComicChapterRow.vue'
+import { useComicI18n as useI18n } from '@/domains/comic/i18n'
+import {
   ONLINE_COMIC_READER_CTX_KEY,
   onlineComicApi,
   resolveOnlineComicCoverUrl,
@@ -22,10 +35,24 @@ import {
   type OnlineComicDetailDto,
   type OnlineComicReaderContextStorage,
 } from '@/domains/comic/onlineApi'
+import { readOnlineComicContext, saveOnlineComicContext } from '@/domains/comic/utils/mappers'
+import {
+  libraryRoute,
+  parseItemRef,
+  playRoute,
+  useOnlineItemState,
+  type OnlineItemMetadataInput,
+  type TrackedItemRef,
+} from '@/sources'
+import { useAuthStore } from '@/stores/auth'
+import { useSnackbarStore } from '@/stores/snackbar'
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+const snackbar = useSnackbarStore()
 
 const loading = ref(true)
 const errorMessage = ref<string | null>(null)
@@ -49,7 +76,7 @@ function isAbortError(err: unknown): boolean {
     : err instanceof Error && err.name === 'AbortError'
 }
 
-function readQueryParam(keys: string[]): string {
+function readQueryParam(keys: readonly string[]): string {
   for (const k of keys) {
     const val = route.query[k]
     if (typeof val === 'string' && val.trim()) {
@@ -59,48 +86,40 @@ function readQueryParam(keys: string[]): string {
   return ''
 }
 
-function readStoredContext(): OnlineComicContextStorage | null {
-  try {
-    const raw = sessionStorage.getItem(ONLINE_COMIC_CTX_KEY)
-    if (!raw) return null
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-    return parsed as OnlineComicContextStorage
-  } catch {
-    return null
-  }
-}
-
 function hydrateParams(): { sourceId: string; comicUrl: string } {
-  const qSourceId = readQueryParam(['sourceId', 'source_id'])
-  const qComicUrl = readQueryParam(['comicUrl', 'comic_url'])
+  const parsed = parseItemRef(route, 'comic')
+  const parsedSourceId = parsed && parsed.scope !== 'local' ? parsed.sourceId : ''
+  const parsedComicUrl = parsed && parsed.scope !== 'local' ? parsed.ref : ''
+  const parsedHints = parsed && parsed.scope !== 'local' ? parsed.hints : undefined
+
   const qSourceName = readQueryParam(['sourceName', 'source_name'])
-  const qTitle = readQueryParam(['title', 'name'])
-  const qAuthor = readQueryParam(['author'])
-  const qCoverUrl = readQueryParam(['coverUrl', 'cover_url'])
-  const qTocUrl = readQueryParam(['tocUrl', 'toc_url'])
+  const qTocUrl = parsedHints?.extra?.toc || readQueryParam(['toc', 'tocUrl', 'toc_url'])
 
-  const stored = readStoredContext()
-  const matchesStored =
+  const stored = readOnlineComicContext()
+  const matchesStored = Boolean(
     stored &&
-    ((qSourceId && qComicUrl && stored.sourceId === qSourceId && stored.comicUrl === qComicUrl) ||
-      (!qSourceId && !qComicUrl && Boolean(stored.sourceId && stored.comicUrl)))
+      ((parsedSourceId &&
+        parsedComicUrl &&
+        stored.sourceId === parsedSourceId &&
+        stored.comicUrl === parsedComicUrl) ||
+        (!parsedSourceId && !parsedComicUrl && Boolean(stored.sourceId && stored.comicUrl))),
+  )
 
-  const sourceId = qSourceId || (matchesStored ? stored.sourceId : '')
-  const comicUrl = qComicUrl || (matchesStored ? stored.comicUrl : '')
+  const sourceId = parsedSourceId || (matchesStored && stored ? stored.sourceId : '')
+  const comicUrl = parsedComicUrl || (matchesStored && stored ? stored.comicUrl : '')
 
   fallbackCtx.value = {
     sourceId,
     comicUrl,
-    sourceName: qSourceName || (matchesStored ? stored.sourceName : undefined),
-    title: qTitle || (matchesStored ? stored.title : undefined),
-    author: qAuthor || (matchesStored ? stored.author : undefined),
-    coverUrl: qCoverUrl || (matchesStored ? stored.coverUrl : undefined),
-    tocUrl: qTocUrl || (matchesStored ? stored.tocUrl : undefined),
-    intro: matchesStored ? stored.intro : undefined,
-    readingDirection: matchesStored ? stored.readingDirection : undefined,
-    returnKeyword: matchesStored ? stored.returnKeyword : undefined,
-    returnSourceId: matchesStored ? stored.returnSourceId : undefined,
+    sourceName: qSourceName || (matchesStored ? stored?.sourceName : undefined),
+    title: parsedHints?.title || (matchesStored ? stored?.title : undefined),
+    author: parsedHints?.author || (matchesStored ? stored?.author : undefined),
+    coverUrl: parsedHints?.cover || (matchesStored ? stored?.coverUrl : undefined),
+    tocUrl: qTocUrl || (matchesStored ? stored?.tocUrl : undefined),
+    intro: matchesStored ? stored?.intro : undefined,
+    readingDirection: matchesStored ? stored?.readingDirection : undefined,
+    returnKeyword: matchesStored ? stored?.returnKeyword : undefined,
+    returnSourceId: matchesStored ? stored?.returnSourceId : undefined,
   }
 
   resolvedSourceId.value = sourceId
@@ -109,6 +128,227 @@ function hydrateParams(): { sourceId: string; comicUrl: string } {
 
   return { sourceId, comicUrl }
 }
+
+const trackedRef = computed<TrackedItemRef | null>(() => {
+  if (!resolvedSourceId.value || !resolvedComicUrl.value) return null
+  return {
+    scope: 'online',
+    domain: 'comic',
+    sourceId: resolvedSourceId.value,
+    ref: resolvedComicUrl.value,
+    hints: {
+      title: displayTitle.value,
+      cover: displayCoverUrl.value || undefined,
+      author: rawAuthor.value || undefined,
+    },
+  }
+})
+
+const displayTitle = computed(
+  () =>
+    detail.value?.title ||
+    onlineState.record.value?.title ||
+    fallbackCtx.value?.title ||
+    resolvedComicUrl.value ||
+    'Comic',
+)
+
+const rawAuthor = computed(
+  () =>
+    detail.value?.author ||
+    onlineState.record.value?.subtitle ||
+    fallbackCtx.value?.author ||
+    '',
+)
+
+const displayAuthor = computed(() => rawAuthor.value || t('online.unknownAuthor'))
+
+const displaySummary = computed(
+  () =>
+    detail.value?.intro ||
+    onlineState.record.value?.intro ||
+    fallbackCtx.value?.intro ||
+    null,
+)
+
+const displayCoverUrl = computed(() =>
+  resolveOnlineComicCoverUrl(
+    detail.value?.proxy_cover_url,
+    detail.value?.cover_url ?? onlineState.record.value?.coverUrl ?? fallbackCtx.value?.coverUrl,
+    resolvedSourceId.value,
+  ),
+)
+
+const displayDirection = computed<ComicReadingDirection>(() => {
+  const extraDir = onlineState.record.value?.extra?.reading_direction
+  const storedDir: ComicReadingDirection | undefined =
+    extraDir === 'rtl' || extraDir === 'ltr' || extraDir === 'webtoon' ? extraDir : undefined
+  return detail.value?.reading_direction || fallbackCtx.value?.readingDirection || storedDir || 'rtl'
+})
+
+const onlineMeta = computed<OnlineItemMetadataInput>(() => {
+  const tocUrl =
+    detail.value?.toc_url ||
+    fallbackCtx.value?.tocUrl ||
+    (typeof onlineState.record.value?.extra?.toc_url === 'string'
+      ? onlineState.record.value.extra.toc_url
+      : '')
+  return {
+    title: displayTitle.value,
+    subtitle: rawAuthor.value || null,
+    coverUrl:
+      detail.value?.cover_url ??
+      fallbackCtx.value?.coverUrl ??
+      onlineState.record.value?.coverUrl ??
+      null,
+    intro: displaySummary.value,
+    kind: detail.value?.kind ?? onlineState.record.value?.kind ?? null,
+    extra: {
+      toc_url: tocUrl || undefined,
+      reading_direction: displayDirection.value,
+      source_name:
+        resolvedSourceName.value || onlineState.record.value?.sourceName || undefined,
+    },
+  }
+})
+
+const onlineState = useOnlineItemState(trackedRef, onlineMeta)
+
+const effectiveSourceName = computed(
+  () => resolvedSourceName.value || onlineState.record.value?.sourceName || '',
+)
+
+const availabilityWarning = computed<string | null>(() => {
+  if (!onlineState.blocked.value) return null
+  if (onlineState.availability.value === 'source_missing') {
+    return t('online.sourceMissingWarning')
+  }
+  return t('online.sourceDisabledWarning')
+})
+
+const directionLabel = computed(() => {
+  if (displayDirection.value === 'ltr') return t('series.directionLtr')
+  if (displayDirection.value === 'webtoon') return t('series.directionWebtoon')
+  return t('series.directionRtl')
+})
+
+const heroSubtitle = computed(() => {
+  const parts: string[] = [displayAuthor.value]
+  if (effectiveSourceName.value) parts.push(effectiveSourceName.value)
+  if (detail.value?.status) parts.push(detail.value.status)
+  return parts.join(' · ')
+})
+
+const kindTags = computed<MediaDetailTag[]>(() => {
+  const raw = detail.value?.kind || onlineState.record.value?.kind
+  if (!raw) return []
+  return raw
+    .split(/[,，|/]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((label) => ({ label, value: label }))
+})
+
+const detailSpecs = computed<MediaDetailSpec[]>(() => {
+  const specs: MediaDetailSpec[] = []
+  if (effectiveSourceName.value) {
+    specs.push({ label: t('online.specSource'), value: effectiveSourceName.value })
+  }
+  if (detail.value?.status) {
+    specs.push({ label: t('online.specStatus'), value: detail.value.status })
+  }
+  specs.push({ label: t('online.readingDirection'), value: directionLabel.value })
+  if (detail.value?.last_chapter) {
+    specs.push({ label: t('online.specLatestChapter'), value: detail.value.last_chapter })
+  }
+  if (chapters.value.length > 0) {
+    specs.push({
+      label: t('online.specChapterCount'),
+      value: t('online.chaptersCount', { count: chapters.value.length }),
+    })
+  }
+  return specs
+})
+
+const readableChapters = computed(() =>
+  chapters.value.filter((ch) => !ch.is_volume && Boolean(ch.url?.trim())),
+)
+
+const displayedChapters = computed(() => {
+  const q = chapterQuery.value.trim().toLowerCase()
+  const base = orderAsc.value ? [...chapters.value] : [...chapters.value].reverse()
+  if (!q) return base
+  return base.filter((ch) => ch.title.toLowerCase().includes(q))
+})
+
+const savedProgress = computed(() => onlineState.progress.value)
+
+const resumeChapter = computed<OnlineComicChapter | null>(() => {
+  const prog = savedProgress.value
+  if (!prog || readableChapters.value.length === 0) return null
+  if (prog.unitKey) {
+    const byUrl = readableChapters.value.find((ch) => ch.url === prog.unitKey)
+    if (byUrl) return byUrl
+  }
+  if (prog.unitIndex !== undefined && prog.unitIndex >= 0) {
+    const byIdx = chapters.value[prog.unitIndex]
+    if (byIdx && !byIdx.is_volume && byIdx.url) return byIdx
+  }
+  return null
+})
+
+const resumePage = computed<number>(() => {
+  const pos = savedProgress.value?.position
+  if (pos !== undefined && Number.isFinite(pos) && pos >= 1) {
+    return Math.floor(pos)
+  }
+  return 1
+})
+
+const progressPercent = computed<number | null>(() => {
+  const ratio = onlineState.record.value?.progressRatio
+  if (ratio !== null && ratio !== undefined && Number.isFinite(ratio) && ratio > 0) {
+    return Math.min(100, Math.max(1, Math.round(ratio * 100)))
+  }
+  return null
+})
+
+const progressLabel = computed(() => {
+  const prog = savedProgress.value
+  if (!prog) return ''
+  const title = prog.unitTitle || resumeChapter.value?.title || ''
+  if (prog.duration && prog.duration > 0 && prog.position > 0) {
+    const pageStr = t('online.continueOnlinePage', {
+      page: Math.floor(prog.position),
+      total: Math.floor(prog.duration),
+    })
+    return title ? `${title} · ${pageStr}` : pageStr
+  }
+  return title
+})
+
+const primaryActionLabel = computed(() => {
+  if (resumeChapter.value) {
+    return t('online.continueOnlineChapter', {
+      chapter: resumeChapter.value.title || `#${resumeChapter.value.index + 1}`,
+    })
+  }
+  return t('series.startReading')
+})
+
+const backRoute = computed(() =>
+  libraryRoute('comic', {
+    scope: 'online',
+    q: fallbackCtx.value?.returnKeyword || null,
+    sourceId: fallbackCtx.value?.returnSourceId || null,
+  }),
+)
+
+// When source is blocked (disabled/missing), show stored record metadata + warning banner instead of error wall
+const effectiveError = computed<string | null>(() => {
+  if (onlineState.blocked.value && onlineState.record.value) return null
+  return errorMessage.value
+})
 
 async function loadDetail(): Promise<void> {
   const { sourceId, comicUrl } = hydrateParams()
@@ -155,7 +395,7 @@ async function loadDetail(): Promise<void> {
     chapters.value = loadedChapters
     resolvedSourceName.value = res.source_name || resolvedSourceName.value
 
-    const nextStored: OnlineComicContextStorage = {
+    saveOnlineComicContext({
       sourceId,
       sourceName: resolvedSourceName.value,
       comicUrl: res.detail.comic_url || comicUrl,
@@ -167,12 +407,7 @@ async function loadDetail(): Promise<void> {
       readingDirection: res.detail.reading_direction,
       returnKeyword: fallbackCtx.value?.returnKeyword,
       returnSourceId: fallbackCtx.value?.returnSourceId,
-    }
-    try {
-      sessionStorage.setItem(ONLINE_COMIC_CTX_KEY, JSON.stringify(nextStored))
-    } catch {
-      // ignore storage errors
-    }
+    })
   } catch (err) {
     if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== loadSeq) return
     errorMessage.value = err instanceof Error ? err.message : String(err)
@@ -199,64 +434,21 @@ onBeforeUnmount(() => {
 })
 
 watch(
-  () => [route.query.sourceId, route.query.source_id, route.query.comicUrl, route.query.comic_url],
+  () => [
+    route.query.source,
+    route.query.sourceId,
+    route.query.source_id,
+    route.query.ref,
+    route.query.comicUrl,
+    route.query.comic_url,
+  ],
   () => {
     void loadDetail()
   },
 )
 
-const displayTitle = computed(
-  () => detail.value?.title || fallbackCtx.value?.title || resolvedComicUrl.value || 'Comic',
-)
-
-const displayAuthor = computed(
-  () => detail.value?.author || fallbackCtx.value?.author || t('online.unknownAuthor'),
-)
-
-const displaySummary = computed(
-  () => detail.value?.intro || fallbackCtx.value?.intro || t('series.summaryEmpty'),
-)
-
-const displayCoverUrl = computed(() =>
-  resolveOnlineComicCoverUrl(
-    detail.value?.proxy_cover_url,
-    detail.value?.cover_url ?? fallbackCtx.value?.coverUrl,
-    resolvedSourceId.value,
-  ),
-)
-
-const displayDirection = computed<ComicReadingDirection>(
-  () => detail.value?.reading_direction || fallbackCtx.value?.readingDirection || 'rtl',
-)
-
-const directionLabel = computed(() => {
-  if (displayDirection.value === 'ltr') return t('series.directionLtr')
-  if (displayDirection.value === 'webtoon') return t('series.directionWebtoon')
-  return t('series.directionRtl')
-})
-
-const kindTags = computed(() => {
-  const raw = detail.value?.kind
-  if (!raw) return []
-  return raw
-    .split(/[,，|/]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-})
-
-const readableChapters = computed(() =>
-  chapters.value.filter((ch) => !ch.is_volume && Boolean(ch.url?.trim())),
-)
-
-const displayedChapters = computed(() => {
-  const q = chapterQuery.value.trim().toLowerCase()
-  const base = orderAsc.value ? [...chapters.value] : [...chapters.value].reverse()
-  if (!q) return base
-  return base.filter((ch) => ch.title.toLowerCase().includes(q))
-})
-
-function openChapter(ch: OnlineComicChapter): void {
-  if (ch.is_volume || !ch.url?.trim() || !resolvedSourceId.value) return
+function openChapter(ch: OnlineComicChapter, initialPage = 1): void {
+  if (onlineState.blocked.value || ch.is_volume || !ch.url?.trim() || !resolvedSourceId.value) return
   const idxByUrlAndIndex = chapters.value.findIndex(
     (c) => c.url === ch.url && c.index === ch.index,
   )
@@ -271,7 +463,7 @@ function openChapter(ch: OnlineComicChapter): void {
   const comicUrl = detail.value?.comic_url || resolvedComicUrl.value
   const tocUrl = detail.value?.toc_url || fallbackCtx.value?.tocUrl || ''
   const title = displayTitle.value
-  const sourceName = resolvedSourceName.value
+  const sourceName = effectiveSourceName.value
   const readingDirection = displayDirection.value
 
   const readerCtx: OnlineComicReaderContextStorage = {
@@ -294,279 +486,208 @@ function openChapter(ch: OnlineComicChapter): void {
     // ignore storage errors
   }
 
-  const query: Record<string, string> = {
+  const refObj: TrackedItemRef = {
+    scope: 'online',
+    domain: 'comic',
     sourceId: resolvedSourceId.value,
-    comicUrl,
-    chapterUrl: ch.url,
-    chapterIndex: String(chapterIndex),
-    readingDirection,
+    ref: comicUrl,
+    hints: {
+      title,
+      cover: detail.value?.cover_url ?? fallbackCtx.value?.coverUrl ?? undefined,
+      author: rawAuthor.value || undefined,
+      extra: {
+        chapter: ch.url,
+        ...(tocUrl ? { toc: tocUrl } : {}),
+        ...(initialPage > 1 ? { page: String(initialPage) } : {}),
+      },
+    },
   }
-  if (tocUrl) query.tocUrl = tocUrl
-  if (title) query.title = title
-  if (sourceName) query.sourceName = sourceName
 
-  void router.push({ path: '/comic/online/read', query })
+  void router.push(
+    playRoute(refObj, {
+      unitKey: ch.url,
+      unitIndex: chapterIndex,
+      unitTitle: ch.title,
+      position: initialPage,
+    }),
+  )
 }
 
-function startReadingFirst(): void {
+function handlePrimaryRead(): void {
+  if (onlineState.blocked.value) return
+  if (resumeChapter.value) {
+    openChapter(resumeChapter.value, resumePage.value)
+    return
+  }
   const first = readableChapters.value[0] ?? chapters.value[0]
   if (first) {
-    openChapter(first)
+    openChapter(first, 1)
   }
 }
 
-function backToOnlineSearch(): void {
-  const query: Record<string, string> = { scope: 'online' }
-  if (fallbackCtx.value?.returnKeyword?.trim()) {
-    query.q = fallbackCtx.value.returnKeyword.trim()
+async function handleClearProgress(): Promise<void> {
+  await onlineState.clearProgress()
+  snackbar.show({ message: t('online.progressCleared') })
+}
+
+async function handleRemoveTracking(): Promise<void> {
+  await onlineState.remove()
+  snackbar.show({ message: t('online.removedFromTracking') })
+  if (onlineState.blocked.value) {
+    await router.replace(backRoute.value)
   }
-  if (fallbackCtx.value?.returnSourceId?.trim()) {
-    query.source = fallbackCtx.value.returnSourceId.trim()
-  }
-  void router.push({ path: '/comic/series', query })
 }
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl space-y-8 p-6 sm:p-8">
-    <!-- Top Back Bar -->
-    <div class="flex items-center justify-between gap-3">
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-tonal md-state"
-        @click="backToOnlineSearch"
-      >
-        <LuChevronLeft class="h-4 w-4" />
-        <span>{{ t('online.backToSearch') }}</span>
-      </button>
-
-      <RefreshButton
-        v-if="resolvedSourceId && resolvedComicUrl"
-        size="md"
-        :action="loadDetail"
-        :busy="loading"
-      />
-    </div>
-
-    <!-- Error State (invalid params or fetch failed) -->
-    <div
-      v-if="errorMessage && !loading"
-      class="md-card-filled flex flex-col items-center justify-center space-y-4 rounded-3xl p-10 text-center"
+  <div class="px-4 py-6 sm:px-6 md:px-8">
+    <MediaDetailTemplate
+      :title="displayTitle"
+      :subtitle="heroSubtitle"
+      :cover="displayCoverUrl || null"
+      aspect="poster"
+      cover-style="book"
+      :fallback-icon="LuBookOpen"
+      :show-back="true"
+      :back-label="t('online.backToSearch')"
+      :back-to="backRoute"
+      :progress-percent="progressPercent"
+      :progress-label="progressLabel"
+      :primary-action-label="primaryActionLabel"
+      :primary-action-icon="LuPlay"
+      :primary-action-disabled="onlineState.blocked.value || readableChapters.length === 0"
+      :show-favorite="Boolean(trackedRef)"
+      :favorite="onlineState.favorite.value"
+      :favorite-loading="onlineState.loading.value"
+      :description="displaySummary"
+      :tags="kindTags"
+      :specs="detailSpecs"
+      :specs-title="t('series.specsTitle')"
+      :loading="loading && !detail && !onlineState.record.value"
+      :error="effectiveError"
+      :availability-warning="availabilityWarning"
+      @primary-action="handlePrimaryRead"
+      @toggle-favorite="onlineState.toggleFavorite()"
+      @retry="loadDetail"
     >
-      <p class="text-sm font-semibold text-[var(--md-sys-color-error)]">
-        {{ t('online.detailLoadFailed') }}
-      </p>
-      <p class="max-w-md text-xs text-[var(--md-sys-color-on-surface-variant)]">
-        {{ errorMessage }}
-      </p>
-      <div class="flex flex-wrap items-center justify-center gap-2.5">
-        <button
-          v-if="resolvedSourceId && resolvedComicUrl"
-          type="button"
-          class="md-btn md-btn-sm md-btn-filled md-state"
-          @click="loadDetail"
+      <template v-if="availabilityWarning" #warning-actions>
+        <MdButton
+          v-if="auth.isAdmin"
+          variant="tonal"
+          size="sm"
+          :icon="LuSettings2"
+          :to="{ path: '/settings/sources', query: { domain: 'comic' } }"
         >
-          {{ t('online.retry') }}
-        </button>
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
-          @click="backToOnlineSearch"
+          {{ t('online.manageSourcesBtn') }}
+        </MdButton>
+        <MdButton
+          v-if="onlineState.record.value"
+          variant="text"
+          size="sm"
+          :icon="LuTrash2"
+          @click="handleRemoveTracking"
         >
-          {{ t('online.backToOnlineList') }}
-        </button>
-      </div>
-    </div>
+          {{ t('online.removeRecordBtn') }}
+        </MdButton>
+      </template>
 
-    <!-- Loading Skeleton -->
-    <div
-      v-else-if="loading && !detail"
-      class="md-card-filled flex flex-col items-center justify-center rounded-3xl py-20 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-    >
-      <div
-        class="mb-3 h-7 w-7 animate-spin rounded-full border-2 border-[var(--md-sys-color-primary)] border-t-transparent"
-      />
-      <span>{{ t('online.loadingDetail') }}</span>
-    </div>
+      <template v-if="resolvedSourceId && resolvedComicUrl" #overflow-menu="{ close }">
+        <MdMenuItem
+          :label="globalT('common.refresh')"
+          :icon="LuRefreshCw"
+          @select="
+            close();
+            loadDetail()
+          "
+        />
+        <MdMenuItem
+          v-if="savedProgress"
+          :label="t('online.clearProgressBtn')"
+          :icon="LuRotateCcw"
+          @select="
+            close();
+            handleClearProgress()
+          "
+        />
+      </template>
 
-    <!-- Hero & Chapters Content -->
-    <template v-else>
-      <section
-        class="md-card-filled flex flex-col gap-8 rounded-3xl border border-[var(--md-sys-color-outline-variant)]/50 p-6 shadow-[var(--md-sys-elevation-1)] md:flex-row md:p-8"
-      >
-        <!-- Cover -->
-        <div class="mx-auto w-48 shrink-0 md:mx-0 md:w-56">
-          <div class="book-shadow overflow-hidden rounded-2xl">
-            <MediaCoverImage
-              :src="displayCoverUrl"
-              :alt="displayTitle"
-              aspect-class="aspect-[2/3]"
-              rounded="rounded-2xl"
-              :fallback-icon="LuBookOpen"
-              fallback-icon-class="h-12 w-12 text-[var(--md-sys-color-on-surface-variant)]/40"
-            />
-          </div>
-        </div>
-
-        <!-- Metadata & Actions -->
-        <div class="flex min-w-0 flex-1 flex-col justify-between space-y-5">
-          <div class="space-y-3.5">
-            <!-- Meta Badges -->
-            <div class="flex flex-wrap items-center gap-2 text-xs">
-              <span
-                v-if="resolvedSourceName"
-                class="rounded-full bg-[var(--md-sys-color-primary-container)] px-3 py-1 font-semibold text-[var(--md-sys-color-on-primary-container)]"
-              >
-                {{ t('online.sourceLabel') }}: {{ resolvedSourceName }}
-              </span>
-              <span
-                v-if="detail?.status"
-                class="rounded-full bg-[var(--md-sys-color-secondary-container)] px-3 py-1 font-semibold text-[var(--md-sys-color-on-secondary-container)]"
-              >
-                {{ detail.status }}
-              </span>
-              <span
-                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ directionLabel }}
-              </span>
-              <span
-                v-if="detail?.word_count"
-                class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-3 py-1 font-medium text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ detail.word_count }}
-              </span>
-            </div>
-
-            <div>
-              <h1
-                class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)] sm:text-3xl"
-              >
-                {{ displayTitle }}
-              </h1>
-              <p class="mt-1 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ t('series.writers') }}: {{ displayAuthor }}
-                <span v-if="detail?.last_chapter">
-                  · {{ t('online.latestChapter', { chapter: detail.last_chapter }) }}
-                </span>
-              </p>
-            </div>
-
-            <p
-              class="text-sm leading-relaxed whitespace-pre-line text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ displaySummary }}
-            </p>
-
-            <div v-if="kindTags.length > 0" class="flex flex-wrap gap-1.5 pt-1">
-              <span
-                v-for="tag in kindTags"
-                :key="tag"
-                class="inline-flex h-7 items-center rounded-full border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)]/75 px-3 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ tag }}
-              </span>
-            </div>
-          </div>
-
-          <div class="flex flex-wrap items-center gap-2.5 pt-2">
-            <button
-              type="button"
-              :disabled="readableChapters.length === 0"
-              class="md-btn md-btn-filled md-state !h-11 !px-6 text-sm shadow-[var(--md-sys-elevation-1)]"
-              @click="startReadingFirst"
-            >
-              <LuPlay class="h-4 w-4 fill-current" />
-              <span>{{ t('series.startReading') }}</span>
-            </button>
-          </div>
-        </div>
-      </section>
+      <template v-if="onlineState.record.value" #overflow-danger="{ close }">
+        <MdMenuItem
+          :label="t('online.removeRecordBtn')"
+          :icon="LuTrash2"
+          destructive
+          @select="
+            close();
+            handleRemoveTracking()
+          "
+        />
+      </template>
 
       <!-- Chapters Section -->
-      <section class="space-y-4">
+      <section v-if="!onlineState.blocked.value" class="space-y-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <div class="flex items-center gap-3">
-            <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
+          <div class="flex items-center gap-2.5">
+            <h2 class="text-title-large text-on-surface">
               {{ t('series.chaptersHeader') }}
             </h2>
             <span
-              class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface-variant)]"
+              class="text-label-medium rounded-corner-full bg-surface-container-high px-2.5 py-0.5 tabular-nums text-on-surface-variant"
             >
               {{ t('online.chaptersCount', { count: chapters.length }) }}
             </span>
           </div>
 
           <div class="flex flex-wrap items-center gap-2.5">
-            <div v-if="chapters.length > 10" class="relative w-48">
-              <LuSearch
-                class="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-              />
-              <input
+            <div v-if="chapters.length > 10" class="w-48">
+              <MdTextField
                 v-model="chapterQuery"
-                type="text"
+                type="search"
+                size="sm"
+                clearable
                 :placeholder="t('online.filterChaptersPlaceholder')"
-                class="md-input h-8 w-full !pl-8 text-xs"
               />
             </div>
 
-            <button
-              type="button"
-              class="md-btn md-btn-sm md-btn-outlined md-state"
+            <MdButton
+              variant="outlined"
+              size="sm"
+              :icon="LuArrowUpDown"
               @click="orderAsc = !orderAsc"
             >
-              <LuArrowUpDown class="h-3.5 w-3.5" />
-              <span>{{ orderAsc ? t('series.orderAsc') : t('series.orderDesc') }}</span>
-            </button>
+              {{ orderAsc ? t('series.orderAsc') : t('series.orderDesc') }}
+            </MdButton>
           </div>
         </div>
 
-        <!-- Empty Chapters Notice -->
-        <div
+        <MdEmptyState
           v-if="!loading && chapters.length === 0"
-          class="md-card-outlined rounded-3xl border-dashed py-16 text-center text-sm text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ t('online.emptyChapters') }}
-        </div>
+          compact
+          :icon="LuBookOpen"
+          :title="t('online.emptyChapters')"
+        />
 
-        <!-- Chapter Rows -->
-        <div
-          v-else
-          class="md-card-filled divide-y divide-[var(--md-sys-color-outline-variant)]/45 overflow-hidden border border-[var(--md-sys-color-outline-variant)]/50"
-        >
-          <button
-            v-for="ch in displayedChapters"
-            :key="`${ch.index}-${ch.url}`"
-            type="button"
-            :disabled="ch.is_volume || !ch.url"
-            class="md-state group flex w-full items-center justify-between gap-4 px-5 py-3.5 text-left transition hover:bg-[var(--md-sys-color-surface-container)] disabled:cursor-default disabled:opacity-65"
-            @click="openChapter(ch)"
-          >
-            <div class="flex min-w-0 flex-1 items-center gap-2.5">
-              <span
-                class="shrink-0 rounded-md bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-xs font-semibold text-[var(--md-sys-color-on-surface)]"
-              >
-                {{ ch.is_volume ? t('online.volumeBadge') : `#${ch.index + 1}` }}
-              </span>
-              <span
-                class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
-              >
-                {{ ch.title }}
-              </span>
-            </div>
+        <MdEmptyState
+          v-else-if="!loading && displayedChapters.length === 0"
+          compact
+          :icon="LuBookOpen"
+          :title="t('series.noMatchingChapters')"
+        />
 
-            <div class="flex shrink-0 items-center gap-3 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              <span v-if="ch.update_time">{{ ch.update_time }}</span>
-              <span
-                v-if="!ch.is_volume && ch.url"
-                class="font-semibold text-[var(--md-sys-color-primary)] opacity-80 group-hover:opacity-100"
-              >
-                {{ t('online.openChapter') }}
-              </span>
-            </div>
-          </button>
-        </div>
+        <MdCard v-else variant="filled" padding="none" class="overflow-hidden">
+          <div class="divide-y divide-outline-variant/50">
+            <ComicChapterRow
+              v-for="ch in displayedChapters"
+              :key="`${ch.index}-${ch.url}`"
+              :badge="ch.is_volume ? t('online.volumeBadge') : `#${ch.index + 1}`"
+              :title="ch.title"
+              :meta-text="ch.update_time || ''"
+              :active="resumeChapter?.url === ch.url"
+              :disabled="ch.is_volume || !ch.url || onlineState.blocked.value"
+              @open="openChapter(ch, resumeChapter?.url === ch.url ? resumePage : 1)"
+            />
+          </div>
+        </MdCard>
       </section>
-    </template>
+    </MediaDetailTemplate>
   </div>
 </template>
