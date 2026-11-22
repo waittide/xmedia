@@ -1,28 +1,34 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type RouteLocationRaw } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   LuBookOpen,
   LuClapperboard,
+  LuCompass,
   LuDisc3,
-  LuFileUp,
-  LuFolderUp,
+  LuFolderHeart,
+  LuHome,
   LuLayers,
+  LuLibrary,
   LuListChecks,
   LuLogOut,
   LuMonitor,
   LuMoon,
-  LuPanelLeftClose,
-  LuPanelLeftOpen,
   LuSearch,
   LuSettings,
   LuSun,
   LuUpload,
-  LuX,
 } from 'vue-icons-plus/lu'
+import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
+import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
+import { MdBadge, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useShowMusicBar } from '@/composables/useShowMusicBar'
+import LyricsOverlay from '@/domains/music/components/LyricsOverlay.vue'
+import PlayerBar from '@/domains/music/components/PlayerBar.vue'
+import QueueDrawer from '@/domains/music/components/QueueDrawer.vue'
+import { usePlayerStore } from '@/domains/music/player'
 import { ensureDomainLocale } from '@/router'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
@@ -30,27 +36,22 @@ import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
 import { useOnlineDownloadsStore } from '@/stores/onlineDownloads'
 import { useThemeStore } from '@/stores/theme'
-import { getAcceptedUploadExtensions, useUploadStore } from '@/stores/uploads'
-import type { MediaKind } from '@/types/api'
-import { extractFilesFromDataTransfer, normalizePickedFiles } from '@/utils/fileDrop'
-
-import { useCatalogStore } from '@/domains/book/store'
-import { useSidebarStore as useComicSidebarStore } from '@/domains/comic/store'
-import { usePlayerStore } from '@/domains/music/player'
-import { useMusicStore } from '@/domains/music/store'
-import { useVideoStore } from '@/domains/video/store'
-
-import BackgroundTasksDrawer from '@/components/BackgroundTasksDrawer.vue'
-import GlobalSearchModal from '@/components/GlobalSearchModal.vue'
-import MdBadge from '@/components/ui/MdBadge.vue'
-import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
-import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
-import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
-import { usePrimaryNavItems } from '@/layouts/useWorkspaceSidebar'
+import { useUploadStore } from '@/stores/uploads'
 import type { ThemeMode } from '@/theme/md3'
+import type { MediaKind } from '@/types/api'
+import { extractFilesFromDataTransfer } from '@/utils/fileDrop'
+import NavigationBar from './NavigationBar.vue'
+import NavigationRail, { type DomainNavTab } from './NavigationRail.vue'
 
-const { t } = useI18n()
+interface SecondaryTab {
+  key: 'home' | 'library' | 'discover' | 'collections'
+  label: string
+  icon: Component
+  active: boolean
+  to: RouteLocationRaw
+}
 
+const { t, te, locale } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const appClientStore = useAppClientStore()
@@ -58,82 +59,22 @@ const authStore = useAuthStore()
 const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
 const onlineDownloadsStore = useOnlineDownloadsStore()
+const playerStore = usePlayerStore()
 const themeStore = useThemeStore()
 const uploadStore = useUploadStore()
 const escapeStack = useEscapeStack()
 
-const bookStore = useCatalogStore()
-const comicSidebarStore = useComicSidebarStore()
-const musicStore = useMusicStore()
-const playerStore = usePlayerStore()
-const videoStore = useVideoStore()
-
-const collapsed = ref(localStorage.getItem('xmedia.sidebar_collapsed') === '1')
-const desktopMediaQuery =
-  typeof window !== 'undefined' ? window.matchMedia('(min-width: 840px)') : null
-const isDesktop = ref(desktopMediaQuery ? desktopMediaQuery.matches : true)
-const mobileMenuOpen = ref(false)
-const accountMenuOpen = ref(false)
-const uploadMenuOpen = ref(false)
+const showMusicBar = useShowMusicBar()
 const tasksDrawerOpen = ref(false)
-const commandPaletteOpen = ref(false)
+const searchOpen = ref(false)
 const dragDepth = ref(0)
-
-const filePickerRef = ref<HTMLInputElement | null>(null)
-const folderPickerRef = ref<HTMLInputElement | null>(null)
 const mainScrollRef = ref<HTMLElement | null>(null)
 const isContentScrolled = ref(false)
-function onMainScroll(ev: Event): void {
-  const el = ev.target as HTMLElement | null
-  isContentScrolled.value = Boolean(el && el.scrollTop > 4)
-}
-const searchInputRef = ref<HTMLInputElement | null>(null)
-const accountMenuRef = ref<HTMLElement | null>(null)
-const uploadMenuRef = ref<HTMLElement | null>(null)
 
-const folderInputAttrs: Record<string, string> = {
-  webkitdirectory: '',
-  directory: '',
-}
-
-const comicSearchQuery = ref('')
-const videoSearchQuery = ref('')
-
-// LIFO Escape stack: pressing Esc closes only the topmost active layer
-escapeStack.register(
-  () => mobileMenuOpen.value,
-  () => {
-    mobileMenuOpen.value = false
-  },
-)
-escapeStack.register(
-  () => uploadMenuOpen.value,
-  () => {
-    uploadMenuOpen.value = false
-  },
-)
-escapeStack.register(
-  () => accountMenuOpen.value,
-  () => {
-    accountMenuOpen.value = false
-  },
-)
 escapeStack.register(
   () => playerStore.lyricsOpen,
   () => {
     playerStore.lyricsOpen = false
-  },
-)
-
-const loadedDomains = new Set<MediaKind>()
-
-watch(
-  () => authStore.user?.id,
-  () => {
-    loadedDomains.clear()
-    if (authStore.isAuthenticated) {
-      void ensureDomainSidebarLoaded(domainStore.activeDomain)
-    }
   },
 )
 
@@ -147,71 +88,31 @@ watch(
   { immediate: true },
 )
 
-async function ensureDomainSidebarLoaded(kind: MediaKind): Promise<void> {
-  if (!authStore.isAuthenticated || !authStore.hasModule(kind) || loadedDomains.has(kind)) return
-  loadedDomains.add(kind)
-  try {
-    if (kind === 'book') await bookStore.refreshSidebarData()
-    else if (kind === 'comic') await comicSidebarStore.refresh()
-    else if (kind === 'music') await musicStore.refreshSidebar()
-    else if (kind === 'video') await videoStore.refreshSidebar()
-  } catch {
-    loadedDomains.delete(kind)
-  }
-}
-
-let sidebarLoadTimer: ReturnType<typeof setTimeout> | null = null
-
 watch(
-  () => route.path,
+  () => [route.path, domainStore.activeDomain] as const,
   () => {
     if (mainScrollRef.value) {
       mainScrollRef.value.scrollTop = 0
+      isContentScrolled.value = false
     }
   },
 )
 
-watch(
-  () => domainStore.activeDomain,
-  (next) => {
-    if (mainScrollRef.value) {
-      mainScrollRef.value.scrollTop = 0
-    }
-    if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
-    if (!loadedDomains.has(next)) {
-      sidebarLoadTimer = setTimeout(() => {
-        void ensureDomainSidebarLoaded(next)
-      }, 60)
-    }
-  },
-  { immediate: true },
-)
+function onMainScroll(ev: Event): void {
+  const el = ev.target as HTMLElement | null
+  isContentScrolled.value = Boolean(el && el.scrollTop > 4)
+}
 
-watch(
-  () => [route.name, route.query.q] as const,
-  ([name, q]) => {
-    const str = typeof q === 'string' ? q : ''
-    if (name === 'comic-series-list') {
-      comicSearchQuery.value = str
-    } else if (comicSearchQuery.value) {
-      comicSearchQuery.value = ''
-    }
-    if (name === 'video-catalog') {
-      videoSearchQuery.value = str
-    } else if (videoSearchQuery.value) {
-      videoSearchQuery.value = ''
-    }
-    if (name === 'music-search' || name === 'music-songs') {
-      musicStore.globalSearchQuery = str
-    } else if (musicStore.globalSearchQuery) {
-      musicStore.globalSearchQuery = ''
-    }
-  },
-  { immediate: true },
-)
+const isZh = computed(() => String(locale.value).startsWith('zh'))
 
-const domainTabs = computed<Array<{ kind: MediaKind; label: string; icon: Component }>>(() => {
-  const all: Array<{ kind: MediaKind; label: string; icon: Component }> = [
+function tr(key: string, zh: string, en: string): string {
+  return te(key) ? t(key) : isZh.value ? zh : en
+}
+
+const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
+
+const domainTabs = computed<DomainNavTab[]>(() => {
+  const all: DomainNavTab[] = [
     { kind: 'book', label: t('app.domains.book'), icon: LuBookOpen },
     { kind: 'comic', label: t('app.domains.comic'), icon: LuLayers },
     { kind: 'music', label: t('app.domains.music'), icon: LuDisc3 },
@@ -220,68 +121,92 @@ const domainTabs = computed<Array<{ kind: MediaKind; label: string; icon: Compon
   return all.filter((item) => authStore.hasModule(item.kind))
 })
 
-const acceptedExtensions = computed(() =>
-  getAcceptedUploadExtensions(authStore.enabledModules),
-)
-
-const showMusicBar = useShowMusicBar()
-
-const { primaryNavItems } = usePrimaryNavItems(() => {
-  mobileMenuOpen.value = false
-})
-
-const showMobileBottomNav = computed(() => primaryNavItems.value.length > 0)
-const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
-
-const isCompact = computed(() => isDesktop.value && collapsed.value)
-const sidebarToggleExpanded = computed(() =>
-  isDesktop.value ? !collapsed.value : mobileMenuOpen.value,
-)
-const sidebarToggleLabel = computed(() =>
-  sidebarToggleExpanded.value ? t('nav.collapseSidebar') : t('nav.expandSidebar'),
-)
-
-async function switchDomain(kind: MediaKind): Promise<void> {
-  const alreadyInDomain = domainStore.activeDomain === kind && route.meta.domain === kind
-  const target = alreadyInDomain ? `/${kind}` : domainStore.getLastRoute(kind)
-  await ensureDomainLocale(kind)
-  domainStore.setActiveDomain(kind)
-  mobileMenuOpen.value = false
-  await router.push(target)
+function hasCanonicalRoute(path: string): boolean {
+  const resolved = router.resolve(path)
+  if (resolved.matched.length === 0) return false
+  return resolved.matched[resolved.matched.length - 1]?.path !== '/:pathMatch(.*)*'
 }
 
-function handleSidebarButtonClick(): void {
-  if (!isDesktop.value) {
-    uploadMenuOpen.value = false
-    accountMenuOpen.value = false
-    mobileMenuOpen.value = !mobileMenuOpen.value
-    return
-  }
-  collapsed.value = !collapsed.value
-  try {
-    localStorage.setItem('xmedia.sidebar_collapsed', collapsed.value ? '1' : '0')
-  } catch {
-    // ignore storage quota / private mode errors
-  }
+function legacyCatalogPath(domain: MediaKind): string {
+  if (domain === 'comic') return '/comic/series'
+  if (domain === 'music') return '/music/songs'
+  return `/${domain}/catalog`
 }
 
-// Unified search state across 4 domains
-const activeSearchValue = computed({
-  get(): string {
-    const d = domainStore.activeDomain
-    if (d === 'book') return bookStore.keyword
-    if (d === 'comic') return comicSearchQuery.value
-    if (d === 'music') return musicStore.globalSearchQuery
-    return videoSearchQuery.value
-  },
-  set(val: string): void {
-    const d = domainStore.activeDomain
-    if (d === 'book') bookStore.keyword = val
-    else if (d === 'comic') comicSearchQuery.value = val
-    else if (d === 'music') musicStore.globalSearchQuery = val
-    else videoSearchQuery.value = val
-  },
+function legacyCollectionsPath(domain: MediaKind): string {
+  return domain === 'music' ? '/music/playlists' : `/${domain}/shelves`
+}
+
+const secondaryTabs = computed<SecondaryTab[]>(() => {
+  if (isSettingsRoute.value) return []
+  const d = domainStore.activeDomain
+  const useCanonical = hasCanonicalRoute(`/${d}/library`)
+  const scope = typeof route.query.scope === 'string' ? route.query.scope : ''
+  const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  const name = String(route.name ?? '')
+
+  const isHome = route.path === `/${d}`
+  const isDiscover =
+    route.path === `/${d}/discover` || (scope === 'online' && !name.includes('detail'))
+  const isCollections =
+    tab === 'collections' ||
+    name.includes('shelves') ||
+    name.includes('playlists') ||
+    name === 'comic-shelves'
+  const isLibrary =
+    !isHome &&
+    !isDiscover &&
+    !isCollections &&
+    (route.path.startsWith(`/${d}/library`) ||
+      name === 'book-catalog' ||
+      name === 'book-detail' ||
+      name === 'comic-series-list' ||
+      name === 'comic-series-detail' ||
+      name === 'music-songs' ||
+      name === 'music-album-detail' ||
+      name === 'music-artist-detail' ||
+      name === 'video-catalog' ||
+      name === 'video-show-detail')
+
+  return [
+    {
+      key: 'home',
+      label: tr('nav.home', '首页', 'Home'),
+      icon: LuHome,
+      active: isHome,
+      to: `/${d}`,
+    },
+    {
+      key: 'library',
+      label: tr('nav.library', '资料库', 'Library'),
+      icon: LuLibrary,
+      active: isLibrary,
+      to: useCanonical ? `/${d}/library` : legacyCatalogPath(d),
+    },
+    {
+      key: 'discover',
+      label: t('nav.discover'),
+      icon: LuCompass,
+      active: isDiscover,
+      to: useCanonical
+        ? `/${d}/discover`
+        : { path: legacyCatalogPath(d), query: { scope: 'online' } },
+    },
+    {
+      key: 'collections',
+      label: tr('nav.collections', '收藏集', 'Collections'),
+      icon: LuFolderHeart,
+      active: isCollections,
+      to: useCanonical
+        ? { path: `/${d}/library`, query: { tab: 'collections' } }
+        : legacyCollectionsPath(d),
+    },
+  ]
 })
+
+const topBarTitle = computed(() =>
+  isSettingsRoute.value ? t('settings.title') : t(`app.domains.${domainStore.activeDomain}`),
+)
 
 const searchPlaceholder = computed(() => {
   const d = domainStore.activeDomain
@@ -291,146 +216,20 @@ const searchPlaceholder = computed(() => {
   return t('common.searchVideo')
 })
 
-async function submitGlobalSearch(): Promise<void> {
-  const d = domainStore.activeDomain
-  if (d === 'book') {
-    const q = bookStore.keyword.trim()
-    bookStore.page = 1
-    if (route.name !== 'book-catalog') {
-      bookStore.activeSection = 'all'
-    }
-    const nextQuery: Record<string, string> = {}
-    if (route.name === 'book-catalog') {
-      for (const [k, v] of Object.entries(route.query)) {
-        if (typeof v === 'string' && k !== 'q' && k !== 'page') {
-          nextQuery[k] = v
-        }
-      }
-    }
-    if (q) nextQuery.q = q
-    await router.push({ path: '/book/catalog', query: nextQuery })
-  } else if (d === 'comic') {
-    const q = comicSearchQuery.value.trim()
-    searchInputRef.value?.blur()
-    const nextQuery: Record<string, string> = {}
-    if (route.name === 'comic-series-list' && route.query.scope === 'online') {
-      nextQuery.scope = 'online'
-      if (typeof route.query.source === 'string' && route.query.source) {
-        nextQuery.source = route.query.source
-      }
-    }
-    if (q) nextQuery.q = q
-    await router.push({ path: '/comic/series', query: nextQuery })
-  } else if (d === 'music') {
-    const q = musicStore.globalSearchQuery.trim()
-    const isOnlineMusic =
-      (route.name === 'music-search' || route.name === 'music-songs') &&
-      route.query.scope === 'online'
-    if (isOnlineMusic) {
-      const nextQuery: Record<string, string> = { scope: 'online' }
-      if (typeof route.query.source === 'string' && route.query.source) {
-        nextQuery.source = route.query.source
-      }
-      if (q) nextQuery.q = q
-      await router.push({ path: route.path, query: nextQuery })
-      return
-    }
-    if (!q) return
-    await router.push({ path: '/music/search', query: { q } })
-  } else {
-    const q = videoSearchQuery.value.trim()
-    const nextQuery: Record<string, string> = {}
-    if (route.name === 'video-catalog' && route.query.scope === 'online') {
-      nextQuery.scope = 'online'
-      if (typeof route.query.source === 'string' && route.query.source) {
-        nextQuery.source = route.query.source
-      }
-    }
-    if (q) nextQuery.q = q
-    await router.push({ path: '/video/catalog', query: nextQuery })
-  }
+async function switchDomain(kind: MediaKind): Promise<void> {
+  const alreadyInDomain =
+    !isSettingsRoute.value && domainStore.activeDomain === kind && route.meta.domain === kind
+  const target = alreadyInDomain ? `/${kind}` : domainStore.getLastRoute(kind)
+  await ensureDomainLocale(kind)
+  domainStore.setActiveDomain(kind)
+  await router.push(target)
 }
 
-function clearGlobalSearch(): void {
-  const d = domainStore.activeDomain
-  if (d === 'book') {
-    bookStore.keyword = ''
-    bookStore.page = 1
-    if (route.name === 'book-catalog') {
-      const nextQuery = { ...route.query }
-      delete nextQuery.q
-      delete nextQuery.page
-      void router.replace({ path: '/book/catalog', query: nextQuery })
-    }
-  } else if (d === 'comic') {
-    comicSearchQuery.value = ''
-    if (route.name === 'comic-series-list' && route.query.q !== undefined) {
-      const nextQuery = { ...route.query }
-      delete nextQuery.q
-      delete nextQuery.page
-      void router.replace({ path: route.path, query: nextQuery })
-    }
-  } else if (d === 'music') {
-    musicStore.globalSearchQuery = ''
-    if (
-      (route.name === 'music-search' || route.name === 'music-songs') &&
-      route.query.scope === 'online'
-    ) {
-      if (route.query.q !== undefined) {
-        const nextQuery = { ...route.query }
-        delete nextQuery.q
-        delete nextQuery.page
-        void router.replace({ path: route.path, query: nextQuery })
-      }
-    } else if (route.name === 'music-search') {
-      void router.push('/music/songs')
-    }
-  } else {
-    videoSearchQuery.value = ''
-    if (route.name === 'video-catalog' && route.query.q !== undefined) {
-      const nextQuery = { ...route.query }
-      delete nextQuery.q
-      delete nextQuery.page
-      void router.replace({ path: route.path, query: nextQuery })
-    }
-  }
+function navigateTab(tab: SecondaryTab): void {
+  void router.push(tab.to)
 }
 
-// Upload & Drag-and-Drop
-function toggleUploadMenu(): void {
-  mobileMenuOpen.value = false
-  accountMenuOpen.value = false
-  uploadMenuOpen.value = !uploadMenuOpen.value
-}
-
-function triggerFilePicker(): void {
-  uploadMenuOpen.value = false
-  filePickerRef.value?.click()
-}
-
-function triggerFolderPicker(): void {
-  uploadMenuOpen.value = false
-  folderPickerRef.value?.click()
-}
-
-function handlePickedFiles(ev: Event): void {
-  const input = ev.target as HTMLInputElement
-  if (input.files && input.files.length > 0) {
-    const { files, fromDirectory } = normalizePickedFiles(input.files, false)
-    uploadStore.enqueueFiles(files, { fromDirectory })
-    input.value = ''
-  }
-}
-
-function handlePickedFolder(ev: Event): void {
-  const input = ev.target as HTMLInputElement
-  if (input.files && input.files.length > 0) {
-    const { files } = normalizePickedFiles(input.files, true)
-    uploadStore.enqueueFiles(files, { fromDirectory: true })
-    input.value = ''
-  }
-}
-
+// Drag-and-drop file/folder upload anywhere in the workspace (admins only)
 function onDragEnter(ev: DragEvent): void {
   if (!authStore.isAdmin) return
   if (!ev.dataTransfer?.types.includes('Files')) return
@@ -450,88 +249,43 @@ async function onDropFiles(ev: DragEvent): Promise<void> {
   }
 }
 
-// Unified Global Background Task Metrics (Scans + Uploads + Online Downloads)
-const globalActiveSummary = computed(() => {
-  const progressValues: number[] = []
-  let activeCount = 0
-
-  for (const sc of eventsStore.scanTaskList) {
-    if (sc.status !== 'running') continue
-    activeCount += 1
-    if (sc.total !== null && sc.total > 0) {
-      progressValues.push(Math.min(100, Math.round((sc.scanned / sc.total) * 100)))
-    }
-  }
-
-  for (const task of uploadStore.tasks) {
-    if (task.status !== 'queued' && task.status !== 'uploading') continue
-    activeCount += 1
-    progressValues.push(Math.max(0, Math.min(100, task.progress)))
-  }
-
-  for (const job of onlineDownloadsStore.activeJobs) {
-    activeCount += 1
-    if (job.total_chapters > 0) {
-      progressValues.push(
-        Math.min(100, Math.round((job.processed_chapters / job.total_chapters) * 100)),
-      )
-    }
-  }
-
-  const progress =
-    activeCount > 0 && progressValues.length > 0
-      ? Math.round(progressValues.reduce((acc, v) => acc + v, 0) / progressValues.length)
-      : null
-
-  return { activeCount, progress }
+// Background task counts for subtle avatar badge & account menu entry
+const globalActiveTaskCount = computed(() => {
+  const activeScans = eventsStore.scanTaskList.filter((sc) => sc.status === 'running').length
+  const activeUploads = uploadStore.tasks.filter(
+    (task) => task.status === 'queued' || task.status === 'uploading',
+  ).length
+  return activeScans + activeUploads + onlineDownloadsStore.activeJobs.length
 })
 
-const globalActiveTaskCount = computed(() => globalActiveSummary.value.activeCount)
-const globalActiveProgress = computed(() => globalActiveSummary.value.progress)
 const globalFailedTaskCount = computed(() => {
   const failedScans = eventsStore.scanTaskList.filter((sc) => sc.status === 'failed').length
   return failedScans + uploadStore.failedCount + onlineDownloadsStore.failedCount
 })
 
-const tasksButtonTooltip = computed(() => {
-  if (globalActiveTaskCount.value > 0) {
-    return t('transfers.openTasksActive', { count: globalActiveTaskCount.value })
-  }
-  return t('transfers.openTasks')
-})
-
 function openTasksDrawer(): void {
-  uploadMenuOpen.value = false
-  accountMenuOpen.value = false
   tasksDrawerOpen.value = true
   if (authStore.isAuthenticated && authStore.hasModule('book')) {
     void onlineDownloadsStore.refresh()
   }
 }
 
-const showTasksButtonInHeader = computed(
-  () =>
-    globalActiveTaskCount.value > 0 ||
-    globalFailedTaskCount.value > 0 ||
-    tasksDrawerOpen.value,
-)
-
-const themeModeMenuOptions = computed<Array<{ value: ThemeMode; label: string; icon: Component }>>(
-  () => [
-    { value: 'system', label: t('theme.system'), icon: LuMonitor },
-    { value: 'light', label: t('theme.light'), icon: LuSun },
-    { value: 'dark', label: t('theme.dark'), icon: LuMoon },
-  ],
-)
+const themeModeOptions = computed<Array<{ value: ThemeMode; label: string; icon: Component }>>(() => [
+  { value: 'system', label: t('theme.system'), icon: LuMonitor },
+  { value: 'light', label: t('theme.light'), icon: LuSun },
+  { value: 'dark', label: t('theme.dark'), icon: LuMoon },
+])
 
 const userInitials = computed(() => {
   const label = authStore.user?.display_name || authStore.user?.username || 'U'
   return label.slice(0, 1).toUpperCase()
 })
 
+const accountButtonLabel = computed(
+  () => authStore.user?.display_name || authStore.user?.username || t('settings.navAccount'),
+)
+
 async function handleSignOut(): Promise<void> {
-  accountMenuOpen.value = false
-  uploadMenuOpen.value = false
   tasksDrawerOpen.value = false
   playerStore.pause()
   eventsStore.disconnect()
@@ -539,59 +293,21 @@ async function handleSignOut(): Promise<void> {
   await router.replace('/login')
 }
 
-function handleOutsideClick(ev: MouseEvent): void {
-  const target = ev.target as Node
-  if (accountMenuOpen.value && accountMenuRef.value && !accountMenuRef.value.contains(target)) {
-    accountMenuOpen.value = false
-  }
-  if (uploadMenuOpen.value && uploadMenuRef.value && !uploadMenuRef.value.contains(target)) {
-    uploadMenuOpen.value = false
-  }
-}
-
-function isEditableEventTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  const tag = target.tagName
-  return (
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT' ||
-    target.isContentEditable
-  )
-}
-
 function handleGlobalKeydown(ev: KeyboardEvent): void {
   if (ev.isComposing || playerStore.lyricsOpen) return
-  const key = ev.key.toLowerCase()
-  if ((ev.metaKey || ev.ctrlKey) && key === 'k') {
-    if (document.querySelector('[aria-modal="true"]') && !commandPaletteOpen.value) return
+  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
+    if (document.querySelector('[aria-modal="true"]') && !searchOpen.value) return
     ev.preventDefault()
-    commandPaletteOpen.value = !commandPaletteOpen.value
-  } else if ((ev.metaKey || ev.ctrlKey) && key === 'b') {
-    if (isEditableEventTarget(ev.target) || document.querySelector('[aria-modal="true"]')) return
-    ev.preventDefault()
-    handleSidebarButtonClick()
-  }
-}
-
-function handleDesktopBreakpointChange(ev: MediaQueryListEvent): void {
-  isDesktop.value = ev.matches
-  if (ev.matches) {
-    mobileMenuOpen.value = false
+    searchOpen.value = !searchOpen.value
   }
 }
 
 onMounted(() => {
-  document.addEventListener('mousedown', handleOutsideClick)
   window.addEventListener('keydown', handleGlobalKeydown)
-  desktopMediaQuery?.addEventListener('change', handleDesktopBreakpointChange)
 })
 
 onBeforeUnmount(() => {
-  document.removeEventListener('mousedown', handleOutsideClick)
   window.removeEventListener('keydown', handleGlobalKeydown)
-  desktopMediaQuery?.removeEventListener('change', handleDesktopBreakpointChange)
-  if (sidebarLoadTimer) clearTimeout(sidebarLoadTimer)
 })
 </script>
 
@@ -599,452 +315,244 @@ onBeforeUnmount(() => {
   <div
     data-workspace-shell
     :data-has-player="showMusicBar ? '1' : '0'"
-    class="relative flex h-screen w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)] supports-[height:100dvh]:h-dvh"
+    class="relative grid h-screen w-screen grid-cols-1 grid-rows-[auto_minmax(0,1fr)_auto_auto] overflow-hidden bg-surface text-on-surface supports-[height:100dvh]:h-dvh md:grid-cols-[80px_minmax(0,1fr)] md:grid-rows-[auto_minmax(0,1fr)_auto]"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent
     @dragleave.prevent="onDragLeave"
     @drop.prevent="onDropFiles"
   >
-    <!-- Hidden Global Multi-Domain File & Folder Pickers -->
-    <input
-      ref="filePickerRef"
-      type="file"
-      multiple
-      :accept="acceptedExtensions"
-      class="hidden"
-      @change="handlePickedFiles"
-    />
-    <input
-      ref="folderPickerRef"
-      type="file"
-      multiple
-      class="hidden"
-      v-bind="folderInputAttrs"
-      @change="handlePickedFolder"
-    />
-
-    <!-- Full-Window Drag & Drop Overlay -->
+    <!-- Full-Window Drag & Drop Upload Overlay -->
     <div
       v-if="dragDepth > 0"
-      class="pointer-events-none fixed inset-3 z-[var(--z-modal)] flex flex-col items-center justify-center rounded-[28px] border-2 border-dashed border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-surface-container-high)]/92 backdrop-blur-md"
+      class="pointer-events-none fixed inset-3 z-[var(--z-modal)] flex flex-col items-center justify-center rounded-corner-xl border-2 border-dashed border-primary bg-surface-container-high/95"
     >
       <div
-        class="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
+        class="mb-3 flex h-14 w-14 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
       >
-        <LuUpload class="h-7 w-7" />
+        <LuUpload class="h-7 w-7" aria-hidden="true" />
       </div>
-      <p class="text-base font-bold text-[var(--md-sys-color-on-surface)]">
+      <p class="text-title-medium text-on-surface">
         {{ t('transfers.dropOverlayTitle') }}
       </p>
-      <p class="mt-1 px-4 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
+      <p class="text-body-small mt-1 px-4 text-center text-on-surface-variant">
         {{ t('transfers.dropOverlayHint') }}
       </p>
     </div>
 
-    <!-- Full-Width MD3 Top App Bar (Scroll-triggered tonal transition) -->
-    <header
-      class="safe-pt safe-px relative z-30 shrink-0 transition-colors duration-[var(--md-sys-motion-duration-short)] select-none"
-      :class="
-        isContentScrolled
-          ? 'bg-[var(--md-sys-color-surface-container)] shadow-[var(--md-sys-elevation-1)]'
-          : 'bg-[var(--md-sys-color-surface)] md:bg-[var(--md-sys-color-surface-container)]'
-      "
-    >
-      <div class="flex h-16 items-center justify-between gap-2.5 px-3 sm:gap-3 sm:px-4">
-      <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Switcher -->
-      <div class="flex shrink-0 items-center gap-2">
-        <button
-          v-if="!isSettingsRoute || !isDesktop"
-          type="button"
-          class="md-icon-btn md-state"
-          :title="sidebarToggleLabel"
-          :aria-label="sidebarToggleLabel"
-          :aria-expanded="sidebarToggleExpanded"
-          @click="handleSidebarButtonClick"
-        >
-          <LuPanelLeftClose v-if="sidebarToggleExpanded" class="h-5 w-5" />
-          <LuPanelLeftOpen v-else class="h-5 w-5" />
-        </button>
-
-        <RouterLink
-          :to="'/' + domainStore.activeDomain"
-          class="md-state flex items-center gap-2.5 rounded-full py-1 pr-2.5 pl-1"
-          @click="mobileMenuOpen = false"
-        >
-          <div
-            class="flex h-9 w-9 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
-          >
-            <LuLayers class="h-[18px] w-[18px]" />
-          </div>
-          <span class="hidden text-base font-semibold tracking-tight text-[var(--md-sys-color-on-surface)] lg:inline">
-            {{ t('app.name') }}
-          </span>
-        </RouterLink>
-
-        <!-- MD3 Segmented Domain Switcher -->
-        <div v-if="domainTabs.length > 1" class="ml-1 hidden md:block">
-          <MdSegmentedButton
-            :model-value="domainStore.activeDomain"
-            :options="domainTabs.map((tab) => ({ value: tab.kind, label: tab.label, icon: tab.icon }))"
-            size="sm"
-            :show-check="!isSettingsRoute"
-            @update:model-value="switchDomain($event)"
-          />
-        </div>
-      </div>
-
-      <!-- Center: Unified MD3 Search Bar (sm+) -->
-      <div
-        role="search"
-        class="relative mx-auto hidden max-w-md flex-1 sm:block lg:max-w-lg"
-      >
-        <LuSearch
-          class="pointer-events-none absolute top-1/2 left-4 h-4 w-4 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-        />
-        <input
-          ref="searchInputRef"
-          v-model="activeSearchValue"
-          type="text"
-          :placeholder="searchPlaceholder"
-          class="h-11 w-full rounded-full bg-[var(--md-sys-color-surface-container-high)] pr-14 pl-11 text-[13px] text-[var(--md-sys-color-on-surface)] placeholder-[var(--md-sys-color-on-surface-variant)] outline-none transition duration-200 focus:bg-[var(--md-sys-color-surface-container-lowest)] focus:shadow-[var(--md-sys-elevation-2)]"
-          @keydown.enter.prevent="submitGlobalSearch"
-        />
-        <button
-          v-if="!activeSearchValue"
-          type="button"
-          class="md-state absolute top-1/2 right-3 inline-flex -translate-y-1/2 items-center rounded-full bg-[var(--md-sys-color-surface-container)] px-2.5 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-          :title="t('common.search') + ' (⌘K)'"
-          :aria-label="t('common.search')"
-          @click="commandPaletteOpen = true"
-        >
-          ⌘K
-        </button>
-        <button
-          v-else
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state absolute top-1/2 right-1.5 -translate-y-1/2"
-          :aria-label="t('common.cancel')"
-          @click="clearGlobalSearch"
-        >
-          <LuX class="h-4 w-4" />
-        </button>
-      </div>
-
-      <!-- Right: Mobile Search Icon + Upload Menu + Background Tasks Ring Button + Theme + Avatar Menu -->
-      <div class="flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          class="md-icon-btn md-state sm:hidden"
-          :title="t('common.search')"
-          :aria-label="t('common.search')"
-          @click="commandPaletteOpen = true"
-        >
-          <LuSearch class="h-[18px] w-[18px]" />
-        </button>
-
-        <!-- Upload Menu (Files / Folder) -->
-        <div v-if="authStore.isAdmin" ref="uploadMenuRef" class="relative">
-          <button
-            type="button"
-            class="md-icon-btn md-state"
-            :class="
-              uploadMenuOpen
-                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                : ''
-            "
-            :title="t('common.uploadMedia')"
-            :aria-label="t('common.uploadMedia')"
-            :aria-expanded="uploadMenuOpen"
-            aria-haspopup="menu"
-            @click="toggleUploadMenu"
-          >
-            <LuUpload class="h-[18px] w-[18px]" />
-          </button>
-
-          <Transition name="md-dialog">
-            <div
-              v-if="uploadMenuOpen"
-              role="menu"
-              class="absolute top-12 right-0 z-[var(--z-popover)] w-44 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-1.5 shadow-[var(--md-sys-elevation-3)]"
-            >
-              <button
-                type="button"
-                role="menuitem"
-                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
-                @click="triggerFilePicker"
-              >
-                <LuFileUp class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
-                <span>{{ t('common.uploadFiles') }}</span>
-              </button>
-
-              <button
-                type="button"
-                role="menuitem"
-                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
-                @click="triggerFolderPicker"
-              >
-                <LuFolderUp class="h-4 w-4 shrink-0 text-[var(--md-sys-color-on-surface-variant)]" />
-                <span>{{ t('common.uploadFolder') }}</span>
-              </button>
-            </div>
-          </Transition>
-        </div>
-
-        <!-- Global Background Tasks Button (shown on demand when tasks are active/failed or drawer open) -->
-        <div
-          v-if="showTasksButtonInHeader"
-          class="relative inline-flex items-center justify-center"
-        >
-          <button
-            type="button"
-            class="md-icon-btn md-state"
-            :class="
-              tasksDrawerOpen
-                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                : globalActiveTaskCount > 0
-                  ? 'text-[var(--md-sys-color-primary)]'
-                  : ''
-            "
-            :title="tasksButtonTooltip"
-            :aria-label="tasksButtonTooltip"
-            @click="openTasksDrawer"
-          >
-            <LuListChecks class="h-[18px] w-[18px]" />
-          </button>
-
-          <MdCircularProgress
-            v-if="globalActiveTaskCount > 0"
-            :value="globalActiveProgress"
-            :indeterminate="globalActiveProgress === null"
-            :size="40"
-            :stroke-width="2.5"
-            class="pointer-events-none absolute inset-0"
-          />
-
-          <MdBadge
-            v-if="globalActiveTaskCount > 0"
-            :value="globalActiveTaskCount"
-            :max="99"
-            tone="error"
-            class="pointer-events-none absolute -top-0.5 -right-0.5 ring-2 ring-[var(--md-sys-color-surface-container)]"
-          />
-          <MdBadge
-            v-else-if="globalFailedTaskCount > 0"
-            dot
-            tone="error"
-            class="pointer-events-none absolute top-1.5 right-1.5 ring-2 ring-[var(--md-sys-color-surface-container)]"
-          />
-        </div>
-
-        <RouterLink
-          to="/settings"
-          class="md-icon-btn md-state hidden sm:inline-flex"
-          :class="
-            route.path === '/settings'
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : ''
-          "
-          :title="t('nav.settings')"
-          :aria-label="t('nav.settings')"
-          @click="mobileMenuOpen = false; accountMenuOpen = false; uploadMenuOpen = false"
-        >
-          <LuSettings class="h-[18px] w-[18px]" />
-        </RouterLink>
-
-        <div ref="accountMenuRef" class="relative ml-1">
-          <button
-            type="button"
-            class="md-state flex h-9 w-9 items-center justify-center rounded-full bg-[var(--md-sys-color-primary-container)] text-xs font-bold text-[var(--md-sys-color-on-primary-container)]"
-            @click="mobileMenuOpen = false; uploadMenuOpen = false; accountMenuOpen = !accountMenuOpen"
-          >
-            {{ userInitials }}
-          </button>
-
-          <Transition name="md-dialog">
-            <div
-              v-if="accountMenuOpen"
-              class="absolute top-12 right-0 z-[var(--z-popover)] w-64 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
-            >
-              <div class="px-3 py-2">
-                <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-                  {{ authStore.user?.display_name || authStore.user?.username }}
-                </p>
-                <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                  @{{ authStore.user?.username }} ·
-                  {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
-                </p>
-              </div>
-
-              <!-- Compact 3-state Theme Switcher -->
-              <div class="px-1.5 pb-1.5">
-                <div
-                  role="radiogroup"
-                  :aria-label="t('theme.modeTitle')"
-                  class="flex items-center gap-0.5 rounded-full bg-[var(--md-sys-color-surface-container)] p-1"
-                >
-                  <button
-                    v-for="opt in themeModeMenuOptions"
-                    :key="opt.value"
-                    type="button"
-                    role="radio"
-                    :aria-checked="themeStore.themeMode === opt.value"
-                    :title="opt.label"
-                    class="md-state flex flex-1 items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[11px] font-medium whitespace-nowrap transition"
-                    :class="
-                      themeStore.themeMode === opt.value
-                        ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                        : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
-                    "
-                    @click="themeStore.setThemeMode(opt.value)"
-                  >
-                    <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" />
-                    <span>{{ opt.label }}</span>
-                  </button>
-                </div>
-              </div>
-
-              <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/50" />
-
-              <button
-                type="button"
-                class="md-state flex w-full items-center justify-between gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
-                @click="openTasksDrawer"
-              >
-                <span class="flex items-center gap-2.5">
-                  <LuListChecks class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
-                  <span>{{ t('transfers.openTasks') }}</span>
-                </span>
-                <span
-                  v-if="globalActiveTaskCount > 0"
-                  class="rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--md-sys-color-on-primary-container)]"
-                >
-                  {{ globalActiveTaskCount }}
-                </span>
-              </button>
-
-              <RouterLink
-                to="/settings"
-                class="md-state flex items-center gap-2.5 rounded-full px-3 py-2 text-xs font-medium text-[var(--md-sys-color-on-surface)]"
-                @click="accountMenuOpen = false; mobileMenuOpen = false"
-              >
-                <LuSettings class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
-                <span>{{ t('nav.settings') }}</span>
-              </RouterLink>
-
-              <button
-                v-if="!appClientStore.isStandaloneApp"
-                type="button"
-                class="md-state flex w-full items-center gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-error)]"
-                @click="handleSignOut"
-              >
-                <LuLogOut class="h-4 w-4" />
-                <span>{{ t('auth.signOut') }}</span>
-              </button>
-            </div>
-          </Transition>
-        </div>
-      </div>
-      </div>
-    </header>
-
-    <!-- Middle Body: Collapsible Domain Sidebar + Flush Rounded Main Canvas -->
-    <div class="relative flex min-h-0 flex-1 overflow-hidden">
-      <WorkspaceSidebar
-        v-if="!isSettingsRoute || !isDesktop"
-        :mobile-menu-open="mobileMenuOpen"
-        :collapsed="collapsed"
-        :is-compact="isCompact"
-        :show-music-bar="showMusicBar"
-        :domain-tabs="domainTabs"
-        @close-mobile="mobileMenuOpen = false"
-        @switch-domain="switchDomain"
-      />
-
-      <!-- Main Route Viewport (Outer rounded clip avoids scroll-layer corner artifacts) -->
-      <div
-        class="min-w-0 flex-1 overflow-hidden bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
-        :class="isSettingsRoute ? 'md:ml-3' : ''"
-      >
-        <main
-          ref="mainScrollRef"
-          class="h-full overflow-y-auto"
-          :class="!showMobileBottomNav && !showMusicBar ? 'safe-pb md:pb-0' : ''"
-          @scroll.passive="onMainScroll"
-        >
-          <RouterView v-slot="{ Component }">
-            <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">
-              <component :is="Component" />
-            </KeepAlive>
-          </RouterView>
-        </main>
-      </div>
-    </div>
-
-    <!-- Reserve Space for Persistent Global PlayerBar Rendered in App.vue -->
-    <div
-      v-if="showMusicBar"
-      class="shrink-0"
-      :class="
-        showMobileBottomNav
-          ? 'h-[var(--player-bar-h)] md:h-[calc(var(--player-bar-h)+var(--safe-area-bottom))]'
-          : 'h-[calc(var(--player-bar-h)+var(--safe-area-bottom))]'
-      "
-      aria-hidden="true"
+    <!-- Expanded (>=840px): MD3 Navigation Rail (Col 1, spans all rows) -->
+    <NavigationRail
+      class="md:col-start-1 md:row-span-3"
+      :domain-tabs="domainTabs"
+      :active-domain="domainStore.activeDomain"
+      :is-settings-route="isSettingsRoute"
+      @switch-domain="switchDomain"
     />
 
-    <!-- Mobile MD3 Navigation Bar (< md): Active Domain Primary Navigation -->
-    <nav
-      v-if="showMobileBottomNav"
-      data-mobile-bottom-nav
-      :aria-label="t(`app.domains.${domainStore.activeDomain}`)"
-      class="safe-pb safe-px relative z-30 shrink-0 border-t border-[var(--md-sys-color-outline-variant)]/50 bg-[var(--md-sys-color-surface-container)] select-none md:hidden"
+    <!-- Top Region: Minimal MD3 Top App Bar + Domain Primary Tabs -->
+    <div
+      class="col-start-1 row-start-1 z-20 shrink-0 transition-shadow duration-150 ease-standard select-none md:col-start-2"
+      :class="
+        isContentScrolled ? 'bg-surface-container shadow-elevation-1' : 'bg-surface'
+      "
     >
-      <div
-        class="grid h-16 items-center"
-        :style="{ gridTemplateColumns: `repeat(${primaryNavItems.length}, minmax(0, 1fr))` }"
-      >
+      <header class="safe-pt safe-px flex h-16 items-center justify-between gap-3 px-4 md:px-6">
+        <h1 class="text-title-large shrink-0 truncate text-on-surface">
+          {{ topBarTitle }}
+        </h1>
+
+        <!-- Desktop Single Search Entry (opens unified SearchView) -->
         <button
-          v-for="item in primaryNavItems"
-          :key="`bottom-${domainStore.activeDomain}-${item.key}`"
           type="button"
-          :aria-current="item.active ? 'page' : undefined"
-          class="group flex h-full flex-col items-center justify-center gap-1 outline-none"
-          @click="item.onClick()"
+          class="md-state hidden h-11 max-w-md flex-1 cursor-pointer items-center gap-3 rounded-corner-full bg-surface-container-high px-4 text-left text-on-surface-variant hover:text-on-surface sm:flex"
+          :aria-label="t('common.search')"
+          @click="searchOpen = true"
         >
-          <span
-            class="md-state flex h-8 w-16 items-center justify-center rounded-full transition-colors duration-200 group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-[var(--md-sys-color-primary)]"
-            :class="
-              item.active
-                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)] group-hover:text-[var(--md-sys-color-on-surface)]'
-            "
-          >
-            <component :is="item.icon" class="h-5 w-5 shrink-0" />
+          <LuSearch class="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span class="text-body-medium min-w-0 flex-1 truncate">
+            {{ searchPlaceholder }}
           </span>
           <span
-            class="md-label-medium max-w-full truncate px-1"
-            :class="
-              item.active
-                ? 'font-semibold text-[var(--md-sys-color-on-surface)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)]'
-            "
+            class="text-label-small shrink-0 rounded-corner-full bg-surface-container px-2 py-0.5 font-mono text-on-surface-variant"
           >
-            {{ item.label }}
+            ⌘K
           </span>
         </button>
-      </div>
-    </nav>
 
-    <!-- Unified Global Background Tasks Drawer -->
+        <!-- Right Actions (<=2): Mobile Search Icon + Account Menu -->
+        <div class="flex shrink-0 items-center gap-1">
+          <MdIconButton
+            class="sm:hidden"
+            :icon="LuSearch"
+            :aria-label="t('common.search')"
+            @click="searchOpen = true"
+          />
+
+          <MdMenu placement="bottom-end" :min-width="240" :aria-label="accountButtonLabel">
+            <template #trigger="{ toggle, triggerAttrs }">
+              <button
+                type="button"
+                v-bind="triggerAttrs"
+                data-account-menu
+                :aria-label="accountButtonLabel"
+                class="md-state md-touch-target text-label-large relative inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-corner-full bg-primary-container text-on-primary-container"
+                @click="toggle"
+              >
+                {{ userInitials }}
+                <MdBadge
+                  v-if="globalActiveTaskCount > 0"
+                  :value="globalActiveTaskCount"
+                  :max="99"
+                  tone="primary"
+                  class="pointer-events-none absolute -top-0.5 -right-0.5"
+                />
+                <MdBadge
+                  v-else-if="globalFailedTaskCount > 0"
+                  dot
+                  tone="error"
+                  class="pointer-events-none absolute top-0.5 right-0.5"
+                />
+              </button>
+            </template>
+
+            <div class="px-3 pt-1 pb-2">
+              <p class="text-title-small truncate text-on-surface">
+                {{ authStore.user?.display_name || authStore.user?.username }}
+              </p>
+              <p class="text-body-small truncate text-on-surface-variant">
+                @{{ authStore.user?.username }} ·
+                {{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}
+              </p>
+            </div>
+
+            <!-- Compact 3-state Theme Mode Switcher -->
+            <div class="px-3 pb-2">
+              <div
+                role="radiogroup"
+                :aria-label="t('theme.modeTitle')"
+                class="grid grid-cols-3 gap-1 rounded-corner-full bg-surface-container-high p-1"
+              >
+                <button
+                  v-for="opt in themeModeOptions"
+                  :key="opt.value"
+                  type="button"
+                  role="radio"
+                  :aria-checked="themeStore.themeMode === opt.value"
+                  :title="opt.label"
+                  class="md-state text-label-small flex cursor-pointer items-center justify-center gap-1 rounded-corner-full px-2 py-1.5"
+                  :class="
+                    themeStore.themeMode === opt.value
+                      ? 'bg-secondary-container text-on-secondary-container'
+                      : 'text-on-surface-variant hover:text-on-surface'
+                  "
+                  @click="themeStore.setThemeMode(opt.value)"
+                >
+                  <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span class="truncate">{{ opt.label }}</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="my-1 border-t border-outline-variant" />
+
+            <MdMenuItem
+              :icon="LuListChecks"
+              :label="t('transfers.openTasks')"
+              :trailing-text="globalActiveTaskCount > 0 ? String(globalActiveTaskCount) : ''"
+              @select="openTasksDrawer"
+            />
+
+            <MdMenuItem
+              :icon="LuSettings"
+              :label="t('nav.settings')"
+              to="/settings"
+            />
+
+            <MdMenuItem
+              v-if="!appClientStore.isStandaloneApp"
+              :icon="LuLogOut"
+              :label="t('auth.signOut')"
+              destructive
+              @select="handleSignOut"
+            />
+          </MdMenu>
+        </div>
+      </header>
+
+      <!-- Domain Secondary Navigation: MD3 Primary Tabs (hidden on /settings*) -->
+      <nav
+        v-if="secondaryTabs.length > 0"
+        :aria-label="t('nav.navigation')"
+        class="no-scrollbar flex items-end gap-1 overflow-x-auto border-b border-outline-variant px-4 md:px-6"
+      >
+        <button
+          v-for="tab in secondaryTabs"
+          :key="tab.key"
+          type="button"
+          :data-nav="tab.key"
+          :aria-current="tab.active ? 'page' : undefined"
+          class="md-state text-title-small relative inline-flex h-12 shrink-0 cursor-pointer items-center gap-2 px-4 whitespace-nowrap transition-colors duration-150 ease-standard"
+          :class="
+            tab.active ? 'text-primary' : 'text-on-surface-variant hover:text-on-surface'
+          "
+          @click="navigateTab(tab)"
+        >
+          <component :is="tab.icon" class="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+          <span>{{ tab.label }}</span>
+          <span
+            v-if="tab.active"
+            aria-hidden="true"
+            class="pointer-events-none absolute right-3 bottom-0 left-3 h-[3px] rounded-t-corner-xs bg-primary"
+          />
+        </button>
+      </nav>
+    </div>
+
+    <!-- Main Scrollable Route Viewport -->
+    <main
+      ref="mainScrollRef"
+      class="col-start-1 row-start-2 min-h-0 min-w-0 overflow-y-auto bg-surface md:col-start-2"
+      @scroll.passive="onMainScroll"
+    >
+      <RouterView v-slot="{ Component }">
+        <KeepAlive :include="['BookHomeView', 'ComicHomeView', 'MusicHomeView', 'VideoHomeView']">
+          <component :is="Component" />
+        </KeepAlive>
+      </RouterView>
+    </main>
+
+    <!-- Grid-Flow Global Player Bar (never fixed, never overlaps Nav Bar or main) -->
+    <div
+      v-if="showMusicBar"
+      class="col-start-1 row-start-3 min-w-0 md:col-start-2 md:safe-pb"
+    >
+      <PlayerBar />
+    </div>
+
+    <!-- Compact / Medium (<840px): MD3 Bottom Navigation Bar -->
+    <NavigationBar
+      class="col-start-1 row-start-4"
+      :domain-tabs="domainTabs"
+      :active-domain="domainStore.activeDomain"
+      :is-settings-route="isSettingsRoute"
+      @switch-domain="switchDomain"
+    />
+
+    <!-- Player Side Sheets & Fullscreen Lyrics Overlay -->
+    <template v-if="showMusicBar">
+      <QueueDrawer />
+      <LyricsOverlay />
+    </template>
+
+    <!-- Global Background Tasks Sheet -->
     <BackgroundTasksDrawer
       :open="tasksDrawerOpen"
       @close="tasksDrawerOpen = false"
     />
 
-    <!-- Cross-Domain Quick Search / Command Palette (⌘K) -->
+    <!-- Unified MD3 Search View (Top Bar / Mobile Search / ⌘K) -->
     <GlobalSearchModal
-      :open="commandPaletteOpen"
-      @close="commandPaletteOpen = false"
+      :open="searchOpen"
+      @close="searchOpen = false"
     />
   </div>
 </template>

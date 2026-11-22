@@ -204,7 +204,7 @@ onBeforeUnmount(() => {
 
 <template>
   <footer
-    class="safe-px fixed inset-x-0 bottom-0 z-30 flex flex-col border-t border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)]/95 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
+    class="safe-px relative z-20 flex w-full shrink-0 flex-col border-t border-outline-variant bg-surface-container text-on-surface"
   >
     <div ref="audioHostRef" class="hidden" aria-hidden="true" />
     <div
