@@ -289,7 +289,7 @@ async function clickButtonMatching(cdp, patterns, { rootSelector = 'body', timeo
 }
 
 // ---------------------------------------------------------------------------
-// Tier 2 Case Registry (90 cases: T2-F01-01 .. T2-F18-05)
+// Tier 2 Case Registry (92 cases: T2-F01-01 .. T2-F18-05)
 // ---------------------------------------------------------------------------
 
 function buildTier2Cases() {
@@ -2485,6 +2485,23 @@ function buildTier2Cases() {
             })()`,
             { timeoutMs: 10000, label: 'PlayerBar renders [role="alert"] and Retry button on 502 audio-proxy' },
           );
+          // G2-03: Open LyricsOverlay and verify [role="dialog"] [role="alert"] + Retry mirrors PlayerBar
+          await cdp.click(
+            'footer button[aria-pressed][aria-label*="歌词"], footer button[aria-pressed][aria-label*="Lyrics"]',
+          );
+          await cdp.waitForFn(
+            `(() => {
+              const alert = document.querySelector('[role="dialog"] [role="alert"]');
+              const retry = alert?.querySelector('button');
+              return Boolean(alert && alert.innerText.trim().length > 0 && retry && /重试|Retry/i.test(retry.innerText || ''));
+            })()`,
+            { timeoutMs: 5000, label: 'LyricsOverlay renders [role="alert"] and Retry button on 502 audio-proxy' },
+          );
+          await cdp.evalJs(`document.querySelector('[role="dialog"] [role="alert"] button')?.click()`);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('[role="dialog"] [role="alert"]'))`,
+            { timeoutMs: 8000, label: 'LyricsOverlay retry keeps error alert surfaced on repeated 502' },
+          );
           assert.equal(cdp.exceptions.length, 0);
         } finally {
           await cdp.close();
@@ -2767,6 +2784,202 @@ function buildTier2Cases() {
             { timeoutMs: 8000, label: 'Re-attached <audio> exists and is paused' },
           );
           cdp.assertNoErrors('T2-F16-05');
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F16-06',
+      feature: 'F16',
+      domain: 'ui',
+      title: 'Browser: OnlineVideoSearchSection supports category-less rule browse and surfaces [role="alert"] + Retry on /categories 500',
+      async run(ctx) {
+        await clearDomainSources(ctx.admin, 'video');
+        const categorylessRuleSrc = {
+          sourceName: 'Categoryless Rule Video',
+          sourceUrl: `${ctx.mockBaseUrl}/video/peertube`,
+          sourceFormat: 'rule',
+          enabled: true,
+          enabledExplore: true,
+          weight: 100,
+          categoriesUrl: `${ctx.mockBaseUrl}/video/peertube/api/v1/search/videos?search=__none__`,
+          ruleCategories: { list: '$.data[*]', id: '$.uuid', name: '$.name' },
+          exploreUrl: `${ctx.mockBaseUrl}/video/peertube/api/v1/search/videos?search=Blender`,
+          ruleExplore: {
+            list: '$.data[*]',
+            title: '$.name',
+            videoId: '$.uuid',
+            detailUrl: `${ctx.mockBaseUrl}/video/peertube/api/v1/videos/{{$.uuid}}`,
+          },
+          ruleSearch: {
+            list: '$.data[*]',
+            title: '$.name',
+            videoId: '$.uuid',
+            detailUrl: `${ctx.mockBaseUrl}/video/peertube/api/v1/videos/{{$.uuid}}`,
+          },
+          ruleDetail: { title: '$.name', episodes: '$.streamingPlaylists[0].files[*]', episodeName: '$.resolution.label', episodeUrl: '$.fileUrl' },
+          rulePlay: { requestUrl: '{{playUrl}}', streamUrl: '{{playUrl}}' },
+        };
+        await importSources(ctx.admin, 'video', categorylessRuleSrc);
+
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/video/catalog?scope=online',
+        );
+        try {
+          // 1. Category-less rule source returns categories: [] yet still executes /browse cleanly
+          await cdp.waitForFn(
+            `document.querySelector('main')?.innerText.includes('Mock Blender Open Movie')`,
+            { timeoutMs: 10000, label: 'category-less rule source browse rendered results' },
+          );
+          cdp.assertNoErrors('T2-F16-06 category-less browse');
+
+          // 2. HTTP 500 from /categories renders [role="alert"] + Retry button instead of swallowing
+          let interceptCategories = true;
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/video/online/categories', requestStage: 'Request' }],
+          });
+          cdp.on('Fetch.requestPaused', async (params) => {
+            try {
+              if (interceptCategories) {
+                await cdp.send('Fetch.fulfillRequest', {
+                  requestId: params.requestId,
+                  responseCode: 500,
+                  responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+                  body: Buffer.from('{"error":{"code":"INTERNAL","message":"Categories unavailable"}}').toString('base64'),
+                });
+              } else {
+                await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+              }
+            } catch {
+              // ignore if closed
+            }
+          });
+
+          await cdp.goto(`${ctx.baseUrl}/video/catalog?scope=online`);
+          await cdp.waitForFn(
+            `(() => {
+              const alert = document.querySelector('main [role="alert"]');
+              const retry = alert?.querySelector('button');
+              return Boolean(alert && retry && /重试|Retry/i.test(retry.innerText || ''));
+            })()`,
+            { timeoutMs: 10000, label: '/categories 500 renders [role="alert"] + Retry button' },
+          );
+
+          interceptCategories = false;
+          await cdp.send('Fetch.disable');
+          await cdp.evalJs(`document.querySelector('main [role="alert"] button')?.click()`);
+          await cdp.waitForFn(
+            `!document.querySelector('main [role="alert"]') && document.querySelector('main')?.innerText.includes('Mock Blender Open Movie')`,
+            { timeoutMs: 10000, label: 'Retry after /categories 500 recovers browse results' },
+          );
+          assert.equal(cdp.exceptions.length, 0);
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F16-07',
+      feature: 'F16',
+      domain: 'ui',
+      title: 'Browser: Online video, comic, and music search clear stale results and show [role="alert"] on /online/search 500',
+      async run(ctx) {
+        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+
+        const scenarios = [
+          {
+            domain: 'video',
+            path: '/video/catalog?scope=online&q=Earth',
+            expectedItem: 'Mock Wandering Earth',
+            pattern: '*/api/v1/video/online/search',
+          },
+          {
+            domain: 'comic',
+            path: '/comic/series?scope=online&q=Strip',
+            expectedItem: 'Mock XKCD Strip',
+            pattern: '*/api/v1/comic/online/search',
+          },
+          {
+            domain: 'music',
+            path: '/music/songs?scope=online&q=Mojito',
+            expectedItem: 'Mock Mojito',
+            pattern: '*/api/v1/music/online/search',
+          },
+        ];
+
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/settings',
+        );
+        try {
+          let interceptDomain = null;
+          cdp.on('Fetch.requestPaused', async (params) => {
+            try {
+              if (interceptDomain) {
+                await cdp.send('Fetch.fulfillRequest', {
+                  requestId: params.requestId,
+                  responseCode: 500,
+                  responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+                  body: Buffer.from(
+                    `{"error":{"code":"INTERNAL","message":"${interceptDomain} search 500"}}`,
+                  ).toString('base64'),
+                });
+              } else {
+                await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+              }
+            } catch {
+              // ignore if closed
+            }
+          });
+
+          for (const sc of scenarios) {
+            await cdp.goto(`${ctx.baseUrl}${sc.path}`);
+            await cdp.waitForFn(
+              `document.querySelector('main')?.innerText.includes(${JSON.stringify(sc.expectedItem)})`,
+              { timeoutMs: 10000, label: `${sc.domain} initial search result rendered` },
+            );
+
+            interceptDomain = sc.domain;
+            await cdp.send('Fetch.enable', {
+              patterns: [{ urlPattern: sc.pattern, requestStage: 'Request' }],
+            });
+
+            await cdp.evalJs(`(() => {
+              const input = document.querySelector('main input[type="search"], main input[type="text"]');
+              if (!input) throw new Error('missing search input');
+              input.focus();
+              input.value = 'FailQuery';
+              input.dispatchEvent(new Event('input', { bubbles: true }));
+              input.closest('form')?.requestSubmit();
+            })()`);
+
+            await cdp.waitForFn(
+              `(() => {
+                const main = document.querySelector('main');
+                const text = main?.innerText || '';
+                const alert = main?.querySelector('[role="alert"]');
+                return Boolean(alert)
+                  && !text.includes(${JSON.stringify(sc.expectedItem)})
+                  && !/未找到与|No results for/i.test(text);
+              })()`,
+              {
+                timeoutMs: 10000,
+                label: `${sc.domain} /online/search 500 clears stale results, shows [role="alert"], hides false empty state`,
+              },
+            );
+
+            interceptDomain = null;
+            await cdp.send('Fetch.disable');
+          }
+          assert.equal(cdp.exceptions.length, 0);
         } finally {
           await cdp.close();
         }
