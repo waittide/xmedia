@@ -3843,3 +3843,121 @@ async fn comic_js_pipeline_guard_blocks_comma_quote_semicolon_option_injection()
     assert_eq!(post_hits.load(Ordering::SeqCst), 2);
     server.abort();
 }
+
+#[tokio::test]
+async fn comic_split_tag_js_url_and_options_evaluates_both_and_blocks_injection() {
+    use axum::body::to_bytes;
+    use std::sync::Mutex;
+
+    let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let cap_c = captured.clone();
+
+    let app = Router::new().route(
+        "/search",
+        axum::routing::any(move |req: axum::extract::Request| {
+            let cap = cap_c.clone();
+            async move {
+                let method = req.method().to_string();
+                let uri = req.uri().to_string();
+                let body_bytes = to_bytes(req.into_body(), 64 * 1024)
+                    .await
+                    .unwrap_or_default();
+                let body = String::from_utf8_lossy(&body_bytes).to_string();
+                cap.lock().unwrap().push((format!("{method} {uri}"), body));
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"items":[{"t":"SplitHit","u":"/c/1"}]}"#))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let split_ok_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SplitTagJsComic",
+        "sourceUrl": base,
+        "searchUrl": "<js>'/search?q=' + encodeURIComponent(key)</js>,{\"method\":\"POST\",\"body\":\"k={{key}}\"}",
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let split_unsafe_url_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SplitUnsafeUrlComic",
+        "sourceUrl": base,
+        "searchUrl": "<js>'/search?q=' + key</js>,{\"method\":\"POST\",\"body\":\"k={{key}}\"}",
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let split_js_opts_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SplitJsOptsComic",
+        "sourceUrl": base,
+        "searchUrl": "<js>'/search?q=' + encodeURIComponent(key)</js>,{\"method\":\"POST\",\"body\":{\"kw\":\"{{String(key)}}\"}}",
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    tokio::task::spawn_blocking(move || {
+        let ok = engine
+            .search_sync(
+                &split_ok_src,
+                SourceRuntimeState::default(),
+                "hello world",
+                1,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(ok[0].title, "SplitHit");
+
+        // Option injection in url_tpl side must be rejected even with trailing ,{options}.
+        let evil = r#"hello,{"method":"DELETE","headers":{"X-Evil":"1"}}"#;
+        let url_err = engine
+            .search_sync(
+                &split_unsafe_url_src,
+                SourceRuntimeState::default(),
+                evil,
+                1,
+            )
+            .expect_err("option injection in <js> url_tpl side must be rejected");
+        assert!(url_err.contains("选项"), "unexpected error: {url_err}");
+
+        // Option breakout in options side with {{String(key)}} is JSON-escaped cleanly without mutating JSON structure.
+        let breakout = r#"a","method":"DELETE"#;
+        let ok2 = engine
+            .search_sync(
+                &split_js_opts_src,
+                SourceRuntimeState::default(),
+                breakout,
+                1,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(ok2[0].title, "SplitHit");
+    })
+    .await
+    .unwrap();
+
+    let reqs = captured.lock().unwrap();
+    assert_eq!(reqs.len(), 2);
+    assert_eq!(reqs[0].0, "POST /search?q=hello%20world");
+    assert_eq!(reqs[0].1, "k=hello%20world");
+    assert!(reqs[1].0.starts_with("POST /search?q=a%22"));
+    let parsed_body: serde_json::Value = serde_json::from_str(&reqs[1].1).unwrap();
+    assert_eq!(parsed_body["kw"], r#"a","method":"DELETE"#);
+    server.abort();
+}

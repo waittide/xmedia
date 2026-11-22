@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use xmedia_source::http::{
-    HttpClientConfig, LegadoHttpClient, LegadoUrlOptions, eval_json_options_template,
-    json_raw_structure_signature, resolve_relative_url, resolve_relative_url_preserving_options,
+    HttpClientConfig, LegadoHttpClient, eval_json_options_template, has_suspicious_option_chars,
+    resolve_relative_url, resolve_relative_url_preserving_options,
     split_legado_url_and_raw_options, split_legado_url_template_and_options,
-    substitute_legado_options_vars, substitute_url_part_vars,
+    substitute_legado_options_vars, substitute_url_part_vars, verify_js_pipeline_url_options,
 };
 use xmedia_source::model::{
     ExecutionDiagnostics, SourceCallError, SourceCallOutput, SourceRuntimeState,
@@ -227,7 +227,7 @@ impl<'a> MusicTemplateVars<'a> {
     }
 
     fn has_suspicious_option_chars(&self) -> bool {
-        [
+        has_suspicious_option_chars(&[
             self.key,
             self.quality,
             self.track_id,
@@ -239,14 +239,8 @@ impl<'a> MusicTemplateVars<'a> {
             self.title,
             self.artist,
             self.album,
-        ]
-        .into_iter()
-        .any(|s| {
-            !s.is_empty()
-                && s.chars().any(|c| {
-                    matches!(c, '{' | '}' | '[' | ']' | '"' | '\\' | ',') || c.is_control()
-                })
-        })
+            self.cover_url.unwrap_or(""),
+        ])
     }
 }
 
@@ -265,13 +259,6 @@ fn detect_passthrough_url_var<'a>(
         }
     }
     None
-}
-
-fn count_comma_open_brace(s: &str) -> usize {
-    s.bytes()
-        .enumerate()
-        .filter(|&(i, b)| b == b',' && s[i + 1..].trim_start().starts_with('{'))
-        .count()
 }
 
 fn normalize_quality_placeholder(tpl: &str) -> Cow<'_, str> {
@@ -323,7 +310,7 @@ fn eval_js_pipeline_guarded(
 ) -> Result<String, String> {
     let out = session.eval_string(input, raw_tpl, base_url)?;
     if vars.has_suspicious_option_chars()
-        && let (eval_url_part, Some(eval_opt_json)) = split_legado_url_and_raw_options(out.trim())
+        && split_legado_url_and_raw_options(out.trim()).1.is_some()
     {
         let probe_ctx = MusicTrackContext {
             track_id: "__xmedia_probe__".into(),
@@ -338,9 +325,12 @@ fn eval_js_pipeline_guarded(
             quality: Some("__xmedia_probe__".into()),
             ..Default::default()
         };
-        session.set_search_vars("__xmedia_probe__", vars.page, vars.limit)?;
-        session.set_track_context(&probe_ctx)?;
-        let probe_res = session.eval_string(input, raw_tpl, base_url);
+        let probe_res = match session.set_search_vars("__xmedia_probe__", vars.page, vars.limit) {
+            Ok(()) => session
+                .set_track_context(&probe_ctx)
+                .and_then(|()| session.eval_string(input, raw_tpl, base_url)),
+            Err(e) => Err(e),
+        };
 
         // Restore caller vars/context before checking probe result.
         let restore_ctx = MusicTrackContext {
@@ -361,29 +351,7 @@ fn eval_js_pipeline_guarded(
         let _ = session.set_track_context(&restore_ctx);
 
         let probe_out = probe_res?;
-        let (probe_url_part, Some(probe_opt_json)) =
-            split_legado_url_and_raw_options(probe_out.trim())
-        else {
-            return Err("请求 URL 模板参数不允许附加请求选项".into());
-        };
-        if (split_legado_url_and_raw_options(probe_url_part.trim())
-            .1
-            .is_none()
-            && split_legado_url_and_raw_options(eval_url_part.trim())
-                .1
-                .is_some())
-            || count_comma_open_brace(eval_url_part) != count_comma_open_brace(probe_url_part)
-        {
-            return Err("请求 URL 模板参数不允许附加请求选项".into());
-        }
-        let expected_sig = json_raw_structure_signature(probe_opt_json);
-        let actual_sig = json_raw_structure_signature(eval_opt_json);
-        if expected_sig.is_none()
-            || actual_sig != expected_sig
-            || serde_json::from_str::<LegadoUrlOptions>(eval_opt_json).is_err()
-        {
-            return Err("请求 URL 模板参数不允许修改请求选项结构".into());
-        }
+        verify_js_pipeline_url_options(&out, &probe_out, "请求 URL")?;
     }
     Ok(out)
 }
@@ -395,29 +363,32 @@ fn eval_template_branch_single_pass(
     input: &RuleValue,
     base_url: &str,
 ) -> Result<String, String> {
-    if split_js_pipeline(branch).is_some() {
-        return eval_js_pipeline_guarded(session, branch, vars, input, base_url);
-    }
-
-    if !branch.contains("{{") || !branch.contains("}}") {
-        if branch.starts_with("$.")
-            || branch.starts_with("$[")
-            || branch == "$"
-            || branch.starts_with('@')
-        {
-            return Ok(session.eval_opt(input, Some(branch), base_url));
-        }
-        return Ok(branch.to_string());
-    }
-
     let normalized_branch = normalize_quality_placeholder(branch);
+    let (raw_url_part, opt_part) = split_legado_url_template_and_options(&normalized_branch);
+
+    if opt_part.is_none() {
+        if split_js_pipeline(branch).is_some() {
+            return eval_js_pipeline_guarded(session, branch, vars, input, base_url);
+        }
+        if !branch.contains("{{") || !branch.contains("}}") {
+            if branch.starts_with("$.")
+                || branch.starts_with("$[")
+                || branch == "$"
+                || branch.starts_with('@')
+            {
+                return Ok(session.eval_opt(input, Some(branch), base_url));
+            }
+            return Ok(branch.to_string());
+        }
+    }
+
     let page_str = vars.page.to_string();
     let limit_str = vars.limit.to_string();
     let var_pairs = vars.to_pairs(&page_str, &limit_str);
 
-    let (raw_url_part, opt_part) = split_legado_url_template_and_options(&normalized_branch);
-
-    let rendered_url = if let Some((var_name, literal_val)) =
+    let rendered_url = if split_js_pipeline(raw_url_part).is_some() {
+        eval_js_pipeline_guarded(session, raw_url_part, vars, input, base_url)?
+    } else if let Some((var_name, literal_val)) =
         detect_passthrough_url_var(raw_url_part, &var_pairs)
     {
         if literal_val.trim().is_empty() {
@@ -427,16 +398,14 @@ fn eval_template_branch_single_pass(
         }
     } else {
         let pre_url = substitute_url_part_vars(raw_url_part, &var_pairs, None);
-        let has_js_pipeline = split_js_pipeline(raw_url_part).is_some();
         let evaluated_url = if pre_url.contains("{{") && pre_url.contains("}}") {
             session.eval_string(input, &pre_url, base_url)?
         } else {
             pre_url
         };
-        if !has_js_pipeline
-            && split_legado_url_and_raw_options(evaluated_url.trim())
-                .1
-                .is_some()
+        if split_legado_url_and_raw_options(evaluated_url.trim())
+            .1
+            .is_some()
         {
             return Err("请求 URL 模板参数不允许附加请求选项".into());
         }
@@ -471,10 +440,6 @@ fn eval_template_expression(
     input: &RuleValue,
     base_url: &str,
 ) -> Result<String, String> {
-    if split_js_pipeline(raw_tpl).is_some() {
-        return eval_js_pipeline_guarded(session, raw_tpl, vars, input, base_url);
-    }
-
     for branch in split_top_level_or(raw_tpl) {
         if branch.is_empty() {
             continue;
@@ -580,11 +545,32 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
     let mut mustache_depth = 0usize;
     let mut depth_bracket = 0usize;
     let mut depth_paren = 0usize;
+    let mut depth_brace = 0usize;
     let mut in_single = false;
     let mut in_double = false;
     while i < bytes.len() {
         let ch = bytes[i];
         if !in_single && !in_double {
+            if mustache_depth == 0 && depth_bracket == 0 && depth_paren == 0 && depth_brace == 0 {
+                if bytes.len() - i >= 4 && bytes[i..i + 4].eq_ignore_ascii_case(b"<js>") {
+                    let mut j = i + 4;
+                    let mut found_end = None;
+                    while j + 5 <= bytes.len() {
+                        if bytes[j..j + 5].eq_ignore_ascii_case(b"</js>") {
+                            found_end = Some(j + 5);
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if let Some(end_idx) = found_end {
+                        i = end_idx;
+                        continue;
+                    }
+                }
+                if bytes.len() - i >= 4 && bytes[i..i + 4].eq_ignore_ascii_case(b"@js:") {
+                    break;
+                }
+            }
             if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
                 mustache_depth += 1;
                 i += 2;
@@ -596,7 +582,11 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
                 i += 2;
                 continue;
             }
-            if ch == b'[' {
+            if ch == b'{' {
+                depth_brace += 1;
+            } else if ch == b'}' && depth_brace > 0 {
+                depth_brace -= 1;
+            } else if ch == b'[' {
                 depth_bracket += 1;
             } else if ch == b']' && depth_bracket > 0 {
                 depth_bracket -= 1;
@@ -607,6 +597,7 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
             } else if mustache_depth == 0
                 && depth_bracket == 0
                 && depth_paren == 0
+                && depth_brace == 0
                 && i + 1 < bytes.len()
                 && bytes[i] == b'|'
                 && bytes[i + 1] == b'|'
@@ -617,13 +608,13 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
                 continue;
             }
         }
-        if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0)
+        if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0 || depth_brace > 0)
             && ch == b'\''
             && !in_double
             && (i == 0 || bytes[i - 1] != b'\\')
         {
             in_single = !in_single;
-        } else if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0)
+        } else if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0 || depth_brace > 0)
             && ch == b'"'
             && !in_single
             && (i == 0 || bytes[i - 1] != b'\\')
@@ -2303,6 +2294,132 @@ mod tests {
             out.data.stream_url,
             "https://cdn.example.com/audio.mp3?dur=245&cover=https%3A%2F%2Fcdn.example.com%2Fcover.jpg"
         );
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn music_split_tag_js_url_and_options_evaluates_both_and_blocks_injection() {
+        use axum::Router;
+        use axum::body::{Body, to_bytes};
+        use axum::http::StatusCode;
+        use axum::response::Response;
+        use axum::routing::any;
+
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        let cap_c = captured.clone();
+
+        let app = Router::new().route(
+            "/search",
+            any(move |req: axum::extract::Request| {
+                let cap = cap_c.clone();
+                async move {
+                    let method = req.method().to_string();
+                    let uri = req.uri().to_string();
+                    let body_bytes = to_bytes(req.into_body(), 64 * 1024)
+                        .await
+                        .unwrap_or_default();
+                    let body = String::from_utf8_lossy(&body_bytes).to_string();
+                    cap.lock().unwrap().push((format!("{method} {uri}"), body));
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"items":[{"id":"1","title":"SplitSong","artist":"Art"}]}"#,
+                        ))
+                        .unwrap()
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+
+        let split_ok_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "SplitTagJsMusic",
+            "sourceUrl": base,
+            "searchUrl": "<js>var sep = 0 || 1; '/search?q=' + encodeURIComponent(key) + '&s=' + sep</js>,{\"method\":\"POST\",\"body\":\"k={{key}}\"}",
+            "ruleSearch": { "trackList": "$.items[*]", "trackId": "$.id", "title": "$.title", "artist": "$.artist" }
+        }))
+        .unwrap();
+
+        let split_unsafe_url_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "SplitUnsafeUrlMusic",
+            "sourceUrl": base,
+            "searchUrl": "<js>'/search?q=' + key</js>,{\"method\":\"POST\",\"body\":\"k={{key}}\"}",
+            "ruleSearch": { "trackList": "$.items[*]", "trackId": "$.id", "title": "$.title", "artist": "$.artist" }
+        }))
+        .unwrap();
+
+        let split_or_fallback_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "SplitOrFallbackMusic",
+            "sourceUrl": base,
+            "searchUrl": "{{nonExistentVar}} || <js>'/search?q=' + encodeURIComponent(key)</js>,{\"method\":\"POST\",\"body\":\"k={{key}}\"}",
+            "ruleSearch": { "trackList": "$.items[*]", "trackId": "$.id", "title": "$.title", "artist": "$.artist" }
+        }))
+        .unwrap();
+
+        let engine = super::MusicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        );
+
+        tokio::task::spawn_blocking(move || {
+            let res = engine
+                .search_sync(
+                    &split_ok_spec,
+                    SourceRuntimeState::default(),
+                    "hello world",
+                    1,
+                    10,
+                )
+                .unwrap();
+            assert_eq!(res.data[0].title, "SplitSong");
+
+            // Option injection via key in <js> url_tpl must be rejected.
+            let evil = r#"hello,{"method":"DELETE","headers":{"X-Evil":"1"}}"#;
+            let url_err = engine
+                .search_sync(
+                    &split_unsafe_url_spec,
+                    SourceRuntimeState::default(),
+                    evil,
+                    1,
+                    10,
+                )
+                .expect_err("option injection in <js> url_tpl must be rejected");
+            assert!(
+                url_err.message.contains("选项"),
+                "unexpected error: {url_err}"
+            );
+
+            // Breakout in options side is safely form-encoded without altering method/headers.
+            let breakout = r#"a","method":"DELETE"#;
+            let res2 = engine
+                .search_sync(
+                    &split_or_fallback_spec,
+                    SourceRuntimeState::default(),
+                    breakout,
+                    1,
+                    10,
+                )
+                .unwrap();
+            assert_eq!(res2.data[0].title, "SplitSong");
+        })
+        .await
+        .unwrap();
+
+        let reqs = captured.lock().unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0].0, "POST /search?q=hello%20world&s=1");
+        assert_eq!(reqs[0].1, "k=hello%20world");
+        assert!(reqs[1].0.starts_with("POST /search?q=a%22"));
+        assert!(reqs[1].1.starts_with("k=a%22%2C%22method%22%3A%22DELETE"));
         srv.abort();
     }
 }

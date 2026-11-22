@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -6,8 +5,8 @@ use std::time::Duration;
 
 use xmedia_source::http::{
     HttpClientConfig, LegadoHttpClient, LegadoUrlOptions, eval_json_options_template,
-    has_suspicious_option_chars, resolve_relative_url, substitute_url_part_vars,
-    verify_js_pipeline_url_options,
+    has_suspicious_option_chars, resolve_relative_url, split_legado_url_template_and_options,
+    substitute_url_part_vars, verify_js_pipeline_url_options,
 };
 pub use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
@@ -181,76 +180,6 @@ pub(super) fn split_legado_url_and_raw_options(input: &str) -> Option<(&str, &st
     let mut in_string = false;
 
     for idx in (0..bytes.len()).rev() {
-        let b = bytes[idx];
-        if b == b'"' {
-            let mut backslashes = 0usize;
-            let mut k = idx;
-            while k > 0 && bytes[k - 1] == b'\\' {
-                backslashes += 1;
-                k -= 1;
-            }
-            if backslashes.is_multiple_of(2) {
-                in_string = !in_string;
-            }
-            continue;
-        }
-        if in_string {
-            continue;
-        }
-        match b {
-            b'}' => depth += 1,
-            b'{' => {
-                depth -= 1;
-                if depth == 0 {
-                    let url_part = trimmed[..idx].trim_end().strip_suffix(',')?;
-                    return Some((url_part.trim(), &trimmed[idx..]));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn split_legado_url_template_and_options(input: &str) -> Option<(&str, &str)> {
-    let trimmed = input.trim();
-    if !trimmed.ends_with('}') {
-        return None;
-    }
-
-    let mut mustache_spans: Vec<(usize, usize)> = Vec::new();
-    let mut scan = 0usize;
-    while let Some(rel_open) = trimmed[scan..].find("{{") {
-        let open = scan + rel_open;
-        let after_open = open + 2;
-        let Some(rel_close) = trimmed[after_open..].find("}}") else {
-            break;
-        };
-        let end = after_open + rel_close + 2;
-        mustache_spans.push((open, end));
-        scan = end;
-    }
-
-    let bytes = trimmed.as_bytes();
-    if mustache_spans
-        .last()
-        .is_some_and(|&(_, end)| end == bytes.len())
-    {
-        return None;
-    }
-
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut span_idx = mustache_spans.len();
-    let mut idx = bytes.len();
-
-    while idx > 0 {
-        idx -= 1;
-        if span_idx > 0 && idx + 1 == mustache_spans[span_idx - 1].1 {
-            span_idx -= 1;
-            idx = mustache_spans[span_idx].0;
-            continue;
-        }
         let b = bytes[idx];
         if b == b'"' {
             let mut backslashes = 0usize;
@@ -503,37 +432,35 @@ impl ComicSourceEngine {
         page: u32,
         label: &str,
     ) -> Result<String, String> {
-        let evaluated = if split_js_pipeline(raw_tpl).is_some() {
-            session.set_search_vars(keyword, page)?;
-            Self::eval_js_pipeline_url_guarded(
-                session,
-                raw_tpl,
-                &source.source_url,
-                keyword,
-                page,
-                label,
-            )?
-        } else if let Some((raw_url_part, raw_opt_json)) =
-            split_legado_url_template_and_options(raw_tpl)
-        {
+        let (raw_url_part, opt_tpl) = split_legado_url_template_and_options(raw_tpl);
+        let evaluated = if let Some(raw_opt_json) = opt_tpl {
             let page_str = page.to_string();
             let vars = [("key", keyword), ("page", page_str.as_str())];
             if template_needs_js(raw_tpl) {
                 session.set_search_vars(keyword, page)?;
             }
             let eval_url_part = if template_needs_js(raw_url_part) {
-                let has_js_pipeline = split_js_pipeline(raw_url_part).is_some();
-                let pre_url = if has_js_pipeline {
-                    Cow::Borrowed(raw_url_part)
+                if split_js_pipeline(raw_url_part).is_some() {
+                    Self::eval_js_pipeline_url_guarded(
+                        session,
+                        raw_url_part,
+                        &source.source_url,
+                        keyword,
+                        page,
+                        label,
+                    )?
                 } else {
-                    Cow::Owned(substitute_url_part_vars(raw_url_part, &vars, None))
-                };
-                let input = RuleValue::Text(String::new());
-                let out = session.eval_string(&input, &pre_url, &source.source_url)?;
-                if !has_js_pipeline && split_legado_url_and_raw_options(out.trim()).is_some() {
-                    return Err(format!("{label} 模板参数不允许附加请求选项"));
+                    let pre_url = substitute_url_part_vars(raw_url_part, &vars, None);
+                    let input = RuleValue::Text(String::new());
+                    let out = session.eval_string(&input, &pre_url, &source.source_url)?;
+                    if xmedia_source::http::split_legado_url_and_raw_options(out.trim())
+                        .1
+                        .is_some()
+                    {
+                        return Err(format!("{label} 模板参数不允许附加请求选项"));
+                    }
+                    out
                 }
-                out
             } else {
                 let unencoded = substitute_simple_template(raw_url_part, keyword, page, false);
                 if split_legado_url_and_raw_options(unencoded.trim()).is_some() {
@@ -559,6 +486,16 @@ impl ComicSourceEngine {
                 label,
             )?;
             format!("{},{eval_opt_json}", eval_url_part.trim())
+        } else if split_js_pipeline(raw_tpl).is_some() {
+            session.set_search_vars(keyword, page)?;
+            Self::eval_js_pipeline_url_guarded(
+                session,
+                raw_tpl,
+                &source.source_url,
+                keyword,
+                page,
+                label,
+            )?
         } else {
             let sub = if template_needs_js(raw_tpl) {
                 let page_str = page.to_string();
