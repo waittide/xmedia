@@ -3319,3 +3319,279 @@ async fn subtitle_proxy_serves_vtt_converts_srt_injects_headers_and_enforces_sec
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn video_online_endpoints_enforce_cancel_on_future_drop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let step1_entered = Arc::new(tokio::sync::Notify::new());
+    let step1_entered_c = step1_entered.clone();
+    let step2_hits = Arc::new(AtomicUsize::new(0));
+    let step2_hits_c = step2_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/step1",
+            get(move || {
+                let notify = step1_entered_c.clone();
+                async move {
+                    notify.notify_waiters();
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    r#"{"items":[{"id":"v1","title":"Item"}],"cats":[{"id":"c1","name":"Cat"}],"title":"Video","stream":"https://cdn.example/v.mp4"}"#
+                }
+            }),
+        )
+        .route(
+            "/step2",
+            get(move || {
+                let hits = step2_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"ok":true,"items":[{"id":"v1","title":"Step2"}],"cats":[{"id":"c1","name":"Cat2"}],"title":"Step2","stream":"https://cdn.example/v2.mp4"}"#
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let src_json = serde_json::json!({
+        "sourceName": "DropVideoSource",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "searchable": true,
+        "enabledExplore": true,
+        "categoriesUrl": format!("{base}/step1"),
+        "ruleCategories": {
+            "list": "$.cats[*]",
+            "id": "$.id",
+            "name": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Cat'"
+        },
+        "searchUrl": format!("{base}/step1?q={{{{key}}}}"),
+        "ruleSearch": {
+            "list": "$.items[*]",
+            "title": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Title'",
+            "videoId": "$.id"
+        },
+        "exploreUrl": format!("{base}/step1?p={{{{page}}}}"),
+        "ruleExplore": {
+            "list": "$.items[*]",
+            "title": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Browse'",
+            "videoId": "$.id"
+        },
+        "ruleDetail": {
+            "requestUrl": format!("{base}/step1"),
+            "name": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Detail'",
+            "playUrl": "https://cdn.example/ep1.mp4"
+        },
+        "rulePlay": {
+            "requestUrl": format!("{base}/step1"),
+            "streamUrl": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'https://cdn.example/v.mp4'"
+        }
+    });
+
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for (uri, payload) in [
+        (
+            "/api/v1/video/online/categories",
+            serde_json::json!({ "source_id": sid }),
+        ),
+        (
+            "/api/v1/video/online/browse",
+            serde_json::json!({ "source_id": sid, "page": 1 }),
+        ),
+        (
+            "/api/v1/video/online/detail",
+            serde_json::json!({ "source_id": sid, "video_id": "v1" }),
+        ),
+        (
+            "/api/v1/video/online/play",
+            serde_json::json!({ "source_id": sid, "play_url": format!("{base}/ep1") }),
+        ),
+        (
+            "/api/v1/video/online/search",
+            serde_json::json!({ "keyword": "drop", "source_ids": [sid] }),
+        ),
+    ] {
+        let before_hits = step2_hits.load(Ordering::SeqCst);
+        {
+            let fut = post_json(&app, uri, &member_tok, payload);
+            tokio::pin!(fut);
+            tokio::select! {
+                _ = &mut fut => panic!("{uri} completed before drop"),
+                _ = step1_entered.notified() => {
+                    // Drop the outer handler future immediately once step 1 starts.
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(320)).await;
+        assert_eq!(
+            step2_hits.load(Ordering::SeqCst),
+            before_hits,
+            "dropping {uri} mid-flight must cancel/abort before step 2 java.ajax"
+        );
+    }
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use xmedia_core::domain::error::DomainError;
+    use xmedia_source::http::HttpClientConfig;
+
+    use crate::application::online::VideoOnlineService;
+    use crate::infra::persistence::repositories::ToastyVideoSourceRepository;
+    use crate::source::VideoSourceEngine;
+
+    let after_hits = Arc::new(AtomicUsize::new(0));
+    let after_hits_c = after_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/hop1",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(90)).await;
+                r#"{"next":"/stall"}"#
+            }),
+        )
+        .route(
+            "/stall",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                r#"{"cats":[{"id":"1","name":"Cat"}],"items":[{"id":"1","title":"Late"}],"title":"Late","stream":"https://cdn.example/late.mp4"}"#
+            }),
+        )
+        .route(
+            "/after",
+            get(move || {
+                let hits = after_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"ok":true}"#
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("xmedia_video_timeout.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_video_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_video_schema(&mut db, &db_url).await.unwrap();
+
+    let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let security = Arc::new(SecurityManager::new("video-timeout-secret"));
+    let tokens = Arc::new(JwtTokenService::new("video-timeout-secret", 3600));
+    let auth_svc = Arc::new(AuthService::new(users_repo, security, tokens, lifecycles));
+    let admin_session = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "adminpassword123".into(),
+        })
+        .await
+        .unwrap();
+    let admin = auth_svc
+        .authenticate_jwt(&admin_session.token)
+        .await
+        .unwrap();
+
+    let sources_repo = Arc::new(ToastyVideoSourceRepository::new(db));
+    let engine = VideoSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(5),
+    );
+    let svc = VideoOnlineService::with_engine(sources_repo, engine, true)
+        .with_timeouts(Duration::from_millis(120), Duration::from_millis(160));
+
+    let raw_src = serde_json::json!({
+        "sourceName": "StalledMultiHopVideo",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "enabledExplore": true,
+        "categoriesUrl": format!("<js>java.ajax('{base}/hop1'); '{base}/stall'</js>"),
+        "ruleCategories": {
+            "list": "$.cats[*]",
+            "id": "$.id",
+            "name": "@js:java.ajax(baseUrl.replace('/stall', '/after')); 'Cat'"
+        },
+        "exploreUrl": format!("<js>java.ajax('{base}/hop1'); '{base}/stall'</js>"),
+        "ruleExplore": {
+            "list": "$.items[*]",
+            "title": "@js:java.ajax(baseUrl.replace('/stall', '/after')); 'Item'",
+            "videoId": "$.id"
+        },
+        "ruleDetail": {
+            "requestUrl": format!("<js>java.ajax('{base}/hop1'); '{base}/stall'</js>"),
+            "name": "@js:java.ajax(baseUrl.replace('/stall', '/after')); 'Detail'",
+            "playUrl": "https://cdn.example/ep1.mp4"
+        },
+        "rulePlay": {
+            "requestUrl": format!("<js>java.ajax('{base}/hop1'); '{base}/stall'</js>"),
+            "streamUrl": "@js:java.ajax(baseUrl.replace('/stall', '/after')); 'https://cdn.example/v.mp4'"
+        }
+    });
+    let imported = svc
+        .import_sources(&admin, &raw_src.to_string())
+        .await
+        .unwrap();
+    let sid = imported.sources[0].id;
+
+    let t_start = std::time::Instant::now();
+    let cat_err = svc.categories(&admin, sid).await.unwrap_err();
+    assert!(matches!(cat_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    let browse_err = svc.browse(&admin, sid, None, 1).await.unwrap_err();
+    assert!(matches!(browse_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    let detail_err = svc.detail(&admin, sid, Some("1"), None).await.unwrap_err();
+    assert!(matches!(detail_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    let play_err = svc
+        .play(&admin, sid, &format!("{base}/ep1"), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(play_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    assert!(
+        t_start.elapsed() < Duration::from_secs(1),
+        "all 4 timed-out video calls should finish well under 2s stall, took {:?}",
+        t_start.elapsed()
+    );
+    assert_eq!(after_hits.load(Ordering::SeqCst), 0);
+
+    srv.abort();
+}

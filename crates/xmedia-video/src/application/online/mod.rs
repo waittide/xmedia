@@ -4,6 +4,7 @@ mod dto;
 mod sources;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -19,7 +20,64 @@ pub use dto::*;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
+const DETAIL_OP_TIMEOUT: Duration = Duration::from_secs(25);
 const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
+
+pub(super) struct CancelOnDrop {
+    flag: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    pub(super) fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag, armed: true }
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+pub(super) struct CancelTasksOnDrop {
+    entries: Vec<(Arc<AtomicBool>, tokio::task::AbortHandle)>,
+    armed: bool,
+}
+
+impl CancelTasksOnDrop {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            armed: true,
+        }
+    }
+
+    pub(super) fn push(&mut self, flag: Arc<AtomicBool>, abort: tokio::task::AbortHandle) {
+        self.entries.push((flag, abort));
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelTasksOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            for (flag, abort) in &self.entries {
+                flag.store(true, Ordering::Relaxed);
+                abort.abort();
+            }
+        }
+    }
+}
 
 pub(super) type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
 
@@ -47,6 +105,8 @@ pub struct VideoOnlineService {
     rate_limiters: RateLimiterMap,
     seed_import_lock: tokio::sync::Mutex<()>,
     allow_private_ips: bool,
+    op_timeout: Duration,
+    detail_timeout: Duration,
 }
 
 impl VideoOnlineService {
@@ -68,7 +128,16 @@ impl VideoOnlineService {
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
+            op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
+            detail_timeout: DETAIL_OP_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timeouts(mut self, op_timeout: Duration, detail_timeout: Duration) -> Self {
+        self.op_timeout = op_timeout;
+        self.detail_timeout = detail_timeout;
+        self
     }
 
     pub(super) async fn acquire_rate_slot(

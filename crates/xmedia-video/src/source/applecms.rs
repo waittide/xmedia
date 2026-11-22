@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use regex::Regex;
 use serde::Deserialize;
@@ -225,9 +226,17 @@ pub fn fetch_categories(
     spec: &VideoSourceSpec,
     http: &LegadoHttpClient,
 ) -> Result<Vec<OnlineVideoCategory>, String> {
+    fetch_categories_with_timeout(spec, http, None)
+}
+
+pub fn fetch_categories_with_timeout(
+    spec: &VideoSourceSpec,
+    http: &LegadoHttpClient,
+    timeout: Option<Duration>,
+) -> Result<Vec<OnlineVideoCategory>, String> {
     let api_url = spec.effective_api_url();
     let url = build_api_url(api_url, &[("ac", "list".into()), ("pg", "1".into())])?;
-    let fetched = http.fetch(&url, spec.effective_source_url())?;
+    let fetched = http.fetch_with_timeout(&url, spec.effective_source_url(), timeout)?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "获取分类")?;
 
     let mut out = Vec::with_capacity(parsed.class.len());
@@ -257,6 +266,16 @@ pub fn search(
     keyword: &str,
     page: u32,
 ) -> Result<Vec<OnlineVideoSummary>, String> {
+    search_with_timeout(spec, http, keyword, page, None)
+}
+
+pub fn search_with_timeout(
+    spec: &VideoSourceSpec,
+    http: &LegadoHttpClient,
+    keyword: &str,
+    page: u32,
+    timeout: Option<Duration>,
+) -> Result<Vec<OnlineVideoSummary>, String> {
     if !spec.searchable {
         return Err(format!("影视源「{}」不支持关键词搜索", spec.source_name));
     }
@@ -270,7 +289,7 @@ pub fn search(
             ("pg", page_num.to_string()),
         ],
     )?;
-    let fetched = http.fetch(&url, spec.effective_source_url())?;
+    let fetched = http.fetch_with_timeout(&url, spec.effective_source_url(), timeout)?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "关键词搜索")?;
     Ok(parsed
         .list
@@ -285,6 +304,16 @@ pub fn browse(
     category_id: Option<&str>,
     page: u32,
 ) -> Result<AppleCmsBrowsePage, String> {
+    browse_with_timeout(spec, http, category_id, page, None)
+}
+
+pub fn browse_with_timeout(
+    spec: &VideoSourceSpec,
+    http: &LegadoHttpClient,
+    category_id: Option<&str>,
+    page: u32,
+    timeout: Option<Duration>,
+) -> Result<AppleCmsBrowsePage, String> {
     let api_url = spec.effective_api_url();
     let page_num = page.max(1);
     let mut params = vec![("ac", "detail".into()), ("pg", page_num.to_string())];
@@ -292,7 +321,7 @@ pub fn browse(
         params.push(("t", cat.to_string()));
     }
     let url = build_api_url(api_url, &params)?;
-    let fetched = http.fetch(&url, spec.effective_source_url())?;
+    let fetched = http.fetch_with_timeout(&url, spec.effective_source_url(), timeout)?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "分类浏览")?;
 
     let items = parsed
@@ -327,6 +356,16 @@ pub fn fetch_detail(
     video_id: Option<&str>,
     detail_url: Option<&str>,
 ) -> Result<OnlineVideoDetail, String> {
+    fetch_detail_with_timeout(spec, http, video_id, detail_url, None)
+}
+
+pub fn fetch_detail_with_timeout(
+    spec: &VideoSourceSpec,
+    http: &LegadoHttpClient,
+    video_id: Option<&str>,
+    detail_url: Option<&str>,
+    timeout: Option<Duration>,
+) -> Result<OnlineVideoDetail, String> {
     let api_url = spec.effective_api_url();
     let target_url = if let Some(vid) = video_id.map(str::trim).filter(|s| !s.is_empty()) {
         build_api_url(
@@ -339,7 +378,7 @@ pub fn fetch_detail(
         return Err("缺少 video_id 或 detail_url".into());
     };
 
-    let fetched = http.fetch(&target_url, spec.effective_source_url())?;
+    let fetched = http.fetch_with_timeout(&target_url, spec.effective_source_url(), timeout)?;
     let parsed = parse_applecms_json(fetched.status, &fetched.body, "获取影视详情")?;
     let vod = parsed
         .list

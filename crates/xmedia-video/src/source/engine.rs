@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use xmedia_source::http::{
-    HttpClientConfig, LegadoHttpClient, eval_json_options_template, has_suspicious_option_chars,
-    resolve_relative_url, resolve_relative_url_preserving_options,
+    HttpClientConfig, HttpFetchResult, LegadoHttpClient, eval_json_options_template,
+    has_suspicious_option_chars, resolve_relative_url, resolve_relative_url_preserving_options,
     split_legado_url_and_raw_options, split_legado_url_template_and_options,
     substitute_legado_options_vars, substitute_legado_url_template_vars, substitute_url_part_vars,
     verify_js_pipeline_url_options,
@@ -97,6 +97,26 @@ fn substitute_template_vars(raw_tpl: &str, vars: &[(&str, &str)]) -> Result<Stri
     let (url_part, _) = split_legado_url_template_and_options(raw_tpl);
     let passthrough = detect_passthrough_url_var(url_part, vars);
     substitute_legado_url_template_vars(raw_tpl, vars, passthrough).map_err(|e| e.to_string())
+}
+
+fn remaining_fetch_timeout(session: &ReusableSourceSession) -> Result<Duration, String> {
+    session.check_active()?;
+    let remaining = session.remaining_budget();
+    if remaining.is_zero() {
+        return Err("执行超过单次操作总超时上限 (interrupted)".into());
+    }
+    Ok(remaining)
+}
+
+fn fetch_session_api(
+    session: &ReusableSourceSession,
+    target_url: &str,
+    base_url: &str,
+) -> Result<HttpFetchResult, String> {
+    let remaining = remaining_fetch_timeout(session)?;
+    session
+        .http()
+        .fetch_with_timeout(target_url, base_url, Some(remaining))
 }
 
 impl VideoSourceEngine {
@@ -315,7 +335,9 @@ impl VideoSourceEngine {
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
         let res: Result<Vec<OnlineVideoCategory>, String> = match source.effective_format() {
-            VideoSourceFormat::ApplecmsV10 => applecms::fetch_categories(source, session.http()),
+            VideoSourceFormat::ApplecmsV10 => remaining_fetch_timeout(&session).and_then(|t| {
+                applecms::fetch_categories_with_timeout(source, session.http(), Some(t))
+            }),
             VideoSourceFormat::Rule => (|| {
                 let Some(cat_url_tpl) = source
                     .categories_url
@@ -342,8 +364,7 @@ impl VideoSourceEngine {
                     "",
                     1,
                 )?;
-                session.check_active()?;
-                let fetched = session.http().fetch(&url, base_url)?;
+                let fetched = fetch_session_api(&session, &url, base_url)?;
                 let raw_input = RuleValue::from_raw(fetched.body);
 
                 let list_rule = rule_cat
@@ -398,9 +419,9 @@ impl VideoSourceEngine {
 
         let page_num = page.max(1);
         let res: Result<Vec<OnlineVideoSummary>, String> = match source.effective_format() {
-            VideoSourceFormat::ApplecmsV10 => {
-                applecms::search(source, session.http(), keyword, page_num)
-            }
+            VideoSourceFormat::ApplecmsV10 => remaining_fetch_timeout(&session).and_then(|t| {
+                applecms::search_with_timeout(source, session.http(), keyword, page_num, Some(t))
+            }),
             VideoSourceFormat::Rule => (|| {
                 if !source.searchable {
                     return Err(format!("影视源「{}」不支持关键词搜索", source.source_name));
@@ -432,8 +453,7 @@ impl VideoSourceEngine {
                     keyword,
                     page_num,
                 )?;
-                session.check_active()?;
-                let fetched = session.http().fetch(&url, base_url)?;
+                let fetched = fetch_session_api(&session, &url, base_url)?;
                 let raw_input = RuleValue::from_raw(fetched.body);
                 eval_video_summary_list(&mut session, &raw_input, rule_search, &fetched.final_url)
             })(),
@@ -465,16 +485,21 @@ impl VideoSourceEngine {
 
         let page_num = page.max(1);
         let res: Result<VideoBrowseOutput, String> = match source.effective_format() {
-            VideoSourceFormat::ApplecmsV10 => {
-                applecms::browse(source, session.http(), category_id, page_num).map(|p| {
-                    VideoBrowseOutput {
-                        items: p.items,
-                        total: p.total,
-                        page: p.page,
-                        page_count: p.page_count,
-                    }
+            VideoSourceFormat::ApplecmsV10 => remaining_fetch_timeout(&session).and_then(|t| {
+                applecms::browse_with_timeout(
+                    source,
+                    session.http(),
+                    category_id,
+                    page_num,
+                    Some(t),
+                )
+                .map(|p| VideoBrowseOutput {
+                    items: p.items,
+                    total: p.total,
+                    page: p.page,
+                    page_count: p.page_count,
                 })
-            }
+            }),
             VideoSourceFormat::Rule => (|| {
                 let explore_tpl = source
                     .explore_url
@@ -510,8 +535,7 @@ impl VideoSourceEngine {
                     "",
                     page_num,
                 )?;
-                session.check_active()?;
-                let fetched = session.http().fetch(&url, base_url)?;
+                let fetched = fetch_session_api(&session, &url, base_url)?;
                 let raw_input = RuleValue::from_raw(fetched.body);
                 let items =
                     eval_video_summary_list(&mut session, &raw_input, rule, &fetched.final_url)?;
@@ -549,9 +573,15 @@ impl VideoSourceEngine {
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
         let res: Result<OnlineVideoDetail, String> = match source.effective_format() {
-            VideoSourceFormat::ApplecmsV10 => {
-                applecms::fetch_detail(source, session.http(), video_id, detail_url)
-            }
+            VideoSourceFormat::ApplecmsV10 => remaining_fetch_timeout(&session).and_then(|t| {
+                applecms::fetch_detail_with_timeout(
+                    source,
+                    session.http(),
+                    video_id,
+                    detail_url,
+                    Some(t),
+                )
+            }),
             VideoSourceFormat::Rule => (|| {
                 let rule_detail = source
                     .rule_detail
@@ -588,8 +618,7 @@ impl VideoSourceEngine {
                     return Err("缺少 detail_url 且 ruleDetail 未配置 requestUrl".into());
                 };
 
-                session.check_active()?;
-                let fetched = session.http().fetch(&target_url, base_url)?;
+                let fetched = fetch_session_api(&session, &target_url, base_url)?;
                 let mut raw_input = RuleValue::from_raw(fetched.body);
                 if let Some(ref init_rule) = rule_detail.init
                     && !init_rule.trim().is_empty()
@@ -647,6 +676,7 @@ impl VideoSourceEngine {
                     let group_items =
                         session.eval_list(&raw_input, groups_rule, &fetched.final_url)?;
                     for (g_idx, g_item) in group_items.into_iter().enumerate() {
+                        session.check_active()?;
                         let g_name = non_empty_opt(session.eval_opt(
                             &g_item,
                             rule_detail.group_name.as_deref(),
@@ -811,8 +841,7 @@ impl VideoSourceEngine {
                     "",
                     1,
                 )?;
-                session.check_active()?;
-                let fetched = session.http().fetch(&req_url, base_url)?;
+                let fetched = fetch_session_api(&session, &req_url, base_url)?;
                 eval_base_url = fetched.final_url;
                 target_input = RuleValue::from_raw(fetched.body);
             }

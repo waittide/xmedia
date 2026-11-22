@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use reqwest::header::{ACCEPT_ENCODING, CONTENT_TYPE, HeaderValue, RANGE, USER_AGENT};
 use tokio::sync::Semaphore;
@@ -32,7 +31,7 @@ use super::dto::{
     OnlineVideoDetailResponseDto, OnlineVideoPlayResponseDto, OnlineVideoSearchErrorDto,
     OnlineVideoSearchItemDto, OnlineVideoSearchResponseDto, ProxyStreamOutcome, ProxyStreamPayload,
 };
-use super::{SEARCH_MAX_CONCURRENCY, SEARCH_PER_SOURCE_TIMEOUT, VideoOnlineService};
+use super::{CancelOnDrop, CancelTasksOnDrop, SEARCH_MAX_CONCURRENCY, VideoOnlineService};
 
 fn validate_range_header(raw: Option<&str>) -> DomainResult<Option<String>> {
     let Some(val) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -125,13 +124,10 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
         let has_explore = match parsed.effective_format() {
             crate::source::model::VideoSourceFormat::ApplecmsV10 => true,
             crate::source::model::VideoSourceFormat::Rule => {
@@ -147,18 +143,45 @@ impl VideoOnlineService {
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_categories_sync_with_control(
-                &parsed,
-                prev_state,
-                Duration::from_secs(20),
-                cancel_flag,
-            )
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取影视分类失败: {e}")))?
-        .map_err(|e| DomainError::Validation(e.message))?;
+        let timed = tokio::time::timeout(
+            op_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .fetch_categories_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        op_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取影视分类失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取影视分类超时（超过 {} 秒）",
+                    op_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
             && let Err(err) = self
@@ -209,8 +232,10 @@ impl VideoOnlineService {
         sources.sort_by(|a, b| b.weight.cmp(&a.weight).then_with(|| a.name.cmp(&b.name)));
         let page_num = page.max(1);
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
+        let op_timeout = self.op_timeout;
 
         let mut handles = Vec::with_capacity(sources.len());
+        let mut cancel_all_guard = CancelTasksOnDrop::new();
         let multi_source_mode = !explicit_single_or_filtered || sources.len() > 1;
 
         for rec in sources {
@@ -230,8 +255,10 @@ impl VideoOnlineService {
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
             let rate_limiter = get_or_insert_rate_limiter(&self.rate_limiters, sid);
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            let cancel_for_task = cancel_flag.clone();
 
-            handles.push(tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let parsed = match parsed_res {
                     Ok(p) => p,
                     Err(e) => {
@@ -244,17 +271,17 @@ impl VideoOnlineService {
                     }
                 };
                 if let Some(rate) = parsed.parse_concurrent_rate()
-                    && let Err(e) = rate_limiter.acquire(rate, SEARCH_PER_SOURCE_TIMEOUT).await
+                    && let Err(e) = rate_limiter.acquire(rate, op_timeout).await
                 {
                     return (sid, sname, prev_state_cmp, Err(e));
                 }
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (sid, sname, prev_state_cmp, Err("搜索并发调度已关闭".into()));
                 };
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                let cancel_worker = cancel_flag.clone();
+                let cancel_worker = cancel_for_task.clone();
+                let mut cancel_guard = CancelOnDrop::new(cancel_for_task.clone());
                 let timed = tokio::time::timeout(
-                    SEARCH_PER_SOURCE_TIMEOUT,
+                    op_timeout,
                     tokio::task::spawn_blocking(move || {
                         engine
                             .search_sync_with_control(
@@ -262,7 +289,7 @@ impl VideoOnlineService {
                                 state,
                                 &kw_owned,
                                 page_num,
-                                SEARCH_PER_SOURCE_TIMEOUT,
+                                op_timeout,
                                 cancel_worker,
                             )
                             .map_err(Into::into)
@@ -270,27 +297,32 @@ impl VideoOnlineService {
                 )
                 .await;
                 match timed {
-                    Ok(Ok(res)) => (sid, sname, prev_state_cmp, res),
-                    Ok(Err(e)) => (
-                        sid,
-                        sname,
-                        prev_state_cmp,
-                        Err(format!("搜索任务异常: {e}")),
-                    ),
-                    Err(_) => {
-                        cancel_flag.store(true, Ordering::Relaxed);
+                    Ok(Ok(res)) => {
+                        cancel_guard.disarm();
+                        (sid, sname, prev_state_cmp, res)
+                    }
+                    Ok(Err(e)) => {
+                        cancel_guard.disarm();
                         (
                             sid,
                             sname,
                             prev_state_cmp,
-                            Err(format!(
-                                "搜索超时（超过 {} 秒）",
-                                SEARCH_PER_SOURCE_TIMEOUT.as_secs()
-                            )),
+                            Err(format!("搜索任务异常: {e}")),
+                        )
+                    }
+                    Err(_) => {
+                        cancel_for_task.store(true, Ordering::Relaxed);
+                        (
+                            sid,
+                            sname,
+                            prev_state_cmp,
+                            Err(format!("搜索超时（超过 {} 秒）", op_timeout.as_secs())),
                         )
                     }
                 }
-            }));
+            });
+            cancel_all_guard.push(cancel_flag, handle.abort_handle());
+            handles.push(handle);
         }
 
         let mut results = Vec::new();
@@ -333,6 +365,7 @@ impl VideoOnlineService {
                 }
             }
         }
+        cancel_all_guard.disarm();
 
         Ok(OnlineVideoSearchResponseDto {
             keyword: kw.to_string(),
@@ -353,13 +386,10 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
@@ -370,21 +400,48 @@ impl VideoOnlineService {
             .map(ToString::to_string);
         let cat_for_worker = cat_owned.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
         let page_num = page.max(1);
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.browse_sync_with_control(
-                &parsed,
-                prev_state,
-                cat_for_worker.as_deref(),
-                page_num,
-                Duration::from_secs(20),
-                cancel_flag,
-            )
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("分类浏览失败: {e}")))?
-        .map_err(|e| DomainError::Validation(e.message))?;
+        let timed = tokio::time::timeout(
+            op_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .browse_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        cat_for_worker.as_deref(),
+                        page_num,
+                        op_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("分类浏览失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "分类浏览超时（超过 {} 秒）",
+                    op_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
             && let Err(err) = self
@@ -427,13 +484,11 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        let detail_timeout = self.detail_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
         let clean_detail_url =
             if let Some(raw_detail) = detail_url.map(str::trim).filter(|s| !s.is_empty()) {
                 Some(xmedia_source::http::resolve_literal_http_url(
@@ -450,20 +505,47 @@ impl VideoOnlineService {
         let vid_owned = video_id.map(ToString::to_string);
         let durl_owned = clean_detail_url;
         let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.fetch_detail_sync_with_control(
-                &parsed,
-                prev_state,
-                vid_owned.as_deref(),
-                durl_owned.as_deref(),
-                Duration::from_secs(25),
-                cancel_flag,
-            )
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("获取影视详情失败: {e}")))?
-        .map_err(|e| DomainError::Validation(e.message))?;
+        let timed = tokio::time::timeout(
+            detail_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .fetch_detail_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        vid_owned.as_deref(),
+                        durl_owned.as_deref(),
+                        detail_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("获取影视详情失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取影视详情超时（超过 {} 秒）",
+                    detail_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
             && let Err(err) = self
@@ -500,13 +582,10 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
         let clean_play_url = xmedia_source::http::resolve_literal_http_url(
             play_url,
             Some(parsed.effective_source_url()),
@@ -518,20 +597,47 @@ impl VideoOnlineService {
         let play_owned = clean_play_url;
         let group_owned = group_name.map(ToString::to_string);
         let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-        let mut out = tokio::task::spawn_blocking(move || {
-            engine.resolve_play_sync_with_control(
-                &parsed,
-                prev_state,
-                &play_owned,
-                group_owned.as_deref(),
-                Duration::from_secs(20),
-                cancel_flag,
-            )
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("解析播放地址失败: {e}")))?
-        .map_err(|e| DomainError::Validation(e.message))?;
+        let timed = tokio::time::timeout(
+            op_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .resolve_play_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &play_owned,
+                        group_owned.as_deref(),
+                        op_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let mut out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("解析播放地址失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "解析播放地址超时（超过 {} 秒）",
+                    op_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp
             && let Err(err) = self

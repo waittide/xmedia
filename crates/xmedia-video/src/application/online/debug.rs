@@ -23,7 +23,7 @@ use super::dto::{
     VideoSourceTestStepDto,
 };
 use super::sources::merge_runtime_state_with_base;
-use super::{SOURCE_TEST_TOTAL_TIMEOUT, VideoOnlineService};
+use super::{CancelOnDrop, SOURCE_TEST_TOTAL_TIMEOUT, VideoOnlineService};
 
 impl VideoOnlineService {
     pub async fn test_source(
@@ -147,6 +147,7 @@ impl VideoOnlineService {
         let kw_clone = effective_keyword.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
         let timed_res = tokio::time::timeout(
             SOURCE_TEST_TOTAL_TIMEOUT,
@@ -594,8 +595,12 @@ impl VideoOnlineService {
         .await;
 
         let (maybe_final_state, report) = match timed_res {
-            Ok(Ok((state, report))) => (Some(state), report),
+            Ok(Ok((state, report))) => {
+                cancel_guard.disarm();
+                (Some(state), report)
+            }
             Ok(Err(e)) => {
+                cancel_guard.disarm();
                 return Err(DomainError::Storage(format!("测试影视源线程失败: {e}")));
             }
             Err(_) => {
