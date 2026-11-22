@@ -2,13 +2,21 @@ use scraper::{ElementRef, Html, Selector};
 
 use crate::http::resolve_relative_url;
 
+fn strip_css_prefix(rule: &str) -> &str {
+    if rule
+        .as_bytes()
+        .get(..5)
+        .is_some_and(|b| b.eq_ignore_ascii_case(b"@css:"))
+    {
+        rule[5..].trim()
+    } else {
+        rule.trim()
+    }
+}
+
 pub(super) fn eval_html_list(html_str: &str, rule: &str) -> Vec<String> {
     let doc = Html::parse_fragment(html_str);
-    let clean = rule
-        .strip_prefix("@css:")
-        .or_else(|| rule.strip_prefix("@CSS:"))
-        .unwrap_or(rule)
-        .trim();
+    let clean = strip_css_prefix(rule);
 
     let elements = select_elements_chained(&doc, clean);
     elements.into_iter().map(|el| el.html()).collect()
@@ -16,11 +24,7 @@ pub(super) fn eval_html_list(html_str: &str, rule: &str) -> Vec<String> {
 
 pub(super) fn eval_html_single(html_str: &str, rule: &str, base_url: &str) -> String {
     let doc = Html::parse_fragment(html_str);
-    let clean = rule
-        .strip_prefix("@css:")
-        .or_else(|| rule.strip_prefix("@CSS:"))
-        .unwrap_or(rule)
-        .trim();
+    let clean = strip_css_prefix(rule);
 
     let (selector_part, attr_part) = if let Some((left, right)) = clean.rsplit_once('@') {
         if is_attr_extractor(right.trim()) {

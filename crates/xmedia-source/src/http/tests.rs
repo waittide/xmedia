@@ -491,3 +491,69 @@ async fn cookie_jar_set_cookie_from_http_response_and_forbidden_headers_stripped
 
     server.abort();
 }
+
+#[test]
+fn literal_http_url_rejects_options_and_data_urls() {
+    assert_eq!(
+        resolve_literal_http_url("https://example.com/v/1?a=b", None).unwrap(),
+        "https://example.com/v/1?a=b"
+    );
+    assert_eq!(
+        resolve_literal_http_url("/v/1", Some("https://example.com/root/")).unwrap(),
+        "https://example.com/v/1"
+    );
+    assert!(
+        resolve_literal_http_url(
+            "https://example.com/v/1,{\"method\":\"POST\",\"headers\":{\"X-Evil\":\"1\"}}",
+            None,
+        )
+        .is_err()
+    );
+    assert!(resolve_literal_http_url("data:text/html,<h1>x</h1>", None).is_err());
+    assert!(resolve_literal_http_url("javascript:alert(1)", Some("https://example.com")).is_err());
+}
+
+#[test]
+fn legado_url_template_encodes_url_vars_and_isolates_json_options() {
+    let rendered = substitute_legado_url_template_vars(
+        "https://example.com/search?q={{key}}&p={{page}}",
+        &[("key", "hello world&injected=1"), ("page", "2")],
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        rendered,
+        "https://example.com/search?q=hello%20world%26injected%3D1&p=2"
+    );
+
+    let poison = "x\",\"headers\":{\"X-Injected\":\"pwned\"},\"z\":\"";
+    let rendered_post = substitute_legado_url_template_vars(
+        "https://example.com/api?k={{key}},{\"method\":\"POST\",\"body\":\"q={{key}}&p={{page}}\"}",
+        &[("key", poison), ("page", "1")],
+        None,
+    )
+    .unwrap();
+    let (url_part, opt_part) = split_legado_url_and_raw_options(&rendered_post);
+    assert!(url_part.contains("?k=x%22"));
+    let parsed_opts: LegadoUrlOptions = serde_json::from_str(opt_part.unwrap()).unwrap();
+    assert_eq!(parsed_opts.method.as_deref(), Some("POST"));
+    assert!(parsed_opts.headers.is_none());
+    assert!(
+        parsed_opts
+            .body
+            .as_ref()
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .starts_with("q=x%22%2C%22headers%22")
+    );
+
+    let json_body_tpl = "https://example.com/api,{\"method\":\"POST\",\"headers\":{\"Content-Type\":\"application/json\"},\"body\":\"{\\\"kw\\\":\\\"{{key}}\\\"}\"}";
+    let rendered_json =
+        substitute_legado_url_template_vars(json_body_tpl, &[("key", poison)], None).unwrap();
+    let (_, json_opts_str) = split_legado_url_and_raw_options(&rendered_json);
+    let json_opts: LegadoUrlOptions = serde_json::from_str(json_opts_str.unwrap()).unwrap();
+    assert!(json_opts.headers.unwrap().get("X-Injected").is_none());
+    let inner_body: serde_json::Value =
+        serde_json::from_str(json_opts.body.as_ref().and_then(|v| v.as_str()).unwrap()).unwrap();
+    assert_eq!(inner_body["kw"].as_str(), Some(poison));
+}

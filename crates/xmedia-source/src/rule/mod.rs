@@ -36,6 +36,18 @@ pub fn cached_regex(pattern: &str) -> Option<Regex> {
     Some(compiled)
 }
 
+fn has_non_js_rule_prefix(expr: &str) -> bool {
+    let bytes = expr.as_bytes();
+    expr.starts_with("$.")
+        || expr.starts_with("$[")
+        || bytes
+            .get(..5)
+            .is_some_and(|b| b.eq_ignore_ascii_case(b"@css:"))
+        || bytes
+            .get(..6)
+            .is_some_and(|b| b.eq_ignore_ascii_case(b"@json:"))
+}
+
 /// Returns true when evaluating `rule` may require a QuickJS runtime.
 pub fn rule_needs_js(rule: &str) -> bool {
     let trimmed = rule.trim();
@@ -52,13 +64,12 @@ pub fn rule_needs_js(rule: &str) -> bool {
             break;
         };
         let expr = after_open[..close].trim();
-        let is_pure_non_js = expr.starts_with("$.")
-            || expr.starts_with("$[")
-            || expr.starts_with("@css:")
-            || expr.starts_with("@CSS:")
-            || expr.starts_with("@Json:")
-            || expr.starts_with("@json:");
-        if !is_pure_non_js {
+        let needs_js = if has_non_js_rule_prefix(expr) {
+            rule_needs_js(expr)
+        } else {
+            true
+        };
+        if needs_js {
             return true;
         }
         rest = &after_open[close + 2..];
@@ -203,7 +214,7 @@ fn eval_rule_string_depth(
 
     if trimmed.contains("{{") && trimmed.contains("}}") {
         let (template_part, regex_suffix) = split_regex_replace_suffix(trimmed);
-        let interpolated = eval_mustache_template(template_part, input, base_url, js)?;
+        let interpolated = eval_mustache_template(template_part, input, base_url, js, depth)?;
         return Ok(apply_regex_replace(&interpolated, regex_suffix));
     }
 
@@ -307,8 +318,10 @@ pub fn eval_non_js_single(input: &RuleValue, rule: &str, base_url: &str) -> Stri
     let (core, regex_suffix) = split_regex_replace_suffix(trimmed);
 
     if let Some(jp) = core
-        .strip_prefix("@Json:")
-        .or_else(|| core.strip_prefix("@json:"))
+        .as_bytes()
+        .get(..6)
+        .is_some_and(|b| b.eq_ignore_ascii_case(b"@json:"))
+        .then(|| &core[6..])
         .or_else(|| core.starts_with("$.").then_some(core))
         .or_else(|| core.starts_with("$[").then_some(core))
         .or_else(|| (core == "$").then_some(core))
@@ -430,12 +443,39 @@ fn value_to_list(val: RuleValue) -> Vec<RuleValue> {
     }
 }
 
-/// Splits a rule into `(prefix_rule, js_code, suffix_rule)` if it contains `<js>...</js>` or `@js:`.
+fn find_ci_outside_mustache(rule: &str, needle_ascii_lower: &[u8]) -> Option<usize> {
+    let bytes = rule.as_bytes();
+    let mut mustache_depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            mustache_depth += 1;
+            i += 2;
+            continue;
+        }
+        if mustache_depth > 0 && i + 1 < bytes.len() && bytes[i] == b'}' && bytes[i + 1] == b'}' {
+            mustache_depth -= 1;
+            i += 2;
+            continue;
+        }
+        if mustache_depth == 0
+            && i + needle_ascii_lower.len() <= bytes.len()
+            && bytes[i..i + needle_ascii_lower.len()].eq_ignore_ascii_case(needle_ascii_lower)
+        {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Splits a rule into `(prefix_rule, js_code, suffix_rule)` if it contains `<js>...</js>` or `@js:`
+/// outside any `{{...}}` Mustache template block.
 pub fn split_js_pipeline(rule: &str) -> Option<(&str, &str, &str)> {
-    let lower = rule.to_ascii_lowercase();
-    if let Some(start) = lower.find("<js>") {
+    if let Some(start) = find_ci_outside_mustache(rule, b"<js>") {
         let code_start = start + 4;
-        if let Some(rel_end) = lower[code_start..].find("</js>") {
+        let lower_tail = rule[code_start..].to_ascii_lowercase();
+        if let Some(rel_end) = lower_tail.find("</js>") {
             let code_end = code_start + rel_end;
             let prefix = rule[..start].trim();
             let code = rule[code_start..code_end].trim();
@@ -443,7 +483,7 @@ pub fn split_js_pipeline(rule: &str) -> Option<(&str, &str, &str)> {
             return Some((prefix, code, suffix));
         }
     }
-    if let Some(idx) = lower.find("@js:") {
+    if let Some(idx) = find_ci_outside_mustache(rule, b"@js:") {
         let prefix = rule[..idx].trim();
         let code = rule[idx + 4..].trim();
         return Some((prefix, code, ""));
@@ -472,7 +512,11 @@ fn eval_mustache_template(
     input: &RuleValue,
     base_url: &str,
     js: &mut Option<&mut dyn JsRuleEvaluator>,
+    depth: usize,
 ) -> Result<String, String> {
+    if depth >= MAX_RULE_EVAL_DEPTH {
+        return Err(format!("规则递归嵌套深度超过上限 ({MAX_RULE_EVAL_DEPTH})"));
+    }
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(open) = rest.find("{{") {
@@ -486,25 +530,20 @@ fn eval_mustache_template(
             return Ok(out);
         };
         let expr = after_open[..close].trim();
-        let val = if expr.starts_with("$.")
-            || expr.starts_with("$[")
-            || expr.starts_with("@css:")
-            || expr.starts_with("@Json:")
-            || expr.starts_with("@json:")
-        {
-            eval_non_js_single(input, expr, base_url)
+        let val = if has_non_js_rule_prefix(expr) {
+            eval_rule_string_depth(input, expr, base_url, js, depth + 1)?
         } else if let Some(js_session) = js.as_deref_mut() {
             let eval_res = js_session.eval_rule_js(expr, input, base_url);
             js_session.check_active()?;
             match eval_res {
                 Ok(v) => v.as_text(),
                 Err(err) if is_benign_mustache_js_miss(&err) => {
-                    eval_non_js_single(input, expr, base_url)
+                    eval_rule_string_depth(input, expr, base_url, &mut None, depth + 1)?
                 }
                 Err(err) => return Err(err),
             }
         } else {
-            eval_non_js_single(input, expr, base_url)
+            eval_rule_string_depth(input, expr, base_url, js, depth + 1)?
         };
         out.push_str(&val);
         rest = &after_open[close + 2..];

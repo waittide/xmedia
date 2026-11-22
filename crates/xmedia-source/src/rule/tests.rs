@@ -22,6 +22,9 @@ impl JsRuleEvaluator for MockJsEvaluator {
         if trimmed == "make_list" {
             return Ok(RuleValue::Json(serde_json::json!(["alpha", "beta"])));
         }
+        if trimmed == "'js_fallback'" || trimmed == "js_fallback" {
+            return Ok(RuleValue::Text("js_fallback".to_string()));
+        }
         Err(format!("unknown mock op: {trimmed}"))
     }
 }
@@ -582,4 +585,48 @@ fn jsonpath_filter_exact_large_integer_equality_and_json_html_guard() {
 
     let str_rv = RuleValue::Json(serde_json::json!("<b>ok</b>"));
     assert_eq!(eval_rule_string(&str_rv, "b@text", "", None).unwrap(), "ok");
+}
+
+#[test]
+fn mustache_combinators_route_through_rule_eval_and_js_detection() {
+    let rv = RuleValue::Json(serde_json::json!({
+        "a": "",
+        "b": "fallback_val",
+        "c": "second_val"
+    }));
+    assert!(!rule_needs_js("id:{{$.a || $.b}}"));
+    assert!(!rule_needs_js("id:{{$.b && $.c}}"));
+    assert!(rule_needs_js("id:{{$.a || @js: 'js_fallback'}}"));
+
+    assert_eq!(
+        eval_rule_string(&rv, "id:{{$.a || $.b}}", "", None).unwrap(),
+        "id:fallback_val"
+    );
+    assert_eq!(
+        eval_rule_string(&rv, "id:{{$.b && $.c}}", "", None).unwrap(),
+        "id:fallback_val\nsecond_val"
+    );
+    assert_eq!(
+        eval_rule_string(
+            &rv,
+            "id:{{$.a || @js: 'js_fallback'}}",
+            "",
+            Some(&mut MockJsEvaluator),
+        )
+        .unwrap(),
+        "id:js_fallback"
+    );
+
+    let html_rv = RuleValue::Text("<div class=\"title\">Hello</div>".to_string());
+    assert!(!rule_needs_js("x:{{@Css:.missing || @cSs:.title@text}}"));
+    assert_eq!(
+        eval_rule_string(
+            &html_rv,
+            "x:{{@Css:.missing || @cSs:.title@text}}",
+            "",
+            None
+        )
+        .unwrap(),
+        "x:Hello"
+    );
 }
