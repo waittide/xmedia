@@ -69,6 +69,12 @@ export const router = createRouter({
       meta: { domain: 'comic' as MediaKind, fullscreen: true },
     },
     {
+      path: '/comic/online/read',
+      name: 'comic-online-reader',
+      component: () => import('@/domains/comic/views/OnlineComicReaderView.vue'),
+      meta: { domain: 'comic' as MediaKind, fullscreen: true },
+    },
+    {
       path: '/video/watch/:id',
       name: 'video-player',
       component: () => import('@/domains/video/views/VideoPlayerView.vue'),
@@ -203,6 +209,16 @@ export const router = createRouter({
           name: 'comic-bookmarks',
           component: () => import('@/domains/comic/views/BookmarksView.vue'),
           meta: { domain: 'comic' as MediaKind },
+        },
+        {
+          path: 'comic/online/detail',
+          name: 'comic-online-detail',
+          component: () => import('@/domains/comic/views/OnlineComicDetailView.vue'),
+          meta: { domain: 'comic' as MediaKind },
+        },
+        {
+          path: 'comic/online',
+          redirect: { path: '/comic/series', query: { scope: 'online' } },
         },
 
         // 3. Music Domain (/music)
