@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -7,7 +8,7 @@ use regex::Regex;
 
 use super::session::{ReusableSourceContext, ReusableWorkerSession};
 use crate::source::http::{
-    HttpClientConfig, LegadoHttpClient, json_structure_signature, resolve_relative_url,
+    HttpClientConfig, LegadoHttpClient, eval_json_options_template, resolve_relative_url,
     resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
     split_legado_url_template_and_options, substitute_legado_options_vars,
     substitute_legado_url_template_vars, substitute_url_part_vars,
@@ -168,49 +169,53 @@ impl BookSourceEngine {
 
         let evaluated = if search_url_needs_js(raw_tpl) {
             let (url_tpl, opt_tpl) = split_legado_url_template_and_options(raw_tpl);
+            let page_str = page.to_string();
+            let vars = [("key", keyword), ("page", page_str.as_str())];
             if let Some(raw_opts) = opt_tpl {
-                let page_str = page.to_string();
                 let rendered_url = if search_url_needs_js(url_tpl) {
                     session.set_search_vars(keyword, page)?;
+                    let has_js_pipeline = split_js_pipeline(url_tpl).is_some();
+                    let pre_url = if has_js_pipeline {
+                        Cow::Borrowed(url_tpl)
+                    } else {
+                        Cow::Owned(substitute_url_part_vars(url_tpl, &vars, None))
+                    };
                     let input = RuleValue::Text(String::new());
-                    session.eval_string(&input, url_tpl, &source.book_source_url)?
+                    let out_url = session.eval_string(&input, &pre_url, &source.book_source_url)?;
+                    if !has_js_pipeline && split_legado_url_and_raw_options(&out_url).1.is_some() {
+                        return Err("searchUrl 不允许通过模板变量注入请求配置".into());
+                    }
+                    out_url
                 } else {
-                    substitute_url_part_vars(
-                        url_tpl,
-                        &[("key", keyword), ("page", &page_str)],
-                        None,
-                    )
+                    substitute_url_part_vars(url_tpl, &vars, None)
                 };
                 let rendered_opts = if search_url_needs_js(raw_opts) {
-                    let expected_sig = serde_json::from_str::<serde_json::Value>(raw_opts)
-                        .ok()
-                        .map(|v| json_structure_signature(&v));
                     session.set_search_vars(keyword, page)?;
-                    let input = RuleValue::Text(String::new());
-                    let out_opts =
-                        session.eval_string(&input, raw_opts, &source.book_source_url)?;
-                    let parsed_out: serde_json::Value = serde_json::from_str(out_opts.trim())
-                        .map_err(|e| format!("searchUrl 请求配置 JS 求值后 JSON 无效: {e}"))?;
-                    if let Some(sig) = expected_sig
-                        && json_structure_signature(&parsed_out) != sig
-                    {
-                        return Err("searchUrl 请求配置 JSON 结构在模板求值后发生异常变化".into());
-                    }
-                    out_opts
-                } else {
-                    substitute_legado_options_vars(
+                    eval_json_options_template(
                         raw_opts,
-                        &[("key", keyword), ("page", &page_str)],
-                    )
-                    .map_err(|e| e.to_string())?
+                        &vars,
+                        |expr_tpl| {
+                            let input = RuleValue::Text(String::new());
+                            session.eval_string(&input, expr_tpl, &source.book_source_url)
+                        },
+                        "searchUrl",
+                    )?
+                } else {
+                    substitute_legado_options_vars(raw_opts, &vars).map_err(|e| e.to_string())?
                 };
                 format!("{rendered_url},{rendered_opts}")
             } else {
                 session.set_search_vars(keyword, page)?;
+                let has_js_pipeline = split_js_pipeline(raw_tpl).is_some();
+                let eval_tpl = if has_js_pipeline {
+                    Cow::Borrowed(raw_tpl)
+                } else {
+                    Cow::Owned(substitute_url_part_vars(raw_tpl, &vars, None))
+                };
                 let input = RuleValue::Text(String::new());
-                let out = session.eval_string(&input, raw_tpl, &source.book_source_url)?;
+                let out = session.eval_string(&input, &eval_tpl, &source.book_source_url)?;
                 let (_, post_opts) = split_legado_url_and_raw_options(&out);
-                if post_opts.is_some() && !raw_tpl.contains("@js:") && !raw_tpl.contains("<js>") {
+                if post_opts.is_some() && !has_js_pipeline {
                     return Err("searchUrl 不允许通过模板变量注入请求配置".into());
                 }
                 out

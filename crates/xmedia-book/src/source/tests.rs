@@ -755,3 +755,173 @@ fn search_url_template_encodes_keyword_and_blocks_legado_options_json_injection(
     assert!(cap.targets[1].contains("q=x%22"));
     assert!(!cap.targets[1].contains("X-Injected\":\"pwned"));
 }
+
+#[test]
+fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_urls() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Captured {
+        methods: Vec<String>,
+        targets: Vec<String>,
+        bodies: Vec<String>,
+        signs: Vec<String>,
+    }
+
+    let captured = Arc::new(Mutex::new(Captured::default()));
+    let cap_clone = captured.clone();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = std::thread::spawn(move || {
+        for _ in 0..4 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 8192];
+            let n = stream.read(&mut buf).unwrap();
+            let req_str = String::from_utf8_lossy(&buf[..n]).to_string();
+            let (head, body) = req_str.split_once("\r\n\r\n").unwrap_or((&req_str, ""));
+            let first_line = head.lines().next().unwrap_or("");
+            let mut parts = first_line.split_whitespace();
+            let method = parts.next().unwrap_or("").to_string();
+            let target = parts.next().unwrap_or("").to_string();
+            let sign = head
+                .lines()
+                .find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.trim()
+                        .eq_ignore_ascii_case("x-sign")
+                        .then(|| v.trim().to_string())
+                })
+                .unwrap_or_default();
+            {
+                let mut g = cap_clone.lock().unwrap();
+                g.methods.push(method);
+                g.targets.push(target);
+                g.bodies.push(body.to_string());
+                g.signs.push(sign);
+            }
+            let payload = r#"{"items":[]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                payload.len(),
+                payload
+            );
+            stream.write_all(resp.as_bytes()).unwrap();
+        }
+    });
+
+    let cfg = HttpClientConfig {
+        allow_private_ips: true,
+        ..Default::default()
+    };
+    let engine = BookSourceEngine::new(cfg, Duration::from_secs(2));
+    let base_rule = crate::source::model::LegadoSearchRule {
+        book_list: Some("$.items[*]".into()),
+        name: Some("$.name".into()),
+        ..Default::default()
+    };
+
+    let dup_key_payload = "x\",\"method\":\"DELETE\",\"charset\":\"";
+
+    // 1. JS-enabled LegadoUrlOptions + {{key}} + trailing key + mixed JS URL part
+    let src_js_opts = LegadoBookSource {
+        book_source_name: "JsOptsBook".into(),
+        book_source_url: format!("http://{addr}"),
+        js_lib: Some("function sign(k){ return 'sig:' + k.length; }".into()),
+        search_url: Some(
+            "/s?wd={{key}}&t={{100 + 23}},{\"method\":\"POST\",\"headers\":{\"X-Sign\":\"{{sign(key)}}\"},\"body\":\"q={{key}}\",\"charset\":\"UTF-8\"}"
+                .into(),
+        ),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    engine
+        .search_sync(
+            &src_js_opts,
+            SourceRuntimeState::default(),
+            dup_key_payload,
+            1,
+        )
+        .unwrap();
+
+    // 2. Unquoted {{...}} placeholders inside JS-enabled LegadoUrlOptions (previously set expected_sig = None!)
+    let src_unquoted_opts = LegadoBookSource {
+        book_source_name: "UnquotedOptsBook".into(),
+        book_source_url: format!("http://{addr}"),
+        js_lib: Some("function flag(){ return true; }".into()),
+        search_url: Some(
+            "/unq,{\"method\":\"POST\",\"webView\":{{flag()}},\"body\":{\"page\":{{page}},\"kw\":\"{{key}}\"}}"
+                .into(),
+        ),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    engine
+        .search_sync(
+            &src_unquoted_opts,
+            SourceRuntimeState::default(),
+            dup_key_payload,
+            3,
+        )
+        .unwrap();
+
+    // 3. Mixed {{key}} + JS {{...}} without options percent-encodes {{key}}
+    let src_mixed_url = LegadoBookSource {
+        book_source_name: "MixedUrlBook".into(),
+        book_source_url: format!("http://{addr}"),
+        search_url: Some("/mixed?wd={{key}}&t={{40 + 2}}".into()),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    engine
+        .search_sync(
+            &src_mixed_url,
+            SourceRuntimeState::default(),
+            "a&admin=1",
+            1,
+        )
+        .unwrap();
+
+    // 4. Case-insensitive @JS: pipeline still permitted to build options
+    let src_ci_js = LegadoBookSource {
+        book_source_name: "CiJsBook".into(),
+        book_source_url: format!("http://{addr}"),
+        search_url: Some("@JS:'/ci,' + JSON.stringify({method:'POST',body:'ok'})".into()),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    engine
+        .search_sync(&src_ci_js, SourceRuntimeState::default(), "q", 1)
+        .unwrap();
+
+    // 5. Options smuggling via {{...}} when no @js:/<js> is present must be rejected
+    let src_smuggle_mustache = LegadoBookSource {
+        book_source_name: "SmuggleMustacheBook".into(),
+        book_source_url: format!("http://{addr}"),
+        search_url: Some("/bad?q={{key}}&x={{\",{\\\"method\\\":\\\"DELETE\\\"}\"}}".into()),
+        rule_search: Some(base_rule),
+        ..Default::default()
+    };
+    assert!(
+        engine
+            .search_sync(&src_smuggle_mustache, SourceRuntimeState::default(), "q", 1)
+            .is_err()
+    );
+
+    server.join().unwrap();
+    let cap = captured.lock().unwrap();
+    assert_eq!(cap.methods, vec!["POST", "POST", "GET", "POST"]);
+    assert!(cap.targets[0].starts_with("/s?wd=x%22") && cap.targets[0].ends_with("&t=123"));
+    assert_eq!(cap.bodies[0], format!("q={dup_key_payload}"));
+    assert_eq!(cap.signs[0], format!("sig:{}", dup_key_payload.len()));
+
+    let unq_body: serde_json::Value = serde_json::from_str(&cap.bodies[1]).unwrap();
+    assert_eq!(unq_body["page"], 3);
+    assert_eq!(unq_body["kw"].as_str(), Some(dup_key_payload));
+
+    assert_eq!(cap.targets[2], "/mixed?wd=a%26admin%3D1&t=42");
+    assert_eq!(cap.targets[3], "/ci");
+    assert_eq!(cap.bodies[3], "ok");
+}
