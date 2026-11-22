@@ -350,12 +350,12 @@ onBeforeUnmount(() => {
 
     <!-- Top Region: Minimal MD3 Top App Bar + Domain Primary Tabs -->
     <div
-      class="col-start-1 row-start-1 z-20 shrink-0 transition-shadow duration-150 ease-standard select-none md:col-start-2"
+      class="safe-pt safe-px col-start-1 row-start-1 z-20 shrink-0 transition-shadow duration-150 ease-standard select-none md:col-start-2"
       :class="
         isContentScrolled ? 'bg-surface-container shadow-elevation-1' : 'bg-surface'
       "
     >
-      <header class="safe-pt safe-px flex h-16 items-center justify-between gap-3 px-4 md:px-6">
+      <header class="flex h-16 items-center justify-between gap-3 px-4 md:px-6">
         <h1 class="text-title-large shrink-0 truncate text-on-surface">
           {{ topBarTitle }}
         </h1>
@@ -387,7 +387,12 @@ onBeforeUnmount(() => {
             @click="searchOpen = true"
           />
 
-          <MdMenu placement="bottom-end" :min-width="240" :aria-label="accountButtonLabel">
+          <MdMenu
+            placement="bottom-end"
+            :min-width="284"
+            :max-width="320"
+            :aria-label="accountButtonLabel"
+          >
             <template #trigger="{ toggle, triggerAttrs }">
               <button
                 type="button"
@@ -429,7 +434,7 @@ onBeforeUnmount(() => {
               <div
                 role="radiogroup"
                 :aria-label="t('theme.modeTitle')"
-                class="grid grid-cols-3 gap-1 rounded-corner-full bg-surface-container-high p-1"
+                class="grid grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)] gap-1 rounded-corner-full bg-surface-container-high p-1"
               >
                 <button
                   v-for="opt in themeModeOptions"
@@ -438,7 +443,7 @@ onBeforeUnmount(() => {
                   role="radio"
                   :aria-checked="themeStore.themeMode === opt.value"
                   :title="opt.label"
-                  class="md-state text-label-small flex cursor-pointer items-center justify-center gap-1 rounded-corner-full px-2 py-1.5"
+                  class="md-state text-label-small flex cursor-pointer items-center justify-center gap-1 rounded-corner-full px-1.5 py-1.5 whitespace-nowrap"
                   :class="
                     themeStore.themeMode === opt.value
                       ? 'bg-secondary-container text-on-secondary-container'
@@ -447,7 +452,7 @@ onBeforeUnmount(() => {
                   @click="themeStore.setThemeMode(opt.value)"
                 >
                   <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span class="truncate">{{ opt.label }}</span>
+                  <span>{{ opt.label }}</span>
                 </button>
               </div>
             </div>
@@ -523,7 +528,7 @@ onBeforeUnmount(() => {
     <!-- Grid-Flow Global Player Bar (never fixed, never overlaps Nav Bar or main) -->
     <div
       v-if="showMusicBar"
-      class="col-start-1 row-start-3 min-w-0 md:col-start-2 md:safe-pb"
+      class="col-start-1 row-start-3 min-w-0 md:col-start-2 md:pb-[var(--safe-area-bottom)]"
     >
       <PlayerBar />
     </div>

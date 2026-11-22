@@ -444,7 +444,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="relative flex h-full w-full items-center justify-center overflow-hidden bg-surface">
+  <div
+    class="relative flex h-full w-full items-center justify-center overflow-hidden bg-surface pt-14 pb-10"
+  >
     <div
       v-if="loading"
       class="flex flex-col items-center justify-center gap-3 text-on-surface-variant"

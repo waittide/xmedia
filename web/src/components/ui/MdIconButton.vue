@@ -105,7 +105,7 @@ function handleClick(): void {
         :to="to"
         :aria-label="resolvedAriaLabel"
         :aria-describedby="tooltipId"
-        class="md-state md-touch-target inline-flex shrink-0 cursor-pointer items-center justify-center rounded-corner-full select-none"
+        class="md-state md-touch-target md-inline-flex shrink-0 cursor-pointer items-center justify-center rounded-corner-full select-none"
         :class="[sizeClass, variantClass]"
       >
         <LuLoader2 v-if="loading" :class="[iconSizeClass, 'animate-spin']" aria-hidden="true" />
@@ -122,7 +122,7 @@ function handleClick(): void {
         :aria-describedby="tooltipId"
         :aria-pressed="isToggle ? isSelected : undefined"
         :aria-busy="loading ? 'true' : undefined"
-        class="md-state md-touch-target inline-flex shrink-0 cursor-pointer items-center justify-center rounded-corner-full select-none"
+        class="md-state md-touch-target md-inline-flex shrink-0 cursor-pointer items-center justify-center rounded-corner-full select-none"
         :class="[sizeClass, variantClass]"
         @click="handleClick"
       >
@@ -139,7 +139,7 @@ function handleClick(): void {
     v-bind="attrs"
     :to="to"
     :aria-label="resolvedAriaLabel"
-    class="md-state md-touch-target inline-flex shrink-0 cursor-pointer items-center justify-center rounded-corner-full select-none"
+    class="md-state md-touch-target md-inline-flex shrink-0 cursor-pointer items-center justify-center rounded-corner-full select-none"
     :class="[sizeClass, variantClass]"
   >
     <LuLoader2 v-if="loading" :class="[iconSizeClass, 'animate-spin']" aria-hidden="true" />
@@ -156,7 +156,7 @@ function handleClick(): void {
     :aria-label="resolvedAriaLabel"
     :aria-pressed="isToggle ? isSelected : undefined"
     :aria-busy="loading ? 'true' : undefined"
-    class="md-state md-touch-target inline-flex shrink-0 items-center justify-center rounded-corner-full select-none"
+    class="md-state md-touch-target md-inline-flex shrink-0 items-center justify-center rounded-corner-full select-none"
     :class="[sizeClass, variantClass, isDisabled ? 'cursor-not-allowed' : 'cursor-pointer']"
     @click="handleClick"
   >

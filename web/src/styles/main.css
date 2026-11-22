@@ -820,9 +820,14 @@ a,
     background-color: var(--md-sys-color-secondary-container);
     color: var(--md-sys-color-on-secondary-container);
   }
-}
 
-@layer utilities {
+  /* Low-precedence display helper so utility overrides (hidden, sm:inline-flex) always win */
+  .md-inline-flex {
+    display: inline-flex;
+  }
+
+  /* Safe-area padding helpers kept in @layer components so Tailwind utility classes
+     (px-4, md:px-6, py-3, pb-6) never get clobbered to 0px on standard viewports. */
   .safe-pt {
     padding-top: var(--safe-area-top);
   }

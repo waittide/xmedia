@@ -353,48 +353,49 @@ onBeforeUnmount(() => {
           </span>
         </div>
 
-        <MdIconButton
-          size="sm"
-          class="hidden sm:inline-flex"
-          :selected="isCurrentStarred"
-          :aria-label="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
-          :title="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
-          @click="handleToggleFavorite"
-        >
-          <LuHeart
-            class="h-4 w-4"
-            :class="isCurrentStarred ? 'fill-error text-error' : 'text-on-surface-variant'"
-          />
-        </MdIconButton>
+        <div class="hidden sm:flex">
+          <MdIconButton
+            size="sm"
+            :selected="isCurrentStarred"
+            :aria-label="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
+            :title="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
+            @click="handleToggleFavorite"
+          >
+            <LuHeart
+              class="h-4 w-4"
+              :class="isCurrentStarred ? 'fill-error text-error' : 'text-on-surface-variant'"
+            />
+          </MdIconButton>
+        </div>
       </div>
 
       <!-- Center: Transport Controls + Desktop Seek Bar -->
       <div class="flex shrink-0 flex-col items-center justify-center gap-0.5 sm:max-w-xl sm:flex-1">
         <div class="flex items-center gap-1 sm:gap-2">
-          <MdIconButton
-            size="sm"
-            class="hidden sm:inline-flex"
-            :variant="playerStore.playMode !== 'sequence' ? 'tonal' : 'standard'"
-            :selected="playerStore.playMode !== 'sequence'"
-            :aria-label="playModeTitle"
-            :title="playModeTitle"
-            @click="playerStore.cyclePlayMode()"
-          >
-            <LuRepeat1 v-if="playerStore.playMode === 'loop_one'" class="h-4 w-4" />
-            <LuShuffle v-else-if="playerStore.playMode === 'shuffle'" class="h-4 w-4" />
-            <LuRepeat v-else class="h-4 w-4" />
-          </MdIconButton>
+          <div class="hidden items-center gap-1 sm:flex sm:gap-2">
+            <MdIconButton
+              size="sm"
+              :variant="playerStore.playMode !== 'sequence' ? 'tonal' : 'standard'"
+              :selected="playerStore.playMode !== 'sequence'"
+              :aria-label="playModeTitle"
+              :title="playModeTitle"
+              @click="playerStore.cyclePlayMode()"
+            >
+              <LuRepeat1 v-if="playerStore.playMode === 'loop_one'" class="h-4 w-4" />
+              <LuShuffle v-else-if="playerStore.playMode === 'shuffle'" class="h-4 w-4" />
+              <LuRepeat v-else class="h-4 w-4" />
+            </MdIconButton>
 
-          <MdIconButton
-            size="sm"
-            class="hidden sm:inline-flex"
-            :disabled="!playerStore.currentTrack"
-            :aria-label="t('player.prev')"
-            :title="t('player.prev')"
-            @click="playerStore.playPrev()"
-          >
-            <LuSkipBack class="h-4 w-4 fill-current text-on-surface" />
-          </MdIconButton>
+            <MdIconButton
+              size="sm"
+              :disabled="!playerStore.currentTrack"
+              :aria-label="t('player.prev')"
+              :title="t('player.prev')"
+              @click="playerStore.playPrev()"
+            >
+              <LuSkipBack class="h-4 w-4 fill-current text-on-surface" />
+            </MdIconButton>
+          </div>
 
           <button
             type="button"
@@ -460,8 +461,8 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Right: Lyrics, Queue, Volume (lg+) & Playback Options Menu -->
-      <div class="flex shrink-0 items-center justify-end gap-0.5 md:max-w-[30%] md:flex-1 md:gap-1">
+      <!-- Right: Lyrics, Queue, Volume (lg+) & Playback Options Menu (sm+; mobile accesses via LyricsOverlay) -->
+      <div class="hidden shrink-0 items-center justify-end gap-0.5 sm:flex md:max-w-[30%] md:flex-1 md:gap-1">
         <MdIconButton
           size="sm"
           :variant="playerStore.lyricsOpen ? 'tonal' : 'standard'"
@@ -522,7 +523,6 @@ onBeforeUnmount(() => {
             <MdIconButton
               v-bind="triggerAttrs"
               size="sm"
-              class="hidden sm:inline-flex"
               :variant="open ? 'tonal' : 'standard'"
               :icon="LuSlidersHorizontal"
               :title="t('player.optionsMenu')"
