@@ -119,7 +119,7 @@
   --player-bar-h: 5.875rem;
 }
 
-@media (min-width: 640px) {
+@media (min-width: 600px) {
   :root {
     --player-bar-h: 5rem;
   }
@@ -598,14 +598,15 @@ a,
   }
 }
 
-/* Coordinate fixed PlayerBar, mobile sidebar drawer, and Snackbar with safe areas & MD3 bottom nav */
-@media (min-width: 768px) {
+/* Coordinate fixed PlayerBar, mobile sidebar drawer, and Snackbar with safe areas & MD3 bottom nav.
+   Must match the MD3 Medium/Expanded boundary (840px) used by `md:` and WorkspaceLayout. */
+@media (min-width: 840px) {
   #app > footer.fixed.bottom-0 {
     padding-bottom: var(--safe-area-bottom);
   }
 }
 
-@media (max-width: 767.98px) {
+@media (max-width: 839.98px) {
   :root:has([data-mobile-bottom-nav]) {
     --md-snackbar-bottom: 5.25rem;
   }

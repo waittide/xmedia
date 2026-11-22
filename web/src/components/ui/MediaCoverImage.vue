@@ -58,7 +58,7 @@ watch(
       :alt="alt"
       :loading="loading"
       decoding="async"
-      class="relative z-[1] transition-opacity duration-200"
+      class="relative transition-opacity duration-200"
       :class="[imgClass, loaded ? 'opacity-100' : 'opacity-0']"
       @load="loaded = true"
       @error="failed = true"

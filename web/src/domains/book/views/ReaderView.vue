@@ -12,6 +12,7 @@ import {
   LuX,
 } from 'vue-icons-plus/lu'
 import { api } from '@/domains/book/api'
+import { pushEscapeHandler } from '@/composables/useEscapeStack'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
@@ -182,8 +183,21 @@ async function loadBook(id: string): Promise<void> {
   }
 }
 
+// Reader-level Escape is the bottom layer of the shared LIFO escape stack, so popovers/sheets
+// opened later (theme popover, panels) are dismissed first instead of exiting the reader.
+let removeReaderEscape: (() => void) | null = null
+
+function handleReaderEscape(): void {
+  if (activePanel.value !== 'none') {
+    activePanel.value = 'none'
+  } else {
+    void exitReader()
+  }
+}
+
 onMounted(() => {
   disposed = false
+  removeReaderEscape = pushEscapeHandler(handleReaderEscape)
   window.addEventListener('keydown', handleReaderKeydown)
   window.addEventListener('pagehide', handlePageHide)
   void loadBook(bookId.value)
@@ -201,6 +215,8 @@ watch(bookId, (nextId, prevId) => {
 onBeforeUnmount(() => {
   disposed = true
   loadSeq += 1
+  removeReaderEscape?.()
+  removeReaderEscape = null
   window.removeEventListener('keydown', handleReaderKeydown)
   window.removeEventListener('pagehide', handlePageHide)
   void flushPendingProgress()
@@ -215,15 +231,6 @@ function handleReaderKeydown(ev: KeyboardEvent): void {
       target.tagName === 'SELECT' ||
       target.isContentEditable)
 
-  if (ev.key === 'Escape') {
-    ev.preventDefault()
-    if (activePanel.value !== 'none') {
-      activePanel.value = 'none'
-    } else {
-      void exitReader()
-    }
-    return
-  }
   if (isTyping || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key.toLowerCase() === 'b') {
     ev.preventDefault()

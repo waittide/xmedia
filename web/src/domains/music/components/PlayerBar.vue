@@ -130,7 +130,14 @@ function handlePlaybackKeydown(ev: KeyboardEvent): void {
   if (!playerStore.currentTrack) return
   if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing) return
   if (dialogStore.active !== null) return
-  if (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]')) return
+  // Modal layers block playback shortcuts, except player-owned overlays (e.g. full-screen lyrics)
+  // that opt in via `data-player-shortcuts`.
+  if (
+    typeof document !== 'undefined' &&
+    document.querySelector('[aria-modal="true"]:not([data-player-shortcuts])')
+  ) {
+    return
+  }
   if (isExcludedPlaybackRoute()) return
 
   const isSpace = ev.code === 'Space' || ev.key === ' '

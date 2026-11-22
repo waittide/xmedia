@@ -54,7 +54,7 @@ escapeStack.register(
             tabindex="-1"
             :aria-labelledby="title ? titleId : undefined"
             :aria-describedby="subtitle ? subtitleId : undefined"
-            class="safe-pb flex max-h-[85dvh] w-full flex-col overflow-hidden rounded-t-[var(--md-sys-shape-corner-xl)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-1)] outline-none sm:h-full sm:max-h-none sm:rounded-t-none sm:rounded-l-[var(--md-sys-shape-corner-lg)] sm:pb-0"
+            class="safe-pb flex max-h-[85dvh] flex-col overflow-hidden max-sm:w-full max-sm:max-w-none rounded-t-[var(--md-sys-shape-corner-xl)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-1)] outline-none sm:h-full sm:max-h-none sm:rounded-t-none sm:rounded-l-[var(--md-sys-shape-corner-lg)] sm:pb-0"
             :class="widthClass"
           >
             <!-- Compact (<600px) Bottom Sheet Drag Handle -->
