@@ -2490,16 +2490,29 @@ async fn rule_play_subtitles_jsonpath_and_js_e2e() {
 #[tokio::test]
 async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
     let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
-    let origin_app = Router::new().route(
-        "/bad.m3u8",
-        get(|| async {
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/vnd.apple.mpegurl")
-                .body(Body::from("not an m3u8 playlist"))
-                .unwrap()
-        }),
-    );
+    let origin_app = Router::new()
+        .route(
+            "/bad.m3u8",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/vnd.apple.mpegurl")
+                    .body(Body::from("not an m3u8 playlist"))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/fake-tag.m3u8",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/vnd.apple.mpegurl")
+                    .body(Body::from(
+                        "#EXTM3U_GARBAGE_NOT_TAG\n#EXTINF:5.0,\nseg0.ts\n",
+                    ))
+                    .unwrap()
+            }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let origin = format!("http://{addr}");
@@ -2517,6 +2530,17 @@ async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
     )
     .await;
     assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    let encoded_fake: String =
+        form_urlencoded::byte_serialize(format!("{origin}/fake-tag.m3u8").as_bytes()).collect();
+    let (st_fake, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_fake}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_fake, StatusCode::BAD_REQUEST);
 
     srv.abort();
 }

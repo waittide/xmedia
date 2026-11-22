@@ -684,7 +684,10 @@ impl VideoOnlineService {
             let text = decode_response_bytes(&buf, None, header_ct.as_deref());
             let trimmed_m3u8 =
                 text.trim_start_matches(|c: char| c == '\u{feff}' || c.is_ascii_whitespace());
-            if !trimmed_m3u8.starts_with("#EXTM3U") {
+            let valid_extm3u_header = trimmed_m3u8
+                .strip_prefix("#EXTM3U")
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t', '\r', '\n']));
+            if !valid_extm3u_header {
                 return Err(DomainError::Validation(
                     "无效的 HLS 播放列表：缺少 #EXTM3U 头".into(),
                 ));
