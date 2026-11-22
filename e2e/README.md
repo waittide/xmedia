@@ -27,6 +27,10 @@ node e2e/run.mjs --base-url http://127.0.0.1:8090 --tier 1
 
 # 4. Opt-in live external source verification (requires public internet)
 node e2e/run.mjs --live
+node e2e/run.mjs --live --live-report e2e
+
+# Or via the reproducible verification script (writes e2e/live_verification_report.{md,json})
+./scripts/verify_live_sources.sh
 
 # 5. Machine-readable JSON output
 node e2e/run.mjs --self-test --json
@@ -36,7 +40,7 @@ node e2e/run.mjs --self-test --json
 
 | Path | Purpose |
 |---|---|
-| `e2e/run.mjs` | CLI runner (`--self-test`, `--live`, `--tier`, `--domain`, `--base-url`, `--xmedia-bin`, `--web-dir`, `--keep-tmp`, `--json`) |
+| `e2e/run.mjs` | CLI runner (`--self-test`, `--live`, `--live-report`, `--tier`, `--domain`, `--base-url`, `--xmedia-bin`, `--web-dir`, `--keep-tmp`, `--json`) |
 | `e2e/lib/fixtures.mjs` | Deterministic in-memory binary fixtures (`MOCK_JPEG_BYTES`, `MOCK_PNG_BYTES`, `MOCK_MP3_BYTES`, `MOCK_TS_SEGMENT_{1,2}`, `MOCK_MP4_BYTES`, `MOCK_FMP4_{INIT,SEG}`, `MOCK_AES_KEY_BYTES`, `MOCK_GBK_HTML_BYTES`) & magic-byte/header/M3U8 assertions |
 | `e2e/lib/mock_origin.mjs` | Deterministic local HTTP/1.1 Mock Origin Server (`127.0.0.1:0`) simulating MangaDex, WEBTOON (`Referer` gate + `data-url`), XKCD, GDStudio (`206` Range + LRC), Audius (`200` non-Range), AppleCMS v10 (nested HLS + AES key + fMP4 map + `0x47` TS), PeerTube (`206` MP4), and `/edge/*` security/error/GBK/cookie endpoints |
 | `e2e/lib/client.mjs` | Free TCP port allocator, `XMediaServerManager` (`mock` vs `hardened` SSRF modes, isolated `TempDir` DB, `restart()`), `ApiClient` (Cookie, Bearer, `x-api-key`, GET-only `?token=`, `failLoudlyRequest` throwing `SutEndpointMissingError` on `404`/`405`) |

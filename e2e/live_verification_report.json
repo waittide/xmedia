@@ -1,0 +1,329 @@
+{
+  "generated_at": "2026-11-22T05:24:17.569Z",
+  "mode": "hardened (allow_private_ips=false)",
+  "report_dir": "/data/code/github/waittide/xmedia/e2e",
+  "domains": {
+    "comic": {
+      "passed": 3,
+      "results": [
+        {
+          "id": "LIVE-01",
+          "domain": "comic",
+          "title": "Comic — MangaDex live search -> pages -> image-proxy",
+          "status": "pass",
+          "durationMs": 3134,
+          "detail": {
+            "source": "MangaDex (EN)",
+            "keyword": "Yotsuba",
+            "mime": "image/jpeg",
+            "bytes": 52815,
+            "title": "Yotsuba&!"
+          }
+        },
+        {
+          "id": "LIVE-02",
+          "domain": "comic",
+          "title": "Comic — WEBTOON live search -> pages -> Referer image-proxy",
+          "status": "pass",
+          "durationMs": 4973,
+          "detail": {
+            "source": "WEBTOON (EN)",
+            "keyword": "Tower of God",
+            "mime": "image/jpeg",
+            "bytes": 54414,
+            "title": "Tower of God: Urek Mazino"
+          }
+        },
+        {
+          "id": "LIVE-03",
+          "domain": "comic",
+          "title": "Comic — XKCD live explore -> image-proxy PNG",
+          "status": "pass",
+          "durationMs": 2292,
+          "detail": {
+            "source": "XKCD",
+            "mime": "image/png",
+            "bytes": 100654,
+            "title": "#3327 Plate Maintenance"
+          }
+        }
+      ]
+    },
+    "music": {
+      "passed": 3,
+      "results": [
+        {
+          "id": "LIVE-04",
+          "domain": "music",
+          "title": "Music — GDStudio live track-info + 206 audio-proxy + cover-proxy + lyrics",
+          "status": "pass",
+          "durationMs": 1981,
+          "detail": {
+            "source": "GDStudio Music API (网易云)",
+            "status": 206,
+            "audioBytes": 4096,
+            "coverMime": "image/jpeg",
+            "lyricLines": 38
+          }
+        },
+        {
+          "id": "LIVE-05",
+          "domain": "music",
+          "title": "Music — Audius trending -> audio-proxy stream chunk",
+          "status": "pass",
+          "durationMs": 4168,
+          "detail": {
+            "source": "Audius Public API",
+            "status": 200,
+            "bytesRead": 8192,
+            "title": "Xsetra - Fragments"
+          }
+        },
+        {
+          "id": "LIVE-06",
+          "domain": "music",
+          "title": "Music — Internet Archive Audio & iTunes+LRCLIB live stream & lyrics",
+          "status": "pass",
+          "durationMs": 5861,
+          "detail": {
+            "archive": {
+              "source": "Internet Archive Audio",
+              "status": 200,
+              "bytesRead": 4096,
+              "title": "Whiz M.F. Quiz - Sick Puppies interview"
+            },
+            "itunes": {
+              "source": "iTunes Search + LRCLIB",
+              "status": 200,
+              "bytesRead": 4096,
+              "lyricLines": 65,
+              "hasPlainLyrics": true,
+              "title": "Bohemian Rhapsody"
+            }
+          }
+        }
+      ]
+    },
+    "video": {
+      "passed": 3,
+      "results": [
+        {
+          "id": "LIVE-07",
+          "domain": "video",
+          "title": "Video — AppleCMS v10 multi-node HLS -> hls-proxy segments",
+          "status": "pass",
+          "durationMs": 12205,
+          "detail": {
+            "source": "爱坤资源 (ikunzy)",
+            "title": "群英会2026",
+            "tsBytes": 711204,
+            "encrypted": false,
+            "nodeWarnings": []
+          }
+        },
+        {
+          "id": "LIVE-08",
+          "domain": "video",
+          "title": "Video — PeerTube framatube.org live HLS/MP4 proxy Range",
+          "status": "pass",
+          "durationMs": 4170,
+          "detail": {
+            "source": "PeerTube (Framatube)",
+            "title": "Fondation Blender - Le jeu Yo Frankie",
+            "streamType": "hls",
+            "status": 206,
+            "bytes": 4096
+          }
+        },
+        {
+          "id": "LIVE-08B",
+          "domain": "video",
+          "title": "Video — Internet Archive live MP4 stream-proxy Range",
+          "status": "pass",
+          "durationMs": 1589,
+          "detail": {
+            "source": "Internet Archive Video",
+            "title": "Big Buck Bunny",
+            "streamType": "mp4",
+            "status": 206,
+            "bytes": 4096
+          }
+        }
+      ]
+    }
+  },
+  "browser_smoke": {
+    "comic": "Yotsuba&!",
+    "music": "Mojito (Live)",
+    "video": "群英会2026"
+  },
+  "gate": {
+    "required_domains": [
+      "comic",
+      "music",
+      "video"
+    ],
+    "comic_passed": 3,
+    "music_passed": 3,
+    "video_passed": 3,
+    "domain_gate_ok": true
+  },
+  "cases": [
+    {
+      "id": "LIVE-01",
+      "domain": "comic",
+      "title": "Comic — MangaDex live search -> pages -> image-proxy",
+      "status": "pass",
+      "durationMs": 3134,
+      "detail": {
+        "source": "MangaDex (EN)",
+        "keyword": "Yotsuba",
+        "mime": "image/jpeg",
+        "bytes": 52815,
+        "title": "Yotsuba&!"
+      }
+    },
+    {
+      "id": "LIVE-02",
+      "domain": "comic",
+      "title": "Comic — WEBTOON live search -> pages -> Referer image-proxy",
+      "status": "pass",
+      "durationMs": 4973,
+      "detail": {
+        "source": "WEBTOON (EN)",
+        "keyword": "Tower of God",
+        "mime": "image/jpeg",
+        "bytes": 54414,
+        "title": "Tower of God: Urek Mazino"
+      }
+    },
+    {
+      "id": "LIVE-03",
+      "domain": "comic",
+      "title": "Comic — XKCD live explore -> image-proxy PNG",
+      "status": "pass",
+      "durationMs": 2292,
+      "detail": {
+        "source": "XKCD",
+        "mime": "image/png",
+        "bytes": 100654,
+        "title": "#3327 Plate Maintenance"
+      }
+    },
+    {
+      "id": "LIVE-04",
+      "domain": "music",
+      "title": "Music — GDStudio live track-info + 206 audio-proxy + cover-proxy + lyrics",
+      "status": "pass",
+      "durationMs": 1981,
+      "detail": {
+        "source": "GDStudio Music API (网易云)",
+        "status": 206,
+        "audioBytes": 4096,
+        "coverMime": "image/jpeg",
+        "lyricLines": 38
+      }
+    },
+    {
+      "id": "LIVE-05",
+      "domain": "music",
+      "title": "Music — Audius trending -> audio-proxy stream chunk",
+      "status": "pass",
+      "durationMs": 4168,
+      "detail": {
+        "source": "Audius Public API",
+        "status": 200,
+        "bytesRead": 8192,
+        "title": "Xsetra - Fragments"
+      }
+    },
+    {
+      "id": "LIVE-06",
+      "domain": "music",
+      "title": "Music — Internet Archive Audio & iTunes+LRCLIB live stream & lyrics",
+      "status": "pass",
+      "durationMs": 5861,
+      "detail": {
+        "archive": {
+          "source": "Internet Archive Audio",
+          "status": 200,
+          "bytesRead": 4096,
+          "title": "Whiz M.F. Quiz - Sick Puppies interview"
+        },
+        "itunes": {
+          "source": "iTunes Search + LRCLIB",
+          "status": 200,
+          "bytesRead": 4096,
+          "lyricLines": 65,
+          "hasPlainLyrics": true,
+          "title": "Bohemian Rhapsody"
+        }
+      }
+    },
+    {
+      "id": "LIVE-07",
+      "domain": "video",
+      "title": "Video — AppleCMS v10 multi-node HLS -> hls-proxy segments",
+      "status": "pass",
+      "durationMs": 12205,
+      "detail": {
+        "source": "爱坤资源 (ikunzy)",
+        "title": "群英会2026",
+        "tsBytes": 711204,
+        "encrypted": false,
+        "nodeWarnings": []
+      }
+    },
+    {
+      "id": "LIVE-08",
+      "domain": "video",
+      "title": "Video — PeerTube framatube.org live HLS/MP4 proxy Range",
+      "status": "pass",
+      "durationMs": 4170,
+      "detail": {
+        "source": "PeerTube (Framatube)",
+        "title": "Fondation Blender - Le jeu Yo Frankie",
+        "streamType": "hls",
+        "status": 206,
+        "bytes": 4096
+      }
+    },
+    {
+      "id": "LIVE-08B",
+      "domain": "video",
+      "title": "Video — Internet Archive live MP4 stream-proxy Range",
+      "status": "pass",
+      "durationMs": 1589,
+      "detail": {
+        "source": "Internet Archive Video",
+        "title": "Big Buck Bunny",
+        "streamType": "mp4",
+        "status": 206,
+        "bytes": 4096
+      }
+    },
+    {
+      "id": "LIVE-09",
+      "domain": "ui",
+      "title": "Live Browser Smoke (Chromium comic/music/video online UI)",
+      "status": "pass",
+      "durationMs": 20863,
+      "detail": {
+        "comic": "Yotsuba&!",
+        "music": "Mojito (Live)",
+        "video": "群英会2026"
+      }
+    },
+    {
+      "id": "LIVE-10",
+      "domain": "core",
+      "title": "Evidence Artifact Generation (/data/code/github/waittide/xmedia/e2e)",
+      "status": "pass",
+      "durationMs": 0,
+      "detail": {
+        "jsonPath": "/data/code/github/waittide/xmedia/e2e/live_verification_report.json",
+        "mdPath": "/data/code/github/waittide/xmedia/e2e/live_verification_report.md"
+      }
+    }
+  ]
+}
