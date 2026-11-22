@@ -839,6 +839,12 @@ impl ComicSourceEngine {
     ) -> Result<Vec<ComicSearchResult>, String> {
         session.check_active()?;
         let fetched = session.http_fetch(request_url)?;
+        if fetched.status >= 400 {
+            return Err(format!(
+                "{rule_label}请求失败，HTTP 状态码 {}",
+                fetched.status
+            ));
+        }
         let is_json_ct = fetched
             .headers
             .iter()

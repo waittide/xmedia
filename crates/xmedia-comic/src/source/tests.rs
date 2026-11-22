@@ -3385,6 +3385,16 @@ async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fall
             }),
         )
         .route(
+            "/bad-502",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::BAD_GATEWAY)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"error":"upstream_down"}"#))
+                    .unwrap()
+            }),
+        )
+        .route(
             "/auth/login",
             post(|| async {
                 Response::builder()
@@ -3416,6 +3426,13 @@ async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fall
         "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
     }))
     .unwrap();
+    let bad_502_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Bad502",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/bad-502?q={{{{key}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
     let login_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
         "sourceName": "HttpLoginUrl",
         "sourceUrl": base,
@@ -3432,7 +3449,7 @@ async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fall
         Duration::from_secs(10),
     );
     let base_c = base.clone();
-    let (detail_out, bad_err, login_out) = tokio::task::spawn_blocking(move || {
+    let (detail_out, bad_err, bad_502_err, login_out) = tokio::task::spawn_blocking(move || {
         let d = engine
             .fetch_detail_sync(
                 &detail_src,
@@ -3445,6 +3462,9 @@ async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fall
         let b = engine
             .search_sync(&bad_json_src, SourceRuntimeState::default(), "x", 1)
             .unwrap_err();
+        let b502 = engine
+            .search_sync(&bad_502_src, SourceRuntimeState::default(), "x", 1)
+            .unwrap_err();
         let l = engine
             .run_login_action_sync(
                 &login_src,
@@ -3453,7 +3473,7 @@ async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fall
                 None,
             )
             .unwrap();
-        (d, b, l)
+        (d, b, b502, l)
     })
     .await
     .unwrap();
@@ -3465,6 +3485,10 @@ async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fall
     assert!(
         bad_err.contains("JSON"),
         "expected JSON error, got: {bad_err}"
+    );
+    assert!(
+        bad_502_err.contains("502"),
+        "expected HTTP 502 error, got: {bad_502_err}"
     );
     assert_eq!(login_out.data, "checked");
     assert!(
