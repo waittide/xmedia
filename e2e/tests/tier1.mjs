@@ -1830,6 +1830,10 @@ function buildTier1Cases() {
           });
           await clickButtonMatching(cdp, [/编辑|edit/i]);
           await cdp.waitForSelector('[role="dialog"]', { visible: true });
+          await cdp.waitForSelector('[role="dialog"] input[name="group_name"]', {
+            visible: true,
+            timeoutMs: 8000,
+          });
           await cdp.evalJs(`(() => {
             const dlg = document.querySelector('[role="dialog"]');
             const inputs = [...dlg.querySelectorAll('input')];
