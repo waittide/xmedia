@@ -68,6 +68,7 @@ let searchSeq = 0
 let exploreSeq = 0
 let unmounted = false
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
+let pendingSourceEmit: string | null | undefined = undefined
 
 const pageLimit = 20
 
@@ -112,9 +113,22 @@ function scheduleDebouncedSearch(): void {
   }, 250)
 }
 
+function emitSourceId(nextSourceId: string | null): void {
+  const currentProp = props.initialSourceId ?? null
+  pendingSourceEmit = currentProp !== nextSourceId ? nextSourceId : undefined
+  emit('update:sourceId', nextSourceId)
+}
+
 watch(
   () => props.initialSourceId,
-  (nextId) => {
+  (nextId, prevId) => {
+    const normalizedNext = nextId ?? null
+    if (pendingSourceEmit !== undefined && normalizedNext === pendingSourceEmit) {
+      pendingSourceEmit = undefined
+      return
+    }
+    pendingSourceEmit = undefined
+
     if (nextId && enabledSources.value.some((s) => s.id === nextId)) {
       if (!sameIds(selectedSourceIds.value, [nextId])) {
         selectedSourceIds.value = [nextId]
@@ -123,9 +137,17 @@ watch(
           void runSearch(1, 'replace', true)
         }
       }
-    } else if (!nextId && selectedSourceIds.value.length > 0) {
+    } else if (
+      !nextId &&
+      prevId &&
+      selectedSourceIds.value.length === 1 &&
+      selectedSourceIds.value[0] === prevId
+    ) {
       selectedSourceIds.value = []
       resetExploreState()
+      if (searchKeyword.value.trim() && !loadingInit.value) {
+        void runSearch(1, 'replace', true)
+      }
     }
   },
 )
@@ -150,6 +172,7 @@ watch(
 )
 
 function resetExploreState(): void {
+  exploreSeq += 1
   exploreMode.value = false
   exploring.value = false
   exploreCategories.value = []
@@ -177,7 +200,7 @@ function handleSearchSubmit(): void {
 function selectAllSources(): void {
   selectedSourceIds.value = []
   resetExploreState()
-  emit('update:sourceId', null)
+  emitSourceId(null)
   if (searchKeyword.value.trim() && enabledSources.value.length > 0) {
     void runSearch(1, 'replace', true)
   }
@@ -189,7 +212,7 @@ function toggleSourceFilter(sourceId: string): void {
     ? selectedSourceIds.value.filter((id) => id !== sourceId)
     : [...selectedSourceIds.value, sourceId]
   resetExploreState()
-  emit('update:sourceId', selectedSourceIds.value.length === 1 ? selectedSourceIds.value[0]! : null)
+  emitSourceId(selectedSourceIds.value.length === 1 ? selectedSourceIds.value[0]! : null)
   if (searchKeyword.value.trim() && enabledSources.value.length > 0) {
     void runSearch(1, 'replace', true)
   }
@@ -216,7 +239,9 @@ async function runSearch(
     return
   }
 
+  exploreSeq += 1
   exploreMode.value = false
+  exploring.value = false
   exploreError.value = null
 
   const seq = ++searchSeq
@@ -235,7 +260,7 @@ async function runSearch(
       page,
       pageLimit,
     )
-    if (unmounted || seq !== searchSeq) return
+    if (unmounted || seq !== searchSeq || exploreMode.value) return
 
     hasSearched.value = true
     searchPage.value = res.page || page
@@ -263,7 +288,7 @@ async function runSearch(
     const activeSourceCount = sourceScope.length > 0 ? sourceScope.length : enabledSources.value.length
     hasMoreResults.value = incoming.length >= pageLimit || (activeSourceCount > 1 && incoming.length > 0 && incoming.length >= Math.min(10, pageLimit))
   } catch (err) {
-    if (unmounted || seq !== searchSeq) return
+    if (unmounted || seq !== searchSeq || exploreMode.value) return
     hasSearched.value = true
     searchErrors.value = [
       {
@@ -286,7 +311,10 @@ async function runExplore(
   page = 1,
 ): Promise<void> {
   const seq = ++exploreSeq
+  searchSeq += 1
   clearDebounce()
+  searching.value = false
+  loadingMore.value = false
   exploreMode.value = true
   exploring.value = true
   exploreError.value = null
@@ -296,14 +324,14 @@ async function runExplore(
 
   try {
     const res = await onlineMusicApi.explore(sourceId, exploreUrl, page, pageLimit)
-    if (unmounted || seq !== exploreSeq) return
+    if (unmounted || seq !== exploreSeq || !exploreMode.value) return
     searchPage.value = page
     hasSearched.value = true
     exploreCategories.value = res.categories ?? []
     searchResults.value = res.results ?? []
     hasMoreResults.value = (res.results?.length ?? 0) >= pageLimit
   } catch (err) {
-    if (unmounted || seq !== exploreSeq) return
+    if (unmounted || seq !== exploreSeq || !exploreMode.value) return
     exploreError.value = err instanceof Error ? err.message : String(err)
     searchResults.value = []
     hasMoreResults.value = false

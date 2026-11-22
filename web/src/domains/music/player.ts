@@ -102,6 +102,14 @@ function makeOnlineQueueItem(track: OnlineMusicTrackDto): OnlineQueueItem {
   }
 }
 
+function isOnlineItemExpired(item: OnlineQueueItem): boolean {
+  return (
+    item.resolved?.expires_in_secs != null &&
+    item.resolvedAtMs != null &&
+    Date.now() - item.resolvedAtMs >= item.resolved.expires_in_secs * 1000
+  )
+}
+
 export const usePlayerStore = defineStore('player', () => {
   const themeStore = useThemeStore()
   const audio = new Audio()
@@ -549,6 +557,7 @@ export const usePlayerStore = defineStore('player', () => {
     currentTimeSecs.value = startAtSecs
     rawAudioDuration.value = 0
     bufferedRatio.value = 0
+    onlineResolving.value = false
     playbackError.value = null
     clearPendingSeek()
     audio.pause()
@@ -562,11 +571,7 @@ export const usePlayerStore = defineStore('player', () => {
     }
     updateMediaSession(currentTrack.value)
 
-    const nowMs = Date.now()
-    const isExpired =
-      item.resolved?.expires_in_secs != null &&
-      item.resolvedAtMs != null &&
-      nowMs - item.resolvedAtMs >= item.resolved.expires_in_secs * 1000
+    const isExpired = isOnlineItemExpired(item)
     const requestedQuality =
       overrideQuality ?? item.selectedQuality ?? pickDefaultOnlineQuality(item.track.qualities)
     const needsFullInfo = !item.resolved || isExpired
@@ -869,10 +874,15 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function togglePlay(): Promise<void> {
-    if (!currentTrack.value) return
+    const item = currentItem.value
+    if (!item) return
     if (isPlaying.value) {
       audio.pause()
     } else {
+      if (item.kind === 'online' && (!item.resolved || isOnlineItemExpired(item))) {
+        await loadAndPlayCurrent(currentTimeSecs.value, true)
+        return
+      }
       if (!audio.src || audio.error) {
         await loadAndPlayCurrent(currentTimeSecs.value, true)
       } else {
@@ -994,10 +1004,11 @@ export const usePlayerStore = defineStore('player', () => {
     shufflePool = shufflePool
       .filter((i) => i !== idx)
       .map((i) => (i > idx ? i - 1 : i))
+    if (removedItem?.kind === 'local' && !queue.value.some((i) => i.kind === 'local')) {
+      queueHadLocalOnClear = true
+    }
     if (queue.value.length === 0) {
-      if (removedItem?.kind === 'local') {
-        queueHadLocalOnClear = true
-      }
+      loadSeq += 1
       clearPendingSeek()
       audio.pause()
       audio.removeAttribute('src')
@@ -1030,6 +1041,7 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   function clearQueue(): void {
+    loadSeq += 1
     queueHadLocalOnClear = queue.value.some((i) => i.kind === 'local')
     clearPendingSeek()
     audio.pause()
@@ -1089,7 +1101,7 @@ export const usePlayerStore = defineStore('player', () => {
   } | null {
     const localItems = queue.value.filter((i): i is LocalQueueItem => i.kind === 'local')
     if (localItems.length === 0) {
-      if (queue.value.length === 0 && queueHadLocalOnClear) {
+      if (queueHadLocalOnClear) {
         queueHadLocalOnClear = false
         return {
           track_ids: [],
@@ -1111,7 +1123,7 @@ export const usePlayerStore = defineStore('player', () => {
   function scheduleQueueSync(): void {
     if (!useAuthStore().isAuthenticated) return
     const hasLocal = queue.value.some((i) => i.kind === 'local')
-    if (!hasLocal && !(queue.value.length === 0 && queueHadLocalOnClear)) {
+    if (!hasLocal && !queueHadLocalOnClear) {
       return
     }
     queueDirty = true
