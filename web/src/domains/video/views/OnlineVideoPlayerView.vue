@@ -533,6 +533,15 @@ async function loadPlay(): Promise<void> {
       if (Hls.isSupported()) {
         let networkRetries = 0
         let mediaRetries = 0
+        const unrecoverableManifestErrors = new Set<string>([
+          Hls.ErrorDetails.MANIFEST_PARSING_ERROR,
+          Hls.ErrorDetails.MANIFEST_INCOMPATIBLE_CODECS_ERROR,
+          Hls.ErrorDetails.LEVEL_EMPTY_ERROR,
+        ])
+        const manifestLoadErrors = new Set<string>([
+          Hls.ErrorDetails.MANIFEST_LOAD_ERROR,
+          Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT,
+        ])
         const hls = new Hls({
           xhrSetup: (xhr) => {
             xhr.withCredentials = true
@@ -550,15 +559,21 @@ async function loadPlay(): Promise<void> {
         })
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (unmounted || seq !== playSeq || !data.fatal) return
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
-            networkRetries += 1
-            hls.startLoad()
-            return
-          }
-          if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 1) {
-            mediaRetries += 1
-            hls.recoverMediaError()
-            return
+          if (!unrecoverableManifestErrors.has(data.details)) {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
+              networkRetries += 1
+              if (manifestLoadErrors.has(data.details) || hls.levels.length === 0) {
+                hls.loadSource(playableUrl)
+              } else {
+                hls.startLoad()
+              }
+              return
+            }
+            if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 1) {
+              mediaRetries += 1
+              hls.recoverMediaError()
+              return
+            }
           }
           destroyHls()
           isPlaying.value = false
