@@ -344,16 +344,17 @@ function destroyHls(): void {
 
 function stopAndClearVideoElement(): void {
   clearPendingSeekHandler()
-  destroyHls()
   const el = videoEl.value
-  if (!el) return
-  try {
-    el.pause()
-    el.removeAttribute('src')
-    el.load()
-  } catch {
-    // ignore cleanup errors
+  if (el) {
+    try {
+      el.pause()
+      el.removeAttribute('src')
+      el.load()
+    } catch {
+      // ignore cleanup errors
+    }
   }
+  destroyHls()
 }
 
 function setMediaSessionAction(
@@ -575,7 +576,7 @@ async function loadPlay(): Promise<void> {
               return
             }
           }
-          destroyHls()
+          stopAndClearVideoElement()
           isPlaying.value = false
           isBuffering.value = false
           loadError.value = data.reason || t('online.streamLoadFailed')
