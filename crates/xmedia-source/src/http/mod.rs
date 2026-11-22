@@ -22,9 +22,9 @@ pub use ssrf::{
 };
 pub use template::{
     json_escape_str_inner, json_structure_signature, resolve_literal_http_url,
-    split_legado_url_and_raw_options, split_legado_url_template_and_options,
-    substitute_legado_options_vars, substitute_legado_url_template_vars, substitute_url_part_vars,
-    url_encode_component,
+    resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
+    split_legado_url_template_and_options, substitute_legado_options_vars,
+    substitute_legado_url_template_vars, substitute_url_part_vars, url_encode_component,
 };
 pub use url_cookie::{
     HttpClientConfig, HttpFetchResult, LegadoUrlOptions, ParsedLegadoUrl, merge_cookie_string,
