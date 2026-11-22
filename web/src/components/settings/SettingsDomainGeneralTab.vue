@@ -1,16 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { LuPlay, LuTrash2 } from 'vue-icons-plus/lu'
-import { useAuthStore } from '@/stores/auth'
-import { usePreferencesStore } from '@/stores/preferences'
-import { useSnackbarStore } from '@/stores/snackbar'
-import { formatTime } from '@/utils/format'
-import { api as musicApi } from '@/domains/music/api'
-import { usePlayerStore } from '@/domains/music/player'
-import type { BookmarkDto } from '@/domains/music/types'
+import { computed, nextTick, onMounted, watch } from 'vue'
 import { useBookI18n } from '@/domains/book/i18n'
 import { useComicI18n } from '@/domains/comic/i18n'
+import { AppSlider, MdCard, MdChip, MdSelect, MdSwitch } from '@/components/ui'
+import { useAuthStore } from '@/stores/auth'
+import { usePreferencesStore } from '@/stores/preferences'
 import type {
   ComicFitMode,
   ComicReaderMode,
@@ -19,24 +13,33 @@ import type {
   TranscodeProfile,
   VideoQualityProfile,
 } from '@/types/api'
-import LayoutCustomizerModal from '@/components/LayoutCustomizerModal.vue'
-import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppSlider from '@/components/ui/AppSlider.vue'
+import { useSettingsI18n } from './i18nHelper'
+import { DOMAIN_ICONS } from './sections'
 
-const props = defineProps<{
-  domain: MediaKind
-}>()
+const props = withDefaults(
+  defineProps<{
+    anchorHash?: string
+  }>(),
+  {
+    anchorHash: '',
+  },
+)
 
-const { t } = useI18n()
+const { t, tr } = useSettingsI18n()
 const { t: bookT } = useBookI18n()
 const { t: comicT } = useComicI18n()
 const authStore = useAuthStore()
-const playerStore = usePlayerStore()
 const prefsStore = usePreferencesStore()
 
-const bookmarks = ref<BookmarkDto[]>([])
-const bookmarksLoaded = ref(false)
+const enabledDomains = computed<MediaKind[]>(() => authStore.enabledModules)
+
+const activeAnchorDomain = computed<MediaKind | null>(() => {
+  const clean = props.anchorHash.replace(/^#/, '')
+  if (clean === 'book' || clean === 'comic' || clean === 'music' || clean === 'video') {
+    return clean
+  }
+  return null
+})
 
 const bookFontOptions = computed(() => [
   { value: 'system-ui', label: bookT('reader.fontSystem') },
@@ -78,254 +81,307 @@ const videoQualityOptions = computed(() => [
   { value: 'p480', label: t('settings.videoQuality480p') },
 ])
 
-async function ensureMusicBookmarks(): Promise<void> {
-  if (props.domain !== 'music' || !authStore.hasModule('music') || bookmarksLoaded.value) return
-  bookmarksLoaded.value = true
-  try {
-    bookmarks.value = await musicApi.listBookmarks()
-  } catch {
-    bookmarksLoaded.value = false
-  }
+function scrollToDomainSection(kind: MediaKind, smooth = true): void {
+  const target = document.getElementById(kind)
+  target?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' })
+}
+
+function syncHashScroll(smooth: boolean): void {
+  if (!activeAnchorDomain.value) return
+  const target = activeAnchorDomain.value
+  void nextTick(() => scrollToDomainSection(target, smooth))
 }
 
 onMounted(() => {
-  void ensureMusicBookmarks()
+  syncHashScroll(false)
 })
 
 watch(
-  () => props.domain,
+  () => props.anchorHash,
   () => {
-    void ensureMusicBookmarks()
+    syncHashScroll(true)
   },
 )
-
-function formatBookmarkPos(ms: number): string {
-  return formatTime(ms / 1000)
-}
-
-function playBookmark(bm: BookmarkDto): void {
-  playerStore.playTrackAt(bm.track, bm.position_ms / 1000)
-}
-
-async function removeBookmark(trackId: string): Promise<void> {
-  try {
-    await musicApi.deleteBookmark(trackId)
-    bookmarks.value = bookmarks.value.filter((b) => b.track.id !== trackId)
-  } catch (err) {
-    useSnackbarStore().show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  }
-}
 </script>
 
 <template>
-  <!-- Book Reader Preferences -->
-  <section v-if="domain === 'book'" class="md-card-outlined space-y-4 p-6">
-    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-      {{ t('settings.bookPrefsTitle') }}
-    </h2>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-          {{ bookT('reader.fontFamily') }}
-        </label>
-        <AppSelect
-          :model-value="prefsStore.reader.font_family"
-          :options="bookFontOptions"
-          @update:model-value="prefsStore.updateReaderPreferences({ font_family: $event })"
-        />
-      </div>
-
-      <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('settings.bookFlowLabel') }}
-        </label>
-        <AppSelect
-          :model-value="prefsStore.reader.flow"
-          :options="bookFlowOptions"
-          @update:model-value="prefsStore.updateReaderPreferences({ flow: $event as ReadingFlow })"
-        />
-      </div>
-
-      <div>
-        <div class="mb-1.5 flex items-center justify-between text-xs">
-          <span class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('settings.bookFontSize') }}
-          </span>
-          <span class="font-mono font-medium text-[var(--md-sys-color-on-surface)]">
-            {{ prefsStore.reader.font_size }} px
-          </span>
-        </div>
-        <AppSlider
-          :model-value="prefsStore.reader.font_size"
-          :min="13"
-          :max="28"
-          :step="1"
-          :aria-label="t('settings.bookFontSize')"
-          always-show-thumb
-          @update:model-value="prefsStore.updateReaderPreferences({ font_size: $event })"
-        />
-      </div>
-
-      <div>
-        <div class="mb-1.5 flex items-center justify-between text-xs">
-          <span class="md-label-medium text-[var(--md-sys-color-on-surface-variant)]">
-            {{ bookT('reader.lineHeight') }}
-          </span>
-          <span class="font-mono font-medium text-[var(--md-sys-color-on-surface)]">
-            {{ prefsStore.reader.line_height }}
-          </span>
-        </div>
-        <AppSlider
-          :model-value="prefsStore.reader.line_height"
-          :min="1.3"
-          :max="2.4"
-          :step="0.1"
-          :aria-label="bookT('reader.lineHeight')"
-          always-show-thumb
-          @update:model-value="prefsStore.updateReaderPreferences({ line_height: $event })"
-        />
-      </div>
-    </div>
-  </section>
-
-  <!-- Comic Reader Preferences -->
-  <section v-else-if="domain === 'comic'" class="md-card-outlined space-y-4 p-6">
-    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-      {{ t('settings.comicPrefsTitle') }}
-    </h2>
-
-    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-          {{ comicT('settings.defaultReaderMode') }}
-        </label>
-        <AppSelect
-          :model-value="prefsStore.comic.default_reader_mode"
-          :options="comicModeOptions"
-          @update:model-value="
-            prefsStore.updateComicPreferences({ default_reader_mode: $event as ComicReaderMode })
-          "
-        />
-      </div>
-
-      <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-          {{ comicT('settings.defaultFitMode') }}
-        </label>
-        <AppSelect
-          :model-value="prefsStore.comic.default_fit_mode"
-          :options="comicFitOptions"
-          @update:model-value="
-            prefsStore.updateComicPreferences({ default_fit_mode: $event as ComicFitMode })
-          "
-        />
-      </div>
-    </div>
-
-    <div class="flex flex-wrap gap-6 pt-1">
-      <AppCheckbox
-        :model-value="prefsStore.comic.offset_cover_page"
-        :label="t('settings.comicOffsetCover')"
-        @update:model-value="prefsStore.updateComicPreferences({ offset_cover_page: $event })"
-      />
-      <AppCheckbox
-        :model-value="prefsStore.comic.dim_images_in_dark"
-        :label="comicT('reader.eyeCareDim')"
-        @update:model-value="prefsStore.updateComicPreferences({ dim_images_in_dark: $event })"
-      />
-    </div>
-  </section>
-
-  <!-- Music Playback Preferences & Bookmarks -->
-  <section v-else-if="domain === 'music'" class="md-card-outlined space-y-4 p-6">
-    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-      {{ t('settings.playbackDefaultQuality') }}
-    </h2>
-
-    <div class="max-w-sm">
-      <AppSelect
-        :model-value="prefsStore.playback.transcode_profile"
-        :options="musicQualityOptions"
-        @update:model-value="
-          prefsStore.updatePlaybackPreferences({ transcode_profile: $event as TranscodeProfile })
-        "
-      />
-    </div>
-
+  <div class="flex flex-col gap-5">
+    <!-- Quick anchor chips across enabled domains -->
     <div
-      v-if="bookmarks.length > 0"
-      class="border-t border-[var(--md-sys-color-outline-variant)]/60 pt-4"
+      v-if="enabledDomains.length > 1"
+      class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5"
     >
-      <h3 class="md-label-medium mb-2.5 text-[var(--md-sys-color-on-surface-variant)]">
-        {{ t('settings.bookmarksTitle') }}
-      </h3>
-      <div class="space-y-2">
-        <div
-          v-for="bm in bookmarks"
-          :key="bm.track.id"
-          class="md-card-filled flex items-center justify-between px-3.5 py-2.5 text-xs"
-        >
-          <div class="min-w-0 flex-1">
-            <p class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">
-              {{ bm.track.title }}
-            </p>
-            <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-              {{ bm.track.artist_name }} · {{ formatBookmarkPos(bm.position_ms) }}
-            </p>
-          </div>
-          <div class="ml-3 flex items-center gap-1">
-            <button
-              type="button"
-              class="md-icon-btn md-icon-btn-sm bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]"
-              @click="playBookmark(bm)"
-            >
-              <LuPlay class="h-3.5 w-3.5 fill-current" />
-            </button>
-            <button
-              type="button"
-              class="md-icon-btn md-icon-btn-sm hover:!text-[var(--md-sys-color-error)]"
-              @click="removeBookmark(bm.track.id)"
-            >
-              <LuTrash2 class="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Video Playback Preferences -->
-  <section v-else-if="domain === 'video'" class="md-card-outlined space-y-4 p-6">
-    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-      {{ t('settings.videoPrefsTitle') }}
-    </h2>
-
-    <div class="max-w-md">
-      <AppSelect
-        :model-value="prefsStore.video.default_quality"
-        :options="videoQualityOptions"
-        @update:model-value="
-          prefsStore.updateVideoPreferences({ default_quality: $event as VideoQualityProfile })
-        "
+      <MdChip
+        v-for="kind in enabledDomains"
+        :key="kind"
+        variant="filter"
+        hide-check
+        :icon="DOMAIN_ICONS[kind]"
+        :label="t(`app.domains.${kind}`)"
+        :selected="activeAnchorDomain === kind"
+        @click="scrollToDomainSection(kind, true)"
       />
     </div>
 
-    <AppCheckbox
-      :model-value="prefsStore.video.autoplay_next"
-      :label="t('settings.videoAutoplayNext')"
-      @update:model-value="prefsStore.updateVideoPreferences({ autoplay_next: $event })"
-    />
-  </section>
+    <!-- #book: Book Reader Defaults -->
+    <MdCard
+      v-if="authStore.hasModule('book')"
+      id="book"
+      as="section"
+      variant="outlined"
+      padding="lg"
+      class="scroll-mt-20 space-y-5"
+    >
+      <div class="flex items-center gap-2.5">
+        <div
+          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
+        >
+          <component :is="DOMAIN_ICONS.book" class="h-4 w-4" />
+        </div>
+        <div>
+          <h2 class="text-title-medium text-on-surface">
+            {{ t('settings.bookPrefsTitle') }}
+          </h2>
+          <p class="text-body-small text-on-surface-variant">
+            {{
+              tr(
+                'settings.bookPrefsDesc',
+                '默认字体、排版方式与阅读器字号行距',
+                'Default font family, flow mode, font size, and line height',
+              )
+            }}
+          </p>
+        </div>
+      </div>
 
-  <!-- Domain Workspace Layout Customizer -->
-  <section class="md-card-outlined p-6">
-    <h2 class="md-title-small mb-4 text-[var(--md-sys-color-on-surface)]">
-      {{ t('layoutCustomizer.title') }}
-    </h2>
-    <LayoutCustomizerModal :domain="domain" inline hide-domain-tabs />
-  </section>
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label class="text-label-medium mb-1.5 block text-on-surface-variant">
+            {{ bookT('reader.fontFamily') }}
+          </label>
+          <MdSelect
+            :model-value="prefsStore.reader.font_family"
+            :options="bookFontOptions"
+            @update:model-value="prefsStore.updateReaderPreferences({ font_family: $event })"
+          />
+        </div>
+
+        <div>
+          <label class="text-label-medium mb-1.5 block text-on-surface-variant">
+            {{ t('settings.bookFlowLabel') }}
+          </label>
+          <MdSelect
+            :model-value="prefsStore.reader.flow"
+            :options="bookFlowOptions"
+            @update:model-value="prefsStore.updateReaderPreferences({ flow: $event as ReadingFlow })"
+          />
+        </div>
+
+        <div>
+          <div class="mb-1.5 flex items-center justify-between">
+            <span class="text-label-medium text-on-surface-variant">
+              {{ t('settings.bookFontSize') }}
+            </span>
+            <span class="text-label-medium font-mono text-on-surface">
+              {{ prefsStore.reader.font_size }} px
+            </span>
+          </div>
+          <AppSlider
+            :model-value="prefsStore.reader.font_size"
+            :min="13"
+            :max="28"
+            :step="1"
+            :aria-label="t('settings.bookFontSize')"
+            always-show-thumb
+            @update:model-value="prefsStore.updateReaderPreferences({ font_size: $event })"
+          />
+        </div>
+
+        <div>
+          <div class="mb-1.5 flex items-center justify-between">
+            <span class="text-label-medium text-on-surface-variant">
+              {{ bookT('reader.lineHeight') }}
+            </span>
+            <span class="text-label-medium font-mono text-on-surface">
+              {{ prefsStore.reader.line_height }}
+            </span>
+          </div>
+          <AppSlider
+            :model-value="prefsStore.reader.line_height"
+            :min="1.3"
+            :max="2.4"
+            :step="0.1"
+            :aria-label="bookT('reader.lineHeight')"
+            always-show-thumb
+            @update:model-value="prefsStore.updateReaderPreferences({ line_height: $event })"
+          />
+        </div>
+      </div>
+    </MdCard>
+
+    <!-- #comic: Comic Reader Defaults -->
+    <MdCard
+      v-if="authStore.hasModule('comic')"
+      id="comic"
+      as="section"
+      variant="outlined"
+      padding="lg"
+      class="scroll-mt-20 space-y-5"
+    >
+      <div class="flex items-center gap-2.5">
+        <div
+          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
+        >
+          <component :is="DOMAIN_ICONS.comic" class="h-4 w-4" />
+        </div>
+        <div>
+          <h2 class="text-title-medium text-on-surface">
+            {{ t('settings.comicPrefsTitle') }}
+          </h2>
+          <p class="text-body-small text-on-surface-variant">
+            {{
+              tr(
+                'settings.comicPrefsDesc',
+                '翻页方向、图片缩放适配与夜间护眼设置',
+                'Reading direction, page scaling, cover offset, and dark-mode dimming',
+              )
+            }}
+          </p>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div>
+          <label class="text-label-medium mb-1.5 block text-on-surface-variant">
+            {{ comicT('settings.defaultReaderMode') }}
+          </label>
+          <MdSelect
+            :model-value="prefsStore.comic.default_reader_mode"
+            :options="comicModeOptions"
+            @update:model-value="
+              prefsStore.updateComicPreferences({ default_reader_mode: $event as ComicReaderMode })
+            "
+          />
+        </div>
+
+        <div>
+          <label class="text-label-medium mb-1.5 block text-on-surface-variant">
+            {{ comicT('settings.defaultFitMode') }}
+          </label>
+          <MdSelect
+            :model-value="prefsStore.comic.default_fit_mode"
+            :options="comicFitOptions"
+            @update:model-value="
+              prefsStore.updateComicPreferences({ default_fit_mode: $event as ComicFitMode })
+            "
+          />
+        </div>
+      </div>
+
+      <div class="flex flex-col gap-3 border-t border-outline-variant/50 pt-4 sm:flex-row sm:flex-wrap sm:gap-8">
+        <MdSwitch
+          :model-value="prefsStore.comic.offset_cover_page"
+          :label="t('settings.comicOffsetCover')"
+          @update:model-value="prefsStore.updateComicPreferences({ offset_cover_page: $event })"
+        />
+        <MdSwitch
+          :model-value="prefsStore.comic.dim_images_in_dark"
+          :label="comicT('reader.eyeCareDim')"
+          @update:model-value="prefsStore.updateComicPreferences({ dim_images_in_dark: $event })"
+        />
+      </div>
+    </MdCard>
+
+    <!-- #music: Music Playback Defaults (Bookmarks removed per §3.4) -->
+    <MdCard
+      v-if="authStore.hasModule('music')"
+      id="music"
+      as="section"
+      variant="outlined"
+      padding="lg"
+      class="scroll-mt-20 space-y-5"
+    >
+      <div class="flex items-center gap-2.5">
+        <div
+          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
+        >
+          <component :is="DOMAIN_ICONS.music" class="h-4 w-4" />
+        </div>
+        <div>
+          <h2 class="text-title-medium text-on-surface">
+            {{ t('settings.playbackDefaultQuality') }}
+          </h2>
+          <p class="text-body-small text-on-surface-variant">
+            {{
+              tr(
+                'settings.musicPrefsDesc',
+                '选择默认音频流直推或服务端转码规格',
+                'Select default audio direct stream or server transcode profile',
+              )
+            }}
+          </p>
+        </div>
+      </div>
+
+      <div class="max-w-sm">
+        <MdSelect
+          :model-value="prefsStore.playback.transcode_profile"
+          :options="musicQualityOptions"
+          @update:model-value="
+            prefsStore.updatePlaybackPreferences({ transcode_profile: $event as TranscodeProfile })
+          "
+        />
+      </div>
+    </MdCard>
+
+    <!-- #video: Video Playback Defaults -->
+    <MdCard
+      v-if="authStore.hasModule('video')"
+      id="video"
+      as="section"
+      variant="outlined"
+      padding="lg"
+      class="scroll-mt-20 space-y-5"
+    >
+      <div class="flex items-center gap-2.5">
+        <div
+          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-corner-md bg-secondary-container text-on-secondary-container"
+        >
+          <component :is="DOMAIN_ICONS.video" class="h-4 w-4" />
+        </div>
+        <div>
+          <h2 class="text-title-medium text-on-surface">
+            {{ t('settings.videoPrefsTitle') }}
+          </h2>
+          <p class="text-body-small text-on-surface-variant">
+            {{
+              tr(
+                'settings.videoPrefsDesc',
+                '配置默认播放画质与剧集自动连播行为',
+                'Configure default video quality and automatic episode playback',
+              )
+            }}
+          </p>
+        </div>
+      </div>
+
+      <div class="max-w-sm">
+        <MdSelect
+          :model-value="prefsStore.video.default_quality"
+          :options="videoQualityOptions"
+          @update:model-value="
+            prefsStore.updateVideoPreferences({ default_quality: $event as VideoQualityProfile })
+          "
+        />
+      </div>
+
+      <div class="border-t border-outline-variant/50 pt-4">
+        <MdSwitch
+          :model-value="prefsStore.video.autoplay_next"
+          :label="t('settings.videoAutoplayNext')"
+          @update:model-value="prefsStore.updateVideoPreferences({ autoplay_next: $event })"
+        />
+      </div>
+    </MdCard>
+  </div>
 </template>

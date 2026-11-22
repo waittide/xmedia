@@ -1,77 +1,89 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { LuBookOpen, LuCloud, LuDisc3, LuLoader2, LuSettings2 } from 'vue-icons-plus/lu'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import {
+  LuAlertCircle,
+  LuBookOpen,
+  LuCheckCircle2,
+  LuCloud,
+  LuDisc3,
+  LuExternalLink,
+  LuLoader2,
+  LuPencil,
+  LuPlus,
+  LuShieldAlert,
+  LuTrash2,
+  LuWifi,
+} from 'vue-icons-plus/lu'
 import {
   appHostApi,
   type RemoteProtocol,
   type RemoteSourceSummaryDto,
   type TestRemoteSourceResponse,
 } from '@/api/appHost'
-import RemoteOpdsBrowser from '@/components/remote/RemoteOpdsBrowser.vue'
 import RemoteSourceFormDialog from '@/components/remote/RemoteSourceFormDialog.vue'
-import RemoteSourcesManageList from '@/components/remote/RemoteSourcesManageList.vue'
-import RemoteSubsonicBrowser from '@/components/remote/RemoteSubsonicBrowser.vue'
-import type { SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
-import MdTabs from '@/components/ui/MdTabs.vue'
+import { MdButton, MdCard, MdEmptyState, MdIconButton } from '@/components/ui'
+import { resolveLibraryRoute, useSettingsI18n } from '@/components/settings/i18nHelper'
 import { useAppClientStore } from '@/stores/appServers'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
+import type { MediaKind } from '@/types/api'
 
-type ActiveTab = 'opds' | 'subsonic' | 'manage'
+const props = withDefaults(
+  defineProps<{
+    embeddedProtocol?: RemoteProtocol
+    domain?: MediaKind
+  }>(),
+  {
+    embeddedProtocol: undefined,
+    domain: undefined,
+  },
+)
 
-const props = defineProps<{
-  embeddedProtocol: RemoteProtocol
-}>()
-
-const { t } = useI18n()
+const { t, tr } = useSettingsI18n()
+const router = useRouter()
 const appClientStore = useAppClientStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
 
-const activeTab = ref<ActiveTab>(props.embeddedProtocol)
 const initLoading = ref(false)
-
-// Source form dialog state
 const formDialogOpen = ref(false)
 const editingSource = ref<RemoteSourceSummaryDto | null>(null)
-const formDefaultProtocol = ref<RemoteProtocol>(props.embeddedProtocol)
+const formDefaultProtocol = ref<RemoteProtocol>(props.embeddedProtocol ?? 'opds')
 
-// Source management list actions
 const testingSourceId = ref<string | null>(null)
 const deletingSourceId = ref<string | null>(null)
 const cardTestResults = ref<Record<string, TestRemoteSourceResponse>>({})
 
-// Selected source IDs + browser refs
-const selectedOpdsId = ref('')
-const selectedSubsonicId = ref('')
-const opdsBrowserRef = ref<InstanceType<typeof RemoteOpdsBrowser> | null>(null)
-const subsonicBrowserRef = ref<InstanceType<typeof RemoteSubsonicBrowser> | null>(null)
-
-const tabOptions = computed<SegmentedOption<ActiveTab>[]>(() => {
-  if (props.embeddedProtocol === 'opds') {
-    return [
-      { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
-      { value: 'opds', label: t('remote.browseBtn'), icon: LuBookOpen },
-    ]
-  }
-  return [
-    { value: 'manage', label: t('remote.tabManage'), icon: LuSettings2 },
-    { value: 'subsonic', label: t('remote.browseBtn'), icon: LuDisc3 },
-  ]
+const managedSources = computed<RemoteSourceSummaryDto[]>(() => {
+  if (props.embeddedProtocol === 'opds') return appClientStore.opdsSources
+  if (props.embeddedProtocol === 'subsonic') return appClientStore.subsonicSources
+  return appClientStore.remoteSources
 })
 
-const managedSources = computed<RemoteSourceSummaryDto[]>(() =>
-  props.embeddedProtocol === 'opds' ? appClientStore.opdsSources : appClientStore.subsonicSources,
-)
+const sectionTitle = computed(() => {
+  if (props.embeddedProtocol === 'opds') return t('settings.remoteOpdsTitle')
+  if (props.embeddedProtocol === 'subsonic') return t('settings.remoteSubsonicTitle')
+  return tr('settings.remoteServersTitle', '远程服务器', 'Remote Servers')
+})
 
-const embeddedHeaderTitle = computed(() =>
-  props.embeddedProtocol === 'opds'
-    ? t('settings.remoteOpdsTitle')
-    : t('settings.remoteSubsonicTitle'),
-)
+function resolveTargetDomain(source: RemoteSourceSummaryDto): MediaKind {
+  if (source.protocol === 'subsonic') return 'music'
+  if (props.domain === 'comic') return 'comic'
+  return 'book'
+}
 
-function openAddSourceDialog(protocol: RemoteProtocol = 'opds'): void {
+function openInLibrary(source: RemoteSourceSummaryDto): void {
+  const targetDomain = resolveTargetDomain(source)
+  void router.push(
+    resolveLibraryRoute(router, targetDomain, {
+      scope: 'remote',
+      sourceId: source.id,
+    }),
+  )
+}
+
+function openAddSourceDialog(protocol: RemoteProtocol = props.embeddedProtocol ?? 'opds'): void {
   editingSource.value = null
   formDefaultProtocol.value = protocol
   formDialogOpen.value = true
@@ -83,50 +95,7 @@ function openEditSourceDialog(source: RemoteSourceSummaryDto): void {
   formDialogOpen.value = true
 }
 
-function handleSourceSaved(source: RemoteSourceSummaryDto): void {
-  const opdsIds = new Set(appClientStore.opdsSources.map((s) => s.id))
-  if (selectedOpdsId.value && !opdsIds.has(selectedOpdsId.value)) {
-    selectedOpdsId.value = appClientStore.opdsSources[0]?.id ?? ''
-    opdsBrowserRef.value?.resetState(false)
-  }
-
-  const subsonicIds = new Set(appClientStore.subsonicSources.map((s) => s.id))
-  if (selectedSubsonicId.value && !subsonicIds.has(selectedSubsonicId.value)) {
-    selectedSubsonicId.value = appClientStore.subsonicSources[0]?.id ?? ''
-    subsonicBrowserRef.value?.resetState(false)
-  }
-
-  if (source.protocol === 'opds') {
-    if (!selectedOpdsId.value || selectedOpdsId.value === source.id) {
-      selectedOpdsId.value = source.id
-      opdsBrowserRef.value?.resetState(activeTab.value === 'opds', source.id)
-    }
-  } else if (source.protocol === 'subsonic') {
-    if (!selectedSubsonicId.value || selectedSubsonicId.value === source.id) {
-      selectedSubsonicId.value = source.id
-      subsonicBrowserRef.value?.resetState(activeTab.value === 'subsonic', source.id)
-    }
-  }
-}
-
-function handleBrowseSource(source: RemoteSourceSummaryDto): void {
-  if (source.protocol === 'opds') {
-    activeTab.value = 'opds'
-    if (selectedOpdsId.value !== source.id || !opdsBrowserRef.value?.hasFeed) {
-      selectedOpdsId.value = source.id
-      opdsBrowserRef.value?.selectSource(source.id)
-    }
-  } else {
-    activeTab.value = 'subsonic'
-    if (selectedSubsonicId.value !== source.id || !subsonicBrowserRef.value?.hasAlbums) {
-      selectedSubsonicId.value = source.id
-      subsonicBrowserRef.value?.selectSource(source.id)
-    }
-  }
-}
-
-async function handleTestSavedSource(source: RemoteSourceSummaryDto): Promise<void> {
-  if (testingSourceId.value) return
+async function handleTestSavedSource(source: RemoteSourceSummaryDto): Promise<TestRemoteSourceResponse> {
   testingSourceId.value = source.id
   const startedAt = performance.now()
   try {
@@ -155,6 +124,7 @@ async function handleTestSavedSource(source: RemoteSourceSummaryDto): Promise<vo
       }
     } else {
       result = await appClientStore.testSource({
+        source_id: source.id,
         protocol: source.protocol,
         url: source.url,
         username: source.username || undefined,
@@ -162,18 +132,45 @@ async function handleTestSavedSource(source: RemoteSourceSummaryDto): Promise<vo
       })
     }
     cardTestResults.value = { ...cardTestResults.value, [source.id]: result }
+    return result
   } catch (err) {
-    cardTestResults.value = {
-      ...cardTestResults.value,
-      [source.id]: {
-        ok: false,
-        latency_ms: Math.max(1, Math.round(performance.now() - startedAt)),
-        protocol: source.protocol,
-        error: err instanceof Error ? err.message : String(err),
-      },
+    const failed: TestRemoteSourceResponse = {
+      ok: false,
+      latency_ms: Math.max(1, Math.round(performance.now() - startedAt)),
+      protocol: source.protocol,
+      error: err instanceof Error ? err.message : String(err),
     }
+    cardTestResults.value = { ...cardTestResults.value, [source.id]: failed }
+    return failed
   } finally {
-    testingSourceId.value = null
+    if (testingSourceId.value === source.id) {
+      testingSourceId.value = null
+    }
+  }
+}
+
+async function handleSourceSaved(source: RemoteSourceSummaryDto): Promise<void> {
+  const result = await handleTestSavedSource(source)
+  if (result.ok) {
+    snackbarStore.show({
+      message: tr(
+        'settings.remoteSavedAvailableInLibrary',
+        '连接正常，已出现在资料库来源中',
+        'Connected — now available in Library sources',
+      ),
+      actionLabel: tr('settings.openInLibraryAction', '前往查看', 'Open Library'),
+      onAction: () => openInLibrary(source),
+    })
+  } else {
+    snackbarStore.show({
+      message: tr(
+        'settings.remoteSavedTestWarning',
+        '已保存服务器，但连接测试未通过：{error}',
+        'Server saved, but connection test failed: {error}',
+        { error: result.error || t('remote.testFailed') },
+      ),
+      tone: 'error',
+    })
   }
 }
 
@@ -190,21 +187,10 @@ async function handleDeleteSource(source: RemoteSourceSummaryDto): Promise<void>
   deletingSourceId.value = source.id
   try {
     await appClientStore.deleteSource(source.id)
+    const nextResults = { ...cardTestResults.value }
+    delete nextResults[source.id]
+    cardTestResults.value = nextResults
     snackbarStore.show(t('remote.deletedMsg'))
-
-    if (selectedOpdsId.value === source.id) {
-      const nextId = appClientStore.opdsSources[0]?.id ?? ''
-      selectedOpdsId.value = nextId
-      opdsBrowserRef.value?.resetState(Boolean(nextId && activeTab.value === 'opds'), nextId)
-    }
-    if (selectedSubsonicId.value === source.id) {
-      const nextId = appClientStore.subsonicSources[0]?.id ?? ''
-      selectedSubsonicId.value = nextId
-      subsonicBrowserRef.value?.resetState(
-        Boolean(nextId && activeTab.value === 'subsonic'),
-        nextId,
-      )
-    }
   } catch (err) {
     snackbarStore.show({
       message: err instanceof Error ? err.message : String(err),
@@ -214,41 +200,6 @@ async function handleDeleteSource(source: RemoteSourceSummaryDto): Promise<void>
     deletingSourceId.value = null
   }
 }
-
-watch(activeTab, (tab) => {
-  if (tab === 'opds' && !selectedOpdsId.value && appClientStore.opdsSources.length > 0) {
-    selectedOpdsId.value = appClientStore.opdsSources[0]!.id
-  } else if (
-    tab === 'subsonic' &&
-    !selectedSubsonicId.value &&
-    appClientStore.subsonicSources.length > 0
-  ) {
-    selectedSubsonicId.value = appClientStore.subsonicSources[0]!.id
-  }
-})
-
-watch(
-  () => props.embeddedProtocol,
-  (proto) => {
-    if (proto !== 'subsonic') {
-      subsonicBrowserRef.value?.closeAllOverlays()
-    } else {
-      opdsBrowserRef.value?.closeDetail()
-    }
-    formDefaultProtocol.value = proto
-    if (proto === 'opds') {
-      activeTab.value = appClientStore.opdsSources.length > 0 ? 'opds' : 'manage'
-      if (appClientStore.opdsSources.length > 0 && !selectedOpdsId.value) {
-        selectedOpdsId.value = appClientStore.opdsSources[0]!.id
-      }
-    } else {
-      activeTab.value = appClientStore.subsonicSources.length > 0 ? 'subsonic' : 'manage'
-      if (appClientStore.subsonicSources.length > 0 && !selectedSubsonicId.value) {
-        selectedSubsonicId.value = appClientStore.subsonicSources[0]!.id
-      }
-    }
-  },
-)
 
 onMounted(async () => {
   initLoading.value = true
@@ -260,80 +211,201 @@ onMounted(async () => {
       tone: 'error',
     })
   } finally {
-    if (props.embeddedProtocol === 'opds') {
-      activeTab.value = appClientStore.opdsSources.length > 0 ? 'opds' : 'manage'
-    } else {
-      activeTab.value = appClientStore.subsonicSources.length > 0 ? 'subsonic' : 'manage'
-    }
-
-    if (appClientStore.opdsSources.length > 0) {
-      selectedOpdsId.value = appClientStore.opdsSources[0]!.id
-    }
-    if (appClientStore.subsonicSources.length > 0) {
-      selectedSubsonicId.value = appClientStore.subsonicSources[0]!.id
-    }
     initLoading.value = false
   }
 })
 </script>
 
 <template>
-  <div class="space-y-4">
-    <!-- Header + MD3 Tabs -->
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <h2 class="md-title-small flex items-center gap-2 text-[var(--md-sys-color-on-surface)]">
-        <LuCloud class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
-        <span>{{ embeddedHeaderTitle }}</span>
-      </h2>
+  <MdCard variant="outlined" padding="none" class="overflow-hidden">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-outline-variant/60 px-5 py-4">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2">
+          <LuCloud class="h-4 w-4 shrink-0 text-primary" />
+          <h3 class="text-title-medium text-on-surface">
+            {{ sectionTitle }}
+          </h3>
+          <span
+            class="text-label-small rounded-corner-full bg-surface-container-high px-2.5 py-0.5 tabular-nums text-on-surface-variant"
+          >
+            {{ managedSources.length }}
+          </span>
+        </div>
+        <p class="text-body-small mt-0.5 text-on-surface-variant">
+          {{
+            tr(
+              'settings.remoteServersHint',
+              '添加后的 OPDS / OpenSubsonic 服务器会自动出现在对应域的资料库来源筛选中。',
+              'Configured OPDS / OpenSubsonic servers appear automatically in the domain library source switcher.',
+            )
+          }}
+        </p>
+      </div>
 
-      <MdTabs
-        v-model="activeTab"
-        :tabs="tabOptions"
-        variant="primary"
-        :aria-label="embeddedHeaderTitle"
-      />
+      <MdButton
+        variant="tonal"
+        size="sm"
+        :icon="LuPlus"
+        @click="openAddSourceDialog(embeddedProtocol ?? 'opds')"
+      >
+        {{ t('remote.addSource') }}
+      </MdButton>
     </div>
 
     <div
       v-if="initLoading"
-      class="flex items-center justify-center py-20 text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      class="text-body-small flex items-center justify-center gap-2 py-12 text-on-surface-variant"
     >
-      <LuLoader2 class="mr-2 h-4 w-4 animate-spin" />
+      <LuLoader2 class="h-4 w-4 animate-spin" />
       <span>{{ t('common.loading') }}</span>
     </div>
 
-    <template v-else>
-      <RemoteOpdsBrowser
-        v-if="embeddedProtocol === 'opds'"
-        v-show="activeTab === 'opds'"
-        ref="opdsBrowserRef"
-        v-model:selected-source-id="selectedOpdsId"
-        :active="activeTab === 'opds'"
-        @add-source="openAddSourceDialog('opds')"
-      />
+    <MdEmptyState
+      v-else-if="managedSources.length === 0"
+      compact
+      :icon="embeddedProtocol === 'subsonic' ? LuDisc3 : LuBookOpen"
+      :title="
+        embeddedProtocol === 'subsonic'
+          ? t('remote.subsonicEmptySourcesTitle')
+          : t('remote.opdsEmptySourcesTitle')
+      "
+      :description="
+        embeddedProtocol === 'subsonic'
+          ? t('remote.subsonicEmptySourcesHint')
+          : t('remote.opdsEmptySourcesHint')
+      "
+    >
+      <template #action>
+        <MdButton
+          variant="filled"
+          size="sm"
+          :icon="embeddedProtocol === 'subsonic' ? LuDisc3 : LuBookOpen"
+          @click="openAddSourceDialog(embeddedProtocol ?? 'opds')"
+        >
+          {{
+            embeddedProtocol === 'subsonic'
+              ? t('remote.subsonicAddBtn')
+              : t('remote.opdsAddBtn')
+          }}
+        </MdButton>
+      </template>
+    </MdEmptyState>
 
-      <RemoteSourcesManageList
-        v-if="activeTab === 'manage'"
-        :protocol="embeddedProtocol"
-        :sources="managedSources"
-        :testing-source-id="testingSourceId"
-        :deleting-source-id="deletingSourceId"
-        :card-test-results="cardTestResults"
-        @add="openAddSourceDialog"
-        @browse="handleBrowseSource"
-        @test="handleTestSavedSource"
-        @edit="openEditSourceDialog"
-        @delete="handleDeleteSource"
-      />
+    <ul v-else class="divide-y divide-outline-variant/50">
+      <li
+        v-for="source in managedSources"
+        :key="source.id"
+        class="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div class="min-w-0 flex-1 space-y-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <span
+              class="text-label-small inline-flex shrink-0 items-center gap-1 rounded-corner-full px-2.5 py-0.5"
+              :class="
+                source.protocol === 'opds'
+                  ? 'bg-primary-container text-on-primary-container'
+                  : 'bg-tertiary-container text-on-tertiary-container'
+              "
+            >
+              <LuBookOpen v-if="source.protocol === 'opds'" class="h-3 w-3" />
+              <LuDisc3 v-else class="h-3 w-3" />
+              <span>{{ source.protocol === 'opds' ? 'OPDS' : 'OpenSubsonic' }}</span>
+            </span>
 
-      <RemoteSubsonicBrowser
-        v-if="embeddedProtocol === 'subsonic'"
-        ref="subsonicBrowserRef"
-        v-model:selected-source-id="selectedSubsonicId"
-        :active="activeTab === 'subsonic'"
-        @add-source="openAddSourceDialog('subsonic')"
-      />
-    </template>
+            <span class="text-body-large truncate text-on-surface">
+              {{ source.name || t('remote.unnamed') }}
+            </span>
+
+            <span
+              v-if="source.allow_insecure_tls"
+              class="inline-flex shrink-0 items-center text-on-surface-variant"
+              :title="t('remote.insecureBadge')"
+            >
+              <LuShieldAlert class="h-3.5 w-3.5" />
+            </span>
+          </div>
+
+          <p class="text-body-small truncate font-mono text-on-surface-variant">
+            {{ source.url }}
+          </p>
+
+          <div
+            v-if="source.username || source.has_password"
+            class="text-label-small flex flex-wrap items-center gap-1.5 text-on-surface-variant"
+          >
+            <span v-if="source.username" class="rounded-corner-xs bg-surface-container-high px-2 py-0.5 font-mono">
+              @{{ source.username }}
+            </span>
+            <span v-if="source.has_password" class="rounded-corner-xs bg-surface-container-high px-2 py-0.5">
+              {{ t('remote.passwordSavedBadge') }}
+            </span>
+          </div>
+
+          <!-- Inline connection test feedback -->
+          <div
+            v-if="cardTestResults[source.id]"
+            class="text-label-medium mt-1.5 inline-flex max-w-full items-center gap-1.5 rounded-corner-sm px-2.5 py-1"
+            :class="
+              cardTestResults[source.id]!.ok
+                ? 'bg-success-container text-on-success-container'
+                : 'bg-error-container text-on-error-container'
+            "
+          >
+            <LuCheckCircle2 v-if="cardTestResults[source.id]!.ok" class="h-3.5 w-3.5 shrink-0" />
+            <LuAlertCircle v-else class="h-3.5 w-3.5 shrink-0" />
+            <span class="truncate">
+              <template v-if="cardTestResults[source.id]!.ok">
+                {{ t('remote.testOk', { latency: cardTestResults[source.id]!.latency_ms }) }}
+                <span v-if="cardTestResults[source.id]!.detail">
+                  · {{ cardTestResults[source.id]!.detail }}
+                </span>
+              </template>
+              <template v-else>
+                {{ cardTestResults[source.id]!.error || t('remote.testFailed') }}
+              </template>
+            </span>
+          </div>
+        </div>
+
+        <div class="flex shrink-0 items-center gap-1.5">
+          <MdButton
+            variant="tonal"
+            size="sm"
+            :icon="LuExternalLink"
+            @click="openInLibrary(source)"
+          >
+            {{ tr('settings.openInLibraryBtn', '在资料库中打开', 'Open in Library') }}
+          </MdButton>
+
+          <MdIconButton
+            size="sm"
+            :icon="LuWifi"
+            :loading="testingSourceId === source.id"
+            :tooltip="t('remote.testBtn')"
+            :aria-label="t('remote.testBtn')"
+            @click="handleTestSavedSource(source)"
+          />
+
+          <MdIconButton
+            size="sm"
+            :icon="LuPencil"
+            :tooltip="t('remote.editBtn')"
+            :aria-label="t('remote.editBtn')"
+            @click="openEditSourceDialog(source)"
+          />
+
+          <MdIconButton
+            size="sm"
+            :icon="LuTrash2"
+            :loading="deletingSourceId === source.id"
+            :tooltip="t('common.delete')"
+            :aria-label="t('common.delete')"
+            class="hover:text-error"
+            @click="handleDeleteSource(source)"
+          />
+        </div>
+      </li>
+    </ul>
 
     <RemoteSourceFormDialog
       :open="formDialogOpen"
@@ -343,5 +415,5 @@ onMounted(async () => {
       @close="formDialogOpen = false"
       @saved="handleSourceSaved"
     />
-  </div>
+  </MdCard>
 </template>

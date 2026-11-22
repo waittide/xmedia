@@ -1,69 +1,140 @@
 <script setup lang="ts">
-import { useI18n } from 'vue-i18n'
-import { LuAlertCircle, LuCheckCircle2, LuHardDrive } from 'vue-icons-plus/lu'
+import { computed, nextTick, onMounted, watch } from 'vue'
+import { LuAlertCircle, LuCheckCircle2, LuHardDrive, LuLayers } from 'vue-icons-plus/lu'
+import { MdCard } from '@/components/ui'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
+import SettingsDomainProtocolsTab from './SettingsDomainProtocolsTab.vue'
+import { useSettingsI18n } from './i18nHelper'
+import { DOMAIN_ICONS } from './sections'
 
-const { t } = useI18n()
+const props = withDefaults(
+  defineProps<{
+    anchorHash?: string
+  }>(),
+  {
+    anchorHash: '',
+  },
+)
+
+const { t, tr } = useSettingsI18n()
 const authStore = useAuthStore()
 const appClientStore = useAppClientStore()
+
+const displayVersion = computed(
+  () => authStore.capabilities?.version || appClientStore.appVersion || '0.1.0',
+)
+
+function scrollToProtocolsIfNeeded(smooth: boolean): void {
+  if (props.anchorHash.replace(/^#/, '') !== 'protocols') return
+  void nextTick(() => {
+    document.getElementById('protocols')?.scrollIntoView({
+      behavior: smooth ? 'smooth' : 'auto',
+      block: 'start',
+    })
+  })
+}
+
+onMounted(() => {
+  scrollToProtocolsIfNeeded(false)
+})
+
+watch(
+  () => props.anchorHash,
+  () => {
+    scrollToProtocolsIfNeeded(true)
+  },
+)
 </script>
 
 <template>
-  <!-- FFmpeg Engine Status -->
-  <section class="md-card-outlined p-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-          {{ t('settings.ffmpegStatusTitle') }}
-        </h2>
-        <p
-          v-if="authStore.capabilities?.ffmpeg.ffmpeg_version"
-          class="md-body-small mt-1 font-mono text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ authStore.capabilities.ffmpeg.ffmpeg_version }}
-        </p>
-      </div>
-      <span
-        v-if="authStore.capabilities?.ffmpeg.ffmpeg_available"
-        class="md-label-medium inline-flex items-center gap-1.5 rounded-full bg-[var(--md-sys-color-success-container)] px-3 py-1 text-[var(--md-sys-color-on-success-container)]"
-      >
-        <LuCheckCircle2 class="h-4 w-4" />
-        <span>{{ t('settings.ffmpegAvailable') }}</span>
-      </span>
-      <span
-        v-else
-        class="md-label-medium inline-flex items-center gap-1.5 rounded-full bg-[var(--md-sys-color-warning-container)] px-3 py-1 text-[var(--md-sys-color-on-warning-container)]"
-      >
-        <LuAlertCircle class="h-4 w-4" />
-        <span>{{ t('settings.ffmpegMissing') }}</span>
-      </span>
-    </div>
-  </section>
-
-  <!-- Standalone Client Engine Info -->
-  <section v-if="appClientStore.isStandaloneApp" class="md-card-outlined p-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-3">
-        <div
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]"
-        >
-          <LuHardDrive class="h-5 w-5" />
+  <div class="flex flex-col gap-5">
+    <!-- Application Version & Runtime Mode -->
+    <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="flex items-center gap-3.5">
+          <div
+            class="flex h-11 w-11 shrink-0 items-center justify-center rounded-corner-lg bg-primary-container text-on-primary-container"
+          >
+            <LuHardDrive v-if="appClientStore.isStandaloneApp" class="h-5 w-5" />
+            <LuLayers v-else class="h-5 w-5" />
+          </div>
+          <div>
+            <h2 class="text-title-medium text-on-surface">
+              {{
+                appClientStore.isStandaloneApp
+                  ? t('settings.standaloneModeTitle')
+                  : t('app.name')
+              }}
+            </h2>
+            <p class="text-body-small mt-0.5 font-mono text-on-surface-variant">
+              XMedia v{{ displayVersion }}
+            </p>
+          </div>
         </div>
-        <div>
-          <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-            {{ t('settings.standaloneModeTitle') }}
+
+        <span
+          v-if="appClientStore.isStandaloneApp"
+          class="text-label-medium rounded-corner-full bg-primary-container px-3 py-1 text-on-primary-container"
+        >
+          {{ t('settings.standaloneModeBadge') }}
+        </span>
+        <span
+          v-else
+          class="text-label-medium rounded-corner-full bg-secondary-container px-3 py-1 text-on-secondary-container"
+        >
+          {{ tr('settings.serverModeBadge', '服务端模式', 'Server Mode') }}
+        </span>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 border-t border-outline-variant/50 pt-3.5">
+        <span class="text-label-medium mr-1 text-on-surface-variant">
+          {{ tr('settings.enabledDomainsLabel', '已启用媒体域', 'Enabled Domains') }}:
+        </span>
+        <span
+          v-for="kind in authStore.enabledModules"
+          :key="kind"
+          class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-surface-container-high px-2.5 py-0.5 text-on-surface-variant"
+        >
+          <component :is="DOMAIN_ICONS[kind]" class="h-3 w-3" />
+          <span>{{ t(`app.domains.${kind}`) }}</span>
+        </span>
+      </div>
+    </MdCard>
+
+    <!-- FFmpeg Engine Status -->
+    <MdCard as="section" variant="outlined" padding="lg">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div class="min-w-0">
+          <h2 class="text-title-medium text-on-surface">
+            {{ t('settings.ffmpegStatusTitle') }}
           </h2>
-          <p class="md-body-small mt-0.5 font-mono text-[var(--md-sys-color-on-surface-variant)]">
-            XMedia v{{ appClientStore.appVersion || '0.1.0' }}
+          <p
+            v-if="authStore.capabilities?.ffmpeg.ffmpeg_version"
+            class="text-body-small mt-1 truncate font-mono text-on-surface-variant"
+          >
+            {{ authStore.capabilities.ffmpeg.ffmpeg_version }}
           </p>
         </div>
+
+        <span
+          v-if="authStore.capabilities?.ffmpeg.ffmpeg_available"
+          class="text-label-medium inline-flex shrink-0 items-center gap-1.5 rounded-corner-full bg-success-container px-3 py-1 text-on-success-container"
+        >
+          <LuCheckCircle2 class="h-4 w-4" />
+          <span>{{ t('settings.ffmpegAvailable') }}</span>
+        </span>
+        <span
+          v-else
+          class="text-label-medium inline-flex shrink-0 items-center gap-1.5 rounded-corner-full bg-warning-container px-3 py-1 text-on-warning-container"
+        >
+          <LuAlertCircle class="h-4 w-4" />
+          <span>{{ t('settings.ffmpegMissing') }}</span>
+        </span>
       </div>
-      <span
-        class="md-label-medium rounded-full bg-[var(--md-sys-color-primary-container)] px-3 py-1 text-[var(--md-sys-color-on-primary-container)]"
-      >
-        {{ t('settings.standaloneModeBadge') }}
-      </span>
-    </div>
-  </section>
+    </MdCard>
+
+    <!-- Exposed Open Protocol Endpoints (#protocols) -->
+    <SettingsDomainProtocolsTab />
+  </div>
 </template>

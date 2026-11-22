@@ -1,76 +1,116 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { LuLibrary, LuRefreshCw, LuTrash2 } from 'vue-icons-plus/lu'
+import { useRouter } from 'vue-router'
+import {
+  LuFolderOpen,
+  LuLibrary,
+  LuLock,
+  LuPlus,
+  LuRefreshCw,
+  LuTrash2,
+} from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
+import {
+  MdButton,
+  MdCard,
+  MdChip,
+  MdDialog,
+  MdEmptyState,
+  MdIconButton,
+  MdSelect,
+  MdSwitch,
+  MdTextField,
+  RefreshButton,
+} from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useDomainStore } from '@/stores/domain'
 import { useEventsStore } from '@/stores/events'
+import { useSnackbarStore } from '@/stores/snackbar'
 import type { CoreLibraryDto, MediaKind } from '@/types/api'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { resolveLibraryRoute, useSettingsI18n } from './i18nHelper'
+import { DOMAIN_ICONS } from './sections'
 
-const props = defineProps<{
-  domain?: MediaKind
-}>()
+const props = withDefaults(
+  defineProps<{
+    filterDomain?: 'all' | MediaKind
+  }>(),
+  {
+    filterDomain: 'all',
+  },
+)
 
 const emit = defineEmits<{
   error: [message: string]
+  'update:filterDomain': [value: 'all' | MediaKind]
 }>()
 
-const { t } = useI18n()
+const { t, tr } = useSettingsI18n()
+const router = useRouter()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
 const domainStore = useDomainStore()
 const eventsStore = useEventsStore()
+const snackbarStore = useSnackbarStore()
 
 const allLibraries = ref<CoreLibraryDto[]>([])
-const libraryFilterKind = ref<'all' | MediaKind>(props.domain ?? 'all')
-const libKind = ref<MediaKind>(props.domain ?? domainStore.activeDomain)
+const loading = ref(false)
+const scanningId = ref<string | null>(null)
+const scanningAll = ref(false)
+
+// Add Library Dialog state
+const addDialogOpen = ref(false)
+const libKind = ref<MediaKind>(
+  props.filterDomain !== 'all' ? props.filterDomain : domainStore.activeDomain,
+)
 const libName = ref('')
 const libPath = ref('')
 const scanNow = ref(true)
 const mounting = ref(false)
-const scanningId = ref<string | null>(null)
-const scanningAll = ref(false)
+const dialogError = ref('')
 
-watch(
-  () => props.domain,
-  (next) => {
-    if (next) {
-      libKind.value = next
-      libraryFilterKind.value = next
-    }
-  },
-)
-
-const effectiveFilterKind = computed<'all' | MediaKind>(() => props.domain ?? libraryFilterKind.value)
-const effectiveMountKind = computed<MediaKind>(() => props.domain ?? libKind.value)
+const enabledDomains = computed<MediaKind[]>(() => authStore.enabledModules)
 
 const domainSelectOptions = computed(() =>
-  authStore.enabledModules.map((k) => ({
+  enabledDomains.value.map((k) => ({
     value: k,
     label: t(`app.domains.${k}`),
   })),
 )
 
-const libraryFilterOptions = computed(() => [
-  { value: 'all', label: t('admin.libraryFilterAll') },
-  ...domainSelectOptions.value,
-])
+const enabledLibraries = computed(() =>
+  allLibraries.value.filter((l) => authStore.hasModule(l.media_kind)),
+)
 
-const filteredLibraries = computed(() => {
-  if (effectiveFilterKind.value === 'all') return allLibraries.value
-  return allLibraries.value.filter((l) => l.media_kind === effectiveFilterKind.value)
+const countsByDomain = computed<Record<MediaKind, number>>(() => {
+  const counts: Record<MediaKind, number> = { book: 0, comic: 0, music: 0, video: 0 }
+  for (const lib of enabledLibraries.value) {
+    counts[lib.media_kind] = (counts[lib.media_kind] ?? 0) + 1
+  }
+  return counts
 })
 
+const filteredLibraries = computed(() => {
+  if (props.filterDomain === 'all') return enabledLibraries.value
+  return enabledLibraries.value.filter((l) => l.media_kind === props.filterDomain)
+})
+
+const hasLocalMountInView = computed(() =>
+  filteredLibraries.value.some((lib) => lib.kind.type === 'local_mount'),
+)
+
 async function refreshAdminLibraries(): Promise<void> {
-  allLibraries.value = await api.listLibraries()
+  if (!authStore.isAdmin) return
+  loading.value = true
+  try {
+    allLibraries.value = await api.listLibraries()
+  } finally {
+    loading.value = false
+  }
 }
 
 onMounted(() => {
+  if (!authStore.isAdmin) return
   void refreshAdminLibraries().catch((err) => {
     emit('error', err instanceof Error ? err.message : String(err))
   })
@@ -84,34 +124,63 @@ watch(
     eventsStore.domainRefreshTick.video,
   ],
   () => {
+    if (!authStore.isAdmin) return
     void refreshAdminLibraries().catch(() => {})
   },
 )
 
+function inferNameFromPath(pathStr: string): string {
+  const clean = pathStr.trim().replace(/[\\/]+$/, '')
+  if (!clean) return ''
+  const parts = clean.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? ''
+}
+
+function openAddDialog(): void {
+  dialogError.value = ''
+  libKind.value =
+    props.filterDomain !== 'all'
+      ? props.filterDomain
+      : authStore.hasModule(domainStore.activeDomain)
+        ? domainStore.activeDomain
+        : (enabledDomains.value[0] ?? 'book')
+  libName.value = ''
+  libPath.value = ''
+  scanNow.value = true
+  addDialogOpen.value = true
+}
+
 async function handleMountLibrary(): Promise<void> {
+  dialogError.value = ''
   emit('error', '')
-  const trimmedName = libName.value.trim()
   const trimmedPath = libPath.value.trim()
-  if (!trimmedName || !trimmedPath) {
-    emit('error', t('admin.libraryPathPlaceholder'))
+  const resolvedName = libName.value.trim() || inferNameFromPath(trimmedPath)
+  if (!trimmedPath || !resolvedName) {
+    dialogError.value = t('admin.libraryPathPlaceholder')
     return
   }
   mounting.value = true
   try {
     const created = await api.createLibrary({
-      name: trimmedName,
-      media_kind: effectiveMountKind.value,
+      name: resolvedName,
+      media_kind: libKind.value,
       root_path: trimmedPath,
     })
     if (scanNow.value) {
       await api.scanLibrary(created.id)
     }
+    addDialogOpen.value = false
     libName.value = ''
     libPath.value = ''
     eventsStore.bumpDomain(created.media_kind)
     await refreshAdminLibraries()
+    snackbarStore.show(
+      tr('settings.libraryMountedMsg', '已挂载媒体库「{name}」', 'Mounted library "{name}"', {
+        name: created.name,
+      }),
+    )
   } catch (err) {
-    emit('error', err instanceof Error ? err.message : String(err))
+    dialogError.value = err instanceof Error ? err.message : String(err)
   } finally {
     mounting.value = false
   }
@@ -184,6 +253,10 @@ async function handleDeleteLibrary(lib: CoreLibraryDto): Promise<void> {
   }
 }
 
+function openLibraryInDomain(lib: CoreLibraryDto): void {
+  void router.push(resolveLibraryRoute(router, lib.media_kind, { library: lib.id }))
+}
+
 function formatScanStatus(lib: CoreLibraryDto): string {
   const s = lib.scan_status
   if (s.state === 'scanning') {
@@ -207,177 +280,248 @@ function formatScanStatus(lib: CoreLibraryDto): string {
 </script>
 
 <template>
-  <section class="md-card-outlined p-6">
-    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-      {{ t('admin.mountLibraryTitle') }}
-    </h2>
-    <p class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]">
-      {{ t('admin.mountLibraryDesc') }}
+  <!-- Admin-only Gate -->
+  <MdCard v-if="!authStore.isAdmin" variant="outlined" padding="lg" class="py-14 text-center">
+    <div
+      class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-corner-lg bg-surface-container-high text-on-surface-variant"
+    >
+      <LuLock class="h-5 w-5" />
+    </div>
+    <p class="text-title-medium text-on-surface">
+      {{
+        tr(
+          'settings.librariesAdminOnly',
+          '仅管理员可管理本地媒体库',
+          'Administrator access required to manage media libraries',
+        )
+      }}
     </p>
+  </MdCard>
 
-    <form class="mt-4 space-y-4" @submit.prevent="handleMountLibrary">
-      <div
-        class="grid grid-cols-1 gap-4"
-        :class="domain ? 'sm:grid-cols-2' : 'sm:grid-cols-3'"
+  <div v-else class="flex flex-col gap-5">
+    <!-- Filter Chips + Action Bar -->
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="no-scrollbar flex flex-nowrap items-center gap-2 overflow-x-auto py-0.5">
+        <MdChip
+          variant="filter"
+          :label="`${t('admin.libraryFilterAll')} (${enabledLibraries.length})`"
+          :selected="filterDomain === 'all'"
+          @click="emit('update:filterDomain', 'all')"
+        />
+        <MdChip
+          v-for="kind in enabledDomains"
+          :key="kind"
+          variant="filter"
+          hide-check
+          :icon="DOMAIN_ICONS[kind]"
+          :label="`${t(`app.domains.${kind}`)} (${countsByDomain[kind]})`"
+          :selected="filterDomain === kind"
+          @click="emit('update:filterDomain', filterDomain === kind ? 'all' : kind)"
+        />
+      </div>
+
+      <div class="flex shrink-0 items-center gap-2">
+        <RefreshButton size="sm" :busy="loading" :action="refreshAdminLibraries" />
+        <MdButton
+          v-if="hasLocalMountInView"
+          variant="outlined"
+          size="sm"
+          :icon="LuRefreshCw"
+          :loading="scanningAll"
+          @click="handleScanAll"
+        >
+          {{ t('admin.scanAllBtn') }}
+        </MdButton>
+        <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
+          {{ tr('settings.addLibraryBtn', '添加文件夹', 'Add Folder') }}
+        </MdButton>
+      </div>
+    </div>
+
+    <!-- Unified Library List -->
+    <MdCard variant="outlined" padding="none" class="overflow-hidden">
+      <MdEmptyState
+        v-if="filteredLibraries.length === 0 && !loading"
+        compact
+        :icon="LuLibrary"
+        :title="
+          tr(
+            'settings.librariesEmptyTitle',
+            '尚未添加媒体库',
+            'No media libraries yet',
+          )
+        "
+        :description="t('admin.mountLibraryDesc')"
       >
-        <div v-if="!domain">
-          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
+        <template #action>
+          <MdButton variant="filled" size="sm" :icon="LuPlus" @click="openAddDialog">
+            {{ tr('settings.addLibraryBtn', '添加文件夹', 'Add Folder') }}
+          </MdButton>
+        </template>
+      </MdEmptyState>
+
+      <ul v-else class="divide-y divide-outline-variant/50">
+        <li
+          v-for="lib in filteredLibraries"
+          :key="lib.id"
+          class="flex flex-col justify-between gap-3 px-5 py-4 transition-colors hover:bg-surface-container-low sm:flex-row sm:items-center"
+        >
+          <div class="min-w-0 flex-1 space-y-1">
+            <div class="flex flex-wrap items-center gap-2">
+              <span
+                class="text-label-small inline-flex shrink-0 items-center gap-1 rounded-corner-full bg-secondary-container px-2.5 py-0.5 text-on-secondary-container"
+              >
+                <component :is="DOMAIN_ICONS[lib.media_kind]" class="h-3 w-3" />
+                <span>{{ t(`app.domains.${lib.media_kind}`) }}</span>
+              </span>
+
+              <button
+                type="button"
+                class="text-title-small inline-flex min-w-0 cursor-pointer items-center gap-1.5 truncate text-left text-on-surface transition-colors hover:text-primary"
+                @click="openLibraryInDomain(lib)"
+              >
+                <LuFolderOpen class="h-4 w-4 shrink-0 text-primary" />
+                <span class="truncate">{{ lib.name }}</span>
+              </button>
+
+              <span
+                class="text-label-small rounded-corner-full bg-surface-container-high px-2.5 py-0.5 text-on-surface-variant"
+              >
+                {{
+                  lib.kind.type === 'managed'
+                    ? t('admin.managedBadge')
+                    : t('admin.localMountBadge')
+                }}
+              </span>
+
+              <span class="text-body-small text-on-surface-variant">
+                · {{ t('admin.itemsCountBadge', { count: lib.item_count }) }}
+              </span>
+            </div>
+
+            <p
+              v-if="lib.kind.type === 'local_mount'"
+              class="text-body-small truncate font-mono text-on-surface-variant"
+            >
+              {{ lib.kind.root_path }}
+            </p>
+            <p
+              class="text-body-small"
+              :class="
+                lib.scan_status.state === 'failed'
+                  ? 'text-error'
+                  : lib.scan_status.state === 'scanning'
+                    ? 'text-primary'
+                    : 'text-on-surface-variant'
+              "
+            >
+              {{ formatScanStatus(lib) }}
+            </p>
+          </div>
+
+          <div v-if="lib.kind.type === 'local_mount'" class="flex shrink-0 items-center gap-1.5">
+            <MdButton
+              variant="tonal"
+              size="sm"
+              :icon="LuRefreshCw"
+              :loading="scanningId === lib.id || lib.scan_status.state === 'scanning'"
+              @click="handleRescan(lib)"
+            >
+              {{ t('admin.rescanBtn') }}
+            </MdButton>
+
+            <MdIconButton
+              size="sm"
+              :icon="LuTrash2"
+              :tooltip="t('admin.deleteLibrary')"
+              :aria-label="t('admin.deleteLibrary')"
+              class="hover:text-error"
+              @click="handleDeleteLibrary(lib)"
+            />
+          </div>
+        </li>
+      </ul>
+    </MdCard>
+
+    <!-- Add Library Dialog -->
+    <MdDialog
+      :open="addDialogOpen"
+      :title="t('admin.mountLibraryTitle')"
+      :subtitle="t('admin.mountLibraryDesc')"
+      size="sm"
+      @close="!mounting && (addDialogOpen = false)"
+    >
+      <template #icon>
+        <LuLibrary class="h-5 w-5" />
+      </template>
+
+      <form id="settings-add-library-form" class="flex flex-col gap-4 py-1" @submit.prevent="handleMountLibrary">
+        <div
+          v-if="dialogError"
+          role="alert"
+          class="text-body-small rounded-corner-md bg-error-container px-3.5 py-2.5 text-on-error-container"
+        >
+          {{ dialogError }}
+        </div>
+
+        <div>
+          <label class="text-label-medium mb-1.5 block text-on-surface-variant">
             {{ t('admin.libraryKind') }}
           </label>
-          <AppSelect
+          <MdSelect
             :model-value="libKind"
             :options="domainSelectOptions"
+            :disabled="mounting"
             @update:model-value="libKind = $event as MediaKind"
           />
         </div>
 
-        <div>
-          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('admin.libraryName') }}
-          </label>
-          <input
-            v-model="libName"
-            type="text"
-            required
-            :placeholder="t('admin.libraryNamePlaceholder')"
-            class="md-input h-10 w-full text-xs"
-          />
-        </div>
-
-        <div>
-          <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('admin.libraryPath') }}
-          </label>
-          <input
-            v-model="libPath"
-            type="text"
-            required
-            :placeholder="t('admin.libraryPathPlaceholder')"
-            class="md-input h-10 w-full font-mono text-xs"
-          />
-        </div>
-      </div>
-
-      <div class="flex flex-wrap items-center justify-between gap-3">
-        <AppCheckbox v-model="scanNow" :label="t('admin.scanAfterMountLabel')" />
-        <button
-          type="submit"
+        <MdTextField
+          v-model="libPath"
+          required
           :disabled="mounting"
-          class="md-btn md-btn-filled"
-        >
-          <LuLibrary class="h-4 w-4" />
-          <span>{{ scanNow ? t('admin.mountAndScanBtn') : t('admin.mountOnlyBtn') }}</span>
-        </button>
-      </div>
-    </form>
-  </section>
-
-  <section class="md-card-outlined space-y-4 p-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
-      <div v-if="!domain" class="w-48">
-        <AppSelect
-          :model-value="libraryFilterKind"
-          :options="libraryFilterOptions"
-          @update:model-value="libraryFilterKind = $event as 'all' | MediaKind"
+          :label="t('admin.libraryPath')"
+          :placeholder="t('admin.libraryPathPlaceholder')"
         />
-      </div>
-      <div v-else class="flex items-center gap-2">
-        <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-          {{ t('settings.domainMediaSourcesListTitle') }}
-        </h2>
-        <span
-          class="md-label-small rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 tabular-nums text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ filteredLibraries.length }}
-        </span>
-      </div>
 
-      <div class="flex items-center gap-2">
-        <RefreshButton size="md" :action="refreshAdminLibraries" />
-        <button
-          type="button"
-          :disabled="scanningAll"
-          class="md-btn md-btn-outlined"
-          @click="handleScanAll"
-        >
-          <LuRefreshCw class="h-4 w-4" :class="scanningAll ? 'animate-spin' : ''" />
-          <span>{{ t('admin.scanAllBtn') }}</span>
-        </button>
-      </div>
-    </div>
+        <MdTextField
+          v-model="libName"
+          :disabled="mounting"
+          :label="t('admin.libraryName')"
+          :placeholder="inferNameFromPath(libPath) || t('admin.libraryNamePlaceholder')"
+          :supporting-text="
+            tr(
+              'settings.libraryNameAutoHint',
+              '留空将自动使用目录名称',
+              'Leave blank to use the folder name automatically',
+            )
+          "
+        />
 
-    <div class="space-y-3">
-      <div
-        v-for="lib in filteredLibraries"
-        :key="lib.id"
-        class="md-card-filled flex flex-col justify-between gap-3 p-4 sm:flex-row sm:items-center"
-      >
-        <div class="min-w-0 flex-1 space-y-1">
-          <div class="flex flex-wrap items-center gap-2">
-            <span
-              class="md-label-small rounded-full bg-[var(--md-sys-color-secondary-container)] px-2.5 py-0.5 text-[var(--md-sys-color-on-secondary-container)]"
-            >
-              {{ t(`app.domains.${lib.media_kind}`) }}
-            </span>
-            <p class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-              {{ lib.name }}
-            </p>
-            <span
-              class="md-label-small rounded-full bg-[var(--md-sys-color-surface-container-low)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{
-                lib.kind.type === 'managed'
-                  ? t('admin.managedBadge')
-                  : t('admin.localMountBadge')
-              }}
-            </span>
-            <span class="md-body-small font-medium text-[var(--md-sys-color-on-surface-variant)]">
-              · {{ t('admin.itemsCountBadge', { count: lib.item_count }) }}
-            </span>
-          </div>
-
-          <p
-            v-if="lib.kind.type === 'local_mount'"
-            class="md-body-small truncate font-mono text-[var(--md-sys-color-on-surface-variant)]"
-          >
-            {{ lib.kind.root_path }}
-          </p>
-          <p class="md-body-small text-[var(--md-sys-color-on-surface-variant)]">
-            {{ formatScanStatus(lib) }}
-          </p>
+        <div class="rounded-corner-md bg-surface-container px-4 py-2.5">
+          <MdSwitch
+            v-model="scanNow"
+            :disabled="mounting"
+            :label="t('admin.scanAfterMountLabel')"
+          />
         </div>
+      </form>
 
-        <div class="flex shrink-0 items-center gap-2">
-          <button
-            v-if="lib.kind.type === 'local_mount'"
-            type="button"
-            :disabled="scanningId === lib.id || lib.scan_status.state === 'scanning'"
-            class="md-btn md-btn-sm md-btn-tonal"
-            @click="handleRescan(lib)"
-          >
-            <LuRefreshCw
-              class="h-3.5 w-3.5"
-              :class="
-                scanningId === lib.id || lib.scan_status.state === 'scanning'
-                  ? 'animate-spin'
-                  : ''
-              "
-            />
-            <span>{{ t('admin.rescanBtn') }}</span>
-          </button>
-
-          <button
-            v-if="lib.kind.type === 'local_mount'"
-            type="button"
-            class="md-icon-btn md-icon-btn-sm hover:!text-[var(--md-sys-color-error)]"
-            :title="t('admin.deleteLibrary')"
-            :aria-label="t('admin.deleteLibrary')"
-            @click="handleDeleteLibrary(lib)"
-          >
-            <LuTrash2 class="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    </div>
-  </section>
+      <template #footer>
+        <MdButton variant="text" :disabled="mounting" @click="addDialogOpen = false">
+          {{ t('common.cancel') }}
+        </MdButton>
+        <MdButton
+          type="submit"
+          form="settings-add-library-form"
+          variant="filled"
+          :icon="LuLibrary"
+          :loading="mounting"
+          :disabled="!libPath.trim()"
+        >
+          {{ scanNow ? t('admin.mountAndScanBtn') : t('admin.mountOnlyBtn') }}
+        </MdButton>
+      </template>
+    </MdDialog>
+  </div>
 </template>

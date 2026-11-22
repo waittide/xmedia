@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useI18n } from 'vue-i18n'
-import { LuCheck, LuCopy, LuEye, LuEyeOff, LuRotateCw } from 'vue-icons-plus/lu'
+import { computed, ref } from 'vue'
+import { LuCheck, LuCopy, LuEye, LuEyeOff, LuRotateCw, LuShieldCheck, LuUser } from 'vue-icons-plus/lu'
 import { api } from '@/api/client'
+import { MdButton, MdCard, MdIconButton, MdTextField } from '@/components/ui'
 import { useAuthStore } from '@/stores/auth'
 import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useCopyFeedback } from './clipboard'
+import { useSettingsI18n } from './i18nHelper'
 
 const emit = defineEmits<{
   error: [message: string]
 }>()
 
-const { t } = useI18n()
+const { t, tr } = useSettingsI18n()
 const authStore = useAuthStore()
 const dialogStore = useDialogStore()
 const snackbarStore = useSnackbarStore()
@@ -25,9 +26,22 @@ const savingPwd = ref(false)
 const rotatingKey = ref(false)
 const showApiKey = ref(false)
 
+const displayLabel = computed(
+  () => authStore.user?.display_name || authStore.user?.username || '',
+)
+
+const avatarInitial = computed(() => {
+  const raw = displayLabel.value.trim()
+  return raw ? raw.charAt(0).toUpperCase() : '?'
+})
+
 async function submitPasswordChange(): Promise<void> {
   emit('error', '')
   pwdSuccess.value = ''
+  if (nextPwd.value.length < 6) {
+    emit('error', t('auth.passwordPlaceholder'))
+    return
+  }
   savingPwd.value = true
   try {
     const session = await api.changePassword({
@@ -70,106 +84,159 @@ async function handleRotateApiKey(): Promise<void> {
 </script>
 
 <template>
-  <section class="md-card-outlined space-y-4 p-6">
+  <!-- Profile Summary -->
+  <MdCard v-if="authStore.user" as="section" variant="outlined" padding="lg">
+    <div class="flex flex-wrap items-center justify-between gap-4">
+      <div class="flex min-w-0 items-center gap-3.5">
+        <div
+          class="text-title-large flex h-12 w-12 shrink-0 items-center justify-center rounded-corner-full bg-primary-container text-on-primary-container"
+          aria-hidden="true"
+        >
+          {{ avatarInitial }}
+        </div>
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <h2 class="text-title-medium truncate text-on-surface">
+              {{ displayLabel }}
+            </h2>
+            <span
+              class="text-label-small inline-flex items-center gap-1 rounded-corner-full px-2.5 py-0.5"
+              :class="
+                authStore.isAdmin
+                  ? 'bg-primary-container text-on-primary-container'
+                  : 'bg-secondary-container text-on-secondary-container'
+              "
+            >
+              <LuShieldCheck v-if="authStore.isAdmin" class="h-3 w-3" />
+              <LuUser v-else class="h-3 w-3" />
+              <span>{{ authStore.isAdmin ? t('auth.roleAdmin') : t('auth.roleMember') }}</span>
+            </span>
+          </div>
+          <p class="text-body-small mt-0.5 truncate font-mono text-on-surface-variant">
+            @{{ authStore.user.username }}
+          </p>
+        </div>
+      </div>
+
+      <span
+        class="text-label-medium rounded-corner-full px-3 py-1"
+        :class="
+          authStore.user.is_active
+            ? 'bg-success-container text-on-success-container'
+            : 'bg-surface-container-high text-on-surface-variant'
+        "
+      >
+        {{ authStore.user.is_active ? t('auth.activeAccount') : t('auth.disabledAccount') }}
+      </span>
+    </div>
+  </MdCard>
+
+  <!-- API Key -->
+  <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
     <div>
-      <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
+      <h2 class="text-title-medium text-on-surface">
         {{ t('settings.apiKeyTitle') }}
       </h2>
-      <p class="md-body-small mt-1 text-[var(--md-sys-color-on-surface-variant)]">
+      <p class="text-body-small mt-1 text-on-surface-variant">
         {{ t('settings.apiKeyDesc') }}
       </p>
     </div>
 
-    <div class="flex flex-wrap items-center gap-2">
-      <div class="relative min-w-0 flex-1">
-        <input
-          readonly
+    <div class="flex flex-wrap items-center gap-2.5">
+      <div class="min-w-[14rem] flex-1">
+        <MdTextField
+          :model-value="authStore.user?.api_key || ''"
           :type="showApiKey ? 'text' : 'password'"
-          :value="authStore.user?.api_key || ''"
-          :aria-label="t('settings.apiKeyTitle')"
+          readonly
+          size="sm"
           autocomplete="off"
-          class="md-input h-10 w-full !pr-10 font-mono text-xs"
-        />
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state absolute top-1/2 right-1 -translate-y-1/2"
-          :aria-label="showApiKey ? t('common.close') : t('settings.apiKeyTitle')"
-          :aria-pressed="showApiKey"
-          @click="showApiKey = !showApiKey"
+          :aria-label="t('settings.apiKeyTitle')"
         >
-          <LuEyeOff v-if="showApiKey" class="h-4 w-4" />
-          <LuEye v-else class="h-4 w-4" />
-        </button>
+          <template #trailing>
+            <MdIconButton
+              size="sm"
+              :icon="showApiKey ? LuEyeOff : LuEye"
+              :selected="showApiKey"
+              :aria-label="
+                showApiKey
+                  ? tr('settings.hideApiKey', '隐藏 API Key', 'Hide API Key')
+                  : tr('settings.showApiKey', '显示 API Key', 'Show API Key')
+              "
+              @click="showApiKey = !showApiKey"
+            />
+          </template>
+        </MdTextField>
       </div>
-      <button
-        type="button"
-        class="md-btn md-btn-filled"
+
+      <MdButton
+        variant="filled"
+        size="sm"
+        :icon="copiedKey === 'apiKey' ? LuCheck : LuCopy"
         @click="copyText('apiKey', authStore.user?.api_key || '')"
       >
-        <LuCheck v-if="copiedKey === 'apiKey'" class="h-4 w-4" />
-        <LuCopy v-else class="h-4 w-4" />
-        <span>{{ copiedKey === 'apiKey' ? t('common.copied') : t('common.copy') }}</span>
-      </button>
-      <button
-        type="button"
-        :disabled="rotatingKey"
-        class="md-btn md-btn-outlined !border-[var(--md-sys-color-error)]/50 !text-[var(--md-sys-color-error)]"
+        {{ copiedKey === 'apiKey' ? t('common.copied') : t('common.copy') }}
+      </MdButton>
+
+      <MdButton
+        variant="outlined"
+        size="sm"
+        tone="error"
+        :icon="LuRotateCw"
+        :loading="rotatingKey"
         @click="handleRotateApiKey"
       >
-        <LuRotateCw class="h-4 w-4" :class="rotatingKey ? 'animate-spin' : ''" />
-        <span>{{ t('settings.rotateApiKey') }}</span>
-      </button>
+        {{ t('settings.rotateApiKey') }}
+      </MdButton>
     </div>
-  </section>
+  </MdCard>
 
-  <section class="md-card-outlined p-6">
-    <h2 class="md-title-small text-[var(--md-sys-color-on-surface)]">
-      {{ t('auth.password') }}
-    </h2>
+  <!-- Change Password -->
+  <MdCard as="section" variant="outlined" padding="lg" class="space-y-4">
+    <div>
+      <h2 class="text-title-medium text-on-surface">
+        {{ tr('settings.changePasswordTitle', '修改密码', 'Change Password') }}
+      </h2>
+      <p class="text-body-small mt-1 text-on-surface-variant">
+        {{
+          tr(
+            'settings.changePasswordDesc',
+            '修改密码会同时刷新您的登录凭证。',
+            'Updating your password also refreshes your account credentials.',
+          )
+        }}
+      </p>
+    </div>
 
     <div
       v-if="pwdSuccess"
-      class="mt-3 rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-success-container)] px-3.5 py-2.5 text-xs font-medium text-[var(--md-sys-color-on-success-container)]"
+      class="text-body-small rounded-corner-md bg-success-container px-3.5 py-2.5 text-on-success-container"
     >
       {{ pwdSuccess }}
     </div>
 
-    <form class="mt-4 max-w-md space-y-4" @submit.prevent="submitPasswordChange">
-      <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('auth.currentPassword') }}
-        </label>
-        <input
-          v-model="currentPwd"
-          type="password"
-          required
-          autocomplete="current-password"
-          class="md-input h-10 w-full text-xs"
-        />
-      </div>
-
-      <div>
-        <label class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('auth.newPassword') }}
-        </label>
-        <input
-          v-model="nextPwd"
-          type="password"
-          required
-          minlength="6"
-          autocomplete="new-password"
-          :placeholder="t('auth.passwordPlaceholder')"
-          class="md-input h-10 w-full text-xs"
-        />
-      </div>
-
-      <button
-        type="submit"
+    <form class="max-w-md space-y-4" @submit.prevent="submitPasswordChange">
+      <MdTextField
+        v-model="currentPwd"
+        type="password"
+        required
+        autocomplete="current-password"
+        :label="t('auth.currentPassword')"
         :disabled="savingPwd"
-        class="md-btn md-btn-filled"
-      >
+      />
+
+      <MdTextField
+        v-model="nextPwd"
+        type="password"
+        required
+        autocomplete="new-password"
+        :label="t('auth.newPassword')"
+        :placeholder="t('auth.passwordPlaceholder')"
+        :disabled="savingPwd"
+      />
+
+      <MdButton type="submit" variant="filled" :loading="savingPwd">
         {{ t('common.save') }}
-      </button>
+      </MdButton>
     </form>
-  </section>
+  </MdCard>
 </template>
