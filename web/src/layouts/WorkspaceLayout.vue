@@ -863,7 +863,7 @@ onBeforeUnmount(() => {
           <Transition name="md-dialog">
             <div
               v-if="accountMenuOpen"
-              class="absolute top-12 right-0 z-[var(--z-popover)] w-60 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
+              class="absolute top-12 right-0 z-[var(--z-popover)] w-64 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
             >
               <div class="px-3 py-2">
                 <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
@@ -876,11 +876,11 @@ onBeforeUnmount(() => {
               </div>
 
               <!-- Compact 3-state Theme Switcher -->
-              <div class="px-2 pb-1.5">
+              <div class="px-1.5 pb-1.5">
                 <div
                   role="radiogroup"
                   :aria-label="t('theme.modeTitle')"
-                  class="grid grid-cols-3 gap-1 rounded-full bg-[var(--md-sys-color-surface-container)] p-1"
+                  class="flex items-center gap-0.5 rounded-full bg-[var(--md-sys-color-surface-container)] p-1"
                 >
                   <button
                     v-for="opt in themeModeMenuOptions"
@@ -889,7 +889,7 @@ onBeforeUnmount(() => {
                     role="radio"
                     :aria-checked="themeStore.themeMode === opt.value"
                     :title="opt.label"
-                    class="md-state flex items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[11px] font-medium transition"
+                    class="md-state flex flex-1 items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[11px] font-medium whitespace-nowrap transition"
                     :class="
                       themeStore.themeMode === opt.value
                         ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
@@ -898,7 +898,7 @@ onBeforeUnmount(() => {
                     @click="themeStore.setThemeMode(opt.value)"
                   >
                     <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" />
-                    <span class="truncate">{{ opt.label }}</span>
+                    <span>{{ opt.label }}</span>
                   </button>
                 </div>
               </div>
