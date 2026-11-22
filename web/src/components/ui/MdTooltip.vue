@@ -30,7 +30,7 @@ const visible = ref(false)
         v-if="visible && text"
         :id="tooltipId"
         role="tooltip"
-        class="md-body-small pointer-events-none absolute left-1/2 z-[var(--z-tooltip)] -translate-x-1/2 whitespace-nowrap rounded-[var(--md-sys-shape-corner-xs)] bg-[var(--md-sys-color-inverse-surface)] px-2 py-1 text-[var(--md-sys-color-inverse-on-surface)] shadow-[var(--md-sys-elevation-2)]"
+        class="text-body-small pointer-events-none absolute left-1/2 z-[var(--z-tooltip)] -translate-x-1/2 whitespace-nowrap rounded-corner-xs bg-inverse-surface px-2 py-1 text-inverse-on-surface shadow-elevation-2"
         :class="placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'"
       >
         {{ text }}

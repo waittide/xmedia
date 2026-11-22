@@ -1,17 +1,22 @@
 <script setup lang="ts">
-import { ref, useId } from 'vue'
+import { computed, ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
 import { stripAriaModalOnLeave } from '@/utils/dom'
+import MdIconButton from './MdIconButton.vue'
+
+export type MdDialogSize = 'sm' | 'md' | 'lg'
 
 const props = withDefaults(
   defineProps<{
     open: boolean
     title?: string
     subtitle?: string
+    size?: MdDialogSize
     maxWidth?: string
+    fullscreen?: boolean
     closeOnBackdrop?: boolean
     hideClose?: boolean
     footerAlign?: 'between' | 'end'
@@ -19,10 +24,12 @@ const props = withDefaults(
   {
     title: '',
     subtitle: '',
-    maxWidth: 'max-w-2xl',
+    size: undefined,
+    maxWidth: '',
+    fullscreen: false,
     closeOnBackdrop: true,
     hideClose: false,
-    footerAlign: 'between',
+    footerAlign: 'end',
   },
 )
 
@@ -42,6 +49,20 @@ escapeStack.register(
   () => props.open,
   () => emit('close'),
 )
+
+const resolvedWidthClass = computed(() => {
+  if (props.fullscreen) return ''
+  if (props.maxWidth) return props.maxWidth
+  switch (props.size) {
+    case 'sm':
+      return 'max-w-md'
+    case 'md':
+      return 'max-w-xl'
+    case 'lg':
+    default:
+      return 'max-w-2xl'
+  }
+})
 </script>
 
 <template>
@@ -49,8 +70,9 @@ escapeStack.register(
     <Transition name="md-fade" @before-leave="stripAriaModalOnLeave">
       <div
         v-if="open"
-        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-[var(--md-sys-color-scrim)]/32 p-4"
-        @mousedown.self="closeOnBackdrop && emit('close')"
+        class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center bg-scrim/32"
+        :class="fullscreen ? 'p-0' : 'p-4'"
+        @mousedown.self="!fullscreen && closeOnBackdrop && emit('close')"
       >
         <Transition name="md-dialog" appear @before-leave="stripAriaModalOnLeave">
           <div
@@ -60,30 +82,70 @@ escapeStack.register(
             tabindex="-1"
             :aria-labelledby="title ? titleId : undefined"
             :aria-describedby="subtitle ? subtitleId : undefined"
-            class="flex max-h-[90vh] w-full flex-col overflow-hidden rounded-[28px] bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] outline-none"
-            :class="maxWidth"
+            class="flex w-full flex-col overflow-hidden text-on-surface outline-none"
+            :class="
+              fullscreen
+                ? 'h-dvh max-h-none max-w-none rounded-corner-none bg-surface shadow-none'
+                : [
+                    'max-h-[90vh] rounded-corner-xl bg-surface-container-high shadow-elevation-3',
+                    resolvedWidthClass,
+                  ]
+            "
           >
-            <!-- MD3 Dialog Header -->
+            <!-- MD3 Full-Screen Dialog Top App Bar -->
             <div
-              v-if="title || $slots.header || $slots.icon"
+              v-if="fullscreen"
+              class="safe-pt safe-px flex min-h-14 shrink-0 items-center justify-between gap-3 border-b border-outline-variant bg-surface-container px-4 py-2"
+            >
+              <div class="flex min-w-0 items-center gap-2">
+                <MdIconButton
+                  v-if="!hideClose"
+                  size="sm"
+                  :icon="LuX"
+                  :aria-label="t('common.close')"
+                  @click="emit('close')"
+                />
+                <slot name="header">
+                  <div class="min-w-0">
+                    <h3 :id="titleId" class="text-title-large truncate text-on-surface">
+                      {{ title }}
+                    </h3>
+                    <p
+                      v-if="subtitle"
+                      :id="subtitleId"
+                      class="text-body-small truncate text-on-surface-variant"
+                    >
+                      {{ subtitle }}
+                    </p>
+                  </div>
+                </slot>
+              </div>
+              <div class="flex shrink-0 items-center gap-2">
+                <slot name="headerActions" />
+              </div>
+            </div>
+
+            <!-- MD3 Basic Dialog Header -->
+            <div
+              v-else-if="title || $slots.header || $slots.icon"
               class="flex items-start justify-between gap-4 px-6 pt-6 pb-3"
             >
               <slot name="header">
                 <div class="flex min-w-0 items-start gap-3.5">
                   <div
                     v-if="$slots.icon"
-                    class="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]"
+                    class="flex h-10 w-10 shrink-0 items-center justify-center rounded-corner-lg bg-secondary-container text-on-secondary-container"
                   >
                     <slot name="icon" />
                   </div>
                   <div class="min-w-0">
-                    <h3 :id="titleId" class="md-headline-small">
+                    <h3 :id="titleId" class="text-headline-small text-on-surface">
                       {{ title }}
                     </h3>
                     <p
                       v-if="subtitle"
                       :id="subtitleId"
-                      class="md-body-small mt-1 leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
+                      class="text-body-small mt-1 text-on-surface-variant"
                     >
                       {{ subtitle }}
                     </p>
@@ -93,28 +155,34 @@ escapeStack.register(
 
               <div class="flex shrink-0 items-center gap-1">
                 <slot name="headerActions" />
-                <button
+                <MdIconButton
                   v-if="!hideClose"
-                  type="button"
-                  class="md-icon-btn md-icon-btn-sm md-state"
+                  size="sm"
+                  :icon="LuX"
                   :aria-label="t('common.close')"
                   @click="emit('close')"
-                >
-                  <LuX class="h-4 w-4" />
-                </button>
+                />
               </div>
             </div>
 
             <!-- Scrollable Content -->
-            <div class="flex-1 overflow-y-auto px-6 py-2">
+            <div
+              class="flex-1 overflow-y-auto"
+              :class="fullscreen ? 'safe-px safe-pb px-6 py-5' : 'px-6 py-2'"
+            >
               <slot />
             </div>
 
             <!-- MD3 Dialog Action Bar -->
             <div
               v-if="$slots.footer"
-              class="flex flex-wrap items-center gap-2 px-6 pt-3 pb-5"
-              :class="footerAlign === 'end' ? 'justify-end' : 'justify-between'"
+              class="flex flex-wrap items-center gap-2 px-6"
+              :class="[
+                fullscreen
+                  ? 'safe-px safe-pb border-t border-outline-variant bg-surface-container py-4'
+                  : 'pt-3 pb-5',
+                footerAlign === 'end' ? 'justify-end' : 'justify-between',
+              ]"
             >
               <slot name="footer" />
             </div>
