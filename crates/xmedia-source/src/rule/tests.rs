@@ -450,3 +450,136 @@ fn rule_value_from_json_or_raw_accepts_scalar_roots_and_rejects_malformed() {
             .is_empty()
     );
 }
+
+struct CountingJsEvaluator {
+    calls: usize,
+}
+
+impl JsRuleEvaluator for CountingJsEvaluator {
+    fn eval_rule_js(
+        &mut self,
+        code: &str,
+        input: &RuleValue,
+        _base_url: &str,
+    ) -> Result<RuleValue, String> {
+        self.calls += 1;
+        Ok(RuleValue::Text(format!(
+            "JS({})::{}",
+            code.trim(),
+            input.as_text()
+        )))
+    }
+}
+
+#[test]
+fn combinators_handle_unmatched_quotes_mustache_and_js_precedence() {
+    let rv = RuleValue::Json(serde_json::json!({
+        "empty": "",
+        "b": "B_VAL",
+        "items": [
+            {"a": "x||y", "v": "QUOTED_HIT"}
+        ],
+        "left": ["L1"],
+        "right": ["R1"]
+    }));
+
+    // GAP-06: depth-0 unmatched apostrophe must not suppress || / && / %% splitting
+    assert_eq!(
+        eval_rule_string(&rv, "$.don't || $.b", "", None).unwrap(),
+        "B_VAL"
+    );
+    assert_eq!(
+        eval_rule_string(&rv, "$.don't && $.b", "", None).unwrap(),
+        "B_VAL"
+    );
+    let interleaved = eval_rule_list(&rv, "$.don't %% $.right", "", None).unwrap();
+    assert_eq!(
+        interleaved
+            .into_iter()
+            .map(|v| v.as_text())
+            .collect::<Vec<_>>(),
+        vec!["R1"]
+    );
+    // Balanced quotes inside [...] still protect `||`
+    assert_eq!(
+        eval_rule_string(&rv, "$.items[?(@.a=='x||y')].v || $.b", "", None).unwrap(),
+        "QUOTED_HIT"
+    );
+
+    // GAP-07: top-level combinators split before Mustache & JS pipeline
+    assert_eq!(
+        eval_rule_string(&rv, "{{$.empty}} || {{$.b}}", "", None).unwrap(),
+        "B_VAL"
+    );
+    let mut counter = CountingJsEvaluator { calls: 0 };
+    assert_eq!(
+        eval_rule_string(&rv, "$.b || @js:fallback_js", "", Some(&mut counter)).unwrap(),
+        "B_VAL"
+    );
+    assert_eq!(counter.calls, 0);
+
+    assert_eq!(
+        eval_rule_string(&rv, "$.empty || @js:fallback_js", "", Some(&mut counter)).unwrap(),
+        format!("JS(fallback_js)::{}", rv.as_text())
+    );
+    assert_eq!(counter.calls, 1);
+
+    // `||` inside <js>...</js> must remain intact
+    assert_eq!(
+        eval_rule_string(&rv, "$.b<js>'x || y'</js>", "", Some(&mut counter)).unwrap(),
+        "JS('x || y')::B_VAL"
+    );
+    assert_eq!(counter.calls, 2);
+
+    // `||` inside @js: code must remain intact
+    assert_eq!(
+        eval_rule_string(&rv, "$.empty || @js:a || b", "", Some(&mut counter)).unwrap(),
+        format!("JS(a || b)::{}", rv.as_text())
+    );
+    assert_eq!(counter.calls, 3);
+}
+
+#[test]
+fn jsonpath_filter_exact_large_integer_equality_and_json_html_guard() {
+    // GAP-08: 64-bit integers > 2^53 compare without f64 precision loss
+    let rv = RuleValue::Json(serde_json::json!({
+        "items": [
+            {"id": 9007199254740992_i64, "name": "ID_992"},
+            {"id": 9007199254740993_i64, "name": "ID_993"},
+            {"id": 18446744073709551615_u64, "name": "U64_MAX"}
+        ]
+    }));
+
+    assert_eq!(
+        eval_rule_list(&rv, "$.items[?(@.id==9007199254740993)].name", "", None)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.as_text())
+            .collect::<Vec<_>>(),
+        vec!["ID_993"]
+    );
+    assert_eq!(
+        eval_rule_list(&rv, "$.items[?(@.id!=9007199254740993)].name", "", None)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.as_text())
+            .collect::<Vec<_>>(),
+        vec!["ID_992", "U64_MAX"]
+    );
+    assert_eq!(
+        eval_rule_list(&rv, "$.items[?(@.id==18446744073709551615)].name", "", None)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.as_text())
+            .collect::<Vec<_>>(),
+        vec!["U64_MAX"]
+    );
+
+    // GAP-09: JSON objects/arrays must not be parsed as HTML, while JSON String still works
+    let obj_rv = RuleValue::Json(serde_json::json!({"payload": "<b>XSS</b>"}));
+    assert_eq!(eval_rule_string(&obj_rv, "b@text", "", None).unwrap(), "");
+    assert!(eval_rule_list(&obj_rv, "b", "", None).unwrap().is_empty());
+
+    let str_rv = RuleValue::Json(serde_json::json!("<b>ok</b>"));
+    assert_eq!(eval_rule_string(&str_rv, "b@text", "", None).unwrap(), "ok");
+}

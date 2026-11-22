@@ -162,6 +162,26 @@ fn eval_rule_string_depth(
         return Ok(String::new());
     }
 
+    if let Some(parts) = split_top_level_op(trimmed, "||") {
+        for part in parts {
+            let res = eval_rule_string_depth(input, part, base_url, js, depth + 1)?;
+            if !res.trim().is_empty() {
+                return Ok(res);
+            }
+        }
+        return Ok(String::new());
+    }
+    if let Some(parts) = split_top_level_op(trimmed, "&&") {
+        let mut out = Vec::new();
+        for part in parts {
+            let res = eval_rule_string_depth(input, part, base_url, js, depth + 1)?;
+            if !res.trim().is_empty() {
+                out.push(res);
+            }
+        }
+        return Ok(out.join("\n"));
+    }
+
     if let Some((prefix_rule, js_code, suffix_rule)) = split_js_pipeline(trimmed) {
         let stage1 = if prefix_rule.is_empty() {
             input.clone()
@@ -185,26 +205,6 @@ fn eval_rule_string_depth(
         let (template_part, regex_suffix) = split_regex_replace_suffix(trimmed);
         let interpolated = eval_mustache_template(template_part, input, base_url, js)?;
         return Ok(apply_regex_replace(&interpolated, regex_suffix));
-    }
-
-    if let Some(parts) = split_top_level_op(trimmed, "||") {
-        for part in parts {
-            let res = eval_rule_string_depth(input, part, base_url, js, depth + 1)?;
-            if !res.trim().is_empty() {
-                return Ok(res);
-            }
-        }
-        return Ok(String::new());
-    }
-    if let Some(parts) = split_top_level_op(trimmed, "&&") {
-        let mut out = Vec::new();
-        for part in parts {
-            let res = eval_rule_string_depth(input, part, base_url, js, depth + 1)?;
-            if !res.trim().is_empty() {
-                out.push(res);
-            }
-        }
-        return Ok(out.join("\n"));
     }
 
     let (core_rule, regex_suffix) = split_regex_replace_suffix(trimmed);
@@ -237,25 +237,6 @@ fn eval_rule_list_depth(
     let trimmed = rule.trim();
     if trimmed.is_empty() {
         return Ok(Vec::new());
-    }
-
-    if let Some((prefix_rule, js_code, suffix_rule)) = split_js_pipeline(trimmed) {
-        let stage1 = if prefix_rule.is_empty() {
-            input.clone()
-        } else {
-            let s = eval_rule_string_depth(input, prefix_rule, base_url, js, depth + 1)?;
-            RuleValue::from_raw(s)
-        };
-        let js_out = {
-            let js_session = js
-                .as_deref_mut()
-                .ok_or_else(|| "列表规则包含 JS 代码，但当前上下文未启用 JS 沙箱".to_string())?;
-            js_session.eval_rule_js(js_code, &stage1, base_url)?
-        };
-        if suffix_rule.is_empty() {
-            return Ok(value_to_list(js_out));
-        }
-        return eval_rule_list_depth(&js_out, suffix_rule, base_url, js, depth + 1);
     }
 
     if let Some(parts) = split_top_level_op(trimmed, "||") {
@@ -293,6 +274,25 @@ fn eval_rule_list_depth(
             }
         }
         return Ok(interleaved);
+    }
+
+    if let Some((prefix_rule, js_code, suffix_rule)) = split_js_pipeline(trimmed) {
+        let stage1 = if prefix_rule.is_empty() {
+            input.clone()
+        } else {
+            let s = eval_rule_string_depth(input, prefix_rule, base_url, js, depth + 1)?;
+            RuleValue::from_raw(s)
+        };
+        let js_out = {
+            let js_session = js
+                .as_deref_mut()
+                .ok_or_else(|| "列表规则包含 JS 代码，但当前上下文未启用 JS 沙箱".to_string())?;
+            js_session.eval_rule_js(js_code, &stage1, base_url)?
+        };
+        if suffix_rule.is_empty() {
+            return Ok(value_to_list(js_out));
+        }
+        return eval_rule_list_depth(&js_out, suffix_rule, base_url, js, depth + 1);
     }
 
     Ok(eval_non_js_list(input, trimmed))
@@ -350,6 +350,13 @@ pub fn eval_non_js_single(input: &RuleValue, rule: &str, base_url: &str) -> Stri
         return String::new();
     }
 
+    if matches!(
+        input,
+        RuleValue::Json(serde_json::Value::Object(_) | serde_json::Value::Array(_))
+    ) {
+        return String::new();
+    }
+
     let html_str = input.as_text();
     let extracted = eval_html_single(&html_str, core, base_url);
     apply_regex_replace(&extracted, regex_suffix)
@@ -393,6 +400,11 @@ pub fn eval_non_js_list(input: &RuleValue, rule: &str) -> Vec<RuleValue> {
         } else {
             Vec::new()
         }
+    } else if matches!(
+        input,
+        RuleValue::Json(serde_json::Value::Object(_) | serde_json::Value::Array(_))
+    ) {
+        Vec::new()
     } else {
         let html_str = input.as_text();
         eval_html_list(&html_str, core)
@@ -637,8 +649,9 @@ fn split_top_level_op<'a>(input: &'a str, op: &str) -> Option<Vec<&'a str>> {
     while i < bytes.len() {
         let b = bytes[i];
         if let Some(q) = in_quote {
-            if b == b'\\' {
-                i += 2;
+            if b == b'\\' && i + 1 < bytes.len() {
+                let next_len = input[i + 1..].chars().next().map_or(0, char::len_utf8);
+                i += 1 + next_len;
                 continue;
             }
             if b == q {
@@ -647,8 +660,30 @@ fn split_top_level_op<'a>(input: &'a str, op: &str) -> Option<Vec<&'a str>> {
             i += 1;
             continue;
         }
+        if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 {
+            if bytes.len() - i >= 4 && bytes[i..i + 4].eq_ignore_ascii_case(b"<js>") {
+                let mut j = i + 4;
+                let mut found_end = None;
+                while j + 5 <= bytes.len() {
+                    if bytes[j..j + 5].eq_ignore_ascii_case(b"</js>") {
+                        found_end = Some(j + 5);
+                        break;
+                    }
+                    j += 1;
+                }
+                if let Some(end_idx) = found_end {
+                    i = end_idx;
+                    continue;
+                }
+            }
+            if bytes.len() - i >= 4 && bytes[i..i + 4].eq_ignore_ascii_case(b"@js:") {
+                break;
+            }
+        }
         match b {
-            b'"' | b'\'' => in_quote = Some(b),
+            b'"' | b'\'' if depth_paren > 0 || depth_bracket > 0 || depth_brace > 0 => {
+                in_quote = Some(b);
+            }
             b'(' => depth_paren += 1,
             b')' => depth_paren = (depth_paren - 1).max(0),
             b'[' => depth_bracket += 1,

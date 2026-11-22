@@ -1,9 +1,16 @@
 const MAX_JSON_RECURSIVE_DEPTH: usize = 128;
 
+#[derive(Debug, Clone, Copy)]
+enum FilterNumber {
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+}
+
 #[derive(Debug, Clone)]
 enum FilterLiteral {
     String(String),
-    Number(f64),
+    Number(FilterNumber),
     Bool(bool),
     Null,
 }
@@ -150,7 +157,25 @@ fn filter_value_equals(lhs: Option<&serde_json::Value>, rhs: &FilterLiteral) -> 
         (Some(serde_json::Value::String(s)), FilterLiteral::String(r)) => s == r,
         (Some(serde_json::Value::Bool(b)), FilterLiteral::Bool(r)) => b == r,
         (Some(serde_json::Value::Number(n)), FilterLiteral::Number(r)) => {
-            n.as_f64().is_some_and(|v| (v - r).abs() < f64::EPSILON)
+            if let Some(l) = n.as_i64() {
+                match *r {
+                    FilterNumber::Signed(ri) => return l == ri,
+                    FilterNumber::Unsigned(ru) => return u64::try_from(l).ok() == Some(ru),
+                    FilterNumber::Float(_) => {}
+                }
+            } else if let Some(l) = n.as_u64() {
+                match *r {
+                    FilterNumber::Signed(ri) => return i64::try_from(l).ok() == Some(ri),
+                    FilterNumber::Unsigned(ru) => return l == ru,
+                    FilterNumber::Float(_) => {}
+                }
+            }
+            let rhs_f = match *r {
+                FilterNumber::Signed(ri) => ri as f64,
+                FilterNumber::Unsigned(ru) => ru as f64,
+                FilterNumber::Float(rf) => rf,
+            };
+            n.as_f64().is_some_and(|v| (v - rhs_f).abs() < f64::EPSILON)
         }
         _ => false,
     }
@@ -240,10 +265,18 @@ fn parse_filter_literal(raw: &str) -> Option<FilterLiteral> {
     if t == "null" {
         return Some(FilterLiteral::Null);
     }
+    if !t.contains(['.', 'e', 'E']) {
+        if let Ok(num) = t.parse::<i64>() {
+            return Some(FilterLiteral::Number(FilterNumber::Signed(num)));
+        }
+        if let Ok(num) = t.parse::<u64>() {
+            return Some(FilterLiteral::Number(FilterNumber::Unsigned(num)));
+        }
+    }
     if let Ok(num) = t.parse::<f64>()
         && num.is_finite()
     {
-        return Some(FilterLiteral::Number(num));
+        return Some(FilterLiteral::Number(FilterNumber::Float(num)));
     }
     None
 }
