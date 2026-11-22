@@ -1725,4 +1725,137 @@ mod gateway_seed_tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn unified_gateway_theme_defaults_and_online_items_cross_domain_e2e() {
+        let tmp = TempDir::new().unwrap();
+        let app_instance = XMediaApp::connect_and_init(make_cfg(&tmp)).await.unwrap();
+        let (admin_token, member_token) = setup_admin_and_member(&app_instance).await;
+        let router = app_instance.router;
+
+        // 1. New user receives Material You seed defaults via /auth/me
+        let (st_me, me) = send_req(
+            &router,
+            "GET",
+            "/api/v1/auth/me",
+            Some(&member_token),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_me, StatusCode::OK);
+        let member_id = me["id"].as_str().unwrap().to_string();
+        assert_eq!(me["preferences"]["theme_mode"], "system");
+        assert_eq!(me["preferences"]["light_preset"], "material-you-light");
+        assert_eq!(me["preferences"]["dark_preset"], "material-you-dark");
+        assert_eq!(me["preferences"]["accent_mode"], "seed");
+        assert!(me["preferences"]["seed_color"].is_null());
+
+        // 2. Legacy Catppuccin preferences with custom accent migrate cleanly to seed_color
+        let (st_legacy, legacy_res) = send_req(
+            &router,
+            "PUT",
+            "/api/v1/auth/preferences",
+            Some(&member_token),
+            Body::from(
+                serde_json::json!({
+                    "theme_mode": "light",
+                    "light_preset": "catppuccin-latte",
+                    "dark_preset": "catppuccin-mocha",
+                    "accent_mode": "custom",
+                    "accent": "mauve",
+                    "custom_accent": "#1A2B3C"
+                })
+                .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        assert_eq!(st_legacy, StatusCode::OK);
+        assert_eq!(
+            legacy_res["preferences"]["light_preset"],
+            "material-you-light"
+        );
+        assert_eq!(
+            legacy_res["preferences"]["dark_preset"],
+            "material-you-dark"
+        );
+        assert_eq!(legacy_res["preferences"]["accent_mode"], "seed");
+        assert_eq!(legacy_res["preferences"]["seed_color"], "#1a2b3c");
+
+        // 3. Minimal payload (omitting deprecated fields) persists cleanly
+        let (st_min, min_res) = send_req(
+            &router,
+            "PUT",
+            "/api/v1/auth/preferences",
+            Some(&member_token),
+            Body::from(
+                serde_json::json!({
+                    "theme_mode": "dark",
+                    "seed_color": "#006A6A"
+                })
+                .to_string(),
+            ),
+            Some("application/json"),
+        )
+        .await;
+        assert_eq!(st_min, StatusCode::OK);
+        assert_eq!(min_res["preferences"]["theme_mode"], "dark");
+        assert_eq!(min_res["preferences"]["seed_color"], "#006a6a");
+        assert_eq!(min_res["preferences"]["accent_mode"], "seed");
+
+        // 4. Online items are mounted on comic/music/video and strictly isolated per domain
+        for domain in ["comic", "music", "video"] {
+            let (st_put, put_val) = send_req(
+                &router,
+                "PUT",
+                &format!("/api/v1/{domain}/online/items"),
+                Some(&member_token),
+                Body::from(
+                    serde_json::json!({
+                        "source_kind": "remote",
+                        "source_id": "remote-1",
+                        "item_key": "shared-key",
+                        "title": format!("Item in {domain}"),
+                        "favorite": true,
+                        "progress": { "position": 10.0, "duration": 100.0, "completed": false }
+                    })
+                    .to_string(),
+                ),
+                Some("application/json"),
+            )
+            .await;
+            assert_eq!(st_put, StatusCode::OK, "domain={domain} body={put_val}");
+            assert_eq!(put_val["media_kind"], domain);
+            assert_eq!(put_val["availability"], "unverified");
+        }
+
+        for domain in ["comic", "music", "video"] {
+            let (st_list, list_val) = send_req(
+                &router,
+                "GET",
+                &format!("/api/v1/{domain}/online/items?view=continue"),
+                Some(&member_token),
+                Body::empty(),
+                None,
+            )
+            .await;
+            assert_eq!(st_list, StatusCode::OK);
+            assert_eq!(list_val["total"], 1);
+            assert_eq!(list_val["items"][0]["media_kind"], domain);
+        }
+
+        // 5. Deleting member succeeds and purges online items
+        let (st_del_user, del_val) = send_req(
+            &router,
+            "DELETE",
+            &format!("/api/v1/users/{member_id}"),
+            Some(&admin_token),
+            Body::empty(),
+            None,
+        )
+        .await;
+        assert_eq!(st_del_user, StatusCode::OK);
+        assert_eq!(del_val["ok"], true);
+    }
 }
