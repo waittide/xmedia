@@ -4,7 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 
 const DEFAULT_CHROMIUM_BIN = process.env.XMEDIA_CHROMIUM_BIN || '/usr/sbin/chromium';
-const DEFAULT_ALLOWED_ERROR_PATTERNS = [/\/_app\/health(?:$|\?)/, /\/favicon\.ico(?:$|\?)/];
+export const DEFAULT_ALLOWED_ERROR_PATTERNS = [
+  /^(?:https?:\/\/[^/?#]+)?\/_app\/health(?:$|\?)/,
+  /^(?:https?:\/\/[^/?#]+)?\/favicon\.ico(?:$|\?)/,
+];
+
+export function isDefaultAllowedErrorUrl(url) {
+  return matchesAnyPattern(url, DEFAULT_ALLOWED_ERROR_PATTERNS);
+}
 
 const activeCdpClients = new Set();
 let cdpSignalHandlersInstalled = false;

@@ -58,12 +58,14 @@ export function parseArgs(argv) {
       return argv[i];
     };
 
+    const eqVal = () => arg.slice(arg.indexOf('=') + 1);
+
     if (arg === '--self-test') {
       opts.selfTest = true;
     } else if (arg === '--live') {
       opts.live = true;
     } else if (arg === '--live-report' || arg.startsWith('--live-report=')) {
-      opts.liveReport = (arg.includes('=') ? arg.split('=')[1] : nextVal()).trim();
+      opts.liveReport = (arg.includes('=') ? eqVal() : nextVal()).trim();
       if (!opts.liveReport) {
         throw new Error('Missing non-empty value for --live-report');
       }
@@ -74,7 +76,7 @@ export function parseArgs(argv) {
     } else if (arg === '-h' || arg === '--help') {
       opts.help = true;
     } else if (arg === '--tier' || arg.startsWith('--tier=')) {
-      const raw = arg.includes('=') ? arg.split('=')[1] : nextVal();
+      const raw = arg.includes('=') ? eqVal() : nextVal();
       for (const piece of raw.split(',')) {
         const num = Number.parseInt(piece.trim(), 10);
         if (!VALID_TIERS.has(num)) {
@@ -83,7 +85,7 @@ export function parseArgs(argv) {
         if (!opts.tiers.includes(num)) opts.tiers.push(num);
       }
     } else if (arg === '--domain' || arg.startsWith('--domain=')) {
-      const val = (arg.includes('=') ? arg.split('=')[1] : nextVal()).trim();
+      const val = (arg.includes('=') ? eqVal() : nextVal()).trim();
       if (!VALID_DOMAINS.has(val)) {
         throw new Error(
           `Invalid --domain value: ${val}. Must be one of: ${[...VALID_DOMAINS].join(', ')}.`,
@@ -91,11 +93,11 @@ export function parseArgs(argv) {
       }
       opts.domain = val;
     } else if (arg === '--base-url' || arg.startsWith('--base-url=')) {
-      opts.baseUrl = (arg.includes('=') ? arg.split('=')[1] : nextVal()).trim();
+      opts.baseUrl = (arg.includes('=') ? eqVal() : nextVal()).trim();
     } else if (arg === '--xmedia-bin' || arg.startsWith('--xmedia-bin=')) {
-      opts.xmediaBin = (arg.includes('=') ? arg.split('=')[1] : nextVal()).trim();
+      opts.xmediaBin = (arg.includes('=') ? eqVal() : nextVal()).trim();
     } else if (arg === '--web-dir' || arg.startsWith('--web-dir=')) {
-      opts.webDir = (arg.includes('=') ? arg.split('=')[1] : nextVal()).trim();
+      opts.webDir = (arg.includes('=') ? eqVal() : nextVal()).trim();
     } else {
       throw new Error(`Unknown CLI argument: ${arg}`);
     }
@@ -273,7 +275,9 @@ async function main() {
   process.exitCode = summary.failed > 0 || summary.total === 0 ? 1 : 0;
 }
 
-main().catch((err) => {
-  console.error(err.stack || err.message);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error(err.stack || err.message);
+    process.exitCode = 1;
+  });
+}

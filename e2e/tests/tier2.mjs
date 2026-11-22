@@ -1735,10 +1735,65 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/开始测试|运行|run|test/i], {
             rootSelector: '[role="dialog"]',
           });
+          await cdp.waitForFn(
+            `[...document.querySelectorAll('[role="dialog"] button')].some((b) => /取消|中止|停止|abort|cancel|stop/i.test(b.innerText || ''))`,
+            { timeoutMs: 5000, label: 'debug stop button active while test running' },
+          );
           await clickButtonMatching(cdp, [/取消|中止|停止|abort|cancel|stop/i], {
             rootSelector: '[role="dialog"]',
           });
+          await cdp.waitForFn(
+            `(() => {
+              const btns = [...document.querySelectorAll('[role="dialog"] button')];
+              const runBtn = btns.find((b) => /开始测试|运行|run|test/i.test(b.innerText || ''));
+              const stopBtn = btns.find((b) => /取消|中止|停止|abort|cancel|stop/i.test(b.innerText || ''));
+              return Boolean(runBtn && !runBtn.disabled && !stopBtn);
+            })()`,
+            { timeoutMs: 8000, label: 'debug Run button restored and Stop button cleared after abort' },
+          );
           assert.equal(cdp.exceptions.length, 0);
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F12-06',
+      feature: 'F12',
+      domain: 'ui',
+      title: 'Browser (Admin): OnlineSourceEditShell opens immediately with loading spinner during slow /export',
+      async run(ctx) {
+        await clearDomainSources(ctx.admin, 'comic');
+        const comics = buildMockComicSources(ctx.mockBaseUrl);
+        await importSources(ctx.admin, 'comic', comics.xkcd);
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.admin,
+          '/settings?tab=domain-datasources&domain=comic',
+        );
+        try {
+          await cdp.waitForFn(`document.body.innerText.includes('Mock XKCD')`, { timeoutMs: 10000 });
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/comic/sources/*/export', requestStage: 'Request' }],
+          });
+          cdp.on('Fetch.requestPaused', async (params) => {
+            await new Promise((r) => setTimeout(r, 900));
+            try {
+              await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+            } catch {
+              // ignore if browser closed
+            }
+          });
+
+          await clickButtonMatching(cdp, [/编辑|edit/i]);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('[role="dialog"]')) && Boolean(document.querySelector('[role="dialog"] .animate-spin'))`,
+            { timeoutMs: 600, label: 'OnlineSourceEditShell opens immediately with loading spinner' },
+          );
+          await cdp.waitForSelector('[role="dialog"] textarea', { visible: true, timeoutMs: 8000 });
+          await cdp.send('Fetch.disable');
+          cdp.assertNoErrors('T2-F12-06');
         } finally {
           await cdp.close();
         }
@@ -1942,8 +1997,66 @@ function buildTier2Cases() {
           '/comic/series?scope=online&q=Strip',
         );
         try {
-          await cdp.waitForFn(`document.body.innerText.includes('Mock XKCD Strip')`, {
-            timeoutMs: 10000,
+          await cdp.waitForFn(
+            `document.body.innerText.includes('Mock XKCD Strip') && document.body.innerText.includes('Edge 502 Source') && /搜索异常|search error/i.test(document.body.innerText)`,
+            { timeoutMs: 10000, label: 'partial results and 502 source error notice rendered' },
+          );
+          assert.equal(cdp.exceptions.length, 0);
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F13-06',
+      feature: 'F13',
+      domain: 'ui',
+      title: 'Browser: Online search section shows explicit [role="alert"] + Retry instead of empty-sources CTA on /sources 500',
+      async run(ctx) {
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/settings',
+        );
+        try {
+          let interceptActive = true;
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/comic/sources', requestStage: 'Request' }],
+          });
+          cdp.on('Fetch.requestPaused', async (params) => {
+            try {
+              if (interceptActive) {
+                await cdp.send('Fetch.fulfillRequest', {
+                  requestId: params.requestId,
+                  responseCode: 500,
+                  responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+                  body: Buffer.from('{"error":"Database unavailable"}').toString('base64'),
+                });
+              } else {
+                await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+              }
+            } catch {
+              // ignore if closed
+            }
+          });
+
+          await cdp.goto(`${ctx.baseUrl}/comic/series?scope=online`);
+          await cdp.waitForFn(
+            `(() => {
+              const alert = document.querySelector('main [role="alert"]');
+              const text = document.body.innerText || '';
+              return Boolean(alert) && !/没有已启用的在线漫画源|No online comic sources enabled/i.test(text);
+            })()`,
+            { timeoutMs: 10000, label: 'explicit [role="alert"] shown instead of no-enabled-sources CTA on 500' },
+          );
+
+          interceptActive = false;
+          await cdp.send('Fetch.disable');
+          await clickButtonMatching(cdp, [/重试|retry/i], { rootSelector: 'main [role="alert"]' });
+          await cdp.waitForFn(`!document.querySelector('main [role="alert"]')`, {
+            timeoutMs: 8000,
+            label: 'retry clears /sources 500 alert',
           });
           assert.equal(cdp.exceptions.length, 0);
         } finally {
@@ -1998,8 +2111,8 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock XKCD Strip/]);
           await clickButtonMatching(cdp, [/Broken Chapter/]);
           await cdp.waitForFn(
-            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
-            { timeoutMs: 10000, label: 'broken image reader mounted' },
+            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]')) && /图片加载失败|Failed to load page/i.test(document.body.innerText) && [...document.querySelectorAll('button')].some((b) => /重试本页|Retry Page/i.test(b.innerText || ''))`,
+            { timeoutMs: 12000, label: 'broken image error message and Retry Page button rendered' },
           );
           assert.equal(cdp.exceptions.length, 0);
         } finally {
@@ -2020,7 +2133,10 @@ function buildTier2Cases() {
           '/comic/online/read?source_id=99999999-9999-4999-8999-999999999999&chapter_url=invalid',
         );
         try {
-          await cdp.waitForFn(`document.body.innerText.trim().length > 0`, { timeoutMs: 8000 });
+          await cdp.waitForFn(
+            `/未找到|无效|失败|不存在|error|failed|invalid|not found/i.test(document.body.innerText) && [...document.querySelectorAll('button')].some((b) => /返回|重试|刷新|back|retry|refresh/i.test(b.innerText || ''))`,
+            { timeoutMs: 8000, label: 'graceful error message and recovery button rendered' },
+          );
           assert.equal(cdp.exceptions.length, 0);
         } finally {
           await cdp.close();
@@ -2114,6 +2230,61 @@ function buildTier2Cases() {
             timeoutMs: 8000,
           });
           cdp.assertNoErrors('T2-F14-05');
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F14-06',
+      feature: 'F14',
+      domain: 'ui',
+      title: 'Browser: ComicReaderShell ignores page-turn shortcuts while settings popover is open',
+      async run(ctx) {
+        await ensureComicMocks(ctx.admin, ctx.mockBaseUrl);
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/comic/series?scope=online&q=Naruto',
+        );
+        try {
+          await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
+          await clickButtonMatching(cdp, [/Mock Naruto/]);
+          await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
+          await cdp.waitForFn(
+            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            { timeoutMs: 12000, label: 'comic reader mounted for popover shortcut test' },
+          );
+          await cdp.waitForFn(`/1\\s*\\/\\s*3/.test(document.body.innerText)`, {
+            timeoutMs: 8000,
+            label: 'initial page counter 1 / 3 visible',
+          });
+
+          await clickButtonMatching(cdp, [/阅读设置|settings/i]);
+          await cdp.waitForFn(`/默认阅读模式|Default Reader Mode/i.test(document.body.innerText)`, {
+            timeoutMs: 5000,
+            label: 'settings popover opened',
+          });
+
+          await cdp.pressKey('ArrowLeft');
+          await cdp.pressKey(' ');
+          await new Promise((r) => setTimeout(r, 150));
+          const stayedOnPage1 = await cdp.evalJs(`/1\\s*\\/\\s*3/.test(document.body.innerText)`);
+          assert.equal(stayedOnPage1, true, 'page must stay at 1 / 3 while settings popover is open');
+
+          await cdp.pressKey('Escape');
+          await cdp.waitForFn(`!/默认阅读模式|Default Reader Mode/i.test(document.body.innerText)`, {
+            timeoutMs: 5000,
+            label: 'Escape closes settings popover',
+          });
+
+          await cdp.pressKey(' ');
+          await cdp.waitForFn(`!/1\\s*\\/\\s*3/.test(document.body.innerText)`, {
+            timeoutMs: 5000,
+            label: 'Space advances page after closing settings popover',
+          });
+          cdp.assertNoErrors('T2-F14-06');
         } finally {
           await cdp.close();
         }
@@ -2280,6 +2451,96 @@ function buildTier2Cases() {
         }
       },
     },
+    {
+      id: 'T2-F15-06',
+      feature: 'F15',
+      domain: 'ui',
+      title: 'Browser: PlayerBar renders localized error alert and Retry button when audio-proxy returns 502',
+      async run(ctx) {
+        await clearDomainSources(ctx.admin, 'music');
+        const badAudioSrc = {
+          ...buildMockMusicSources(ctx.mockBaseUrl).gdstudio,
+          sourceName: 'Bad Audio 502 Music',
+          sourceUrl: `${ctx.mockBaseUrl}/music/bad-502`,
+          ruleStream: {
+            requestUrl: `${ctx.mockBaseUrl}/music/gdstudio/api.php?types=url&source=netease&id={{urlId}}&br={{quality}}`,
+            streamUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/edge/error-502`)}`,
+          },
+        };
+        await importSources(ctx.admin, 'music', badAudioSrc);
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/music/songs?scope=online&q=Mojito',
+        );
+        try {
+          await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
+          await clickButtonMatching(cdp, [/Mock Mojito|播放|play/i]);
+          await cdp.waitForFn(
+            `(() => {
+              const alert = document.querySelector('footer [role="alert"]');
+              const retry = alert?.querySelector('button');
+              return Boolean(alert && alert.innerText.trim().length > 0 && retry && /重试|Retry/i.test(retry.innerText || ''));
+            })()`,
+            { timeoutMs: 10000, label: 'PlayerBar renders [role="alert"] and Retry button on 502 audio-proxy' },
+          );
+          assert.equal(cdp.exceptions.length, 0);
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F15-07',
+      feature: 'F15',
+      domain: 'ui',
+      title: 'Browser: Clicking PlayerBar Play during in-flight track-info does not issue duplicate track-info',
+      async run(ctx) {
+        await clearDomainSources(ctx.admin, 'music');
+        const slowResolveSrc = {
+          ...buildMockMusicSources(ctx.mockBaseUrl).gdstudio,
+          sourceName: 'Slow Resolve Music',
+          sourceUrl: `${ctx.mockBaseUrl}/music/slow-resolve`,
+          ruleStream: {
+            requestUrl: `${ctx.mockBaseUrl}/edge/delay?ms=650`,
+            streamUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/music/audius/v1/tracks/aud-1/stream`)}`,
+          },
+        };
+        await importSources(ctx.admin, 'music', slowResolveSrc);
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/music/songs?scope=online&q=Mojito',
+        );
+        try {
+          await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
+          await clickButtonMatching(cdp, [/Mock Mojito|播放|play/i]);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('footer button[aria-busy="true"]'))`,
+            { timeoutMs: 3000, label: 'PlayerBar shows resolving loading state' },
+          );
+          await cdp.evalJs(`document.querySelector('footer button[aria-busy="true"]')?.click()`);
+          await cdp.pressKey(' ');
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('audio')?.src.includes('audio-proxy'))`,
+            { timeoutMs: 10000, label: 'slow track-info eventually binds audio-proxy' },
+          );
+          const trackInfoReqs = cdp.networkRequests.filter(
+            (r) => r.method === 'POST' && r.url.includes('/api/v1/music/online/track-info'),
+          );
+          assert.equal(
+            trackInfoReqs.length,
+            1,
+            `Expected exactly 1 track-info request during onlineResolving, got ${trackInfoReqs.length}`,
+          );
+          cdp.assertNoErrors('T2-F15-07');
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
 
     // =======================================================================
     // F16: Web UI Video Boundary (ui)
@@ -2356,6 +2617,10 @@ function buildTier2Cases() {
           await clickButtonMatching(cdp, [/Mock Blender Open Movie/]);
           await clickButtonMatching(cdp, [/立即播放|play now|播放|play|第1集|正片/i]);
           await cdp.waitForSelector('video', { timeoutMs: 8000 });
+          await cdp.waitForFn(
+            `/视频流加载或解析失败|Failed to load or parse video stream|加载失败/i.test(document.body.innerText) && [...document.querySelectorAll('button')].some((b) => /重试|Retry/i.test(b.innerText || ''))`,
+            { timeoutMs: 10000, label: 'HLS error message and Retry button rendered on malformed m3u8' },
+          );
           assert.equal(cdp.exceptions.length, 0);
         } finally {
           await cdp.close();

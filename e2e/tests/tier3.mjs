@@ -1481,6 +1481,44 @@ export async function runTier3(context = {}) {
         }
       },
     );
+
+    // T3-25: bfcache + /api/v1/events/stream SSE cleanup across 8 sequential full-page navigations
+    await runCase(
+      'T3-25',
+      ['core', 'ui'],
+      'Browser: 8 sequential full-page HTTP/1.1 navigations & history.back() do not exhaust SSE connection pool',
+      async () => {
+        await withCdpBrowser(async (cdp) => {
+          await browserLogin(cdp, baseUrl, MEMBER_CREDS);
+          const routes = [
+            '/comic/series',
+            '/music/songs',
+            '/video/catalog',
+            '/settings',
+            '/comic/series?p=1',
+            '/music/songs?p=2',
+            '/video/catalog?p=3',
+            '/book/books',
+          ];
+          for (const route of routes) {
+            await cdp.goto(`${baseUrl}${route}`);
+            await cdp.waitForSelector('#app', { visible: true, timeoutMs: 5000 });
+          }
+          const capStatus = await cdp.evalJs(
+            `fetch('/api/v1/system/capabilities', { credentials: 'include' }).then((r) => r.status)`,
+          );
+          assert.equal(capStatus, 200, 'HTTP/1.1 connection pool must remain responsive after 8 navigations');
+
+          await cdp.evalJs(`history.back()`);
+          await new Promise((r) => setTimeout(r, 400));
+          const backCapStatus = await cdp.evalJs(
+            `fetch('/api/v1/system/capabilities', { credentials: 'include' }).then((r) => r.status)`,
+          );
+          assert.equal(backCapStatus, 200, 'capabilities fetch must succeed after history.back() + pageshow');
+          cdp.assertNoErrors('T3-25 SSE bfcache multi-navigation');
+        });
+      },
+    );
   } finally {
     if (hardenedMgr) await hardenedMgr.cleanup().catch(() => {});
     if (serverMgr) await serverMgr.cleanup().catch(() => {});

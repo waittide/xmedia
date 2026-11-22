@@ -4,6 +4,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withCdpBrowser } from '../lib/cdp.mjs';
+
+export function isAllowedExternalThumbError(url) {
+  if (!url) return false;
+  try {
+    const pathname = new URL(url, 'http://localhost').pathname;
+    return (
+      pathname === '/api/v1/music/online/cover-proxy' ||
+      pathname === '/api/v1/video/online/poster-proxy'
+    );
+  } catch {
+    return false;
+  }
+}
 import {
   ApiClient,
   REPO_ROOT,
@@ -1008,10 +1021,6 @@ export async function runLiveTests(context = {}) {
           }
 
           const { exceptions, consoleErrors, httpErrors } = cdp.getErrors();
-          const isAllowedExternalThumbError = (url) =>
-            Boolean(url) &&
-            (url.includes('/api/v1/music/online/cover-proxy') ||
-              url.includes('/api/v1/video/online/poster-proxy'));
           const fatalHttpErrors = httpErrors.filter(
             (e) => !(e.status === 400 && isAllowedExternalThumbError(e.url)),
           );

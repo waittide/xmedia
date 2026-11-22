@@ -7,7 +7,7 @@ import {
   buildMockMusicSources,
   buildMockVideoSources,
 } from '../fixtures/mock_sources.mjs';
-import { withCdpBrowser } from '../lib/cdp.mjs';
+import { isDefaultAllowedErrorUrl, withCdpBrowser } from '../lib/cdp.mjs';
 import { ApiClient, allocateFreePort, SutEndpointMissingError } from '../lib/client.mjs';
 import {
   assertJpeg,
@@ -498,6 +498,62 @@ export async function runSelfTests({ silent = false } = {}) {
 
         cdp.assertNoErrors('CDP smoke page');
       });
+    });
+
+    // ST-11: parseArgs preserves `=` in flag values and importing run.mjs has no top-level side effects
+    await runCase('ST-11', 'e2e/run.mjs parseArgs preserves `=` values and guards main() on import', async () => {
+      const savedArgv = [...process.argv];
+      try {
+        process.argv = ['node', 'other-caller.mjs', '--unrelated-host-flag'];
+        const { parseArgs } = await import('../run.mjs');
+        const parsed = parseArgs([
+          '--base-url=http://127.0.0.1:8080/?a=1&b=2',
+          '--live-report=/tmp/dir=1',
+          '--xmedia-bin=/tmp/bin=1',
+          '--web-dir=/tmp/web=1',
+          '--tier=1,2',
+          '--domain=ui',
+        ]);
+        assert.equal(parsed.baseUrl, 'http://127.0.0.1:8080/?a=1&b=2');
+        assert.equal(parsed.liveReport, '/tmp/dir=1');
+        assert.equal(parsed.xmediaBin, '/tmp/bin=1');
+        assert.equal(parsed.webDir, '/tmp/web=1');
+        assert.deepEqual(parsed.tiers, [1, 2]);
+        assert.equal(parsed.domain, 'ui');
+      } finally {
+        process.argv = savedArgv;
+      }
+    });
+
+    // ST-12: Strict pathname checks in live.mjs and cdp.mjs reject query-string masking
+    await runCase('ST-12', 'Error-filter allowlists reject proxy query-string masking payloads', async () => {
+      const { isAllowedExternalThumbError } = await import('./live.mjs');
+      assert.equal(
+        isAllowedExternalThumbError(
+          'http://127.0.0.1:8080/api/v1/music/online/cover-proxy?url=https://a.test/c.jpg',
+        ),
+        true,
+      );
+      assert.equal(
+        isAllowedExternalThumbError(
+          'http://127.0.0.1:8080/api/v1/video/online/poster-proxy?url=https://a.test/p.jpg',
+        ),
+        true,
+      );
+      assert.equal(
+        isAllowedExternalThumbError(
+          'http://127.0.0.1:8080/api/v1/comic/online/image-proxy?url=https://evil.test/api/v1/music/online/cover-proxy',
+        ),
+        false,
+      );
+      assert.equal(isDefaultAllowedErrorUrl('http://127.0.0.1:8080/favicon.ico'), true);
+      assert.equal(isDefaultAllowedErrorUrl('/favicon.ico?v=1'), true);
+      assert.equal(
+        isDefaultAllowedErrorUrl(
+          'http://127.0.0.1:8080/api/v1/comic/online/image-proxy?url=http://evil.test/favicon.ico',
+        ),
+        false,
+      );
     });
   } finally {
     await mock.stop();

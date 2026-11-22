@@ -2329,9 +2329,18 @@ function buildTier1Cases() {
           await cdp.type('main input[type="text"], main input[type="search"]', 'Fragments');
           await cdp.pressKey('Enter');
           await cdp.waitForFn(`document.body.innerText.includes('Fragments Mock')`, { timeoutMs: 10000 });
-          await clickButtonMatching(cdp, [/加入队列|队列|enqueue|queue/i]);
+          await clickButtonMatching(cdp, [/加入队列|加入|enqueue/i]);
           await clickButtonMatching(cdp, [/播放队列|队列|queue/i]);
-          await cdp.waitForFn(`document.body.innerText.includes('Fragments Mock')`, { timeoutMs: 8000 });
+          await cdp.waitForSelector('[role="dialog"]', { visible: true, timeoutMs: 8000 });
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('[role="dialog"]')?.innerText.includes('Fragments Mock'))`,
+            { timeoutMs: 8000, label: 'Fragments Mock rendered inside QueueDrawer' },
+          );
+          await clickButtonMatching(cdp, [/Fragments Mock/], { rootSelector: '[role="dialog"]' });
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('footer')?.innerText.includes('Fragments Mock')) && Boolean(document.querySelector('audio')?.src.includes('audio-proxy'))`,
+            { timeoutMs: 10000, label: 'QueueDrawer track click switched PlayerBar playback to Fragments Mock' },
+          );
           cdp.assertNoErrors('T1-F15-04');
         } finally {
           await cdp.close();
