@@ -540,7 +540,7 @@ fn find_double_hash_outside_mustache(rule: &str) -> Option<usize> {
             i += 2;
             continue;
         }
-        if b == b'\'' || b == b'"' {
+        if (bracket_depth > 0 || mustache_depth > 0) && (b == b'\'' || b == b'"') {
             in_quote = Some(b);
             i += 1;
             continue;

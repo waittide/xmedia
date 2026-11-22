@@ -401,6 +401,22 @@ fn jsonpath_filter_handles_utf8_fields_escaped_quotes_and_double_hash() {
         eval_rule_string(&rv, "$.items[?(@.name=='a##b')].title##Hash##OK", "", None).unwrap(),
         "OKMatched"
     );
+
+    // Unmatched quote outside `[...]` and `{{...}}` must NOT block `##` regex splitting
+    assert_eq!(
+        find_double_hash_outside_mustache(r":it's (\w+)##$1##"),
+        Some(11)
+    );
+    let apostrophe_rv = RuleValue::Text("it's hello".to_string());
+    assert_eq!(
+        eval_rule_string(&apostrophe_rv, r":it's (\w+)##(\w+)##[$1]", "", None).unwrap(),
+        "[hello]"
+    );
+    // While quoted `##` inside `{{...}}` remains protected
+    assert_eq!(
+        find_double_hash_outside_mustache(r#"{{'a##b'}}##x##y"#),
+        Some(10)
+    );
 }
 
 #[test]
