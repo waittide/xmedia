@@ -141,7 +141,8 @@ impl ReusableComicSession {
             return Err("执行超过单次操作总超时上限 (interrupted)".into());
         }
         const MIN_RETRY_OP_BUDGET: Duration = Duration::from_secs(8);
-        if self.op_timeout >= MIN_RETRY_OP_BUDGET && remaining >= MIN_RETRY_OP_BUDGET {
+        const MIN_RETRY_REMAINING: Duration = Duration::from_secs(7);
+        if self.op_timeout >= MIN_RETRY_OP_BUDGET && remaining >= MIN_RETRY_REMAINING {
             self.inner.http().fetch_with_timeout_resilient(
                 raw_url,
                 &self.source.source_url,

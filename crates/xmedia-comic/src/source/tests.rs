@@ -4124,3 +4124,113 @@ fn merged_image_headers_overrides_json_accept_unless_image_header_specifies_acce
         Some("image/png")
     );
 }
+
+#[tokio::test]
+async fn comic_session_http_fetch_retries_at_exact_8s_and_skips_below_8s() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hits_8s = Arc::new(AtomicUsize::new(0));
+    let hits_7s = Arc::new(AtomicUsize::new(0));
+    let h8 = hits_8s.clone();
+    let h7 = hits_7s.clone();
+
+    let app = Router::new()
+        .route(
+            "/search-8s",
+            get(move || {
+                let h = h8.clone();
+                async move {
+                    let n = h.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == 1 {
+                        Response::builder()
+                            .status(StatusCode::SERVICE_UNAVAILABLE)
+                            .body(Body::from("busy"))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Body::from(r#"{"items":[{"t":"Ok8s","u":"/c/8"}]}"#))
+                            .unwrap()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/search-7s",
+            get(move || {
+                let h = h7.clone();
+                async move {
+                    let n = h.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == 1 {
+                        Response::builder()
+                            .status(StatusCode::SERVICE_UNAVAILABLE)
+                            .body(Body::from("busy"))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "application/json")
+                            .body(Body::from(r#"{"items":[{"t":"Unexpected","u":"/c/7"}]}"#))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let src_8s: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Boundary8s",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search-8s?q={{{{key}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+    let src_7s: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "Boundary7s",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search-7s?q={{{{key}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let (res_8s, res_7s) = tokio::task::spawn_blocking(move || {
+        let engine_8s = ComicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(8),
+        );
+        let engine_7s = ComicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(7),
+        );
+        let ok = engine_8s
+            .search_sync(&src_8s, SourceRuntimeState::default(), "q", 1)
+            .unwrap()
+            .data;
+        let err = engine_7s
+            .search_sync(&src_7s, SourceRuntimeState::default(), "q", 1)
+            .unwrap_err();
+        (ok, err)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(res_8s[0].title, "Ok8s");
+    assert!(res_7s.contains("503"), "expected 503 error, got: {res_7s}");
+    assert_eq!(hits_8s.load(Ordering::SeqCst), 2);
+    assert_eq!(hits_7s.load(Ordering::SeqCst), 1);
+
+    server.abort();
+}
