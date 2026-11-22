@@ -1,10 +1,4 @@
-import type {
-  AccentMode,
-  CatppuccinAccent,
-  CatppuccinFlavor,
-  CustomPaletteTokens,
-  ThemeMode,
-} from '@/theme/catppuccin'
+import type { ThemeMode } from '@/theme/md3'
 
 export type UserRole = 'admin' | 'reader'
 export type LocaleCode = 'zh-CN' | 'en-US'
@@ -24,14 +18,7 @@ export interface ReaderPreferences {
 
 export interface UserPreferences {
   theme_mode: ThemeMode
-  light_preset: string
-  dark_preset: string
-  dark_flavor: CatppuccinFlavor
-  accent_mode: AccentMode
-  accent: CatppuccinAccent
-  custom_accent: string | null
-  custom_light: CustomPaletteTokens | null
-  custom_dark: CustomPaletteTokens | null
+  seed_color?: string | null
   locale: LocaleCode
   reader: ReaderPreferences
 }

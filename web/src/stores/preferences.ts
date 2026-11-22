@@ -7,7 +7,7 @@ import {
   sanitizeWorkspaceLayout,
 } from '@/config/workspaceLayout'
 import { useAuthStore } from '@/stores/auth'
-import { DARK_PALETTE_PRESETS, LIGHT_PALETTE_PRESETS } from '@/theme/catppuccin'
+import { normalizeThemeMode, resolveSeedColor } from '@/theme/md3'
 import type {
   ComicReaderPreferences,
   DomainLayoutConfig,
@@ -24,16 +24,7 @@ export const PREFS_STORAGE_KEY = 'xmedia.preferences'
 
 export type VisualPreferencesSnapshot = Pick<
   UserPreferences,
-  | 'theme_mode'
-  | 'light_preset'
-  | 'dark_preset'
-  | 'dark_flavor'
-  | 'accent_mode'
-  | 'accent'
-  | 'custom_accent'
-  | 'custom_light'
-  | 'custom_dark'
-  | 'locale'
+  'theme_mode' | 'seed_color' | 'locale'
 >
 
 export const DEFAULT_BOOK_PREFS: ReaderPreferences = {
@@ -84,20 +75,8 @@ export function readStoredPreferencesRaw(): Partial<UserPreferences> {
 function fallbackVisualSnapshot(): VisualPreferencesSnapshot {
   const parsed = readStoredPreferencesRaw()
   return {
-    theme_mode: parsed.theme_mode ?? 'system',
-    light_preset: parsed.light_preset ?? 'material-you-light',
-    dark_preset: parsed.dark_preset ?? 'material-you-dark',
-    dark_flavor: parsed.dark_flavor ?? 'mocha',
-    accent_mode:
-      parsed.accent_mode === 'preset' ||
-      parsed.accent_mode === 'catppuccin' ||
-      parsed.accent_mode === 'custom'
-        ? parsed.accent_mode
-        : 'preset',
-    accent: parsed.accent ?? 'blue',
-    custom_accent: parsed.custom_accent ?? '#3b82f6',
-    custom_light: parsed.custom_light ?? { ...LIGHT_PALETTE_PRESETS[0]!.tokens },
-    custom_dark: parsed.custom_dark ?? { ...DARK_PALETTE_PRESETS[0]!.tokens },
+    theme_mode: normalizeThemeMode(parsed.theme_mode),
+    seed_color: resolveSeedColor(parsed),
     locale: (parsed.locale ?? (localStorage.getItem('xmedia.locale') as LocaleCode | null)) || 'zh-CN',
   }
 }

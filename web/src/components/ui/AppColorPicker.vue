@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useEscapeStack } from '@/composables/useEscapeStack'
-import { normalizeHex, parseHexRgb, rgbToHex } from '@/theme/catppuccin'
+import { normalizeHex, parseHexRgb, rgbToHex, SEED_PRESETS } from '@/theme/md3'
 
 const props = defineProps<{
   modelValue: string
@@ -35,22 +35,7 @@ const sat = ref(0.75)
 const val = ref(0.95)
 const hexDraft = ref(props.modelValue)
 
-const QUICK_SWATCHES = [
-  '#1e66f5',
-  '#89b4fa',
-  '#7287fd',
-  '#cba6f7',
-  '#ea76cb',
-  '#d20f39',
-  '#fe640b',
-  '#df8e1d',
-  '#40a02b',
-  '#179299',
-  '#eff1f5',
-  '#1e1e2e',
-  '#313244',
-  '#cdd6f4',
-]
+const QUICK_SWATCHES = SEED_PRESETS.map((p) => p.hex)
 
 function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
   const rn = r / 255

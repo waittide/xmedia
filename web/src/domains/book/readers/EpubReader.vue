@@ -120,20 +120,20 @@ function writeCachedLocations(key: string, serialized: string): void {
 
 function applyRenditionTheme(): void {
   if (!rendition) return
-  const palette = themeStore.activePalette
+  const scheme = themeStore.activeScheme
   const r = themeStore.reader
   const verticalPad = r.flow === 'scrolled' ? 16 : 0
   rendition.themes.default({
     body: {
-      background: `${palette.canvas} !important`,
-      color: `${palette.text} !important`,
+      background: `${scheme.surface} !important`,
+      color: `${scheme['on-surface']} !important`,
       'font-family': `${resolveFontStack(r.font_family)} !important`,
       'font-size': `${r.font_size}px !important`,
       'line-height': `${r.line_height} !important`,
       padding: `${verticalPad}px ${r.margin_px}px !important`,
     },
     a: {
-      color: `${palette.accent} !important`,
+      color: `${scheme.primary} !important`,
     },
   })
 }
@@ -341,7 +341,7 @@ onMounted(async () => {
 
 watch(
   () => [
-    themeStore.activePalette,
+    themeStore.activeScheme,
     themeStore.reader.font_family,
     themeStore.reader.font_size,
     themeStore.reader.line_height,

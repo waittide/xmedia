@@ -10,7 +10,7 @@ import { useToolText } from './i18n'
 import { useToolTaskStore } from './tasks'
 import type { ToolStatusDto } from './types'
 
-// Initialize Catppuccin palette & dark/light class immediately
+// Initialize MD3 theme & dark/light class immediately
 useThemeStore()
 const taskStore = useToolTaskStore()
 const txt = useToolText()

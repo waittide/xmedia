@@ -1,10 +1,4 @@
-import type {
-  AccentMode,
-  CatppuccinAccent,
-  CatppuccinFlavor,
-  CustomPaletteTokens,
-  ThemeMode,
-} from '@/theme/catppuccin'
+import type { ThemeMode } from '@/theme/md3'
 
 export type LocaleCode = 'zh-CN' | 'en-US'
 export type MediaKind = 'book' | 'comic' | 'music' | 'video'
@@ -63,14 +57,15 @@ export interface WorkspaceLayoutPreferences {
 
 export interface UserPreferences {
   theme_mode: ThemeMode
-  light_preset: string
-  dark_preset: string
-  dark_flavor: CatppuccinFlavor
-  accent_mode: AccentMode
-  accent: CatppuccinAccent
-  custom_accent: string | null
-  custom_light: CustomPaletteTokens | null
-  custom_dark: CustomPaletteTokens | null
+  seed_color?: string | null
+  /** @deprecated Normalized by server to `material-you-light`. */
+  light_preset?: string
+  /** @deprecated Normalized by server to `material-you-dark`. */
+  dark_preset?: string
+  /** @deprecated Normalized by server to `seed`. */
+  accent_mode?: string
+  /** @deprecated Retained for reading legacy payloads before migration. */
+  custom_accent?: string | null
   locale: LocaleCode
   book: ReaderPreferences
   comic: ComicReaderPreferences

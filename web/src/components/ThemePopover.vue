@@ -1,18 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LuPalette, LuSun, LuMoon, LuMonitor, LuCheck, LuGlobe } from 'vue-icons-plus/lu'
-import {
-  CATPPUCCIN_ACCENTS,
-  CATPPUCCIN_ACCENT_HEX,
-  DARK_PALETTE_PRESETS,
-  LIGHT_PALETTE_PRESETS,
-  chooseContrastText,
-  type CatppuccinAccent,
-  type ThemeMode,
-} from '@/theme/catppuccin'
+import { LuCheck, LuGlobe, LuMonitor, LuMoon, LuPalette, LuSun } from 'vue-icons-plus/lu'
+import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useThemeStore } from '@/stores/theme'
+import { chooseContrastText, SEED_PRESETS, type ThemeMode } from '@/theme/md3'
 import type { LocaleCode } from '@/types/api'
 
 defineProps<{
@@ -55,32 +48,16 @@ watch(
 )
 onBeforeUnmount(() => document.removeEventListener('mousedown', handleOutside))
 
-const modes: { value: ThemeMode; labelKey: string }[] = [
-  { value: 'light', labelKey: 'theme.light' },
-  { value: 'dark', labelKey: 'theme.dark' },
-  { value: 'system', labelKey: 'theme.system' },
-]
-
-const currentPresets = computed(() =>
-  themeStore.isDark ? DARK_PALETTE_PRESETS : LIGHT_PALETTE_PRESETS,
-)
+const modeOptions = computed<SegmentedOption<ThemeMode>[]>(() => [
+  { value: 'system', label: t('theme.system'), icon: LuMonitor },
+  { value: 'light', label: t('theme.light'), icon: LuSun },
+  { value: 'dark', label: t('theme.dark'), icon: LuMoon },
+])
 
 const locales: { code: LocaleCode; nativeLabel: string }[] = [
   { code: 'zh-CN', nativeLabel: '简体中文' },
   { code: 'en-US', nativeLabel: 'English' },
 ]
-
-function selectPreset(id: string): void {
-  if (themeStore.isDark) {
-    themeStore.setDarkPreset(id)
-  } else {
-    themeStore.setLightPreset(id)
-  }
-}
-
-function accentColorHex(accent: CatppuccinAccent): string {
-  return CATPPUCCIN_ACCENT_HEX[themeStore.isDark ? 'dark' : 'light'][accent]
-}
 </script>
 
 <template>
@@ -88,7 +65,7 @@ function accentColorHex(accent: CatppuccinAccent): string {
     <div v-if="showLanguage" class="relative">
       <button
         type="button"
-        class="md-state md-label-medium flex h-9 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
+        class="md-state text-label-medium flex h-9 cursor-pointer items-center gap-1.5 rounded-corner-full px-3 text-on-surface-variant hover:text-on-surface"
         @click="langOpen = !langOpen; open = false"
       >
         <LuGlobe class="h-4 w-4" />
@@ -96,22 +73,22 @@ function accentColorHex(accent: CatppuccinAccent): string {
       </button>
       <div
         v-if="langOpen"
-        class="absolute top-11 right-0 z-[var(--z-popover)] w-40 rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-surface-container)] p-1.5 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+        class="absolute top-11 right-0 z-[var(--z-popover)] w-40 rounded-corner-xs bg-surface-container py-1 text-on-surface shadow-elevation-2"
       >
         <button
           v-for="loc in locales"
           :key="loc.code"
           type="button"
-          class="md-state flex w-full cursor-pointer items-center justify-between rounded-[var(--md-sys-shape-corner-sm)] px-3 py-2 text-xs transition"
+          class="md-state text-body-medium flex h-10 w-full cursor-pointer items-center justify-between px-3"
           :class="
             themeStore.locale === loc.code
-              ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface)]'
+              ? 'bg-secondary-container text-on-secondary-container'
+              : 'text-on-surface'
           "
           @click="themeStore.setLocale(loc.code); langOpen = false"
         >
           <span>{{ loc.nativeLabel }}</span>
-          <LuCheck v-if="themeStore.locale === loc.code" class="h-3.5 w-3.5" />
+          <LuCheck v-if="themeStore.locale === loc.code" class="h-4 w-4" />
         </button>
       </div>
     </div>
@@ -121,87 +98,50 @@ function accentColorHex(accent: CatppuccinAccent): string {
       class="md-icon-btn md-state h-9 w-9"
       :title="t('theme.title')"
       :aria-label="t('theme.title')"
+      :aria-expanded="open"
       @click="open = !open; langOpen = false"
     >
-      <LuPalette class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
+      <LuPalette class="h-4 w-4 text-primary" />
     </button>
 
     <div
       v-if="open"
-      class="absolute top-11 right-0 z-[var(--z-popover)] w-80 rounded-[var(--md-sys-shape-corner-lg)] bg-[var(--md-sys-color-surface-container)] p-4 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] ring-1 ring-[var(--md-sys-color-outline-variant)]/40"
+      class="absolute top-11 right-0 z-[var(--z-popover)] w-72 rounded-corner-lg bg-surface-container p-4 text-on-surface shadow-elevation-3"
     >
-      <div class="mb-3.5">
-        <div class="md-label-medium mb-2 text-[var(--md-sys-color-on-surface-variant)]">
+      <div>
+        <div class="text-label-medium mb-2 text-on-surface-variant">
           {{ t('theme.modeTitle') }}
         </div>
-        <div
-          class="grid grid-cols-3 overflow-hidden rounded-full border border-[var(--md-sys-color-outline)]"
-        >
-          <button
-            v-for="(m, idx) in modes"
-            :key="m.value"
-            type="button"
-            class="md-state flex h-9 cursor-pointer items-center justify-center gap-1.5 text-xs font-medium transition focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--md-sys-color-primary)]"
-            :class="[
-              idx > 0 ? 'border-l border-[var(--md-sys-color-outline)]' : '',
-              themeStore.themeMode === m.value
-                ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
-                : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]',
-            ]"
-            @click="themeStore.setThemeMode(m.value)"
-          >
-            <LuSun v-if="m.value === 'light'" class="h-3.5 w-3.5" />
-            <LuMoon v-else-if="m.value === 'dark'" class="h-3.5 w-3.5" />
-            <LuMonitor v-else class="h-3.5 w-3.5" />
-            <span class="truncate">{{ t(m.labelKey) }}</span>
-          </button>
-        </div>
+        <MdSegmentedButton
+          :model-value="themeStore.themeMode"
+          :options="modeOptions"
+          size="sm"
+          :show-check="false"
+          full-width
+          @update:model-value="themeStore.setThemeMode($event)"
+        />
       </div>
 
-      <div class="mb-3.5">
-        <div class="md-label-medium mb-2 text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('theme.activePaletteTitle') }}
+      <div class="mt-4">
+        <div class="text-label-medium mb-2 text-on-surface-variant">
+          {{ t('theme.seedColorTitle') }}
         </div>
-        <div class="grid grid-cols-2 gap-1.5">
+        <div class="flex items-center justify-between gap-1.5">
           <button
-            v-for="preset in currentPresets"
+            v-for="preset in SEED_PRESETS"
             :key="preset.id"
             type="button"
-            class="md-state flex cursor-pointer items-center gap-2 rounded-[var(--md-sys-shape-corner-sm)] border px-2.5 py-2 text-left text-xs font-medium transition"
-            :class="
-              themeStore.activePresetId === preset.id
-                ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                : 'border-[var(--md-sys-color-outline-variant)] bg-[var(--md-sys-color-surface-container-low)] text-[var(--md-sys-color-on-surface)]'
-            "
-            @click="selectPreset(preset.id)"
-          >
-            <span
-              class="h-3 w-3 shrink-0 rounded-full border border-black/15"
-              :style="{ backgroundColor: preset.tokens.canvas }"
-            />
-            <span class="truncate">{{ t(`theme.presets.${preset.id}`) }}</span>
-          </button>
-        </div>
-      </div>
-
-      <div>
-        <div class="md-label-medium mb-2 text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('theme.accentTitle') }}
-        </div>
-        <div class="grid grid-cols-7 gap-1.5">
-          <button
-            v-for="acc in CATPPUCCIN_ACCENTS"
-            :key="acc"
-            type="button"
-            class="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full transition hover:scale-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-primary)]"
-            :style="{ backgroundColor: accentColorHex(acc) }"
-            :title="t(`theme.accents.${acc}`)"
-            @click="themeStore.setCatppuccinAccent(acc)"
+            :aria-label="t(`theme.seeds.${preset.id}`)"
+            :aria-pressed="themeStore.effectiveSeedColor === preset.hex"
+            :title="t(`theme.seeds.${preset.id}`)"
+            class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-corner-full transition-transform duration-150 ease-standard hover:scale-110 focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-secondary"
+            :style="{ backgroundColor: preset.hex }"
+            @click="themeStore.setSeedColor(preset.hex)"
           >
             <LuCheck
-              v-if="themeStore.accentMode === 'catppuccin' && themeStore.accent === acc"
-              class="h-3.5 w-3.5 stroke-[2.5]"
-              :style="{ color: chooseContrastText(accentColorHex(acc)) }"
+              v-if="themeStore.effectiveSeedColor === preset.hex"
+              class="h-4 w-4 stroke-[2.5]"
+              :style="{ color: chooseContrastText(preset.hex) }"
             />
           </button>
         </div>

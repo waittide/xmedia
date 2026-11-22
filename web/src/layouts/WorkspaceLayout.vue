@@ -47,7 +47,7 @@ import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
 import { usePrimaryNavItems } from '@/layouts/useWorkspaceSidebar'
-import type { ThemeMode } from '@/theme/catppuccin'
+import type { ThemeMode } from '@/theme/md3'
 
 const { t } = useI18n()
 
