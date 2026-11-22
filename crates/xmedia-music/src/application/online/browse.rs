@@ -191,7 +191,7 @@ impl MusicOnlineService {
                 Ok(out) => {
                     if out.state != prev_state {
                         let _ = self
-                            .persist_runtime_state_delta(sid, &prev_state, &out.state)
+                            .persist_runtime_state_with_base(sid, &prev_state, out.state, false)
                             .await;
                     }
                     for t in out.diagnostics.toasts {
@@ -257,7 +257,7 @@ impl MusicOnlineService {
 
         if out.state != prev_state_cmp {
             let _ = self
-                .persist_runtime_state_delta(source_id, &prev_state_cmp, &out.state)
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await;
         }
 
@@ -412,7 +412,7 @@ impl MusicOnlineService {
 
         if final_state != prev_state_cmp {
             let _ = self
-                .persist_runtime_state_delta(source_id, &prev_state_cmp, &final_state)
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, final_state, false)
                 .await;
         }
         if !actor.role.is_admin() {
@@ -484,7 +484,7 @@ impl MusicOnlineService {
 
         if out.state != prev_state_cmp {
             let _ = self
-                .persist_runtime_state_delta(source_id, &prev_state_cmp, &out.state)
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await;
         }
 
@@ -532,7 +532,7 @@ impl MusicOnlineService {
 
         if out.state != prev_state_cmp {
             let _ = self
-                .persist_runtime_state_delta(source_id, &prev_state_cmp, &out.state)
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
                 .await;
         }
 

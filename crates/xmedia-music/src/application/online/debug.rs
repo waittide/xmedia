@@ -7,14 +7,14 @@ use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
-    format_test_failure_summary, format_timeout_step, merge_diagnostics, merge_runtime_state,
-    summarize_steps_outcome,
+    format_test_failure_summary, format_timeout_step, merge_diagnostics,
+    merge_runtime_state_with_base, summarize_steps_outcome,
 };
 
 use crate::domain::catalog::StructuredLyrics;
 use crate::source::model::{
     ExecutionDiagnostics, MusicSourceSpec, MusicSourceTestMode, MusicTrackContext,
-    OnlineMusicTrackItem, SourceRuntimeState,
+    OnlineMusicTrackItem,
 };
 
 use super::browse::{build_proxy_cover_url, build_proxy_stream_url, track_item_to_dto};
@@ -572,11 +572,8 @@ impl MusicOnlineService {
         )
         .await;
 
-        let (state_delta, report) = match timed_res {
-            Ok(Ok((final_state, report))) => (
-                super::runtime_state_delta(&prev_state_cmp, &final_state),
-                report,
-            ),
+        let (maybe_final_state, report) = match timed_res {
+            Ok(Ok((final_state, report))) => (Some(final_state), report),
             Ok(Err(e)) => {
                 return Err(DomainError::Storage(format!("测试音源线程失败: {e}")));
             }
@@ -601,7 +598,7 @@ impl MusicOnlineService {
                     )],
                     payload: MusicSourceTestPayload::default(),
                 };
-                (SourceRuntimeState::default(), report)
+                (None, report)
             }
         };
 
@@ -619,7 +616,12 @@ impl MusicOnlineService {
         let lock = self.source_state_lock_for(id);
         let _guard = lock.lock().await;
         let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged_state = merge_runtime_state(current, state_delta);
+        let merged_state = match maybe_final_state {
+            Some(final_state) => {
+                merge_runtime_state_with_base(&prev_state_cmp, current, final_state, false)
+            }
+            None => current.unwrap_or(prev_state_cmp),
+        };
 
         let _ = self
             .sources

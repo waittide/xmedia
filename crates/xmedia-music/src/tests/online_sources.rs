@@ -3092,3 +3092,256 @@ async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
         );
     }
 }
+
+fn music_delayed_chunked_response(
+    content_type: Option<&'static str>,
+    chunks: Vec<(Vec<u8>, u64)>,
+) -> Response {
+    let (tx, rx) = tokio::sync::mpsc::channel::<xmedia_core::domain::error::DomainResult<Bytes>>(8);
+    tokio::spawn(async move {
+        for (data, delay_ms) in chunks {
+            if delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            if tx.send(Ok(Bytes::from(data))).await.is_err() {
+                break;
+            }
+        }
+    });
+    let mut builder = Response::builder().status(StatusCode::OK);
+    if let Some(ct) = content_type {
+        builder = builder.header(header::CONTENT_TYPE, ct);
+    }
+    builder
+        .body(Body::from_stream(
+            xmedia_core::infra::stream::MpscByteStream::into_boxed(rx),
+        ))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatched_apostrophe_e2e()
+{
+    let h = setup_online_test_harness(true).await;
+
+    let origin = Router::new()
+        .route(
+            "/search",
+            get(|| async {
+                axum::Json(serde_json::json!({
+                    "list": [{
+                        "fallback": "Good Track",
+                        "artist": "Artist",
+                        "id": "t1"
+                    }]
+                }))
+            }),
+        )
+        .route(
+            "/audio/disguised-html.bin",
+            get(|| async {
+                music_delayed_chunked_response(
+                    Some("application/octet-stream"),
+                    vec![
+                        (b"  <ht".to_vec(), 0),
+                        (b"ml><script>alert(1)</script></html>".to_vec(), 5),
+                    ],
+                )
+            }),
+        )
+        .route(
+            "/audio/disguised-svg.bin",
+            get(|| async {
+                music_delayed_chunked_response(
+                    None,
+                    vec![
+                        (b"\xEF\xBB\xBF <sv".to_vec(), 0),
+                        (b"g xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_vec(), 5),
+                    ],
+                )
+            }),
+        )
+        .route(
+            "/audio/disguised-xml-svg.bin",
+            get(|| async {
+                music_delayed_chunked_response(
+                    Some("application/octet-stream"),
+                    vec![
+                        (b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>".to_vec(), 0),
+                        (b"<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_vec(), 5),
+                    ],
+                )
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let raw_src = serde_json::json!({
+        "sourceName": "AdversarialMusic",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search?q={{{{key}}}}"),
+        "loginUrl": "@js:'ok'",
+        "ruleSearch": {
+            "trackList": "$.list",
+            "title": "$.don't || $.fallback",
+            "artist": "$.artist",
+            "trackId": "$.id"
+        }
+    })
+    .to_string();
+
+    let (st_imp, _, b_imp) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": raw_src })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_json: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_json["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // GAP-06: `$.don't || $.fallback` resolves to "Good Track"
+    let (st_test, _, b_test) = send_json(
+        &h.app,
+        "POST",
+        &format!("/sources/{sid}/test"),
+        &h.admin_token,
+        Some(serde_json::json!({ "mode": "search", "keyword": "q" })),
+    )
+    .await;
+    assert_eq!(st_test, StatusCode::OK);
+    let test_json: serde_json::Value = serde_json::from_slice(&b_test).unwrap();
+    assert_eq!(test_json["sample_titles"][0], "Good Track");
+
+    // GAP-01: set then clear variable, cache, and cookies via login-action
+    let login_uri = format!("/sources/{sid}/login-action");
+    let (st_set, _, _) = send_json(
+        &h.app,
+        "POST",
+        &login_uri,
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": {},
+            "action": "source.setVariable('secret_var');cache.put('k1','v1');cookie.setCookie('https://music-probe.test','a=1; b=2');'ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_set, StatusCode::OK);
+
+    let (st_clr, _, _) = send_json(
+        &h.app,
+        "POST",
+        &login_uri,
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": {},
+            "action": "source.setVariable('');cache.delete('k1');cookie.removeCookie('https://music-probe.test');'ok'"
+        })),
+    )
+    .await;
+    assert_eq!(st_clr, StatusCode::OK);
+
+    let (st_var, _, b_var) = send_json(
+        &h.app,
+        "GET",
+        &format!("/sources/{sid}/variable"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_var, StatusCode::OK);
+    let var_json: serde_json::Value = serde_json::from_slice(&b_var).unwrap();
+    assert_eq!(var_json["variable"], "");
+
+    let (st_chk, _, b_chk) = send_json(
+        &h.app,
+        "POST",
+        &login_uri,
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": {},
+            "action": "JSON.stringify({v:source.getVariable(),k1:cache.get('k1'),ck:cookie.getCookie('https://music-probe.test')})"
+        })),
+    )
+    .await;
+    assert_eq!(st_chk, StatusCode::OK);
+    let chk_json: serde_json::Value = serde_json::from_slice(&b_chk).unwrap();
+    let inner: serde_json::Value =
+        serde_json::from_str(chk_json["result"].as_str().unwrap()).unwrap();
+    assert_eq!(inner["v"], "");
+    assert!(inner["k1"].is_null());
+    assert_eq!(inner["ck"], "");
+
+    // GAP-01: concurrent writes to distinct cookie keys on the same host preserve both
+    let (r_a, r_b) = tokio::join!(
+        send_json(
+            &h.app,
+            "POST",
+            &login_uri,
+            &h.admin_token,
+            Some(serde_json::json!({
+                "login_info": {},
+                "action": "cookie.setCookie('https://same-host.test','kA=valA');'a'"
+            })),
+        ),
+        send_json(
+            &h.app,
+            "POST",
+            &login_uri,
+            &h.admin_token,
+            Some(serde_json::json!({
+                "login_info": {},
+                "action": "cookie.setCookie('https://same-host.test','kB=valB');'b'"
+            })),
+        ),
+    );
+    assert_eq!(r_a.0, StatusCode::OK);
+    assert_eq!(r_b.0, StatusCode::OK);
+
+    let (st_ck, _, b_ck) = send_json(
+        &h.app,
+        "POST",
+        &login_uri,
+        &h.admin_token,
+        Some(serde_json::json!({
+            "login_info": {},
+            "action": "cookie.getCookie('https://same-host.test')"
+        })),
+    )
+    .await;
+    assert_eq!(st_ck, StatusCode::OK);
+    let ck_res = serde_json::from_slice::<serde_json::Value>(&b_ck).unwrap()["result"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(ck_res.contains("kA=valA"), "missing kA=valA in {ck_res}");
+    assert!(ck_res.contains("kB=valB"), "missing kB=valB in {ck_res}");
+
+    // GAP-03: audio-proxy rejects split-chunk HTML, SVG, and XML+SVG disguised as octet-stream/empty CT
+    for path in [
+        "/audio/disguised-html.bin",
+        "/audio/disguised-svg.bin",
+        "/audio/disguised-xml-svg.bin",
+    ] {
+        let (st_px, _, _) = send_json(
+            &h.app,
+            "GET",
+            &format!(
+                "/online/audio-proxy?url={}&source_id={sid}",
+                url_encode_component(&format!("{base}{path}"))
+            ),
+            &h.member_token,
+            None,
+        )
+        .await;
+        assert_eq!(st_px, StatusCode::BAD_REQUEST, "expected 400 for {path}");
+    }
+
+    srv.abort();
+}

@@ -311,6 +311,8 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
     let mut start = 0usize;
     let mut i = 0usize;
     let mut mustache_depth = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
     let mut in_single = false;
     let mut in_double = false;
     while i < bytes.len() {
@@ -327,7 +329,17 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
                 i += 2;
                 continue;
             }
-            if mustache_depth == 0
+            if ch == b'[' {
+                depth_bracket += 1;
+            } else if ch == b']' && depth_bracket > 0 {
+                depth_bracket -= 1;
+            } else if ch == b'(' {
+                depth_paren += 1;
+            } else if ch == b')' && depth_paren > 0 {
+                depth_paren -= 1;
+            } else if mustache_depth == 0
+                && depth_bracket == 0
+                && depth_paren == 0
                 && i + 1 < bytes.len()
                 && bytes[i] == b'|'
                 && bytes[i + 1] == b'|'
@@ -338,9 +350,17 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
                 continue;
             }
         }
-        if ch == b'\'' && !in_double && (i == 0 || bytes[i - 1] != b'\\') {
+        if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0)
+            && ch == b'\''
+            && !in_double
+            && (i == 0 || bytes[i - 1] != b'\\')
+        {
             in_single = !in_single;
-        } else if ch == b'"' && !in_single && (i == 0 || bytes[i - 1] != b'\\') {
+        } else if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0)
+            && ch == b'"'
+            && !in_single
+            && (i == 0 || bytes[i - 1] != b'\\')
+        {
             in_double = !in_double;
         }
         i += 1;
@@ -1764,5 +1784,26 @@ impl MusicSourceEngine {
             }
             Err(msg) => Err(SourceCallError::new(msg, session.snapshot_diagnostics())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_top_level_or;
+
+    #[test]
+    fn split_top_level_or_ignores_depth_zero_unmatched_apostrophes_and_preserves_scoped_quotes() {
+        assert_eq!(
+            split_top_level_or("$.don't || $.fallback"),
+            vec!["$.don't", "$.fallback"]
+        );
+        assert_eq!(
+            split_top_level_or("{{'a||b'}} || $.fallback"),
+            vec!["{{'a||b'}}", "$.fallback"]
+        );
+        assert_eq!(
+            split_top_level_or("$.items[?(@.a=='x||y')] || $.fallback"),
+            vec!["$.items[?(@.a=='x||y')]", "$.fallback"]
+        );
     }
 }

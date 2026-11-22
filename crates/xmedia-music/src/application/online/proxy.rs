@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::http::header::{CONTENT_TYPE, IF_RANGE, RANGE, USER_AGENT};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use uuid::Uuid;
 use xmedia_core::application::ports::{ByteChunkStream, ByteRangeSpec};
 use xmedia_core::domain::error::{DomainError, DomainResult};
@@ -18,7 +18,8 @@ use xmedia_source::http::{
 };
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, DEFAULT_IMAGE_PROXY_TIMEOUT_SECS,
-    fetch_validated_image_bytes_with_config,
+    fetch_validated_image_bytes_with_config, has_enough_media_sniff_bytes,
+    looks_like_html_or_svg_bytes,
 };
 
 use super::MusicOnlineService;
@@ -26,6 +27,8 @@ use crate::source::model::MusicSourceSpec;
 
 const AUDIO_PROXY_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const AUDIO_PROXY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const AUDIO_SNIFF_PREFIX_MAX_BYTES: usize = 4096;
+const AUDIO_SNIFF_MIN_NON_WS_BYTES: usize = 16;
 
 static AUDIO_STREAMING_CLIENT_CACHE: LazyLock<Mutex<HashMap<bool, reqwest::Client>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -119,6 +122,29 @@ fn is_allowed_audio_content_type(ct_lower: &str) -> bool {
                 | "video/mp4"
                 | "application/mp4"
         )
+}
+
+async fn read_audio_sniff_prefix(
+    resp: &mut reqwest::Response,
+    max_sniff_bytes: usize,
+) -> DomainResult<Bytes> {
+    let mut buf = BytesMut::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| DomainError::Validation(format!("拉取音频流失败: {e}")))?
+    {
+        if chunk.is_empty() {
+            continue;
+        }
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= max_sniff_bytes
+            || has_enough_media_sniff_bytes(&buf, AUDIO_SNIFF_MIN_NON_WS_BYTES)
+        {
+            break;
+        }
+    }
+    Ok(buf.freeze())
 }
 
 fn parse_total_size_from_content_range(header: Option<&HeaderValue>) -> u64 {
@@ -300,8 +326,21 @@ impl MusicOnlineService {
             .map(|s| s.trim().to_string())
             .or_else(|| (status == StatusCode::PARTIAL_CONTENT).then(|| "bytes".to_string()));
 
+        let prefix = read_audio_sniff_prefix(&mut resp, AUDIO_SNIFF_PREFIX_MAX_BYTES).await?;
+        if looks_like_html_or_svg_bytes(&prefix) {
+            return Err(DomainError::Validation(
+                "拒绝转发伪装为音频的 HTML/SVG 内容".into(),
+            ));
+        }
+
+        let initial = (!prefix.is_empty()).then_some(prefix);
         let (tx, rx) = tokio::sync::mpsc::channel::<DomainResult<Bytes>>(16);
         tokio::spawn(async move {
+            if let Some(first) = initial
+                && tx.send(Ok(first)).await.is_err()
+            {
+                return;
+            }
             loop {
                 tokio::select! {
                     biased;

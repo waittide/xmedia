@@ -8,7 +8,7 @@ use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
     ParsedSourceSummaryMeta, SourceRecordSnapshot, build_source_summary, compute_reorder_targets,
     dedup_preserve_order_uuids, format_export_batch_json, merge_login_info_preserving_masked,
-    merge_runtime_state,
+    merge_runtime_state_with_base,
 };
 
 use crate::domain::online::{MusicSourceMetadataUpdate, MusicSourceRecord};
@@ -99,31 +99,25 @@ impl MusicOnlineService {
         get_or_insert_weak_lock(&self.source_state_locks, id)
     }
 
-    pub(super) async fn persist_runtime_state(
+    pub(super) async fn persist_runtime_state_with_base(
         &self,
         id: Uuid,
+        base_state: &SourceRuntimeState,
         new_state: SourceRuntimeState,
+        allow_login_info_override: bool,
     ) -> DomainResult<()> {
         let lock = self.source_state_lock_for(id);
         let _guard = lock.lock().await;
         let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged = merge_runtime_state(current, new_state);
+        let merged = merge_runtime_state_with_base(
+            base_state,
+            current,
+            new_state,
+            allow_login_info_override,
+        );
         self.sources
             .update_runtime_state(id, merged, Timestamp::now())
             .await
-    }
-
-    pub(super) async fn persist_runtime_state_delta(
-        &self,
-        id: Uuid,
-        prev: &SourceRuntimeState,
-        next: &SourceRuntimeState,
-    ) -> DomainResult<()> {
-        let delta = super::runtime_state_delta(prev, next);
-        if delta == SourceRuntimeState::default() {
-            return Ok(());
-        }
-        self.persist_runtime_state(id, delta).await
     }
 
     pub async fn list_sources(&self, actor: &User) -> DomainResult<Vec<MusicSourceSummaryDto>> {
@@ -548,7 +542,7 @@ impl MusicOnlineService {
         .map_err(|e| DomainError::Storage(format!("执行登录脚本线程失败: {e}")))?
         .map_err(|e| DomainError::Validation(e.message))?;
 
-        self.persist_runtime_state_delta(id, &prev_state_cmp, &out.state)
+        self.persist_runtime_state_with_base(id, &prev_state_cmp, out.state, true)
             .await?;
         let refreshed = self.load_source(id).await?;
 

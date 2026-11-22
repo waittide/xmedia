@@ -15,47 +15,10 @@ pub use proxy::AudioProxyResponse;
 
 use crate::domain::repository::MusicSourceRepository;
 use crate::source::MusicSourceEngine;
-use crate::source::model::SourceRuntimeState;
 
 pub(super) const SEARCH_MAX_CONCURRENCY: usize = 16;
 pub(super) const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
 pub(super) const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
-
-pub(super) fn runtime_state_delta(
-    prev: &SourceRuntimeState,
-    next: &SourceRuntimeState,
-) -> SourceRuntimeState {
-    SourceRuntimeState {
-        variable: if next.variable != prev.variable {
-            next.variable.clone()
-        } else {
-            String::new()
-        },
-        login_info: next
-            .login_info
-            .iter()
-            .filter(|(k, v)| prev.login_info.get(*k) != Some(*v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        cookies: next
-            .cookies
-            .iter()
-            .filter(|(k, v)| prev.cookies.get(*k) != Some(*v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        cache: next
-            .cache
-            .iter()
-            .filter(|(k, v)| prev.cache.get(*k) != Some(*v))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-        android_id: if next.android_id != prev.android_id {
-            next.android_id.clone()
-        } else {
-            String::new()
-        },
-    }
-}
 
 pub(super) type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
 
