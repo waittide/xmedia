@@ -48,7 +48,7 @@ fn is_transient_reqwest_error(err: &reqwest::Error) -> bool {
     if has_ssrf_io_error_in_chain(err) {
         return false;
     }
-    err.is_timeout() || err.is_connect() || err.is_body() || err.is_request()
+    err.is_timeout() || err.is_connect() || err.is_body() || err.is_decode() || err.is_request()
 }
 
 fn is_transient_image_status(status: reqwest::StatusCode) -> bool {
@@ -906,6 +906,62 @@ mod tests {
         assert!(matches!(err2, DomainError::Validation(_)));
         assert_eq!(redir_hits.load(Ordering::SeqCst), 1);
         assert_eq!(target_hits.load(Ordering::SeqCst), 0);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_validated_image_bytes_retries_premature_eof_decode_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_c = hits.clone();
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let n = hits_c.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                if n == 1 {
+                    let head = b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
+                    let _ = stream.write_all(head).await;
+                    let _ = stream.write_all(&PNG_BYTES[..4]).await;
+                    let _ = stream.flush().await;
+                    let _ = stream.shutdown().await;
+                } else {
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        PNG_BYTES.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes()).await;
+                    let _ = stream.write_all(PNG_BYTES).await;
+                    let _ = stream.flush().await;
+                    let _ = stream.shutdown().await;
+                }
+            }
+        });
+
+        let ok_cfg = HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: true,
+            proxy_url: None,
+        };
+        let (bytes, mime) = fetch_validated_image_bytes_with_config(
+            &format!("http://{addr}/eof.png"),
+            None,
+            1024,
+            &ok_cfg,
+        )
+        .await
+        .expect("premature EOF on first attempt should retry and succeed");
+
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, PNG_BYTES);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
 
         server.abort();
     }

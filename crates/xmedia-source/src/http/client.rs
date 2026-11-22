@@ -347,6 +347,20 @@ impl LegadoHttpClient {
         })
     }
 
+    #[cfg(test)]
+    pub(super) fn with_blocking_client_for_test(
+        client: reqwest::blocking::Client,
+        config: HttpClientConfig,
+    ) -> Self {
+        Self {
+            client,
+            config,
+            cookies: Arc::new(Mutex::new(HashMap::new())),
+            default_headers: HashMap::new(),
+            enabled_cookie_jar: false,
+        }
+    }
+
     pub fn get_cookie_header(&self, url_or_domain: &str) -> String {
         let key = normalize_cookie_key(url_or_domain);
         if key.is_empty() {
@@ -471,8 +485,10 @@ impl LegadoHttpClient {
                 Ok(res) => {
                     let transient_status = matches!(res.status, 408 | 429 | 500 | 502 | 503 | 504);
                     if transient_status && attempt < allowed_retries {
+                        let post_remaining =
+                            timeout_override.map(|t| t.saturating_sub(start.elapsed()));
                         let has_budget =
-                            remaining_override.is_none_or(|rem| rem >= Duration::from_secs(4));
+                            post_remaining.is_none_or(|rem| rem >= Duration::from_secs(4));
                         if has_budget {
                             attempt += 1;
                             if !sleep_with_cancel(Duration::from_millis(300), cancel_flag) {
@@ -485,8 +501,10 @@ impl LegadoHttpClient {
                 }
                 Err((msg, retriable)) => {
                     if retriable && attempt < allowed_retries {
+                        let post_remaining =
+                            timeout_override.map(|t| t.saturating_sub(start.elapsed()));
                         let has_budget =
-                            remaining_override.is_none_or(|rem| rem >= Duration::from_secs(4));
+                            post_remaining.is_none_or(|rem| rem >= Duration::from_secs(4));
                         if has_budget {
                             attempt += 1;
                             if !sleep_with_cancel(Duration::from_millis(300), cancel_flag) {

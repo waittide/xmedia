@@ -746,3 +746,236 @@ fn legado_http_client_fetch_with_timeout_reports_body_timeout_on_chunked_stall()
 
     let _ = server_handle.join();
 }
+
+#[tokio::test]
+async fn fetch_with_timeout_resilient_skips_retry_when_post_attempt_budget_under_4s() {
+    use axum::http::StatusCode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let hits_c = hits.clone();
+
+    let app = Router::new().route(
+        "/slow-503",
+        get(move || {
+            let h = hits_c.clone();
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(4800)).await;
+                (StatusCode::SERVICE_UNAVAILABLE, "busy")
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let url = format!("http://{addr}/slow-503");
+    let started = std::time::Instant::now();
+    let res = tokio::task::spawn_blocking(move || {
+        let client = LegadoHttpClient::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                timeout_secs: 10,
+                ..Default::default()
+            },
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+            false,
+        )
+        .unwrap();
+        client.fetch_with_timeout_resilient(&url, "", Some(Duration::from_secs(5)), 1, None)
+    })
+    .await
+    .unwrap()
+    .expect("should return 503 response instead of sleeping past deadline");
+
+    let elapsed = started.elapsed();
+    assert_eq!(res.status, 503);
+    assert_eq!(res.body, "busy");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert!(
+        elapsed < Duration::from_millis(5050),
+        "must return immediately without 300ms backoff sleep, took {elapsed:?}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn fetch_with_timeout_resilient_retries_503_to_200_and_never_retries_post_or_ssrf() {
+    use axum::http::StatusCode;
+    use axum::routing::post;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let flaky_hits = Arc::new(AtomicUsize::new(0));
+    let post_hits = Arc::new(AtomicUsize::new(0));
+    let redir_hits = Arc::new(AtomicUsize::new(0));
+    let secret_hits = Arc::new(AtomicUsize::new(0));
+
+    let fh = flaky_hits.clone();
+    let ph = post_hits.clone();
+    let rh = redir_hits.clone();
+    let sh = secret_hits.clone();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let secret_url = format!("http://{addr}/secret");
+
+    let app = Router::new()
+        .route(
+            "/flaky",
+            get(move || {
+                let h = fh.clone();
+                async move {
+                    let n = h.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == 1 {
+                        (StatusCode::SERVICE_UNAVAILABLE, "try again")
+                    } else {
+                        (StatusCode::OK, "recovered")
+                    }
+                }
+            }),
+        )
+        .route(
+            "/submit",
+            post(move || {
+                let h = ph.clone();
+                async move {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::SERVICE_UNAVAILABLE, "post busy")
+                }
+            }),
+        )
+        .route(
+            "/redir",
+            get(move || {
+                let h = rh.clone();
+                let loc = secret_url.clone();
+                async move {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::FOUND,
+                        [(reqwest::header::LOCATION.as_str(), loc)],
+                        "",
+                    )
+                }
+            }),
+        )
+        .route(
+            "/secret",
+            get(move || {
+                let h = sh.clone();
+                async move {
+                    h.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::OK, "secret")
+                }
+            }),
+        );
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let base = format!("http://{addr}");
+    tokio::task::spawn_blocking(move || {
+        let client = LegadoHttpClient::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                timeout_secs: 10,
+                ..Default::default()
+            },
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+            false,
+        )
+        .unwrap();
+
+        // 1. 503 -> 200 succeeds when >= 4s budget remains
+        let ok_res = client
+            .fetch_with_timeout_resilient(
+                &format!("{base}/flaky"),
+                "",
+                Some(Duration::from_secs(6)),
+                1,
+                None,
+            )
+            .unwrap();
+        assert_eq!(ok_res.status, 200);
+        assert_eq!(ok_res.body, "recovered");
+
+        // 2. Non-idempotent POST never retries
+        let post_res = client
+            .fetch_with_timeout_resilient(
+                &format!(r#"{base}/submit,{{"method":"POST","body":"x=1"}}"#),
+                "",
+                Some(Duration::from_secs(6)),
+                2,
+                None,
+            )
+            .unwrap();
+        assert_eq!(post_res.status, 503);
+
+        // 3. Direct SSRF blocked upfront (0 target hits, no retry)
+        let ssrf_client = LegadoHttpClient::new(
+            HttpClientConfig {
+                allow_private_ips: false,
+                timeout_secs: 10,
+                ..Default::default()
+            },
+            Arc::new(Mutex::new(HashMap::new())),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(
+            ssrf_client
+                .fetch_with_timeout_resilient(
+                    &format!("{base}/secret"),
+                    "",
+                    Some(Duration::from_secs(6)),
+                    2,
+                    None,
+                )
+                .is_err()
+        );
+
+        // 4. 302 -> 127.0.0.1 blocked by ssrf_redirect_policy(false) and never retried
+        let redir_blocking = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(ssrf_redirect_policy(false, MAX_REDIRECT_HOPS))
+            .build()
+            .unwrap();
+        let redir_client = LegadoHttpClient::with_blocking_client_for_test(
+            redir_blocking,
+            HttpClientConfig {
+                allow_private_ips: true,
+                timeout_secs: 5,
+                ..Default::default()
+            },
+        );
+        assert!(
+            redir_client
+                .fetch_with_timeout_resilient(
+                    &format!("{base}/redir"),
+                    "",
+                    Some(Duration::from_secs(6)),
+                    2,
+                    None,
+                )
+                .is_err()
+        );
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(flaky_hits.load(Ordering::SeqCst), 2);
+    assert_eq!(post_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(redir_hits.load(Ordering::SeqCst), 1);
+    assert_eq!(secret_hits.load(Ordering::SeqCst), 0);
+
+    server.abort();
+}
