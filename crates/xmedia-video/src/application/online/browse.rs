@@ -91,7 +91,10 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, sid).await?;
         let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
-        Ok(spec.parse_media_header_map())
+        let mut merged = spec.parse_media_header_map();
+        // Never allow static source config to override client Range requests or truncate playlists/streams.
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        Ok(merged)
     }
 
     async fn resolve_source_media_headers_with_cookies(
@@ -107,6 +110,7 @@ impl VideoOnlineService {
         let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
         let mut merged = spec.parse_media_header_map();
+        merged.retain(|k, _| !k.eq_ignore_ascii_case("range"));
         if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
             && spec.enabled_cookie_jar
             && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)

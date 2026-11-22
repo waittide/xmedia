@@ -3710,3 +3710,192 @@ async fn video_play_headers_applied_matches_build_sanitized_headers() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn video_proxies_strip_static_range_from_source_media_headers() {
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let seen_hls_ranges: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_hls_referers: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_mp4_ranges: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_mp4_referers: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let hls_ranges_c = seen_hls_ranges.clone();
+    let hls_refs_c = seen_hls_referers.clone();
+    let mp4_ranges_c = seen_mp4_ranges.clone();
+    let mp4_refs_c = seen_mp4_referers.clone();
+
+    let playlist_body = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\nseg0.ts\n#EXTINF:10.0,\nseg1.ts\n#EXT-X-ENDLIST\n";
+    let mp4_bytes = fake_mp4_payload();
+
+    let origin_app = Router::new()
+        .route(
+            "/hls/index.m3u8",
+            get(move |headers: HeaderMap| {
+                let ranges = hls_ranges_c.clone();
+                let refs = hls_refs_c.clone();
+                async move {
+                    let rng = headers
+                        .get(header::RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string);
+                    let ref_val = headers
+                        .get(header::REFERER)
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string);
+                    ranges.lock().unwrap().push(rng.clone());
+                    refs.lock().unwrap().push(ref_val);
+                    if rng.is_some() {
+                        // Simulate upstream returning truncated 206 if Range was leaked!
+                        return Response::builder()
+                            .status(StatusCode::PARTIAL_CONTENT)
+                            .header("content-type", "application/vnd.apple.mpegurl")
+                            .header(
+                                "content-range",
+                                format!("bytes 0-10/{}", playlist_body.len()),
+                            )
+                            .body(Body::from(&playlist_body[..11]))
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/vnd.apple.mpegurl")
+                        .body(Body::from(playlist_body))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/media/video.mp4",
+            get(move |headers: HeaderMap| {
+                let ranges = mp4_ranges_c.clone();
+                let refs = mp4_refs_c.clone();
+                let full = mp4_bytes.clone();
+                async move {
+                    let rng = headers
+                        .get(header::RANGE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string);
+                    let ref_val = headers
+                        .get(header::REFERER)
+                        .and_then(|v| v.to_str().ok())
+                        .map(ToString::to_string);
+                    ranges.lock().unwrap().push(rng.clone());
+                    refs.lock().unwrap().push(ref_val);
+                    if rng.as_deref() == Some("bytes=0-15") {
+                        return Response::builder()
+                            .status(StatusCode::PARTIAL_CONTENT)
+                            .header("content-type", "video/mp4")
+                            .header("content-range", format!("bytes 0-15/{}", full.len()))
+                            .body(Body::from(full[..16].to_vec()))
+                            .unwrap();
+                    }
+                    if rng.is_some() {
+                        return Response::builder()
+                            .status(StatusCode::PARTIAL_CONTENT)
+                            .header("content-type", "video/mp4")
+                            .header("content-range", format!("bytes 0-10/{}", full.len()))
+                            .body(Body::from(full[..11].to_vec()))
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "video/mp4")
+                        .body(Body::from(full))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let src_json = serde_json::json!({
+        "sourceName": "StaticRangeSource",
+        "sourceUrl": origin,
+        "sourceFormat": "rule",
+        "header": r#"{"range":"bytes=0-5"}"#,
+        "mediaHeader": {
+            "Range": "bytes=0-10",
+            "Referer": "https://ok.example/"
+        },
+        "rulePlay": {
+            "requestUrl": "{{playUrl}}",
+            "streamUrl": "$.stream"
+        }
+    });
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap();
+
+    // 1. open_hls_proxy with range_header = None must NOT send static Range and must return full rewritten playlist
+    let hls_url = urlencoding_param(&format!("{origin}/hls/index.m3u8"));
+    let (st_hls, _, body_hls) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={hls_url}&source_id={sid}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_hls, StatusCode::OK);
+    let hls_text = String::from_utf8(body_hls).unwrap();
+    assert!(hls_text.contains("seg0.ts"), "missing seg0.ts: {hls_text}");
+    assert!(hls_text.contains("seg1.ts"), "missing seg1.ts: {hls_text}");
+    assert_eq!(*seen_hls_ranges.lock().unwrap(), vec![None]);
+    assert_eq!(
+        *seen_hls_referers.lock().unwrap(),
+        vec![Some("https://ok.example/".to_string())]
+    );
+
+    // 2. open_stream_proxy with range_header = None must NOT send static Range and must return 200 OK full payload
+    let mp4_url = urlencoding_param(&format!("{origin}/media/video.mp4"));
+    let (st_mp4_full, _, body_mp4_full) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/stream-proxy?url={mp4_url}&source_id={sid}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st_mp4_full, StatusCode::OK);
+    assert_eq!(body_mp4_full.len(), fake_mp4_payload().len());
+
+    // 3. open_stream_proxy with explicit client Range MUST still forward client Range and return 206
+    let (st_mp4_rng, hdrs_rng, body_mp4_rng) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/stream-proxy?url={mp4_url}&source_id={sid}"),
+        Some(&member_tok),
+        Some("bytes=0-15"),
+    )
+    .await;
+    assert_eq!(st_mp4_rng, StatusCode::PARTIAL_CONTENT);
+    assert_eq!(body_mp4_rng.len(), 16);
+    assert_eq!(
+        hdrs_rng
+            .get(header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok()),
+        Some("bytes 0-15/4096")
+    );
+    assert_eq!(
+        *seen_mp4_ranges.lock().unwrap(),
+        vec![None, Some("bytes=0-15".to_string())]
+    );
+    assert_eq!(
+        *seen_mp4_referers.lock().unwrap(),
+        vec![
+            Some("https://ok.example/".to_string()),
+            Some("https://ok.example/".to_string()),
+        ]
+    );
+
+    srv.abort();
+}

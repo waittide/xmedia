@@ -791,7 +791,9 @@ impl VideoSourceEngine {
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
         let trimmed_play = play_url.trim();
-        let headers_applied = !build_sanitized_headers(&source.parse_media_header_map()).is_empty();
+        let mut effective_media_headers = source.parse_media_header_map();
+        effective_media_headers.retain(|k, _| !k.eq_ignore_ascii_case("range"));
+        let headers_applied = !build_sanitized_headers(&effective_media_headers).is_empty();
 
         let res: Result<OnlineVideoPlayResult, String> = (|| {
             if trimmed_play.is_empty() {

@@ -2718,3 +2718,95 @@ async fn comic_online_search_enforces_cancel_on_future_drop() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn comic_image_proxy_strips_static_range_from_source_headers() {
+    let seen_range: Arc<std::sync::Mutex<Vec<Option<String>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_referer: Arc<std::sync::Mutex<Vec<Option<String>>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_range_c = seen_range.clone();
+    let seen_referer_c = seen_referer.clone();
+
+    let png = valid_png_bytes();
+    let origin_app = Router::new().route(
+        "/page1.png",
+        get(move |headers: HeaderMap| {
+            let ranges = seen_range_c.clone();
+            let refs = seen_referer_c.clone();
+            let bytes = png.clone();
+            async move {
+                let rng = headers
+                    .get(header::RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string);
+                let ref_val = headers
+                    .get(header::REFERER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string);
+                ranges.lock().unwrap().push(rng.clone());
+                refs.lock().unwrap().push(ref_val);
+                if rng.is_some() {
+                    return Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header("content-type", "image/png")
+                        .body(Body::from(bytes[..10].to_vec()))
+                        .unwrap();
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "image/png")
+                    .body(Body::from(bytes))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let h = setup_test_harness(true).await;
+    let src_json = serde_json::json!([{
+        "bookSourceName": "StaticRangeComicSource",
+        "bookSourceUrl": base,
+        "header": r#"{"range":"bytes=0-5"}"#,
+        "imageHeader": r#"{"Range":"bytes=0-10","Referer":"https://ok.example/"}"#
+    }]);
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap();
+
+    let encoded_url =
+        form_urlencoded::byte_serialize(format!("{base}/page1.png").as_bytes()).collect::<String>();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/comic/online/image-proxy?source_id={sid}&url={encoded_url}"
+        ))
+        .header("Authorization", format!("Bearer {}", h.member_token))
+        .body(Body::empty())
+        .unwrap();
+    let resp = h.app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(body.as_ref(), valid_png_bytes().as_slice());
+    assert_eq!(*seen_range.lock().unwrap(), vec![None]);
+    assert_eq!(
+        *seen_referer.lock().unwrap(),
+        vec![Some("https://ok.example/".to_string())]
+    );
+
+    srv.abort();
+}
