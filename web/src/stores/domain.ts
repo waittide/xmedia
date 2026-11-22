@@ -1,27 +1,18 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
+import { isMediaKind } from '@/sources/routes'
 import type { MediaKind } from '@/types/api'
 
 const DOMAIN_KEY = 'xmedia.active_domain'
 
-const DEFAULT_ROUTES: Record<MediaKind, string> = {
-  book: '/book',
-  comic: '/comic',
-  music: '/music',
-  video: '/video',
-}
-
 export const useDomainStore = defineStore('domain', () => {
-  let saved: MediaKind | null = null
+  let saved: string | null = null
   try {
-    saved = localStorage.getItem(DOMAIN_KEY) as MediaKind | null
+    saved = localStorage.getItem(DOMAIN_KEY)
   } catch {
     saved = null
   }
-  const activeDomain = ref<MediaKind>(
-    saved && ['book', 'comic', 'music', 'video'].includes(saved) ? saved : 'book',
-  )
-  const lastDomainRoute = ref<Record<MediaKind, string>>({ ...DEFAULT_ROUTES })
+  const activeDomain = ref<MediaKind>(isMediaKind(saved) ? saved : 'book')
 
   function setActiveDomain(next: MediaKind): void {
     activeDomain.value = next
@@ -32,48 +23,24 @@ export const useDomainStore = defineStore('domain', () => {
     }
   }
 
+  /**
+   * Switching domains always enters that domain's canonical home page (`/${kind}`)
+   * rather than restoring stale filtered sub-routes (see IA contract §1.2).
+   */
   function getLastRoute(kind: MediaKind): string {
-    return lastDomainRoute.value[kind] || `/${kind}`
+    return `/${kind}`
   }
 
   function syncFromPath(fullPath: string): void {
-    const cleanPath = fullPath.split('?')[0] ?? fullPath
-    if (cleanPath === '/book' || cleanPath.startsWith('/book/')) {
-      setActiveDomain('book')
-      if (
-        !cleanPath.startsWith('/book/read/') &&
-        cleanPath !== '/book/online/read' &&
-        !cleanPath.startsWith('/book/online/read/')
-      ) {
-        lastDomainRoute.value.book = fullPath
-      }
-    } else if (cleanPath === '/comic' || cleanPath.startsWith('/comic/')) {
-      setActiveDomain('comic')
-      if (
-        !cleanPath.startsWith('/comic/read/') &&
-        cleanPath !== '/comic/online/read' &&
-        !cleanPath.startsWith('/comic/online/read/')
-      ) {
-        lastDomainRoute.value.comic = fullPath
-      }
-    } else if (cleanPath === '/music' || cleanPath.startsWith('/music/')) {
-      setActiveDomain('music')
-      lastDomainRoute.value.music = fullPath
-    } else if (cleanPath === '/video' || cleanPath.startsWith('/video/')) {
-      setActiveDomain('video')
-      if (
-        !cleanPath.startsWith('/video/watch/') &&
-        cleanPath !== '/video/online/watch' &&
-        !cleanPath.startsWith('/video/online/watch/')
-      ) {
-        lastDomainRoute.value.video = fullPath
-      }
+    const cleanPath = (fullPath.split('?')[0] ?? fullPath).split('#')[0] ?? fullPath
+    const firstSegment = cleanPath.split('/').filter(Boolean)[0]
+    if (isMediaKind(firstSegment)) {
+      setActiveDomain(firstSegment)
     }
   }
 
   function resetRoutes(): void {
     activeDomain.value = 'book'
-    lastDomainRoute.value = { ...DEFAULT_ROUTES }
     try {
       localStorage.removeItem(DOMAIN_KEY)
     } catch {
@@ -83,7 +50,6 @@ export const useDomainStore = defineStore('domain', () => {
 
   return {
     activeDomain,
-    lastDomainRoute,
     setActiveDomain,
     getLastRoute,
     syncFromPath,

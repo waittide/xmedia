@@ -1,13 +1,32 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import {
+  createRouter,
+  createWebHistory,
+  type LocationQuery,
+  type LocationQueryRaw,
+  type RouteLocationNormalized,
+  type RouteLocationRaw,
+} from 'vue-router'
 import { setUnauthorizedHandler } from '@/api/client'
 import { ensureBookLocale } from '@/domains/book/i18n'
 import { ensureComicLocale } from '@/domains/comic/i18n'
 import { ensureMusicLocale } from '@/domains/music/i18n'
 import { ensureVideoLocale } from '@/domains/video/i18n'
+import {
+  bridgeBookOnlinePlayQuery,
+  bridgeComicOnlineDetailQuery,
+  bridgeComicOnlinePlayQuery,
+  bridgeVideoOnlineDetailQuery,
+  bridgeVideoOnlinePlayQuery,
+  legacyRedirectRoutes,
+  migrateBookOnlineReadQuery,
+  resolveLegacySettingsRedirect,
+} from '@/router/legacyRedirects'
 import { useAppClientStore } from '@/stores/appServers'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { MediaKind } from '@/types/api'
+
+const DESKTOP_SETTINGS_MEDIA_QUERY = '(min-width: 840px)'
 
 export function ensureDomainLocale(domain: MediaKind): Promise<void> {
   switch (domain) {
@@ -30,13 +49,31 @@ function resolvePreferredDomain(
   return enabled[0] ?? null
 }
 
+function createOnlineQueryBridgeGuard(
+  bridge: (query: LocationQuery) => LocationQueryRaw | null,
+) {
+  return (to: RouteLocationNormalized): RouteLocationRaw | true => {
+    const bridged = bridge(to.query)
+    if (!bridged) return true
+    return { path: to.path, query: bridged, hash: to.hash, replace: true }
+  }
+}
+
+function firstQueryString(query: LocationQuery, keys: readonly string[]): string {
+  for (const key of keys) {
+    const raw = query[key]
+    if (typeof raw === 'string' && raw.trim()) return raw.trim()
+    if (Array.isArray(raw)) {
+      const hit = raw.find((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      if (hit) return hit.trim()
+    }
+  }
+  return ''
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    {
-      path: '/connect',
-      redirect: '/',
-    },
     {
       path: '/setup',
       name: 'setup',
@@ -49,44 +86,50 @@ export const router = createRouter({
       component: () => import('@/views/LoginView.vue'),
       meta: { public: true, fullscreen: true },
     },
-    // Standalone Fullscreen Readers & Cinema Player
+
+    // Standalone Fullscreen Readers & Players (static `/play/online` MUST precede `/play/:id`)
     {
-      path: '/book/read/:id',
+      path: '/book/play/online',
+      name: 'book-online-reader',
+      component: () => import('@/domains/book/views/OnlineReaderView.vue'),
+      beforeEnter: createOnlineQueryBridgeGuard(bridgeBookOnlinePlayQuery),
+      meta: { domain: 'book' as MediaKind, fullscreen: true },
+    },
+    {
+      path: '/book/play/:id',
       name: 'book-reader',
       component: () => import('@/domains/book/views/ReaderView.vue'),
       meta: { domain: 'book' as MediaKind, fullscreen: true },
     },
     {
-      path: '/book/online/read',
-      name: 'book-online-reader',
-      component: () => import('@/domains/book/views/OnlineReaderView.vue'),
-      meta: { domain: 'book' as MediaKind, fullscreen: true },
+      path: '/comic/play/online',
+      name: 'comic-online-reader',
+      component: () => import('@/domains/comic/views/OnlineComicReaderView.vue'),
+      beforeEnter: createOnlineQueryBridgeGuard(bridgeComicOnlinePlayQuery),
+      meta: { domain: 'comic' as MediaKind, fullscreen: true },
     },
     {
-      path: '/comic/read/:chapterId',
+      // Keep `:chapterId` param name until Wave 4B aligns `domains/comic/views/ReaderView.vue`
+      path: '/comic/play/:chapterId',
       name: 'comic-reader',
       component: () => import('@/domains/comic/views/ReaderView.vue'),
       meta: { domain: 'comic' as MediaKind, fullscreen: true },
     },
     {
-      path: '/comic/online/read',
-      name: 'comic-online-reader',
-      component: () => import('@/domains/comic/views/OnlineComicReaderView.vue'),
-      meta: { domain: 'comic' as MediaKind, fullscreen: true },
+      path: '/video/play/online',
+      name: 'video-online-player',
+      component: () => import('@/domains/video/views/OnlineVideoPlayerView.vue'),
+      beforeEnter: createOnlineQueryBridgeGuard(bridgeVideoOnlinePlayQuery),
+      meta: { domain: 'video' as MediaKind, fullscreen: true },
     },
     {
-      path: '/video/watch/:id',
+      path: '/video/play/:id',
       name: 'video-player',
       component: () => import('@/domains/video/views/VideoPlayerView.vue'),
       meta: { domain: 'video' as MediaKind, fullscreen: true },
     },
-    {
-      path: '/video/online/watch',
-      name: 'video-online-player',
-      component: () => import('@/domains/video/views/OnlineVideoPlayerView.vue'),
-      meta: { domain: 'video' as MediaKind, fullscreen: true },
-    },
-    // Unified Workspace Shell
+
+    // Unified Workspace Shell — Canonical Isomorphic IA (§1.1)
     {
       path: '/',
       component: () => import('@/layouts/WorkspaceLayout.vue'),
@@ -101,10 +144,11 @@ export const router = createRouter({
               domainStore.activeDomain,
               auth.enabledModules,
             )
-            return `/${target}`
+            return target ? `/${target}` : '/settings'
           },
         },
-        // 1. Books Domain (/book)
+
+        // 1. Book Domain (/book)
         {
           path: 'book',
           name: 'book-home',
@@ -112,53 +156,31 @@ export const router = createRouter({
           meta: { domain: 'book' as MediaKind },
         },
         {
-          path: 'book/catalog',
-          name: 'book-catalog',
+          path: 'book/library',
+          name: 'book-library',
           component: () => import('@/domains/book/views/CatalogView.vue'),
           meta: { domain: 'book' as MediaKind },
         },
         {
-          path: 'book/items/:id',
+          // Placeholder until Wave 4B introduces a dedicated online book detail view
+          path: 'book/item/online',
+          name: 'book-online-detail',
+          redirect: (to) => {
+            const query = migrateBookOnlineReadQuery(to.query)
+            return Object.keys(query).length > 0
+              ? { path: '/book/play/online', query }
+              : { path: '/book/play/online' }
+          },
+          meta: { domain: 'book' as MediaKind },
+        },
+        {
+          path: 'book/item/:id',
           name: 'book-detail',
           component: () => import('@/domains/book/views/BookDetailView.vue'),
           meta: { domain: 'book' as MediaKind },
         },
-        {
-          path: 'book/libraries',
-          name: 'book-libraries-overview',
-          component: () => import('@/domains/book/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'book' as MediaKind },
-        },
-        {
-          path: 'book/shelves',
-          name: 'book-shelves-overview',
-          component: () => import('@/domains/book/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'book' as MediaKind },
-        },
-        {
-          path: 'book/tags',
-          name: 'book-tags-overview',
-          component: () => import('@/domains/book/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'book' as MediaKind },
-        },
-        {
-          path: 'book/authors',
-          name: 'book-authors-overview',
-          component: () => import('@/domains/book/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'book' as MediaKind },
-        },
-        {
-          path: 'book/bookmarks',
-          name: 'book-bookmarks',
-          component: () => import('@/domains/book/views/BookmarksView.vue'),
-          meta: { domain: 'book' as MediaKind },
-        },
-        {
-          path: 'book/online',
-          redirect: { path: '/book/catalog', query: { scope: 'online' } },
-        },
 
-        // 2. Comics Domain (/comic)
+        // 2. Comic Domain (/comic)
         {
           path: 'comic',
           name: 'comic-home',
@@ -166,65 +188,29 @@ export const router = createRouter({
           meta: { domain: 'comic' as MediaKind },
         },
         {
-          path: 'comic/series',
-          name: 'comic-series-list',
+          path: 'comic/library',
+          name: 'comic-library',
           component: () => import('@/domains/comic/views/SeriesListView.vue'),
-          props: { presetMode: 'all' },
+          props: (route) => {
+            if (route.query.scope === 'online') return { presetMode: 'all' }
+            if (route.query.tab === 'continue') return { presetMode: 'continue' }
+            if (route.query.tab === 'favorites') return { presetMode: 'favorites' }
+            return { presetMode: 'all' }
+          },
           meta: { domain: 'comic' as MediaKind },
         },
         {
-          path: 'comic/series/:id',
+          path: 'comic/item/online',
+          name: 'comic-online-detail',
+          component: () => import('@/domains/comic/views/OnlineComicDetailView.vue'),
+          beforeEnter: createOnlineQueryBridgeGuard(bridgeComicOnlineDetailQuery),
+          meta: { domain: 'comic' as MediaKind },
+        },
+        {
+          path: 'comic/item/:id',
           name: 'comic-series-detail',
           component: () => import('@/domains/comic/views/SeriesDetailView.vue'),
           meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/continue',
-          name: 'comic-continue',
-          component: () => import('@/domains/comic/views/SeriesListView.vue'),
-          props: { presetMode: 'continue' },
-          meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/favorites',
-          name: 'comic-favorites',
-          component: () => import('@/domains/comic/views/SeriesListView.vue'),
-          props: { presetMode: 'favorites' },
-          meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/libraries',
-          name: 'comic-libraries',
-          component: () => import('@/domains/comic/views/LibrariesView.vue'),
-          meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/shelves',
-          name: 'comic-shelves',
-          component: () => import('@/domains/comic/views/ShelvesView.vue'),
-          meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/tags',
-          name: 'comic-tags',
-          component: () => import('@/domains/comic/views/TagsView.vue'),
-          meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/bookmarks',
-          name: 'comic-bookmarks',
-          component: () => import('@/domains/comic/views/BookmarksView.vue'),
-          meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/online/detail',
-          name: 'comic-online-detail',
-          component: () => import('@/domains/comic/views/OnlineComicDetailView.vue'),
-          meta: { domain: 'comic' as MediaKind },
-        },
-        {
-          path: 'comic/online',
-          redirect: { path: '/comic/series', query: { scope: 'online' } },
         },
 
         // 3. Music Domain (/music)
@@ -235,77 +221,29 @@ export const router = createRouter({
           meta: { domain: 'music' as MediaKind },
         },
         {
-          path: 'music/songs',
-          name: 'music-songs',
+          path: 'music/library',
+          name: 'music-library',
           component: () => import('@/domains/music/views/SongsView.vue'),
           meta: { domain: 'music' as MediaKind },
         },
         {
-          path: 'music/albums',
-          redirect: { path: '/music/songs', query: { tab: 'albums' } },
+          // Placeholder until Wave 4B introduces online track/album detail resolution
+          path: 'music/item/online',
+          name: 'music-online-detail',
+          redirect: (to) => {
+            const query: LocationQueryRaw = { scope: 'online' }
+            const source = firstQueryString(to.query, ['source', 'sourceId', 'source_id'])
+            const q = firstQueryString(to.query, ['q', 'title', 'name'])
+            if (source) query.source = source
+            if (q) query.q = q
+            return { path: '/music/library', query }
+          },
+          meta: { domain: 'music' as MediaKind },
         },
         {
-          path: 'music/albums/:id',
+          path: 'music/item/:id',
           name: 'music-album-detail',
           component: () => import('@/domains/music/views/AlbumDetailView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/artists',
-          redirect: { path: '/music/songs', query: { tab: 'artists' } },
-        },
-        {
-          path: 'music/artists/:id',
-          name: 'music-artist-detail',
-          component: () => import('@/domains/music/views/ArtistDetailView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/continue',
-          name: 'music-continue',
-          component: () => import('@/domains/music/views/ContinueView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/favorites',
-          name: 'music-favorites',
-          component: () => import('@/domains/music/views/FavoritesView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/libraries',
-          name: 'music-libraries-overview',
-          component: () => import('@/domains/music/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/playlists',
-          name: 'music-playlists-overview',
-          component: () => import('@/domains/music/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/playlists/:id',
-          name: 'music-playlist-detail',
-          component: () => import('@/domains/music/views/PlaylistDetailView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/genres',
-          name: 'music-genres-overview',
-          component: () => import('@/domains/music/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/tags',
-          name: 'music-tags-overview',
-          component: () => import('@/domains/music/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'music' as MediaKind },
-        },
-        {
-          path: 'music/search',
-          name: 'music-search',
-          component: () => import('@/domains/music/views/SearchView.vue'),
           meta: { domain: 'music' as MediaKind },
         },
 
@@ -317,98 +255,54 @@ export const router = createRouter({
           meta: { domain: 'video' as MediaKind },
         },
         {
-          path: 'video/catalog',
-          name: 'video-catalog',
+          path: 'video/library',
+          name: 'video-library',
           component: () => import('@/domains/video/views/CatalogView.vue'),
           meta: { domain: 'video' as MediaKind },
         },
         {
-          path: 'video/continue',
-          name: 'video-continue',
-          component: () => import('@/domains/video/views/ContinueView.vue'),
+          path: 'video/item/online',
+          name: 'video-online-detail',
+          component: () => import('@/domains/video/views/OnlineVideoDetailView.vue'),
+          beforeEnter: createOnlineQueryBridgeGuard(bridgeVideoOnlineDetailQuery),
           meta: { domain: 'video' as MediaKind },
         },
         {
-          path: 'video/favorites',
-          name: 'video-favorites',
-          component: () => import('@/domains/video/views/FavoritesView.vue'),
-          meta: { domain: 'video' as MediaKind },
-        },
-        {
-          path: 'video/libraries',
-          name: 'video-libraries-overview',
-          component: () => import('@/domains/video/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'video' as MediaKind },
-        },
-        {
-          path: 'video/shelves',
-          name: 'video-shelves-overview',
-          component: () => import('@/domains/video/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'video' as MediaKind },
-        },
-        {
-          path: 'video/shelves/:id',
-          name: 'video-shelf-detail',
-          component: () => import('@/domains/video/views/ShelfDetailView.vue'),
-          meta: { domain: 'video' as MediaKind },
-        },
-        {
-          path: 'video/tags',
-          name: 'video-tags-overview',
-          component: () => import('@/domains/video/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'video' as MediaKind },
-        },
-        {
-          path: 'video/genres',
-          name: 'video-genres-overview',
-          component: () => import('@/domains/video/views/CollectionsOverviewView.vue'),
-          meta: { domain: 'video' as MediaKind },
-        },
-        {
-          path: 'video/shows',
-          redirect: { path: '/video/catalog', query: { tab: 'shows' } },
-        },
-        {
-          path: 'video/shows/:id',
+          path: 'video/item/:id',
           name: 'video-show-detail',
           component: () => import('@/domains/video/views/ShowDetailView.vue'),
           meta: { domain: 'video' as MediaKind },
         },
-        {
-          path: 'video/online/detail',
-          name: 'video-online-detail',
-          component: () => import('@/domains/video/views/OnlineVideoDetailView.vue'),
-          meta: { domain: 'video' as MediaKind },
-        },
-        {
-          path: 'video/online',
-          redirect: { path: '/video/catalog', query: { scope: 'online' } },
-        },
 
-        // Unified Settings (with legacy /remote alias redirected into Domain Protocols)
-        {
-          path: 'remote',
-          redirect: (to) => {
-            const query: Record<string, string> = { tab: 'domain-protocols' }
-            if (to.query.tab === 'subsonic') {
-              query.domain = 'music'
-            } else if (to.query.tab === 'opds') {
-              query.domain = 'book'
-            }
-            return { path: '/settings', query }
-          },
-        },
+        // 5. Unified Single-Level Settings (/settings & /settings/:section)
         {
           path: 'settings',
           name: 'settings',
           component: () => import('@/views/SettingsView.vue'),
+          beforeEnter: (to) => {
+            const legacyTarget = resolveLegacySettingsRedirect(to)
+            if (legacyTarget) return legacyTarget
+            if (
+              typeof window !== 'undefined' &&
+              typeof window.matchMedia === 'function' &&
+              window.matchMedia(DESKTOP_SETTINGS_MEDIA_QUERY).matches
+            ) {
+              return { path: '/settings/appearance', replace: true }
+            }
+            return true
+          },
         },
-        // Legacy path aliases
-        { path: 'books', redirect: '/book' },
-        { path: 'comics', redirect: '/comic' },
-        { path: 'videos', redirect: '/video' },
+        {
+          path: 'settings/:section(appearance|playback|libraries|sources|account|about)',
+          name: 'settings-section',
+          component: () => import('@/views/SettingsView.vue'),
+        },
       ],
     },
+
+    // Centralized legacy redirects & `/:domain/discover` alias (§1.4)
+    ...legacyRedirectRoutes,
+
     {
       path: '/:pathMatch(.*)*',
       redirect: '/',
@@ -497,20 +391,21 @@ router.beforeEach(async (to) => {
     }
   }
 
+  const isSettingsTarget = to.name === 'settings' || to.name === 'settings-section'
   const routeDomain = to.meta.domain as MediaKind | undefined
   if (routeDomain && !auth.hasModule(routeDomain)) {
     const fallback = resolvePreferredDomain(domainStore.activeDomain, auth.enabledModules)
     if (fallback && fallback !== routeDomain) {
       return `/${fallback}`
     }
-    if (!fallback && to.name !== 'settings') {
+    if (!fallback && !isSettingsTarget) {
       return { name: 'settings' }
     }
   }
 
   if (routeDomain) {
     await ensureDomainLocale(routeDomain)
-  } else if (to.name === 'settings') {
+  } else if (isSettingsTarget) {
     const domains = new Set<MediaKind>([
       'book',
       'comic',
