@@ -27,6 +27,8 @@ import {
   assertMp4,
   assertMpegTs,
   assertPng,
+  assertRasterImage,
+  assertSecurityHeaders,
   decryptAes128Cbc,
 } from '../lib/fixtures.mjs';
 import { MockOriginServer } from '../lib/mock_origin.mjs';
@@ -1014,6 +1016,33 @@ function buildTier2Cases() {
           expectedStatus: 400,
         });
         assert.equal(res.json?.error?.code, 'validation_error');
+      },
+    },
+    {
+      id: 'T2-F06-06',
+      feature: 'F6',
+      domain: 'comic',
+      title: 'image-proxy recovers from transient upstream 503 -> 200 while 403 fails in 1 hit without retry',
+      async run(ctx) {
+        const key = `t2f0606-${Date.now()}`;
+        const okRes = await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
+          query: { url: `${ctx.mockBaseUrl}/edge/retry-once-png?key=${key}` },
+          expectedStatus: 200,
+        });
+        assertRasterImage(okRes.buffer, 'image/png', 'T2-F06-06 transient 503 recovery');
+        assertSecurityHeaders(okRes.headers, { label: 'T2-F06-06' });
+
+        await ctx.member.failLoudlyRequest('GET', '/api/v1/comic/online/image-proxy', {
+          query: { url: `${ctx.mockBaseUrl}/edge/always-403-png` },
+          expectedStatus: 400,
+        });
+
+        const reqsRes = await fetch(`${ctx.mockBaseUrl}/__mock/requests?limit=200`);
+        const reqs = await reqsRes.json();
+        const retryHits = reqs.filter((r) => r.path === '/edge/retry-once-png' && r.query?.key === key);
+        const err403Hits = reqs.filter((r) => r.path === '/edge/always-403-png');
+        assert.equal(retryHits.length, 2, `Expected 2 hits for transient 503 retry, got ${retryHits.length}`);
+        assert.equal(err403Hits.length, 1, `Expected 1 hit for 403 (no retry), got ${err403Hits.length}`);
       },
     },
 

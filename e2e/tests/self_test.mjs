@@ -555,6 +555,50 @@ export async function runSelfTests({ silent = false } = {}) {
         false,
       );
     });
+
+    // ST-13: Phase-scoped comic image-proxy filter allows pre-reader thumbs only and enforces reader 200
+    await runCase('ST-13', 'isAllowedLiveThumbHttpError scopes comic image-proxy strictly to pre-reader requestIds', async () => {
+      const { isComicImageProxyUrl, isAllowedLiveThumbHttpError } = await import('./live.mjs');
+      const preReaderReqIds = new Set(['req-grid-1', 'req-grid-2']);
+      const gridUrl = 'http://127.0.0.1:8080/api/v1/comic/online/image-proxy?url=https%3A%2F%2Fcdn.test%2Fcover.jpg';
+      const readerUrl = 'http://127.0.0.1:8080/api/v1/comic/online/image-proxy?url=https%3A%2F%2Fcdn.test%2Fpage1.jpg';
+      const maskedUrl = 'http://127.0.0.1:8080/api/v1/other?next=/api/v1/comic/online/image-proxy';
+
+      assert.equal(isComicImageProxyUrl(gridUrl), true);
+      assert.equal(isComicImageProxyUrl(maskedUrl), false);
+
+      // Pre-reader comic search-grid thumbnail transient errors (400/502/504) are tolerated
+      for (const status of [400, 502, 504]) {
+        assert.equal(
+          isAllowedLiveThumbHttpError({ requestId: 'req-grid-1', url: gridUrl, status }, preReaderReqIds),
+          true,
+        );
+      }
+
+      // Reader-phase comic image-proxy requests are NEVER exempted (strict HTTP 200)
+      for (const status of [400, 502, 504]) {
+        assert.equal(
+          isAllowedLiveThumbHttpError({ requestId: 'req-reader-1', url: readerUrl, status }, preReaderReqIds),
+          false,
+        );
+      }
+
+      // Non-transient status codes (401/403/404/500) and masked paths are never exempted
+      for (const status of [401, 403, 404, 500]) {
+        assert.equal(
+          isAllowedLiveThumbHttpError({ requestId: 'req-grid-1', url: gridUrl, status }, preReaderReqIds),
+          false,
+        );
+      }
+      assert.equal(
+        isAllowedLiveThumbHttpError({ requestId: 'req-grid-1', url: maskedUrl, status: 400 }, preReaderReqIds),
+        false,
+      );
+      assert.equal(
+        isAllowedLiveThumbHttpError({ requestId: 'req-grid-1', url: gridUrl, status: 400 }, null),
+        false,
+      );
+    });
   } finally {
     await mock.stop();
   }

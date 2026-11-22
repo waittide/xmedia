@@ -116,6 +116,7 @@ export class MockOriginServer {
     this.requests = [];
     this.sockets = new Set();
     this.activeTimers = new Set();
+    this.retryOnceSeen = new Set();
   }
 
   async start() {
@@ -169,6 +170,7 @@ export class MockOriginServer {
 
   reset() {
     this.requests = [];
+    this.retryOnceSeen.clear();
   }
 
   async #handleRequest(req, res) {
@@ -991,6 +993,19 @@ export class MockOriginServer {
       const totalBytes = 17 * 1024 * 1024; // 17 MiB > 16 MiB cap
       await this.#streamOversized(req, res, totalBytes, 'image/jpeg', MOCK_JPEG_BYTES);
       return;
+    }
+
+    if (pathname === '/edge/retry-once-png') {
+      const key = urlObj.searchParams.get('key') || 'default';
+      if (!this.retryOnceSeen.has(key)) {
+        this.retryOnceSeen.add(key);
+        return sendText(res, 503, 'transient upstream 503');
+      }
+      return sendBuffer(res, 200, MOCK_PNG_BYTES, 'image/png');
+    }
+
+    if (pathname === '/edge/always-403-png') {
+      return sendText(res, 403, 'upstream forbidden');
     }
 
     if (pathname === '/edge/oversized-m3u8') {

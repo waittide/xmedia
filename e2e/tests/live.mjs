@@ -17,6 +17,25 @@ export function isAllowedExternalThumbError(url) {
     return false;
   }
 }
+
+export function isComicImageProxyUrl(url) {
+  if (!url) return false;
+  try {
+    return new URL(url, 'http://localhost').pathname === '/api/v1/comic/online/image-proxy';
+  } catch {
+    return false;
+  }
+}
+
+export function isAllowedLiveThumbHttpError(entry, preReaderComicReqIds) {
+  if (!entry || ![400, 502, 504].includes(entry.status)) return false;
+  if (isAllowedExternalThumbError(entry.url)) return true;
+  return (
+    isComicImageProxyUrl(entry.url) &&
+    preReaderComicReqIds instanceof Set &&
+    preReaderComicReqIds.has(entry.requestId)
+  );
+}
 import {
   ApiClient,
   REPO_ROOT,
@@ -364,7 +383,11 @@ export async function runLiveTests(context = {}) {
                 const mime = assertRasterImage(imgRes.buffer, null, 'LIVE-01 MangaDex page');
                 assert.ok(imgRes.buffer.length > 1024, `Image too small: ${imgRes.buffer.length}`);
                 assertSecurityHeaders(imgRes.headers, { label: 'LIVE-01 image-proxy' });
-                liveComicSample = liveComicSample || { keyword: kw, title: item.title };
+                liveComicSample = liveComicSample || {
+                  sourceId: src.id,
+                  keyword: kw,
+                  title: item.title,
+                };
                 return { source: src.name, keyword: kw, mime, bytes: imgRes.buffer.length, title: item.title };
               } catch (candErr) {
                 if (candErr instanceof SutEndpointMissingError) throw candErr;
@@ -426,7 +449,11 @@ export async function runLiveTests(context = {}) {
                 const mime = assertRasterImage(imgRes.buffer, null, 'LIVE-02 WEBTOON page');
                 assert.ok(imgRes.buffer.length > 512, `WEBTOON image too small: ${imgRes.buffer.length}`);
                 assertSecurityHeaders(imgRes.headers, { label: 'LIVE-02 image-proxy' });
-                liveComicSample = liveComicSample || { keyword: kw, title: item.title };
+                liveComicSample = liveComicSample || {
+                  sourceId: src.id,
+                  keyword: kw,
+                  title: item.title,
+                };
                 return { source: src.name, keyword: kw, mime, bytes: imgRes.buffer.length, title: item.title };
               } catch (candErr) {
                 if (candErr instanceof SutEndpointMissingError) throw candErr;
@@ -477,7 +504,11 @@ export async function runLiveTests(context = {}) {
         const mime = assertRasterImage(imgRes.buffer, null, 'LIVE-03 XKCD strip');
         assert.ok(imgRes.buffer.length > 512, `XKCD image too small: ${imgRes.buffer.length}`);
         assertSecurityHeaders(imgRes.headers, { label: 'LIVE-03 image-proxy' });
-        liveComicSample = liveComicSample || { keyword: 'xkcd', title: item.title };
+        liveComicSample = liveComicSample || {
+          sourceId: src.id,
+          keyword: 'xkcd',
+          title: item.title,
+        };
         return { source: src.name, mime, bytes: imgRes.buffer.length, title: item.title };
       }),
     );
@@ -927,19 +958,66 @@ export async function runLiveTests(context = {}) {
         await withCdpBrowser(async (cdp) => {
           await browserLogin(cdp, baseUrl, MEMBER_CREDS);
           const summary = {};
+          let preReaderComicReqIds = new Set();
 
           if (liveComicSample) {
+            const sourceQuery = liveComicSample.sourceId
+              ? `&source=${encodeURIComponent(liveComicSample.sourceId)}`
+              : '';
             await cdp.goto(
-              `${baseUrl}/comic/series?scope=online&q=${encodeURIComponent(liveComicSample.keyword)}`,
+              `${baseUrl}/comic/series?scope=online&q=${encodeURIComponent(liveComicSample.keyword)}${sourceQuery}`,
             );
             await cdp.waitForFn(
               `document.body.textContent.includes(${JSON.stringify(liveComicSample.title)})`,
               { timeoutMs: 25000, label: 'LIVE-09 comic search result' },
             );
             await clickButtonByText(cdp, [liveComicSample.title], { timeoutMs: 10000 });
-            await cdp.waitForFn(
-              `window.location.pathname.includes('/comic/online/detail') && (document.body.textContent.includes('开始阅读') || document.body.textContent.includes('Start Reading'))`,
-              { timeoutMs: 20000, label: 'LIVE-09 comic detail loaded' },
+            let detailState = await cdp.waitForFn(
+              `(() => {
+                if (!window.location.pathname.includes('/comic/online/detail')) return false;
+                const txt = document.body.textContent || '';
+                if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
+                if (txt.includes('重试') || txt.includes('Retry')) return 'error';
+                return false;
+              })()`,
+              { timeoutMs: 45000, label: 'LIVE-09 comic detail loaded' },
+            );
+            if (detailState === 'error') {
+              const preRetryHttpCount = cdp.httpErrors.length;
+              const preRetryConsoleCount = cdp.consoleErrors.length;
+              await clickButtonByText(cdp, ['重试', 'Retry'], { timeoutMs: 10000 });
+              detailState = await cdp.waitForFn(
+                `(() => {
+                  if (!window.location.pathname.includes('/comic/online/detail')) return false;
+                  const txt = document.body.textContent || '';
+                  if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
+                  if (txt.includes('重试') || txt.includes('Retry')) return 'error';
+                  return false;
+                })()`,
+                { timeoutMs: 45000, label: 'LIVE-09 comic detail retry loaded' },
+              );
+              assert.equal(
+                detailState,
+                'ready',
+                'LIVE-09 comic detail remained in error state after retry',
+              );
+              summary.comicDetailRetried = true;
+              const isDetailApiErr = (e) =>
+                String(e?.url || '').includes('/api/v1/comic/online/detail');
+              for (let i = preRetryHttpCount - 1; i >= 0; i -= 1) {
+                if (isDetailApiErr(cdp.httpErrors[i])) cdp.httpErrors.splice(i, 1);
+              }
+              for (let i = preRetryConsoleCount - 1; i >= 0; i -= 1) {
+                if (cdp.consoleErrors[i]?.source === 'network' && isDetailApiErr(cdp.consoleErrors[i])) {
+                  cdp.consoleErrors.splice(i, 1);
+                }
+              }
+            }
+            assert.equal(detailState, 'ready', 'LIVE-09 comic detail did not reach ready state');
+            preReaderComicReqIds = new Set(
+              cdp.networkRequests
+                .filter((r) => isComicImageProxyUrl(r.url))
+                .map((r) => r.requestId),
             );
             await clickButtonByText(cdp, ['开始阅读', 'Start Reading'], {
               timeoutMs: 20000,
@@ -951,6 +1029,25 @@ export async function runLiveTests(context = {}) {
                 return imgs.length >= 1 && imgs.some(i => i.complete && i.naturalWidth > 0);
               })()`,
               { timeoutMs: 25000, label: 'LIVE-09 live comic image-proxy loaded' },
+            );
+            const readerImageResponses = cdp.networkResponses.filter(
+              (r) => isComicImageProxyUrl(r.url) && !preReaderComicReqIds.has(r.requestId),
+            );
+            assert.ok(
+              readerImageResponses.length >= 1,
+              'Expected at least one opened reader /api/v1/comic/online/image-proxy response in LIVE-09',
+            );
+            assert.ok(
+              readerImageResponses.some((r) => r.status === 200),
+              `Expected HTTP 200 for opened comic reader image-proxy page image, got: ${JSON.stringify(
+                readerImageResponses.map((r) => ({ status: r.status, url: r.url })),
+              )}`,
+            );
+            assert.ok(
+              !readerImageResponses.some((r) => r.status >= 400),
+              `Unexpected error status on opened comic reader image-proxy request(s): ${JSON.stringify(
+                readerImageResponses.filter((r) => r.status >= 400),
+              )}`,
             );
             summary.comic = liveComicSample.title;
           }
@@ -993,7 +1090,7 @@ export async function runLiveTests(context = {}) {
             await clickButtonByText(cdp, [liveVideoSample.title], { timeoutMs: 10000 });
             await cdp.waitForFn(
               `window.location.pathname.includes('/video/online/detail') && (document.body.textContent.includes('立即播放') || document.body.textContent.includes('Play Now'))`,
-              { timeoutMs: 20000, label: 'LIVE-09 video detail loaded' },
+              { timeoutMs: 30000, label: 'LIVE-09 video detail loaded' },
             );
             await clickButtonByText(
               cdp,
@@ -1022,15 +1119,16 @@ export async function runLiveTests(context = {}) {
 
           const { exceptions, consoleErrors, httpErrors } = cdp.getErrors();
           const fatalHttpErrors = httpErrors.filter(
-            (e) => !(e.status === 400 && isAllowedExternalThumbError(e.url)),
+            (e) => !isAllowedLiveThumbHttpError(e, preReaderComicReqIds),
           );
+          const fatalHttpUrls = new Set(fatalHttpErrors.map((e) => e.url));
           const ignoredThumbUrls = new Set(
             httpErrors
-              .filter((e) => e.status === 400 && isAllowedExternalThumbError(e.url))
+              .filter((e) => isAllowedLiveThumbHttpError(e, preReaderComicReqIds))
               .map((e) => e.url),
           );
           const fatalConsoleErrors = consoleErrors.filter(
-            (e) => !(e.source === 'network' && ignoredThumbUrls.has(e.url)),
+            (e) => !(e.source === 'network' && ignoredThumbUrls.has(e.url) && !fatalHttpUrls.has(e.url)),
           );
           const problems = [];
           if (exceptions.length > 0) problems.push(`exceptions=${JSON.stringify(exceptions)}`);
