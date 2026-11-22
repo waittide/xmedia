@@ -4395,3 +4395,166 @@ async fn music_stream_sanitizes_dangerous_schemes_and_aligns_headers_applied_wit
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn online_music_items_favorites_progress_and_remote_e2e() {
+    let h = setup_online_test_harness(true).await;
+
+    let src_json = serde_json::json!({
+        "sourceName": "Test Music Source",
+        "sourceUrl": "https://music-item.test",
+        "sourceGroup": "Test",
+        "ruleSearch": { "list": "$.items[*]", "title": "$.t", "trackId": "$.id" }
+    });
+    let (st_imp, _, b_imp) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 1. Upsert online music track with playback progress (seconds) and extra metadata
+    let (st_put, _, b_put) = send_json(
+        &h.app,
+        "PUT",
+        "/online/items",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": source_id,
+            "item_key": "track-77",
+            "title": "Nocturne Op.9 No.2",
+            "subtitle": "Chopin",
+            "cover_url": "https://music-item.test/cover.jpg",
+            "extra": {
+                "album": "Nocturnes",
+                "play_url": "https://music-item.test/stream/77",
+                "lyric_id": "lrc-77"
+            },
+            "favorite": true,
+            "progress": {
+                "position": 65.5,
+                "duration": 262.0,
+                "completed": false
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_put, StatusCode::OK);
+    let track: serde_json::Value = serde_json::from_slice(&b_put).unwrap();
+    let track_item_id = track["id"].as_str().unwrap().to_string();
+    assert_eq!(track["media_kind"], "music");
+    assert_eq!(track["source_name"], "Test Music Source");
+    assert_eq!(track["availability"], "ok");
+    assert_eq!(track["extra"]["album"], "Nocturnes");
+    assert!((track["progress_ratio"].as_f64().unwrap() - 0.25).abs() < 1e-6);
+
+    // 2. Upsert a remote Subsonic track (source_kind = "remote", site-relative proxy cover)
+    let (st_sub, _, b_sub) = send_json(
+        &h.app,
+        "PUT",
+        "/online/items",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_kind": "remote",
+            "source_id": "subsonic-nas",
+            "item_key": "song-900",
+            "title": "Clair de Lune",
+            "subtitle": "Debussy",
+            "cover_url": "/_app/subsonic/subsonic-nas/cover/al-9",
+            "favorite": true
+        })),
+    )
+    .await;
+    assert_eq!(st_sub, StatusCode::OK);
+    let sub_item: serde_json::Value = serde_json::from_slice(&b_sub).unwrap();
+    assert_eq!(sub_item["availability"], "unverified");
+    assert!(sub_item["source_name"].is_null());
+
+    // 3. Lookup & view filtering
+    let (st_lk, _, b_lk) = send_json(
+        &h.app,
+        "POST",
+        "/online/items/lookup",
+        &h.member_token,
+        Some(serde_json::json!({
+            "items": [
+                { "source_id": source_id, "item_key": "track-77" },
+                { "source_kind": "remote", "source_id": "subsonic-nas", "item_key": "song-900" }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(st_lk, StatusCode::OK);
+    let lk: serde_json::Value = serde_json::from_slice(&b_lk).unwrap();
+    assert_eq!(lk["total"], 2);
+
+    let (st_cont, _, b_cont) = send_json(
+        &h.app,
+        "GET",
+        "/online/items?view=continue",
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_cont, StatusCode::OK);
+    let cont: serde_json::Value = serde_json::from_slice(&b_cont).unwrap();
+    assert_eq!(cont["total"], 1);
+    assert_eq!(cont["items"][0]["id"], track_item_id);
+
+    let (st_rem_list, _, b_rem_list) = send_json(
+        &h.app,
+        "GET",
+        "/online/items?source_kind=remote&view=favorites",
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_rem_list, StatusCode::OK);
+    let rem_list: serde_json::Value = serde_json::from_slice(&b_rem_list).unwrap();
+    assert_eq!(rem_list["total"], 1);
+    assert_eq!(rem_list["items"][0]["source_id"], "subsonic-nas");
+
+    // 4. Update progress -> clear -> delete
+    let (st_prog, _, b_prog) = send_json(
+        &h.app,
+        "PUT",
+        &format!("/online/items/{track_item_id}/progress"),
+        &h.member_token,
+        Some(serde_json::json!({
+            "position": 262.0,
+            "duration": 262.0,
+            "completed": true
+        })),
+    )
+    .await;
+    assert_eq!(st_prog, StatusCode::OK);
+    let p_val: serde_json::Value = serde_json::from_slice(&b_prog).unwrap();
+    assert_eq!(p_val["progress"]["completed"], true);
+
+    let (st_cont2, _, b_cont2) = send_json(
+        &h.app,
+        "GET",
+        "/online/items?view=continue",
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_cont2, StatusCode::OK);
+    let cont2: serde_json::Value = serde_json::from_slice(&b_cont2).unwrap();
+    assert_eq!(cont2["total"], 0);
+
+    let (st_del, _, _) = send_json(
+        &h.app,
+        "DELETE",
+        &format!("/online/items/{track_item_id}"),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_del, StatusCode::NO_CONTENT);
+}

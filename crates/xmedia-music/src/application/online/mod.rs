@@ -1,6 +1,7 @@
 mod browse;
 mod debug;
 mod dto;
+mod items;
 mod proxy;
 mod sources;
 
@@ -14,6 +15,7 @@ use xmedia_source::model::ConcurrentRateSpec;
 use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
 pub use dto::*;
+pub use items::MusicOnlineSourceDirectory;
 pub use proxy::AudioProxyResponse;
 
 use crate::domain::repository::MusicSourceRepository;

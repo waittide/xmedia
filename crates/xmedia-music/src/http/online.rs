@@ -50,6 +50,11 @@ pub fn router() -> Router<MusicHttpState> {
         .route("/online/lyrics", post(online_lyrics))
         .route("/online/cover-proxy", get(online_cover_proxy))
         .route("/online/audio-proxy", get(online_audio_proxy))
+        // Per-user online/remote music favorites & playback progress
+        .nest(
+            "/online/items",
+            xmedia_core::http::online_items::online_items_router(),
+        )
 }
 
 #[derive(Debug, Deserialize)]

@@ -13,17 +13,20 @@ use std::time::Duration;
 
 use toasty::Db;
 use xmedia_core::application::library::LibraryService;
+use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
 use xmedia_core::infra::ffmpeg::FfmpegToolkit;
+use xmedia_core::infra::persistence::repositories::ToastyOnlineLibraryItemRepository;
 use xmedia_source::http::HttpClientConfig;
 
 use application::MusicServices;
 use application::catalog::MusicCatalogService;
 use application::collection::MusicCollectionService;
 use application::ingest::MusicIngestService;
-use application::online::MusicOnlineService;
+use application::online::{MusicOnlineService, MusicOnlineSourceDirectory};
 use application::streaming::MusicStreamingService;
 use infra::audio_probe::LoftyAudioProbe;
 use infra::lyrics::HybridLyricsResolver;
@@ -66,6 +69,7 @@ pub fn init_music_module_with_allow_private_ips(
 ) -> DomainResult<MusicServices> {
     let catalog_repo = Arc::new(ToastyMusicCatalogRepository::new(db.clone()));
     let collections_repo = Arc::new(ToastyMusicCollectionRepository::new(db.clone()));
+    let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
     let sources_repo = Arc::new(ToastyMusicSourceRepository::new(db));
 
     let storage = Arc::new(LocalMusicStorage::new(data_dir)?);
@@ -113,9 +117,14 @@ pub fn init_music_module_with_allow_private_ips(
         Duration::from_secs(45),
     );
     let online = Arc::new(MusicOnlineService::with_engine(
-        sources_repo,
+        sources_repo.clone(),
         engine,
         allow_private_ips,
+    ));
+    let online_items = Arc::new(OnlineLibraryService::new(
+        MediaKind::Music,
+        online_items_repo,
+        Arc::new(MusicOnlineSourceDirectory::new(sources_repo)),
     ));
 
     Ok(MusicServices::new(
@@ -124,5 +133,6 @@ pub fn init_music_module_with_allow_private_ips(
         ingest,
         streaming,
         online,
+        online_items,
     ))
 }
