@@ -9,7 +9,8 @@ use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
 use xmedia_source::http::{
-    DEFAULT_WEBVIEW_UA, build_sanitized_headers, decode_response_bytes, validate_target_url_static,
+    DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, build_sanitized_headers, decode_response_bytes,
+    get_or_build_async_client, normalize_cookie_key, validate_target_url_static,
 };
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, fetch_validated_image_bytes_with_config,
@@ -17,11 +18,12 @@ use xmedia_source::proxy::{
 use xmedia_source::rate_limit::get_or_insert_rate_limiter;
 
 use crate::source::hls::{
-    MAX_M3U8_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url, build_poster_proxy_url,
-    build_stream_proxy_url, get_or_build_streaming_async_client, infer_segment_content_type,
-    is_forbidden_media_ct, is_hls_playlist_response, is_partial_hls_playlist_range_candidate,
+    MAX_M3U8_BYTES, MAX_SUBTITLE_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url,
+    build_poster_proxy_url, build_stream_proxy_url, build_subtitle_proxy_url,
+    get_or_build_streaming_async_client, infer_segment_content_type, is_forbidden_media_ct,
+    is_forbidden_subtitle_ct, is_hls_playlist_response, is_partial_hls_playlist_range_candidate,
     looks_like_html_bytes, read_sniff_prefix_with_context, rewrite_m3u8_playlist,
-    spawn_chunk_stream,
+    spawn_chunk_stream, validate_and_normalize_subtitle_to_vtt,
 };
 use crate::source::model::VideoSourceSpec;
 
@@ -43,6 +45,41 @@ fn validate_range_header(raw: Option<&str>) -> DomainResult<Option<String>> {
     Ok(Some(val.to_string()))
 }
 
+fn lookup_cookie_for_url(cookies: &HashMap<String, String>, target_url: &str) -> Option<String> {
+    let key = normalize_cookie_key(target_url);
+    if key.is_empty() {
+        return None;
+    }
+    if let Some(v) = cookies.get(&key)
+        && !v.trim().is_empty()
+    {
+        return Some(v.clone());
+    }
+    let mut best: Option<(&str, &str)> = None;
+    for (stored_host, val) in cookies {
+        let clean_stored = stored_host.trim_start_matches('.');
+        if clean_stored.is_empty() || val.trim().is_empty() {
+            continue;
+        }
+        if key.len() > clean_stored.len()
+            && key.ends_with(clean_stored)
+            && key.as_bytes()[key.len() - clean_stored.len() - 1] == b'.'
+        {
+            let replace = match best {
+                None => true,
+                Some((prev_host, _)) => {
+                    clean_stored.len() > prev_host.len()
+                        || (clean_stored.len() == prev_host.len() && clean_stored < prev_host)
+                }
+            };
+            if replace {
+                best = Some((clean_stored, val.as_str()));
+            }
+        }
+    }
+    best.map(|(_, v)| v.to_string())
+}
+
 impl VideoOnlineService {
     async fn resolve_source_media_headers(
         &self,
@@ -56,6 +93,28 @@ impl VideoOnlineService {
         let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
         Ok(spec.parse_media_header_map())
+    }
+
+    async fn resolve_source_media_headers_with_cookies(
+        &self,
+        actor: &User,
+        source_id: Option<Uuid>,
+        target_url: &str,
+    ) -> DomainResult<HashMap<String, String>> {
+        let Some(sid) = source_id else {
+            return Ok(HashMap::new());
+        };
+        let rec = self.load_source_for_actor(actor, sid).await?;
+        let spec: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
+            .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let mut merged = spec.parse_media_header_map();
+        if !merged.keys().any(|k| k.eq_ignore_ascii_case("cookie"))
+            && spec.enabled_cookie_jar
+            && let Some(cookie) = lookup_cookie_for_url(&rec.runtime_state.cookies, target_url)
+        {
+            merged.insert("Cookie".to_string(), cookie);
+        }
+        Ok(merged)
     }
 
     pub async fn categories(
@@ -490,6 +549,12 @@ impl VideoOnlineService {
         } else {
             build_stream_proxy_url(&out.data.stream_url, Some(source_id), None)
         };
+        for sub in &mut out.data.subtitles {
+            let clean = sub.url.trim();
+            if clean.starts_with("http://") || clean.starts_with("https://") {
+                sub.proxy_url = Some(build_subtitle_proxy_url(clean, Some(source_id), None));
+            }
+        }
 
         Ok(OnlineVideoPlayResponseDto {
             source_id,
@@ -513,6 +578,84 @@ impl VideoOnlineService {
             &self.http_config,
         )
         .await
+    }
+
+    pub async fn fetch_subtitle_proxy(
+        &self,
+        actor: &User,
+        raw_url: &str,
+        source_id: Option<Uuid>,
+    ) -> DomainResult<String> {
+        let validated = validate_target_url_static(raw_url.trim(), self.allow_private_ips)
+            .map_err(DomainError::Validation)?;
+        let source_headers = self
+            .resolve_source_media_headers_with_cookies(actor, source_id, validated.as_str())
+            .await?;
+
+        let mut header_map = build_sanitized_headers(&source_headers);
+        if !header_map.contains_key(USER_AGENT) {
+            header_map.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_WEBVIEW_UA));
+        }
+
+        let client = get_or_build_async_client(
+            15,
+            self.allow_private_ips,
+            self.http_config.proxy_url.as_deref(),
+        )
+        .map_err(DomainError::Storage)?;
+
+        let _ = MAX_REDIRECT_HOPS;
+        let mut resp = client
+            .get(validated)
+            .headers(header_map)
+            .send()
+            .await
+            .map_err(|e| DomainError::Validation(format!("拉取字幕失败: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(DomainError::Validation(format!(
+                "字幕响应状态异常: {}",
+                resp.status()
+            )));
+        }
+
+        let header_ct = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(ToString::to_string);
+        if let Some(ref ct) = header_ct
+            && is_forbidden_subtitle_ct(&ct.to_ascii_lowercase())
+        {
+            return Err(DomainError::Validation(format!(
+                "拒绝转发不安全的字幕内容类型: {ct}"
+            )));
+        }
+        if let Some(len) = resp.content_length()
+            && len > MAX_SUBTITLE_BYTES as u64
+        {
+            return Err(DomainError::Validation(format!(
+                "字幕文件体积超过 {} 字节限制",
+                MAX_SUBTITLE_BYTES
+            )));
+        }
+
+        let mut buf = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|e| DomainError::Validation(format!("读取字幕失败: {e}")))?
+        {
+            if buf.len().saturating_add(chunk.len()) > MAX_SUBTITLE_BYTES {
+                return Err(DomainError::Validation(format!(
+                    "字幕文件体积超过 {} 字节限制",
+                    MAX_SUBTITLE_BYTES
+                )));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        validate_and_normalize_subtitle_to_vtt(&buf, header_ct.as_deref())
     }
 
     pub async fn open_stream_proxy(

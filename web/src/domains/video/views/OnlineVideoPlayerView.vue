@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Hls from 'hls.js'
 import {
@@ -16,7 +16,6 @@ import {
   LuVolume2,
   LuVolumeX,
 } from 'vue-icons-plus/lu'
-import { isSafeHttpUrl } from '@/components/online-sources/types'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
@@ -29,6 +28,7 @@ import {
   onlineVideoApi,
   resolveOnlineVideoPosterUrl,
   resolveOnlineVideoStreamUrl,
+  resolveOnlineVideoSubtitleUrl,
   type OnlineVideoEpisode,
   type OnlineVideoPlayGroup,
   type OnlineVideoPlayResponseDto,
@@ -115,6 +115,8 @@ let hudHideTimer: ReturnType<typeof setTimeout> | null = null
 let pendingLoadedMetadataHandler: (() => void) | null = null
 let playSeq = 0
 let detailSeq = 0
+let syncUrlSeq = 0
+let syncingUrl = false
 let unmounted = false
 
 const activeGroup = computed<OnlineVideoPlayGroup | null>(() => {
@@ -145,8 +147,17 @@ const groupOptions = computed(() =>
   })),
 )
 
-const safeSubtitles = computed<OnlineVideoSubtitle[]>(() =>
-  (playResult.value?.subtitles ?? []).filter((s) => isSafeHttpUrl(s.url)),
+interface ResolvedOnlineVideoSubtitle extends OnlineVideoSubtitle {
+  resolvedUrl: string
+}
+
+const safeSubtitles = computed<ResolvedOnlineVideoSubtitle[]>(() =>
+  (playResult.value?.subtitles ?? [])
+    .map((s) => ({
+      ...s,
+      resolvedUrl: resolveOnlineVideoSubtitleUrl(s.proxy_url, s.url, sourceId.value),
+    }))
+    .filter((s) => Boolean(s.resolvedUrl)),
 )
 
 const subtitleOptions = computed(() => [
@@ -157,7 +168,7 @@ const subtitleOptions = computed(() => [
   })),
 ])
 
-const activeSubtitle = computed<OnlineVideoSubtitle | null>(() => {
+const activeSubtitle = computed<ResolvedOnlineVideoSubtitle | null>(() => {
   if (selectedSubtitleIdx.value === 'off') return null
   const idx = Number.parseInt(selectedSubtitleIdx.value, 10)
   if (!Number.isFinite(idx) || idx < 0) return null
@@ -653,7 +664,17 @@ function selectEpisode(epIndex: number, groupNameOverride?: string): void {
   if (title.value) nextQuery.title = title.value
   if (sourceName.value) nextQuery.sourceName = sourceName.value
 
-  void router.replace({ path: '/video/online/watch', query: nextQuery })
+  const seq = ++syncUrlSeq
+  syncingUrl = true
+  void router
+    .replace({ path: '/video/online/watch', query: nextQuery })
+    .finally(() =>
+      nextTick(() => {
+        if (seq === syncUrlSeq) {
+          syncingUrl = false
+        }
+      }),
+    )
   void loadPlay()
 }
 
@@ -929,9 +950,12 @@ watch(
     route.query.playUrl,
     route.query.play_url,
     route.query.groupName,
+    route.query.group_name,
     route.query.episodeIndex,
+    route.query.episode_index,
   ],
   () => {
+    if (syncingUrl) return
     const qSourceId = readQueryParam(['sourceId', 'source_id'])
     const qPlayUrl = readQueryParam(['playUrl', 'play_url'])
     const qGroupName = readQueryParam(['groupName', 'group_name'])
@@ -982,9 +1006,9 @@ watch(
     >
       <track
         v-if="activeSubtitle"
-        :key="activeSubtitle.url"
+        :key="activeSubtitle.resolvedUrl"
         kind="subtitles"
-        :src="activeSubtitle.url"
+        :src="activeSubtitle.resolvedUrl"
         :srclang="activeSubtitle.lang || 'und'"
         :label="activeSubtitle.label"
         default

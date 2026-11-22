@@ -10,7 +10,9 @@ use xmedia_source::crud::{
     format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
 };
 
-use crate::source::hls::{build_hls_proxy_url, build_poster_proxy_url, build_stream_proxy_url};
+use crate::source::hls::{
+    build_hls_proxy_url, build_poster_proxy_url, build_stream_proxy_url, build_subtitle_proxy_url,
+};
 use crate::source::model::{
     ExecutionDiagnostics, OnlineVideoCategory, OnlineVideoDetail, OnlineVideoPlayResult,
     OnlineVideoSummary, VideoSourceSpec,
@@ -504,6 +506,13 @@ impl VideoOnlineService {
                             } else {
                                 build_stream_proxy_url(&out.data.stream_url, Some(id), None)
                             };
+                            for sub in &mut out.data.subtitles {
+                                let clean = sub.url.trim();
+                                if clean.starts_with("http://") || clean.starts_with("https://") {
+                                    sub.proxy_url =
+                                        Some(build_subtitle_proxy_url(clean, Some(id), None));
+                                }
+                            }
                             let ok = !out.data.stream_url.trim().is_empty();
                             let summary = if ok {
                                 format!(

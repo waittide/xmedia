@@ -75,6 +75,7 @@ export interface OnlineVideoSubtitle {
   label: string
   lang: string | null
   url: string
+  proxy_url?: string | null
 }
 
 export interface OnlineVideoPlayResult {
@@ -260,6 +261,40 @@ export function resolveOnlineVideoStreamUrl(
     return ''
   }
   return buildOnlineVideoStreamUrl(rawStreamUrl, streamType, sourceId)
+}
+
+export function buildOnlineVideoSubtitleUrl(
+  rawUrl: string | null | undefined,
+  sourceId?: string | null,
+): string {
+  if (!rawUrl || !rawUrl.trim() || !isSafeHttpUrl(rawUrl)) return ''
+  const qs = new URLSearchParams({ url: rawUrl.trim() })
+  if (sourceId) qs.set('source_id', sourceId)
+  return withAuthToken(`/api/v1/video/online/subtitle-proxy?${qs.toString()}`)
+}
+
+export function resolveOnlineVideoSubtitleUrl(
+  proxyUrl?: string | null,
+  rawUrl?: string | null,
+  sourceId?: string | null,
+): string {
+  const proxy = proxyUrl?.trim()
+  if (proxy) {
+    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
+      try {
+        const parsed = new URL(proxy, 'http://localhost')
+        if (parsed.origin !== 'http://localhost') return ''
+        if (parsed.pathname !== '/api/v1/video/online/subtitle-proxy') return ''
+        const innerUrl = parsed.searchParams.get('url')?.trim()
+        if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+        return withAuthToken(proxy)
+      } catch {
+        return ''
+      }
+    }
+    return ''
+  }
+  return buildOnlineVideoSubtitleUrl(rawUrl, sourceId)
 }
 
 const baseCrud = createDomainSourceApi<VideoSourceSummaryDto>('video', { hasSeeds: true })

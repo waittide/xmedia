@@ -949,3 +949,40 @@ fn video_run_login_action_strips_at_js_and_tag_js_wrappers() {
         .unwrap();
     assert_eq!(out_tag.data, "tag:bob");
 }
+
+#[test]
+fn subtitle_proxy_normalizer_passes_vtt_converts_srt_and_rejects_xss_or_oversized() {
+    use crate::source::hls::{MAX_SUBTITLE_BYTES, validate_and_normalize_subtitle_to_vtt};
+
+    let vtt = b"\xEF\xBB\xBFWEBVTT\r\n\r\n00:00:01.000 --> 00:00:03.000\r\nHello, world!\r\n";
+    let vtt_out = validate_and_normalize_subtitle_to_vtt(vtt, Some("text/vtt")).unwrap();
+    assert_eq!(
+        vtt_out,
+        "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello, world!\n"
+    );
+
+    let srt = b"1\r\n00:00:01,250 --> 00:00:04,500 align:start\r\nHello, SRT!\r\n\r\n2\r\n00:05,000 --> 00:08,100\r\nSecond\r\n";
+    let srt_out =
+        validate_and_normalize_subtitle_to_vtt(srt, Some("application/x-subrip")).unwrap();
+    assert!(srt_out.starts_with("WEBVTT\n\n"));
+    assert!(srt_out.contains("00:00:01.250 --> 00:00:04.500 align:start\nHello, SRT!"));
+    assert!(srt_out.contains("00:05.000 --> 00:08.100\nSecond"));
+
+    // Reject HTML/SVG/XML/script, invalid UTF-8, non-subtitle text, and >4 MiB payloads
+    assert!(
+        validate_and_normalize_subtitle_to_vtt(b"<html><body>xss</body></html>", None).is_err()
+    );
+    assert!(
+        validate_and_normalize_subtitle_to_vtt(
+            b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<script>alert(1)</script>",
+            None
+        )
+        .is_err()
+    );
+    assert!(validate_and_normalize_subtitle_to_vtt(b"WEBVTT", Some("text/html")).is_err());
+    assert!(validate_and_normalize_subtitle_to_vtt(b"WEBVTT", Some("application/xml")).is_err());
+    assert!(validate_and_normalize_subtitle_to_vtt(b"plain text without cues", None).is_err());
+    assert!(validate_and_normalize_subtitle_to_vtt(&[0xFF, 0xFE, b'W', 0x00], None).is_err());
+    let oversized = vec![b'a'; MAX_SUBTITLE_BYTES + 1];
+    assert!(validate_and_normalize_subtitle_to_vtt(&oversized, None).is_err());
+}

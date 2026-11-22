@@ -437,6 +437,8 @@ pub struct OnlineVideoSubtitle {
     #[serde(default)]
     pub lang: Option<String>,
     pub url: String,
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

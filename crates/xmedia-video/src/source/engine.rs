@@ -1034,6 +1034,7 @@ fn collect_subtitle_object(
         label,
         lang,
         url: resolve_relative_url(clean_url, base_url),
+        proxy_url: None,
     });
 }
 
@@ -1081,6 +1082,7 @@ fn collect_subtitles_from_text(raw: &str, base_url: &str, out: &mut Vec<OnlineVi
             label: format!("字幕 {}", out.len() + 1),
             lang: None,
             url: resolve_relative_url(trimmed, base_url),
+            proxy_url: None,
         });
     }
 }

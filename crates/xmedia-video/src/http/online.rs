@@ -51,6 +51,7 @@ pub fn router() -> Router<VideoHttpState> {
         .route("/online/poster-proxy", get(online_poster_proxy))
         .route("/online/stream-proxy", get(online_stream_proxy))
         .route("/online/hls-proxy", get(online_hls_proxy))
+        .route("/online/subtitle-proxy", get(online_subtitle_proxy))
 }
 
 fn default_page() -> u32 {
@@ -448,4 +449,37 @@ async fn online_hls_proxy(
             Ok(build_416_response(content_range))
         }
     }
+}
+
+async fn online_subtitle_proxy(
+    State(state): State<VideoHttpState>,
+    WebAuth(user): WebAuth,
+    Query(q): Query<StreamProxyQuery>,
+) -> Result<Response, ApiError> {
+    let has_query_token = q.token.as_deref().is_some_and(|t| !t.trim().is_empty());
+    let vtt = state
+        .services
+        .online
+        .fetch_subtitle_proxy(&user, &q.url, q.source_id)
+        .await?;
+    let mut resp = Response::new(Body::from(vtt));
+    resp.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/vtt; charset=utf-8"),
+    );
+    resp.headers_mut()
+        .insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    resp.headers_mut().insert(
+        CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'"),
+    );
+    resp.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static(if has_query_token {
+            "no-store"
+        } else {
+            "private, max-age=3600"
+        }),
+    );
+    Ok(resp)
 }

@@ -3126,3 +3126,196 @@ async fn video_online_search_enforces_source_concurrent_rate_throttling() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn subtitle_proxy_serves_vtt_converts_srt_injects_headers_and_enforces_security_e2e() {
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let origin_app = Router::new()
+        .route(
+            "/api/play",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "stream": "/media/ep1.mp4",
+                            "subs": [
+                                { "label": "English", "lang": "en", "url": "/subs/en.srt" },
+                                { "label": "中文", "lang": "zh", "url": "/subs/zh.vtt" }
+                            ]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/subs/en.srt",
+            get(|headers: HeaderMap| async move {
+                if headers.get(header::REFERER).and_then(|v| v.to_str().ok())
+                    != Some("https://sub.origin.test/")
+                {
+                    return Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Body::from("missing referer"))
+                        .unwrap();
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/plain; charset=utf-8")
+                    .body(Body::from(
+                        "1\n00:00:01,000 --> 00:00:03,500\nHello, Subtitle!\n",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/subs/zh.vtt",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/vtt; charset=utf-8")
+                    .body(Body::from(
+                        "WEBVTT\n\n00:00:01.000 --> 00:00:03.500\n你好字幕\n",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/subs/evil.vtt",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/plain")
+                    .body(Body::from(
+                        "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n<svg onload=alert(1)>\n",
+                    ))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/subs/huge.vtt",
+            get(|| async {
+                let mut body = b"WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n".to_vec();
+                body.extend(vec![b'x'; 4 * 1024 * 1024 + 128]);
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "text/vtt")
+                    .body(Body::from(body))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let src_json = serde_json::json!({
+        "sourceName": "Subtitle Proxy Source",
+        "sourceUrl": origin,
+        "sourceFormat": "rule",
+        "mediaHeader": { "Referer": "https://sub.origin.test/" },
+        "rulePlay": {
+            "requestUrl": "{{playUrl}}",
+            "streamUrl": "$.stream",
+            "subtitles": "$.subs"
+        }
+    });
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let (st_play, play_res) = post_json(
+        &app,
+        "/api/v1/video/online/play",
+        &member_tok,
+        serde_json::json!({
+            "source_id": sid,
+            "play_url": format!("{origin}/api/play")
+        }),
+    )
+    .await;
+    assert_eq!(st_play, StatusCode::OK);
+    let subs = play_res["subtitles"].as_array().unwrap();
+    assert_eq!(subs.len(), 2);
+    let srt_proxy = subs[0]["proxy_url"].as_str().unwrap();
+    assert!(srt_proxy.starts_with("/api/v1/video/online/subtitle-proxy?url="));
+
+    // 1. Authenticated member fetches SRT subtitle via proxy -> converted to WebVTT with security headers
+    let (st_srt, hdrs_srt, body_srt) =
+        get_bytes_with_auth(&app, srt_proxy, Some(&member_tok), None).await;
+    assert_eq!(st_srt, StatusCode::OK);
+    assert_eq!(
+        hdrs_srt
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
+        Some("text/vtt; charset=utf-8")
+    );
+    assert_eq!(
+        hdrs_srt
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(
+        hdrs_srt
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some("sandbox; default-src 'none'")
+    );
+    let srt_text = String::from_utf8(body_srt).unwrap();
+    assert!(srt_text.starts_with("WEBVTT\n\n"));
+    assert!(srt_text.contains("00:00:01.000 --> 00:00:03.500\nHello, Subtitle!"));
+
+    // 2. VTT passthrough works cleanly
+    let vtt_proxy = subs[1]["proxy_url"].as_str().unwrap();
+    let (st_vtt, _, body_vtt) = get_bytes_with_auth(&app, vtt_proxy, Some(&member_tok), None).await;
+    assert_eq!(st_vtt, StatusCode::OK);
+    assert!(String::from_utf8(body_vtt).unwrap().contains("你好字幕"));
+
+    // 3. Unauthenticated request rejected with 401
+    let (st_unauth, _, _) = get_bytes_with_auth(&app, srt_proxy, None, None).await;
+    assert_eq!(st_unauth, StatusCode::UNAUTHORIZED);
+
+    // 4. SVG/script injection and >4 MiB oversized subtitle rejected with 400
+    for bad_path in ["/subs/evil.vtt", "/subs/huge.vtt"] {
+        let encoded = urlencoding_param(&format!("{origin}{bad_path}"));
+        let (st_bad, _, _) = get_bytes_with_auth(
+            &app,
+            &format!("/api/v1/video/online/subtitle-proxy?url={encoded}&source_id={sid}"),
+            Some(&member_tok),
+            None,
+        )
+        .await;
+        assert_eq!(
+            st_bad,
+            StatusCode::BAD_REQUEST,
+            "expected 400 for {bad_path}"
+        );
+    }
+
+    // 5. Hardened default app blocks loopback SSRF on subtitle-proxy
+    let (_tmp_h, app_hardened, _adm_h, mem_h) = setup_test_app(false).await;
+    let encoded_loop = urlencoding_param(&format!("{origin}/subs/zh.vtt"));
+    let (st_ssrf, _, _) = get_bytes_with_auth(
+        &app_hardened,
+        &format!("/api/v1/video/online/subtitle-proxy?url={encoded_loop}"),
+        Some(&mem_h),
+        None,
+    )
+    .await;
+    assert_eq!(st_ssrf, StatusCode::BAD_REQUEST);
+
+    srv.abort();
+}

@@ -19,6 +19,7 @@ use xmedia_source::proxy::{
 };
 
 pub const MAX_M3U8_BYTES: usize = 8 * 1024 * 1024;
+pub const MAX_SUBTITLE_BYTES: usize = 4 * 1024 * 1024;
 pub const SNIFF_PREFIX_MAX_BYTES: usize = 4096;
 pub const SNIFF_MIN_NON_WS_BYTES: usize = 16;
 pub const STREAM_CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -36,6 +37,12 @@ static STREAMING_ASYNC_CLIENT_CACHE: LazyLock<Mutex<HashMap<StreamingClientKey, 
 
 static RE_M3U8_URI_ATTR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\b(URI=")([^"]*)(")"#).expect("valid m3u8 URI attr regex"));
+static RE_SRT_TIMESTAMP_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*((?:\d{1,3}:)?\d{2}:\d{2})[,.](\d{3})\s*-->\s*((?:\d{1,3}:)?\d{2}:\d{2})[,.](\d{3})(.*)$",
+    )
+    .expect("valid srt timestamp regex")
+});
 
 /// Builds or returns a pooled async `reqwest::Client` specifically for long-lived video streaming.
 /// Uses `connect_timeout` + per-chunk `read_timeout` WITHOUT a short total-body `.timeout(...)`
@@ -394,6 +401,124 @@ pub fn build_hls_proxy_url(
         out.push_str(&encode_query_component(tok));
     }
     out
+}
+
+pub fn build_subtitle_proxy_url(
+    target_url: &str,
+    source_id: Option<uuid::Uuid>,
+    token: Option<&str>,
+) -> String {
+    let mut out = format!(
+        "/api/v1/video/online/subtitle-proxy?url={}",
+        encode_query_component(target_url)
+    );
+    if let Some(sid) = source_id {
+        out.push_str("&source_id=");
+        out.push_str(&sid.to_string());
+    }
+    if let Some(tok) = token.map(str::trim).filter(|t| !t.is_empty()) {
+        out.push_str("&token=");
+        out.push_str(&encode_query_component(tok));
+    }
+    out
+}
+
+pub fn is_forbidden_subtitle_ct(ct_lower: &str) -> bool {
+    let base = ct_lower
+        .split(';')
+        .next()
+        .unwrap_or(ct_lower)
+        .trim()
+        .to_ascii_lowercase();
+    base.contains("text/html")
+        || base.contains("application/xhtml")
+        || base.contains("image/svg")
+        || base.contains("javascript")
+        || base == "application/xml"
+        || base == "text/xml"
+}
+
+pub fn validate_and_normalize_subtitle_to_vtt(
+    raw_bytes: &[u8],
+    header_ct: Option<&str>,
+) -> DomainResult<String> {
+    if raw_bytes.len() > MAX_SUBTITLE_BYTES {
+        return Err(DomainError::Validation(format!(
+            "字幕文件体积超过 {} 字节限制",
+            MAX_SUBTITLE_BYTES
+        )));
+    }
+    if let Some(ct) = header_ct {
+        let ct_lower = ct.to_ascii_lowercase();
+        if is_forbidden_subtitle_ct(&ct_lower) {
+            return Err(DomainError::Validation(format!(
+                "拒绝转发不安全的字幕内容类型: {ct}"
+            )));
+        }
+    }
+    if raw_bytes.contains(&0) {
+        return Err(DomainError::Validation(
+            "字幕文件包含非法空字节，拒绝转发".into(),
+        ));
+    }
+    if looks_like_html_bytes(raw_bytes) {
+        return Err(DomainError::Validation(
+            "拒绝转发伪装为字幕的 HTML/SVG/XML 内容".into(),
+        ));
+    }
+
+    let utf8_text = std::str::from_utf8(raw_bytes)
+        .map_err(|_| DomainError::Validation("字幕内容不是有效的 UTF-8 文本".into()))?;
+    let without_bom = utf8_text.trim_start_matches('\u{feff}');
+    let normalized = without_bom.replace("\r\n", "\n").replace('\r', "\n");
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        return Err(DomainError::Validation("字幕内容为空".into()));
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("<?")
+        || lower.contains("<script")
+        || lower.contains("<!doctype")
+        || lower.contains("<html")
+        || lower.contains("<svg")
+        || lower.contains("<?xml")
+    {
+        return Err(DomainError::Validation(
+            "拒绝包含 HTML/SVG/XML 脚本标签的字幕内容".into(),
+        ));
+    }
+
+    let is_webvtt = trimmed
+        .strip_prefix("WEBVTT")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t', '\n']));
+    if is_webvtt {
+        return Ok(format!("{}\n", normalized.trim_end_matches('\n')));
+    }
+
+    let mut cue_count = 0usize;
+    let mut out_lines = Vec::new();
+    for line in normalized.lines() {
+        if let Some(caps) = RE_SRT_TIMESTAMP_LINE.captures(line) {
+            cue_count += 1;
+            out_lines.push(format!(
+                "{}.{} --> {}.{}{}",
+                &caps[1], &caps[2], &caps[3], &caps[4], &caps[5]
+            ));
+        } else {
+            out_lines.push(line.to_string());
+        }
+    }
+    if cue_count == 0 {
+        return Err(DomainError::Validation(
+            "不支持的字幕格式，仅支持 WebVTT 或 SRT".into(),
+        ));
+    }
+
+    let mut vtt = String::from("WEBVTT\n\n");
+    vtt.push_str(out_lines.join("\n").trim_end_matches('\n'));
+    vtt.push('\n');
+    Ok(vtt)
 }
 
 fn resolve_m3u8_uri(raw_uri: &str, base_url: &Url) -> Option<String> {
