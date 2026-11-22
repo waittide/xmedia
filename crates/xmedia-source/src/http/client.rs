@@ -477,9 +477,13 @@ impl LegadoHttpClient {
             }
         }
 
-        let mut resp = req
-            .send()
-            .map_err(|e| format!("请求 '{resolved_url}' 失败: {e}"))?;
+        let mut resp = req.send().map_err(|e| {
+            if e.is_timeout() {
+                format!("请求 '{resolved_url}' 超时: {e}")
+            } else {
+                format!("请求 '{resolved_url}' 失败: {e}")
+            }
+        })?;
 
         let final_url = resp.url().to_string();
         let status = resp.status().as_u16();
@@ -516,7 +520,13 @@ impl LegadoHttpClient {
         resp.by_ref()
             .take((MAX_RESPONSE_BODY_BYTES as u64) + 1)
             .read_to_end(&mut raw_bytes)
-            .map_err(|e| format!("读取响应体失败 '{resolved_url}': {e}"))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::TimedOut {
+                    format!("读取响应体超时 '{resolved_url}': {e}")
+                } else {
+                    format!("读取响应体失败 '{resolved_url}': {e}")
+                }
+            })?;
         if raw_bytes.len() > MAX_RESPONSE_BODY_BYTES {
             return Err(format!(
                 "响应体超过最大限制 ({}MB): '{resolved_url}'",

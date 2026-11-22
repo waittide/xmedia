@@ -69,6 +69,10 @@ impl MusicSourceSession {
         self.inner.check_active()
     }
 
+    pub(crate) fn remaining_budget(&self) -> Duration {
+        self.inner.remaining_budget()
+    }
+
     pub fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {
         self.inner.snapshot_diagnostics()
     }

@@ -876,7 +876,14 @@ fn fetch_api(
     base_url: &str,
 ) -> Result<xmedia_source::http::HttpFetchResult, String> {
     session.check_active()?;
-    let fetched = session.http().fetch(target_url, base_url)?;
+    let remaining = session.remaining_budget();
+    if remaining.is_zero() {
+        return Err("执行超过单次操作总超时上限 (interrupted)".into());
+    }
+    let fetched = session
+        .http()
+        .fetch_with_timeout(target_url, base_url, Some(remaining))?;
+    session.check_active()?;
     if fetched.status >= 400 {
         return Err(format!(
             "上游接口返回异常状态 HTTP {} ({})",
@@ -2805,6 +2812,180 @@ mod tests {
         })
         .await
         .unwrap();
+
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn music_fetch_api_clamps_single_and_multistep_requests_to_remaining_budget() {
+        use axum::{Router, routing::get};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+
+        let slow_stream_hits = Arc::new(AtomicUsize::new(0));
+        let step1_hits = Arc::new(AtomicUsize::new(0));
+        let step2_hits = Arc::new(AtomicUsize::new(0));
+
+        let slow_stream_hits_c = slow_stream_hits.clone();
+        let step1_hits_c = step1_hits.clone();
+        let step2_hits_c = step2_hits.clone();
+
+        let app = Router::new()
+            .route(
+                "/slow-stream",
+                get(move || {
+                    let hits = slow_stream_hits_c.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                        r#"{"url":"https://cdn.example/late.mp3"}"#
+                    }
+                }),
+            )
+            .route(
+                "/step1",
+                get(move || {
+                    let hits = step1_hits_c.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        r#"{"token":"ok"}"#
+                    }
+                }),
+            )
+            .route(
+                "/step2",
+                get(move || {
+                    let hits = step2_hits_c.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(1200)).await;
+                        r#"{"items":[{"id":"1","title":"Late","artist":"Art"}]}"#
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let base_c = base.clone();
+        tokio::task::spawn_blocking(move || {
+            let engine = super::MusicSourceEngine::new(
+                HttpClientConfig {
+                    timeout_secs: 2,
+                    allow_private_ips: true,
+                    proxy_url: None,
+                },
+                Duration::from_secs(5),
+            );
+            let op_timeout = Duration::from_millis(220);
+            let cancel = Arc::new(AtomicBool::new(false));
+
+            // 1. Single fetch_api call in resolve_stream_sync_with_control
+            let stream_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+                "sourceName": "SlowStreamBudgetMusic",
+                "sourceUrl": base_c,
+                "ruleStream": {
+                    "requestUrl": format!("{base_c}/slow-stream"),
+                    "streamUrl": "$.url"
+                }
+            }))
+            .unwrap();
+            let ctx = MusicTrackContext {
+                track_id: "t1".into(),
+                title: "Song".into(),
+                artist: "Artist".into(),
+                ..Default::default()
+            };
+
+            let t_single = Instant::now();
+            let single_err = engine
+                .resolve_stream_sync_with_control(
+                    &stream_spec,
+                    SourceRuntimeState::default(),
+                    &ctx,
+                    None,
+                    op_timeout,
+                    cancel.clone(),
+                )
+                .expect_err("slow single fetch_api must abort within op_timeout");
+            let single_elapsed = t_single.elapsed();
+            assert!(
+                single_elapsed < Duration::from_millis(500),
+                "single fetch_api took {:?} (expected < 500ms), err={single_err}",
+                single_elapsed
+            );
+            assert!(
+                single_err.message.contains("超时") || single_err.message.contains("interrupted"),
+                "unexpected single_err message: {}",
+                single_err.message
+            );
+
+            // 2. Multi-step search_sync_with_control: @js:java.ajax(150ms) + fetch_api(1200ms)
+            let search_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+                "sourceName": "MultiStepBudgetMusic",
+                "sourceUrl": base_c,
+                "searchUrl": format!("@js:java.ajax('{base_c}/step1'); '{base_c}/step2?q=' + encodeURIComponent(key)"),
+                "ruleSearch": {
+                    "trackList": "$.items[*]",
+                    "trackId": "$.id",
+                    "title": "$.title",
+                    "artist": "$.artist"
+                }
+            }))
+            .unwrap();
+
+            let t_multi = Instant::now();
+            let multi_err = engine
+                .search_sync_with_control(
+                    &search_spec,
+                    SourceRuntimeState::default(),
+                    "test",
+                    1,
+                    10,
+                    op_timeout,
+                    cancel.clone(),
+                )
+                .expect_err("multi-step search fetch_api must abort within remaining budget");
+            let multi_elapsed = t_multi.elapsed();
+            assert!(
+                multi_elapsed < Duration::from_millis(500),
+                "multi-step search took {:?} (expected < 500ms), err={multi_err}",
+                multi_elapsed
+            );
+            assert!(
+                multi_err.message.contains("超时") || multi_err.message.contains("interrupted"),
+                "unexpected multi_err message: {}",
+                multi_err.message
+            );
+
+            // 3. Zero remaining budget rejects immediately before making any HTTP call
+            let zero_err = engine
+                .resolve_stream_sync_with_control(
+                    &stream_spec,
+                    SourceRuntimeState::default(),
+                    &ctx,
+                    None,
+                    Duration::ZERO,
+                    cancel,
+                )
+                .expect_err("zero op_timeout must reject before HTTP call");
+            assert!(
+                zero_err.message.contains("interrupted"),
+                "unexpected zero_err message: {}",
+                zero_err.message
+            );
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(slow_stream_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(step1_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(step2_hits.load(Ordering::SeqCst), 1);
 
         srv.abort();
     }
