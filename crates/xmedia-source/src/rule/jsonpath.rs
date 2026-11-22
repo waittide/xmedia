@@ -197,12 +197,39 @@ fn parse_filter_field_path(raw: &str) -> Option<Vec<String>> {
     if parts.is_empty() { None } else { Some(parts) }
 }
 
+fn unescape_filter_string(inner: &str) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\'') => out.push('\''),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn parse_filter_literal(raw: &str) -> Option<FilterLiteral> {
     let t = raw.trim();
     if (t.starts_with('\'') && t.ends_with('\'') && t.len() >= 2)
         || (t.starts_with('"') && t.ends_with('"') && t.len() >= 2)
     {
-        return Some(FilterLiteral::String(t[1..t.len() - 1].to_string()));
+        return Some(FilterLiteral::String(unescape_filter_string(
+            &t[1..t.len() - 1],
+        )));
     }
     if t == "true" {
         return Some(FilterLiteral::Bool(true));
@@ -294,7 +321,7 @@ fn split_filter_op<'a>(s: &'a str, op: &str) -> Option<(&'a str, &'a str)> {
             i += 1;
             continue;
         }
-        if s[i..].starts_with(op) {
+        if bytes[i..].starts_with(op.as_bytes()) {
             return Some((&s[..i], &s[i + op.len()..]));
         }
         i += 1;

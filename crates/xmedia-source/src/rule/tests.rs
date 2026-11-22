@@ -346,3 +346,91 @@ fn jsonpath_supports_filter_predicates() {
         "Artist Mock"
     );
 }
+
+#[test]
+fn jsonpath_filter_handles_utf8_fields_escaped_quotes_and_double_hash() {
+    let doc = serde_json::json!({
+        "items": [
+            { "标题": "命中", "v": "1" },
+            { "标题": "未命中", "v": "2" },
+            { "name": "O'Reilly", "title": "SingleQuote" },
+            { "name": "a\"b", "title": "DoubleQuote" },
+            { "name": "back\\slash\nline\t", "title": "Escapes" },
+            { "name": "a##b", "title": "HashMatched" }
+        ]
+    });
+    let rv = RuleValue::Json(doc);
+
+    // Non-ASCII UTF-8 field name before operator must not panic on char boundary
+    assert_eq!(
+        eval_rule_string(&rv, "$.items[?(@.标题=='命中')].v", "", None).unwrap(),
+        "1"
+    );
+    assert_eq!(
+        eval_rule_string(&rv, "$.items[?(@.标题==='命中')].v", "", None).unwrap(),
+        "1"
+    );
+
+    // Escaped quotes & backslash sequences inside filter string literals
+    assert_eq!(
+        eval_rule_string(&rv, r"$.items[?(@.name=='O\'Reilly')].title", "", None).unwrap(),
+        "SingleQuote"
+    );
+    assert_eq!(
+        eval_rule_string(&rv, r#"$.items[?(@.name=="a\"b")].title"#, "", None).unwrap(),
+        "DoubleQuote"
+    );
+    assert_eq!(
+        eval_rule_string(
+            &rv,
+            r"$.items[?(@.name=='back\\slash\nline\t')].title",
+            "",
+            None
+        )
+        .unwrap(),
+        "Escapes"
+    );
+
+    // `##` inside JSONPath filter quotes must NOT be treated as regex-replace separator
+    assert_eq!(
+        eval_rule_string(&rv, "$.items[?(@.name=='a##b')].title", "", None).unwrap(),
+        "HashMatched"
+    );
+    // `##` AFTER the bracketed filter still acts as regex-replace separator
+    assert_eq!(
+        eval_rule_string(&rv, "$.items[?(@.name=='a##b')].title##Hash##OK", "", None).unwrap(),
+        "OKMatched"
+    );
+}
+
+#[test]
+fn rule_value_from_json_or_raw_accepts_scalar_roots_and_rejects_malformed() {
+    assert_eq!(
+        RuleValue::from_json_or_raw(r#""just-a-string""#.to_string()),
+        RuleValue::Json(serde_json::json!("just-a-string"))
+    );
+    assert_eq!(
+        RuleValue::from_json_or_raw("123".to_string()),
+        RuleValue::Json(serde_json::json!(123))
+    );
+    assert_eq!(
+        RuleValue::from_json_or_raw("true".to_string()),
+        RuleValue::Json(serde_json::json!(true))
+    );
+    assert_eq!(
+        RuleValue::from_json_or_raw("null".to_string()),
+        RuleValue::Json(serde_json::Value::Null)
+    );
+    assert!(
+        RuleValue::from_json_or_raw(r#"{ "broken": [1, 2,"#.to_string())
+            .as_json()
+            .is_none()
+    );
+    // Scalar JSON root yields empty list for $.items[*] without error
+    let scalar_rv = RuleValue::from_json_or_raw(r#""just-a-string""#.to_string());
+    assert!(
+        eval_rule_list(&scalar_rv, "$.items[*]", "", None)
+            .unwrap()
+            .is_empty()
+    );
+}

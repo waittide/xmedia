@@ -85,6 +85,18 @@ impl RuleValue {
         Self::Text(raw)
     }
 
+    /// Parses any valid JSON value (including scalar roots like `"str"`, `123`, `true`, `null`),
+    /// falling back to `RuleValue::Text` if `raw` is not valid JSON.
+    pub fn from_json_or_raw(raw: String) -> Self {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty()
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed)
+        {
+            return Self::Json(v);
+        }
+        Self::Text(raw)
+    }
+
     pub fn as_text(&self) -> String {
         match self {
             Self::Text(s) => s.clone(),
@@ -503,18 +515,52 @@ fn find_double_hash_outside_mustache(rule: &str) -> Option<usize> {
     let bytes = rule.as_bytes();
     let mut i = 0usize;
     let mut mustache_depth = 0usize;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b'{' && bytes[i + 1] == b'{' {
+    let mut bracket_depth = 0usize;
+    let mut in_quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = in_quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                in_quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if i + 1 < bytes.len() && b == b'{' && bytes[i + 1] == b'{' {
             mustache_depth += 1;
             i += 2;
             continue;
         }
-        if bytes[i] == b'}' && bytes[i + 1] == b'}' && mustache_depth > 0 {
+        if i + 1 < bytes.len() && b == b'}' && bytes[i + 1] == b'}' && mustache_depth > 0 {
             mustache_depth -= 1;
             i += 2;
             continue;
         }
-        if mustache_depth == 0 && bytes[i] == b'#' && bytes[i + 1] == b'#' {
+        if b == b'\'' || b == b'"' {
+            in_quote = Some(b);
+            i += 1;
+            continue;
+        }
+        if b == b'[' {
+            bracket_depth += 1;
+            i += 1;
+            continue;
+        }
+        if b == b']' && bracket_depth > 0 {
+            bracket_depth -= 1;
+            i += 1;
+            continue;
+        }
+        if mustache_depth == 0
+            && bracket_depth == 0
+            && i + 1 < bytes.len()
+            && b == b'#'
+            && bytes[i + 1] == b'#'
+        {
             return Some(i);
         }
         i += 1;
