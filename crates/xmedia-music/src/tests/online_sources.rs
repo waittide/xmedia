@@ -3172,6 +3172,45 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
                     ],
                 )
             }),
+        )
+        .route(
+            "/audio/disguised-utf16le-svg.bin",
+            get(|| async {
+                let mut payload = vec![0xFFu8, 0xFE];
+                for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".encode_utf16() {
+                    payload.extend_from_slice(&u.to_le_bytes());
+                }
+                let mid = payload.len() / 2;
+                music_delayed_chunked_response(
+                    Some("application/octet-stream"),
+                    vec![(payload[..mid].to_vec(), 0), (payload[mid..].to_vec(), 5)],
+                )
+            }),
+        )
+        .route(
+            "/audio/disguised-utf16be-svg.bin",
+            get(|| async {
+                let mut payload = vec![0xFEu8, 0xFF];
+                for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".encode_utf16() {
+                    payload.extend_from_slice(&u.to_be_bytes());
+                }
+                music_delayed_chunked_response(
+                    Some("application/octet-stream"),
+                    vec![(payload, 0)],
+                )
+            }),
+        )
+        .route(
+            "/audio/disguised-large-comment-svg.bin",
+            get(|| async {
+                let mut chunk1 = b"<!-- ".to_vec();
+                chunk1.extend_from_slice(&vec![b'X'; 4600]);
+                let chunk2 = b" --><svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>".to_vec();
+                music_delayed_chunked_response(
+                    Some("application/octet-stream"),
+                    vec![(chunk1, 0), (chunk2, 5)],
+                )
+            }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -3323,11 +3362,15 @@ async fn music_runtime_state_clear_concurrent_cookies_audio_sniffing_and_unmatch
     assert!(ck_res.contains("kA=valA"), "missing kA=valA in {ck_res}");
     assert!(ck_res.contains("kB=valB"), "missing kB=valB in {ck_res}");
 
-    // GAP-03: audio-proxy rejects split-chunk HTML, SVG, and XML+SVG disguised as octet-stream/empty CT
+    // GAP-03 & I2-GAP-05: audio-proxy rejects split-chunk HTML, SVG, XML+SVG, UTF-16LE/BE SVG,
+    // and >4KB HTML comment + SVG disguised as octet-stream/empty CT
     for path in [
         "/audio/disguised-html.bin",
         "/audio/disguised-svg.bin",
         "/audio/disguised-xml-svg.bin",
+        "/audio/disguised-utf16le-svg.bin",
+        "/audio/disguised-utf16be-svg.bin",
+        "/audio/disguised-large-comment-svg.bin",
     ] {
         let (st_px, _, _) = send_json(
             &h.app,
