@@ -589,8 +589,41 @@ fn eval_json_options_template_prevents_duplicate_keys_and_handles_unquoted_place
     );
     assert_eq!(
         parsed.body.as_ref().unwrap().as_str(),
-        Some("q=x\",\"method\":\"DELETE\",\"charset\":\"")
+        Some(format!("q={}", url_encode_component(poison)).as_str())
     );
+
+    // Mixed JS + static form-urlencoded body must percent-encode static vars while preserving JS output
+    let form_js_tpl = r#"{"method":"POST","headers":{"Content-Type":"application/x-www-form-urlencoded"},"body":"q={{key}}&sig={{sign(key)}}"}"#;
+    let rendered_form_js = eval_json_options_template(
+        form_js_tpl,
+        &[("key", "foo&admin=1")],
+        |expr| match expr {
+            "{{sign(key)}}" => Ok("deadbeef".to_string()),
+            other => Err(format!("unexpected expr: {other}")),
+        },
+        "searchUrl",
+    )
+    .unwrap();
+    let parsed_form_js: LegadoUrlOptions = serde_json::from_str(&rendered_form_js).unwrap();
+    assert_eq!(
+        parsed_form_js.body.as_ref().unwrap().as_str(),
+        Some("q=foo%26admin%3D1&sig=deadbeef")
+    );
+
+    // Explicit application/json Content-Type must JSON-escape rather than URL-encode
+    let json_js_tpl = r#"{"method":"POST","headers":{"Content-Type":"application/json"},"body":"{\"q\":\"{{key}}\",\"sig\":\"{{sign(key)}}\"}"}"#;
+    let rendered_json_js = eval_json_options_template(
+        json_js_tpl,
+        &[("key", "foo&\"bar\"")],
+        |_| Ok("sig1".to_string()),
+        "searchUrl",
+    )
+    .unwrap();
+    let parsed_json_js: LegadoUrlOptions = serde_json::from_str(&rendered_json_js).unwrap();
+    let inner_json: serde_json::Value =
+        serde_json::from_str(parsed_json_js.body.as_ref().unwrap().as_str().unwrap()).unwrap();
+    assert_eq!(inner_json["q"], "foo&\"bar\"");
+    assert_eq!(inner_json["sig"], "sig1");
 
     // Unquoted placeholders (`"webView":{{flag}}` and `"page":{{page}}`) still get a valid expected_sig
     let unquoted_tpl =

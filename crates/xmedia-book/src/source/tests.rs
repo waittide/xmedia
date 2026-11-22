@@ -914,7 +914,13 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
     let cap = captured.lock().unwrap();
     assert_eq!(cap.methods, vec!["POST", "POST", "GET", "POST"]);
     assert!(cap.targets[0].starts_with("/s?wd=x%22") && cap.targets[0].ends_with("&t=123"));
-    assert_eq!(cap.bodies[0], format!("q={dup_key_payload}"));
+    assert_eq!(
+        cap.bodies[0],
+        format!(
+            "q={}",
+            xmedia_source::http::url_encode_component(dup_key_payload)
+        )
+    );
     assert_eq!(cap.signs[0], format!("sig:{}", dup_key_payload.len()));
 
     let unq_body: serde_json::Value = serde_json::from_str(&cap.bodies[1]).unwrap();

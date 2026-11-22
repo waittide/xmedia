@@ -2364,8 +2364,8 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
     let ma_id = imp_val["sources"][1]["id"].as_str().unwrap().to_string();
     let opts_id = imp_val["sources"][2]["id"].as_str().unwrap().to_string();
 
-    // 1. Member search smuggling attempts on @js: and Mustache arithmetic templates are isolated as errors
-    for sid in [&js_id, &ma_id] {
+    // 1. Member search smuggling attempts on @js: is isolated as error, while Mustache arithmetic safely percent-encodes {{key}}
+    {
         let (st, b) = json_request(
             &h.app,
             "POST",
@@ -2373,7 +2373,7 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
             &h.member_token,
             Some(serde_json::json!({
                 "keyword": r#"a,{"method":"POST","headers":{"X-Smuggled":"YES"},"body":"evil"}"#,
-                "source_ids": [sid],
+                "source_ids": [&js_id],
                 "page": 1
             })),
         )
@@ -2382,6 +2382,23 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
         let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
         assert!(v["results"].as_array().unwrap().is_empty());
         assert_eq!(v["errors"].as_array().unwrap().len(), 1);
+
+        let (st_ma, b_ma) = json_request(
+            &h.app,
+            "POST",
+            "/api/v1/comic/online/search",
+            &h.member_token,
+            Some(serde_json::json!({
+                "keyword": r#"a,{"method":"POST","headers":{"X-Smuggled":"YES"},"body":"evil"}"#,
+                "source_ids": [&ma_id],
+                "page": 1
+            })),
+        )
+        .await;
+        assert_eq!(st_ma, StatusCode::OK);
+        let v_ma: serde_json::Value = serde_json::from_slice(&b_ma).unwrap();
+        assert_eq!(v_ma["results"][0]["title"], "PlainOk");
+        assert!(v_ma["errors"].as_array().unwrap().is_empty());
     }
 
     // 2. Member JSON breakout attempt inside ,{options} searchUrl does NOT smuggle X-Smuggled header
@@ -2402,7 +2419,10 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
     let v_opt: serde_json::Value = serde_json::from_slice(&b_opt).unwrap();
     assert_eq!(
         v_opt["results"][0]["title"],
-        format!("Opts:q={breakout_kw}")
+        format!(
+            "Opts:q={}",
+            xmedia_source::http::url_encode_component(breakout_kw)
+        )
     );
 
     // 3. Same-host cookie-pair granularity: slow online/detail Set-Cookie: detail_ck=from_detail

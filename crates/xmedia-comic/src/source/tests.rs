@@ -2409,8 +2409,19 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
         let replacement_nbsp_junk_payload =
             "x\"},junk,\u{00A0}{\"method\":\"DELETE\",\"body\":\"evil";
 
-        // Bypass A: Mustache arithmetic + {{key}}, {{String(key)}}, and @js: without options must reject
-        for src in [&src_mustache_arith, &src_mustache_str, &src_js_plain] {
+        // Bypass A: Mustache arithmetic safely percent-encodes {{key}} (GET LegitGet, zero POST smuggling),
+        // while {{String(key)}} and @js: without options reject post-eval options injection.
+        let ma_res = engine
+            .search_sync(
+                &src_mustache_arith,
+                SourceRuntimeState::default(),
+                smuggle_payload,
+                1,
+            )
+            .unwrap()
+            .data;
+        assert_eq!(ma_res[0].title, "LegitGet");
+        for src in [&src_mustache_str, &src_js_plain] {
             let err = engine
                 .search_sync(src, SourceRuntimeState::default(), smuggle_payload, 1)
                 .expect_err("options smuggling via keyword must be rejected");
@@ -2470,7 +2481,7 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
             "unexpected error: {arr_err}"
         );
 
-        // Bypass B: simple & Mustache JS ,{options} templates safely JSON-escape keyword inside body without injecting headers
+        // Bypass B: simple & Mustache JS ,{options} templates safely percent-encode/JSON-escape keyword inside body without injecting headers
         let res_opts = engine
             .search_sync(
                 &src_opts_simple,
@@ -2480,7 +2491,13 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
             )
             .unwrap()
             .data;
-        assert_eq!(res_opts[0].title, format!("Post:q={breakout_payload}"));
+        assert_eq!(
+            res_opts[0].title,
+            format!(
+                "Post:q={}",
+                xmedia_source::http::url_encode_component(breakout_payload)
+            )
+        );
 
         let res_mjs_opts = engine
             .search_sync(
@@ -2508,7 +2525,10 @@ async fn search_blocks_js_mustache_and_json_options_breakout_smuggling() {
             .data;
         assert_eq!(
             res_unquoted_quote[0].title,
-            format!("Post:q={breakout_payload}")
+            format!(
+                "Post:q={}",
+                xmedia_source::http::url_encode_component(breakout_payload)
+            )
         );
 
         // Legitimate @js: JSON.stringify and encodeURI work even with braces/quotes in keyword
@@ -3607,6 +3627,110 @@ async fn json_scalar_roots_return_empty_results_without_invalid_json_error() {
     assert!(r_null.unwrap().data.is_empty());
     let err = r_broken.unwrap_err();
     assert!(err.contains("上游返回无效 JSON"), "got: {err}");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn mixed_js_search_url_encodes_static_key_and_form_body_and_blocks_option_injection() {
+    let seen_requests: Arc<std::sync::Mutex<Vec<(String, String)>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_c = seen_requests.clone();
+
+    let app = Router::new().route(
+        "/search",
+        axum::routing::any(move |req: axum::extract::Request| {
+            let seen = seen_c.clone();
+            async move {
+                let uri = req.uri().to_string();
+                let method = req.method().to_string();
+                let body_bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
+                    .await
+                    .unwrap_or_default();
+                let body_str = String::from_utf8_lossy(&body_bytes).to_string();
+                seen.lock()
+                    .unwrap()
+                    .push((format!("{method} {uri}"), body_str));
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"items":[{"t":"Hit","u":"/c/1"}]}"#))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let mixed_get: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "MixedGet",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search?q={{{{key}}}}&sig={{{{1+1}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let mixed_opts: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "MixedOpts",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search?q={{{{key}}}}&sig={{{{1+1}}}},{{\"method\":\"POST\",\"body\":\"k={{{{key}}}}&s={{{{1+1}}}}\"}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let (res_get, res_lit_opts, res_post) = tokio::task::spawn_blocking(move || {
+        (
+            engine.search_sync(
+                &mixed_get,
+                SourceRuntimeState::default(),
+                "a&admin=1#frag",
+                1,
+            ),
+            engine.search_sync(
+                &mixed_get,
+                SourceRuntimeState::default(),
+                r#"foo,{"method":"DELETE"}"#,
+                1,
+            ),
+            engine.search_sync(&mixed_opts, SourceRuntimeState::default(), "x&evil=1", 1),
+        )
+    })
+    .await
+    .unwrap();
+
+    assert!(res_get.is_ok(), "unexpected error: {:?}", res_get.err());
+    assert!(
+        res_lit_opts.is_ok(),
+        "literal options-like keyword should be encoded cleanly: {:?}",
+        res_lit_opts.err()
+    );
+    assert!(res_post.is_ok(), "unexpected error: {:?}", res_post.err());
+
+    let logged = seen_requests.lock().unwrap();
+    assert_eq!(logged.len(), 3);
+    assert_eq!(logged[0].0, "GET /search?q=a%26admin%3D1%23frag&sig=2");
+    assert!(
+        logged[1]
+            .0
+            .starts_with("GET /search?q=foo%2C%7B%22method%22"),
+        "unexpected uri: {}",
+        logged[1].0
+    );
+    assert_eq!(logged[2].0, "POST /search?q=x%26evil%3D1&sig=2");
+    assert_eq!(logged[2].1, "k=x%26evil%3D1&s=2");
 
     server.abort();
 }

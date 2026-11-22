@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -5,7 +6,7 @@ use std::time::Duration;
 
 use xmedia_source::http::{
     HttpClientConfig, LegadoHttpClient, LegadoUrlOptions, eval_json_options_template,
-    json_raw_structure_signature, resolve_relative_url,
+    json_raw_structure_signature, resolve_relative_url, substitute_url_part_vars,
 };
 pub use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
@@ -525,12 +526,24 @@ impl ComicSourceEngine {
         } else if let Some((raw_url_part, raw_opt_json)) =
             split_legado_url_template_and_options(raw_tpl)
         {
+            let page_str = page.to_string();
+            let vars = [("key", keyword), ("page", page_str.as_str())];
             if template_needs_js(raw_tpl) {
                 session.set_search_vars(keyword, page)?;
             }
             let eval_url_part = if template_needs_js(raw_url_part) {
+                let has_js_pipeline = split_js_pipeline(raw_url_part).is_some();
+                let pre_url = if has_js_pipeline {
+                    Cow::Borrowed(raw_url_part)
+                } else {
+                    Cow::Owned(substitute_url_part_vars(raw_url_part, &vars, None))
+                };
                 let input = RuleValue::Text(String::new());
-                session.eval_string(&input, raw_url_part, &source.source_url)?
+                let out = session.eval_string(&input, &pre_url, &source.source_url)?;
+                if !has_js_pipeline && split_legado_url_and_raw_options(out.trim()).is_some() {
+                    return Err(format!("{label} 模板参数不允许附加请求选项"));
+                }
+                out
             } else {
                 let unencoded = substitute_simple_template(raw_url_part, keyword, page, false);
                 if split_legado_url_and_raw_options(unencoded.trim()).is_some() {
@@ -538,8 +551,6 @@ impl ComicSourceEngine {
                 }
                 substitute_simple_template(raw_url_part, keyword, page, true)
             };
-            let page_str = page.to_string();
-            let vars = [("key", keyword), ("page", page_str.as_str())];
             let needs_js_opts = template_needs_js(raw_opt_json);
             let eval_opt_json = eval_json_options_template(
                 raw_opt_json,
@@ -560,9 +571,12 @@ impl ComicSourceEngine {
             format!("{},{eval_opt_json}", eval_url_part.trim())
         } else {
             let sub = if template_needs_js(raw_tpl) {
+                let page_str = page.to_string();
+                let vars = [("key", keyword), ("page", page_str.as_str())];
+                let pre_tpl = substitute_url_part_vars(raw_tpl, &vars, None);
                 session.set_search_vars(keyword, page)?;
                 let input = RuleValue::Text(String::new());
-                session.eval_string(&input, raw_tpl, &source.source_url)?
+                session.eval_string(&input, &pre_tpl, &source.source_url)?
             } else {
                 let unencoded = substitute_simple_template(raw_tpl, keyword, page, false);
                 if split_legado_url_and_raw_options(unencoded.trim()).is_some() {

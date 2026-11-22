@@ -521,10 +521,34 @@ pub fn eval_json_options_template<F>(
 where
     F: FnMut(&str) -> Result<String, String>,
 {
+    let (form_body, json_str_body) = {
+        let masked = mask_mustache_with_token(raw_opt_json, "0");
+        serde_json::from_str::<Value>(&masked)
+            .ok()
+            .and_then(|v| {
+                v.as_object().and_then(|obj| {
+                    obj.get("body").and_then(Value::as_str).map(|body_tpl| {
+                        let is_form = is_url_encoded_form_body(obj, body_tpl);
+                        let trimmed_body = body_tpl.trim_start();
+                        let is_json_str = !is_form
+                            && (trimmed_body.starts_with('{') || trimmed_body.starts_with('['));
+                        (is_form, is_json_str)
+                    })
+                })
+            })
+            .unwrap_or((false, false))
+    };
+
     let bytes = raw_opt_json.as_bytes();
     let mut eval_opt = String::with_capacity(raw_opt_json.len() + 32);
     let mut baseline_opt = String::with_capacity(raw_opt_json.len() + 32);
     let mut in_string = false;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut top_key_expected = false;
+    let mut reading_top_key = false;
+    let mut top_key_start = 0usize;
+    let mut current_top_key: Option<String> = None;
     let mut pos = 0usize;
 
     while pos < bytes.len() {
@@ -549,14 +573,31 @@ where
                     "\"_XMEDIA_PROBE_\""
                 });
 
+                let in_body_string = in_string
+                    && !reading_top_key
+                    && brace_depth == 1
+                    && bracket_depth == 0
+                    && current_top_key.as_deref() == Some("body");
+                let in_form_body_string = form_body && in_body_string;
+                let in_json_str_body = json_str_body && in_body_string;
+
                 let raw_val = if let Some((_, static_val)) = vars.iter().find(|(k, _)| *k == expr) {
-                    (*static_val).to_string()
+                    if in_form_body_string {
+                        url_encode_component(static_val)
+                    } else {
+                        (*static_val).to_string()
+                    }
                 } else {
                     eval_js(&format!("{{{{{expr}}}}}"))?
                 };
 
                 if in_string {
-                    eval_opt.push_str(&json_escape_str_inner(&raw_val));
+                    let escaped = if in_json_str_body {
+                        json_escape_str_inner(&json_escape_str_inner(&raw_val))
+                    } else {
+                        json_escape_str_inner(&raw_val)
+                    };
+                    eval_opt.push_str(&escaped);
                 } else {
                     let trimmed_val = raw_val.trim();
                     if let Ok(v) = serde_json::from_str::<Value>(trimmed_val)
@@ -575,11 +616,55 @@ where
             }
         }
         if bytes[pos] == b'"' {
-            in_string = !in_string;
+            if !in_string {
+                in_string = true;
+                if brace_depth == 1 && bracket_depth == 0 && top_key_expected {
+                    reading_top_key = true;
+                    top_key_start = pos;
+                }
+            } else {
+                in_string = false;
+                if reading_top_key {
+                    reading_top_key = false;
+                    current_top_key =
+                        serde_json::from_str::<String>(&raw_opt_json[top_key_start..=pos]).ok();
+                }
+            }
             eval_opt.push('"');
             baseline_opt.push('"');
             pos += 1;
             continue;
+        }
+        if !in_string {
+            match bytes[pos] {
+                b'{' => {
+                    if brace_depth == 0 && bracket_depth == 0 {
+                        top_key_expected = true;
+                    }
+                    brace_depth += 1;
+                }
+                b'}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    if brace_depth == 0 {
+                        top_key_expected = false;
+                        current_top_key = None;
+                    }
+                }
+                b'[' => {
+                    bracket_depth += 1;
+                }
+                b']' => {
+                    bracket_depth = bracket_depth.saturating_sub(1);
+                }
+                b',' if brace_depth == 1 && bracket_depth == 0 => {
+                    top_key_expected = true;
+                    current_top_key = None;
+                }
+                b':' if brace_depth == 1 && bracket_depth == 0 => {
+                    top_key_expected = false;
+                }
+                _ => {}
+            }
         }
         if let Some(ch) = raw_opt_json[pos..].chars().next() {
             eval_opt.push(ch);
