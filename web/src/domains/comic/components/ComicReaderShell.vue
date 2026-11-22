@@ -462,6 +462,8 @@ function onKeydown(e: KeyboardEvent): void {
   }
 
   if (e.metaKey || e.ctrlKey || e.altKey) return
+  if (settingsDrawerOpen.value || chaptersDrawerOpen.value) return
+  if (target?.closest('[aria-modal="true"]')) return
 
   if (e.key === ' ') {
     e.preventDefault()

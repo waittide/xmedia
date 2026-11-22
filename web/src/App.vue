@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, watch } from 'vue'
+import { onBeforeUnmount, onMounted, watch } from 'vue'
 import { useShowMusicBar } from '@/composables/useShowMusicBar'
 import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
@@ -32,7 +32,24 @@ watch(
   { immediate: true },
 )
 
+function handlePageHide(): void {
+  eventsStore.disconnect()
+}
+
+function handlePageShow(event: PageTransitionEvent): void {
+  if (event.persisted && authStore.isAuthenticated) {
+    eventsStore.connect()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('pagehide', handlePageHide)
+  window.addEventListener('pageshow', handlePageShow)
+})
+
 onBeforeUnmount(() => {
+  window.removeEventListener('pagehide', handlePageHide)
+  window.removeEventListener('pageshow', handlePageShow)
   eventsStore.disconnect()
 })
 

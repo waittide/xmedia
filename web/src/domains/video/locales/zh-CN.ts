@@ -152,6 +152,7 @@ export default {
     allSources: '全部影视源',
     allSourcesCount: '全部 ({count})',
     noEnabledSources: '当前没有已启用的在线影视源，请先在「设置 → 数据源 → 影视」导入并启用影视源。',
+    sourcesLoadFailed: '加载在线影视源列表失败',
     goSettings: '前往设置',
     categoriesTitle: '分类浏览',
     allCategories: '全部分类',

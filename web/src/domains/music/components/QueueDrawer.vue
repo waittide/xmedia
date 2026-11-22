@@ -56,7 +56,6 @@ async function handleClearQueue(): Promise<void> {
 
 <template>
   <MdSideSheet
-    v-if="playerStore.queueOpen"
     :open="playerStore.queueOpen"
     :title="t('player.queueTitle')"
     :subtitle="queueSubtitle"

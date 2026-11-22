@@ -806,6 +806,7 @@ function onVideoEnded(): void {
 function onVideoError(): void {
   const el = videoEl.value
   if (!el || (!el.getAttribute('src') && !hlsInstance) || !el.error) return
+  stopAndClearVideoElement()
   isPlaying.value = false
   isBuffering.value = false
   loadError.value = t('online.streamLoadFailed')

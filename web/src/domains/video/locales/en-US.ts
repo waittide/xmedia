@@ -152,6 +152,7 @@ export default {
     allSources: 'All Sources',
     allSourcesCount: 'All ({count})',
     noEnabledSources: 'No online video sources enabled. Import and enable sources in Settings → Data Sources → Video.',
+    sourcesLoadFailed: 'Failed to load online video sources',
     goSettings: 'Go to Settings',
     categoriesTitle: 'Categories',
     allCategories: 'All Categories',

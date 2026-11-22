@@ -17,6 +17,7 @@ import {
   LuChevronUp,
   LuBookmark,
   LuCheck,
+  LuLoader2,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
@@ -199,6 +200,20 @@ onBeforeUnmount(() => {
     class="safe-px fixed inset-x-0 bottom-0 z-30 flex flex-col border-t border-[var(--md-sys-color-outline-variant)]/60 bg-[var(--md-sys-color-surface-container)]/95 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-md"
   >
     <div ref="audioHostRef" class="hidden" aria-hidden="true" />
+    <div
+      v-if="playerStore.playbackError"
+      role="alert"
+      class="flex items-center justify-between gap-2 border-b border-[var(--md-sys-color-error)]/25 bg-[var(--md-sys-color-error-container)]/90 px-3 py-1.5 text-xs text-[var(--md-sys-color-on-error-container)] sm:px-6"
+    >
+      <span class="truncate">{{ playerStore.playbackError }}</span>
+      <button
+        type="button"
+        class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
+        @click="playerStore.retryCurrentPlayback()"
+      >
+        {{ t('player.retryPlayback') }}
+      </button>
+    </div>
     <!-- Mobile Compact Draggable Progress Bar (< sm) -->
     <div class="flex items-center gap-2 px-3 pt-1 sm:hidden">
       <span
@@ -354,13 +369,27 @@ onBeforeUnmount(() => {
 
           <button
             type="button"
-            :disabled="!playerStore.currentTrack"
+            :disabled="!playerStore.currentTrack || playerStore.onlineResolving"
             class="md-state flex h-10 w-10 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)] transition hover:scale-105 disabled:opacity-45"
-            :title="playerStore.isPlaying ? t('player.pause') : t('player.play')"
-            :aria-label="playerStore.isPlaying ? t('player.pause') : t('player.play')"
+            :title="
+              playerStore.onlineResolving
+                ? t('player.resolvingStream')
+                : playerStore.isPlaying
+                  ? t('player.pause')
+                  : t('player.play')
+            "
+            :aria-label="
+              playerStore.onlineResolving
+                ? t('player.resolvingStream')
+                : playerStore.isPlaying
+                  ? t('player.pause')
+                  : t('player.play')
+            "
+            :aria-busy="playerStore.onlineResolving || undefined"
             @click="playerStore.togglePlay()"
           >
-            <LuPause v-if="playerStore.isPlaying" class="h-4 w-4 fill-current" />
+            <LuLoader2 v-if="playerStore.onlineResolving" class="h-4 w-4 animate-spin" />
+            <LuPause v-else-if="playerStore.isPlaying" class="h-4 w-4 fill-current" />
             <LuPlay v-else class="ml-0.5 h-4 w-4 fill-current" />
           </button>
 

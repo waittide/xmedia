@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import { api, buildCoverUrl, buildStreamUrl, canPlayFormatNatively } from './api'
+import { useMusicI18n } from './i18n'
 import {
   onlineMusicApi,
   resolveOnlineMusicAudioUrl,
@@ -113,6 +114,8 @@ function isOnlineItemExpired(item: OnlineQueueItem): boolean {
 
 export const usePlayerStore = defineStore('player', () => {
   const themeStore = useThemeStore()
+  const { t: tMusic, ensureLocale: ensureMusicLocale } = useMusicI18n()
+  void ensureMusicLocale()
   const audio = new Audio()
   audio.preload = 'auto'
   audio.hidden = true
@@ -319,6 +322,7 @@ export const usePlayerStore = defineStore('player', () => {
 
   audio.addEventListener('play', () => {
     isPlaying.value = true
+    playbackError.value = null
   })
 
   audio.addEventListener('pause', () => {
@@ -339,7 +343,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (!audio.src || !currentItem.value) return
     isPlaying.value = false
     if (currentItem.value.kind === 'online') {
-      playbackError.value = audio.error?.message || 'Audio playback error'
+      playbackError.value = audio.error?.message || tMusic('player.playbackError')
     }
   })
 
@@ -654,7 +658,7 @@ export const usePlayerStore = defineStore('player', () => {
 
     const streamUrl = resolveOnlineItemStreamUrl(item)
     if (!streamUrl) {
-      const msg = 'No playable stream URL resolved'
+      const msg = tMusic('player.noPlayableStream')
       playbackError.value = msg
       isPlaying.value = false
       useSnackbarStore().show({ message: msg, tone: 'error' })
@@ -877,6 +881,7 @@ export const usePlayerStore = defineStore('player', () => {
   async function togglePlay(): Promise<void> {
     const item = currentItem.value
     if (!item) return
+    if (onlineResolving.value) return
     if (isPlaying.value) {
       audio.pause()
     } else {
@@ -899,6 +904,16 @@ export const usePlayerStore = defineStore('player', () => {
         }
       }
     }
+  }
+
+  async function retryCurrentPlayback(): Promise<void> {
+    const item = currentItem.value
+    if (!item || onlineResolving.value) return
+    if (item.kind === 'online') {
+      item.resolved = null
+      item.resolvedAtMs = null
+    }
+    await loadAndPlayCurrent(currentTimeSecs.value, true)
   }
 
   function playNext(): void {
@@ -1232,6 +1247,7 @@ export const usePlayerStore = defineStore('player', () => {
     isOnlineTrackInQueue,
     pause,
     togglePlay,
+    retryCurrentPlayback,
     playNext,
     playPrev,
     seekTo,

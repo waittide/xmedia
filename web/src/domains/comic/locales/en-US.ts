@@ -195,6 +195,7 @@ export default {
     allSources: 'All Sources',
     allSourcesCount: 'All ({count})',
     noEnabledSources: 'No online comic sources enabled. Import and enable sources in Settings → Data Sources → Comic.',
+    sourcesLoadFailed: 'Failed to load online comic sources',
     goSettings: 'Go to Settings',
     exploreTitle: 'Explore',
     exploreCategories: 'Explore Categories',

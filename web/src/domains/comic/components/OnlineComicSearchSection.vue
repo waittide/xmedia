@@ -43,6 +43,7 @@ const snackbar = useSnackbarStore()
 
 const loadingInit = ref(false)
 const sources = ref<ComicSourceSummaryDto[]>([])
+const sourcesLoadError = ref<string | null>(null)
 const searchKeyword = ref(props.keyword)
 const selectedSourceIds = ref<string[]>([])
 
@@ -180,8 +181,9 @@ watch(
 async function initData(): Promise<void> {
   const seq = ++initSeq
   loadingInit.value = true
+  sourcesLoadError.value = null
   try {
-    const srcList = await onlineComicApi.listSources().catch(() => [])
+    const srcList = await onlineComicApi.listSources()
     if (unmounted || seq !== initSeq) return
     sources.value = srcList
     if (
@@ -190,6 +192,10 @@ async function initData(): Promise<void> {
     ) {
       selectedSourceIds.value = [props.initialSourceId]
     }
+  } catch (err) {
+    if (unmounted || seq !== initSeq) return
+    sources.value = []
+    sourcesLoadError.value = err instanceof Error ? err.message : String(err)
   } finally {
     if (!unmounted && seq === initSeq) {
       loadingInit.value = false
@@ -515,6 +521,22 @@ function goManageDataSources(): void {
           @click="toggleSourceFilter(src.id)"
         >
           {{ src.name }}
+        </button>
+      </div>
+
+      <!-- Sources Load Error Banner -->
+      <div
+        v-else-if="!loadingInit && sourcesLoadError"
+        role="alert"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
+      >
+        <span>{{ t('online.sourcesLoadFailed') }}: {{ sourcesLoadError }}</span>
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-tonal md-state"
+          @click="initData"
+        >
+          <span>{{ t('online.retry') }}</span>
         </button>
       </div>
 

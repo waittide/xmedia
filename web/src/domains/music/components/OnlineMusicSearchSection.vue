@@ -41,6 +41,7 @@ const playerStore = usePlayerStore()
 
 const loadingInit = ref(true)
 const sources = ref<MusicSourceSummaryDto[]>([])
+const sourcesLoadError = ref<string | null>(null)
 const enabledSources = computed(() => sources.value.filter((s) => s.enabled))
 
 const searchKeyword = ref(props.keyword)
@@ -366,6 +367,7 @@ function goManageDataSources(): void {
 async function initSources(): Promise<void> {
   const seq = ++initSeq
   loadingInit.value = true
+  sourcesLoadError.value = null
   try {
     const list = await onlineMusicApi.listSources()
     if (unmounted || seq !== initSeq) return
@@ -373,9 +375,10 @@ async function initSources(): Promise<void> {
     if (props.initialSourceId && list.some((s) => s.enabled && s.id === props.initialSourceId)) {
       selectedSourceIds.value = [props.initialSourceId]
     }
-  } catch {
+  } catch (err) {
     if (unmounted || seq !== initSeq) return
     sources.value = []
+    sourcesLoadError.value = err instanceof Error ? err.message : String(err)
   } finally {
     if (!unmounted && seq === initSeq) {
       loadingInit.value = false
@@ -458,6 +461,22 @@ onBeforeUnmount(() => {
           @click="toggleSourceFilter(src.id)"
         >
           {{ src.name }}
+        </button>
+      </div>
+
+      <!-- Sources Load Error Banner -->
+      <div
+        v-else-if="!loadingInit && sourcesLoadError"
+        role="alert"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
+      >
+        <span>{{ t('online.sourcesLoadFailed') }}: {{ sourcesLoadError }}</span>
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-tonal md-state"
+          @click="initSources"
+        >
+          <span>{{ t('online.retry') }}</span>
         </button>
       </div>
 

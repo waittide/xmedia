@@ -42,7 +42,7 @@ const { t } = useI18n()
 
 <template>
   <MdSideSheet
-    :open="open && (!loading || Boolean(loadError))"
+    :open="open"
     :title="title"
     :subtitle="subtitle"
     width-class="w-[min(54rem,100vw)]"
