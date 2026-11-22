@@ -137,6 +137,7 @@ export default {
     scanFailed: '扫描失败：{message}',
   },
   reader: {
+    page: '页码',
     backToBook: '返回书籍详情',
     toc: '目录',
     bookmarks: '书签',

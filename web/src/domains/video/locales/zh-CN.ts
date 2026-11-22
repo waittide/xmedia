@@ -17,6 +17,9 @@ export default {
     markUnwatched: '标记未看',
     editMetadata: '编辑信息',
     uploadPoster: '更换海报',
+    favorite: '收藏',
+    unfavorite: '取消收藏',
+    moreActions: '更多操作',
   },
   nav: {
     home: '首页',

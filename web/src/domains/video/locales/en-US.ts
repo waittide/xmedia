@@ -17,6 +17,9 @@ export default {
     markUnwatched: 'Mark Unwatched',
     editMetadata: 'Edit Metadata',
     uploadPoster: 'Upload Poster',
+    favorite: 'Favorite',
+    unfavorite: 'Unfavorite',
+    moreActions: 'More actions',
   },
   nav: {
     home: 'Home',

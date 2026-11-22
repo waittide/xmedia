@@ -137,6 +137,7 @@ export default {
     scanFailed: 'Failed: {message}',
   },
   reader: {
+    page: 'Page',
     backToBook: 'Back to Book',
     toc: 'Contents',
     bookmarks: 'Bookmarks',
