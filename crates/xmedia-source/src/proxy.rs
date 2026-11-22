@@ -146,6 +146,69 @@ pub async fn fetch_validated_image_bytes_with_config(
     .await
 }
 
+pub fn strip_bom_and_ascii_ws(mut bytes: &[u8]) -> &[u8] {
+    if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        bytes = &bytes[3..];
+    }
+    while let Some((&b, rest)) = bytes.split_first() {
+        if b.is_ascii_whitespace() {
+            bytes = rest;
+        } else {
+            break;
+        }
+    }
+    bytes
+}
+
+fn strip_leading_xml_prolog_and_comments(mut cur: &[u8]) -> (&[u8], bool) {
+    loop {
+        if cur.starts_with(b"<?") {
+            let Some(end) = cur.windows(2).position(|w| w == b"?>") else {
+                return (cur, true);
+            };
+            cur = strip_bom_and_ascii_ws(&cur[end + 2..]);
+            continue;
+        }
+        if cur.starts_with(b"<!--") {
+            let Some(end) = cur.windows(3).position(|w| w == b"-->") else {
+                return (cur, true);
+            };
+            cur = strip_bom_and_ascii_ws(&cur[end + 3..]);
+            continue;
+        }
+        return (cur, false);
+    }
+}
+
+/// Returns `true` when `buf` already has enough non-whitespace bytes past any leading
+/// XML processing instructions (`<?xml ...?>`) or comments (`<!-- ... -->`) to reliably
+/// sniff HTML/SVG/HLS headers.
+pub fn has_enough_media_sniff_bytes(buf: &[u8], min_non_ws_bytes: usize) -> bool {
+    let trimmed = strip_bom_and_ascii_ws(buf);
+    let (after_prolog, unclosed_prolog) = strip_leading_xml_prolog_and_comments(trimmed);
+    !unclosed_prolog && after_prolog.len() >= min_non_ws_bytes
+}
+
+/// Returns `true` when `bytes` begins with HTML or SVG markup (including after leading
+/// UTF-8 BOM, whitespace, `<?xml ...?>` declarations, or `<!-- ... -->` comments).
+pub fn looks_like_html_or_svg_bytes(bytes: &[u8]) -> bool {
+    let trimmed = strip_bom_and_ascii_ws(bytes);
+    let (cur, unclosed_prolog) = strip_leading_xml_prolog_and_comments(trimmed);
+    if unclosed_prolog || cur.len() < 4 {
+        return false;
+    }
+    let head: Vec<u8> = cur
+        .iter()
+        .take(16)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    head.starts_with(b"<html")
+        || head.starts_with(b"<!doctype")
+        || head.starts_with(b"<head")
+        || head.starts_with(b"<body")
+        || head.starts_with(b"<svg")
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -377,5 +440,30 @@ mod tests {
         );
 
         server.abort();
+    }
+
+    #[test]
+    fn html_or_svg_sniffing_catches_xml_prologs_comments_and_split_chunks() {
+        assert!(looks_like_html_or_svg_bytes(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        ));
+        assert!(looks_like_html_or_svg_bytes(
+            b"\xEF\xBB\xBF \n<?xml version=\"1.0\"?>\n<!-- c --><!DOCTYPE html><html></html>"
+        ));
+        assert!(!has_enough_media_sniff_bytes(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+            16
+        ));
+        assert!(has_enough_media_sniff_bytes(
+            b"<?xml version=\"1.0\" encoding=\"UTF-8\"?><svg xmlns=\"http://www.w3.org/2000/svg\">",
+            16
+        ));
+        assert!(has_enough_media_sniff_bytes(
+            b"ID3\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+            16
+        ));
+        assert!(!looks_like_html_or_svg_bytes(
+            b"ID3\x03\x00\x00\x00\x00\x00\x00"
+        ));
     }
 }
