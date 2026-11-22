@@ -726,6 +726,13 @@ impl ReusableSourceSession {
             .clone()
     }
 
+    pub fn push_diagnostic_log(&self, msg: impl Into<String>) {
+        let mut g = self.diag_arc.lock().unwrap_or_else(|e| e.into_inner());
+        if g.logs.len() < 100 {
+            g.logs.push(msg.into());
+        }
+    }
+
     pub fn finalize_state(&self) -> (SourceRuntimeState, ExecutionDiagnostics) {
         let mut st = self
             .state_arc

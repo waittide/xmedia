@@ -243,3 +243,31 @@ pub fn ssrf_redirect_policy(allow_private_ips: bool, max_hops: usize) -> reqwest
         attempt.follow()
     })
 }
+
+/// Returns `true` if any error in the `Error::source()` / `io::Error::get_ref()` chain is an
+/// SSRF/policy-induced `PermissionDenied` or `AddrNotAvailable` error.
+pub fn has_ssrf_io_error_in_chain(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut stack: Vec<&(dyn std::error::Error + 'static)> = vec![err];
+    let mut visited = 0usize;
+    while let Some(cur) = stack.pop() {
+        visited += 1;
+        if visited > 32 {
+            break;
+        }
+        if let Some(io_err) = cur.downcast_ref::<std::io::Error>() {
+            if matches!(
+                io_err.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::AddrNotAvailable
+            ) {
+                return true;
+            }
+            if let Some(inner) = io_err.get_ref() {
+                stack.push(inner);
+            }
+        }
+        if let Some(src) = cur.source() {
+            stack.push(src);
+        }
+    }
+    false
+}

@@ -1,18 +1,65 @@
 use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::time::{Duration, Instant};
 
-use reqwest::header::{CONTENT_TYPE, HeaderValue, USER_AGENT};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER, USER_AGENT};
+use tokio::sync::Semaphore;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::infra::thumbnail::sniff_raster_image_mime;
 
 use crate::http::{
     DEFAULT_WEBVIEW_UA, HttpClientConfig, build_sanitized_headers, get_or_build_async_client,
-    validate_target_url_static,
+    has_ssrf_io_error_in_chain, validate_target_url_static,
 };
 
 pub const DEFAULT_IMAGE_PROXY_MAX_BYTES: usize = 8 * 1024 * 1024;
-pub const DEFAULT_IMAGE_PROXY_TIMEOUT_SECS: u64 = 12;
+pub const DEFAULT_IMAGE_PROXY_TIMEOUT_SECS: u64 = 20;
 pub const IMAGE_PROXY_CSP: &str = "sandbox; default-src 'none'; img-src 'self' data:";
 pub const IMAGE_PROXY_CACHE_CONTROL: &str = "private, max-age=86400";
+
+const IMAGE_PROXY_MAX_CONCURRENT_PER_HOST: usize = 6;
+const IMAGE_PROXY_MAX_ATTEMPTS: usize = 2;
+const IMAGE_PROXY_DEFAULT_RETRY_DELAY: Duration = Duration::from_millis(300);
+const IMAGE_PROXY_MIN_RETRY_DELAY: Duration = Duration::from_millis(250);
+const IMAGE_PROXY_MAX_RETRY_DELAY: Duration = Duration::from_secs(2);
+const IMAGE_PROXY_RETRY_BUDGET: Duration = Duration::from_secs(14);
+
+static HOST_SEMAPHORES: LazyLock<Mutex<HashMap<String, Weak<Semaphore>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn host_semaphore(host: &str) -> Arc<Semaphore> {
+    let key = host.trim().to_ascii_lowercase();
+    let mut guard = HOST_SEMAPHORES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = guard.get(&key).and_then(Weak::upgrade) {
+        return existing;
+    }
+    if guard.len() >= 128 {
+        guard.retain(|_, w| w.strong_count() > 0);
+    }
+    let sem = Arc::new(Semaphore::new(IMAGE_PROXY_MAX_CONCURRENT_PER_HOST));
+    guard.insert(key, Arc::downgrade(&sem));
+    sem
+}
+
+fn is_transient_reqwest_error(err: &reqwest::Error) -> bool {
+    if err.is_redirect() || err.is_builder() {
+        return false;
+    }
+    if has_ssrf_io_error_in_chain(err) {
+        return false;
+    }
+    err.is_timeout() || err.is_connect() || err.is_body() || err.is_request()
+}
+
+fn is_transient_image_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+fn parse_retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
+    let raw = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
+    let secs = raw.parse::<u64>().ok()?;
+    Some(Duration::from_secs(secs).clamp(IMAGE_PROXY_MIN_RETRY_DELAY, IMAGE_PROXY_MAX_RETRY_DELAY))
+}
 
 /// Validates that upstream `Content-Type` (lowercased, without parameters) is either empty,
 /// generic octet-stream, or a non-SVG `image/*` type.
@@ -55,32 +102,44 @@ pub fn validate_safe_raster_image(
 /// source headers (defaulting `User-Agent` to `DEFAULT_WEBVIEW_UA` if omitted),
 /// enforces `max_bytes` on both `Content-Length` and streamed chunks, validates
 /// `Content-Type`, and sniffs magic bytes before returning `(bytes, mime_type)`.
-pub async fn fetch_validated_image_bytes(
+enum ImageAttemptOutcome {
+    Done((Vec<u8>, &'static str)),
+    Retry(Duration),
+}
+
+async fn attempt_fetch_validated_image_bytes(
     client: &reqwest::Client,
-    raw_url: &str,
-    headers: Option<&HashMap<String, String>>,
+    validated: reqwest::Url,
+    header_map: HeaderMap,
     max_bytes: usize,
-    allow_private_ips: bool,
-) -> DomainResult<(Vec<u8>, &'static str)> {
-    let validated = validate_target_url_static(raw_url.trim(), allow_private_ips)
-        .map_err(DomainError::Validation)?;
-
-    let mut header_map = headers.map(build_sanitized_headers).unwrap_or_default();
-    if !header_map.contains_key(USER_AGENT) {
-        header_map.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_WEBVIEW_UA));
-    }
-
-    let mut resp = client
-        .get(validated)
-        .headers(header_map)
-        .send()
-        .await
-        .map_err(|e| DomainError::Validation(format!("拉取图片失败: {e}")))?;
+    can_retry: bool,
+    started: Instant,
+) -> DomainResult<ImageAttemptOutcome> {
+    let mut resp = match client.get(validated).headers(header_map).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            if can_retry
+                && is_transient_reqwest_error(&e)
+                && started.elapsed() < IMAGE_PROXY_RETRY_BUDGET
+            {
+                return Ok(ImageAttemptOutcome::Retry(IMAGE_PROXY_DEFAULT_RETRY_DELAY));
+            }
+            return Err(DomainError::Validation(format!("拉取图片失败: {e}")));
+        }
+    };
 
     if !resp.status().is_success() {
+        let status = resp.status();
+        if can_retry
+            && is_transient_image_status(status)
+            && started.elapsed() < IMAGE_PROXY_RETRY_BUDGET
+        {
+            let delay =
+                parse_retry_after_delay(resp.headers()).unwrap_or(IMAGE_PROXY_DEFAULT_RETRY_DELAY);
+            return Ok(ImageAttemptOutcome::Retry(delay));
+        }
         return Err(DomainError::Validation(format!(
-            "图片响应状态异常: {}",
-            resp.status()
+            "图片响应状态异常: {status}"
         )));
     }
 
@@ -104,22 +163,80 @@ pub async fn fetch_validated_image_bytes(
     }
 
     let mut bytes = Vec::new();
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| DomainError::Validation(format!("读取图片失败: {e}")))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > max_bytes {
-            return Err(DomainError::Validation(format!(
-                "图片体积超过 {} 字节限制",
-                max_bytes
-            )));
+    loop {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                    return Err(DomainError::Validation(format!(
+                        "图片体积超过 {} 字节限制",
+                        max_bytes
+                    )));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => {
+                if can_retry
+                    && is_transient_reqwest_error(&e)
+                    && started.elapsed() < IMAGE_PROXY_RETRY_BUDGET
+                {
+                    return Ok(ImageAttemptOutcome::Retry(IMAGE_PROXY_DEFAULT_RETRY_DELAY));
+                }
+                return Err(DomainError::Validation(format!("读取图片失败: {e}")));
+            }
         }
-        bytes.extend_from_slice(&chunk);
     }
 
     let safe_mime = validate_safe_raster_image(header_ct.as_deref(), &bytes)?;
-    Ok((bytes, safe_mime))
+    Ok(ImageAttemptOutcome::Done((bytes, safe_mime)))
+}
+
+pub async fn fetch_validated_image_bytes(
+    client: &reqwest::Client,
+    raw_url: &str,
+    headers: Option<&HashMap<String, String>>,
+    max_bytes: usize,
+    allow_private_ips: bool,
+) -> DomainResult<(Vec<u8>, &'static str)> {
+    let validated = validate_target_url_static(raw_url.trim(), allow_private_ips)
+        .map_err(DomainError::Validation)?;
+
+    let mut header_map = headers.map(build_sanitized_headers).unwrap_or_default();
+    if !header_map.contains_key(USER_AGENT) {
+        header_map.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_WEBVIEW_UA));
+    }
+
+    let sem = host_semaphore(validated.host_str().unwrap_or("_unknown"));
+    let started = Instant::now();
+
+    for attempt in 1..=IMAGE_PROXY_MAX_ATTEMPTS {
+        let can_retry = attempt < IMAGE_PROXY_MAX_ATTEMPTS;
+        let outcome = {
+            let _permit = sem
+                .acquire()
+                .await
+                .map_err(|_| DomainError::Storage("图片代理并发信号量已关闭".into()))?;
+            attempt_fetch_validated_image_bytes(
+                client,
+                validated.clone(),
+                header_map.clone(),
+                max_bytes,
+                can_retry,
+                started,
+            )
+            .await?
+        };
+        match outcome {
+            ImageAttemptOutcome::Done(result) => return Ok(result),
+            ImageAttemptOutcome::Retry(delay) => {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    Err(DomainError::Validation(
+        "拉取图片失败: 重试次数已耗尽".into(),
+    ))
 }
 
 /// Convenience wrapper that resolves a pooled async client from `config`
@@ -561,5 +678,235 @@ mod tests {
         assert!(!looks_like_html_or_svg_bytes(
             b"RIFF\x24\x00\x00\x00WAVEfmt "
         ));
+    }
+
+    #[tokio::test]
+    async fn fetch_validated_image_bytes_retries_transient_503_and_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_c = hits.clone();
+
+        let app = Router::new().route(
+            "/flaky.png",
+            get(move || {
+                let h = hits_c.clone();
+                async move {
+                    let n = h.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == 1 {
+                        Response::builder()
+                            .status(StatusCode::SERVICE_UNAVAILABLE)
+                            .body(Body::from("busy"))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "image/png")
+                            .body(Body::from(PNG_BYTES.to_vec()))
+                            .unwrap()
+                    }
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let ok_cfg = HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: true,
+            proxy_url: None,
+        };
+        let (bytes, mime) = fetch_validated_image_bytes_with_config(
+            &format!("http://{addr}/flaky.png"),
+            None,
+            1024,
+            &ok_cfg,
+        )
+        .await
+        .expect("transient 503 should recover on retry");
+
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, PNG_BYTES);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_validated_image_bytes_never_retries_403_svg_or_oversize() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hits_403 = Arc::new(AtomicUsize::new(0));
+        let hits_svg = Arc::new(AtomicUsize::new(0));
+        let hits_big = Arc::new(AtomicUsize::new(0));
+
+        let h403 = hits_403.clone();
+        let hsvg = hits_svg.clone();
+        let hbig = hits_big.clone();
+
+        let app = Router::new()
+            .route(
+                "/forbidden.png",
+                get(move || {
+                    let c = h403.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        (StatusCode::FORBIDDEN, "forbidden")
+                    }
+                }),
+            )
+            .route(
+                "/svg.svg",
+                get(move || {
+                    let c = hsvg.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "image/svg+xml")
+                            .body(Body::from("<svg></svg>"))
+                            .unwrap()
+                    }
+                }),
+            )
+            .route(
+                "/oversize.png",
+                get(move || {
+                    let c = hbig.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        let mut payload = PNG_BYTES.to_vec();
+                        payload.extend_from_slice(&[7u8; 200]);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "image/png")
+                            .body(Body::from(payload))
+                            .unwrap()
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let ok_cfg = HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: true,
+            proxy_url: None,
+        };
+
+        for path in ["/forbidden.png", "/svg.svg", "/oversize.png"] {
+            let err = fetch_validated_image_bytes_with_config(
+                &format!("http://{addr}{path}"),
+                None,
+                64,
+                &ok_cfg,
+            )
+            .await
+            .expect_err("non-transient failure must fail");
+            assert!(matches!(err, DomainError::Validation(_)));
+        }
+
+        assert_eq!(hits_403.load(Ordering::SeqCst), 1);
+        assert_eq!(hits_svg.load(Ordering::SeqCst), 1);
+        assert_eq!(hits_big.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fetch_validated_image_bytes_never_retries_ssrf_or_redirect_to_loopback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::http::{MAX_REDIRECT_HOPS, ssrf_redirect_policy};
+
+        let target_hits = Arc::new(AtomicUsize::new(0));
+        let redir_hits = Arc::new(AtomicUsize::new(0));
+        let th = target_hits.clone();
+        let rh = redir_hits.clone();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let target_url = format!("http://{addr}/secret.png");
+
+        let app = Router::new()
+            .route(
+                "/secret.png",
+                get(move || {
+                    let c = th.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "image/png")
+                            .body(Body::from(PNG_BYTES.to_vec()))
+                            .unwrap()
+                    }
+                }),
+            )
+            .route(
+                "/redir",
+                get(move || {
+                    let c = rh.clone();
+                    let loc = target_url.clone();
+                    async move {
+                        c.fetch_add(1, Ordering::SeqCst);
+                        Response::builder()
+                            .status(StatusCode::FOUND)
+                            .header("location", loc)
+                            .body(Body::empty())
+                            .unwrap()
+                    }
+                }),
+            );
+
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        // 1. Direct loopback URL with allow_private_ips = false -> 0 hits to loopback target
+        let ssrf_cfg = HttpClientConfig {
+            timeout_secs: 5,
+            allow_private_ips: false,
+            proxy_url: None,
+        };
+        let err1 = fetch_validated_image_bytes_with_config(
+            &format!("http://{addr}/secret.png"),
+            None,
+            1024,
+            &ssrf_cfg,
+        )
+        .await
+        .expect_err("loopback SSRF must fail");
+        assert!(matches!(err1, DomainError::Validation(_)));
+        assert_eq!(target_hits.load(Ordering::SeqCst), 0);
+
+        // 2. 302 -> 127.0.0.1 blocked by ssrf_redirect_policy(false) -> 1 redirect hit, 0 target hits, no retry
+        let redir_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .redirect(ssrf_redirect_policy(false, MAX_REDIRECT_HOPS))
+            .build()
+            .unwrap();
+        let err2 = fetch_validated_image_bytes(
+            &redir_client,
+            &format!("http://{addr}/redir"),
+            None,
+            1024,
+            true,
+        )
+        .await
+        .expect_err("302 redirect to loopback must fail");
+        assert!(matches!(err2, DomainError::Validation(_)));
+        assert_eq!(redir_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(target_hits.load(Ordering::SeqCst), 0);
+
+        server.abort();
     }
 }

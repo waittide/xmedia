@@ -1,13 +1,16 @@
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use encoding_rs::Encoding;
 use regex::Regex;
 use reqwest::header::{COOKIE, HeaderMap, HeaderName, HeaderValue, SET_COOKIE, USER_AGENT};
 
-use super::ssrf::{SsrfSafeResolver, ssrf_redirect_policy, validate_target_url_static};
+use super::ssrf::{
+    SsrfSafeResolver, has_ssrf_io_error_in_chain, ssrf_redirect_policy, validate_target_url_static,
+};
 use super::url_cookie::{
     HttpClientConfig, HttpFetchResult, merge_cookie_string, normalize_cookie_key, parse_legado_url,
     resolve_relative_url, try_resolve_data_url,
@@ -427,15 +430,93 @@ impl LegadoHttpClient {
         base_url: &str,
         timeout_override: Option<Duration>,
     ) -> Result<HttpFetchResult, String> {
+        self.fetch_once(raw_url, base_url, timeout_override)
+            .map_err(|(msg, _)| msg)
+    }
+
+    pub fn fetch_with_timeout_resilient(
+        &self,
+        raw_url: &str,
+        base_url: &str,
+        timeout_override: Option<Duration>,
+        max_retries: usize,
+        cancel_flag: Option<&AtomicBool>,
+    ) -> Result<HttpFetchResult, String> {
+        let parsed = parse_legado_url(raw_url);
+        let method_str = parsed
+            .options
+            .method
+            .as_deref()
+            .unwrap_or("GET")
+            .trim()
+            .to_ascii_uppercase();
+        let is_idempotent = matches!(method_str.as_str(), "GET" | "HEAD")
+            && !parsed.url.trim().starts_with("data:");
+        let allowed_retries = if is_idempotent { max_retries } else { 0 };
+        let start = Instant::now();
+
+        let mut attempt = 0usize;
+        loop {
+            if cancel_flag.is_some_and(|f| f.load(Ordering::Relaxed)) {
+                return Err("执行已取消 (interrupted)".into());
+            }
+            let remaining_override = timeout_override.map(|t| t.saturating_sub(start.elapsed()));
+            if let Some(rem) = remaining_override
+                && rem.is_zero()
+            {
+                return Err("执行超过单次操作总超时上限 (interrupted)".into());
+            }
+
+            match self.fetch_once(raw_url, base_url, remaining_override) {
+                Ok(res) => {
+                    let transient_status = matches!(res.status, 408 | 429 | 500 | 502 | 503 | 504);
+                    if transient_status && attempt < allowed_retries {
+                        let has_budget =
+                            remaining_override.is_none_or(|rem| rem >= Duration::from_secs(4));
+                        if has_budget {
+                            attempt += 1;
+                            if !sleep_with_cancel(Duration::from_millis(300), cancel_flag) {
+                                return Err("执行已取消 (interrupted)".into());
+                            }
+                            continue;
+                        }
+                    }
+                    return Ok(res);
+                }
+                Err((msg, retriable)) => {
+                    if retriable && attempt < allowed_retries {
+                        let has_budget =
+                            remaining_override.is_none_or(|rem| rem >= Duration::from_secs(4));
+                        if has_budget {
+                            attempt += 1;
+                            if !sleep_with_cancel(Duration::from_millis(300), cancel_flag) {
+                                return Err("执行已取消 (interrupted)".into());
+                            }
+                            continue;
+                        }
+                    }
+                    return Err(msg);
+                }
+            }
+        }
+    }
+
+    fn fetch_once(
+        &self,
+        raw_url: &str,
+        base_url: &str,
+        timeout_override: Option<Duration>,
+    ) -> Result<HttpFetchResult, (String, bool)> {
         let parsed = parse_legado_url(raw_url);
         if let Some(res) = try_resolve_data_url(&parsed) {
-            return res;
+            return res.map_err(|m| (m, false));
         }
 
         let resolved_url = resolve_relative_url(&parsed.url, base_url);
         // Static validation runs upfront; DNS resolution & IP checks execute once inside
         // `SsrfSafeResolver` (when no proxy is configured) to prevent DNS rebinding TOCTOU.
-        let validated = validate_target_url_static(&resolved_url, self.config.allow_private_ips)?;
+        let validated = validate_target_url_static(&resolved_url, self.config.allow_private_ips)
+            .map_err(|m| (m, false))?;
 
         let method_str = parsed
             .options
@@ -515,11 +596,13 @@ impl LegadoHttpClient {
         }
 
         let mut resp = req.send().map_err(|e| {
-            if e.is_timeout() {
+            let retriable = is_transient_blocking_send_error(&e);
+            let msg = if e.is_timeout() {
                 format!("请求 '{resolved_url}' 超时: {e}")
             } else {
                 format!("请求 '{resolved_url}' 失败: {e}")
-            }
+            };
+            (msg, retriable)
         })?;
 
         let final_url = resp.url().to_string();
@@ -547,9 +630,12 @@ impl LegadoHttpClient {
         if let Some(content_len) = resp.content_length()
             && content_len > MAX_RESPONSE_BODY_BYTES as u64
         {
-            return Err(format!(
-                "响应体超过最大限制 ({}MB): '{resolved_url}'",
-                MAX_RESPONSE_BODY_BYTES / (1024 * 1024)
+            return Err((
+                format!(
+                    "响应体超过最大限制 ({}MB): '{resolved_url}'",
+                    MAX_RESPONSE_BODY_BYTES / (1024 * 1024)
+                ),
+                false,
             ));
         }
 
@@ -558,16 +644,21 @@ impl LegadoHttpClient {
             .take((MAX_RESPONSE_BODY_BYTES as u64) + 1)
             .read_to_end(&mut raw_bytes)
             .map_err(|e| {
-                if is_timeout_error_chain(&e) {
+                let retriable = !has_ssrf_io_error_in_chain(&e);
+                let msg = if is_timeout_error_chain(&e) {
                     format!("读取响应体超时 '{resolved_url}': {e}")
                 } else {
                     format!("读取响应体失败 '{resolved_url}': {e}")
-                }
+                };
+                (msg, retriable)
             })?;
         if raw_bytes.len() > MAX_RESPONSE_BODY_BYTES {
-            return Err(format!(
-                "响应体超过最大限制 ({}MB): '{resolved_url}'",
-                MAX_RESPONSE_BODY_BYTES / (1024 * 1024)
+            return Err((
+                format!(
+                    "响应体超过最大限制 ({}MB): '{resolved_url}'",
+                    MAX_RESPONSE_BODY_BYTES / (1024 * 1024)
+                ),
+                false,
             ));
         }
 
@@ -584,4 +675,28 @@ impl LegadoHttpClient {
             headers: resp_headers,
         })
     }
+}
+
+fn is_transient_blocking_send_error(err: &reqwest::Error) -> bool {
+    if err.is_redirect() || err.is_builder() {
+        return false;
+    }
+    if has_ssrf_io_error_in_chain(err) {
+        return false;
+    }
+    err.is_timeout() || err.is_connect() || err.is_body() || err.is_request()
+}
+
+fn sleep_with_cancel(total: Duration, cancel_flag: Option<&AtomicBool>) -> bool {
+    let step = Duration::from_millis(50);
+    let mut elapsed = Duration::ZERO;
+    while elapsed < total {
+        if cancel_flag.is_some_and(|f| f.load(Ordering::Relaxed)) {
+            return false;
+        }
+        let d = step.min(total - elapsed);
+        std::thread::sleep(d);
+        elapsed += d;
+    }
+    !cancel_flag.is_some_and(|f| f.load(Ordering::Relaxed))
 }
