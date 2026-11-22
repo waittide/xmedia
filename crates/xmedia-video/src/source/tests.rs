@@ -961,12 +961,21 @@ fn subtitle_proxy_normalizer_passes_vtt_converts_srt_and_rejects_xss_or_oversize
         "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nHello, world!\n"
     );
 
-    let srt = b"1\r\n00:00:01,250 --> 00:00:04,500 align:start\r\nHello, SRT!\r\n\r\n2\r\n00:05,000 --> 00:08,100\r\nSecond\r\n";
+    let vtt_leading_blank = b"\n\n  \r\nWEBVTT\n\n00:00:00.100 --> 00:00:05.000\nHello VTT\n\n";
+    let vtt_leading_out =
+        validate_and_normalize_subtitle_to_vtt(vtt_leading_blank, Some("text/vtt")).unwrap();
+    assert_eq!(
+        vtt_leading_out,
+        "WEBVTT\n\n00:00:00.100 --> 00:00:05.000\nHello VTT\n"
+    );
+
+    let srt = b"1\r\n00:00:01,250 --> 00:00:04,500 align:start\r\nHello, SRT!\r\n\r\n2\r\n00:05,000 --> 00:08,100\r\nSecond\r\n\r\n3\r\n0:01:02,345 --> 1:02:03,678\r\nOne-digit hour\r\n";
     let srt_out =
         validate_and_normalize_subtitle_to_vtt(srt, Some("application/x-subrip")).unwrap();
     assert!(srt_out.starts_with("WEBVTT\n\n"));
     assert!(srt_out.contains("00:00:01.250 --> 00:00:04.500 align:start\nHello, SRT!"));
     assert!(srt_out.contains("00:05.000 --> 00:08.100\nSecond"));
+    assert!(srt_out.contains("00:01:02.345 --> 01:02:03.678\nOne-digit hour"));
 
     // Reject HTML/SVG/XML/script, invalid UTF-8, non-subtitle text, and >4 MiB payloads
     assert!(

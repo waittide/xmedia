@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -438,6 +439,16 @@ pub fn is_forbidden_subtitle_ct(ct_lower: &str) -> bool {
         || base == "text/xml"
 }
 
+fn pad_vtt_timestamp_hms(ts: &str) -> Cow<'_, str> {
+    if let Some((hours, rest)) = ts.split_once(':')
+        && rest.contains(':')
+        && hours.len() == 1
+    {
+        return Cow::Owned(format!("0{hours}:{rest}"));
+    }
+    Cow::Borrowed(ts)
+}
+
 pub fn validate_and_normalize_subtitle_to_vtt(
     raw_bytes: &[u8],
     header_ct: Option<&str>,
@@ -493,7 +504,7 @@ pub fn validate_and_normalize_subtitle_to_vtt(
         .strip_prefix("WEBVTT")
         .is_some_and(|rest| rest.is_empty() || rest.starts_with([' ', '\t', '\n']));
     if is_webvtt {
-        return Ok(format!("{}\n", normalized.trim_end_matches('\n')));
+        return Ok(format!("{trimmed}\n"));
     }
 
     let mut cue_count = 0usize;
@@ -503,7 +514,11 @@ pub fn validate_and_normalize_subtitle_to_vtt(
             cue_count += 1;
             out_lines.push(format!(
                 "{}.{} --> {}.{}{}",
-                &caps[1], &caps[2], &caps[3], &caps[4], &caps[5]
+                pad_vtt_timestamp_hms(&caps[1]),
+                &caps[2],
+                pad_vtt_timestamp_hms(&caps[3]),
+                &caps[4],
+                &caps[5]
             ));
         } else {
             out_lines.push(line.to_string());
