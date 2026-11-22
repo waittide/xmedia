@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use xmedia_source::http::{
-    HttpClientConfig, HttpFetchResult, LegadoHttpClient, eval_json_options_template,
-    has_suspicious_option_chars, resolve_relative_url, resolve_relative_url_preserving_options,
-    split_legado_url_and_raw_options, split_legado_url_template_and_options,
-    substitute_legado_options_vars, substitute_legado_url_template_vars, substitute_url_part_vars,
-    verify_js_pipeline_url_options,
+    HttpClientConfig, HttpFetchResult, LegadoHttpClient, build_sanitized_headers,
+    eval_json_options_template, has_suspicious_option_chars, resolve_relative_url,
+    resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
+    split_legado_url_template_and_options, substitute_legado_options_vars,
+    substitute_legado_url_template_vars, substitute_url_part_vars, verify_js_pipeline_url_options,
 };
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline, strip_js_wrapper};
@@ -791,7 +791,7 @@ impl VideoSourceEngine {
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
         let trimmed_play = play_url.trim();
-        let headers_applied = !source.parse_media_header_map().is_empty();
+        let headers_applied = !build_sanitized_headers(&source.parse_media_header_map()).is_empty();
 
         let res: Result<OnlineVideoPlayResult, String> = (|| {
             if trimmed_play.is_empty() {

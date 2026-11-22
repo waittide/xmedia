@@ -3595,3 +3595,118 @@ async fn video_online_endpoints_enforce_timeout_on_stalled_upstream() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn video_play_headers_applied_matches_build_sanitized_headers() {
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let origin_app = Router::new()
+        .route(
+            "/api/play",
+            get(|| async { r#"{"stream":"/media/video.mp4"}"# }),
+        )
+        .route(
+            "/media/video.mp4",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "video/mp4")
+                    .body(Body::from(fake_mp4_payload()))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    // 1. Forbidden / invalid headers only (applecms_v10 + rule) -> headers_applied == false
+    let forbidden_applecms = serde_json::json!({
+        "sourceName": "ForbiddenHeadersApplecms",
+        "apiUrl": format!("{origin}/applecms/api.php/provide/vod/"),
+        "header": r#"{"Host":"evil.com","Connection":"close"}"#,
+        "mediaHeader": r#"{"Transfer-Encoding":"chunked","Bad\nName":"v","X-Newline":"a\nb"}"#
+    });
+    let forbidden_rule = serde_json::json!({
+        "sourceName": "ForbiddenHeadersRule",
+        "sourceUrl": origin,
+        "sourceFormat": "rule",
+        "header": r#"{"Host":"evil.com"}"#,
+        "mediaHeader": r#"{"Connection":"close"}"#,
+        "rulePlay": {
+            "requestUrl": "{{playUrl}}",
+            "streamUrl": "$.stream"
+        }
+    });
+    // 2. Valid custom header alongside forbidden header -> headers_applied == true
+    let valid_rule = serde_json::json!({
+        "sourceName": "ValidCustomHeaderRule",
+        "sourceUrl": origin,
+        "sourceFormat": "rule",
+        "header": r#"{"Host":"evil.com"}"#,
+        "mediaHeader": r#"{"Referer":"https://player.example.com/"}"#,
+        "rulePlay": {
+            "requestUrl": "{{playUrl}}",
+            "streamUrl": "$.stream"
+        }
+    });
+
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({
+            "raw_json": serde_json::Value::Array(vec![forbidden_applecms, forbidden_rule, valid_rule]).to_string()
+        }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sources = imp_res["sources"].as_array().unwrap();
+    let id_forbidden_applecms = sources[0]["id"].as_str().unwrap();
+    let id_forbidden_rule = sources[1]["id"].as_str().unwrap();
+    let id_valid_rule = sources[2]["id"].as_str().unwrap();
+
+    let (st1, play1) = post_json(
+        &app,
+        "/api/v1/video/online/play",
+        &member_tok,
+        serde_json::json!({
+            "source_id": id_forbidden_applecms,
+            "play_url": format!("{origin}/media/video.mp4")
+        }),
+    )
+    .await;
+    assert_eq!(st1, StatusCode::OK);
+    assert_eq!(play1["headers_applied"], false);
+
+    let (st2, play2) = post_json(
+        &app,
+        "/api/v1/video/online/play",
+        &member_tok,
+        serde_json::json!({
+            "source_id": id_forbidden_rule,
+            "play_url": format!("{origin}/api/play")
+        }),
+    )
+    .await;
+    assert_eq!(st2, StatusCode::OK);
+    assert_eq!(play2["headers_applied"], false);
+
+    let (st3, play3) = post_json(
+        &app,
+        "/api/v1/video/online/play",
+        &member_tok,
+        serde_json::json!({
+            "source_id": id_valid_rule,
+            "play_url": format!("{origin}/api/play")
+        }),
+    )
+    .await;
+    assert_eq!(st3, StatusCode::OK);
+    assert_eq!(play3["headers_applied"], true);
+
+    srv.abort();
+}
