@@ -77,7 +77,7 @@ function triggerFileImport(): void {
           :value="searchQuery"
           type="text"
           :placeholder="t('onlineSources.toolbar.searchPlaceholder', { domain: domainLabel })"
-          class="md-input w-full py-1.5 pr-8 pl-9 text-xs"
+          class="md-input h-9 w-full !rounded-full pr-8 pl-9 text-xs"
           @input="emit('update:searchQuery', ($event.target as HTMLInputElement).value)"
         />
         <button
@@ -95,7 +95,7 @@ function triggerFileImport(): void {
           v-if="totalCount > 0"
           type="button"
           class="md-btn md-btn-sm md-state"
-          :class="selectionMode ? 'md-btn-tonal' : 'md-btn-outlined'"
+          :class="selectionMode ? 'md-btn-tonal' : 'md-btn-text !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]'"
           @click="emit('toggle-selection-mode')"
         >
           <LuListChecks class="h-3.5 w-3.5" />
@@ -132,7 +132,7 @@ function triggerFileImport(): void {
         <button
           v-if="!showImportBox"
           type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
+          class="md-btn md-btn-sm md-btn-outlined md-state"
           :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
           @click="triggerFileImport"
         >

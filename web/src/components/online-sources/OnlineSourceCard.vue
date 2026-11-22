@@ -61,14 +61,14 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
 <template>
   <div
     :draggable="canReorder"
-    class="relative flex flex-col gap-2.5 rounded-2xl px-3.5 py-3.5 transition sm:flex-row sm:items-center sm:justify-between sm:gap-3"
+    class="relative flex flex-col gap-2.5 rounded-2xl border px-4 py-3.5 transition sm:flex-row sm:items-center sm:justify-between sm:gap-3"
     :class="[
       selectionMode
         ? selected
-          ? 'cursor-pointer select-none bg-[var(--md-sys-color-secondary-container)]/35 ring-1 ring-[var(--md-sys-color-primary)]/55'
-          : 'cursor-pointer select-none bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]/75'
-        : 'bg-[var(--md-sys-color-surface-container)] hover:bg-[var(--md-sys-color-surface-container-high)]/75',
-      !source.enabled && !selected ? 'opacity-65' : '',
+          ? 'cursor-pointer select-none border-[var(--md-sys-color-primary)]/50 bg-[var(--md-sys-color-secondary-container)]/35'
+          : 'cursor-pointer select-none border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container-low)] hover:border-[var(--md-sys-color-outline-variant)] hover:bg-[var(--md-sys-color-surface-container)]/70'
+        : 'border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container-low)] hover:border-[var(--md-sys-color-outline-variant)] hover:bg-[var(--md-sys-color-surface-container)]/70',
+      !source.enabled && !selected ? 'opacity-60' : '',
       dragging ? 'opacity-40 ring-1 ring-[var(--md-sys-color-primary)]/50' : '',
     ]"
     @click="selectionMode ? emit('toggle-select', $event.shiftKey) : undefined"

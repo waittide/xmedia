@@ -46,29 +46,29 @@ const cardsGridClass = computed(() => {
       </button>
     </div>
 
-    <div class="grid gap-4" :class="cardsGridClass">
+    <div class="grid gap-3.5" :class="cardsGridClass">
       <button
         v-for="card in cards"
         :key="card.key"
         type="button"
-        class="md-card-filled md-state flex items-center gap-3.5 border border-transparent p-4 text-left transition hover:border-[var(--md-sys-color-primary)]/45 hover:shadow-[var(--md-sys-elevation-1)]"
+        class="md-card-filled md-state flex items-center gap-3.5 p-4 text-left transition hover:-translate-y-0.5 hover:border-[var(--md-sys-color-outline)]/40 hover:shadow-[var(--md-sys-elevation-1)]"
         @click="card.onClick()"
       >
         <div
           class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl"
           :class="
             card.tone === 'rose'
-              ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-              : 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
+              ? 'bg-[var(--md-sys-color-error-container)]/85 text-[var(--md-sys-color-on-error-container)]'
+              : 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
           "
         >
-          <component :is="card.icon" class="h-5 w-5" />
+          <component :is="card.icon" class="h-[18px] w-[18px]" />
         </div>
         <div class="min-w-0">
-          <p class="text-xl leading-none font-bold text-[var(--md-sys-color-on-surface)]">
+          <p class="text-xl leading-none font-semibold tabular-nums text-[var(--md-sys-color-on-surface)]">
             {{ card.value }}
           </p>
-          <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          <p class="mt-1.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
             {{ card.label ?? t(`layoutCustomizer.cards.${domain}.${card.key}`) }}
           </p>
         </div>

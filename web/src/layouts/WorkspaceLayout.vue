@@ -232,6 +232,7 @@ const { primaryNavItems } = usePrimaryNavItems(() => {
 })
 
 const showMobileBottomNav = computed(() => primaryNavItems.value.length > 0)
+const isSettingsRoute = computed(() => route.path.startsWith('/settings'))
 
 const isCompact = computed(() => isDesktop.value && collapsed.value)
 const sidebarToggleExpanded = computed(() =>
@@ -653,6 +654,7 @@ onBeforeUnmount(() => {
       <!-- Left: Rail/Drawer Toggle + Soft Tonal Brand + MD3 Domain Segmented Switcher -->
       <div class="flex shrink-0 items-center gap-2">
         <button
+          v-if="!isSettingsRoute || !isDesktop"
           type="button"
           class="md-icon-btn md-state"
           :title="sidebarToggleLabel"
@@ -685,6 +687,7 @@ onBeforeUnmount(() => {
             :model-value="domainStore.activeDomain"
             :options="domainTabs.map((tab) => ({ value: tab.kind, label: tab.label, icon: tab.icon }))"
             size="sm"
+            :show-check="!isSettingsRoute"
             @update:model-value="switchDomain($event)"
           />
         </div>
@@ -915,6 +918,7 @@ onBeforeUnmount(() => {
     <!-- Middle Body: Collapsible Domain Sidebar + Flush Rounded Main Canvas -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
       <WorkspaceSidebar
+        v-if="!isSettingsRoute || !isDesktop"
         :mobile-menu-open="mobileMenuOpen"
         :collapsed="collapsed"
         :is-compact="isCompact"
@@ -928,6 +932,7 @@ onBeforeUnmount(() => {
       <!-- Main Route Viewport (Outer rounded clip avoids scroll-layer corner artifacts) -->
       <div
         class="min-w-0 flex-1 overflow-hidden bg-[var(--md-sys-color-surface)] md:mr-3 md:mb-3 md:rounded-[24px]"
+        :class="isSettingsRoute ? 'md:ml-3' : ''"
       >
         <main
           ref="mainScrollRef"

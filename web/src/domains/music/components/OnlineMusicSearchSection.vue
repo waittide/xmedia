@@ -422,7 +422,7 @@ onBeforeUnmount(() => {
             v-model="searchKeyword"
             type="search"
             :placeholder="t('online.searchPlaceholder')"
-            class="md-input h-10 w-full !pl-10 text-xs"
+            class="md-input h-10 w-full !rounded-full !pl-10 text-xs"
             @input="onLocalInput"
           />
         </div>

@@ -546,7 +546,7 @@ function goManageDataSources(): void {
             v-model="searchKeyword"
             type="text"
             :placeholder="t('online.searchPlaceholder')"
-            class="md-input h-10 w-full !pl-10 text-xs"
+            class="md-input h-10 w-full !rounded-full !pl-10 text-xs"
           />
         </div>
         <button
@@ -717,7 +717,7 @@ function goManageDataSources(): void {
           v-for="(item, idx) in displayItems"
           :key="`${item.source_id}-${idx}-${item.comic_url}`"
           type="button"
-          class="md-card-filled md-state group flex w-full cursor-pointer gap-3.5 p-3.5 text-left transition hover:border-[var(--md-sys-color-primary)]/45"
+          class="md-card-filled md-state group flex w-full cursor-pointer gap-3.5 p-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--md-sys-color-outline)]/40 hover:shadow-[var(--md-sys-elevation-1)]"
           @click="openOnlineComicDetail(item)"
         >
           <MediaCoverImage
@@ -730,7 +730,7 @@ function goManageDataSources(): void {
             fallback-icon-class="h-6 w-6 text-[var(--md-sys-color-on-surface-variant)]/50"
           />
 
-          <div class="flex min-w-0 flex-1 flex-col justify-between">
+          <div class="flex min-w-0 flex-1 flex-col justify-between py-0.5">
             <div>
               <div class="flex items-start justify-between gap-2">
                 <h3
@@ -739,13 +739,13 @@ function goManageDataSources(): void {
                   {{ item.title }}
                 </h3>
                 <span
-                  class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+                  class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   {{ item.source_name }}
                 </span>
               </div>
 
-              <p class="mt-0.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
+              <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
                 {{ item.author || t('online.unknownAuthor') }}
                 <span v-if="item.word_count"> · {{ item.word_count }}</span>
                 <span v-if="formatKindTags(item.kind)"> · {{ formatKindTags(item.kind) }}</span>
@@ -753,24 +753,18 @@ function goManageDataSources(): void {
 
               <p
                 v-if="item.intro"
-                class="mt-1 line-clamp-2 text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]"
+                class="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]/90"
               >
                 {{ item.intro }}
               </p>
-
-              <p
-                v-if="item.last_chapter"
-                class="mt-1 truncate text-[10px] text-[var(--md-sys-color-on-surface-variant)] opacity-80"
-              >
-                {{ t('online.latestChapter', { chapter: item.last_chapter }) }}
-              </p>
             </div>
 
-            <div class="mt-2 flex items-center justify-end">
-              <span class="text-[11px] font-semibold text-[var(--md-sys-color-primary)]">
-                {{ t('online.viewDetail') }} →
-              </span>
-            </div>
+            <p
+              v-if="item.last_chapter"
+              class="mt-2 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
+            >
+              {{ t('online.latestChapter', { chapter: item.last_chapter }) }}
+            </p>
           </div>
         </button>
       </div>

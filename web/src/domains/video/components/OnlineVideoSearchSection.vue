@@ -621,7 +621,7 @@ function goManageDataSources(): void {
             v-model="searchKeyword"
             type="search"
             :placeholder="t('online.searchPlaceholder')"
-            class="md-input h-10 w-full !pl-10 text-xs"
+            class="md-input h-10 w-full !rounded-full !pl-10 text-xs"
             @input="handleKeywordInput"
           />
         </div>
@@ -821,7 +821,7 @@ function goManageDataSources(): void {
           v-for="(item, idx) in displayItems"
           :key="`${item.source_id}-${idx}-${item.detail_url || item.vod_id}`"
           type="button"
-          class="md-card-filled md-state group flex w-full cursor-pointer gap-3.5 p-3.5 text-left transition hover:border-[var(--md-sys-color-primary)]/45"
+          class="md-card-filled md-state group flex w-full cursor-pointer gap-3.5 p-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--md-sys-color-outline)]/40 hover:shadow-[var(--md-sys-elevation-1)]"
           @click="openOnlineVideoDetail(item)"
         >
           <MediaCoverImage
@@ -834,8 +834,8 @@ function goManageDataSources(): void {
             fallback-icon-class="h-6 w-6 text-[var(--md-sys-color-on-surface-variant)]/50"
           />
 
-          <div class="flex min-w-0 flex-1 flex-col justify-between">
-            <div class="space-y-1">
+          <div class="flex min-w-0 flex-1 flex-col justify-between py-0.5">
+            <div class="space-y-1.5">
               <div class="flex items-start justify-between gap-2">
                 <h3
                   class="line-clamp-2 text-sm font-semibold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
@@ -843,7 +843,7 @@ function goManageDataSources(): void {
                   {{ item.title }}
                 </h3>
                 <span
-                  class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+                  class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   {{ item.source_name }}
                 </span>
@@ -851,24 +851,18 @@ function goManageDataSources(): void {
 
               <p
                 v-if="item.remarks"
-                class="inline-block max-w-full truncate rounded-md bg-[var(--md-sys-color-secondary-container)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-secondary-container)]"
+                class="inline-block max-w-full truncate rounded-md bg-[var(--md-sys-color-secondary-container)]/80 px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-secondary-container)]"
               >
                 {{ item.remarks }}
               </p>
-
-              <p
-                v-if="formatMetaLine(item)"
-                class="truncate text-xs text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ formatMetaLine(item) }}
-              </p>
             </div>
 
-            <div class="mt-2 flex items-center justify-end">
-              <span class="text-[11px] font-semibold text-[var(--md-sys-color-primary)]">
-                {{ t('online.viewDetail') }} →
-              </span>
-            </div>
+            <p
+              v-if="formatMetaLine(item)"
+              class="mt-2 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            >
+              {{ formatMetaLine(item) }}
+            </p>
           </div>
         </button>
       </div>

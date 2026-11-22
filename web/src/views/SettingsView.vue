@@ -208,9 +208,9 @@ function selectDomain(domain: MediaKind): void {
 </script>
 
 <template>
-  <div class="mx-auto max-w-6xl px-6 py-8 sm:px-8">
-    <div class="mb-8">
-      <h1 class="md-headline-small text-[var(--md-sys-color-on-surface)]">
+  <div class="mx-auto max-w-6xl px-6 py-6 sm:px-8 sm:py-7">
+    <div class="mb-6">
+      <h1 class="md-headline-small font-semibold tracking-tight text-[var(--md-sys-color-on-surface)]">
         {{ t('settings.title') }}
       </h1>
       <p
@@ -221,15 +221,15 @@ function selectDomain(domain: MediaKind): void {
       </p>
     </div>
 
-    <div class="grid grid-cols-1 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
+    <div class="grid grid-cols-1 gap-6 md:grid-cols-[204px_minmax(0,1fr)] md:gap-8">
       <!-- Left Settings Category Rail (Upper: Global / Lower: Domain-Scoped) -->
       <nav
         ref="navRef"
         :aria-label="t('settings.navLabel')"
-        class="-m-1 flex flex-wrap items-center gap-1 p-1 lg:flex-col lg:flex-nowrap lg:items-stretch"
+        class="-m-1 flex flex-wrap items-center gap-1 p-1 md:flex-col md:flex-nowrap md:items-stretch"
       >
         <p
-          class="md-label-small hidden px-4 pt-1 pb-1.5 tracking-wide text-[var(--md-sys-color-on-surface-variant)] lg:block"
+          class="md-label-small hidden px-3.5 pt-1 pb-1.5 tracking-wide text-[var(--md-sys-color-on-surface-variant)] md:block"
         >
           {{ t('settings.groupGlobal') }}
         </p>
@@ -239,7 +239,7 @@ function selectDomain(domain: MediaKind): void {
           :key="item.id"
           :data-settings-tab="item.id"
           type="button"
-          class="md-state md-label-large flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3.5 text-left lg:h-10 lg:gap-2.5 lg:px-4"
+          class="md-state md-label-large flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3.5 text-left md:h-10 md:gap-2.5 md:px-4"
           :class="
             activeTab === item.id
               ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
@@ -253,12 +253,12 @@ function selectDomain(domain: MediaKind): void {
 
         <!-- Divider between Global and Domain sections -->
         <div
-          class="mx-1 hidden h-5 w-px shrink-0 bg-[var(--md-sys-color-outline-variant)]/60 sm:block lg:mx-0 lg:my-2.5 lg:h-px lg:w-auto"
+          class="mx-1 hidden h-5 w-px shrink-0 bg-[var(--md-sys-color-outline-variant)]/60 sm:block md:mx-2 md:my-2.5 md:h-px md:w-auto"
           aria-hidden="true"
         />
 
         <p
-          class="md-label-small hidden px-4 pt-0.5 pb-1.5 tracking-wide text-[var(--md-sys-color-on-surface-variant)] lg:block"
+          class="md-label-small hidden px-3.5 pt-0.5 pb-1.5 tracking-wide text-[var(--md-sys-color-on-surface-variant)] md:block"
         >
           {{ t('settings.groupDomain') }}
         </p>
@@ -268,7 +268,7 @@ function selectDomain(domain: MediaKind): void {
           :key="item.id"
           :data-settings-tab="item.id"
           type="button"
-          class="md-state md-label-large flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3.5 text-left lg:h-10 lg:gap-2.5 lg:px-4"
+          class="md-state md-label-large flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3.5 text-left md:h-10 md:gap-2.5 md:px-4"
           :class="
             activeTab === item.id
               ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'

@@ -250,7 +250,7 @@ onBeforeUnmount(() => {
 
           <td v-if="showSource" class="hidden w-36 px-3 py-2.5 md:table-cell">
             <span
-              class="inline-flex max-w-full items-center truncate rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+              class="inline-flex max-w-full items-center truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
               :title="tr.source_name"
             >
               <span class="truncate">{{ tr.source_name }}</span>
