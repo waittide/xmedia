@@ -13,14 +13,17 @@ use std::time::Duration;
 
 use toasty::Db;
 use xmedia_core::application::library::LibraryService;
+use xmedia_core::application::online_items::OnlineLibraryService;
 use xmedia_core::application::ports::RealtimeEventPort;
 use xmedia_core::domain::error::DomainResult;
+use xmedia_core::domain::library::MediaKind;
 use xmedia_core::domain::repository::LibraryRepository;
+use xmedia_core::infra::persistence::repositories::ToastyOnlineLibraryItemRepository;
 
 use application::ComicServices;
 use application::catalog::ComicCatalogService;
 use application::lifecycle::ComicDomainLifecycle;
-use application::online::ComicOnlineService;
+use application::online::{ComicOnlineService, ComicOnlineSourceDirectory};
 use application::opds::ComicOpdsService;
 use application::reading::ComicReadingService;
 use infra::archive::PureRustArchiveReader;
@@ -63,6 +66,7 @@ pub fn init_comic_module_with_allow_private_ips(
     let series = Arc::new(ToastySeriesRepository::new(db.clone()));
     let chapters = Arc::new(ToastyChapterRepository::new(db.clone()));
     let sources = Arc::new(ToastyComicSourceRepository::new(db.clone()));
+    let online_items_repo = Arc::new(ToastyOnlineLibraryItemRepository::new(db.clone()));
     let reading_repo = Arc::new(ToastyComicReadingRepository::new(db));
 
     let archives = Arc::new(PureRustArchiveReader::new());
@@ -113,12 +117,23 @@ pub fn init_comic_module_with_allow_private_ips(
         Duration::from_secs(45),
     );
     let online = Arc::new(ComicOnlineService::with_engine(
-        sources,
+        sources.clone(),
         engine,
         allow_private_ips,
     ));
+    let online_items = Arc::new(OnlineLibraryService::new(
+        MediaKind::Comic,
+        online_items_repo,
+        Arc::new(ComicOnlineSourceDirectory::new(sources)),
+    ));
 
-    Ok(ComicServices::new(catalog, reading, opds, online))
+    Ok(ComicServices::new(
+        catalog,
+        reading,
+        opds,
+        online,
+        online_items,
+    ))
 }
 
 #[cfg(test)]

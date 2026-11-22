@@ -1,6 +1,7 @@
 mod debug;
 mod dto;
 mod helpers;
+mod items;
 mod reader;
 mod sources;
 
@@ -15,6 +16,7 @@ use crate::source::ComicSourceEngine;
 
 pub use dto::*;
 use helpers::{AsyncLockMap, RateLimiterMap, get_or_insert_rate_limiter};
+pub use items::ComicOnlineSourceDirectory;
 use xmedia_source::model::ConcurrentRateSpec;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;

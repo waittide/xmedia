@@ -2922,3 +2922,240 @@ async fn image_proxy_retries_transient_503_and_does_not_retry_403() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn online_comic_items_favorites_progress_and_availability_e2e() {
+    let h = setup_test_harness(true).await;
+
+    // Import one comic source so we have a valid online source_id.
+    let src_json = serde_json::json!({
+        "bookSourceName": "Test Comic Source",
+        "bookSourceUrl": "https://comic-item.test",
+        "bookSourceGroup": "Test",
+        "bookSourceType": 2,
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    });
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let source_id = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 1. Idempotent upsert with favorite + progress (no trailing slash on /online/items)
+    let (st_put, b_put) = json_request(
+        &h.app,
+        "PUT",
+        "/api/v1/comic/online/items",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_id": source_id,
+            "item_key": "https://comic-item.test/series/1",
+            "title": "One Piece",
+            "subtitle": "Eiichiro Oda",
+            "cover_url": "https://comic-item.test/cover.jpg",
+            "extra": { "toc_url": "https://comic-item.test/series/1/toc" },
+            "favorite": true,
+            "progress": {
+                "unit_index": 2,
+                "unit_key": "https://comic-item.test/series/1/ch/3",
+                "unit_title": "Chapter 3",
+                "position": 5,
+                "duration": 20,
+                "total_units": 10,
+                "completed": false
+            }
+        })),
+    )
+    .await;
+    assert_eq!(st_put, StatusCode::OK);
+    let item: serde_json::Value = serde_json::from_slice(&b_put).unwrap();
+    let item_id = item["id"].as_str().unwrap().to_string();
+    assert_eq!(item["media_kind"], "comic");
+    assert_eq!(item["source_kind"], "online");
+    assert_eq!(item["source_name"], "Test Comic Source");
+    assert_eq!(item["availability"], "ok");
+    assert_eq!(item["favorite"], true);
+    assert_eq!(item["progress"]["unit_index"], 2);
+    assert!((item["progress_ratio"].as_f64().unwrap() - 0.225).abs() < 1e-6);
+
+    // 2. Also upsert a remote OPDS comic item
+    let (st_rem, b_rem) = json_request(
+        &h.app,
+        "PUT",
+        "/api/v1/comic/online/items",
+        &h.member_token,
+        Some(serde_json::json!({
+            "source_kind": "remote",
+            "source_id": "opds-home-1",
+            "item_key": "urn:opds:comic:42",
+            "title": "Remote Comic",
+            "cover_url": "/_app/opds/opds-home-1/proxy-image?url=a",
+            "favorite": true
+        })),
+    )
+    .await;
+    assert_eq!(st_rem, StatusCode::OK);
+    let rem_item: serde_json::Value = serde_json::from_slice(&b_rem).unwrap();
+    assert_eq!(rem_item["availability"], "unverified");
+
+    // 3. Lookup returns both items for member, none for admin
+    let (st_lk, b_lk) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/items/lookup",
+        &h.member_token,
+        Some(serde_json::json!({
+            "items": [
+                { "source_id": source_id, "item_key": "https://comic-item.test/series/1" },
+                { "source_kind": "remote", "source_id": "opds-home-1", "item_key": "urn:opds:comic:42" },
+                { "source_id": source_id, "item_key": "https://comic-item.test/missing" }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(st_lk, StatusCode::OK);
+    let lk: serde_json::Value = serde_json::from_slice(&b_lk).unwrap();
+    assert_eq!(lk["total"], 2);
+
+    let (st_other, _) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/comic/online/items/{item_id}"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_other, StatusCode::NOT_FOUND);
+
+    // 4. Continue view returns only the in-progress item; Favorites returns both
+    let (st_cont, b_cont) = json_request(
+        &h.app,
+        "GET",
+        "/api/v1/comic/online/items?view=continue",
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_cont, StatusCode::OK);
+    let cont: serde_json::Value = serde_json::from_slice(&b_cont).unwrap();
+    assert_eq!(cont["total"], 1);
+    assert_eq!(cont["items"][0]["id"], item_id);
+
+    let (st_fav, b_fav) = json_request(
+        &h.app,
+        "GET",
+        "/api/v1/comic/online/items?view=favorites",
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_fav, StatusCode::OK);
+    let fav: serde_json::Value = serde_json::from_slice(&b_fav).unwrap();
+    assert_eq!(fav["total"], 2);
+
+    // 5. Disable source -> availability becomes source_disabled; delete source -> source_missing
+    let (st_dis, _) = json_request(
+        &h.app,
+        "PATCH",
+        &format!("/api/v1/comic/sources/{source_id}"),
+        &h.admin_token,
+        Some(serde_json::json!({ "enabled": false })),
+    )
+    .await;
+    assert_eq!(st_dis, StatusCode::OK);
+
+    let (st_get1, b_get1) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/comic/online/items/{item_id}"),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_get1, StatusCode::OK);
+    let g1: serde_json::Value = serde_json::from_slice(&b_get1).unwrap();
+    assert_eq!(g1["availability"], "source_disabled");
+
+    let (st_del_src, _) = json_request(
+        &h.app,
+        "DELETE",
+        &format!("/api/v1/comic/sources/{source_id}"),
+        &h.admin_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_del_src, StatusCode::NO_CONTENT);
+
+    let (st_get2, b_get2) = json_request(
+        &h.app,
+        "GET",
+        &format!("/api/v1/comic/online/items/{item_id}"),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_get2, StatusCode::OK);
+    let g2: serde_json::Value = serde_json::from_slice(&b_get2).unwrap();
+    assert_eq!(g2["availability"], "source_missing");
+    assert!(g2["source_name"].is_null());
+
+    // 6. Update progress -> clear progress -> patch favorite=false -> delete
+    let (st_prog, b_prog) = json_request(
+        &h.app,
+        "PUT",
+        &format!("/api/v1/comic/online/items/{item_id}/progress"),
+        &h.member_token,
+        Some(serde_json::json!({
+            "unit_index": 9,
+            "position": 19,
+            "duration": 20,
+            "total_units": 10,
+            "completed": true
+        })),
+    )
+    .await;
+    assert_eq!(st_prog, StatusCode::OK);
+    let p_val: serde_json::Value = serde_json::from_slice(&b_prog).unwrap();
+    assert_eq!(p_val["progress"]["completed"], true);
+    assert_eq!(p_val["progress_ratio"], 1.0);
+
+    let (st_clr, b_clr) = json_request(
+        &h.app,
+        "DELETE",
+        &format!("/api/v1/comic/online/items/{item_id}/progress"),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_clr, StatusCode::OK);
+    let clr_val: serde_json::Value = serde_json::from_slice(&b_clr).unwrap();
+    assert!(clr_val["progress"].is_null());
+
+    let (st_patch, b_patch) = json_request(
+        &h.app,
+        "PATCH",
+        &format!("/api/v1/comic/online/items/{item_id}"),
+        &h.member_token,
+        Some(serde_json::json!({ "favorite": false })),
+    )
+    .await;
+    assert_eq!(st_patch, StatusCode::OK);
+    let pat_val: serde_json::Value = serde_json::from_slice(&b_patch).unwrap();
+    assert_eq!(pat_val["favorite"], false);
+
+    let (st_del, _) = json_request(
+        &h.app,
+        "DELETE",
+        &format!("/api/v1/comic/online/items/{item_id}"),
+        &h.member_token,
+        None,
+    )
+    .await;
+    assert_eq!(st_del, StatusCode::NO_CONTENT);
+}

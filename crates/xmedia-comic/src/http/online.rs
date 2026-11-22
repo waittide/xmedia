@@ -49,6 +49,11 @@ pub fn router() -> Router<ComicHttpState> {
         .route("/online/chapters", post(online_chapters))
         .route("/online/pages", post(online_pages))
         .route("/online/image-proxy", get(online_image_proxy))
+        // Per-user online comic favorites & reading progress
+        .nest(
+            "/online/items",
+            xmedia_core::http::online_items::online_items_router(),
+        )
 }
 
 #[derive(Debug, Deserialize)]
