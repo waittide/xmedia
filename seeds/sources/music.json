@@ -112,8 +112,8 @@
       "User-Agent": "xmedia/0.1.0"
     },
     "concurrentRate": "4/1000",
-    "searchUrl": "https://archive.org/advancedsearch.php?q=mediatype%3Aaudio+AND+format%3A%22VBR+MP3%22+AND+-collection%3Astream_only+AND+({{key}})&fl[]=identifier&fl[]=title&fl[]=creator&rows={{limit}}&page={{page}}&output=json",
-    "exploreUrl": "古典精选::https://archive.org/advancedsearch.php?q=mediatype%3Aaudio+AND+subject%3Aclassical+AND+format%3A%22VBR+MP3%22+AND+-collection%3Astream_only&sort[]=downloads+desc&fl[]=identifier&fl[]=title&fl[]=creator&rows={{limit}}&page={{page}}&output=json",
+    "searchUrl": "https://archive.org/advancedsearch.php?q=mediatype%3Aaudio+AND+format%3A%22VBR+MP3%22+AND+-collection%3Astream_only+AND+-access-restricted-item%3Atrue+AND+({{key}})&fl[]=identifier&fl[]=title&fl[]=creator&rows={{limit}}&page={{page}}&output=json",
+    "exploreUrl": "古典精选::https://archive.org/advancedsearch.php?q=mediatype%3Aaudio+AND+subject%3Aclassical+AND+format%3A%22VBR+MP3%22+AND+-collection%3Astream_only+AND+-access-restricted-item%3Atrue&sort[]=downloads+desc&fl[]=identifier&fl[]=title&fl[]=creator&rows={{limit}}&page={{page}}&output=json",
     "supportedQualities": ["128", "320"],
     "enabledCookieJar": false,
     "ruleSearch": {
@@ -193,7 +193,7 @@
       "bitrate": "256"
     },
     "ruleLyric": {
-      "requestUrl": "https://lrclib.net/api/search?q={{title}} {{artist}}",
+      "requestUrl": "https://lrclib.net/api/search?q={{title}}%20{{artist}}",
       "lyric": "$[0].syncedLyrics||$[1].syncedLyrics||$[2].syncedLyrics||$[0].plainLyrics",
       "plainLyric": "$[0].plainLyrics"
     }
