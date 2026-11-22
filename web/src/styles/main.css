@@ -642,6 +642,9 @@ a,
 .md-fade-leave-active {
   transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 }
+.md-fade-leave-active {
+  pointer-events: none;
+}
 .md-fade-enter-from,
 .md-fade-leave-to {
   opacity: 0;
