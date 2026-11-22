@@ -224,7 +224,7 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <div
-                  class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+                  class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
                 >
                   <span class="min-w-0 truncate">{{ tr.artist || t('online.unknownArtist') }}</span>
                   <span

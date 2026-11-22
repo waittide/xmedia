@@ -45,7 +45,7 @@ const { t } = useI18n()
     :open="open"
     :title="title"
     :subtitle="subtitle"
-    width-class="w-[min(42rem,100vw)]"
+    width-class="w-full max-w-[42rem]"
     @close="emit('close')"
   >
     <template #subheader>
