@@ -41,13 +41,12 @@ fn is_vite_hashed_asset(rel_str: &str) -> bool {
         .rsplit_once('.')
         .map(|(s, _)| s)
         .unwrap_or(file_name);
-    stem.match_indices('-').any(|(idx, _)| {
-        let hash = &stem[idx + 1..];
-        hash.len() >= 8
-            && hash
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    })
+    let bytes = stem.as_bytes();
+    bytes.len() >= 9
+        && bytes[bytes.len() - 9] == b'-'
+        && bytes[bytes.len() - 8..]
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 fn asset_response(path_hint: &str, body: impl Into<Body>, immutable: bool) -> Response {
@@ -168,8 +167,13 @@ mod tests {
     fn vite_hashed_asset_detects_hashes_with_hyphens_and_multidot_names() {
         assert!(is_vite_hashed_asset("assets/index-CdG13ci-.js"));
         assert!(is_vite_hashed_asset("assets/BookDetailView-Ck-3nOyq.js"));
+        assert!(is_vite_hashed_asset("assets/en-US-DNWpP-0k.js"));
         assert!(is_vite_hashed_asset("assets/vue-vendor-CQq8P3gb.js"));
         assert!(is_vite_hashed_asset("assets/pdf.worker.min-CIqJB0yW.mjs"));
+        assert!(!is_vite_hashed_asset("assets/my-very-long-asset.js"));
+        assert!(!is_vite_hashed_asset("assets/my-component.js"));
+        assert!(!is_vite_hashed_asset("assets/apple-touch-icon.png"));
+        assert!(!is_vite_hashed_asset("assets/custom-stylesheet.css"));
         assert!(!is_vite_hashed_asset("assets/plain.js"));
         assert!(!is_vite_hashed_asset("assets/foo-bar.js"));
         assert!(!is_vite_hashed_asset("index.html"));
