@@ -48,6 +48,7 @@ import MdCircularProgress from '@/components/ui/MdCircularProgress.vue'
 import MdSegmentedButton from '@/components/ui/MdSegmentedButton.vue'
 import WorkspaceSidebar from '@/layouts/WorkspaceSidebar.vue'
 import { usePrimaryNavItems } from '@/layouts/useWorkspaceSidebar'
+import type { ThemeMode } from '@/theme/catppuccin'
 
 const { t } = useI18n()
 
@@ -510,19 +511,20 @@ function openTasksDrawer(): void {
   }
 }
 
-// Theme & Account
-function cycleThemeMode(): void {
-  const order = ['system', 'light', 'dark'] as const
-  const idx = order.indexOf(themeStore.themeMode)
-  const next = order[(idx + 1) % order.length]!
-  themeStore.setThemeMode(next)
-}
+const showTasksButtonInHeader = computed(
+  () =>
+    globalActiveTaskCount.value > 0 ||
+    globalFailedTaskCount.value > 0 ||
+    tasksDrawerOpen.value,
+)
 
-const themeModeTooltip = computed(() => {
-  if (themeStore.themeMode === 'light') return `${t('theme.modeTitle')}: ${t('theme.light')}`
-  if (themeStore.themeMode === 'dark') return `${t('theme.modeTitle')}: ${t('theme.dark')}`
-  return `${t('theme.modeTitle')}: ${t('theme.system')}`
-})
+const themeModeMenuOptions = computed<Array<{ value: ThemeMode; label: string; icon: Component }>>(
+  () => [
+    { value: 'system', label: t('theme.system'), icon: LuMonitor },
+    { value: 'light', label: t('theme.light'), icon: LuSun },
+    { value: 'dark', label: t('theme.dark'), icon: LuMoon },
+  ],
+)
 
 const userInitials = computed(() => {
   const label = authStore.user?.display_name || authStore.user?.username || 'U'
@@ -790,8 +792,11 @@ onBeforeUnmount(() => {
           </Transition>
         </div>
 
-        <!-- Global Background Tasks Button with SVG Progress Ring -->
-        <div class="relative inline-flex items-center justify-center">
+        <!-- Global Background Tasks Button (shown on demand when tasks are active/failed or drawer open) -->
+        <div
+          v-if="showTasksButtonInHeader"
+          class="relative inline-flex items-center justify-center"
+        >
           <button
             type="button"
             class="md-icon-btn md-state"
@@ -833,22 +838,6 @@ onBeforeUnmount(() => {
           />
         </div>
 
-        <button
-          type="button"
-          class="md-icon-btn md-state"
-          :class="
-            themeStore.themeMode === 'system'
-              ? 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)]'
-              : ''
-          "
-          :title="themeModeTooltip"
-          @click="cycleThemeMode"
-        >
-          <LuMonitor v-if="themeStore.themeMode === 'system'" class="h-[18px] w-[18px]" />
-          <LuSun v-else-if="themeStore.themeMode === 'light'" class="h-[18px] w-[18px]" />
-          <LuMoon v-else class="h-[18px] w-[18px]" />
-        </button>
-
         <RouterLink
           to="/settings"
           class="md-icon-btn md-state hidden sm:inline-flex"
@@ -876,7 +865,7 @@ onBeforeUnmount(() => {
           <Transition name="md-dialog">
             <div
               v-if="accountMenuOpen"
-              class="absolute top-12 right-0 z-[var(--z-popover)] w-56 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
+              class="absolute top-12 right-0 z-[var(--z-popover)] w-60 rounded-2xl bg-[var(--md-sys-color-surface-container-high)] p-2 shadow-[var(--md-sys-elevation-3)]"
             >
               <div class="px-3 py-2">
                 <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
@@ -888,7 +877,52 @@ onBeforeUnmount(() => {
                 </p>
               </div>
 
+              <!-- Compact 3-state Theme Switcher -->
+              <div class="px-2 pb-1.5">
+                <div
+                  role="radiogroup"
+                  :aria-label="t('theme.modeTitle')"
+                  class="grid grid-cols-3 gap-1 rounded-full bg-[var(--md-sys-color-surface-container)] p-1"
+                >
+                  <button
+                    v-for="opt in themeModeMenuOptions"
+                    :key="opt.value"
+                    type="button"
+                    role="radio"
+                    :aria-checked="themeStore.themeMode === opt.value"
+                    :title="opt.label"
+                    class="md-state flex items-center justify-center gap-1 rounded-full px-2 py-1.5 text-[11px] font-medium transition"
+                    :class="
+                      themeStore.themeMode === opt.value
+                        ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+                        : 'text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]'
+                    "
+                    @click="themeStore.setThemeMode(opt.value)"
+                  >
+                    <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" />
+                    <span class="truncate">{{ opt.label }}</span>
+                  </button>
+                </div>
+              </div>
+
               <div class="my-1 h-px bg-[var(--md-sys-color-outline-variant)]/50" />
+
+              <button
+                type="button"
+                class="md-state flex w-full items-center justify-between gap-2.5 rounded-full px-3 py-2 text-left text-xs font-medium text-[var(--md-sys-color-on-surface)]"
+                @click="openTasksDrawer"
+              >
+                <span class="flex items-center gap-2.5">
+                  <LuListChecks class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]" />
+                  <span>{{ t('transfers.openTasks') }}</span>
+                </span>
+                <span
+                  v-if="globalActiveTaskCount > 0"
+                  class="rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-[var(--md-sys-color-on-primary-container)]"
+                >
+                  {{ globalActiveTaskCount }}
+                </span>
+              </button>
 
               <RouterLink
                 to="/settings"

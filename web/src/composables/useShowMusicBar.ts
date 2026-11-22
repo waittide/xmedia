@@ -12,15 +12,11 @@ export function useShowMusicBar(): ComputedRef<boolean> {
     route.matched.some((record) => Boolean(record.meta.fullscreen)),
   )
 
-  const isMusicRoute = computed(
-    () => route.meta.domain === 'music' || route.path.startsWith('/music'),
-  )
-
   return computed(
     () =>
       authStore.isAuthenticated &&
       !isFullscreenRoute.value &&
       authStore.hasModule('music') &&
-      (isMusicRoute.value || playerStore.currentTrack !== null),
+      playerStore.currentTrack !== null,
   )
 }
