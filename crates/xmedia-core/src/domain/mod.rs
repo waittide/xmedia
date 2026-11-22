@@ -2,6 +2,8 @@ pub mod error;
 pub mod library;
 pub mod media;
 #[cfg(feature = "server")]
+pub mod online_item;
+#[cfg(feature = "server")]
 pub mod repository;
 #[cfg(feature = "server")]
 pub mod user;

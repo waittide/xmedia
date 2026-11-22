@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use jiff::Timestamp;
+use uuid::Uuid;
 
 use crate::domain::error::DomainResult;
 use crate::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
+use crate::domain::online_item::OnlineLibraryItem;
 use crate::domain::user::{User, UserId, UserPreferences};
 
 #[async_trait]
@@ -59,4 +61,19 @@ pub trait LibraryRepository: Send + Sync {
         updated_at: Timestamp,
     ) -> DomainResult<bool>;
     async fn delete(&self, id: LibraryId) -> DomainResult<()>;
+}
+
+/// Persists per-user favorites / progress of online (non-library) items.
+#[async_trait]
+pub trait OnlineLibraryItemRepository: Send + Sync {
+    /// Lists all items of one media kind for a user (unordered).
+    async fn list_by_user(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+    ) -> DomainResult<Vec<OnlineLibraryItem>>;
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<OnlineLibraryItem>>;
+    async fn save(&self, item: &OnlineLibraryItem) -> DomainResult<()>;
+    async fn delete(&self, id: Uuid) -> DomainResult<()>;
+    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()>;
 }

@@ -1,13 +1,15 @@
 use async_trait::async_trait;
 use jiff::Timestamp;
 use toasty::Db;
+use uuid::Uuid;
 
 use crate::domain::error::{DomainError, DomainResult};
 use crate::domain::library::{Library, LibraryId, MediaKind, ScanStatus};
-use crate::domain::repository::{LibraryRepository, UserRepository};
+use crate::domain::online_item::{OnlineItemSourceKind, OnlineLibraryItem};
+use crate::domain::repository::{LibraryRepository, OnlineLibraryItemRepository, UserRepository};
 use crate::domain::user::{User, UserId, UserPreferences, UserRole};
 
-use super::models::{LibraryModel, UserModel};
+use super::models::{LibraryModel, OnlineLibraryItemModel, UserModel};
 
 #[derive(Clone)]
 pub struct ToastyUserRepository {
@@ -224,6 +226,11 @@ impl UserRepository for ToastyUserRepository {
 
     async fn delete(&self, id: UserId) -> DomainResult<()> {
         let mut db = self.db.clone();
+        OnlineLibraryItemModel::filter_by_user_id(id.0)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(|e| online_item_err("purge user", e))?;
         UserModel::filter_by_id(id.0)
             .delete()
             .exec(&mut db)
@@ -409,6 +416,145 @@ impl LibraryRepository for ToastyLibraryRepository {
             .exec(&mut db)
             .await
             .map_err(|e| DomainError::Persistence(format!("delete library failed: {e}")))?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ToastyOnlineLibraryItemRepository {
+    db: Db,
+}
+
+impl ToastyOnlineLibraryItemRepository {
+    pub fn new(db: Db) -> Self {
+        Self { db }
+    }
+
+    fn model_to_domain(m: OnlineLibraryItemModel) -> DomainResult<OnlineLibraryItem> {
+        Ok(OnlineLibraryItem {
+            id: m.id,
+            user_id: UserId(m.user_id),
+            media_kind: MediaKind::parse(&m.media_kind)?,
+            source_kind: OnlineItemSourceKind::parse(&m.source_kind)?,
+            source_id: m.source_id,
+            item_key: m.item_key,
+            title: m.title,
+            subtitle: m.subtitle,
+            cover_url: m.cover_url,
+            intro: m.intro,
+            kind: m.kind,
+            extra: m.extra.0,
+            favorite: m.favorite,
+            favorited_at: m.favorited_at,
+            progress: m.progress.0,
+            progress_at: m.progress_at,
+            created_at: m.created_at,
+            updated_at: m.updated_at,
+        })
+    }
+}
+
+fn online_item_err(action: &str, e: impl std::fmt::Display) -> DomainError {
+    DomainError::Persistence(format!("{action} online library item failed: {e}"))
+}
+
+#[async_trait]
+impl OnlineLibraryItemRepository for ToastyOnlineLibraryItemRepository {
+    async fn list_by_user(
+        &self,
+        user_id: UserId,
+        media_kind: MediaKind,
+    ) -> DomainResult<Vec<OnlineLibraryItem>> {
+        let mut db = self.db.clone();
+        let rows = OnlineLibraryItemModel::filter_by_user_id(user_id.0)
+            .exec(&mut db)
+            .await
+            .map_err(|e| online_item_err("list", e))?;
+        let wanted = media_kind.as_str();
+        rows.into_iter()
+            .filter(|m| m.media_kind == wanted)
+            .map(Self::model_to_domain)
+            .collect()
+    }
+
+    async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<OnlineLibraryItem>> {
+        let mut db = self.db.clone();
+        let row = OnlineLibraryItemModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| online_item_err("find", e))?;
+        row.map(Self::model_to_domain).transpose()
+    }
+
+    async fn save(&self, item: &OnlineLibraryItem) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        let existing = OnlineLibraryItemModel::filter_by_id(item.id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(|e| online_item_err("load", e))?;
+        if let Some(mut rec) = existing {
+            rec.update()
+                .title(item.title.clone())
+                .subtitle(item.subtitle.clone())
+                .cover_url(item.cover_url.clone())
+                .intro(item.intro.clone())
+                .kind(item.kind.clone())
+                .extra(toasty::Json(item.extra.clone()))
+                .favorite(item.favorite)
+                .favorited_at(item.favorited_at)
+                .progress(toasty::Json(item.progress.clone()))
+                .progress_at(item.progress_at)
+                .updated_at(item.updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(|e| online_item_err("update", e))?;
+        } else {
+            toasty::create!(OnlineLibraryItemModel {
+                id: item.id,
+                user_id: item.user_id.0,
+                media_kind: item.media_kind.as_str().to_string(),
+                source_kind: item.source_kind.as_str().to_string(),
+                source_id: item.source_id.clone(),
+                item_key: item.item_key.clone(),
+                title: item.title.clone(),
+                subtitle: item.subtitle.clone(),
+                cover_url: item.cover_url.clone(),
+                intro: item.intro.clone(),
+                kind: item.kind.clone(),
+                extra: toasty::Json(item.extra.clone()),
+                favorite: item.favorite,
+                favorited_at: item.favorited_at,
+                progress: toasty::Json(item.progress.clone()),
+                progress_at: item.progress_at,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+            })
+            .exec(&mut db)
+            .await
+            .map_err(|e| online_item_err("create", e))?;
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, id: Uuid) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        OnlineLibraryItemModel::filter_by_id(id)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(|e| online_item_err("delete", e))?;
+        Ok(())
+    }
+
+    async fn delete_by_user(&self, user_id: UserId) -> DomainResult<()> {
+        let mut db = self.db.clone();
+        OnlineLibraryItemModel::filter_by_user_id(user_id.0)
+            .delete()
+            .exec(&mut db)
+            .await
+            .map_err(|e| online_item_err("purge", e))?;
         Ok(())
     }
 }

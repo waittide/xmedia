@@ -8,11 +8,12 @@ use toasty::schema::{Model, ModelSet};
 use tracing::info;
 
 use crate::domain::error::{DomainError, DomainResult};
-use models::{LibraryModel, UserModel};
+use models::{LibraryModel, OnlineLibraryItemModel, UserModel};
 
 pub fn register_core_models(set: &mut ModelSet) {
     <UserModel as Model>::register(set);
     <LibraryModel as Model>::register(set);
+    <OnlineLibraryItemModel as Model>::register(set);
 }
 
 /// Returns `true` if all core schema tables (`users` and `libraries`) are already present.
@@ -21,18 +22,37 @@ pub async fn is_core_schema_initialized(db: &mut Db) -> bool {
         && LibraryModel::all().limit(1).exec(db).await.is_ok()
 }
 
+async fn connect_bootstrap(set: ModelSet, database_url: &str) -> DomainResult<Db> {
+    Db::builder()
+        .models(set)
+        .connect(database_url)
+        .await
+        .map_err(|e| DomainError::Persistence(format!("failed to connect core db: {e}")))
+}
+
 pub async fn ensure_core_schema(db: &mut Db, database_url: &str) -> DomainResult<()> {
     if !is_core_schema_initialized(db).await {
         info!("initializing core database schema via toasty");
         let mut set = ModelSet::new();
         register_core_models(&mut set);
-        let bootstrap = Db::builder()
-            .models(set)
-            .connect(database_url)
-            .await
-            .map_err(|e| DomainError::Persistence(format!("failed to connect core db: {e}")))?;
+        let bootstrap = connect_bootstrap(set, database_url).await?;
         bootstrap.push_schema().await.map_err(|e| {
             DomainError::Persistence(format!("failed to push core database schema: {e}"))
+        })?;
+        return Ok(());
+    }
+    if OnlineLibraryItemModel::all()
+        .limit(1)
+        .exec(db)
+        .await
+        .is_err()
+    {
+        info!("migrating online_library_items table via toasty");
+        let mut set = ModelSet::new();
+        <OnlineLibraryItemModel as Model>::register(&mut set);
+        let bootstrap = connect_bootstrap(set, database_url).await?;
+        bootstrap.push_schema().await.map_err(|e| {
+            DomainError::Persistence(format!("failed to push online_library_items schema: {e}"))
         })?;
     }
     Ok(())

@@ -1,3 +1,6 @@
+#[cfg(feature = "server")]
+pub mod online_items;
+
 use std::path::{Path, PathBuf};
 #[cfg(feature = "server")]
 use std::sync::Arc;

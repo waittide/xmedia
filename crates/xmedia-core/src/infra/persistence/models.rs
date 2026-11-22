@@ -2,6 +2,7 @@ use jiff::Timestamp;
 use uuid::Uuid;
 
 use crate::domain::library::{LibraryKind, ScanStatus};
+use crate::domain::online_item::OnlineItemProgress;
 use crate::domain::user::UserPreferences;
 
 #[derive(Debug, toasty::Model)]
@@ -51,6 +52,49 @@ pub(crate) struct LibraryModel {
     pub scan_status: toasty::Json<ScanStatus>,
 
     pub last_scanned_at: Option<Timestamp>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+}
+
+#[derive(Debug, toasty::Model)]
+#[table = "online_library_items"]
+pub(crate) struct OnlineLibraryItemModel {
+    #[key]
+    pub id: Uuid,
+
+    #[index]
+    pub user_id: Uuid,
+
+    #[index]
+    pub media_kind: String,
+
+    pub source_kind: String,
+    pub source_id: String,
+
+    #[column(type = text)]
+    pub item_key: String,
+
+    pub title: String,
+    pub subtitle: Option<String>,
+
+    #[column(type = text)]
+    pub cover_url: Option<String>,
+
+    #[column(type = text)]
+    pub intro: Option<String>,
+
+    pub kind: Option<String>,
+
+    #[column(type = text)]
+    pub extra: toasty::Json<serde_json::Value>,
+
+    pub favorite: bool,
+    pub favorited_at: Option<Timestamp>,
+
+    #[column(type = text)]
+    pub progress: toasty::Json<Option<OnlineItemProgress>>,
+
+    pub progress_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
