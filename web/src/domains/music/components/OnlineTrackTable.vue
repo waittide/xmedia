@@ -138,20 +138,20 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="md-card-filled overflow-x-auto border border-[var(--md-sys-color-outline-variant)]/50"
+    class="md-card-filled overflow-hidden border border-[var(--md-sys-color-outline-variant)]/50"
   >
-    <table class="w-full border-collapse text-left text-xs">
+    <table class="w-full table-fixed border-collapse text-left text-xs">
       <thead>
         <tr
           class="border-b border-[var(--md-sys-color-outline-variant)]/60 text-[11px] font-semibold uppercase tracking-wider text-[var(--md-sys-color-on-surface-variant)]"
         >
-          <th class="w-11 px-3 py-3 text-center">{{ t('catalog.colIndex') }}</th>
-          <th class="px-3 py-3">{{ t('catalog.colTitle') }}</th>
-          <th v-if="showAlbum" class="hidden px-3 py-3 md:table-cell">{{ t('catalog.colAlbum') }}</th>
-          <th v-if="showSource" class="hidden px-3 py-3 sm:table-cell">{{ t('online.colSource') }}</th>
-          <th class="hidden px-3 py-3 lg:table-cell">{{ t('catalog.colQuality') }}</th>
-          <th class="w-20 px-3 py-3 text-right">{{ t('catalog.colDuration') }}</th>
-          <th class="w-32 px-3 py-3 text-right"></th>
+          <th class="w-11 px-2 py-3 text-center sm:px-3">{{ t('catalog.colIndex') }}</th>
+          <th class="px-2 py-3 sm:px-3">{{ t('catalog.colTitle') }}</th>
+          <th v-if="showAlbum" class="hidden w-40 px-3 py-3 lg:table-cell">{{ t('catalog.colAlbum') }}</th>
+          <th v-if="showSource" class="hidden w-36 px-3 py-3 md:table-cell">{{ t('online.colSource') }}</th>
+          <th class="hidden w-20 px-3 py-3 xl:table-cell">{{ t('catalog.colQuality') }}</th>
+          <th class="hidden w-16 px-2 py-3 text-right sm:table-cell sm:px-3">{{ t('catalog.colDuration') }}</th>
+          <th class="w-24 px-2 py-3 text-right sm:w-32 sm:px-3"></th>
         </tr>
       </thead>
       <tbody class="divide-y divide-[var(--md-sys-color-outline-variant)]/35">
@@ -164,7 +164,7 @@ onBeforeUnmount(() => {
           "
           @click="handlePlayRow(idx)"
         >
-          <td class="px-3 py-2.5 text-center" @click.stop="handlePlayRow(idx)">
+          <td class="w-11 px-2 py-2.5 text-center sm:px-3" @click.stop="handlePlayRow(idx)">
             <button
               type="button"
               :title="
@@ -191,8 +191,8 @@ onBeforeUnmount(() => {
             </button>
           </td>
 
-          <td class="px-3 py-2.5">
-            <div class="flex items-center gap-3">
+          <td class="px-2 py-2.5 sm:px-3">
+            <div class="flex min-w-0 items-center gap-2.5 sm:gap-3">
               <CoverImage
                 :src="resolveCoverSrc(tr)"
                 :has-cover="false"
@@ -201,16 +201,17 @@ onBeforeUnmount(() => {
                 rounded="rounded-lg"
                 class="h-10 w-10 shrink-0"
               />
-              <div class="min-w-0">
-                <div class="flex items-center gap-1.5">
+              <div class="min-w-0 flex-1 overflow-hidden">
+                <div class="flex min-w-0 items-center gap-1.5">
                   <button
                     type="button"
-                    class="truncate text-left font-semibold hover:text-[var(--md-sys-color-primary)]"
+                    class="min-w-0 truncate text-left font-semibold hover:text-[var(--md-sys-color-primary)]"
                     :class="
                       isCurrentTrack(tr)
                         ? 'text-[var(--md-sys-color-primary)]'
                         : 'text-[var(--md-sys-color-on-surface)]'
                     "
+                    :title="tr.title"
                     @click.stop="handlePlayRow(idx)"
                   >
                     {{ tr.title }}
@@ -223,12 +224,13 @@ onBeforeUnmount(() => {
                   </span>
                 </div>
                 <div
-                  class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+                  class="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
                 >
-                  <span class="truncate">{{ tr.artist || t('online.unknownArtist') }}</span>
+                  <span class="min-w-0 truncate">{{ tr.artist || t('online.unknownArtist') }}</span>
                   <span
                     v-if="showSource"
-                    class="rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.2 text-[10px] sm:hidden"
+                    class="max-w-[7.5rem] shrink-0 truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.2 text-[10px] md:hidden"
+                    :title="tr.source_name"
                   >
                     {{ tr.source_name }}
                   </span>
@@ -237,39 +239,43 @@ onBeforeUnmount(() => {
             </div>
           </td>
 
-          <td v-if="showAlbum" class="hidden max-w-[14rem] px-3 py-2.5 md:table-cell">
-            <span class="block max-w-full truncate text-[var(--md-sys-color-on-surface-variant)]">
+          <td v-if="showAlbum" class="hidden w-40 px-3 py-2.5 lg:table-cell">
+            <span
+              class="block truncate text-[var(--md-sys-color-on-surface-variant)]"
+              :title="tr.album || undefined"
+            >
               {{ tr.album || '—' }}
             </span>
           </td>
 
-          <td v-if="showSource" class="hidden px-3 py-2.5 sm:table-cell">
+          <td v-if="showSource" class="hidden w-36 px-3 py-2.5 md:table-cell">
             <span
-              class="inline-flex max-w-[10rem] items-center truncate rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+              class="inline-flex max-w-full items-center truncate rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
+              :title="tr.source_name"
             >
-              {{ tr.source_name }}
+              <span class="truncate">{{ tr.source_name }}</span>
             </span>
           </td>
 
-          <td class="hidden px-3 py-2.5 lg:table-cell">
+          <td class="hidden w-20 px-3 py-2.5 xl:table-cell">
             <span
-              class="inline-flex items-center rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
+              class="inline-flex max-w-full items-center truncate rounded-md bg-[var(--md-sys-color-surface-container-high)] px-1.5 py-0.5 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)]"
             >
               {{ formatOnlineQuality(tr) }}
             </span>
           </td>
 
           <td
-            class="px-3 py-2.5 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+            class="hidden w-16 px-2 py-2.5 text-right font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)] sm:table-cell sm:px-3"
           >
             {{ tr.duration_secs != null && tr.duration_secs > 0 ? formatDuration(tr.duration_secs) : '—' }}
           </td>
 
-          <td class="px-3 py-2.5 text-right" @click.stop>
+          <td class="w-24 px-2 py-2.5 text-right sm:w-32 sm:px-3" @click.stop>
             <div class="inline-flex items-center justify-end gap-1">
               <button
                 type="button"
-                class="md-btn md-btn-sm md-state h-7 rounded-full px-2.5 text-[11px]"
+                class="md-btn md-btn-sm md-state h-7 rounded-full px-2 text-[11px] sm:px-2.5"
                 :class="
                   playerStore.isOnlineTrackInQueue(tr)
                     ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
@@ -283,9 +289,9 @@ onBeforeUnmount(() => {
                 "
                 @click.stop="handleEnqueueTrack(tr)"
               >
-                <LuCheck v-if="playerStore.isOnlineTrackInQueue(tr)" class="h-3.5 w-3.5" />
-                <LuListPlus v-else class="h-3.5 w-3.5" />
-                <span>
+                <LuCheck v-if="playerStore.isOnlineTrackInQueue(tr)" class="h-3.5 w-3.5 shrink-0" />
+                <LuListPlus v-else class="h-3.5 w-3.5 shrink-0" />
+                <span class="hidden sm:inline">
                   {{ playerStore.isOnlineTrackInQueue(tr) ? t('online.enqueued') : t('online.enqueue') }}
                 </span>
               </button>

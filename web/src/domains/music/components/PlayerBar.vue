@@ -215,13 +215,13 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <!-- Mobile Compact Draggable Progress Bar (< sm) -->
-    <div class="flex items-center gap-2 px-3 pt-1 sm:hidden">
+    <div class="flex items-center gap-2.5 px-3 pt-1 sm:hidden">
       <span
-        class="w-8 shrink-0 text-right font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+        class="w-9 shrink-0 text-right font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ formatTime(playerStore.currentTimeSecs) }}
       </span>
-      <div class="flex-1">
+      <div class="min-w-0 flex-1 px-2">
         <AppSlider
           :model-value="playerStore.currentTimeSecs"
           :min="0"
@@ -235,7 +235,7 @@ onBeforeUnmount(() => {
         />
       </div>
       <span
-        class="w-8 shrink-0 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+        class="w-9 shrink-0 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
       >
         {{ formatTime(playerStore.durationSecs) }}
       </span>

@@ -61,7 +61,7 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
 <template>
   <div
     :draggable="canReorder"
-    class="relative flex items-center justify-between gap-3 rounded-2xl px-3.5 py-3.5 transition"
+    class="relative flex flex-col gap-2.5 rounded-2xl px-3.5 py-3.5 transition sm:flex-row sm:items-center sm:justify-between sm:gap-3"
     :class="[
       selectionMode
         ? selected
@@ -109,13 +109,16 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
       </div>
 
       <div class="min-w-0 flex-1">
-        <div class="flex items-center gap-2">
-          <span class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span
+            class="min-w-0 truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)]"
+            :title="source.name"
+          >
             {{ source.name }}
           </span>
           <span
             v-if="source.group_name"
-            class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
+            class="max-w-full shrink-0 truncate rounded-full bg-[var(--md-sys-color-surface-container-highest)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
           >
             {{ source.group_name }}
           </span>
@@ -140,7 +143,7 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
       </div>
     </div>
 
-    <div v-if="selectionMode" class="shrink-0">
+    <div v-if="selectionMode" class="flex shrink-0 justify-end">
       <span
         class="rounded-full px-2.5 py-0.5 text-[11px] font-medium"
         :class="
@@ -157,7 +160,7 @@ function statusDotTitle(src: OnlineSourceSummaryDto): string {
       </span>
     </div>
 
-    <div v-else class="flex shrink-0 items-center gap-1.5" @mousedown.stop>
+    <div v-else class="flex shrink-0 items-center justify-end gap-1.5 pl-7 sm:pl-0" @mousedown.stop>
       <AppSwitch
         :model-value="source.enabled"
         :disabled="busy"

@@ -163,7 +163,7 @@ export default {
     disabledAccount: '已禁用',
   },
   player: {
-    qualityRaw: '原画直推',
+    qualityRaw: '原始音质',
     qualityOpus128: 'Opus 128k',
     qualityMp3192: 'MP3 192k',
     qualityMp3320: 'MP3 320k',

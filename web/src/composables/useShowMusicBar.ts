@@ -2,16 +2,18 @@ import { computed, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
 import { usePlayerStore } from '@/domains/music/player'
 import { useAuthStore } from '@/stores/auth'
-import { useDomainStore } from '@/stores/domain'
 
 export function useShowMusicBar(): ComputedRef<boolean> {
   const route = useRoute()
   const authStore = useAuthStore()
-  const domainStore = useDomainStore()
   const playerStore = usePlayerStore()
 
   const isFullscreenRoute = computed(() =>
     route.matched.some((record) => Boolean(record.meta.fullscreen)),
+  )
+
+  const isMusicRoute = computed(
+    () => route.meta.domain === 'music' || route.path.startsWith('/music'),
   )
 
   return computed(
@@ -19,6 +21,6 @@ export function useShowMusicBar(): ComputedRef<boolean> {
       authStore.isAuthenticated &&
       !isFullscreenRoute.value &&
       authStore.hasModule('music') &&
-      (domainStore.activeDomain === 'music' || playerStore.currentTrack !== null),
+      (isMusicRoute.value || playerStore.currentTrack !== null),
   )
 }
