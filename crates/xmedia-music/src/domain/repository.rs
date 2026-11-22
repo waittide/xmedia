@@ -165,6 +165,11 @@ pub trait MusicSourceRepository: Send + Sync {
     async fn find_by_id(&self, id: Uuid) -> DomainResult<Option<MusicSourceRecord>>;
     async fn save(&self, source: &MusicSourceRecord) -> DomainResult<()>;
     async fn update_existing(&self, source: &MusicSourceRecord) -> DomainResult<bool>;
+    async fn update_metadata_if_exists(
+        &self,
+        id: Uuid,
+        patch: crate::domain::online::MusicSourceMetadataUpdate,
+    ) -> DomainResult<Option<MusicSourceRecord>>;
     async fn update_runtime_state(
         &self,
         id: Uuid,

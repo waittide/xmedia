@@ -2903,3 +2903,192 @@ async fn regression_explore_categories_preserve_js_pipelines() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn concurrent_import_sources_and_patch_variable_login_preserve_state() {
+    let h = setup_online_test_harness(true).await;
+
+    let src = serde_json::json!({
+        "sourceName": "ConcurrentMusicPatchImport",
+        "sourceUrl": "https://concurrent-music.test",
+        "sourceGroup": "InitGroup",
+        "weight": 1,
+        "loginUi": "[{\"name\":\"user\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"}]",
+        "loginUrl": "@js:'ok'"
+    });
+    let (st_imp, _, b_imp) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for round in 0..20i64 {
+        let var_val = format!("var_round_{round}");
+        let tok_val = format!("tok_round_{round}");
+        let group_patch = format!("PatchGroup_{round}");
+        let group_import = format!("ImportGroup_{round}");
+        let weight_target = 100 + round;
+
+        let action_js = format!(
+            "source.setVariable('{var_val}');cookie.setCookie('https://concurrent-music.test','sid=s{round}');cache.put('k','c{round}');'ok'"
+        );
+        let import_payload = serde_json::json!({
+            "sourceName": "ConcurrentMusicPatchImport",
+            "sourceUrl": "https://concurrent-music.test",
+            "sourceGroup": group_import,
+            "weight": weight_target,
+            "loginUi": "[{\"name\":\"user\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"}]",
+            "loginUrl": "@js:'ok'",
+            "ruleSearch": { "searchUrl": format!("https://concurrent-music.test/s?r={round}&q={{{{key}}}}") }
+        })
+        .to_string();
+
+        let login_uri = format!("/sources/{sid}/login-action");
+        let patch_uri = format!("/sources/{sid}");
+
+        let (res_login, res_patch) = tokio::join!(
+            send_json(
+                &h.app,
+                "POST",
+                &login_uri,
+                &h.admin_token,
+                Some(serde_json::json!({
+                    "login_info": { "user": format!("u{round}"), "apiToken": tok_val },
+                    "action": action_js
+                })),
+            ),
+            send_json(
+                &h.app,
+                "PATCH",
+                &patch_uri,
+                &h.admin_token,
+                Some(serde_json::json!({
+                    "weight": weight_target,
+                    "group_name": group_patch
+                })),
+            ),
+        );
+        assert_eq!(res_login.0, StatusCode::OK);
+        assert_eq!(res_patch.0, StatusCode::OK);
+
+        // Race login-action against import upsert
+        let var_val2 = format!("var_round_{round}_b");
+        let tok_val2 = format!("tok_round_{round}_b");
+        let action_js2 = format!(
+            "source.setVariable('{var_val2}');cookie.setCookie('https://concurrent-music.test','sid=s{round}_b');cache.put('k','c{round}_b');'ok'"
+        );
+        let (res_login2, res_upsert) = tokio::join!(
+            send_json(
+                &h.app,
+                "POST",
+                &login_uri,
+                &h.admin_token,
+                Some(serde_json::json!({
+                    "login_info": { "user": format!("u{round}_b"), "apiToken": tok_val2 },
+                    "action": action_js2
+                })),
+            ),
+            send_json(
+                &h.app,
+                "POST",
+                "/sources/import",
+                &h.admin_token,
+                Some(serde_json::json!({ "raw_json": import_payload })),
+            ),
+        );
+        assert_eq!(res_login2.0, StatusCode::OK);
+        assert_eq!(res_upsert.0, StatusCode::OK);
+
+        // Also race PATCH(variable) against import upsert
+        let patched_var = format!("patched_var_{round}");
+        let import_payload_b = serde_json::json!({
+            "sourceName": "ConcurrentMusicPatchImport",
+            "sourceUrl": "https://concurrent-music.test",
+            "sourceGroup": group_import,
+            "weight": weight_target + 1,
+            "loginUi": "[{\"name\":\"user\",\"type\":\"text\"},{\"name\":\"apiToken\",\"type\":\"password\"}]",
+            "loginUrl": "@js:'ok'",
+            "ruleSearch": { "searchUrl": format!("https://concurrent-music.test/s2?r={round}&q={{{{key}}}}") }
+        })
+        .to_string();
+        let (res_patch_var, res_upsert2) = tokio::join!(
+            send_json(
+                &h.app,
+                "PATCH",
+                &patch_uri,
+                &h.admin_token,
+                Some(serde_json::json!({ "variable": patched_var })),
+            ),
+            send_json(
+                &h.app,
+                "POST",
+                "/sources/import",
+                &h.admin_token,
+                Some(serde_json::json!({ "raw_json": import_payload_b })),
+            ),
+        );
+        assert_eq!(res_patch_var.0, StatusCode::OK);
+        assert_eq!(res_upsert2.0, StatusCode::OK);
+
+        // Verify neither login_info, variable, cookies, cache, nor import-updated metadata was lost
+        let (st_var, _, b_var) = send_json(
+            &h.app,
+            "GET",
+            &format!("/sources/{sid}/variable"),
+            &h.admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(st_var, StatusCode::OK);
+        let var_json: serde_json::Value = serde_json::from_slice(&b_var).unwrap();
+        assert_eq!(var_json["variable"], patched_var);
+
+        let (st_chk, _, b_chk) = send_json(
+            &h.app,
+            "POST",
+            &login_uri,
+            &h.admin_token,
+            Some(serde_json::json!({
+                "login_info": { "user": format!("u{round}_b"), "apiToken": MASKED_SECRET_PLACEHOLDER },
+                "action": "JSON.stringify({v:source.getVariable(),t:source.getLoginInfoMap().apiToken,c:cookie.getCookie('https://concurrent-music.test'),k:cache.get('k')})"
+            })),
+        )
+        .await;
+        assert_eq!(st_chk, StatusCode::OK);
+        let chk_val: serde_json::Value = serde_json::from_slice(&b_chk).unwrap();
+        let inner: serde_json::Value =
+            serde_json::from_str(chk_val["result"].as_str().unwrap()).unwrap();
+        assert_eq!(inner["v"], patched_var);
+        assert_eq!(inner["t"], tok_val2);
+        assert!(
+            inner["c"]
+                .as_str()
+                .unwrap()
+                .contains(&format!("sid=s{round}_b"))
+        );
+        assert_eq!(inner["k"], format!("c{round}_b"));
+        assert_eq!(chk_val["source"]["weight"], weight_target + 1);
+        assert_eq!(chk_val["source"]["group_name"], group_import);
+
+        let (st_exp, _, b_exp) = send_json(
+            &h.app,
+            "GET",
+            &format!("/sources/{sid}/export"),
+            &h.admin_token,
+            None,
+        )
+        .await;
+        assert_eq!(st_exp, StatusCode::OK);
+        let exp_json: serde_json::Value = serde_json::from_slice(&b_exp).unwrap();
+        assert_eq!(
+            exp_json["ruleSearch"]["searchUrl"],
+            format!("https://concurrent-music.test/s2?r={round}&q={{{{key}}}}")
+        );
+    }
+}

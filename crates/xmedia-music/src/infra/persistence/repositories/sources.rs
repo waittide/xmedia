@@ -6,7 +6,7 @@ use xmedia_core::domain::error::DomainResult;
 use xmedia_source::model::SourceRuntimeState;
 
 use super::db_err;
-use crate::domain::online::MusicSourceRecord;
+use crate::domain::online::{MusicSourceMetadataUpdate, MusicSourceRecord};
 use crate::domain::repository::MusicSourceRepository;
 use crate::infra::persistence::models::MusicSourceRecordModel;
 
@@ -132,6 +132,68 @@ impl MusicSourceRepository for ToastyMusicSourceRepository {
             .await
             .map_err(db_err)?;
         Ok(true)
+    }
+
+    async fn update_metadata_if_exists(
+        &self,
+        id: Uuid,
+        patch: MusicSourceMetadataUpdate,
+    ) -> DomainResult<Option<MusicSourceRecord>> {
+        let mut db = self.db.clone();
+        let Some(mut rec) = MusicSourceRecordModel::filter_by_id(id)
+            .first()
+            .exec(&mut db)
+            .await
+            .map_err(db_err)?
+        else {
+            return Ok(None);
+        };
+        let next_runtime_state = patch.variable.map(|v| {
+            let mut rt = rec.runtime_state.0.clone();
+            rt.variable = v;
+            rt
+        });
+        if let Some(ref rt) = next_runtime_state {
+            rec.update()
+                .name(patch.name.clone())
+                .source_url(patch.source_url.clone())
+                .group_name(patch.group_name.clone())
+                .enabled(patch.enabled)
+                .weight(patch.weight)
+                .source_type(patch.source_type)
+                .raw_json(patch.raw_json.clone())
+                .runtime_state(toasty::Json(rt.clone()))
+                .updated_at(patch.updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        } else {
+            rec.update()
+                .name(patch.name.clone())
+                .source_url(patch.source_url.clone())
+                .group_name(patch.group_name.clone())
+                .enabled(patch.enabled)
+                .weight(patch.weight)
+                .source_type(patch.source_type)
+                .raw_json(patch.raw_json.clone())
+                .updated_at(patch.updated_at)
+                .exec(&mut db)
+                .await
+                .map_err(db_err)?;
+        }
+        let mut domain = Self::to_domain(rec);
+        domain.name = patch.name;
+        domain.source_url = patch.source_url;
+        domain.group_name = patch.group_name;
+        domain.enabled = patch.enabled;
+        domain.weight = patch.weight;
+        domain.source_type = patch.source_type;
+        domain.raw_json = patch.raw_json;
+        if let Some(rt) = next_runtime_state {
+            domain.runtime_state = rt;
+        }
+        domain.updated_at = patch.updated_at;
+        Ok(Some(domain))
     }
 
     async fn update_runtime_state(

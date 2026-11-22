@@ -11,7 +11,7 @@ use xmedia_source::crud::{
     merge_runtime_state,
 };
 
-use crate::domain::online::MusicSourceRecord;
+use crate::domain::online::{MusicSourceMetadataUpdate, MusicSourceRecord};
 use crate::source::model::{MusicSourceSpec, SourceRuntimeState};
 
 use super::dto::{
@@ -151,6 +151,8 @@ impl MusicOnlineService {
         let now = Timestamp::now();
         let mut persisted = Vec::with_capacity(targets.len());
         for (rec, target_weight) in targets {
+            let lock = self.source_state_lock_for(rec.id);
+            let _guard = lock.lock().await;
             if rec.weight != target_weight {
                 if let Some(updated) = self
                     .sources
@@ -159,8 +161,8 @@ impl MusicOnlineService {
                 {
                     persisted.push(updated);
                 }
-            } else {
-                persisted.push(rec);
+            } else if let Some(fresh) = self.sources.find_by_id(rec.id).await? {
+                persisted.push(fresh);
             }
         }
 
@@ -203,47 +205,66 @@ impl MusicOnlineService {
                 MusicSourceRecord::sync_raw_json_fields(&item_raw, None, None, Some(&group_name));
             let key = (src.source_url.clone(), src.source_name.clone());
 
-            if let Some(mut rec) = existing_by_key.remove(&key) {
-                rec.group_name = group_name;
-                rec.enabled = src.enabled;
-                rec.weight = src.weight;
-                rec.source_type = 0;
-                rec.raw_json = synced_raw;
-                rec.updated_at = now;
-                self.sources.save(&rec).await?;
-                let summary = Self::record_to_summary(&rec, true);
-                if let Some(&pos) = out_by_id.get(&rec.id) {
-                    out[pos] = summary;
-                } else {
-                    updated_count += 1;
-                    out_by_id.insert(rec.id, out.len());
-                    out.push(summary);
-                }
-                existing_by_key.insert(key, rec);
-            } else {
-                let mut rt = SourceRuntimeState::default();
-                rt.ensure_android_id(&src.source_url);
-                let rec = MusicSourceRecord {
-                    id: Uuid::now_v7(),
-                    name: src.source_name.clone(),
-                    source_url: src.source_url.clone(),
+            if let Some(existing_rec) = existing_by_key.remove(&key) {
+                let id = existing_rec.id;
+                let lock = self.source_state_lock_for(id);
+                let _guard = lock.lock().await;
+                let patch = MusicSourceMetadataUpdate {
+                    name: existing_rec.name.clone(),
+                    source_url: existing_rec.source_url.clone(),
                     group_name,
                     enabled: src.enabled,
                     weight: src.weight,
                     source_type: 0,
                     raw_json: synced_raw,
-                    runtime_state: rt,
-                    last_test_ok: None,
-                    last_test_msg: None,
-                    created_at: now,
+                    variable: None,
                     updated_at: now,
                 };
-                self.sources.save(&rec).await?;
-                imported_count += 1;
-                out_by_id.insert(rec.id, out.len());
-                out.push(Self::record_to_summary(&rec, true));
-                existing_by_key.insert(key, rec);
+                if let Some(rec) = self.sources.update_metadata_if_exists(id, patch).await? {
+                    let summary = Self::record_to_summary(&rec, true);
+                    if let Some(&pos) = out_by_id.get(&rec.id) {
+                        out[pos] = summary;
+                    } else {
+                        updated_count += 1;
+                        out_by_id.insert(rec.id, out.len());
+                        out.push(summary);
+                    }
+                    existing_by_key.insert(key, rec);
+                    continue;
+                }
             }
+            let mut rt = SourceRuntimeState::default();
+            rt.ensure_android_id(&src.source_url);
+            let rec = MusicSourceRecord {
+                id: Uuid::now_v7(),
+                name: src.source_name.clone(),
+                source_url: src.source_url.clone(),
+                group_name: src
+                    .source_group
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .to_string(),
+                enabled: src.enabled,
+                weight: src.weight,
+                source_type: 0,
+                raw_json: MusicSourceRecord::sync_raw_json_fields(
+                    &item_raw,
+                    None,
+                    None,
+                    Some(src.source_group.as_deref().map(str::trim).unwrap_or("")),
+                ),
+                runtime_state: rt,
+                last_test_ok: None,
+                last_test_msg: None,
+                created_at: now,
+                updated_at: now,
+            };
+            self.sources.save(&rec).await?;
+            imported_count += 1;
+            out_by_id.insert(rec.id, out.len());
+            out.push(Self::record_to_summary(&rec, true));
+            existing_by_key.insert(key, rec);
         }
 
         Ok(ImportMusicSourcesReportDto {
@@ -388,19 +409,29 @@ impl MusicOnlineService {
                 input.group_name.as_deref(),
             );
         }
-        if let Some(v) = input.variable {
-            rec.runtime_state.variable = v;
-        }
-        rec.updated_at = now;
-
-        if !self.sources.update_existing(&rec).await? {
-            return Err(DomainError::NotFound(format!("未找到音源 {id}")));
-        }
-        Ok(Self::record_to_summary(&rec, true))
+        let patch = MusicSourceMetadataUpdate {
+            name: rec.name,
+            source_url: rec.source_url,
+            group_name: rec.group_name,
+            enabled: rec.enabled,
+            weight: rec.weight,
+            source_type: rec.source_type,
+            raw_json: rec.raw_json,
+            variable: input.variable,
+            updated_at: now,
+        };
+        let updated = self
+            .sources
+            .update_metadata_if_exists(id, patch)
+            .await?
+            .ok_or_else(|| DomainError::NotFound(format!("未找到音源 {id}")))?;
+        Ok(Self::record_to_summary(&updated, true))
     }
 
     pub async fn delete_source(&self, actor: &User, id: Uuid) -> DomainResult<()> {
         require_admin(actor)?;
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
         let _ = self.load_source(id).await?;
         self.sources.delete(id).await?;
         Ok(())
@@ -448,6 +479,8 @@ impl MusicOnlineService {
         let mut affected_count = 0usize;
 
         for id in unique_ids {
+            let lock = self.source_state_lock_for(id);
+            let _guard = lock.lock().await;
             match &input.action {
                 BatchMusicSourceAction::Enable => {
                     if self
