@@ -5,6 +5,7 @@ mod proxy;
 mod sources;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -20,7 +21,64 @@ use crate::source::MusicSourceEngine;
 
 pub(super) const SEARCH_MAX_CONCURRENCY: usize = 16;
 pub(super) const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
+pub(super) const TRACK_INFO_OP_TIMEOUT: Duration = Duration::from_secs(45);
 pub(super) const SOURCE_TEST_TOTAL_TIMEOUT: Duration = Duration::from_secs(90);
+
+pub(super) struct CancelOnDrop {
+    flag: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    pub(super) fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag, armed: true }
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+pub(super) struct CancelTasksOnDrop {
+    entries: Vec<(Arc<AtomicBool>, tokio::task::AbortHandle)>,
+    armed: bool,
+}
+
+impl CancelTasksOnDrop {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            armed: true,
+        }
+    }
+
+    pub(super) fn push(&mut self, flag: Arc<AtomicBool>, abort: tokio::task::AbortHandle) {
+        self.entries.push((flag, abort));
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelTasksOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            for (flag, abort) in &self.entries {
+                flag.store(true, Ordering::Relaxed);
+                abort.abort();
+            }
+        }
+    }
+}
 
 pub(super) type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
 
@@ -47,6 +105,8 @@ pub struct MusicOnlineService {
     pub(super) rate_limiters: RateLimiterMap,
     pub(super) seed_import_lock: tokio::sync::Mutex<()>,
     pub(super) allow_private_ips: bool,
+    pub(super) op_timeout: Duration,
+    pub(super) track_info_timeout: Duration,
 }
 
 impl MusicOnlineService {
@@ -66,7 +126,20 @@ impl MusicOnlineService {
             rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
+            op_timeout: SEARCH_PER_SOURCE_TIMEOUT,
+            track_info_timeout: TRACK_INFO_OP_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timeouts(
+        mut self,
+        op_timeout: Duration,
+        track_info_timeout: Duration,
+    ) -> Self {
+        self.op_timeout = op_timeout;
+        self.track_info_timeout = track_info_timeout;
+        self
     }
 
     pub(super) async fn acquire_rate_slot(

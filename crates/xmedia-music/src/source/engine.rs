@@ -865,6 +865,7 @@ fn fetch_api(
     target_url: &str,
     base_url: &str,
 ) -> Result<xmedia_source::http::HttpFetchResult, String> {
+    session.check_active()?;
     let fetched = session.http().fetch(target_url, base_url)?;
     if fetched.status >= 400 {
         return Err(format!(

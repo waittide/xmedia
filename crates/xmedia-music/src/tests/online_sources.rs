@@ -3716,3 +3716,345 @@ async fn music_online_search_enforces_source_concurrent_rate_throttling() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn music_online_browse_enforces_cancel_on_future_drop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    let detail_entered = Arc::new(Notify::new());
+    let detail_entered_c = detail_entered.clone();
+    let after_hits = Arc::new(AtomicUsize::new(0));
+    let after_hits_s = after_hits.clone();
+    let after_hits_c = after_hits.clone();
+    let after_hits_l = after_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/slow-explore",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                r#"{"items":[]}"#
+            }),
+        )
+        .route(
+            "/slow-detail",
+            get(move || {
+                let notify = detail_entered_c.clone();
+                async move {
+                    notify.notify_one();
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    r#"{"id":"t1","name":"SlowTrack","artist":"Art"}"#
+                }
+            }),
+        )
+        .route(
+            "/after-detail-stream",
+            get(move || {
+                let hits = after_hits_s.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"url":"https://cdn.example/a.mp3"}"#
+                }
+            }),
+        )
+        .route(
+            "/after-detail-cover",
+            get(move || {
+                let hits = after_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"pic":"https://cdn.example/c.jpg"}"#
+                }
+            }),
+        )
+        .route(
+            "/after-detail-lyric",
+            get(move || {
+                let hits = after_hits_l.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"lrc":"[00:01.00]Hi"}"#
+                }
+            }),
+        )
+        .route(
+            "/slow-stream",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                r#"{"url":"https://cdn.example/slow.mp3"}"#
+            }),
+        )
+        .route(
+            "/slow-lyric",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                r#"{"lrc":"[00:01.00]Slow"}"#
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let h = setup_online_test_harness(true).await;
+
+    let src_track_info = serde_json::json!({
+        "sourceName": "DropTrackInfoMusic",
+        "sourceUrl": base,
+        "exploreUrl": "Slow::/slow-explore",
+        "searchUrl": format!("{base}/slow-explore?q={{{{key}}}}"),
+        "ruleSearch": { "trackList": "$.items[*]", "trackId": "$.id", "title": "$.name", "artist": "$.artist" },
+        "ruleTrackDetail": {
+            "requestUrl": format!("{base}/slow-detail"),
+            "trackId": "$.id",
+            "title": "$.name",
+            "artist": "$.artist"
+        },
+        "ruleStream": {
+            "requestUrl": format!("{base}/after-detail-stream"),
+            "streamUrl": "$.url"
+        },
+        "ruleCover": {
+            "requestUrl": format!("{base}/after-detail-cover"),
+            "coverUrl": "$.pic"
+        },
+        "ruleLyric": {
+            "requestUrl": format!("{base}/after-detail-lyric"),
+            "lyric": "$.lrc"
+        }
+    });
+    let (st1, _, b1) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_track_info.to_string() })),
+    )
+    .await;
+    assert_eq!(st1, StatusCode::OK);
+    let v1: serde_json::Value = serde_json::from_slice(&b1).unwrap();
+    let sid1 = v1["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let src_slow_single = serde_json::json!({
+        "sourceName": "DropSingleMusic",
+        "sourceUrl": base,
+        "exploreUrl": "Slow::/slow-explore",
+        "ruleStream": {
+            "requestUrl": format!("{base}/slow-stream"),
+            "streamUrl": "$.url"
+        },
+        "ruleLyric": {
+            "requestUrl": format!("{base}/slow-lyric"),
+            "lyric": "$.lrc"
+        }
+    });
+    let (st2, _, b2) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_slow_single.to_string() })),
+    )
+    .await;
+    assert_eq!(st2, StatusCode::OK);
+    let v2: serde_json::Value = serde_json::from_slice(&b2).unwrap();
+    let sid2 = v2["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // 1. Drop explore, stream, and lyrics futures early
+    for (uri, payload) in [
+        (
+            "/online/explore",
+            serde_json::json!({ "source_id": sid1, "page": 1 }),
+        ),
+        (
+            "/online/stream",
+            serde_json::json!({ "source_id": sid2, "track_id": "t1" }),
+        ),
+        (
+            "/online/lyrics",
+            serde_json::json!({ "source_id": sid2, "track_id": "t1" }),
+        ),
+    ] {
+        let res = tokio::time::timeout(
+            Duration::from_millis(80),
+            send_json(&h.app, "POST", uri, &h.member_token, Some(payload)),
+        )
+        .await;
+        assert!(res.is_err(), "expected short client timeout on {uri}");
+    }
+
+    // 2. Drop track-info future after /slow-detail starts; CancelOnDrop must prevent stream/cover/lyric steps
+    {
+        let track_fut = send_json(
+            &h.app,
+            "POST",
+            "/online/track-info",
+            &h.member_token,
+            Some(serde_json::json!({ "source_id": sid1, "track_id": "t1" })),
+        );
+        tokio::pin!(track_fut);
+        tokio::select! {
+            _ = &mut track_fut => panic!("track-info finished unexpectedly early"),
+            _ = detail_entered.notified() => {
+                // Drop track_fut immediately once detail HTTP request started
+            }
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(260)).await;
+    assert_eq!(
+        after_hits.load(Ordering::SeqCst),
+        0,
+        "CancelOnDrop must abort track-info before stream/cover/lyric steps"
+    );
+
+    srv.abort();
+}
+
+#[tokio::test]
+async fn music_online_browse_enforces_timeout_on_stalled_upstream() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use xmedia_core::domain::error::DomainError;
+
+    use crate::application::online::MusicOnlineService;
+    use crate::infra::persistence::repositories::ToastyMusicSourceRepository;
+
+    let after_hits = Arc::new(AtomicUsize::new(0));
+    let after_hits_c = after_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/stall",
+            get(|| async {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                r#"{"items":[],"id":"t1","name":"Late","artist":"Art","url":"https://cdn.example/late.mp3","lrc":"[00:01.00]Late"}"#
+            }),
+        )
+        .route(
+            "/after",
+            get(move || {
+                let hits = after_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"url":"https://cdn.example/after.mp3"}"#
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("xmedia_music_timeout.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_music_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_music_schema(&mut db, &db_url).await.unwrap();
+
+    let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let security = Arc::new(SecurityManager::new("music-timeout-secret"));
+    let tokens = Arc::new(JwtTokenService::new("music-timeout-secret", 3600));
+    let auth_svc = Arc::new(AuthService::new(users_repo, security, tokens, lifecycles));
+    let admin_session = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "adminpassword123".into(),
+        })
+        .await
+        .unwrap();
+    let admin = auth_svc
+        .authenticate_jwt(&admin_session.token)
+        .await
+        .unwrap();
+
+    let sources_repo = Arc::new(ToastyMusicSourceRepository::new(db));
+    let engine = MusicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(5),
+    );
+    let svc = MusicOnlineService::with_engine(sources_repo, engine, true)
+        .with_timeouts(Duration::from_millis(120), Duration::from_millis(160));
+
+    let raw_src = serde_json::json!({
+        "sourceName": "StalledMusicSource",
+        "sourceUrl": base,
+        "exploreUrl": format!("Stall::{base}/stall"),
+        "ruleSearch": { "trackList": "$.items[*]", "trackId": "$.id", "title": "$.name", "artist": "$.artist" },
+        "ruleTrackDetail": {
+            "requestUrl": format!("{base}/stall"),
+            "trackId": "$.id",
+            "title": "$.name",
+            "artist": "$.artist"
+        },
+        "ruleStream": {
+            "requestUrl": format!("{base}/stall"),
+            "streamUrl": "$.url"
+        },
+        "ruleCover": {
+            "requestUrl": format!("{base}/after"),
+            "coverUrl": "$.url"
+        },
+        "ruleLyric": {
+            "requestUrl": format!("{base}/stall"),
+            "lyric": "$.lrc"
+        }
+    });
+    let imported = svc
+        .import_sources(&admin, &raw_src.to_string())
+        .await
+        .unwrap();
+    let sid = imported.sources[0].id;
+
+    let ctx = MusicTrackContext {
+        track_id: "t1".into(),
+        title: "Track".into(),
+        artist: "Art".into(),
+        ..Default::default()
+    };
+
+    let t_start = std::time::Instant::now();
+    let exp_err = svc.explore(&admin, sid, None, 1, 10).await.unwrap_err();
+    assert!(matches!(exp_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    let stream_err = svc
+        .fetch_stream(&admin, sid, ctx.clone(), None)
+        .await
+        .unwrap_err();
+    assert!(matches!(stream_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    let lrc_err = svc
+        .fetch_lyrics(&admin, sid, ctx.clone())
+        .await
+        .unwrap_err();
+    assert!(matches!(lrc_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    let info_err = svc
+        .fetch_track_info(&admin, sid, ctx, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(info_err, DomainError::Validation(ref m) if m.contains("超时")));
+
+    assert!(
+        t_start.elapsed() < Duration::from_secs(1),
+        "all 4 timed-out calls should finish well under 2s stall, took {:?}",
+        t_start.elapsed()
+    );
+    assert_eq!(after_hits.load(Ordering::SeqCst), 0);
+
+    srv.abort();
+}

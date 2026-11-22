@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -18,7 +19,7 @@ use super::dto::{
     OnlineMusicSearchResponseDto, OnlineMusicStreamResponseDto, OnlineMusicTrackDto,
     SourceSearchErrorDto,
 };
-use super::{MusicOnlineService, SEARCH_MAX_CONCURRENCY, SEARCH_PER_SOURCE_TIMEOUT};
+use super::{CancelOnDrop, CancelTasksOnDrop, MusicOnlineService, SEARCH_MAX_CONCURRENCY};
 
 pub(super) fn build_proxy_cover_url(source_id: Uuid, cover_url: &str) -> Option<String> {
     let trimmed = cover_url.trim();
@@ -100,8 +101,10 @@ impl MusicOnlineService {
         let page_num = page.max(1);
         let limit_num = limit.clamp(1, 50);
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
+        let op_timeout = self.op_timeout;
 
         let mut handles = Vec::with_capacity(sources.len());
+        let mut cancel_all_guard = CancelTasksOnDrop::new();
         for rec in sources {
             let engine = self.engine.clone();
             let kw_owned = kw.to_string();
@@ -112,8 +115,10 @@ impl MusicOnlineService {
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
             let rate_limiter = get_or_insert_rate_limiter(&self.rate_limiters, sid);
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            let cancel_for_task = cancel_flag.clone();
 
-            handles.push(tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let parsed = match parsed_res {
                     Ok(p) => p,
                     Err(e) => {
@@ -128,7 +133,7 @@ impl MusicOnlineService {
                 };
                 let qualities = parsed.supported_qualities.clone();
                 if let Some(rate) = parsed.parse_concurrent_rate()
-                    && let Err(e) = rate_limiter.acquire(rate, SEARCH_PER_SOURCE_TIMEOUT).await
+                    && let Err(e) = rate_limiter.acquire(rate, op_timeout).await
                 {
                     return (sid, sname, qualities, prev_state_cmp, Err(e));
                 }
@@ -141,10 +146,10 @@ impl MusicOnlineService {
                         Err("搜索并发调度已关闭".into()),
                     );
                 };
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                let cancel_worker = cancel_flag.clone();
+                let cancel_worker = cancel_for_task.clone();
+                let mut cancel_guard = CancelOnDrop::new(cancel_for_task.clone());
                 let timed = tokio::time::timeout(
-                    SEARCH_PER_SOURCE_TIMEOUT,
+                    op_timeout,
                     tokio::task::spawn_blocking(move || {
                         engine
                             .search_sync_with_control(
@@ -153,7 +158,7 @@ impl MusicOnlineService {
                                 &kw_owned,
                                 page_num,
                                 limit_num,
-                                SEARCH_PER_SOURCE_TIMEOUT,
+                                op_timeout,
                                 cancel_worker,
                             )
                             .map_err(|e| e.message)
@@ -161,29 +166,34 @@ impl MusicOnlineService {
                 )
                 .await;
                 match timed {
-                    Ok(Ok(res)) => (sid, sname, qualities, prev_state_cmp, res),
-                    Ok(Err(e)) => (
-                        sid,
-                        sname,
-                        qualities,
-                        prev_state_cmp,
-                        Err(format!("搜索任务异常: {e}")),
-                    ),
-                    Err(_) => {
-                        cancel_flag.store(true, Ordering::Relaxed);
+                    Ok(Ok(res)) => {
+                        cancel_guard.disarm();
+                        (sid, sname, qualities, prev_state_cmp, res)
+                    }
+                    Ok(Err(e)) => {
+                        cancel_guard.disarm();
                         (
                             sid,
                             sname,
                             qualities,
                             prev_state_cmp,
-                            Err(format!(
-                                "搜索超时（超过 {} 秒）",
-                                SEARCH_PER_SOURCE_TIMEOUT.as_secs()
-                            )),
+                            Err(format!("搜索任务异常: {e}")),
+                        )
+                    }
+                    Err(_) => {
+                        cancel_for_task.store(true, Ordering::Relaxed);
+                        (
+                            sid,
+                            sname,
+                            qualities,
+                            prev_state_cmp,
+                            Err(format!("搜索超时（超过 {} 秒）", op_timeout.as_secs())),
                         )
                     }
                 }
-            }));
+            });
+            cancel_all_guard.push(cancel_flag, handle.abort_handle());
+            handles.push(handle);
         }
 
         let mut results = Vec::new();
@@ -219,6 +229,7 @@ impl MusicOnlineService {
                 }
             }
         }
+        cancel_all_guard.disarm();
 
         Ok(OnlineMusicSearchResponseDto {
             keyword: kw.to_string(),
@@ -241,13 +252,10 @@ impl MusicOnlineService {
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
 
         let qualities = parsed.supported_qualities.clone();
         let engine = self.engine.clone();
@@ -257,18 +265,49 @@ impl MusicOnlineService {
         let page_num = page.max(1);
         let limit_num = limit.clamp(1, 50);
 
-        let out = tokio::task::spawn_blocking(move || {
-            engine.explore_sync(
-                &parsed,
-                prev_state,
-                explore_owned.as_deref(),
-                page_num,
-                limit_num,
-            )
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("浏览音源线程失败: {e}")))?
-        .map_err(|e| DomainError::Validation(e.message))?;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
+
+        let timed = tokio::time::timeout(
+            op_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .explore_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        explore_owned.as_deref(),
+                        page_num,
+                        limit_num,
+                        op_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("浏览音源线程失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "浏览音源超时（超过 {} 秒）",
+                    op_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp {
             let _ = self
@@ -316,13 +355,11 @@ impl MusicOnlineService {
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        let track_info_timeout = self.track_info_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
 
         if let Some(ref q) = quality {
             ctx.quality = Some(q.clone());
@@ -332,34 +369,77 @@ impl MusicOnlineService {
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
-        let (
-            final_state,
-            resolved_track,
-            resolved_stream,
-            resolved_cover,
-            resolved_lyrics,
-            mut diag,
-        ) = tokio::task::spawn_blocking(move || -> Result<_, DomainError> {
-            let mut state = prev_state;
-            let mut combined_diag = ExecutionDiagnostics::default();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
-            let track_item = if parsed.rule_track_detail.is_some()
-                && (ctx
-                    .detail_url
-                    .as_deref()
-                    .is_some_and(|s| !s.trim().is_empty())
-                    || !ctx.track_id.trim().is_empty())
-            {
-                match engine.fetch_track_detail_sync(&parsed, state.clone(), &ctx) {
-                    Ok(out) => {
-                        state = out.state;
-                        xmedia_source::crud::merge_diagnostics(
-                            &mut combined_diag,
-                            &out.diagnostics,
-                        );
-                        out.data
+        let timed = tokio::time::timeout(
+            track_info_timeout,
+            tokio::task::spawn_blocking(move || -> Result<_, DomainError> {
+                let total_start = Instant::now();
+                let remaining_budget = || {
+                    track_info_timeout
+                        .saturating_sub(total_start.elapsed())
+                        .max(Duration::from_millis(1))
+                };
+                let check_not_cancelled = || -> Result<(), DomainError> {
+                    if cancel_worker.load(Ordering::Relaxed)
+                        || total_start.elapsed() >= track_info_timeout
+                    {
+                        Err(DomainError::Validation(format!(
+                            "获取曲目详情超时（超过 {} 秒）",
+                            track_info_timeout.as_secs()
+                        )))
+                    } else {
+                        Ok(())
                     }
-                    Err(_) => OnlineMusicTrackItem {
+                };
+
+                let mut state = prev_state;
+                let mut combined_diag = ExecutionDiagnostics::default();
+
+                let track_item = if parsed.rule_track_detail.is_some()
+                    && (ctx
+                        .detail_url
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty())
+                        || !ctx.track_id.trim().is_empty())
+                {
+                    match engine.fetch_track_detail_sync_with_control(
+                        &parsed,
+                        state.clone(),
+                        &ctx,
+                        remaining_budget(),
+                        cancel_worker.clone(),
+                    ) {
+                        Ok(out) => {
+                            state = out.state;
+                            xmedia_source::crud::merge_diagnostics(
+                                &mut combined_diag,
+                                &out.diagnostics,
+                            );
+                            out.data
+                        }
+                        Err(_) => {
+                            check_not_cancelled()?;
+                            OnlineMusicTrackItem {
+                                track_id: ctx.track_id.clone(),
+                                title: ctx.title.clone(),
+                                artist: ctx.artist.clone(),
+                                album: ctx.album.clone(),
+                                duration_secs: ctx.duration_secs,
+                                cover_url: ctx.cover_url.clone(),
+                                cover_id: ctx.cover_id.clone(),
+                                url_id: ctx.url_id.clone(),
+                                lyric_id: ctx.lyric_id.clone(),
+                                play_url: ctx.play_url.clone(),
+                                detail_url: ctx.detail_url.clone(),
+                                format: None,
+                            }
+                        }
+                    }
+                } else {
+                    OnlineMusicTrackItem {
                         track_id: ctx.track_id.clone(),
                         title: ctx.title.clone(),
                         artist: ctx.artist.clone(),
@@ -372,66 +452,119 @@ impl MusicOnlineService {
                         play_url: ctx.play_url.clone(),
                         detail_url: ctx.detail_url.clone(),
                         format: None,
-                    },
+                    }
+                };
+
+                check_not_cancelled()?;
+                let next_ctx = track_item.to_context(ctx.quality.clone());
+
+                let stream_res = match engine.resolve_stream_sync_with_control(
+                    &parsed,
+                    state.clone(),
+                    &next_ctx,
+                    quality.as_deref(),
+                    remaining_budget(),
+                    cancel_worker.clone(),
+                ) {
+                    Ok(out) => {
+                        state = out.state;
+                        xmedia_source::crud::merge_diagnostics(
+                            &mut combined_diag,
+                            &out.diagnostics,
+                        );
+                        Some(out.data)
+                    }
+                    Err(_) => {
+                        check_not_cancelled()?;
+                        None
+                    }
+                };
+
+                check_not_cancelled()?;
+                let cover_res = match engine.resolve_cover_sync_with_control(
+                    &parsed,
+                    state.clone(),
+                    &next_ctx,
+                    remaining_budget(),
+                    cancel_worker.clone(),
+                ) {
+                    Ok(out) => {
+                        state = out.state;
+                        xmedia_source::crud::merge_diagnostics(
+                            &mut combined_diag,
+                            &out.diagnostics,
+                        );
+                        out.data
+                    }
+                    Err(_) => {
+                        check_not_cancelled()?;
+                        None
+                    }
                 }
-            } else {
-                OnlineMusicTrackItem {
-                    track_id: ctx.track_id.clone(),
-                    title: ctx.title.clone(),
-                    artist: ctx.artist.clone(),
-                    album: ctx.album.clone(),
-                    duration_secs: ctx.duration_secs,
-                    cover_url: ctx.cover_url.clone(),
-                    cover_id: ctx.cover_id.clone(),
-                    url_id: ctx.url_id.clone(),
-                    lyric_id: ctx.lyric_id.clone(),
-                    play_url: ctx.play_url.clone(),
-                    detail_url: ctx.detail_url.clone(),
-                    format: None,
-                }
-            };
-
-            let next_ctx = track_item.to_context(ctx.quality.clone());
-
-            let stream_res = engine
-                .resolve_stream_sync(&parsed, state.clone(), &next_ctx, quality.as_deref())
-                .ok()
-                .map(|out| {
-                    state = out.state;
-                    xmedia_source::crud::merge_diagnostics(&mut combined_diag, &out.diagnostics);
-                    out.data
-                });
-
-            let cover_res = engine
-                .resolve_cover_sync(&parsed, state.clone(), &next_ctx)
-                .ok()
-                .and_then(|out| {
-                    state = out.state;
-                    xmedia_source::crud::merge_diagnostics(&mut combined_diag, &out.diagnostics);
-                    out.data
-                })
                 .or_else(|| track_item.cover_url.clone());
 
-            let lyrics_res = engine
-                .resolve_lyrics_sync(&parsed, state.clone(), &next_ctx)
-                .ok()
-                .and_then(|out| {
-                    state = out.state;
-                    xmedia_source::crud::merge_diagnostics(&mut combined_diag, &out.diagnostics);
-                    out.data
-                });
+                check_not_cancelled()?;
+                let lyrics_res = match engine.resolve_lyrics_sync_with_control(
+                    &parsed,
+                    state.clone(),
+                    &next_ctx,
+                    remaining_budget(),
+                    cancel_worker.clone(),
+                ) {
+                    Ok(out) => {
+                        state = out.state;
+                        xmedia_source::crud::merge_diagnostics(
+                            &mut combined_diag,
+                            &out.diagnostics,
+                        );
+                        out.data
+                    }
+                    Err(_) => {
+                        check_not_cancelled()?;
+                        None
+                    }
+                };
 
-            Ok((
-                state,
-                track_item,
-                stream_res,
-                cover_res,
-                lyrics_res,
-                combined_diag,
-            ))
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("解析曲目详情线程失败: {e}")))??;
+                Ok((
+                    state,
+                    track_item,
+                    stream_res,
+                    cover_res,
+                    lyrics_res,
+                    combined_diag,
+                ))
+            }),
+        )
+        .await;
+
+        let (
+            final_state,
+            resolved_track,
+            resolved_stream,
+            resolved_cover,
+            resolved_lyrics,
+            mut diag,
+        ) = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(err);
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("解析曲目详情线程失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "获取曲目详情超时（超过 {} 秒）",
+                    track_info_timeout.as_secs()
+                )));
+            }
+        };
 
         if final_state != prev_state_cmp {
             let _ = self
@@ -494,24 +627,57 @@ impl MusicOnlineService {
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
-        let out = tokio::task::spawn_blocking(move || {
-            engine.resolve_stream_sync(&parsed, prev_state, &ctx, quality.as_deref())
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("解析音频流线程失败: {e}")))?
-        .map_err(|e| DomainError::Validation(e.message))?;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
+
+        let timed = tokio::time::timeout(
+            op_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .resolve_stream_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &ctx,
+                        quality.as_deref(),
+                        op_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("解析音频流线程失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "解析音频流超时（超过 {} 秒）",
+                    op_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp {
             let _ = self
@@ -550,24 +716,56 @@ impl MusicOnlineService {
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
-        self.acquire_rate_slot(
-            source_id,
-            parsed.parse_concurrent_rate(),
-            SEARCH_PER_SOURCE_TIMEOUT,
-        )
-        .await
-        .map_err(DomainError::Validation)?;
+        let op_timeout = self.op_timeout;
+        self.acquire_rate_slot(source_id, parsed.parse_concurrent_rate(), op_timeout)
+            .await
+            .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
 
-        let out = tokio::task::spawn_blocking(move || {
-            engine.resolve_lyrics_sync(&parsed, prev_state, &ctx)
-        })
-        .await
-        .map_err(|e| DomainError::Storage(format!("解析歌词线程失败: {e}")))?
-        .map_err(|e| DomainError::Validation(e.message))?;
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
+
+        let timed = tokio::time::timeout(
+            op_timeout,
+            tokio::task::spawn_blocking(move || {
+                engine
+                    .resolve_lyrics_sync_with_control(
+                        &parsed,
+                        prev_state,
+                        &ctx,
+                        op_timeout,
+                        cancel_worker,
+                    )
+                    .map_err(|e| e.message)
+            }),
+        )
+        .await;
+
+        let out = match timed {
+            Ok(Ok(Ok(res))) => {
+                cancel_guard.disarm();
+                res
+            }
+            Ok(Ok(Err(err))) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Validation(err));
+            }
+            Ok(Err(e)) => {
+                cancel_guard.disarm();
+                return Err(DomainError::Storage(format!("解析歌词线程失败: {e}")));
+            }
+            Err(_) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                return Err(DomainError::Validation(format!(
+                    "解析歌词超时（超过 {} 秒）",
+                    op_timeout.as_secs()
+                )));
+            }
+        };
 
         if out.state != prev_state_cmp {
             let _ = self

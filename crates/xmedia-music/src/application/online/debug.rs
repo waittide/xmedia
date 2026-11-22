@@ -23,7 +23,7 @@ use super::dto::{
     MusicSourceTestReportDto, OnlineMusicResolvedTrackDto, OnlineMusicStreamResponseDto,
     OnlineMusicTrackDto, SourceDebugStepDto,
 };
-use super::{MusicOnlineService, SOURCE_TEST_TOTAL_TIMEOUT};
+use super::{CancelOnDrop, MusicOnlineService, SOURCE_TEST_TOTAL_TIMEOUT};
 
 impl MusicOnlineService {
     pub async fn test_source(
@@ -63,6 +63,7 @@ impl MusicOnlineService {
         let qualities = parsed.supported_qualities.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
+        let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
 
         let explicit_ctx = MusicTrackContext {
             track_id: input.track_id.unwrap_or_default(),
@@ -573,8 +574,12 @@ impl MusicOnlineService {
         .await;
 
         let (maybe_final_state, report) = match timed_res {
-            Ok(Ok((final_state, report))) => (Some(final_state), report),
+            Ok(Ok((final_state, report))) => {
+                cancel_guard.disarm();
+                (Some(final_state), report)
+            }
             Ok(Err(e)) => {
+                cancel_guard.disarm();
                 return Err(DomainError::Storage(format!("测试音源线程失败: {e}")));
             }
             Err(_) => {
