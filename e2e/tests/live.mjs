@@ -1007,7 +1007,34 @@ export async function runLiveTests(context = {}) {
             summary.video = liveVideoSample.title;
           }
 
-          cdp.assertNoErrors('LIVE-09 Live Browser Smoke');
+          const { exceptions, consoleErrors, httpErrors } = cdp.getErrors();
+          const isAllowedExternalThumbError = (url) =>
+            Boolean(url) &&
+            (url.includes('/api/v1/music/online/cover-proxy') ||
+              url.includes('/api/v1/video/online/poster-proxy'));
+          const fatalHttpErrors = httpErrors.filter(
+            (e) => !(e.status === 400 && isAllowedExternalThumbError(e.url)),
+          );
+          const ignoredThumbUrls = new Set(
+            httpErrors
+              .filter((e) => e.status === 400 && isAllowedExternalThumbError(e.url))
+              .map((e) => e.url),
+          );
+          const fatalConsoleErrors = consoleErrors.filter(
+            (e) => !(e.source === 'network' && ignoredThumbUrls.has(e.url)),
+          );
+          const problems = [];
+          if (exceptions.length > 0) problems.push(`exceptions=${JSON.stringify(exceptions)}`);
+          if (fatalConsoleErrors.length > 0) {
+            problems.push(`consoleErrors=${JSON.stringify(fatalConsoleErrors)}`);
+          }
+          if (fatalHttpErrors.length > 0) problems.push(`httpErrors=${JSON.stringify(fatalHttpErrors)}`);
+          if (problems.length > 0) {
+            throw new Error(`LIVE-09 Live Browser Smoke recorded unexpected browser errors: ${problems.join('; ')}`);
+          }
+          if (ignoredThumbUrls.size > 0) {
+            summary.externalThumbnailWarnings = [...ignoredThumbUrls];
+          }
           evidence.browser_smoke = summary;
         });
 
