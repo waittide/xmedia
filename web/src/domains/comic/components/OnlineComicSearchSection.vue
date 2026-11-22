@@ -147,7 +147,11 @@ watch(
         if (activeExploreSourceId.value) {
           void runExplore(activeExploreSourceId.value, null, 1, 'replace')
         } else {
+          exploreAbortController?.abort()
+          exploreAbortController = null
           exploreSeq += 1
+          exploring.value = false
+          loadingMoreExplore.value = false
           exploreCategories.value = []
           exploreItems.value = []
           exploreError.value = null
@@ -260,6 +264,8 @@ function toggleSourceFilter(id: string): void {
     exploreAbortController?.abort()
     exploreAbortController = null
     exploreSeq += 1
+    exploring.value = false
+    loadingMoreExplore.value = false
     exploreCategories.value = []
     exploreItems.value = []
     exploreError.value = null
@@ -287,6 +293,8 @@ function clearSourceFilter(): void {
     exploreAbortController?.abort()
     exploreAbortController = null
     exploreSeq += 1
+    exploring.value = false
+    loadingMoreExplore.value = false
     exploreCategories.value = []
     exploreItems.value = []
     exploreError.value = null

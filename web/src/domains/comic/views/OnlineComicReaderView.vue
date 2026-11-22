@@ -42,6 +42,7 @@ const offsetCoverPage = ref<boolean>(theme.comic.offset_cover_page)
 const dimImages = ref<boolean>(theme.comic.dim_images_in_dark)
 const webtoonWidth = ref<number>(theme.comic.webtoon_width)
 
+let initSeq = 0
 let loadSeq = 0
 let detailSeq = 0
 let pageAbortController: AbortController | null = null
@@ -398,6 +399,7 @@ async function openChapter(
 }
 
 async function initReader(): Promise<void> {
+  const runInitSeq = ++initSeq
   pageAbortController?.abort()
   pageAbortController = null
   detailAbortController?.abort()
@@ -496,7 +498,7 @@ async function initReader(): Promise<void> {
   }
 
   await openChapter(hydrated.chapterUrl, hydrated.chapterIndex, false)
-  if (!unmounted && chapters.value.length === 0 && hydrated.comicUrl) {
+  if (!unmounted && runInitSeq === initSeq && chapters.value.length === 0 && hydrated.comicUrl) {
     void hydrateChaptersInBackground(hydrated.sourceId, hydrated.comicUrl, hydrated.tocUrl)
   }
 }
@@ -587,6 +589,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   unmounted = true
+  initSeq += 1
   loadSeq += 1
   detailSeq += 1
   pageAbortController?.abort()
