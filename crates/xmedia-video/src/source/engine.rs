@@ -791,8 +791,54 @@ impl VideoSourceEngine {
             Arc::new(AtomicBool::new(false)),
         )?;
 
-        let login_url_js = source.login_url.as_deref().unwrap_or("");
-        let result = session.eval_login_script(login_url_js, action, &login_info)?;
+        let raw_login = source.login_url.as_deref().unwrap_or("").trim();
+        let is_plain_http_login_url =
+            raw_login.starts_with("http://") || raw_login.starts_with("https://");
+        let login_url_js = if raw_login
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@js:"))
+        {
+            raw_login[4..].trim()
+        } else if raw_login.len() >= 9
+            && raw_login
+                .get(..4)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<js>"))
+            && raw_login
+                .get(raw_login.len() - 5..)
+                .is_some_and(|suffix| suffix.eq_ignore_ascii_case("</js>"))
+        {
+            raw_login[4..raw_login.len() - 5].trim()
+        } else if is_plain_http_login_url {
+            ""
+        } else {
+            raw_login
+        };
+        let login_check_stripped = source
+            .login_check_js
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                if s.get(..4)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@js:"))
+                {
+                    s[4..].trim()
+                } else if s.len() >= 9
+                    && s.get(..4)
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<js>"))
+                    && s.get(s.len() - 5..)
+                        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("</js>"))
+                {
+                    s[4..s.len() - 5].trim()
+                } else {
+                    s
+                }
+            });
+        let effective_action = match action.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(act) => Some(act),
+            None => login_check_stripped,
+        };
+        let result = session.eval_login_script(login_url_js, effective_action, &login_info)?;
         let (final_state, diagnostics) = session.finalize_state();
         Ok(SourceCallOutput {
             data: result,

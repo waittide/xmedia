@@ -912,3 +912,40 @@ fn video_search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixe
     assert_eq!(cap.targets[3], "/ci");
     assert_eq!(cap.bodies[3], "ok");
 }
+
+#[test]
+fn video_run_login_action_strips_at_js_and_tag_js_wrappers() {
+    let engine = crate::source::VideoSourceEngine::default();
+    let src_at: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "AtJsLogin",
+        "sourceUrl": "https://video.example.test",
+        "loginUrl": "@js:function login() { return 'at:' + (source.getLoginInfoMap().user || ''); }"
+    }))
+    .unwrap();
+    let out_at = engine
+        .run_login_action_sync(
+            &src_at,
+            crate::source::model::SourceRuntimeState::default(),
+            HashMap::from([("user".to_string(), "alice".to_string())]),
+            Some("login()"),
+        )
+        .unwrap();
+    assert_eq!(out_at.data, "at:alice");
+
+    let src_tag: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "TagJsLogin",
+        "sourceUrl": "https://video.example.test",
+        "loginUrl": "<js>function check() { return 'tag:' + (source.getLoginInfoMap().user || ''); }</js>",
+        "loginCheckJs": "@js:check()"
+    }))
+    .unwrap();
+    let out_tag = engine
+        .run_login_action_sync(
+            &src_tag,
+            crate::source::model::SourceRuntimeState::default(),
+            HashMap::from([("user".to_string(), "bob".to_string())]),
+            None,
+        )
+        .unwrap();
+    assert_eq!(out_tag.data, "tag:bob");
+}

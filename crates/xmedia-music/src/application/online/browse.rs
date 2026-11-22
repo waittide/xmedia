@@ -5,6 +5,7 @@ use tokio::sync::Semaphore;
 use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::User;
+use xmedia_source::rate_limit::get_or_insert_rate_limiter;
 
 use crate::domain::catalog::StructuredLyrics;
 use crate::source::engine::url_encode_component;
@@ -110,6 +111,7 @@ impl MusicOnlineService {
             let state = rec.runtime_state.clone();
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
+            let rate_limiter = get_or_insert_rate_limiter(&self.rate_limiters, sid);
 
             handles.push(tokio::spawn(async move {
                 let parsed = match parsed_res {
@@ -125,6 +127,11 @@ impl MusicOnlineService {
                     }
                 };
                 let qualities = parsed.supported_qualities.clone();
+                if let Some(rate) = parsed.parse_concurrent_rate()
+                    && let Err(e) = rate_limiter.acquire(rate, SEARCH_PER_SOURCE_TIMEOUT).await
+                {
+                    return (sid, sname, qualities, prev_state_cmp, Err(e));
+                }
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (
                         sid,
@@ -234,6 +241,14 @@ impl MusicOnlineService {
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
+
         let qualities = parsed.supported_qualities.clone();
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
@@ -300,6 +315,14 @@ impl MusicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         if let Some(ref q) = quality {
             ctx.quality = Some(q.clone());
@@ -471,6 +494,14 @@ impl MusicOnlineService {
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
 
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
+
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
@@ -518,6 +549,14 @@ impl MusicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: MusicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("音源 JSON 无效: {e}")))?;
+
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();

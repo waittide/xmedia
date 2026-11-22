@@ -9,6 +9,8 @@ use std::time::Duration;
 
 use uuid::Uuid;
 use xmedia_source::http::HttpClientConfig;
+use xmedia_source::model::ConcurrentRateSpec;
+use xmedia_source::rate_limit::{RateLimiterMap, acquire_source_rate_slot};
 
 use crate::domain::repository::VideoSourceRepository;
 use crate::source::VideoSourceEngine;
@@ -42,6 +44,7 @@ pub struct VideoOnlineService {
     engine: VideoSourceEngine,
     http_config: HttpClientConfig,
     source_state_locks: AsyncLockMap<Uuid>,
+    rate_limiters: RateLimiterMap,
     seed_import_lock: tokio::sync::Mutex<()>,
     allow_private_ips: bool,
 }
@@ -62,9 +65,19 @@ impl VideoOnlineService {
             engine,
             http_config,
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
         }
+    }
+
+    pub(super) async fn acquire_rate_slot(
+        &self,
+        source_id: Uuid,
+        spec: Option<ConcurrentRateSpec>,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        acquire_source_rate_slot(&self.rate_limiters, source_id, spec, timeout).await
     }
 
     pub fn allow_private_ips(&self) -> bool {

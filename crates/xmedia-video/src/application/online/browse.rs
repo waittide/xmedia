@@ -14,6 +14,7 @@ use xmedia_source::http::{
 use xmedia_source::proxy::{
     DEFAULT_IMAGE_PROXY_MAX_BYTES, fetch_validated_image_bytes_with_config,
 };
+use xmedia_source::rate_limit::get_or_insert_rate_limiter;
 
 use crate::source::hls::{
     MAX_M3U8_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url, build_poster_proxy_url,
@@ -65,6 +66,13 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
         let has_explore = match parsed.effective_format() {
             crate::source::model::VideoSourceFormat::ApplecmsV10 => true,
             crate::source::model::VideoSourceFormat::Rule => {
@@ -162,6 +170,7 @@ impl VideoOnlineService {
             let state = rec.runtime_state.clone();
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
+            let rate_limiter = get_or_insert_rate_limiter(&self.rate_limiters, sid);
 
             handles.push(tokio::spawn(async move {
                 let parsed = match parsed_res {
@@ -175,6 +184,11 @@ impl VideoOnlineService {
                         );
                     }
                 };
+                if let Some(rate) = parsed.parse_concurrent_rate()
+                    && let Err(e) = rate_limiter.acquire(rate, SEARCH_PER_SOURCE_TIMEOUT).await
+                {
+                    return (sid, sname, prev_state_cmp, Err(e));
+                }
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (sid, sname, prev_state_cmp, Err("搜索并发调度已关闭".into()));
                 };
@@ -280,6 +294,13 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
@@ -347,6 +368,13 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
         let clean_detail_url =
             if let Some(raw_detail) = detail_url.map(str::trim).filter(|s| !s.is_empty()) {
                 Some(xmedia_source::http::resolve_literal_http_url(
@@ -413,6 +441,13 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
         let clean_play_url = xmedia_source::http::resolve_literal_http_url(
             play_url,
             Some(parsed.effective_source_url()),

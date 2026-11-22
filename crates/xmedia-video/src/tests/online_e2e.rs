@@ -3053,3 +3053,76 @@ async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn video_online_search_enforces_source_concurrent_rate_throttling() {
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let origin_app = Router::new().route(
+        "/api/search",
+        get(|| async {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"items":[{"id":"v1","title":"RatedVideo","url":"/v/1"}]}"#,
+                ))
+                .unwrap()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let src = serde_json::json!({
+        "sourceName": "RateLimitedVideo",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "concurrentRate": "1/200",
+        "searchUrl": format!("{base}/api/search?q={{{{key}}}}"),
+        "ruleSearch": {
+            "list": "$.items[*]",
+            "vodId": "$.id",
+            "name": "$.title",
+            "detailUrl": "$.url"
+        }
+    });
+    let (st_imp, imp_val) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src.to_string() }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let start = std::time::Instant::now();
+    let (r1, r2) = tokio::join!(
+        post_json(
+            &app,
+            "/api/v1/video/online/search",
+            &member_tok,
+            serde_json::json!({ "keyword": "a", "source_ids": [&sid] }),
+        ),
+        post_json(
+            &app,
+            "/api/v1/video/online/search",
+            &member_tok,
+            serde_json::json!({ "keyword": "b", "source_ids": [&sid] }),
+        ),
+    );
+    let elapsed = start.elapsed();
+    assert_eq!(r1.0, StatusCode::OK);
+    assert_eq!(r2.0, StatusCode::OK);
+    assert!(
+        elapsed >= std::time::Duration::from_millis(160),
+        "expected concurrentRate 1/200 to throttle 2 concurrent calls, took {:?}",
+        elapsed
+    );
+
+    srv.abort();
+}

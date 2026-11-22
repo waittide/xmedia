@@ -3640,3 +3640,79 @@ async fn online_music_endpoints_block_param_and_options_injection_and_support_re
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn music_online_search_enforces_source_concurrent_rate_throttling() {
+    let h = setup_online_test_harness(true).await;
+
+    let origin_app = Router::new().route(
+        "/api/search",
+        get(|| async {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"items":[{"id":"m1","name":"RatedTrack","artist":"Art"}]}"#,
+                ))
+                .unwrap()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let src = serde_json::json!({
+        "sourceName": "RateLimitedMusic",
+        "sourceUrl": base,
+        "concurrentRate": "1/200",
+        "searchUrl": format!("{base}/api/search?q={{{{key}}}}"),
+        "ruleSearch": {
+            "trackList": "$.items[*]",
+            "trackId": "$.id",
+            "title": "$.name",
+            "artist": "$.artist"
+        }
+    });
+    let (st_imp, _, b_imp) = send_json(
+        &h.app,
+        "POST",
+        "/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let start = std::time::Instant::now();
+    let (r1, r2) = tokio::join!(
+        send_json(
+            &h.app,
+            "POST",
+            "/online/search",
+            &h.member_token,
+            Some(serde_json::json!({ "keyword": "a", "source_ids": [&sid] })),
+        ),
+        send_json(
+            &h.app,
+            "POST",
+            "/online/search",
+            &h.member_token,
+            Some(serde_json::json!({ "keyword": "b", "source_ids": [&sid] })),
+        ),
+    );
+    let elapsed = start.elapsed();
+    assert_eq!(r1.0, StatusCode::OK);
+    assert_eq!(r2.0, StatusCode::OK);
+    assert!(
+        elapsed >= Duration::from_millis(160),
+        "expected concurrentRate 1/200 to throttle 2 concurrent calls, took {:?}",
+        elapsed
+    );
+
+    srv.abort();
+}
