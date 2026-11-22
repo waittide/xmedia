@@ -1,17 +1,19 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { useI18n } from 'vue-i18n'
-import { LuLayers } from 'vue-icons-plus/lu'
-import { useAuthStore } from '@/stores/auth'
+import { LuAlertCircle, LuEye, LuEyeOff, LuLayers } from 'vue-icons-plus/lu'
 import ThemePopover from '@/components/ThemePopover.vue'
+import { useSettingsI18n } from '@/components/settings/i18nHelper'
+import { MdButton, MdCard, MdIconButton, MdTextField } from '@/components/ui'
+import { useAuthStore } from '@/stores/auth'
 
-const { t } = useI18n()
+const { t, tr } = useSettingsI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 
 const username = ref('')
 const password = ref('')
+const showPassword = ref(false)
 const submitting = ref(false)
 const errorMsg = ref('')
 
@@ -30,82 +32,96 @@ async function onSubmit(): Promise<void> {
 </script>
 
 <template>
-  <div
-    class="safe-pb flex min-h-screen flex-col bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)]"
-  >
+  <div class="safe-pb flex min-h-screen flex-col bg-surface text-on-surface">
     <header class="safe-pt safe-px">
       <div class="flex items-center justify-between px-6 py-4">
         <div class="flex items-center gap-2.5">
           <div
-            class="flex h-10 w-10 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)]"
+            class="flex h-10 w-10 items-center justify-center rounded-corner-lg bg-primary text-on-primary shadow-elevation-1"
           >
             <LuLayers class="h-5 w-5" />
           </div>
-          <span class="md-title-medium tracking-tight">{{ t('app.name') }}</span>
+          <span class="text-title-medium tracking-tight">{{ t('app.name') }}</span>
         </div>
         <ThemePopover show-language />
       </div>
     </header>
 
-    <main class="safe-px flex flex-1 items-center justify-center">
-      <div class="flex w-full justify-center p-4">
-        <div
-          class="w-full max-w-md rounded-[28px] border border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] p-8 shadow-[var(--md-sys-elevation-2)]"
-        >
-        <h1 class="md-headline-small mb-6 text-[var(--md-sys-color-on-surface)]">
-          {{ t('auth.loginTitle') }}
-        </h1>
+    <main class="safe-px flex flex-1 items-center justify-center p-4">
+      <MdCard
+        variant="elevated"
+        padding="lg"
+        class="w-full max-w-md rounded-corner-xl border border-outline-variant/60 shadow-elevation-2"
+      >
+        <div class="mb-6">
+          <h1 class="text-headline-small text-on-surface">
+            {{ t('auth.loginTitle') }}
+          </h1>
+          <p class="text-body-small mt-1 text-on-surface-variant">
+            {{
+              tr(
+                'auth.loginSubtitle',
+                '输入账户凭据以访问您的媒体库',
+                'Sign in with your account to access your media workspace',
+              )
+            }}
+          </p>
+        </div>
 
         <div
           v-if="errorMsg"
-          class="mb-4 rounded-[var(--md-sys-shape-corner-md)] bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs font-medium text-[var(--md-sys-color-on-error-container)]"
+          role="alert"
+          class="text-body-small mb-4 flex items-start gap-2 rounded-corner-md bg-error-container px-4 py-3 text-on-error-container"
         >
-          {{ errorMsg }}
+          <LuAlertCircle class="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{{ errorMsg }}</span>
         </div>
 
         <form class="space-y-4" @submit.prevent="onSubmit">
-          <div>
-            <label
-              class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ t('auth.username') }}
-            </label>
-            <input
-              v-model="username"
-              type="text"
-              required
-              autocomplete="username"
-              :placeholder="t('auth.usernamePlaceholder')"
-              class="md-input h-11 w-full text-sm"
-            />
-          </div>
-
-          <div>
-            <label
-              class="md-label-medium mb-1.5 block text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ t('auth.password') }}
-            </label>
-            <input
-              v-model="password"
-              type="password"
-              required
-              autocomplete="current-password"
-              :placeholder="t('auth.passwordPlaceholder')"
-              class="md-input h-11 w-full text-sm"
-            />
-          </div>
-
-          <button
-            type="submit"
+          <MdTextField
+            v-model="username"
+            type="text"
+            required
+            autocomplete="username"
+            :label="t('auth.username')"
+            :placeholder="t('auth.usernamePlaceholder')"
             :disabled="submitting"
-            class="md-btn md-btn-filled mt-2 h-11 w-full"
+          />
+
+          <MdTextField
+            v-model="password"
+            :type="showPassword ? 'text' : 'password'"
+            required
+            autocomplete="current-password"
+            :label="t('auth.password')"
+            :placeholder="t('auth.passwordPlaceholder')"
+            :disabled="submitting"
+          >
+            <template #trailing>
+              <MdIconButton
+                size="sm"
+                :icon="showPassword ? LuEyeOff : LuEye"
+                :aria-label="
+                  showPassword
+                    ? tr('auth.hidePassword', '隐藏密码', 'Hide password')
+                    : tr('auth.showPassword', '显示密码', 'Show password')
+                "
+                @click="showPassword = !showPassword"
+              />
+            </template>
+          </MdTextField>
+
+          <MdButton
+            type="submit"
+            variant="filled"
+            block
+            :loading="submitting"
+            class="mt-2"
           >
             {{ submitting ? t('common.loading') : t('auth.signInBtn') }}
-          </button>
+          </MdButton>
         </form>
-        </div>
-      </div>
+      </MdCard>
     </main>
   </div>
 </template>
