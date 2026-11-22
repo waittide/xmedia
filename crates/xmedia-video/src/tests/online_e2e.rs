@@ -2771,3 +2771,189 @@ async fn proxy_rejects_xml_declared_svg_and_refetches_extensionless_octet_stream
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn video_caller_url_guards_chunked_partial_hls_and_utf16_comment_proxy_e2e() {
+    let (_tmp, app, admin_tok, member_tok) = setup_test_app(true).await;
+
+    let src_json = serde_json::json!([{
+        "sourceName": "GuardVideoSource",
+        "sourceUrl": "https://video-guard.example",
+        "sourceFormat": "rule",
+        "searchUrl": "/search?q={{key}}",
+        "ruleSearch": { "list": "$.items", "title": "$.title", "detailUrl": "$.url" },
+        "ruleDetail": { "title": "$.title" },
+        "rulePlay": { "requestUrl": "{{playUrl}}", "streamUrl": "$.url" }
+    }]);
+    let (st_imp, imp_res) = post_json(
+        &app,
+        "/api/v1/video/sources/import",
+        &admin_tok,
+        serde_json::json!({ "raw_json": src_json.to_string() }),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let sid = imp_res["sources"][0]["id"].as_str().unwrap().to_string();
+
+    // I2-GAP-02: detail and play reject Legado options and data: URLs with 400 Bad Request
+    for bad_url in [
+        "https://video-guard.example/v/1,{\"method\":\"POST\",\"headers\":{\"X-Evil\":\"1\"}}",
+        "data:text/html,<h1>evil</h1>",
+    ] {
+        let (st_d, _) = post_json(
+            &app,
+            "/api/v1/video/online/detail",
+            &member_tok,
+            serde_json::json!({ "source_id": sid, "detail_url": bad_url }),
+        )
+        .await;
+        assert_eq!(
+            st_d,
+            StatusCode::BAD_REQUEST,
+            "expected 400 on detail for {bad_url}"
+        );
+
+        let (st_p, _) = post_json(
+            &app,
+            "/api/v1/video/online/play",
+            &member_tok,
+            serde_json::json!({ "source_id": sid, "play_url": bad_url }),
+        )
+        .await;
+        assert_eq!(
+            st_p,
+            StatusCode::BAD_REQUEST,
+            "expected 400 on play for {bad_url}"
+        );
+    }
+
+    // I2-GAP-03 & I2-GAP-05: mock origin serving chunked 206 partial HLS (>=16 bytes before #EXTINF:)
+    // plus UTF-16LE/BE SVG and >4KB HTML comment + SVG payloads.
+    let full_playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:5\n#EXTINF:5.0,\nsegment_0001_very_long_url.ts\n#EXTINF:5.0,\nsegment_0002.ts\n#EXT-X-ENDLIST\n";
+    let origin_app = Router::new()
+        .route(
+            "/chunked-manifest",
+            get(move |headers: HeaderMap| async move {
+                if let Some(r) = headers.get(header::RANGE).and_then(|v| v.to_str().ok()) {
+                    let _ = r;
+                    let mut resp = delayed_chunked_response(
+                        "application/octet-stream",
+                        vec![
+                            (b"ment_0001_very_long_url.ts\n".to_vec(), 0),
+                            (
+                                b"#EXTINF:5.0,\nsegment_0002.ts\n#EXT-X-ENDLIST\n".to_vec(),
+                                5,
+                            ),
+                        ],
+                    );
+                    *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+                    resp.headers_mut().insert(
+                        header::CONTENT_RANGE,
+                        header::HeaderValue::from_static("bytes 24-120/240"),
+                    );
+                    return resp;
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(full_playlist))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/utf16le-svg.bin",
+            get(|| async {
+                let mut payload = vec![0xFFu8, 0xFE];
+                for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+                    .encode_utf16()
+                {
+                    payload.extend_from_slice(&u.to_le_bytes());
+                }
+                delayed_chunked_response("application/octet-stream", vec![(payload, 0)])
+            }),
+        )
+        .route(
+            "/utf16be-svg.bin",
+            get(|| async {
+                let mut payload = vec![0xFEu8, 0xFF];
+                for u in "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".encode_utf16() {
+                    payload.extend_from_slice(&u.to_be_bytes());
+                }
+                delayed_chunked_response("application/octet-stream", vec![(payload, 0)])
+            }),
+        )
+        .route(
+            "/large-comment-svg.bin",
+            get(|| async {
+                let mut chunk1 = b"<!-- ".to_vec();
+                chunk1.extend_from_slice(&vec![b'X'; 4600]);
+                let chunk2 =
+                    b" --><svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"
+                        .to_vec();
+                delayed_chunked_response("application/octet-stream", vec![(chunk1, 0), (chunk2, 5)])
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    // I2-GAP-03 (hls-proxy): 206 chunk 1 >= 16 bytes + chunk 2 #EXTINF: -> refetches 200 & rewrites
+    let encoded_manifest = urlencoding_param(&format!("{origin}/chunked-manifest"));
+    let (st_hls, hdrs_hls, body_hls) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_manifest}"),
+        Some(&member_tok),
+        Some("bytes=24-120"),
+    )
+    .await;
+    assert_eq!(st_hls, StatusCode::OK);
+    assert!(
+        hdrs_hls
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .contains("mpegurl")
+    );
+    let rewritten = String::from_utf8(body_hls).unwrap();
+    assert!(rewritten.starts_with("#EXTM3U\n"));
+    assert!(rewritten.contains("segment_0001_very_long_url.ts"));
+
+    // I2-GAP-03 (stream-proxy): same chunked 206 partial HLS is rejected with 400 Bad Request
+    let (st_stream_hls, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/stream-proxy?url={encoded_manifest}"),
+        Some(&member_tok),
+        Some("bytes=24-120"),
+    )
+    .await;
+    assert_eq!(st_stream_hls, StatusCode::BAD_REQUEST);
+
+    // I2-GAP-05: UTF-16LE/BE SVG and >4KB HTML comment + SVG rejected on stream-proxy & hls-proxy
+    for endpoint in ["stream-proxy", "hls-proxy"] {
+        for path in [
+            "/utf16le-svg.bin",
+            "/utf16be-svg.bin",
+            "/large-comment-svg.bin",
+        ] {
+            let encoded = urlencoding_param(&format!("{origin}{path}"));
+            let (st, _, _) = get_bytes_with_auth(
+                &app,
+                &format!("/api/v1/video/online/{endpoint}?url={encoded}"),
+                Some(&member_tok),
+                None,
+            )
+            .await;
+            assert_eq!(
+                st,
+                StatusCode::BAD_REQUEST,
+                "expected 400 on {endpoint} for {path}"
+            );
+        }
+    }
+
+    srv.abort();
+}

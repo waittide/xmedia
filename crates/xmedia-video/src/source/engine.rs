@@ -3,7 +3,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use xmedia_source::http::{HttpClientConfig, LegadoHttpClient, resolve_relative_url};
+use xmedia_source::http::{
+    HttpClientConfig, LegadoHttpClient, json_structure_signature, resolve_relative_url,
+    resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
+    split_legado_url_template_and_options, substitute_legado_options_vars,
+    substitute_legado_url_template_vars, substitute_url_part_vars,
+};
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline};
 
@@ -70,28 +75,27 @@ fn template_needs_js(raw_tpl: &str) -> bool {
     false
 }
 
-fn substitute_template_vars(raw_tpl: &str, vars: &[(&str, &str)]) -> String {
-    let mut out = String::with_capacity(raw_tpl.len() + 32);
-    let mut rest = raw_tpl;
-    while let Some(open) = rest.find("{{") {
-        out.push_str(&rest[..open]);
-        let after_open = &rest[open + 2..];
-        let Some(close) = after_open.find("}}") else {
-            out.push_str(&rest[open..]);
-            return out;
-        };
-        let expr = after_open[..close].trim();
-        if let Some((_, val)) = vars.iter().find(|(k, _)| *k == expr) {
-            out.push_str(val);
-        } else {
-            out.push_str("{{");
-            out.push_str(expr);
-            out.push_str("}}");
+fn detect_passthrough_url_var<'a>(
+    url_tpl: &str,
+    vars: &'a [(&'a str, &'a str)],
+) -> Option<&'a str> {
+    let trimmed = url_tpl.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix("{{")
+        .and_then(|s| s.strip_suffix("}}"))
+    {
+        let name = inner.trim();
+        if !name.contains("{{") && !name.contains("}}") && name != "key" && name.ends_with("Url") {
+            return vars.iter().find(|(k, _)| *k == name).map(|(k, _)| *k);
         }
-        rest = &after_open[close + 2..];
     }
-    out.push_str(rest);
-    out
+    None
+}
+
+fn substitute_template_vars(raw_tpl: &str, vars: &[(&str, &str)]) -> Result<String, String> {
+    let (url_part, _) = split_legado_url_template_and_options(raw_tpl);
+    let passthrough = detect_passthrough_url_var(url_part, vars);
+    substitute_legado_url_template_vars(raw_tpl, vars, passthrough).map_err(|e| e.to_string())
 }
 
 impl VideoSourceEngine {
@@ -168,16 +172,50 @@ impl VideoSourceEngine {
         vars: &[(&str, &str)],
     ) -> Result<String, String> {
         let evaluated = if template_needs_js(raw_tpl) {
-            let input = RuleValue::Text(String::new());
-            session.eval_string(&input, raw_tpl, base_url)?
+            let (url_tpl, opt_tpl) = split_legado_url_template_and_options(raw_tpl);
+            if let Some(raw_opts) = opt_tpl {
+                let rendered_url = if template_needs_js(url_tpl) {
+                    let input = RuleValue::Text(String::new());
+                    session.eval_string(&input, url_tpl, base_url)?
+                } else {
+                    let passthrough = detect_passthrough_url_var(url_tpl, vars);
+                    substitute_url_part_vars(url_tpl, vars, passthrough)
+                };
+                let rendered_opts = if template_needs_js(raw_opts) {
+                    let expected_sig = serde_json::from_str::<serde_json::Value>(raw_opts)
+                        .ok()
+                        .map(|v| json_structure_signature(&v));
+                    let input = RuleValue::Text(String::new());
+                    let out_opts = session.eval_string(&input, raw_opts, base_url)?;
+                    let parsed_out: serde_json::Value = serde_json::from_str(out_opts.trim())
+                        .map_err(|e| format!("请求 URL 配置 JS 求值后 JSON 无效: {e}"))?;
+                    if let Some(sig) = expected_sig
+                        && json_structure_signature(&parsed_out) != sig
+                    {
+                        return Err("请求 URL 配置 JSON 结构在模板求值后发生异常变化".into());
+                    }
+                    out_opts
+                } else {
+                    substitute_legado_options_vars(raw_opts, vars).map_err(|e| e.to_string())?
+                };
+                format!("{rendered_url},{rendered_opts}")
+            } else {
+                let input = RuleValue::Text(String::new());
+                let out = session.eval_string(&input, raw_tpl, base_url)?;
+                let (_, post_opts) = split_legado_url_and_raw_options(&out);
+                if post_opts.is_some() && !raw_tpl.contains("@js:") && !raw_tpl.contains("<js>") {
+                    return Err("请求 URL 模板不允许通过变量注入请求配置".into());
+                }
+                out
+            }
         } else {
-            substitute_template_vars(raw_tpl, vars)
+            substitute_template_vars(raw_tpl, vars)?
         };
         let trimmed = evaluated.trim();
         if trimmed.is_empty() {
             return Err("请求 URL 模板求值结果为空".into());
         }
-        Ok(resolve_relative_url(trimmed, base_url))
+        Ok(resolve_relative_url_preserving_options(trimmed, base_url))
     }
 
     pub fn fetch_categories_sync_with_control(

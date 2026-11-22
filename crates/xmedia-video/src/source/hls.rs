@@ -13,7 +13,8 @@ use xmedia_source::http::{
     DEFAULT_WEBVIEW_UA, MAX_REDIRECT_HOPS, SsrfSafeResolver, ssrf_redirect_policy,
 };
 use xmedia_source::proxy::{
-    has_enough_media_sniff_bytes, looks_like_html_or_svg_bytes, strip_bom_and_ascii_ws,
+    MEDIA_PROLOG_SNIFF_MAX_BYTES, has_enough_media_sniff_bytes,
+    has_unclosed_leading_xml_or_comment, looks_like_html_or_svg_bytes, strip_bom_and_ascii_ws,
 };
 
 pub const MAX_M3U8_BYTES: usize = 8 * 1024 * 1024;
@@ -92,14 +93,62 @@ pub fn get_or_build_streaming_async_client(
     Ok(guard.entry(key).or_insert(client).clone())
 }
 
+fn has_binary_media_magic_or_null(buf: &[u8]) -> bool {
+    if buf.contains(&0) {
+        return true;
+    }
+    if buf.get(4..8) == Some(b"ftyp")
+        || buf.starts_with(b"\x1A\x45\xDF\xA3")
+        || buf.starts_with(b"FLV")
+        || buf.starts_with(b"ID3")
+        || buf.starts_with(b"RIFF")
+        || buf.starts_with(b"OggS")
+        || buf.starts_with(b"fLaC")
+    {
+        return true;
+    }
+    if buf.len() >= 2 && buf[0] == 0xFF && (buf[1] & 0xE0) == 0xE0 && buf[1] != 0xFE {
+        return true;
+    }
+    // MPEG-TS sync byte 0x47 ('G'): verify either a second sync byte at +188 or non-text binary bytes
+    if buf.first() == Some(&0x47)
+        && ((buf.len() >= 189 && buf[188] == 0x47)
+            || buf
+                .iter()
+                .any(|&b| b < 0x09 || (b > 0x0D && b < 0x20) || b >= 0x80))
+    {
+        return true;
+    }
+    false
+}
+
 /// Reads a bounded prefix from `resp` across one or more chunks so prefix sniffing
-/// (HTML/SVG detection and `#EXTM3U` playlist detection) is immune to chunk-boundary splits
-/// such as BOM/whitespace in chunk 1 and `#EXTM3U` or `<html>` in chunk 2.
+/// (HTML/SVG detection, UTF-16 BOM / large leading comments, and partial `#EXTM3U` / `#EXTINF:`
+/// playlists) is immune to chunk-boundary splits and 206 Range offsets.
 pub async fn read_sniff_prefix(
     resp: &mut reqwest::Response,
     max_sniff_bytes: usize,
 ) -> DomainResult<Bytes> {
+    let fallback_url = Url::parse("http://localhost/").expect("valid static fallback url");
+    read_sniff_prefix_with_context(resp, max_sniff_bytes, false, "", &fallback_url).await
+}
+
+/// Context-aware sniff prefix reader: on `206 Partial Content` or generic/text/empty Content-Type,
+/// avoids stopping at `16` non-whitespace bytes unless binary media magic/NUL, HTML/SVG, or HLS
+/// tags are observed, and extends up to `MEDIA_PROLOG_SNIFF_MAX_BYTES` for unclosed `<!--` / `<?`.
+pub async fn read_sniff_prefix_with_context(
+    resp: &mut reqwest::Response,
+    max_sniff_bytes: usize,
+    is_partial: bool,
+    ct_lower: &str,
+    final_url: &Url,
+) -> DomainResult<Bytes> {
     let mut buf = BytesMut::new();
+    let might_be_text_or_partial_hls = is_partial
+        || ct_lower.is_empty()
+        || ct_lower == "text/plain"
+        || is_generic_binary_ct(ct_lower);
+
     while let Some(chunk) = resp
         .chunk()
         .await
@@ -109,9 +158,23 @@ pub async fn read_sniff_prefix(
             continue;
         }
         buf.extend_from_slice(&chunk);
-        if buf.len() >= max_sniff_bytes
-            || has_enough_media_sniff_bytes(&buf, SNIFF_MIN_NON_WS_BYTES)
-        {
+        if has_unclosed_leading_xml_or_comment(&buf) {
+            if buf.len() >= max_sniff_bytes.max(MEDIA_PROLOG_SNIFF_MAX_BYTES) {
+                break;
+            }
+            continue;
+        }
+        if buf.len() >= max_sniff_bytes {
+            break;
+        }
+        if might_be_text_or_partial_hls {
+            if has_binary_media_magic_or_null(&buf)
+                || looks_like_html_bytes(&buf)
+                || is_partial_hls_playlist_range_candidate(ct_lower, final_url, &buf)
+            {
+                break;
+            }
+        } else if has_enough_media_sniff_bytes(&buf, SNIFF_MIN_NON_WS_BYTES) {
             break;
         }
     }

@@ -19,7 +19,8 @@ use crate::source::hls::{
     MAX_M3U8_BYTES, SNIFF_PREFIX_MAX_BYTES, build_hls_proxy_url, build_poster_proxy_url,
     build_stream_proxy_url, get_or_build_streaming_async_client, infer_segment_content_type,
     is_forbidden_media_ct, is_hls_playlist_response, is_partial_hls_playlist_range_candidate,
-    looks_like_html_bytes, read_sniff_prefix, rewrite_m3u8_playlist, spawn_chunk_stream,
+    looks_like_html_bytes, read_sniff_prefix_with_context, rewrite_m3u8_playlist,
+    spawn_chunk_stream,
 };
 use crate::source::model::VideoSourceSpec;
 
@@ -335,12 +336,21 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let clean_detail_url =
+            if let Some(raw_detail) = detail_url.map(str::trim).filter(|s| !s.is_empty()) {
+                Some(xmedia_source::http::resolve_literal_http_url(
+                    raw_detail,
+                    Some(parsed.effective_source_url()),
+                )?)
+            } else {
+                None
+            };
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let vid_owned = video_id.map(ToString::to_string);
-        let durl_owned = detail_url.map(ToString::to_string);
+        let durl_owned = clean_detail_url;
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
         let mut out = tokio::task::spawn_blocking(move || {
@@ -392,11 +402,15 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let clean_play_url = xmedia_source::http::resolve_literal_http_url(
+            play_url,
+            Some(parsed.effective_source_url()),
+        )?;
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
-        let play_owned = play_url.to_string();
+        let play_owned = clean_play_url;
         let group_owned = group_name.map(ToString::to_string);
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
@@ -533,10 +547,30 @@ impl VideoOnlineService {
             .unwrap_or("bytes")
             .to_string();
 
-        let prefix = read_sniff_prefix(&mut resp, SNIFF_PREFIX_MAX_BYTES).await?;
+        let final_url = resp.url().clone();
+        let ct_lower = header_ct
+            .as_deref()
+            .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let prefix = read_sniff_prefix_with_context(
+            &mut resp,
+            SNIFF_PREFIX_MAX_BYTES,
+            status == reqwest::StatusCode::PARTIAL_CONTENT,
+            &ct_lower,
+            &final_url,
+        )
+        .await?;
         if looks_like_html_bytes(&prefix) {
             return Err(DomainError::Validation(
                 "拒绝转发伪装为媒体的 HTML/SVG 内容".into(),
+            ));
+        }
+        if is_hls_playlist_response(&ct_lower, &final_url, &prefix)
+            || (status == reqwest::StatusCode::PARTIAL_CONTENT
+                && is_partial_hls_playlist_range_candidate(&ct_lower, &final_url, &prefix))
+        {
+            return Err(DomainError::Validation(
+                "拒绝通过直链媒体代理转发 HLS 播放列表，请改用 hls-proxy".into(),
             ));
         }
         let initial = (!prefix.is_empty()).then_some(prefix);
@@ -649,8 +683,15 @@ impl VideoOnlineService {
                 .to_string();
 
             // Read bounded multi-chunk prefix so BOM/whitespace or opening tags split across
-            // HTTP chunks still reliably trigger HTML/SVG rejection and `#EXTM3U` sniffing.
-            let prefix = read_sniff_prefix(&mut resp, SNIFF_PREFIX_MAX_BYTES).await?;
+            // HTTP chunks still reliably trigger HTML/SVG rejection and `#EXTM3U` / partial `#EXTINF:` sniffing.
+            let prefix = read_sniff_prefix_with_context(
+                &mut resp,
+                SNIFF_PREFIX_MAX_BYTES,
+                status == reqwest::StatusCode::PARTIAL_CONTENT,
+                &ct_lower,
+                &final_url,
+            )
+            .await?;
 
             if looks_like_html_bytes(&prefix) {
                 return Err(DomainError::Validation(
