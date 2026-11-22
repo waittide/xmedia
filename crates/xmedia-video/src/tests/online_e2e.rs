@@ -2544,3 +2544,111 @@ async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn hls_proxy_refetches_full_playlist_when_caller_sends_range_on_large_m3u8() {
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+
+    let mut playlist = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:6\n");
+    for i in 0..120 {
+        playlist.push_str(&format!("#EXTINF:6.0,\nseg_{i:03}.ts\n"));
+    }
+    playlist.push_str("#EXT-X-ENDLIST\n");
+    assert!(playlist.len() > 2048);
+
+    let full_bytes = Arc::new(playlist.into_bytes());
+    let seen_ranges: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_ranges_srv = seen_ranges.clone();
+    let full_bytes_srv = full_bytes.clone();
+
+    let origin_app = Router::new().route(
+        "/large.m3u8",
+        get(move |headers: HeaderMap| {
+            let full = full_bytes_srv.clone();
+            let log = seen_ranges_srv.clone();
+            async move {
+                let rng = headers
+                    .get(header::RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string);
+                log.lock().unwrap().push(rng.clone());
+
+                if let Some(r) = rng {
+                    let spec = r.trim().strip_prefix("bytes=").unwrap_or("0-511");
+                    let (s, e) = spec.split_once('-').unwrap_or(("0", "511"));
+                    let start: usize = s.parse().unwrap_or(0);
+                    let end: usize = e.parse().unwrap_or(511).min(full.len().saturating_sub(1));
+                    let slice = full[start..=end].to_vec();
+                    return Response::builder()
+                        .status(StatusCode::PARTIAL_CONTENT)
+                        .header("content-type", "application/vnd.apple.mpegurl")
+                        .header(
+                            "content-range",
+                            format!("bytes {start}-{end}/{}", full.len()),
+                        )
+                        .body(Body::from(slice))
+                        .unwrap();
+                }
+
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/vnd.apple.mpegurl")
+                    .body(Body::from(full.as_ref().clone()))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let encoded_url: String =
+        form_urlencoded::byte_serialize(format!("{origin}/large.m3u8").as_bytes()).collect();
+
+    // Case 1: Range starting at byte 0 that truncates the playlist before seg_119.ts
+    let (st1, _, body1) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}"),
+        Some(&member_tok),
+        Some("bytes=0-511"),
+    )
+    .await;
+    assert_eq!(st1, StatusCode::OK);
+    let text1 = String::from_utf8(body1).unwrap();
+    assert!(text1.starts_with("#EXTM3U\n"));
+    assert!(text1.contains("seg_000.ts"));
+    assert!(text1.contains("seg_119.ts"));
+    assert!(text1.contains("#EXT-X-ENDLIST"));
+    assert!(text1.contains("/api/v1/video/online/hls-proxy?url="));
+
+    // Case 2: Mid-playlist Range where #EXTM3U header is omitted in the 206 slice
+    let (st2, _, body2) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}"),
+        Some(&member_tok),
+        Some("bytes=200-711"),
+    )
+    .await;
+    assert_eq!(st2, StatusCode::OK);
+    let text2 = String::from_utf8(body2).unwrap();
+    assert!(text2.starts_with("#EXTM3U\n"));
+    assert!(text2.contains("seg_119.ts"));
+    assert!(text2.contains("#EXT-X-ENDLIST"));
+
+    let recorded = seen_ranges.lock().unwrap().clone();
+    assert_eq!(
+        recorded,
+        vec![
+            Some("bytes=0-511".to_string()),
+            None,
+            Some("bytes=200-711".to_string()),
+            None,
+        ]
+    );
+
+    srv.abort();
+}

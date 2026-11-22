@@ -569,78 +569,115 @@ impl VideoOnlineService {
             header_map.insert(USER_AGENT, HeaderValue::from_static(DEFAULT_WEBVIEW_UA));
         }
         header_map.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
-        if let Some(ref rng) = sanitized_range
-            && let Ok(hv) = HeaderValue::from_str(rng)
-        {
-            header_map.insert(RANGE, hv);
-        }
 
         let client = get_or_build_streaming_async_client(
             self.allow_private_ips,
             self.http_config.proxy_url.as_deref(),
         )?;
-        let mut resp = client
-            .get(validated)
-            .headers(header_map)
-            .send()
-            .await
-            .map_err(|e| DomainError::Validation(format!("拉取 HLS 资源失败: {e}")))?;
 
-        let status = resp.status();
-        if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        let mut include_range = sanitized_range.is_some();
+        let (
+            mut resp,
+            status,
+            header_ct,
+            ct_lower,
+            final_url,
+            content_length,
+            content_range,
+            accept_ranges,
+            prefix,
+        ) = loop {
+            let mut req_headers = header_map.clone();
+            if include_range
+                && let Some(ref rng) = sanitized_range
+                && let Ok(hv) = HeaderValue::from_str(rng)
+            {
+                req_headers.insert(RANGE, hv);
+            }
+
+            let mut resp = client
+                .get(validated.clone())
+                .headers(req_headers)
+                .send()
+                .await
+                .map_err(|e| DomainError::Validation(format!("拉取 HLS 资源失败: {e}")))?;
+
+            let status = resp.status();
+            if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+                let content_range = resp
+                    .headers()
+                    .get(reqwest::header::CONTENT_RANGE)
+                    .and_then(|v| v.to_str().ok())
+                    .map(ToString::to_string);
+                return Ok(HlsProxyOutcome::RangeNotSatisfiable { content_range });
+            }
+            if !status.is_success() {
+                return Err(DomainError::Validation(format!(
+                    "HLS 上游响应状态异常: {status}"
+                )));
+            }
+
+            let header_ct = resp
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .map(ToString::to_string);
+            let ct_lower = header_ct
+                .as_deref()
+                .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if is_forbidden_media_ct(&ct_lower) {
+                return Err(DomainError::Validation(format!(
+                    "拒绝转发不安全的媒体内容类型: {ct_lower}"
+                )));
+            }
+
+            let final_url = resp.url().clone();
+            let content_length = resp.content_length();
             let content_range = resp
                 .headers()
                 .get(reqwest::header::CONTENT_RANGE)
                 .and_then(|v| v.to_str().ok())
                 .map(ToString::to_string);
-            return Ok(HlsProxyOutcome::RangeNotSatisfiable { content_range });
-        }
-        if !status.is_success() {
-            return Err(DomainError::Validation(format!(
-                "HLS 上游响应状态异常: {status}"
-            )));
-        }
+            let accept_ranges = resp
+                .headers()
+                .get(reqwest::header::ACCEPT_RANGES)
+                .and_then(|v| v.to_str().ok())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("bytes")
+                .to_string();
 
-        let header_ct = resp
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(ToString::to_string);
-        let ct_lower = header_ct
-            .as_deref()
-            .map(|s| s.split(';').next().unwrap_or(s).trim().to_ascii_lowercase())
-            .unwrap_or_default();
-        if is_forbidden_media_ct(&ct_lower) {
-            return Err(DomainError::Validation(format!(
-                "拒绝转发不安全的媒体内容类型: {ct_lower}"
-            )));
-        }
+            // Read bounded multi-chunk prefix so BOM/whitespace or opening tags split across
+            // HTTP chunks still reliably trigger HTML/SVG rejection and `#EXTM3U` sniffing.
+            let prefix = read_sniff_prefix(&mut resp, SNIFF_PREFIX_MAX_BYTES).await?;
 
-        let final_url = resp.url().clone();
-        let content_length = resp.content_length();
-        let content_range = resp
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .map(ToString::to_string);
-        let accept_ranges = resp
-            .headers()
-            .get(reqwest::header::ACCEPT_RANGES)
-            .and_then(|v| v.to_str().ok())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("bytes")
-            .to_string();
+            if looks_like_html_bytes(&prefix) {
+                return Err(DomainError::Validation(
+                    "拒绝转发伪装为媒体的 HTML/SVG 内容".into(),
+                ));
+            }
 
-        // Read bounded multi-chunk prefix so BOM/whitespace or opening tags split across
-        // HTTP chunks still reliably trigger HTML/SVG rejection and `#EXTM3U` sniffing.
-        let prefix = read_sniff_prefix(&mut resp, SNIFF_PREFIX_MAX_BYTES).await?;
+            if include_range
+                && status == reqwest::StatusCode::PARTIAL_CONTENT
+                && is_hls_playlist_response(&ct_lower, &final_url, &prefix)
+            {
+                include_range = false;
+                continue;
+            }
 
-        if looks_like_html_bytes(&prefix) {
-            return Err(DomainError::Validation(
-                "拒绝转发伪装为媒体的 HTML/SVG 内容".into(),
-            ));
-        }
+            break (
+                resp,
+                status,
+                header_ct,
+                ct_lower,
+                final_url,
+                content_length,
+                content_range,
+                accept_ranges,
+                prefix,
+            );
+        };
 
         if is_hls_playlist_response(&ct_lower, &final_url, &prefix) {
             if let Some(len) = content_length
