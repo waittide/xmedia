@@ -99,6 +99,8 @@ function hydrateParams(): { sourceId: string; comicUrl: string } {
     tocUrl: qTocUrl || (matchesStored ? stored.tocUrl : undefined),
     intro: matchesStored ? stored.intro : undefined,
     readingDirection: matchesStored ? stored.readingDirection : undefined,
+    returnKeyword: matchesStored ? stored.returnKeyword : undefined,
+    returnSourceId: matchesStored ? stored.returnSourceId : undefined,
   }
 
   resolvedSourceId.value = sourceId
@@ -163,6 +165,8 @@ async function loadDetail(): Promise<void> {
       coverUrl: res.detail.cover_url ?? fallbackCtx.value?.coverUrl ?? null,
       intro: res.detail.intro ?? fallbackCtx.value?.intro ?? null,
       readingDirection: res.detail.reading_direction,
+      returnKeyword: fallbackCtx.value?.returnKeyword,
+      returnSourceId: fallbackCtx.value?.returnSourceId,
     }
     try {
       sessionStorage.setItem(ONLINE_COMIC_CTX_KEY, JSON.stringify(nextStored))
@@ -312,7 +316,14 @@ function startReadingFirst(): void {
 }
 
 function backToOnlineSearch(): void {
-  void router.push({ path: '/comic/series', query: { scope: 'online' } })
+  const query: Record<string, string> = { scope: 'online' }
+  if (fallbackCtx.value?.returnKeyword?.trim()) {
+    query.q = fallbackCtx.value.returnKeyword.trim()
+  }
+  if (fallbackCtx.value?.returnSourceId?.trim()) {
+    query.source = fallbackCtx.value.returnSourceId.trim()
+  }
+  void router.push({ path: '/comic/series', query })
 }
 </script>
 

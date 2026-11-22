@@ -153,6 +153,8 @@ export interface OnlineVideoContextStorage {
   year?: string | null
   area?: string | null
   typeName?: string | null
+  returnKeyword?: string
+  returnSourceId?: string | null
 }
 
 export interface OnlineVideoPlayerContextStorage {

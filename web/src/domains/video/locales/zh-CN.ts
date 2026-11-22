@@ -156,6 +156,8 @@ export default {
     goSettings: '前往设置',
     categoriesTitle: '分类浏览',
     allCategories: '全部分类',
+    expandCategories: '展开全部 ({count})',
+    collapseCategories: '收起分类',
     loadingCategories: '正在加载分类…',
     loadingBrowse: '正在加载影视列表…',
     browseEmpty: '输入关键词搜索，或选择支持分类浏览的影视源',

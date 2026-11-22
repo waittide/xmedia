@@ -156,6 +156,8 @@ export default {
     goSettings: 'Go to Settings',
     categoriesTitle: 'Categories',
     allCategories: 'All Categories',
+    expandCategories: 'Show all ({count})',
+    collapseCategories: 'Show less',
     loadingCategories: 'Loading categories…',
     loadingBrowse: 'Loading videos…',
     browseEmpty: 'Enter a keyword to search, or select a source with categories enabled',

@@ -846,6 +846,21 @@ onBeforeUnmount(() => {
           <LuMoon v-else class="h-[18px] w-[18px]" />
         </button>
 
+        <RouterLink
+          to="/settings"
+          class="md-icon-btn md-state hidden sm:inline-flex"
+          :class="
+            route.path === '/settings'
+              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
+              : ''
+          "
+          :title="t('nav.settings')"
+          :aria-label="t('nav.settings')"
+          @click="mobileMenuOpen = false; accountMenuOpen = false; uploadMenuOpen = false"
+        >
+          <LuSettings class="h-[18px] w-[18px]" />
+        </RouterLink>
+
         <div ref="accountMenuRef" class="relative ml-1">
           <button
             type="button"

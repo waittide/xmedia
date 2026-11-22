@@ -316,6 +316,9 @@ watch([statusFilter, readStatusFilter, sortBy, sortDir, () => upload.catalogVers
       v-if="canUseOnlineScope"
       class="flex flex-wrap items-center justify-between gap-3"
     >
+      <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
+        {{ searchScope === 'online' ? t('online.scopeOnline') : t('online.scopeLocal') }}
+      </h1>
       <MdSegmentedButton
         :model-value="searchScope"
         :options="searchScopeOptions"

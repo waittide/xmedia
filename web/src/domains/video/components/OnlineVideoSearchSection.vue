@@ -64,8 +64,30 @@ const browsePage = ref(1)
 const hasMoreBrowse = ref(false)
 const activeCategoryId = ref<string | null>(null)
 const browseCategories = ref<OnlineVideoCategory[]>([])
+const categoriesExpanded = ref(false)
 const browseItems = ref<OnlineVideoSearchItemDto[]>([])
 const browseError = ref<string | null>(null)
+
+const CATEGORY_COLLAPSE_LIMIT = 12
+const canCollapseCategories = computed(
+  () => browseCategories.value.length > CATEGORY_COLLAPSE_LIMIT,
+)
+const visibleBrowseCategories = computed<OnlineVideoCategory[]>(() => {
+  if (!canCollapseCategories.value || categoriesExpanded.value) {
+    return browseCategories.value
+  }
+  const head = browseCategories.value.slice(0, CATEGORY_COLLAPSE_LIMIT)
+  if (
+    activeCategoryId.value &&
+    !head.some((c) => c.id === activeCategoryId.value)
+  ) {
+    const activeCat = browseCategories.value.find((c) => c.id === activeCategoryId.value)
+    if (activeCat) {
+      return [...head, activeCat]
+    }
+  }
+  return head
+})
 
 let initSeq = 0
 let searchSeq = 0
@@ -331,6 +353,7 @@ async function runBrowse(
   try {
     if (fetchCategories) {
       browseCategories.value = []
+      categoriesExpanded.value = false
       const catRes = await onlineVideoApi.categories(sourceId)
       if (unmounted || seq !== browseSeq) return
       browseCategories.value = catRes.categories ?? []
@@ -542,6 +565,9 @@ function formatMetaLine(item: OnlineVideoSearchItemDto): string {
 }
 
 function openOnlineVideoDetail(item: OnlineVideoSearchItemDto): void {
+  const activeKw = (lastSearchKeyword.value || searchKeyword.value).trim()
+  const activeSrc =
+    selectedSourceIds.value.length === 1 ? (selectedSourceIds.value[0] ?? null) : null
   const ctxPayload: OnlineVideoContextStorage = {
     sourceId: item.source_id,
     sourceName: item.source_name,
@@ -554,6 +580,8 @@ function openOnlineVideoDetail(item: OnlineVideoSearchItemDto): void {
     year: item.year,
     area: item.area,
     typeName: item.type_name,
+    returnKeyword: activeKw || undefined,
+    returnSourceId: activeSrc,
   }
   try {
     sessionStorage.setItem(ONLINE_VIDEO_CTX_KEY, JSON.stringify(ctxPayload))
@@ -695,7 +723,7 @@ function goManageDataSources(): void {
           {{ t('online.allCategories') }}
         </button>
         <button
-          v-for="cat in browseCategories"
+          v-for="cat in visibleBrowseCategories"
           :key="cat.id"
           type="button"
           role="tab"
@@ -705,6 +733,18 @@ function goManageDataSources(): void {
           @click="selectBrowseCategory(cat.id)"
         >
           {{ cat.name }}
+        </button>
+        <button
+          v-if="canCollapseCategories"
+          type="button"
+          class="md-btn md-btn-sm md-btn-text md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+          @click="categoriesExpanded = !categoriesExpanded"
+        >
+          {{
+            categoriesExpanded
+              ? t('online.collapseCategories')
+              : t('online.expandCategories', { count: browseCategories.length })
+          }}
         </button>
       </div>
 

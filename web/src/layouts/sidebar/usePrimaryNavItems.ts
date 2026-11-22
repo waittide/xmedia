@@ -1,8 +1,10 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuBookOpen,
   LuClock,
+  LuCompass,
   LuFilm,
   LuHeart,
   LuHome,
@@ -20,6 +22,7 @@ import type { PrimaryNavItem } from './types'
 export function usePrimaryNavItems(onNavigate?: () => void) {
   const route = useRoute()
   const router = useRouter()
+  const { t: globalT } = useGlobalI18n()
   const { t: bookT } = useBookI18n()
   const { t: comicT } = useComicI18n()
   const { t: musicT } = useMusicI18n()
@@ -142,6 +145,16 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
           onClick: () => void openBookSection('all'),
         },
         {
+          key: 'discover',
+          label: globalT('nav.discover'),
+          icon: LuCompass,
+          active: route.name === 'book-catalog' && route.query.scope === 'online',
+          onClick: () => {
+            onNavigate?.()
+            void router.push({ path: '/book/catalog', query: { scope: 'online' } })
+          },
+        },
+        {
           key: 'continue',
           label: bookT('nav.recentReading'),
           icon: LuClock,
@@ -173,6 +186,18 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
           icon: LuLayers,
           active: isAllComicSeriesActive.value,
           onClick: () => go('/comic/series'),
+        },
+        {
+          key: 'discover',
+          label: globalT('nav.discover'),
+          icon: LuCompass,
+          active:
+            (route.name === 'comic-series-list' && route.query.scope === 'online') ||
+            route.name === 'comic-online-detail',
+          onClick: () => {
+            onNavigate?.()
+            void router.push({ path: '/comic/series', query: { scope: 'online' } })
+          },
         },
         {
           key: 'continue',
@@ -208,6 +233,18 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
           onClick: () => void openMusicCatalog(),
         },
         {
+          key: 'discover',
+          label: globalT('nav.discover'),
+          icon: LuCompass,
+          active:
+            (route.name === 'music-songs' || route.name === 'music-search') &&
+            route.query.scope === 'online',
+          onClick: () => {
+            onNavigate?.()
+            void router.push({ path: '/music/songs', query: { scope: 'online' } })
+          },
+        },
+        {
           key: 'continue',
           label: musicT('nav.continueListening'),
           icon: LuClock,
@@ -238,6 +275,18 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
         icon: LuFilm,
         active: isAllVideoActive.value,
         onClick: () => void openVideoCatalog(),
+      },
+      {
+        key: 'discover',
+        label: globalT('nav.discover'),
+        icon: LuCompass,
+        active:
+          (route.name === 'video-catalog' && route.query.scope === 'online') ||
+          route.name === 'video-online-detail',
+        onClick: () => {
+          onNavigate?.()
+          void router.push({ path: '/video/catalog', query: { scope: 'online' } })
+        },
       },
       {
         key: 'continue',

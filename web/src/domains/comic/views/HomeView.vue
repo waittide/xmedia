@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
   LuArrowRight,
@@ -8,6 +9,7 @@ import {
   LuBookMarked,
   LuBookOpen,
   LuClock,
+  LuCompass,
   LuFolder,
   LuHeart,
   LuLayers,
@@ -28,6 +30,7 @@ import HomeStatCards, { type StatCardItem } from '@/components/domain/HomeStatCa
 defineOptions({ name: 'ComicHomeView' })
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const router = useRouter()
 const sidebarStore = useSidebarStore()
 const prefsStore = usePreferencesStore()
@@ -155,6 +158,13 @@ const statCards = computed<StatCardItem[]>(() => {
           <LuUpload class="h-4 w-4" />
           <span>{{ t('home.uploadNow') }}</span>
         </button>
+        <RouterLink
+          :to="{ path: '/comic/series', query: { scope: 'online' } }"
+          class="md-btn md-btn-tonal md-state"
+        >
+          <LuCompass class="h-4 w-4" />
+          <span>{{ globalT('nav.browseOnlineSources') }}</span>
+        </RouterLink>
         <button
           type="button"
           class="md-btn md-btn-outlined md-state"

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import {
   LuArrowRight,
   LuClapperboard,
   LuClock,
+  LuCompass,
   LuFilm,
   LuFolderHeart,
   LuHeart,
@@ -31,6 +33,7 @@ import type { VideoSummaryDto } from '../types'
 defineOptions({ name: 'VideoHomeView' })
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const router = useRouter()
 const prefsStore = usePreferencesStore()
 const videoStore = useVideoStore()
@@ -158,6 +161,15 @@ function formatResumeSubtitle(v: VideoSummaryDto): string {
       <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('home.emptyLibraryDesc') }}
       </p>
+      <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+        <RouterLink
+          :to="{ path: '/video/catalog', query: { scope: 'online' } }"
+          class="md-btn md-btn-tonal md-state"
+        >
+          <LuCompass class="h-4 w-4" />
+          <span>{{ globalT('nav.browseOnlineSources') }}</span>
+        </RouterLink>
+      </div>
     </section>
 
     <template v-else-if="overview">

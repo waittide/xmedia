@@ -226,7 +226,7 @@ function selectDomain(domain: MediaKind): void {
       <nav
         ref="navRef"
         :aria-label="t('settings.navLabel')"
-        class="no-scrollbar -m-1 flex items-center gap-1 overflow-x-auto p-1 lg:flex-col lg:items-stretch lg:overflow-visible"
+        class="-m-1 flex flex-wrap items-center gap-1 p-1 lg:flex-col lg:flex-nowrap lg:items-stretch"
       >
         <p
           class="md-label-small hidden px-4 pt-1 pb-1.5 tracking-wide text-[var(--md-sys-color-on-surface-variant)] lg:block"
@@ -239,7 +239,7 @@ function selectDomain(domain: MediaKind): void {
           :key="item.id"
           :data-settings-tab="item.id"
           type="button"
-          class="md-state md-label-large flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-full px-4 text-left"
+          class="md-state md-label-large flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3.5 text-left lg:h-10 lg:gap-2.5 lg:px-4"
           :class="
             activeTab === item.id
               ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
@@ -253,7 +253,7 @@ function selectDomain(domain: MediaKind): void {
 
         <!-- Divider between Global and Domain sections -->
         <div
-          class="mx-1.5 h-5 w-px shrink-0 bg-[var(--md-sys-color-outline-variant)]/60 lg:mx-0 lg:my-2.5 lg:h-px lg:w-auto"
+          class="mx-1 hidden h-5 w-px shrink-0 bg-[var(--md-sys-color-outline-variant)]/60 sm:block lg:mx-0 lg:my-2.5 lg:h-px lg:w-auto"
           aria-hidden="true"
         />
 
@@ -268,7 +268,7 @@ function selectDomain(domain: MediaKind): void {
           :key="item.id"
           :data-settings-tab="item.id"
           type="button"
-          class="md-state md-label-large flex h-10 shrink-0 cursor-pointer items-center gap-2.5 rounded-full px-4 text-left"
+          class="md-state md-label-large flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3.5 text-left lg:h-10 lg:gap-2.5 lg:px-4"
           :class="
             activeTab === item.id
               ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'

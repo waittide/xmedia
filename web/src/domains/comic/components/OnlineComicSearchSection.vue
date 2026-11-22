@@ -498,6 +498,9 @@ function formatKindTags(raw: string | null | undefined): string {
 }
 
 function openOnlineComicDetail(item: ComicSearchResultItem): void {
+  const activeKw = (lastSearchKeyword.value || searchKeyword.value).trim()
+  const activeSrc =
+    selectedSourceIds.value.length === 1 ? (selectedSourceIds.value[0] ?? null) : null
   const ctxPayload: OnlineComicContextStorage = {
     sourceId: item.source_id,
     sourceName: item.source_name,
@@ -506,6 +509,8 @@ function openOnlineComicDetail(item: ComicSearchResultItem): void {
     author: item.author,
     coverUrl: item.cover_url,
     intro: item.intro,
+    returnKeyword: activeKw || undefined,
+    returnSourceId: activeSrc,
   }
   try {
     sessionStorage.setItem(ONLINE_COMIC_CTX_KEY, JSON.stringify(ctxPayload))

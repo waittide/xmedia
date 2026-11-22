@@ -154,6 +154,8 @@ export interface OnlineComicContextStorage {
   coverUrl?: string | null
   intro?: string | null
   readingDirection?: ComicReadingDirection | null
+  returnKeyword?: string
+  returnSourceId?: string | null
 }
 
 export interface OnlineComicReaderContextStorage {

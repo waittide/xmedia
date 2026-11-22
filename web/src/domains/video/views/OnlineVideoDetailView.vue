@@ -97,6 +97,8 @@ function hydrateParams(): { sourceId: string; videoId: string; detailUrl: string
     year: qYear || (matchesStored ? stored.year : undefined),
     area: qArea || (matchesStored ? stored.area : undefined),
     typeName: matchesStored ? stored.typeName : undefined,
+    returnKeyword: matchesStored ? stored.returnKeyword : undefined,
+    returnSourceId: matchesStored ? stored.returnSourceId : undefined,
   }
 
   resolvedSourceId.value = sourceId
@@ -150,6 +152,8 @@ async function loadDetail(): Promise<void> {
       year: res.year ?? fallbackCtx.value?.year ?? null,
       area: res.area ?? fallbackCtx.value?.area ?? null,
       typeName: fallbackCtx.value?.typeName ?? null,
+      returnKeyword: fallbackCtx.value?.returnKeyword,
+      returnSourceId: fallbackCtx.value?.returnSourceId,
     }
     try {
       sessionStorage.setItem(ONLINE_VIDEO_CTX_KEY, JSON.stringify(nextStored))
@@ -309,7 +313,14 @@ function playFirstEpisode(): void {
 }
 
 function backToOnlineSearch(): void {
-  void router.push({ path: '/video/catalog', query: { scope: 'online' } })
+  const query: Record<string, string> = { scope: 'online' }
+  if (fallbackCtx.value?.returnKeyword?.trim()) {
+    query.q = fallbackCtx.value.returnKeyword.trim()
+  }
+  if (fallbackCtx.value?.returnSourceId?.trim()) {
+    query.source = fallbackCtx.value.returnSourceId.trim()
+  }
+  void router.push({ path: '/video/catalog', query })
 }
 </script>
 

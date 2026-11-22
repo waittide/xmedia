@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import {
   LuArrowRight,
   LuBookmark,
   LuBookOpen,
   LuClock,
+  LuCompass,
   LuFolder,
   LuHeart,
   LuLibrary,
@@ -27,6 +29,7 @@ import HomeStatCards, { type StatCardItem } from '@/components/domain/HomeStatCa
 defineOptions({ name: 'BookHomeView' })
 
 const { t } = useI18n()
+const { t: globalT } = useGlobalI18n()
 const router = useRouter()
 const catalogStore = useCatalogStore()
 const prefsStore = usePreferencesStore()
@@ -163,6 +166,15 @@ function formatResumeSubtitle(book: BookSummaryDto): string {
       <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
         {{ t('home.welcomeEmptyDesc') }}
       </p>
+      <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
+        <RouterLink
+          :to="{ path: '/book/catalog', query: { scope: 'online' } }"
+          class="md-btn md-btn-tonal md-state"
+        >
+          <LuCompass class="h-4 w-4" />
+          <span>{{ globalT('nav.browseOnlineSources') }}</span>
+        </RouterLink>
+      </div>
     </section>
 
     <!-- Continue Reading Section -->
