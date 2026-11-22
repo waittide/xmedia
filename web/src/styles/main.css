@@ -565,7 +565,7 @@ a,
     transition: opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
   }
 
-  .md-state:hover:not(:disabled)::after,
+  .md-state:hover:not(:disabled):not([aria-disabled="true"])::after,
   .md-btn:hover:not(:disabled)::after,
   .md-icon-btn:hover:not(:disabled)::after,
   .md-chip:hover:not(:disabled)::after {
@@ -579,7 +579,7 @@ a,
     opacity: 0.1;
   }
 
-  .md-state:active:not(:disabled)::after,
+  .md-state:active:not(:disabled):not([aria-disabled="true"])::after,
   .md-btn:active:not(:disabled)::after,
   .md-icon-btn:active:not(:disabled)::after,
   .md-chip:active:not(:disabled)::after {
