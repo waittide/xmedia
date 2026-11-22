@@ -1,6 +1,11 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { SubsonicSongDto } from '@/api/appHost'
+import {
+  useOnlineItemState,
+  type OnlineItemMetadataInput,
+  type TrackedItemRef,
+} from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
@@ -13,7 +18,13 @@ import {
   type OnlineMusicResolvedTrackDto,
   type OnlineMusicTrackDto,
 } from './onlineApi'
-import { buildRemoteSubsonicStreamUrl } from './onlineTrackRef'
+import {
+  buildRemoteSubsonicStreamUrl,
+  onlineTrackToItemMeta,
+  onlineTrackToTrackedRef,
+  remoteSongToItemMeta,
+  remoteSongToTrackedRef,
+} from './onlineTrackRef'
 import type { PlayMode, StructuredLyricsDto, TrackDto, TranscodeProfile } from './types'
 
 export interface LocalQueueItem {
@@ -180,8 +191,11 @@ export const usePlayerStore = defineStore('player', () => {
   const queueOpen = ref(false)
   const lyricsLoading = ref(false)
   const lyrics = ref<StructuredLyricsDto | null>(null)
+  const translatedLyrics = ref<StructuredLyricsDto | null>(null)
 
   let scrobbledCurrent = false
+  let lastReportedOnlineSecs = -1
+  let lastReportedOnlineKey: string | null = null
   let queueSyncTimer: ReturnType<typeof setTimeout> | null = null
   let pendingSeekHandler: (() => void) | null = null
   let lyricsLoadedTrackId: string | null = null
@@ -212,6 +226,69 @@ export const usePlayerStore = defineStore('player', () => {
 
   const isCurrentOnline = computed<boolean>(() => currentItem.value?.kind === 'online')
   const isCurrentRemote = computed<boolean>(() => currentItem.value?.kind === 'remote')
+
+  // Persisted favorite & playback progress for online / remote tracks via `useOnlineItemState`
+  const currentTrackedRef = computed<TrackedItemRef | null>(() => {
+    if (!useAuthStore().isAuthenticated) return null
+    const item = currentItem.value
+    if (!item || item.kind === 'local') return null
+    if (item.kind === 'online') {
+      return onlineTrackToTrackedRef(item.resolved?.track ?? item.track)
+    }
+    return remoteSongToTrackedRef(item.source_id, item.song)
+  })
+
+  const currentTrackedMeta = computed<OnlineItemMetadataInput | null>(() => {
+    const item = currentItem.value
+    if (!item || item.kind === 'local') return null
+    if (item.kind === 'online') {
+      const mergedTrack: OnlineMusicTrackDto = item.resolved?.track
+        ? {
+            ...item.track,
+            ...item.resolved.track,
+            cover_url: item.resolved.cover_url || item.resolved.track.cover_url || item.track.cover_url,
+          }
+        : item.track
+      return onlineTrackToItemMeta(mergedTrack)
+    }
+    return remoteSongToItemMeta(item.source_id, item.song)
+  })
+
+  const onlineItemState = useOnlineItemState(currentTrackedRef, currentTrackedMeta)
+  const currentOnlineFavorite = computed<boolean>(() => onlineItemState.favorite.value)
+
+  async function toggleCurrentOnlineFavorite(): Promise<void> {
+    if (!currentTrackedRef.value) return
+    await onlineItemState.toggleFavorite()
+  }
+
+  function reportTrackedProgress(posSecs: number, opts?: { completed?: boolean; immediate?: boolean }): void {
+    const item = currentItem.value
+    if (!item || item.kind === 'local' || !currentTrackedRef.value) return
+    if (!opts?.completed && posSecs < 1) return
+    if (
+      !opts?.immediate &&
+      !opts?.completed &&
+      lastReportedOnlineKey === item.key &&
+      Math.abs(posSecs - lastReportedOnlineSecs) < 2
+    ) {
+      return
+    }
+    lastReportedOnlineKey = item.key
+    lastReportedOnlineSecs = posSecs
+    onlineItemState.saveProgress(
+      {
+        position: Math.max(0, Math.round(posSecs)),
+        duration: durationSecs.value > 0 ? Math.round(durationSecs.value) : undefined,
+        completed: Boolean(opts?.completed),
+      },
+      { immediate: opts?.immediate },
+    )
+  }
+
+  function dismissPlaybackError(): void {
+    playbackError.value = null
+  }
 
   const currentTrack = computed<PlayerTrackDisplay | null>(() => {
     const item = currentItem.value
@@ -372,6 +449,8 @@ export const usePlayerStore = defineStore('player', () => {
         item.track.play_count += 1
         void api.scrobble(item.track.id, true).catch(() => {})
       }
+    } else if (item && item.kind !== 'local' && !audio.paused && t >= 1) {
+      reportTrackedProgress(t)
     }
   })
 
@@ -387,9 +466,18 @@ export const usePlayerStore = defineStore('player', () => {
   audio.addEventListener('pause', () => {
     isPlaying.value = false
     scheduleQueueSync()
+    if (currentItem.value && currentItem.value.kind !== 'local' && currentTimeSecs.value >= 1) {
+      reportTrackedProgress(currentTimeSecs.value, { immediate: true })
+    }
   })
 
   audio.addEventListener('ended', () => {
+    if (currentItem.value && currentItem.value.kind !== 'local') {
+      reportTrackedProgress(durationSecs.value || currentTimeSecs.value, {
+        completed: true,
+        immediate: true,
+      })
+    }
     if (playMode.value === 'loop_one' && currentTrack.value) {
       scrobbledCurrent = false
       void loadAndPlayCurrent(0, true)
@@ -401,8 +489,10 @@ export const usePlayerStore = defineStore('player', () => {
   audio.addEventListener('error', () => {
     if (!audio.src || !currentItem.value) return
     isPlaying.value = false
-    if (currentItem.value.kind === 'online') {
-      playbackError.value = audio.error?.message || tMusic('player.playbackError')
+    const msg = audio.error?.message || tMusic('player.playbackError')
+    playbackError.value = msg
+    if (currentItem.value.kind !== 'online') {
+      useSnackbarStore().show({ message: msg, tone: 'error' })
     }
   })
 
@@ -455,6 +545,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (item.kind === 'remote') {
       if (currentItem.value?.key === targetKey) {
         lyrics.value = null
+        translatedLyrics.value = null
         lyricsLoadedTrackId = targetKey
         lyricsLoading.value = false
       }
@@ -463,6 +554,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (item.kind === 'online' && item.resolved) {
       if (currentItem.value?.key === targetKey) {
         lyrics.value = item.resolved.lyrics ?? null
+        translatedLyrics.value = item.resolved.translated_lyrics ?? null
         lyricsLoadedTrackId = targetKey
         lyricsLoading.value = false
       }
@@ -483,11 +575,13 @@ export const usePlayerStore = defineStore('player', () => {
             })
       if (currentItem.value?.key === targetKey) {
         lyrics.value = res
+        translatedLyrics.value = null
         lyricsLoadedTrackId = targetKey
       }
     } catch {
       if (currentItem.value?.key === targetKey) {
         lyrics.value = null
+        translatedLyrics.value = null
         lyricsLoadedTrackId = targetKey
       }
     } finally {
@@ -591,6 +685,7 @@ export const usePlayerStore = defineStore('player', () => {
       updateMediaSession(currentTrack.value)
       if (lyricsLoadedTrackId !== targetKey) {
         lyrics.value = null
+        translatedLyrics.value = null
         lyricsLoadedTrackId = null
         lyricsLoading.value = false
       }
@@ -611,7 +706,10 @@ export const usePlayerStore = defineStore('player', () => {
             await loadAndPlayCurrent(startAtSecs, true, 'mp3320')
             return
           }
+          const msg = err instanceof Error && err.message ? err.message : tMusic('player.playbackError')
+          playbackError.value = msg
           isPlaying.value = false
+          useSnackbarStore().show({ message: msg, tone: 'error' })
         }
       }
       if (seq === loadSeq) {
@@ -649,6 +747,7 @@ export const usePlayerStore = defineStore('player', () => {
 
       if (lyricsLoadedTrackId !== targetKey) {
         lyrics.value = null
+        translatedLyrics.value = null
         lyricsLoadedTrackId = targetKey
         lyricsLoading.value = false
       }
@@ -688,6 +787,7 @@ export const usePlayerStore = defineStore('player', () => {
 
     if (lyricsLoadedTrackId !== targetKey) {
       lyrics.value = null
+      translatedLyrics.value = null
       lyricsLoadedTrackId = null
       lyricsLoading.value = false
     }
@@ -726,6 +826,7 @@ export const usePlayerStore = defineStore('player', () => {
           item.activeFormat = resolved.format ?? item.track.format
           item.activeBitrate = resolved.bitrate
           lyrics.value = resolved.lyrics ?? null
+          translatedLyrics.value = resolved.translated_lyrics ?? null
           lyricsLoadedTrackId = targetKey
           lyricsLoading.value = false
         } else if (needsQualitySwitch && item.resolved) {
@@ -767,6 +868,7 @@ export const usePlayerStore = defineStore('player', () => {
       }
     } else if (item.resolved) {
       lyrics.value = item.resolved.lyrics ?? null
+      translatedLyrics.value = item.resolved.translated_lyrics ?? null
       lyricsLoadedTrackId = targetKey
       lyricsLoading.value = false
     }
@@ -1210,6 +1312,9 @@ export const usePlayerStore = defineStore('player', () => {
       void loadAndPlayCurrent(clamped, isPlaying.value)
     }
     scheduleQueueSync()
+    if (currentItem.value && currentItem.value.kind !== 'local') {
+      reportTrackedProgress(clamped, { immediate: true })
+    }
   }
 
   function setTranscodeProfile(next: TranscodeProfile): void {
@@ -1249,6 +1354,30 @@ export const usePlayerStore = defineStore('player', () => {
     themeStore.updatePlaybackPreferences({ muted: !muted.value })
   }
 
+  function moveQueueItem(fromIndex: number, toIndex: number): void {
+    const len = queue.value.length
+    if (fromIndex < 0 || fromIndex >= len || toIndex < 0 || toIndex >= len || fromIndex === toIndex) {
+      return
+    }
+    const [moved] = queue.value.splice(fromIndex, 1)
+    if (!moved) return
+    queue.value.splice(toIndex, 0, moved)
+
+    const remapIndex = (idx: number): number => {
+      if (idx === fromIndex) return toIndex
+      if (fromIndex < toIndex && idx > fromIndex && idx <= toIndex) return idx - 1
+      if (fromIndex > toIndex && idx >= toIndex && idx < fromIndex) return idx + 1
+      return idx
+    }
+
+    if (currentIndex.value >= 0) {
+      currentIndex.value = remapIndex(currentIndex.value)
+    }
+    playHistory = playHistory.map(remapIndex)
+    shufflePool = shufflePool.map(remapIndex)
+    scheduleQueueSync()
+  }
+
   function removeQueueAt(idx: number): void {
     if (idx < 0 || idx >= queue.value.length) return
     const removedItem = queue.value[idx]
@@ -1275,6 +1404,7 @@ export const usePlayerStore = defineStore('player', () => {
       onlineResolving.value = false
       playbackError.value = null
       lyrics.value = null
+      translatedLyrics.value = null
       lyricsLoadedTrackId = null
       resetShuffleAndHistory()
     } else if (wasCurrent) {
@@ -1310,7 +1440,10 @@ export const usePlayerStore = defineStore('player', () => {
     onlineResolving.value = false
     playbackError.value = null
     lyrics.value = null
+    translatedLyrics.value = null
     lyricsLoadedTrackId = null
+    lastReportedOnlineSecs = -1
+    lastReportedOnlineKey = null
     resetShuffleAndHistory()
     scheduleQueueSync()
   }
@@ -1344,7 +1477,10 @@ export const usePlayerStore = defineStore('player', () => {
     queueOpen.value = false
     lyricsLoading.value = false
     lyrics.value = null
+    translatedLyrics.value = null
     lyricsLoadedTrackId = null
+    lastReportedOnlineSecs = -1
+    lastReportedOnlineKey = null
     scrobbledCurrent = false
     resetShuffleAndHistory()
     updateMediaSession(null)
@@ -1471,7 +1607,11 @@ export const usePlayerStore = defineStore('player', () => {
     queueOpen,
     lyricsLoading,
     lyrics,
+    translatedLyrics,
     activeLyricIndex,
+    currentOnlineFavorite,
+    toggleCurrentOnlineFavorite,
+    dismissPlaybackError,
     attachAudioElement,
     detachAudioElement,
     playQueue,
@@ -1506,6 +1646,7 @@ export const usePlayerStore = defineStore('player', () => {
     cyclePlayMode,
     setVolume,
     toggleMute,
+    moveQueueItem,
     removeQueueAt,
     removeByTrackId,
     clearQueue,

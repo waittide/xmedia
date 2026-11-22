@@ -1,17 +1,17 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { LuDisc3, LuTrash2, LuPlay, LuVolume2 } from 'vue-icons-plus/lu'
-import MdSideSheet from '@/components/ui/MdSideSheet.vue'
-import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
-import { useDialogStore } from '@/stores/dialog'
-import { buildCoverUrl } from '../api'
+import { computed, ref, watch } from 'vue'
+import { LuDownload, LuTrash2 } from 'vue-icons-plus/lu'
+import { MdButton, MdSheet } from '@/components/ui'
 import { useMusicI18n as useI18n } from '../i18n'
-import { resolveOnlineItemCoverUrl, usePlayerStore, type PlayerQueueItem } from '../player'
+import { usePlayerStore } from '../player'
+import QueueListContent from './QueueListContent.vue'
 
 const { t } = useI18n()
-const dialogStore = useDialogStore()
 const playerStore = usePlayerStore()
+
+const restoring = ref(false)
+const confirmingClear = ref(false)
+const confirmingRestore = ref(false)
 
 const queueSubtitle = computed(() =>
   [t('player.queueSubtitle'), t('common.tracksCount', { count: playerStore.queue.length })]
@@ -19,158 +19,126 @@ const queueSubtitle = computed(() =>
     .join(' · '),
 )
 
-function itemTitle(item: PlayerQueueItem): string {
-  if (item.kind === 'local') return item.track.title
-  if (item.kind === 'remote') return item.song.title
-  return item.resolved?.track.title || item.track.title
-}
+watch(
+  () => [playerStore.queueOpen, playerStore.queue.length] as const,
+  ([isOpen, len]) => {
+    if (!isOpen || len === 0) {
+      confirmingClear.value = false
+      confirmingRestore.value = false
+    }
+  },
+)
 
-function itemSubtitle(item: PlayerQueueItem): string {
-  if (item.kind === 'local') {
-    return [item.track.artist_name, item.track.album_title].filter(Boolean).join(' · ')
-  }
-  if (item.kind === 'remote') {
-    return [item.song.artist, item.song.album].filter(Boolean).join(' · ')
-  }
-  const artist = item.resolved?.track.artist || item.track.artist
-  const album = item.resolved?.track.album ?? item.track.album
-  return [artist, album].filter(Boolean).join(' · ')
-}
-
-function itemCoverSrc(item: PlayerQueueItem): string | null {
-  if (item.kind === 'online') return resolveOnlineItemCoverUrl(item)
-  if (item.kind === 'remote') return item.song.cover_url ?? null
-  return item.track.cover_key ? buildCoverUrl(item.track.id, 80) : null
-}
-
-async function handleClearQueue(): Promise<void> {
+function requestClearQueue(): void {
   if (playerStore.queue.length === 0) return
-  const wasOpen = playerStore.queueOpen
-  playerStore.queueOpen = false
-  const ok = await dialogStore.confirm({
-    title: t('player.clearQueueConfirmTitle'),
-    message: t('player.clearQueueConfirm', { count: playerStore.queue.length }),
-    danger: true,
-  })
-  if (!ok) {
-    playerStore.queueOpen = wasOpen
+  confirmingRestore.value = false
+  confirmingClear.value = true
+}
+
+function confirmClearQueue(): void {
+  confirmingClear.value = false
+  playerStore.clearQueue()
+}
+
+async function runRestoreCloudQueue(): Promise<void> {
+  if (restoring.value) return
+  restoring.value = true
+  confirmingRestore.value = false
+  try {
+    await playerStore.restoreRemoteQueue(true)
+  } finally {
+    restoring.value = false
+  }
+}
+
+function requestRestoreCloudQueue(): void {
+  confirmingClear.value = false
+  if (playerStore.queue.length > 0) {
+    confirmingRestore.value = true
     return
   }
-  playerStore.clearQueue()
+  void runRestoreCloudQueue()
 }
 </script>
 
 <template>
-  <MdSideSheet
+  <MdSheet
     :open="playerStore.queueOpen"
     :title="t('player.queueTitle')"
     :subtitle="queueSubtitle"
-    width-class="w-full max-w-md"
+    size="md"
     @close="playerStore.queueOpen = false"
   >
     <template #subheader>
+      <!-- Inline Confirm Clear (avoids closing/flickering sheet and preserves [role="dialog"] E2E flow) -->
       <div
-        class="flex items-center justify-between gap-2 border-b border-[var(--md-sys-color-outline-variant)]/50 pb-3"
+        v-if="confirmingClear"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-corner-md bg-error-container px-3 py-2 text-on-error-container"
       >
-        <RefreshButton
-          variant="ghost"
-          size="md"
-          :action="() => playerStore.restoreRemoteQueue(true)"
-          :title="t('player.syncFromCloud')"
-        />
+        <span class="text-body-small">
+          {{ t('player.clearQueueConfirm', { count: playerStore.queue.length }) }}
+        </span>
+        <div class="flex shrink-0 items-center gap-1">
+          <MdButton variant="filled" tone="error" size="sm" @click="confirmClearQueue">
+            {{ t('player.clearQueueConfirmAction') }}
+          </MdButton>
+          <MdButton variant="text" size="sm" @click="confirmingClear = false">
+            {{ t('player.cancel') }}
+          </MdButton>
+        </div>
+      </div>
 
-        <button
-          v-if="playerStore.queue.length > 0"
-          type="button"
-          class="md-btn md-btn-sm md-state bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]"
-          :title="t('player.clearQueue')"
-          @click="handleClearQueue"
+      <!-- Inline Confirm Restore Cloud Queue -->
+      <div
+        v-else-if="confirmingRestore"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-corner-md bg-secondary-container px-3 py-2 text-on-secondary-container"
+      >
+        <span class="text-body-small">
+          {{ t('player.syncFromCloudConfirm', { count: playerStore.queue.length }) }}
+        </span>
+        <div class="flex shrink-0 items-center gap-1">
+          <MdButton
+            variant="filled"
+            size="sm"
+            :loading="restoring"
+            @click="runRestoreCloudQueue"
+          >
+            {{ t('player.syncFromCloudConfirmAction') }}
+          </MdButton>
+          <MdButton variant="text" size="sm" @click="confirmingRestore = false">
+            {{ t('player.cancel') }}
+          </MdButton>
+        </div>
+      </div>
+
+      <!-- Default Action Bar -->
+      <div
+        v-else
+        class="flex items-center justify-between gap-2 border-b border-outline-variant pb-3"
+      >
+        <MdButton
+          variant="text"
+          size="sm"
+          :icon="LuDownload"
+          :loading="restoring"
+          @click="requestRestoreCloudQueue"
         >
-          <LuTrash2 class="h-3.5 w-3.5" />
-          <span>{{ t('player.clearQueue') }}</span>
-        </button>
+          {{ t('player.syncFromCloud') }}
+        </MdButton>
+
+        <MdButton
+          v-if="playerStore.queue.length > 0"
+          variant="tonal"
+          tone="error"
+          size="sm"
+          :icon="LuTrash2"
+          @click="requestClearQueue"
+        >
+          {{ t('player.clearQueue') }}
+        </MdButton>
       </div>
     </template>
 
-    <div
-      v-if="playerStore.queue.length === 0"
-      class="flex h-48 items-center justify-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-    >
-      {{ t('player.noTrack') }}
-    </div>
-
-    <div v-else class="space-y-1">
-      <div
-        v-for="(item, idx) in playerStore.queue"
-        :key="`${item.key}-${idx}`"
-        class="group flex items-center gap-3 rounded-2xl px-3 py-2 text-xs transition hover:bg-[var(--md-sys-color-surface-container-high)]"
-        :class="
-          idx === playerStore.currentIndex
-            ? 'bg-[var(--md-sys-color-secondary-container)]/70'
-            : ''
-        "
-      >
-        <MediaCoverImage
-          :src="itemCoverSrc(item)"
-          :alt="itemTitle(item)"
-          aspect-class="h-10 w-10 shrink-0"
-          rounded="rounded-lg"
-          :fallback-icon="LuDisc3"
-          class="cursor-pointer"
-          @click="playerStore.playAtIndex(idx)"
-        />
-
-        <button
-          type="button"
-          class="min-w-0 flex-1 cursor-pointer text-left"
-          @click="playerStore.playAtIndex(idx)"
-        >
-          <div class="flex items-center gap-1.5">
-            <span
-              class="truncate font-semibold"
-              :class="
-                idx === playerStore.currentIndex
-                  ? 'text-[var(--md-sys-color-primary)]'
-                  : 'text-[var(--md-sys-color-on-surface)]'
-              "
-            >
-              {{ itemTitle(item) }}
-            </span>
-            <span
-              v-if="item.kind === 'online'"
-              class="shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-1.5 py-0.2 text-[10px] font-medium text-[var(--md-sys-color-on-primary-container)]"
-            >
-              {{ item.source_name }}
-            </span>
-          </div>
-          <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ itemSubtitle(item) }}
-          </p>
-        </button>
-
-        <LuVolume2
-          v-if="idx === playerStore.currentIndex"
-          class="h-4 w-4 shrink-0 text-[var(--md-sys-color-primary)]"
-        />
-        <button
-          v-else
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state hidden group-hover:inline-flex"
-          :title="t('player.play')"
-          @click="playerStore.playAtIndex(idx)"
-        >
-          <LuPlay class="h-3.5 w-3.5 fill-current" />
-        </button>
-
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state hover:text-[var(--md-sys-color-error)]"
-          :title="t('common.delete')"
-          @click="playerStore.removeQueueAt(idx)"
-        >
-          <LuTrash2 class="h-3.5 w-3.5" />
-        </button>
-      </div>
-    </div>
-  </MdSideSheet>
+    <QueueListContent :active="playerStore.queueOpen" />
+  </MdSheet>
 </template>

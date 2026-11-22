@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, toRef } from 'vue'
+import { computed, onBeforeUnmount, ref, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   LuArrowRight,
   LuDisc3,
   LuFileText,
   LuMusic,
+  LuPause,
+  LuPlay,
   LuSearch,
   LuTerminal,
 } from 'vue-icons-plus/lu'
@@ -13,8 +15,11 @@ import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
 import { useOnlineSourceDebug } from '@/components/online-sources/useOnlineSourceDebug'
-import type { SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
+import { MdButton, MdIconButton, type SegmentedOption } from '@/components/ui'
+import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
+import { formatTime } from '@/utils/format'
+import { ensureMusicLocale, useMusicI18n } from '../i18n'
 import {
   onlineMusicApi,
   resolveOnlineMusicAudioUrl,
@@ -25,6 +30,8 @@ import {
   type MusicSourceTestReportDto,
   type OnlineMusicTrackDto,
 } from '../onlineApi'
+import { usePlayerStore } from '../player'
+import MusicSeekSlider from './MusicSeekSlider.vue'
 
 const props = defineProps<{
   open: boolean
@@ -37,7 +44,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { t: tm } = useMusicI18n()
 const snackbar = useSnackbarStore()
+const playerStore = usePlayerStore()
 
 type ResultTab = 'timeline' | 'search' | 'detail' | 'stream' | 'lyric'
 
@@ -55,6 +64,27 @@ const lastExploreUrl = ref('')
 const qualityInput = ref('')
 const pendingPayload = ref<MusicSourceTestInput | null>(null)
 const pendingPreserve = ref(false)
+
+// Custom MD3 audio preview state (mutually exclusive with global playerStore)
+const previewAudioRef = ref<HTMLAudioElement | null>(null)
+const previewPlaying = ref(false)
+const previewCurrentSecs = ref(0)
+const previewDurationSecs = ref(0)
+const previewScrubSecs = ref<number | null>(null)
+const previewError = ref<string | null>(null)
+
+function stopPreviewAudio(): void {
+  const el = previewAudioRef.value
+  if (el) {
+    el.pause()
+    el.currentTime = 0
+  }
+  previewPlaying.value = false
+  previewCurrentSecs.value = 0
+  previewDurationSecs.value = 0
+  previewScrubSecs.value = null
+  previewError.value = null
+}
 
 const {
   mode,
@@ -75,7 +105,7 @@ const {
   source: toRef(props, 'source'),
   defaultMode: 'full',
   defaultTab: 'timeline',
-  defaultKeyword: 'Mojito',
+  defaultKeyword: '',
   runTest: async (sourceId, signal) => {
     const val = queryInput.value.trim()
     let payload: MusicSourceTestInput
@@ -108,6 +138,7 @@ const {
     return onlineMusicApi.testSource(sourceId, payload, { signal })
   },
   onReset: () => {
+    stopPreviewAudio()
     lastTrack.value = null
     lastExploreUrl.value = ''
     qualityInput.value = ''
@@ -115,6 +146,7 @@ const {
     pendingPreserve.value = false
   },
   onReportReady: (res, preferredTab) => {
+    stopPreviewAudio()
     const prev = pendingPreserve.value ? report.value : null
     const ranStages = new Set(res.steps.map((s) => s.stage))
     const merged: MusicSourceTestReportDto = prev
@@ -159,6 +191,99 @@ const {
   onTested: () => emit('tested'),
 })
 
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) {
+      void ensureMusicLocale()
+    } else {
+      stopPreviewAudio()
+    }
+  },
+  { immediate: true },
+)
+
+watch(
+  () => playerStore.isPlaying,
+  (globalPlaying) => {
+    if (globalPlaying && previewPlaying.value && previewAudioRef.value) {
+      previewAudioRef.value.pause()
+    }
+  },
+)
+
+watch(activeTab, (nextTab) => {
+  if (nextTab !== 'stream' && previewPlaying.value && previewAudioRef.value) {
+    previewAudioRef.value.pause()
+  }
+})
+
+const showQualityControl = computed(
+  () => mode.value === 'full' || mode.value === 'search' || mode.value === 'stream',
+)
+
+const resolvedDetailCoverUrl = computed(() => {
+  const tr = report.value?.resolved_track
+  if (!tr) return ''
+  return resolveOnlineMusicCoverUrl(tr.proxy_cover_url, tr.cover_url, props.source?.id)
+})
+
+const previewAudioUrl = computed(() => {
+  const probe = report.value?.stream_probe
+  if (!probe) return ''
+  return resolveOnlineMusicAudioUrl(probe.proxy_stream_url)
+})
+
+watch(previewAudioUrl, () => {
+  stopPreviewAudio()
+})
+
+function searchItemCoverUrl(item: OnlineMusicTrackDto): string {
+  return resolveOnlineMusicCoverUrl(item.proxy_cover_url, item.cover_url, props.source?.id)
+}
+
+async function togglePreviewPlay(): Promise<void> {
+  const el = previewAudioRef.value
+  if (!el || !previewAudioUrl.value) return
+  if (previewPlaying.value) {
+    el.pause()
+    return
+  }
+  previewError.value = null
+  playerStore.pause()
+  try {
+    await el.play()
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') return
+    previewPlaying.value = false
+    previewError.value = err instanceof Error && err.message ? err.message : tm('sourceEditor.debug.previewError')
+  }
+}
+
+function seekPreview(secs: number): void {
+  const el = previewAudioRef.value
+  if (!el) return
+  el.currentTime = Math.max(0, secs)
+  previewCurrentSecs.value = el.currentTime
+}
+
+function onPreviewTimeUpdate(): void {
+  const el = previewAudioRef.value
+  if (!el) return
+  previewCurrentSecs.value = el.currentTime || 0
+}
+
+function onPreviewLoadedMetadata(): void {
+  const el = previewAudioRef.value
+  if (!el) return
+  previewDurationSecs.value = Number.isFinite(el.duration) ? el.duration : 0
+}
+
+function onPreviewError(): void {
+  previewPlaying.value = false
+  previewError.value = tm('sourceEditor.debug.previewError')
+}
+
 function handleModeChange(nextMode: MusicSourceTestMode): void {
   mode.value = nextMode
   if (nextMode === 'explore' && lastExploreUrl.value) {
@@ -169,7 +294,7 @@ function handleModeChange(nextMode: MusicSourceTestMode): void {
   ) {
     queryInput.value = lastTrack.value.detail_url || lastTrack.value.track_id || lastTrack.value.title
   } else if ((nextMode === 'full' || nextMode === 'search') && props.source) {
-    queryInput.value = props.source.check_keyword?.trim() || 'Mojito'
+    queryInput.value = props.source.check_keyword?.trim() || ''
   }
 }
 
@@ -180,9 +305,11 @@ const hasQuickHint = computed(() => {
 })
 
 const inputPlaceholder = computed(() => {
-  const kw = props.source?.check_keyword?.trim() || 'Mojito'
+  const kw = props.source?.check_keyword?.trim()
   if (mode.value === 'full' || mode.value === 'search') {
-    return t('onlineSources.debug.keywordPlaceholder', { keyword: kw })
+    return kw
+      ? t('onlineSources.debug.keywordPlaceholder', { keyword: kw })
+      : tm('sourceEditor.debug.keywordEmptyPlaceholder')
   }
   return t('onlineSources.debug.urlPlaceholder')
 })
@@ -253,6 +380,10 @@ async function copyDebugReport(): Promise<void> {
     snackbar.show({ message: t('onlineSources.debug.copyFailed'), tone: 'error' })
   }
 }
+
+onBeforeUnmount(() => {
+  stopPreviewAudio()
+})
 </script>
 
 <template>
@@ -281,16 +412,16 @@ async function copyDebugReport(): Promise<void> {
     @stop="abortActiveRun"
     @copy-report="copyDebugReport"
   >
-    <template #extra-controls>
-      <div class="flex items-center gap-2 text-xs">
-        <span class="text-[var(--md-sys-color-on-surface-variant)]">
+    <template v-if="showQualityControl" #extra-controls>
+      <div class="text-body-small flex items-center gap-2">
+        <span class="text-on-surface-variant">
           {{ t('onlineSources.debug.qualityLabel') }}
         </span>
         <input
           v-model="qualityInput"
           type="text"
           placeholder="320 / 999 / flac"
-          class="md-input w-40 py-1 font-mono text-xs"
+          class="md-input text-body-small w-40 py-1 font-mono"
         />
       </div>
     </template>
@@ -299,7 +430,7 @@ async function copyDebugReport(): Promise<void> {
       <button
         v-if="source?.check_keyword && (mode === 'full' || mode === 'search')"
         type="button"
-        class="md-state rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface)]"
+        class="md-state text-label-small cursor-pointer rounded-corner-full bg-surface-container-high px-2.5 py-1 text-on-surface"
         @click="queryInput = source.check_keyword!"
       >
         {{ t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword }) }}
@@ -307,7 +438,7 @@ async function copyDebugReport(): Promise<void> {
       <button
         v-if="lastExploreUrl && mode === 'explore'"
         type="button"
-        class="md-state max-w-xs truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        class="md-state text-label-small max-w-xs cursor-pointer truncate rounded-corner-full bg-surface-container-high px-2.5 py-1 font-mono text-on-surface"
         @click="queryInput = lastExploreUrl"
       >
         {{ t('onlineSources.debug.lastExploreHint') }}
@@ -319,12 +450,12 @@ async function copyDebugReport(): Promise<void> {
       <div v-if="activeTab === 'search' && report" class="flex flex-col gap-2.5">
         <div
           v-if="report.search_items.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptySearch') }}
         </div>
         <template v-else>
-          <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          <p class="text-body-small text-on-surface-variant">
             {{
               t('onlineSources.debug.searchSummary', {
                 total: report.result_count,
@@ -335,51 +466,46 @@ async function copyDebugReport(): Promise<void> {
           <div
             v-for="(item, idx) in report.search_items"
             :key="`${item.track_id}-${idx}`"
-            class="flex items-start gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3.5"
+            class="flex items-start gap-3 rounded-corner-lg bg-surface-container p-3.5"
           >
-            <div class="h-14 w-14 shrink-0 overflow-hidden rounded-xl bg-[var(--md-sys-color-surface-container-high)]">
-              <img
-                v-if="resolveOnlineMusicCoverUrl(item.proxy_cover_url, item.cover_url, source?.id)"
-                :src="resolveOnlineMusicCoverUrl(item.proxy_cover_url, item.cover_url, source?.id)"
-                :alt="item.title"
-                class="h-full w-full object-cover"
-                loading="lazy"
-              />
-              <div
-                v-else
-                class="flex h-full w-full items-center justify-center text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ t('onlineSources.debug.noCover') }}
-              </div>
-            </div>
+            <MediaCoverImage
+              :src="searchItemCoverUrl(item) || null"
+              :alt="item.title"
+              aspect-class="h-14 w-14 shrink-0"
+              rounded="rounded-corner-md"
+              :fallback-icon="LuDisc3"
+            />
 
             <div class="min-w-0 flex-1 space-y-1">
               <div class="flex flex-wrap items-start justify-between gap-2">
                 <div class="min-w-0">
                   <div class="flex flex-wrap items-center gap-1.5">
-                    <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+                    <span class="text-label-small font-mono text-on-surface-variant">
                       #{{ idx + 1 }}
                     </span>
-                    <span class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+                    <span class="text-title-small text-on-surface">
                       {{ item.title }}
                     </span>
-                    <span v-if="item.artist" class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                    <span v-if="item.artist" class="text-body-small text-on-surface-variant">
                       · {{ item.artist }}
                     </span>
                   </div>
-                  <p v-if="item.album" class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+                  <p v-if="item.album" class="text-body-small text-on-surface-variant">
                     {{ item.album }}
                   </p>
                 </div>
-                <button
-                  type="button"
+                <MdButton
+                  variant="tonal"
+                  size="sm"
                   :disabled="running"
-                  class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
+                  class="shrink-0"
                   @click="handleDebugTrack(item)"
                 >
                   <span>{{ t('onlineSources.debug.debugTrackBtn') }}</span>
-                  <LuArrowRight class="h-3.5 w-3.5" />
-                </button>
+                  <template #trailing>
+                    <LuArrowRight class="h-3.5 w-3.5" aria-hidden="true" />
+                  </template>
+                </MdButton>
               </div>
             </div>
           </div>
@@ -390,91 +516,136 @@ async function copyDebugReport(): Promise<void> {
       <div v-else-if="activeTab === 'detail' && report" class="flex flex-col gap-3">
         <div
           v-if="!report.resolved_track"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptyDetail') }}
         </div>
-        <div
-          v-else
-          class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4"
-        >
-          <div class="flex items-center gap-3">
-            <img
-              v-if="
-                resolveOnlineMusicCoverUrl(
-                  report.resolved_track.proxy_cover_url,
-                  report.resolved_track.cover_url,
-                  source?.id,
-                )
-              "
-              :src="
-                resolveOnlineMusicCoverUrl(
-                  report.resolved_track.proxy_cover_url,
-                  report.resolved_track.cover_url,
-                  source?.id,
-                )
-              "
+        <div v-else class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4">
+          <div class="flex items-center gap-3.5">
+            <MediaCoverImage
+              :src="resolvedDetailCoverUrl || null"
               :alt="report.resolved_track.track.title"
-              class="h-16 w-16 rounded-xl object-cover"
+              aspect-class="h-16 w-16 shrink-0"
+              rounded="rounded-corner-md"
+              :fallback-icon="LuDisc3"
             />
             <div class="min-w-0">
-              <div class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
+              <div class="text-title-medium truncate text-on-surface">
                 {{ report.resolved_track.track.title }}
               </div>
-              <div class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="text-body-small text-on-surface-variant">
                 {{ report.resolved_track.track.artist }}
                 <template v-if="report.resolved_track.track.album">
                   · {{ report.resolved_track.track.album }}
                 </template>
               </div>
-              <div class="mt-1 flex flex-wrap gap-2 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="text-label-small mt-1 flex flex-wrap gap-2 font-mono text-on-surface-variant">
                 <span v-if="report.resolved_track.format">{{ report.resolved_track.format }}</span>
-                <span v-if="report.resolved_track.bitrate">{{ report.resolved_track.bitrate }} kbps</span>
+                <span v-if="report.resolved_track.bitrate">
+                  {{ report.resolved_track.bitrate }} kbps
+                </span>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Stream Probe & Audio Preview -->
+      <!-- Stream Probe & Custom MD3 Audio Preview -->
       <div v-else-if="activeTab === 'stream' && report" class="flex flex-col gap-3">
         <div
           v-if="!report.stream_probe"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptyStream') }}
         </div>
-        <div
-          v-else
-          class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4 text-xs"
-        >
-          <audio
-            v-if="resolveOnlineMusicAudioUrl(report.stream_probe.proxy_stream_url)"
-            controls
-            preload="none"
-            :src="resolveOnlineMusicAudioUrl(report.stream_probe.proxy_stream_url)"
-            class="w-full"
-          />
-          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div v-else class="flex flex-col gap-4 rounded-corner-lg bg-surface-container p-4">
+          <!-- Custom MD3 Preview Player (auto-pauses global playerStore to avoid overlap) -->
+          <div
+            v-if="previewAudioUrl"
+            class="flex flex-col gap-2 rounded-corner-md bg-surface-container-high p-3"
+          >
+            <audio
+              ref="previewAudioRef"
+              :src="previewAudioUrl"
+              preload="none"
+              class="hidden"
+              @play="previewPlaying = true"
+              @pause="previewPlaying = false"
+              @ended="previewPlaying = false"
+              @timeupdate="onPreviewTimeUpdate"
+              @loadedmetadata="onPreviewLoadedMetadata"
+              @error="onPreviewError"
+            />
+
+            <div class="flex items-center gap-3">
+              <MdIconButton
+                variant="filled"
+                size="sm"
+                :aria-label="
+                  previewPlaying
+                    ? tm('sourceEditor.debug.previewPause')
+                    : tm('sourceEditor.debug.previewPlay')
+                "
+                :title="
+                  previewPlaying
+                    ? tm('sourceEditor.debug.previewPause')
+                    : tm('sourceEditor.debug.previewPlay')
+                "
+                @click="togglePreviewPlay"
+              >
+                <LuPause v-if="previewPlaying" class="h-4 w-4 fill-current" />
+                <LuPlay v-else class="ml-0.5 h-4 w-4 fill-current" />
+              </MdIconButton>
+
+              <span class="text-label-small w-10 text-right font-mono tabular-nums text-on-surface-variant">
+                {{ formatTime(previewScrubSecs ?? previewCurrentSecs) }}
+              </span>
+
+              <div class="min-w-0 flex-1">
+                <MusicSeekSlider
+                  :model-value="previewCurrentSecs"
+                  :min="0"
+                  :max="Math.max(1, previewDurationSecs)"
+                  :step="0.2"
+                  :disabled="previewDurationSecs <= 0"
+                  :aria-label="tm('sourceEditor.debug.previewTitle')"
+                  @preview="previewScrubSecs = $event"
+                  @commit="seekPreview"
+                />
+              </div>
+
+              <span class="text-label-small w-10 font-mono tabular-nums text-on-surface-variant">
+                {{ formatTime(previewDurationSecs) }}
+              </span>
+            </div>
+
+            <p v-if="previewError" role="alert" class="text-body-small text-error">
+              {{ previewError }}
+            </p>
+          </div>
+
+          <div class="text-body-small grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div>
-              <span class="text-[var(--md-sys-color-on-surface-variant)]">
+              <span class="text-on-surface-variant">
                 {{ t('onlineSources.debug.formatLabel') }}:
               </span>
-              <span class="font-mono">{{ report.stream_probe.format || '-' }}</span>
+              <span class="ml-1 font-mono text-on-surface">
+                {{ report.stream_probe.format || '-' }}
+              </span>
             </div>
             <div>
-              <span class="text-[var(--md-sys-color-on-surface-variant)]">
+              <span class="text-on-surface-variant">
                 {{ t('onlineSources.debug.bitrateLabel') }}:
               </span>
-              <span class="font-mono">
+              <span class="ml-1 font-mono text-on-surface">
                 {{ report.stream_probe.bitrate ? `${report.stream_probe.bitrate} kbps` : '-' }}
               </span>
             </div>
             <div>
-              <span class="text-[var(--md-sys-color-on-surface-variant)]">
+              <span class="text-on-surface-variant">
                 {{ t('onlineSources.debug.expiresLabel') }}:
               </span>
-              <span class="font-mono">
+              <span class="ml-1 font-mono text-on-surface">
                 {{
                   report.stream_probe.expires_in_secs != null
                     ? `${report.stream_probe.expires_in_secs}s`
@@ -483,10 +654,10 @@ async function copyDebugReport(): Promise<void> {
               </span>
             </div>
             <div>
-              <span class="text-[var(--md-sys-color-on-surface-variant)]">
+              <span class="text-on-surface-variant">
                 {{ t('onlineSources.debug.headersAppliedLabel') }}:
               </span>
-              <span>
+              <span class="ml-1 text-on-surface">
                 {{
                   report.stream_probe.headers_applied
                     ? t('onlineSources.debug.yes')
@@ -495,11 +666,15 @@ async function copyDebugReport(): Promise<void> {
               </span>
             </div>
           </div>
-          <div class="break-all font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('onlineSources.debug.streamUrlLabel') }}: {{ report.stream_probe.stream_url }}
-          </div>
-          <div class="break-all font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('onlineSources.debug.proxyStreamUrlLabel') }}: {{ report.stream_probe.proxy_stream_url }}
+
+          <div class="text-label-small space-y-1 break-all font-mono text-on-surface-variant">
+            <div>
+              {{ t('onlineSources.debug.streamUrlLabel') }}: {{ report.stream_probe.stream_url }}
+            </div>
+            <div>
+              {{ t('onlineSources.debug.proxyStreamUrlLabel') }}:
+              {{ report.stream_probe.proxy_stream_url }}
+            </div>
           </div>
         </div>
       </div>
@@ -508,35 +683,37 @@ async function copyDebugReport(): Promise<void> {
       <div v-else-if="activeTab === 'lyric' && report" class="flex flex-col gap-3">
         <div
           v-if="!report.lyrics"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small rounded-corner-lg bg-surface-container py-10 text-center text-on-surface-variant"
         >
           {{ t('onlineSources.debug.emptyLyric') }}
         </div>
-        <div
-          v-else
-          class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4"
-        >
+        <div v-else class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4">
           <div class="flex items-center gap-2">
-            <span class="rounded-full bg-[var(--md-sys-color-secondary-container)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--md-sys-color-on-secondary-container)]">
+            <span
+              class="text-label-small rounded-corner-full bg-secondary-container px-2.5 py-0.5 text-on-secondary-container"
+            >
               {{
                 report.lyrics.synced
                   ? t('onlineSources.debug.syncedLyricsBadge')
                   : t('onlineSources.debug.plainLyricsBadge')
               }}
             </span>
-            <span v-if="report.lyrics.display_title" class="text-xs font-medium">
+            <span v-if="report.lyrics.display_title" class="text-body-small text-on-surface">
               {{ report.lyrics.display_title }}
             </span>
           </div>
-          <div v-if="report.lyrics.lines.length > 0" class="max-h-72 space-y-1 overflow-y-auto font-mono text-xs">
+          <div
+            v-if="report.lyrics.lines.length > 0"
+            class="text-body-small max-h-72 space-y-1 overflow-y-auto font-mono"
+          >
             <div v-for="(line, lIdx) in report.lyrics.lines" :key="lIdx" class="flex gap-2">
-              <span class="shrink-0 text-[var(--md-sys-color-on-surface-variant)]">
+              <span class="shrink-0 tabular-nums text-on-surface-variant">
                 [{{ Math.floor(line.start_ms / 1000) }}s]
               </span>
-              <span>{{ line.text }}</span>
+              <span class="text-on-surface">{{ line.text }}</span>
             </div>
           </div>
-          <pre v-else class="max-h-72 overflow-y-auto whitespace-pre-wrap text-xs">
+          <pre v-else class="text-body-small max-h-72 overflow-y-auto whitespace-pre-wrap text-on-surface">
             {{ report.lyrics.plain_text }}
           </pre>
         </div>

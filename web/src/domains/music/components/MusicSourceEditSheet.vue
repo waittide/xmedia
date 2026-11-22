@@ -1,21 +1,27 @@
 <script setup lang="ts">
-import { computed, reactive, toRef } from 'vue'
+import { computed, reactive, ref, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  LuCheckCircle2,
+  LuChevronDown,
   LuCode2,
   LuCompass,
+  LuCopy,
   LuDisc3,
   LuFileText,
+  LuFlaskConical,
   LuImage,
   LuInfo,
+  LuLoader2,
   LuMusic,
+  LuSave,
   LuSearch,
+  LuSlidersHorizontal,
+  LuXCircle,
 } from 'vue-icons-plus/lu'
-import OnlineSourceEditShell from '@/components/online-sources/OnlineSourceEditShell.vue'
-import RuleFieldsSection, { type RuleFieldDef } from '@/components/online-sources/RuleFieldsSection.vue'
+import type { RuleFieldDef } from '@/components/online-sources/RuleFieldsSection.vue'
 import {
   boolVal,
-  hasAnyRule,
   mergeOptionalField,
   mergeRuleSection,
   numVal,
@@ -24,9 +30,9 @@ import {
   readRuleMap,
   strVal,
   useOnlineSourceEdit,
-  type EditTabItem,
 } from '@/components/online-sources/useOnlineSourceEdit'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
+import { MdButton, MdDialog, MdSwitch, MdTabs, type MdTabItem } from '@/components/ui'
+import { ensureMusicLocale, useMusicI18n } from '../i18n'
 import { musicSourceAdapter, type MusicSourceSummaryDto } from '../onlineApi'
 
 const props = defineProps<{
@@ -41,6 +47,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { t: tm } = useMusicI18n()
+
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) {
+      void ensureMusicLocale()
+      advancedOpen.value = false
+    }
+  },
+  { immediate: true },
+)
 
 type EditTab =
   | 'basic'
@@ -51,6 +69,8 @@ type EditTab =
   | 'cover'
   | 'lyric'
   | 'json'
+
+const advancedOpen = ref(false)
 
 const searchAliases: Record<string, readonly string[]> = {
   trackList: ['list', 'songList'],
@@ -95,64 +115,104 @@ const lyricAliases: Record<string, readonly string[]> = {
   plainLyric: ['plainLyrics'],
 }
 
-const searchRuleFields: RuleFieldDef[] = [
-  { key: 'checkKeyWord', label: 'checkKeyWord' },
-  { key: 'trackList', label: 'trackList', fullWidth: true },
-  { key: 'trackId', label: 'trackId' },
-  { key: 'title', label: 'title' },
-  { key: 'artist', label: 'artist' },
-  { key: 'album', label: 'album' },
-  { key: 'duration', label: 'duration' },
-  { key: 'durationUnit', label: 'durationUnit', placeholder: 's | ms' },
-  { key: 'coverUrl', label: 'coverUrl', fullWidth: true },
-  { key: 'coverId', label: 'coverId' },
-  { key: 'urlId', label: 'urlId' },
-  { key: 'lyricId', label: 'lyricId' },
-  { key: 'format', label: 'format' },
-  { key: 'playUrl', label: 'playUrl', fullWidth: true },
-  { key: 'detailUrl', label: 'detailUrl', fullWidth: true },
+interface FieldSchemaSpec {
+  key: string
+  placeholder?: string
+  multiline?: boolean
+  rows?: number
+  fullWidth?: boolean
+}
+
+const searchFieldSpecs: readonly FieldSchemaSpec[] = [
+  { key: 'checkKeyWord' },
+  { key: 'trackList', fullWidth: true },
+  { key: 'trackId' },
+  { key: 'title' },
+  { key: 'artist' },
+  { key: 'album' },
+  { key: 'duration' },
+  { key: 'durationUnit', placeholder: 's | ms' },
+  { key: 'coverUrl', fullWidth: true },
+  { key: 'coverId' },
+  { key: 'urlId' },
+  { key: 'lyricId' },
+  { key: 'format' },
+  { key: 'playUrl', fullWidth: true },
+  { key: 'detailUrl', fullWidth: true },
 ]
 
-const exploreRuleFields: RuleFieldDef[] = searchRuleFields.filter((f) => f.key !== 'checkKeyWord')
+const exploreFieldSpecs: readonly FieldSchemaSpec[] = searchFieldSpecs.filter(
+  (f) => f.key !== 'checkKeyWord',
+)
 
-const trackDetailRuleFields: RuleFieldDef[] = [
-  { key: 'requestUrl', label: 'requestUrl', fullWidth: true },
-  { key: 'init', label: 'init', multiline: true, rows: 2, fullWidth: true },
-  { key: 'trackId', label: 'trackId' },
-  { key: 'title', label: 'title' },
-  { key: 'artist', label: 'artist' },
-  { key: 'album', label: 'album' },
-  { key: 'duration', label: 'duration' },
-  { key: 'durationUnit', label: 'durationUnit', placeholder: 's | ms' },
-  { key: 'coverUrl', label: 'coverUrl', fullWidth: true },
-  { key: 'coverId', label: 'coverId' },
-  { key: 'urlId', label: 'urlId' },
-  { key: 'lyricId', label: 'lyricId' },
-  { key: 'format', label: 'format' },
-  { key: 'playUrl', label: 'playUrl', fullWidth: true },
-  { key: 'lyric', label: 'lyric', multiline: true, rows: 2, fullWidth: true },
+const trackDetailFieldSpecs: readonly FieldSchemaSpec[] = [
+  { key: 'requestUrl', fullWidth: true },
+  { key: 'init', multiline: true, rows: 2, fullWidth: true },
+  { key: 'trackId' },
+  { key: 'title' },
+  { key: 'artist' },
+  { key: 'album' },
+  { key: 'duration' },
+  { key: 'durationUnit', placeholder: 's | ms' },
+  { key: 'coverUrl', fullWidth: true },
+  { key: 'coverId' },
+  { key: 'urlId' },
+  { key: 'lyricId' },
+  { key: 'format' },
+  { key: 'playUrl', fullWidth: true },
+  { key: 'lyric', multiline: true, rows: 2, fullWidth: true },
 ]
 
-const streamRuleFields: RuleFieldDef[] = [
-  { key: 'requestUrl', label: 'requestUrl', fullWidth: true },
-  { key: 'streamUrl', label: 'streamUrl', multiline: true, rows: 2, fullWidth: true },
-  { key: 'format', label: 'format' },
-  { key: 'bitrate', label: 'bitrate' },
-  { key: 'expiresInSecs', label: 'expiresInSecs' },
-  { key: 'headers', label: 'headers', multiline: true, rows: 2, fullWidth: true },
+const streamFieldSpecs: readonly FieldSchemaSpec[] = [
+  { key: 'requestUrl', fullWidth: true },
+  { key: 'streamUrl', multiline: true, rows: 2, fullWidth: true },
+  { key: 'format' },
+  { key: 'bitrate' },
+  { key: 'expiresInSecs' },
+  { key: 'headers', multiline: true, rows: 2, fullWidth: true },
 ]
 
-const coverRuleFields: RuleFieldDef[] = [
-  { key: 'requestUrl', label: 'requestUrl', fullWidth: true },
-  { key: 'coverUrl', label: 'coverUrl', fullWidth: true },
+const coverFieldSpecs: readonly FieldSchemaSpec[] = [
+  { key: 'requestUrl', fullWidth: true },
+  { key: 'coverUrl', fullWidth: true },
 ]
 
-const lyricRuleFields: RuleFieldDef[] = [
-  { key: 'requestUrl', label: 'requestUrl', fullWidth: true },
-  { key: 'lyric', label: 'lyric', multiline: true, rows: 2, fullWidth: true },
-  { key: 'translatedLyric', label: 'translatedLyric', multiline: true, rows: 2, fullWidth: true },
-  { key: 'plainLyric', label: 'plainLyric', multiline: true, rows: 2, fullWidth: true },
+const lyricFieldSpecs: readonly FieldSchemaSpec[] = [
+  { key: 'requestUrl', fullWidth: true },
+  { key: 'lyric', multiline: true, rows: 2, fullWidth: true },
+  { key: 'translatedLyric', multiline: true, rows: 2, fullWidth: true },
+  { key: 'plainLyric', multiline: true, rows: 2, fullWidth: true },
 ]
+
+function toLocalizedFields(specs: readonly FieldSchemaSpec[]): RuleFieldDef[] {
+  return specs.map((spec) => ({
+    key: spec.key,
+    label: tm(`sourceEditor.fields.${spec.key}`),
+    hint: spec.key,
+    placeholder: spec.placeholder,
+    multiline: spec.multiline,
+    rows: spec.rows,
+    fullWidth: spec.fullWidth,
+  }))
+}
+
+const searchRuleFields = computed(() => toLocalizedFields(searchFieldSpecs))
+const exploreRuleFields = computed(() => toLocalizedFields(exploreFieldSpecs))
+const trackDetailRuleFields = computed(() => toLocalizedFields(trackDetailFieldSpecs))
+const streamRuleFields = computed(() => toLocalizedFields(streamFieldSpecs))
+const coverRuleFields = computed(() => toLocalizedFields(coverFieldSpecs))
+const lyricRuleFields = computed(() => toLocalizedFields(lyricFieldSpecs))
+
+function specsToKeys(specs: readonly FieldSchemaSpec[]): RuleFieldDef[] {
+  return specs.map((spec) => ({ key: spec.key, label: spec.key }))
+}
+
+const searchRuleKeyDefs = specsToKeys(searchFieldSpecs)
+const exploreRuleKeyDefs = specsToKeys(exploreFieldSpecs)
+const trackDetailRuleKeyDefs = specsToKeys(trackDetailFieldSpecs)
+const streamRuleKeyDefs = specsToKeys(streamFieldSpecs)
+const coverRuleKeyDefs = specsToKeys(coverFieldSpecs)
+const lyricRuleKeyDefs = specsToKeys(lyricFieldSpecs)
 
 interface KeyMap {
   nameKey: string
@@ -222,7 +282,10 @@ let initialSnapshot: MusicSnapshot | null = null
 
 function normalizeQualitiesToCsv(raw: unknown): string {
   if (Array.isArray(raw)) {
-    return raw.map((v) => String(v ?? '').trim()).filter(Boolean).join(', ')
+    return raw
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean)
+      .join(', ')
   }
   return strVal(raw)
 }
@@ -264,12 +327,12 @@ function clearFormState(): void {
   form.jsLib = ''
   form.searchUrl = ''
   form.exploreUrl = ''
-  form.ruleSearch = readRuleMap(undefined, searchRuleFields, searchAliases)
-  form.ruleExplore = readRuleMap(undefined, exploreRuleFields, searchAliases)
-  form.ruleTrackDetail = readRuleMap(undefined, trackDetailRuleFields, trackDetailAliases)
-  form.ruleStream = readRuleMap(undefined, streamRuleFields, streamAliases)
-  form.ruleCover = readRuleMap(undefined, coverRuleFields, coverAliases)
-  form.ruleLyric = readRuleMap(undefined, lyricRuleFields, lyricAliases)
+  form.ruleSearch = readRuleMap(undefined, searchRuleKeyDefs, searchAliases)
+  form.ruleExplore = readRuleMap(undefined, exploreRuleKeyDefs, searchAliases)
+  form.ruleTrackDetail = readRuleMap(undefined, trackDetailRuleKeyDefs, trackDetailAliases)
+  form.ruleStream = readRuleMap(undefined, streamRuleKeyDefs, streamAliases)
+  form.ruleCover = readRuleMap(undefined, coverRuleKeyDefs, coverAliases)
+  form.ruleLyric = readRuleMap(undefined, lyricRuleKeyDefs, lyricAliases)
 }
 
 function captureSnapshot(): MusicSnapshot {
@@ -326,12 +389,12 @@ function hydrateFormFromObject(
   form.searchUrl = strVal(obj.searchUrl)
   form.exploreUrl = strVal(obj.exploreUrl)
 
-  form.ruleSearch = readRuleMap(obj.ruleSearch, searchRuleFields, searchAliases)
-  form.ruleExplore = readRuleMap(obj.ruleExplore, exploreRuleFields, searchAliases)
-  form.ruleTrackDetail = readRuleMap(obj.ruleTrackDetail, trackDetailRuleFields, trackDetailAliases)
-  form.ruleStream = readRuleMap(obj.ruleStream, streamRuleFields, streamAliases)
-  form.ruleCover = readRuleMap(obj.ruleCover, coverRuleFields, coverAliases)
-  form.ruleLyric = readRuleMap(obj.ruleLyric, lyricRuleFields, lyricAliases)
+  form.ruleSearch = readRuleMap(obj.ruleSearch, searchRuleKeyDefs, searchAliases)
+  form.ruleExplore = readRuleMap(obj.ruleExplore, exploreRuleKeyDefs, searchAliases)
+  form.ruleTrackDetail = readRuleMap(obj.ruleTrackDetail, trackDetailRuleKeyDefs, trackDetailAliases)
+  form.ruleStream = readRuleMap(obj.ruleStream, streamRuleKeyDefs, streamAliases)
+  form.ruleCover = readRuleMap(obj.ruleCover, coverRuleKeyDefs, coverAliases)
+  form.ruleLyric = readRuleMap(obj.ruleLyric, lyricRuleKeyDefs, lyricAliases)
   initialSnapshot = captureSnapshot()
 }
 
@@ -432,18 +495,18 @@ const {
         Record<string, readonly string[]>,
       ]
     > = [
-      ['ruleSearch', form.ruleSearch, snap?.ruleSearch, searchRuleFields, searchAliases],
-      ['ruleExplore', form.ruleExplore, snap?.ruleExplore, exploreRuleFields, searchAliases],
+      ['ruleSearch', form.ruleSearch, snap?.ruleSearch, searchRuleKeyDefs, searchAliases],
+      ['ruleExplore', form.ruleExplore, snap?.ruleExplore, exploreRuleKeyDefs, searchAliases],
       [
         'ruleTrackDetail',
         form.ruleTrackDetail,
         snap?.ruleTrackDetail,
-        trackDetailRuleFields,
+        trackDetailRuleKeyDefs,
         trackDetailAliases,
       ],
-      ['ruleStream', form.ruleStream, snap?.ruleStream, streamRuleFields, streamAliases],
-      ['ruleCover', form.ruleCover, snap?.ruleCover, coverRuleFields, coverAliases],
-      ['ruleLyric', form.ruleLyric, snap?.ruleLyric, lyricRuleFields, lyricAliases],
+      ['ruleStream', form.ruleStream, snap?.ruleStream, streamRuleKeyDefs, streamAliases],
+      ['ruleCover', form.ruleCover, snap?.ruleCover, coverRuleKeyDefs, coverAliases],
+      ['ruleLyric', form.ruleLyric, snap?.ruleLyric, lyricRuleKeyDefs, lyricAliases],
     ]
     for (const [key, map, initMap, fields, aliases] of sections) {
       const merged = mergeRuleSection(base[key], map, initMap, fields, aliases)
@@ -472,343 +535,585 @@ const {
   onClose: () => emit('close'),
 })
 
+function countConfigured(map: Record<string, string>, extra = ''): number | undefined {
+  let n = extra.trim() ? 1 : 0
+  for (const val of Object.values(map)) {
+    if (val.trim()) n += 1
+  }
+  return n > 0 ? n : undefined
+}
+
+const advancedConfiguredCount = computed(() => {
+  const fields = [
+    form.header,
+    form.mediaHeader,
+    form.loginUrl,
+    form.loginUi,
+    form.loginCheckJs,
+    form.jsLib,
+    form.concurrentRate,
+    variableText.value,
+  ]
+  let count = fields.filter((v) => v.trim().length > 0).length
+  if (numVal(form.weight, 0) !== 0) count += 1
+  if (!form.enabledCookieJar) count += 1
+  return count
+})
+
 const domainLabel = computed(() => t('onlineSources.domainLabel.music'))
 
-const tabItems = computed<EditTabItem<EditTab>[]>(() => [
-  { id: 'basic', label: t('onlineSources.edit.tabBasic'), icon: LuInfo, activeDot: false },
+const mdTabs = computed<MdTabItem<EditTab>[]>(() => [
+  { value: 'basic', label: t('onlineSources.edit.tabBasic'), icon: LuInfo },
   {
-    id: 'search',
+    value: 'search',
     label: t('onlineSources.edit.tabSearch'),
     icon: LuSearch,
-    activeDot: Boolean(form.searchUrl.trim() || hasAnyRule(form.ruleSearch)),
+    badge: countConfigured(form.ruleSearch, form.searchUrl),
   },
   {
-    id: 'explore',
+    value: 'explore',
     label: t('onlineSources.edit.tabExplore'),
     icon: LuCompass,
-    activeDot: Boolean(form.exploreUrl.trim() || hasAnyRule(form.ruleExplore)),
+    badge: countConfigured(form.ruleExplore, form.exploreUrl),
   },
   {
-    id: 'track_detail',
+    value: 'track_detail',
     label: t('onlineSources.edit.tabTrackDetail'),
     icon: LuDisc3,
-    activeDot: hasAnyRule(form.ruleTrackDetail),
+    badge: countConfigured(form.ruleTrackDetail),
   },
   {
-    id: 'stream',
+    value: 'stream',
     label: t('onlineSources.edit.tabStream'),
     icon: LuMusic,
-    activeDot: hasAnyRule(form.ruleStream),
+    badge: countConfigured(form.ruleStream),
   },
   {
-    id: 'cover',
+    value: 'cover',
     label: t('onlineSources.edit.tabCover'),
     icon: LuImage,
-    activeDot: hasAnyRule(form.ruleCover),
+    badge: countConfigured(form.ruleCover),
   },
   {
-    id: 'lyric',
+    value: 'lyric',
     label: t('onlineSources.debug.modeLyric'),
     icon: LuFileText,
-    activeDot: hasAnyRule(form.ruleLyric),
+    badge: countConfigured(form.ruleLyric),
   },
-  { id: 'json', label: t('onlineSources.edit.tabJson'), icon: LuCode2, activeDot: false },
+  { value: 'json', label: t('onlineSources.edit.tabJson'), icon: LuCode2 },
 ])
+
+interface ActiveRuleSection {
+  title: string
+  codeHint: string
+  fields: RuleFieldDef[]
+  model: Record<string, string>
+  setField: (key: string, val: string) => void
+}
+
+const activeRuleSection = computed<ActiveRuleSection | null>(() => {
+  switch (activeTab.value) {
+    case 'search':
+      return {
+        title: tm('sourceEditor.sectionSearch'),
+        codeHint: 'ruleSearch',
+        fields: searchRuleFields.value,
+        model: form.ruleSearch,
+        setField: (k, v) => {
+          form.ruleSearch = { ...form.ruleSearch, [k]: v }
+        },
+      }
+    case 'explore':
+      return {
+        title: tm('sourceEditor.sectionExplore'),
+        codeHint: 'ruleExplore',
+        fields: exploreRuleFields.value,
+        model: form.ruleExplore,
+        setField: (k, v) => {
+          form.ruleExplore = { ...form.ruleExplore, [k]: v }
+        },
+      }
+    case 'track_detail':
+      return {
+        title: tm('sourceEditor.sectionTrackDetail'),
+        codeHint: 'ruleTrackDetail',
+        fields: trackDetailRuleFields.value,
+        model: form.ruleTrackDetail,
+        setField: (k, v) => {
+          form.ruleTrackDetail = { ...form.ruleTrackDetail, [k]: v }
+        },
+      }
+    case 'stream':
+      return {
+        title: tm('sourceEditor.sectionStream'),
+        codeHint: 'ruleStream',
+        fields: streamRuleFields.value,
+        model: form.ruleStream,
+        setField: (k, v) => {
+          form.ruleStream = { ...form.ruleStream, [k]: v }
+        },
+      }
+    case 'cover':
+      return {
+        title: tm('sourceEditor.sectionCover'),
+        codeHint: 'ruleCover',
+        fields: coverRuleFields.value,
+        model: form.ruleCover,
+        setField: (k, v) => {
+          form.ruleCover = { ...form.ruleCover, [k]: v }
+        },
+      }
+    case 'lyric':
+      return {
+        title: tm('sourceEditor.sectionLyric'),
+        codeHint: 'ruleLyric',
+        fields: lyricRuleFields.value,
+        model: form.ruleLyric,
+        setField: (k, v) => {
+          form.ruleLyric = { ...form.ruleLyric, [k]: v }
+        },
+      }
+    default:
+      return null
+  }
+})
 </script>
 
 <template>
-  <OnlineSourceEditShell
+  <MdDialog
     :open="open"
-    :title="t('onlineSources.edit.title', { domain: domainLabel, name: form.sourceName || source?.name || '' })"
+    :title="
+      t('onlineSources.edit.title', {
+        domain: domainLabel,
+        name: form.sourceName || source?.name || '',
+      })
+    "
     :subtitle="form.sourceUrl || source?.source_url"
-    :domain-label="domainLabel"
-    :tabs="tabItems"
-    :active-tab="activeTab"
-    json-tab-id="json"
-    :loading="loading"
-    :saving="saving"
-    :load-error="loadError"
-    :json-text="jsonText"
-    :json-validation="jsonValidation"
+    fullscreen
     @close="emit('close')"
-    @switch-tab="switchTab"
-    @update:json-text="jsonText = $event"
-    @mark-json-dirty="jsonDirty = true"
-    @format-json="formatJson"
-    @copy-json="copyJson"
-    @save="saveSource"
   >
-    <template v-if="activeTab === 'basic'">
-      <section class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-        <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ t('onlineSources.edit.basicSectionTitle') }}
-        </h4>
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.nameLabel') }}
-              <span class="font-mono opacity-65">{{ keyMap.nameKey }}</span>
-            </span>
-            <input v-model="form.sourceName" type="text" class="md-input w-full py-2 text-sm" />
-          </label>
+    <div class="mx-auto flex w-full max-w-4xl flex-col gap-5">
+      <MdTabs
+        :model-value="activeTab"
+        :tabs="mdTabs"
+        variant="secondary"
+        :aria-label="domainLabel"
+        @update:model-value="switchTab($event)"
+      />
 
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.groupLabel') }}
-              <span class="font-mono opacity-65">sourceGroup</span>
-            </span>
-            <input
-              v-model="form.sourceGroup"
-              name="group_name"
-              type="text"
-              :aria-label="t('onlineSources.edit.groupLabel')"
-              :placeholder="t('onlineSources.edit.groupPlaceholder')"
-              class="md-input w-full py-2 text-sm"
-            />
-          </label>
+      <!-- Loading -->
+      <div
+        v-if="loading"
+        class="text-body-medium flex items-center justify-center gap-2 py-20 text-on-surface-variant"
+      >
+        <LuLoader2 class="h-4 w-4 animate-spin" aria-hidden="true" />
+        <span>{{ t('onlineSources.edit.loading', { domain: domainLabel }) }}</span>
+      </div>
 
-          <label class="block space-y-1 sm:col-span-2">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.urlLabel') }}
-              <span class="font-mono opacity-65">{{ keyMap.urlKey }}</span>
-            </span>
-            <input
-              v-model="form.sourceUrl"
-              type="text"
-              :placeholder="t('onlineSources.edit.urlPlaceholder')"
-              class="md-input w-full py-2 font-mono text-xs"
-            />
-          </label>
+      <!-- Load Error -->
+      <div
+        v-else-if="loadError"
+        role="alert"
+        class="text-body-small rounded-corner-lg bg-error-container px-4 py-3 text-on-error-container"
+      >
+        {{ loadError }}
+      </div>
 
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.supportedQualitiesLabel') }}
-              <span class="font-mono opacity-65">supportedQualities</span>
-            </span>
-            <input
-              v-model="form.supportedQualities"
-              type="text"
-              :placeholder="t('onlineSources.edit.supportedQualitiesPlaceholder')"
-              class="md-input w-full py-2 font-mono text-xs"
-            />
-          </label>
+      <!-- Basic Tab -->
+      <template v-else-if="activeTab === 'basic'">
+        <section class="flex flex-col gap-4 rounded-corner-lg bg-surface-container p-4 sm:p-5">
+          <h4 class="text-title-small text-on-surface">
+            {{ t('onlineSources.edit.basicSectionTitle') }}
+          </h4>
 
-          <div class="grid grid-cols-2 gap-2.5">
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ t('onlineSources.edit.concurrentRateLabel') }}
+          <div class="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.nameLabel') }}</span>
+                <span class="font-mono opacity-60">{{ keyMap.nameKey }}</span>
+              </span>
+              <input v-model="form.sourceName" type="text" class="md-input text-body-medium w-full py-2" />
+            </label>
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.groupLabel') }}</span>
+                <span class="font-mono opacity-60">sourceGroup</span>
               </span>
               <input
-                v-model="form.concurrentRate"
+                v-model="form.sourceGroup"
+                name="group_name"
                 type="text"
-                :placeholder="t('onlineSources.edit.concurrentRatePlaceholder')"
-                class="md-input w-full py-2 font-mono text-xs"
+                :aria-label="t('onlineSources.edit.groupLabel')"
+                :placeholder="t('onlineSources.edit.groupPlaceholder')"
+                class="md-input text-body-medium w-full py-2"
               />
             </label>
 
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ t('onlineSources.edit.weightLabel') }}
+            <label class="block space-y-1.5 sm:col-span-2">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.urlLabel') }}</span>
+                <span class="font-mono opacity-60">{{ keyMap.urlKey }}</span>
               </span>
               <input
-                v-model.number="form.weight"
-                type="number"
-                class="md-input w-full py-2 font-mono text-xs"
+                v-model="form.sourceUrl"
+                type="text"
+                :placeholder="t('onlineSources.edit.urlPlaceholder')"
+                class="md-input text-body-small w-full py-2 font-mono"
+              />
+            </label>
+
+            <label class="block space-y-1.5 sm:col-span-2">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.supportedQualitiesLabel') }}</span>
+                <span class="font-mono opacity-60">supportedQualities</span>
+              </span>
+              <input
+                v-model="form.supportedQualities"
+                type="text"
+                :placeholder="t('onlineSources.edit.supportedQualitiesPlaceholder')"
+                class="md-input text-body-small w-full py-2 font-mono"
+              />
+            </label>
+
+            <label class="block space-y-1.5 sm:col-span-2">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.commentLabel') }}</span>
+                <span class="font-mono opacity-60">sourceComment</span>
+              </span>
+              <textarea
+                v-model="form.sourceComment"
+                rows="2"
+                :placeholder="t('onlineSources.edit.commentPlaceholder')"
+                class="md-input text-body-small w-full py-2 leading-5"
               />
             </label>
           </div>
 
-          <label class="block space-y-1 sm:col-span-2">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.commentLabel') }}
-              <span class="font-mono opacity-65">sourceComment</span>
-            </span>
-            <textarea
-              v-model="form.sourceComment"
-              rows="2"
-              :placeholder="t('onlineSources.edit.commentPlaceholder')"
-              class="md-input w-full py-2 text-xs leading-5"
+          <div class="border-t border-outline-variant pt-3">
+            <MdSwitch v-model="form.enabled" :label="t('onlineSources.edit.enabledSwitch')" />
+          </div>
+        </section>
+
+        <!-- Collapsible Advanced Network, Login & Scripts -->
+        <section class="overflow-hidden rounded-corner-lg bg-surface-container">
+          <button
+            type="button"
+            :aria-expanded="advancedOpen"
+            class="md-state flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3.5 text-left sm:px-5"
+            @click="advancedOpen = !advancedOpen"
+          >
+            <div class="flex min-w-0 items-center gap-2.5">
+              <LuSlidersHorizontal class="h-4 w-4 shrink-0 text-on-surface-variant" aria-hidden="true" />
+              <span class="text-title-small text-on-surface">
+                {{ tm('sourceEditor.advancedSectionTitle') }}
+              </span>
+              <span
+                v-if="advancedConfiguredCount > 0"
+                class="text-label-small rounded-corner-full bg-secondary-container px-2.5 py-0.5 text-on-secondary-container"
+              >
+                {{ tm('sourceEditor.advancedConfiguredCount', { count: advancedConfiguredCount }) }}
+              </span>
+            </div>
+            <LuChevronDown
+              class="h-4 w-4 shrink-0 text-on-surface-variant transition-transform duration-200 ease-standard"
+              :class="advancedOpen ? 'rotate-180' : ''"
+              aria-hidden="true"
             />
-          </label>
+          </button>
+
+          <div
+            v-if="advancedOpen"
+            class="flex flex-col gap-3.5 border-t border-outline-variant p-4 sm:p-5"
+          >
+            <div class="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+              <label class="block space-y-1.5">
+                <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                  <span>{{ t('onlineSources.edit.concurrentRateLabel') }}</span>
+                  <span class="font-mono opacity-60">concurrentRate</span>
+                </span>
+                <input
+                  v-model="form.concurrentRate"
+                  type="text"
+                  :placeholder="t('onlineSources.edit.concurrentRatePlaceholder')"
+                  class="md-input text-body-small w-full py-2 font-mono"
+                />
+              </label>
+
+              <label class="block space-y-1.5">
+                <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                  <span>{{ t('onlineSources.edit.weightLabel') }}</span>
+                  <span class="font-mono opacity-60">weight</span>
+                </span>
+                <input
+                  v-model.number="form.weight"
+                  type="number"
+                  class="md-input text-body-small w-full py-2 font-mono"
+                />
+              </label>
+            </div>
+
+            <MdSwitch
+              v-model="form.enabledCookieJar"
+              :label="t('onlineSources.edit.enabledCookieJarSwitch')"
+            />
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.headerLabel') }}</span>
+                <span class="font-mono opacity-60">header</span>
+              </span>
+              <textarea
+                v-model="form.header"
+                rows="3"
+                spellcheck="false"
+                :placeholder="t('onlineSources.edit.headerPlaceholder')"
+                class="md-input text-body-small w-full py-2 font-mono leading-5"
+              />
+            </label>
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.mediaHeaderLabel') }}</span>
+                <span class="font-mono opacity-60">mediaHeader</span>
+              </span>
+              <textarea
+                v-model="form.mediaHeader"
+                rows="3"
+                spellcheck="false"
+                :placeholder="t('onlineSources.edit.headerPlaceholder')"
+                class="md-input text-body-small w-full py-2 font-mono leading-5"
+              />
+            </label>
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.loginUrlLabel') }}</span>
+                <span class="font-mono opacity-60">loginUrl</span>
+              </span>
+              <textarea
+                v-model="form.loginUrl"
+                rows="2"
+                spellcheck="false"
+                class="md-input text-body-small w-full py-2 font-mono leading-5"
+              />
+            </label>
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.loginUiLabel') }}</span>
+                <span class="font-mono opacity-60">loginUi</span>
+              </span>
+              <textarea
+                v-model="form.loginUi"
+                rows="3"
+                spellcheck="false"
+                class="md-input text-body-small w-full py-2 font-mono leading-5"
+              />
+            </label>
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.loginCheckJsLabel') }}</span>
+                <span class="font-mono opacity-60">loginCheckJs</span>
+              </span>
+              <textarea
+                v-model="form.loginCheckJs"
+                rows="2"
+                spellcheck="false"
+                class="md-input text-body-small w-full py-2 font-mono leading-5"
+              />
+            </label>
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.jsLibLabel') }}</span>
+                <span class="font-mono opacity-60">jsLib</span>
+              </span>
+              <textarea
+                v-model="form.jsLib"
+                rows="3"
+                spellcheck="false"
+                class="md-input text-body-small w-full py-2 font-mono leading-5"
+              />
+            </label>
+
+            <label class="block space-y-1.5">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ t('onlineSources.edit.variableLabel') }}</span>
+                <span class="font-mono opacity-60">source.variable</span>
+              </span>
+              <input
+                v-model="variableText"
+                type="text"
+                spellcheck="false"
+                :placeholder="t('onlineSources.edit.variablePlaceholder')"
+                class="md-input text-body-small w-full py-2 font-mono"
+              />
+            </label>
+          </div>
+        </section>
+      </template>
+
+      <!-- JSON Raw Editor Tab -->
+      <section
+        v-else-if="activeTab === 'json'"
+        class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4 sm:p-5"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <h4 class="text-title-small text-on-surface">
+              {{ t('onlineSources.edit.jsonTitle') }}
+            </h4>
+            <span
+              v-if="jsonValidation.valid"
+              class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-success-container px-2.5 py-0.5 text-on-success-container"
+            >
+              <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{{ t('onlineSources.edit.jsonValid') }}</span>
+            </span>
+            <span
+              v-else
+              class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-error-container px-2.5 py-0.5 text-on-error-container"
+            >
+              <LuXCircle class="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{{ t('onlineSources.edit.jsonInvalid') }}</span>
+            </span>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <MdButton variant="tonal" size="sm" :icon="LuCode2" @click="formatJson">
+              {{ t('onlineSources.edit.formatJsonBtn') }}
+            </MdButton>
+            <MdButton variant="outlined" size="sm" :icon="LuCopy" @click="copyJson">
+              {{ t('onlineSources.edit.copyJsonBtn') }}
+            </MdButton>
+          </div>
         </div>
 
-        <div class="flex flex-wrap items-center gap-x-6 gap-y-2.5 border-t border-[var(--md-sys-color-outline-variant)]/40 pt-3">
-          <label class="inline-flex items-center gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
-            <AppSwitch v-model="form.enabled" />
-            <span>{{ t('onlineSources.edit.enabledSwitch') }}</span>
-          </label>
-          <label class="inline-flex items-center gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
-            <AppSwitch v-model="form.enabledCookieJar" />
-            <span>{{ t('onlineSources.edit.enabledCookieJarSwitch') }}</span>
-          </label>
-        </div>
-      </section>
+        <p v-if="!jsonValidation.valid && jsonValidation.error" class="text-body-small text-error">
+          {{ jsonValidation.error }}
+        </p>
 
-      <section class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-        <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ t('onlineSources.edit.networkSectionTitle') }}
-        </h4>
-        <div class="grid grid-cols-1 gap-3">
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.headerLabel') }} <span class="font-mono opacity-65">header</span>
-            </span>
-            <textarea
-              v-model="form.header"
-              rows="3"
-              spellcheck="false"
-              :placeholder="t('onlineSources.edit.headerPlaceholder')"
-              class="md-input w-full py-2 font-mono text-xs leading-5"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.mediaHeaderLabel') }} <span class="font-mono opacity-65">mediaHeader</span>
-            </span>
-            <textarea
-              v-model="form.mediaHeader"
-              rows="3"
-              spellcheck="false"
-              :placeholder="t('onlineSources.edit.headerPlaceholder')"
-              class="md-input w-full py-2 font-mono text-xs leading-5"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.loginUrlLabel') }} <span class="font-mono opacity-65">loginUrl</span>
-            </span>
-            <textarea
-              v-model="form.loginUrl"
-              rows="2"
-              spellcheck="false"
-              class="md-input w-full py-2 font-mono text-xs leading-5"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.loginUiLabel') }} <span class="font-mono opacity-65">loginUi</span>
-            </span>
-            <textarea
-              v-model="form.loginUi"
-              rows="3"
-              spellcheck="false"
-              class="md-input w-full py-2 font-mono text-xs leading-5"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.loginCheckJsLabel') }} <span class="font-mono opacity-65">loginCheckJs</span>
-            </span>
-            <textarea
-              v-model="form.loginCheckJs"
-              rows="2"
-              spellcheck="false"
-              class="md-input w-full py-2 font-mono text-xs leading-5"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.jsLibLabel') }} <span class="font-mono opacity-65">jsLib</span>
-            </span>
-            <textarea
-              v-model="form.jsLib"
-              rows="3"
-              spellcheck="false"
-              class="md-input w-full py-2 font-mono text-xs leading-5"
-            />
-          </label>
-
-          <label class="block space-y-1">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('onlineSources.edit.variableLabel') }} <span class="font-mono opacity-65">source.variable</span>
-            </span>
-            <input
-              v-model="variableText"
-              type="text"
-              spellcheck="false"
-              :placeholder="t('onlineSources.edit.variablePlaceholder')"
-              class="md-input w-full py-2 font-mono text-xs"
-            />
-          </label>
-        </div>
-      </section>
-    </template>
-
-    <template v-else-if="activeTab === 'search'">
-      <section class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-        <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ t('onlineSources.edit.searchUrlLabel') }}
-        </h4>
         <textarea
-          v-model="form.searchUrl"
-          rows="3"
+          :value="jsonText"
+          rows="22"
           spellcheck="false"
-          class="md-input w-full py-2 font-mono text-xs leading-5"
+          class="md-input text-body-small w-full py-2.5 font-mono leading-5"
+          @input="
+            jsonText = ($event.target as HTMLTextAreaElement).value;
+            jsonDirty = true
+          "
         />
       </section>
 
-      <RuleFieldsSection
-        v-model="form.ruleSearch"
-        title="ruleSearch"
-        :fields="searchRuleFields"
-      />
-    </template>
+      <!-- Rule Tabs (Search / Explore / Track Detail / Stream / Cover / Lyric) -->
+      <template v-else-if="activeRuleSection">
+        <section
+          v-if="activeTab === 'search'"
+          class="flex flex-col gap-2.5 rounded-corner-lg bg-surface-container p-4 sm:p-5"
+        >
+          <h4 class="text-title-small text-on-surface">
+            {{ t('onlineSources.edit.searchUrlLabel') }}
+            <span class="text-label-small ml-1.5 font-mono text-on-surface-variant">searchUrl</span>
+          </h4>
+          <textarea
+            v-model="form.searchUrl"
+            rows="3"
+            spellcheck="false"
+            class="md-input text-body-small w-full py-2 font-mono leading-5"
+          />
+        </section>
 
-    <template v-else-if="activeTab === 'explore'">
-      <section class="flex flex-col gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-        <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-          {{ t('onlineSources.edit.exploreUrlLabel') }}
-        </h4>
-        <textarea
-          v-model="form.exploreUrl"
-          rows="4"
-          spellcheck="false"
-          class="md-input w-full py-2 font-mono text-xs leading-5"
-        />
-      </section>
+        <section
+          v-else-if="activeTab === 'explore'"
+          class="flex flex-col gap-2.5 rounded-corner-lg bg-surface-container p-4 sm:p-5"
+        >
+          <h4 class="text-title-small text-on-surface">
+            {{ t('onlineSources.edit.exploreUrlLabel') }}
+            <span class="text-label-small ml-1.5 font-mono text-on-surface-variant">exploreUrl</span>
+          </h4>
+          <textarea
+            v-model="form.exploreUrl"
+            rows="4"
+            spellcheck="false"
+            class="md-input text-body-small w-full py-2 font-mono leading-5"
+          />
+        </section>
 
-      <RuleFieldsSection
-        v-model="form.ruleExplore"
-        title="ruleExplore"
-        :fields="exploreRuleFields"
-      />
-    </template>
+        <section class="flex flex-col gap-4 rounded-corner-lg bg-surface-container p-4 sm:p-5">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-title-small text-on-surface">
+              {{ activeRuleSection.title }}
+            </h4>
+            <span class="text-label-small font-mono text-on-surface-variant">
+              {{ activeRuleSection.codeHint }}
+            </span>
+          </div>
 
-    <template v-else-if="activeTab === 'track_detail'">
-      <RuleFieldsSection
-        v-model="form.ruleTrackDetail"
-        title="ruleTrackDetail"
-        :fields="trackDetailRuleFields"
-      />
-    </template>
+          <div class="grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+            <label
+              v-for="field in activeRuleSection.fields"
+              :key="field.key"
+              class="block space-y-1.5"
+              :class="field.fullWidth ? 'sm:col-span-2' : ''"
+            >
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <span>{{ field.label }}</span>
+                <span v-if="field.hint" class="font-mono opacity-60">{{ field.hint }}</span>
+              </span>
+              <textarea
+                v-if="field.multiline"
+                :value="activeRuleSection.model[field.key] ?? ''"
+                :rows="field.rows ?? 2"
+                :placeholder="field.placeholder"
+                spellcheck="false"
+                class="md-input text-body-small w-full py-2 font-mono leading-5"
+                @input="
+                  activeRuleSection.setField(
+                    field.key,
+                    ($event.target as HTMLTextAreaElement).value,
+                  )
+                "
+              />
+              <input
+                v-else
+                :value="activeRuleSection.model[field.key] ?? ''"
+                type="text"
+                :placeholder="field.placeholder"
+                spellcheck="false"
+                class="md-input text-body-small w-full py-2 font-mono"
+                @input="
+                  activeRuleSection.setField(field.key, ($event.target as HTMLInputElement).value)
+                "
+              />
+            </label>
+          </div>
+        </section>
+      </template>
+    </div>
 
-    <template v-else-if="activeTab === 'stream'">
-      <RuleFieldsSection
-        v-model="form.ruleStream"
-        title="ruleStream"
-        :fields="streamRuleFields"
-      />
+    <template #footer>
+      <MdButton variant="text" :disabled="saving" @click="emit('close')">
+        {{ t('common.cancel') }}
+      </MdButton>
+      <MdButton
+        variant="tonal"
+        :icon="LuFlaskConical"
+        :disabled="loading || saving || Boolean(loadError) || !jsonValidation.valid"
+        @click="saveSource(true)"
+      >
+        {{ t('onlineSources.edit.saveAndDebugBtn') }}
+      </MdButton>
+      <MdButton
+        variant="filled"
+        :icon="LuSave"
+        :loading="saving"
+        :disabled="loading || saving || Boolean(loadError) || !jsonValidation.valid"
+        @click="saveSource(false)"
+      >
+        {{ saving ? t('onlineSources.edit.savingBtn') : t('onlineSources.edit.saveBtn') }}
+      </MdButton>
     </template>
-
-    <template v-else-if="activeTab === 'cover'">
-      <RuleFieldsSection
-        v-model="form.ruleCover"
-        title="ruleCover"
-        :fields="coverRuleFields"
-      />
-    </template>
-
-    <template v-else-if="activeTab === 'lyric'">
-      <RuleFieldsSection
-        v-model="form.ruleLyric"
-        title="ruleLyric"
-        :fields="lyricRuleFields"
-      />
-    </template>
-  </OnlineSourceEditShell>
+  </MdDialog>
 </template>

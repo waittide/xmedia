@@ -2,54 +2,59 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  LuPlay,
+  LuBookmark,
+  LuChevronUp,
+  LuDisc3,
+  LuHeart,
+  LuListMusic,
+  LuLoader2,
+  LuMic2,
   LuPause,
-  LuSkipBack,
-  LuSkipForward,
+  LuPlay,
   LuRepeat,
   LuRepeat1,
   LuShuffle,
+  LuSkipBack,
+  LuSkipForward,
+  LuSlidersHorizontal,
   LuVolume2,
   LuVolumeX,
-  LuHeart,
-  LuMic2,
-  LuListMusic,
-  LuChevronUp,
-  LuBookmark,
-  LuCheck,
-  LuDisc3,
-  LuLoader2,
+  LuX,
 } from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppSlider from '@/components/ui/AppSlider.vue'
-import MdBadge from '@/components/ui/MdBadge.vue'
+import { MdBadge, MdButton, MdIconButton, MdMenu, MdMenuItem } from '@/components/ui'
 import MediaCoverImage from '@/components/ui/MediaCoverImage.vue'
 import { useDialogStore } from '@/stores/dialog'
+import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime } from '@/utils/format'
 import { api, buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
 import { usePlayerStore } from '../player'
 import { useMusicStore } from '../store'
 import type { TranscodeProfile } from '../types'
+import MusicSeekSlider from './MusicSeekSlider.vue'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const dialogStore = useDialogStore()
+const snackbar = useSnackbarStore()
 const playerStore = usePlayerStore()
 const musicStore = useMusicStore()
 
-const bookmarkJustSaved = ref(false)
 const audioHostRef = ref<HTMLDivElement | null>(null)
-let bookmarkTimer: ReturnType<typeof setTimeout> | null = null
+const scrubPreviewSecs = ref<number | null>(null)
+const savingBookmark = ref(false)
 
 const EXCLUDED_SHORTCUT_ROUTES = new Set([
   'book-reader',
   'book-online-reader',
+  'book-play',
   'comic-reader',
   'comic-online-reader',
+  'comic-play',
   'video-player',
   'video-online-player',
+  'video-play',
   'login',
   'setup',
 ])
@@ -58,16 +63,17 @@ const SEEK_STEP_SECS = 5
 
 const qualityOptions = computed(() => [
   {
-    value: 'raw',
-    label:
+    value: 'raw' as TranscodeProfile,
+    label: t('player.qualityRaw'),
+    trailing:
       playerStore.currentLocalTrack && playerStore.transcodeProfile === 'raw'
         ? playerStore.qualitySummary
-        : t('player.qualityRaw'),
+        : '',
   },
-  { value: 'opus128', label: t('player.qualityOpus128') },
-  { value: 'mp3192', label: t('player.qualityMp3192') },
-  { value: 'mp3320', label: t('player.qualityMp3320') },
-  { value: 'aac256', label: t('player.qualityAac256') },
+  { value: 'opus128' as TranscodeProfile, label: t('player.qualityOpus128'), trailing: '' },
+  { value: 'mp3192' as TranscodeProfile, label: t('player.qualityMp3192'), trailing: '' },
+  { value: 'mp3320' as TranscodeProfile, label: t('player.qualityMp3320'), trailing: '' },
+  { value: 'aac256' as TranscodeProfile, label: t('player.qualityAac256'), trailing: '' },
 ])
 
 const onlineQualityOptions = computed(() => {
@@ -79,29 +85,69 @@ const onlineQualityOptions = computed(() => {
   }))
 })
 
+const currentCoverSrc = computed(() => {
+  const tr = playerStore.currentTrack
+  if (!tr) return null
+  if (tr.kind === 'local') {
+    return tr.cover_key && tr.cover_id ? buildCoverUrl(tr.cover_id, 160) : null
+  }
+  return tr.cover_url
+})
+
+const isCurrentStarred = computed(() => {
+  if (playerStore.currentLocalTrack) {
+    return Boolean(playerStore.currentLocalTrack.starred_at)
+  }
+  if (playerStore.currentTrack) {
+    return playerStore.currentOnlineFavorite
+  }
+  return false
+})
+
+const displayTimeSecs = computed(() => scrubPreviewSecs.value ?? playerStore.currentTimeSecs)
+
+const progressPercent = computed(() => {
+  const dur = playerStore.durationSecs
+  if (dur <= 0) return 0
+  return Math.max(0, Math.min(100, (displayTimeSecs.value / dur) * 100))
+})
+
 const playModeTitle = computed(() => {
   if (playerStore.playMode === 'loop_one') return t('player.modeLoopOne')
   if (playerStore.playMode === 'shuffle') return t('player.modeShuffle')
   return t('player.modeSequence')
 })
 
-function onQualityChange(val: string): void {
-  playerStore.setTranscodeProfile(val as TranscodeProfile)
-}
+const hasQualityMenuItems = computed(() => {
+  if (playerStore.currentLocalTrack) return true
+  return playerStore.isCurrentOnline && onlineQualityOptions.value.length > 0
+})
 
-function onOnlineQualityChange(val: string): void {
-  playerStore.setOnlineQuality(val)
+async function handleToggleFavorite(): Promise<void> {
+  if (playerStore.currentLocalTrack) {
+    await musicStore.toggleTrackStar(playerStore.currentLocalTrack)
+    return
+  }
+  if (playerStore.currentTrack) {
+    await playerStore.toggleCurrentOnlineFavorite()
+  }
 }
 
 async function saveCurrentBookmark(): Promise<void> {
   const tr = playerStore.currentLocalTrack
-  if (!tr) return
-  await api.saveBookmark(tr.id, Math.round(playerStore.currentTimeSecs * 1000))
-  bookmarkJustSaved.value = true
-  if (bookmarkTimer) clearTimeout(bookmarkTimer)
-  bookmarkTimer = setTimeout(() => {
-    bookmarkJustSaved.value = false
-  }, 1500)
+  if (!tr || savingBookmark.value) return
+  savingBookmark.value = true
+  try {
+    await api.saveBookmark(tr.id, Math.round(playerStore.currentTimeSecs * 1000))
+    snackbar.show({ message: t('player.bookmarkSaved') })
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : t('player.playbackError'),
+      tone: 'error',
+    })
+  } finally {
+    savingBookmark.value = false
+  }
 }
 
 function isExcludedPlaybackRoute(): boolean {
@@ -110,10 +156,13 @@ function isExcludedPlaybackRoute(): boolean {
   if (EXCLUDED_SHORTCUT_ROUTES.has(routeName)) return true
   const p = route.path
   return (
+    p.startsWith('/book/play') ||
     p.startsWith('/book/read') ||
     p.startsWith('/book/online/read') ||
+    p.startsWith('/comic/play') ||
     p.startsWith('/comic/read') ||
     p.startsWith('/comic/online/read') ||
+    p.startsWith('/video/play') ||
     p.startsWith('/video/watch') ||
     p.startsWith('/video/online/watch')
   )
@@ -146,7 +195,8 @@ function handlePlaybackKeydown(ev: KeyboardEvent): void {
   const isArrowRight = ev.key === 'ArrowRight'
   if (!isSpace && !isArrowLeft && !isArrowRight) return
 
-  const target = (ev.target instanceof HTMLElement ? ev.target : null) ??
+  const target =
+    (ev.target instanceof HTMLElement ? ev.target : null) ??
     (document.activeElement instanceof HTMLElement ? document.activeElement : null)
   if (isEditableElement(target)) return
 
@@ -187,7 +237,12 @@ function handlePlaybackKeydown(ev: KeyboardEvent): void {
   ev.preventDefault()
   const delta = isArrowLeft ? -SEEK_STEP_SECS : SEEK_STEP_SECS
   const maxDur = playerStore.durationSecs
-  const next = Math.max(0, maxDur > 0 ? Math.min(maxDur, playerStore.currentTimeSecs + delta) : playerStore.currentTimeSecs + delta)
+  const next = Math.max(
+    0,
+    maxDur > 0
+      ? Math.min(maxDur, playerStore.currentTimeSecs + delta)
+      : playerStore.currentTimeSecs + delta,
+  )
   playerStore.seekTo(next)
 }
 
@@ -199,7 +254,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handlePlaybackKeydown)
   playerStore.detachAudioElement(audioHostRef.value)
-  if (bookmarkTimer) clearTimeout(bookmarkTimer)
 })
 </script>
 
@@ -208,182 +262,144 @@ onBeforeUnmount(() => {
     class="safe-px relative z-20 flex w-full shrink-0 flex-col border-t border-outline-variant bg-surface-container text-on-surface"
   >
     <div ref="audioHostRef" class="hidden" aria-hidden="true" />
+
+    <!-- Compact (< 600px) 2px Top-Edge Progress Line -->
+    <div
+      class="h-0.5 w-full overflow-hidden bg-surface-container-highest sm:hidden"
+      aria-hidden="true"
+    >
+      <div
+        class="h-full bg-primary transition-[width] duration-150 ease-standard"
+        :style="{ width: `${progressPercent}%` }"
+      />
+    </div>
+
+    <!-- Playback Error Alert (Retry MUST remain the first <button> inside [role="alert"]) -->
     <div
       v-if="playerStore.playbackError"
       role="alert"
-      class="flex items-center justify-between gap-2 border-b border-[var(--md-sys-color-error)]/25 bg-[var(--md-sys-color-error-container)]/90 px-3 py-1.5 text-xs text-[var(--md-sys-color-on-error-container)] sm:px-6"
+      class="text-body-small flex items-center justify-between gap-2 border-b border-error/25 bg-error-container px-3 py-1.5 text-on-error-container sm:px-6"
     >
-      <span class="truncate">{{ playerStore.playbackError }}</span>
-      <button
-        type="button"
-        class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
-        @click="playerStore.retryCurrentPlayback()"
-      >
-        {{ t('player.retryPlayback') }}
-      </button>
-    </div>
-    <!-- Mobile Compact Draggable Progress Bar (< sm) -->
-    <div class="flex items-center gap-2.5 px-3 pt-1 sm:hidden">
-      <span
-        class="w-9 shrink-0 text-right font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ formatTime(playerStore.currentTimeSecs) }}
+      <span class="min-w-0 flex-1 truncate" :title="playerStore.playbackError">
+        {{ playerStore.playbackError }}
       </span>
-      <div class="min-w-0 flex-1 px-2">
-        <AppSlider
-          :model-value="playerStore.currentTimeSecs"
-          :min="0"
-          :max="Math.max(1, playerStore.durationSecs)"
-          :step="0.2"
-          :buffered="playerStore.bufferedPercent"
-          :disabled="!playerStore.currentTrack"
-          commit-on-release
-          aria-label="Playback progress"
-          @change="playerStore.seekTo($event)"
+      <div class="flex shrink-0 items-center gap-1">
+        <MdButton variant="tonal" size="sm" @click="playerStore.retryCurrentPlayback()">
+          {{ t('player.retryPlayback') }}
+        </MdButton>
+        <MdIconButton
+          size="sm"
+          :icon="LuX"
+          :aria-label="t('player.dismissError')"
+          :title="t('player.dismissError')"
+          @click="playerStore.dismissPlaybackError()"
         />
       </div>
-      <span
-        class="w-9 shrink-0 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        {{ formatTime(playerStore.durationSecs) }}
-      </span>
     </div>
 
-    <!-- Main Player Bar Row -->
-    <div class="flex h-16 shrink-0 items-center justify-between gap-2 px-3 sm:h-20 sm:gap-4 sm:px-6">
-      <!-- Left: Track Info & Cover (Click Cover to open Fullscreen Lyrics) -->
-      <div class="flex min-w-0 flex-1 items-center gap-2.5 sm:gap-3 md:max-w-[30%]">
-        <template v-if="playerStore.currentTrack">
+    <!-- Main Player Bar Row (56px compact single-row on < 600px, 80px on >= 600px) -->
+    <div class="flex h-14 shrink-0 items-center justify-between gap-2 px-3 sm:h-20 sm:gap-4 sm:px-6">
+      <!-- Left: Artwork, Title/Artist & Favorite -->
+      <div
+        v-if="playerStore.currentTrack"
+        class="flex min-w-0 flex-1 items-center gap-2.5 sm:gap-3 md:max-w-[30%]"
+      >
+        <button
+          type="button"
+          class="group relative h-10 w-10 shrink-0 cursor-pointer overflow-hidden rounded-corner-sm shadow-elevation-1 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-secondary sm:h-12 sm:w-12"
+          :title="t('player.openLyrics')"
+          :aria-label="t('player.openLyrics')"
+          @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
+        >
+          <MediaCoverImage
+            :src="currentCoverSrc"
+            :alt="playerStore.currentTrack.title"
+            rounded="rounded-corner-sm"
+            :fallback-icon="LuDisc3"
+            class="h-full w-full"
+          />
+          <span
+            class="absolute inset-0 z-[2] flex items-center justify-center bg-scrim/45 text-on-primary opacity-0 transition-opacity duration-150 ease-standard group-focus-visible:opacity-100 group-hover:opacity-100"
+          >
+            <LuChevronUp
+              class="h-5 w-5 transition-transform duration-200 ease-standard"
+              :class="playerStore.lyricsOpen ? 'rotate-180' : ''"
+              aria-hidden="true"
+            />
+          </span>
+        </button>
+
+        <div class="min-w-0 flex-1">
           <button
             type="button"
-            class="group relative h-11 w-11 shrink-0 overflow-hidden rounded-xl shadow-sm focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)] sm:h-13 sm:w-13"
-            :title="t('player.openLyrics')"
-            :aria-label="t('player.openLyrics')"
-            @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
+            class="text-title-small block max-w-full cursor-pointer truncate text-left text-on-surface transition-colors hover:text-primary"
+            @click="playerStore.lyricsOpen = true"
           >
-            <MediaCoverImage
-              :src="
-                playerStore.currentTrack.kind === 'local'
-                  ? playerStore.currentTrack.cover_key && playerStore.currentTrack.cover_id
-                    ? buildCoverUrl(playerStore.currentTrack.cover_id, 160)
-                    : null
-                  : playerStore.currentTrack.cover_url
-              "
-              :alt="playerStore.currentTrack.title"
-              rounded="rounded-xl"
-              :fallback-icon="LuDisc3"
-              class="h-full w-full"
-            />
-            <span
-              class="absolute inset-0 flex items-center justify-center bg-black/45 text-white opacity-0 transition group-hover:opacity-100"
-            >
-              <LuChevronUp
-                class="h-5 w-5 transition-transform"
-                :class="playerStore.lyricsOpen ? 'rotate-180' : ''"
-              />
-            </span>
+            {{ playerStore.currentTrack.title }}
           </button>
-
-          <div class="min-w-0">
-            <button
-              type="button"
-              class="block max-w-full truncate text-left text-xs font-bold text-[var(--md-sys-color-on-surface)] hover:text-[var(--md-sys-color-primary)]"
-              @click="playerStore.lyricsOpen = true"
-            >
-              {{ playerStore.currentTrack.title }}
-            </button>
-            <button
-              v-if="playerStore.currentLocalTrack"
-              type="button"
-              class="mt-0.5 block max-w-full truncate text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-primary)] hover:underline"
-              @click="router.push(`/music/artists/${playerStore.currentLocalTrack.artist_id}`)"
-            >
-              {{ playerStore.currentLocalTrack.artist_name }}
-            </button>
-            <span
-              v-else
-              class="mt-0.5 block max-w-full truncate text-left text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-            >
-              {{ playerStore.currentTrack.artist_name }}
-            </span>
-          </div>
-
           <button
             v-if="playerStore.currentLocalTrack"
             type="button"
-            class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
-            :aria-label="playerStore.currentLocalTrack.starred_at ? t('common.unfavorite') : t('common.favorite')"
-            :aria-pressed="Boolean(playerStore.currentLocalTrack.starred_at)"
-            @click="musicStore.toggleTrackStar(playerStore.currentLocalTrack)"
+            class="text-body-small block max-w-full cursor-pointer truncate text-left text-on-surface-variant transition-colors hover:text-primary hover:underline"
+            @click="router.push(`/music/library?artist=${playerStore.currentLocalTrack.artist_id}`)"
           >
-            <LuHeart
-              class="h-4 w-4"
-              :class="
-                playerStore.currentLocalTrack.starred_at
-                  ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]'
-                  : 'text-[var(--md-sys-color-on-surface-variant)]'
-              "
-            />
+            {{ playerStore.currentLocalTrack.artist_name }}
           </button>
-
-          <button
-            v-if="playerStore.currentLocalTrack"
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state hidden lg:inline-flex"
-            :title="bookmarkJustSaved ? t('player.bookmarkSaved') : t('player.bookmarkBtn')"
-            :aria-label="bookmarkJustSaved ? t('player.bookmarkSaved') : t('player.bookmarkBtn')"
-            @click="saveCurrentBookmark"
+          <span
+            v-else
+            class="text-body-small block max-w-full truncate text-left text-on-surface-variant"
           >
-            <LuCheck v-if="bookmarkJustSaved" class="h-4 w-4 text-[var(--md-sys-color-success)]" />
-            <LuBookmark v-else class="h-4 w-4" />
-          </button>
-        </template>
-
-        <div v-else class="min-w-0">
-          <p class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            {{ t('player.noTrack') }}
-          </p>
-          <p class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('player.selectHint') }}
-          </p>
+            {{ playerStore.currentTrack.artist_name }}
+          </span>
         </div>
+
+        <MdIconButton
+          size="sm"
+          class="hidden sm:inline-flex"
+          :selected="isCurrentStarred"
+          :aria-label="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
+          :title="isCurrentStarred ? t('common.unfavorite') : t('common.favorite')"
+          @click="handleToggleFavorite"
+        >
+          <LuHeart
+            class="h-4 w-4"
+            :class="isCurrentStarred ? 'fill-error text-error' : 'text-on-surface-variant'"
+          />
+        </MdIconButton>
       </div>
 
-      <!-- Center: Transport Controls + Desktop Seek Slider -->
-      <div class="flex shrink-0 flex-col items-center justify-center gap-1 sm:max-w-xl sm:flex-1">
+      <!-- Center: Transport Controls + Desktop Seek Bar -->
+      <div class="flex shrink-0 flex-col items-center justify-center gap-0.5 sm:max-w-xl sm:flex-1">
         <div class="flex items-center gap-1 sm:gap-2">
-          <button
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state hidden sm:inline-flex"
-            :class="
-              playerStore.playMode !== 'sequence'
-                ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                : ''
-            "
-            :title="playModeTitle"
+          <MdIconButton
+            size="sm"
+            class="hidden sm:inline-flex"
+            :variant="playerStore.playMode !== 'sequence' ? 'tonal' : 'standard'"
+            :selected="playerStore.playMode !== 'sequence'"
             :aria-label="playModeTitle"
+            :title="playModeTitle"
             @click="playerStore.cyclePlayMode()"
           >
             <LuRepeat1 v-if="playerStore.playMode === 'loop_one'" class="h-4 w-4" />
             <LuShuffle v-else-if="playerStore.playMode === 'shuffle'" class="h-4 w-4" />
             <LuRepeat v-else class="h-4 w-4" />
-          </button>
+          </MdIconButton>
 
-          <button
-            type="button"
+          <MdIconButton
+            size="sm"
+            class="hidden sm:inline-flex"
             :disabled="!playerStore.currentTrack"
-            class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface)] disabled:opacity-40"
-            :title="t('player.prev')"
             :aria-label="t('player.prev')"
+            :title="t('player.prev')"
             @click="playerStore.playPrev()"
           >
-            <LuSkipBack class="h-4 w-4 fill-current" />
-          </button>
+            <LuSkipBack class="h-4 w-4 fill-current text-on-surface" />
+          </MdIconButton>
 
           <button
             type="button"
             :disabled="!playerStore.currentTrack || playerStore.onlineResolving"
-            class="md-state flex h-10 w-10 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)] transition hover:scale-105 disabled:opacity-45"
+            class="md-state flex h-10 w-10 cursor-pointer items-center justify-center rounded-corner-full bg-primary text-on-primary shadow-elevation-1 transition-transform duration-150 ease-standard hover:scale-105 disabled:cursor-not-allowed disabled:opacity-45"
             :title="
               playerStore.onlineResolving
                 ? t('player.resolvingStream')
@@ -398,7 +414,7 @@ onBeforeUnmount(() => {
                   ? t('player.pause')
                   : t('player.play')
             "
-            :aria-busy="playerStore.onlineResolving || undefined"
+            :aria-busy="playerStore.onlineResolving ? 'true' : undefined"
             @click="playerStore.togglePlay()"
           >
             <LuLoader2 v-if="playerStore.onlineResolving" class="h-4 w-4 animate-spin" />
@@ -406,98 +422,66 @@ onBeforeUnmount(() => {
             <LuPlay v-else class="ml-0.5 h-4 w-4 fill-current" />
           </button>
 
-          <button
-            type="button"
+          <MdIconButton
+            size="sm"
             :disabled="!playerStore.currentTrack"
-            class="md-icon-btn md-icon-btn-sm md-state text-[var(--md-sys-color-on-surface)] disabled:opacity-40"
-            :title="t('player.next')"
             :aria-label="t('player.next')"
+            :title="t('player.next')"
             @click="playerStore.playNext()"
           >
-            <LuSkipForward class="h-4 w-4 fill-current" />
-          </button>
+            <LuSkipForward class="h-4 w-4 fill-current text-on-surface" />
+          </MdIconButton>
         </div>
 
         <div class="hidden w-full items-center gap-2.5 sm:flex">
           <span
-            class="w-10 text-right font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
+            class="text-label-small w-11 text-right font-mono tabular-nums"
+            :class="scrubPreviewSecs !== null ? 'text-primary' : 'text-on-surface-variant'"
           >
-            {{ formatTime(playerStore.currentTimeSecs) }}
+            {{ formatTime(displayTimeSecs) }}
           </span>
-          <div class="flex-1">
-            <AppSlider
+          <div class="min-w-0 flex-1">
+            <MusicSeekSlider
               :model-value="playerStore.currentTimeSecs"
               :min="0"
               :max="Math.max(1, playerStore.durationSecs)"
               :step="0.2"
               :buffered="playerStore.bufferedPercent"
               :disabled="!playerStore.currentTrack"
-              commit-on-release
               aria-label="Playback progress"
-              @change="playerStore.seekTo($event)"
+              :aria-value-text="`${formatTime(displayTimeSecs)} / ${formatTime(playerStore.durationSecs)}`"
+              @preview="scrubPreviewSecs = $event"
+              @commit="playerStore.seekTo($event)"
             />
           </div>
-          <span class="w-10 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+          <span class="text-label-small w-11 font-mono tabular-nums text-on-surface-variant">
             {{ formatTime(playerStore.durationSecs) }}
           </span>
         </div>
       </div>
 
-      <!-- Right: Quality Selector (md+), Always-Accessible Lyrics & Queue, Volume (lg+) -->
-      <div class="flex shrink-0 items-center justify-end gap-1 md:flex-1 md:max-w-[30%] md:gap-2">
-        <div v-if="!playerStore.isCurrentOnline" class="hidden w-40 md:block">
-          <AppSelect
-            :model-value="playerStore.transcodeProfile"
-            :options="qualityOptions"
-            variant="compact"
-            @change="onQualityChange"
-          />
-        </div>
-        <div v-else-if="onlineQualityOptions.length > 1" class="hidden w-28 md:block">
-          <AppSelect
-            :model-value="playerStore.currentOnlineItem?.selectedQuality ?? onlineQualityOptions[0]?.value ?? ''"
-            :options="onlineQualityOptions"
-            variant="compact"
-            @change="onOnlineQualityChange"
-          />
-        </div>
-        <span
-          v-else-if="playerStore.qualitySummary"
-          class="hidden rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-1 font-mono text-[10px] font-semibold text-[var(--md-sys-color-on-surface-variant)] md:inline-flex"
-        >
-          {{ playerStore.qualitySummary }}
-        </span>
-
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state sm:h-9 sm:w-9"
-          :class="
-            playerStore.lyricsOpen
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : ''
-          "
+      <!-- Right: Lyrics, Queue, Volume (lg+) & Playback Options Menu -->
+      <div class="flex shrink-0 items-center justify-end gap-0.5 md:max-w-[30%] md:flex-1 md:gap-1">
+        <MdIconButton
+          size="sm"
+          :variant="playerStore.lyricsOpen ? 'tonal' : 'standard'"
+          :selected="playerStore.lyricsOpen"
+          :icon="LuMic2"
           :title="t('player.openLyrics')"
           :aria-label="t('player.openLyrics')"
-          :aria-pressed="playerStore.lyricsOpen"
           @click="playerStore.lyricsOpen = !playerStore.lyricsOpen"
-        >
-          <LuMic2 class="h-4 w-4" />
-        </button>
+        />
 
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state relative sm:h-9 sm:w-9"
-          :class="
-            playerStore.queueOpen
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : ''
-          "
-          :title="t('player.queueTitle')"
-          :aria-label="t('player.queueTitle')"
-          :aria-pressed="playerStore.queueOpen"
-          @click="playerStore.queueOpen = !playerStore.queueOpen"
-        >
-          <LuListMusic class="h-4 w-4" />
+        <div class="relative inline-flex">
+          <MdIconButton
+            size="sm"
+            :variant="playerStore.queueOpen ? 'tonal' : 'standard'"
+            :selected="playerStore.queueOpen"
+            :icon="LuListMusic"
+            :title="t('player.queueTitle')"
+            :aria-label="t('player.queueTitle')"
+            @click="playerStore.queueOpen = !playerStore.queueOpen"
+          />
           <MdBadge
             v-if="playerStore.queue.length > 0"
             :value="playerStore.queue.length"
@@ -505,28 +489,93 @@ onBeforeUnmount(() => {
             tone="primary"
             class="pointer-events-none absolute -top-0.5 -right-0.5"
           />
-        </button>
+        </div>
 
-        <div class="hidden w-28 items-center gap-1.5 lg:flex">
-          <button
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state"
+        <div class="hidden w-28 items-center gap-1 lg:flex">
+          <MdIconButton
+            size="sm"
+            :icon="playerStore.muted || playerStore.volume === 0 ? LuVolumeX : LuVolume2"
             :title="playerStore.muted ? t('player.unmute') : t('player.mute')"
             :aria-label="playerStore.muted ? t('player.unmute') : t('player.mute')"
             @click="playerStore.toggleMute()"
-          >
-            <LuVolumeX v-if="playerStore.muted || playerStore.volume === 0" class="h-4 w-4" />
-            <LuVolume2 v-else class="h-4 w-4" />
-          </button>
-          <AppSlider
-            :model-value="playerStore.muted ? 0 : playerStore.volume"
-            :min="0"
-            :max="1"
-            :step="0.01"
-            aria-label="Volume"
-            @update:model-value="playerStore.setVolume($event)"
           />
+          <div class="min-w-0 flex-1">
+            <MusicSeekSlider
+              :model-value="playerStore.muted ? 0 : playerStore.volume"
+              :min="0"
+              :max="1"
+              :step="0.02"
+              :commit-on-release="false"
+              :aria-label="t('player.volume')"
+              @update:model-value="playerStore.setVolume($event)"
+            />
+          </div>
         </div>
+
+        <MdMenu
+          v-if="hasQualityMenuItems || playerStore.currentLocalTrack"
+          placement="top-end"
+          :min-width="220"
+          :aria-label="t('player.optionsMenu')"
+        >
+          <template #trigger="{ toggle, open, triggerAttrs }">
+            <MdIconButton
+              v-bind="triggerAttrs"
+              size="sm"
+              class="hidden sm:inline-flex"
+              :variant="open ? 'tonal' : 'standard'"
+              :icon="LuSlidersHorizontal"
+              :title="t('player.optionsMenu')"
+              :aria-label="t('player.optionsMenu')"
+              @click="toggle"
+            />
+          </template>
+
+          <template v-if="hasQualityMenuItems">
+            <div
+              class="text-label-small flex items-center justify-between px-3 py-1.5 text-on-surface-variant"
+            >
+              <span>{{ t('player.qualityHeading') }}</span>
+              <span v-if="playerStore.qualitySummary" class="font-mono">
+                {{ playerStore.qualitySummary }}
+              </span>
+            </div>
+
+            <template v-if="playerStore.currentLocalTrack">
+              <MdMenuItem
+                v-for="opt in qualityOptions"
+                :key="opt.value"
+                :label="opt.label"
+                :trailing-text="opt.trailing"
+                :selected="playerStore.transcodeProfile === opt.value"
+                @select="playerStore.setTranscodeProfile(opt.value)"
+              />
+            </template>
+
+            <template v-else-if="playerStore.isCurrentOnline">
+              <MdMenuItem
+                v-for="opt in onlineQualityOptions"
+                :key="opt.value"
+                :label="opt.label"
+                :selected="
+                  (playerStore.currentOnlineItem?.selectedQuality ??
+                    onlineQualityOptions[0]?.value) === opt.value
+                "
+                @select="playerStore.setOnlineQuality(opt.value)"
+              />
+            </template>
+          </template>
+
+          <template v-if="playerStore.currentLocalTrack">
+            <div class="my-1 border-t border-outline-variant" role="separator" />
+            <MdMenuItem
+              :icon="LuBookmark"
+              :label="t('player.bookmarkBtn')"
+              :disabled="savingBookmark"
+              @select="saveCurrentBookmark"
+            />
+          </template>
+        </MdMenu>
       </div>
     </div>
   </footer>
