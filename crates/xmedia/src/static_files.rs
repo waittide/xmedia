@@ -37,8 +37,12 @@ fn is_vite_hashed_asset(rel_str: &str) -> bool {
     let Some(file_name) = rel_str.strip_prefix("assets/") else {
         return false;
     };
-    let stem = file_name.split('.').next().unwrap_or(file_name);
-    stem.rsplit_once('-').is_some_and(|(_, hash)| {
+    let stem = file_name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(file_name);
+    stem.match_indices('-').any(|(idx, _)| {
+        let hash = &stem[idx + 1..];
         hash.len() >= 8
             && hash
                 .bytes()
@@ -154,4 +158,20 @@ pub async fn serve_spa(State(state): State<GatewayState>, method: Method, uri: U
         HeaderValue::from_static(SPA_HTML_CSP),
     );
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_vite_hashed_asset;
+
+    #[test]
+    fn vite_hashed_asset_detects_hashes_with_hyphens_and_multidot_names() {
+        assert!(is_vite_hashed_asset("assets/index-CdG13ci-.js"));
+        assert!(is_vite_hashed_asset("assets/BookDetailView-Ck-3nOyq.js"));
+        assert!(is_vite_hashed_asset("assets/vue-vendor-CQq8P3gb.js"));
+        assert!(is_vite_hashed_asset("assets/pdf.worker.min-CIqJB0yW.mjs"));
+        assert!(!is_vite_hashed_asset("assets/plain.js"));
+        assert!(!is_vite_hashed_asset("assets/foo-bar.js"));
+        assert!(!is_vite_hashed_asset("index.html"));
+    }
 }
