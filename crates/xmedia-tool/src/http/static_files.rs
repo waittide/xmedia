@@ -37,13 +37,16 @@ fn is_vite_hashed_asset(rel_str: &str) -> bool {
     let Some(file_name) = rel_str.strip_prefix("assets/") else {
         return false;
     };
-    let stem = file_name.split('.').next().unwrap_or(file_name);
-    stem.rsplit_once('-').is_some_and(|(_, hash)| {
-        hash.len() >= 8
-            && hash
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-    })
+    let stem = file_name
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(file_name);
+    let bytes = stem.as_bytes();
+    bytes.len() >= 9
+        && bytes[bytes.len() - 9] == b'-'
+        && bytes[bytes.len() - 8..]
+            .iter()
+            .all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 const TOOL_INDEX_CANDIDATES: [&str; 2] = ["tool.html", "index.html"];
@@ -168,6 +171,22 @@ async fn read_external_index(ext_dir: &Path) -> Option<(&'static str, Vec<u8>)> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vite_hashed_asset_detects_hashes_with_hyphens_and_multidot_names() {
+        assert!(is_vite_hashed_asset("assets/index-CdG13ci-.js"));
+        assert!(is_vite_hashed_asset("assets/BookDetailView-Ck-3nOyq.js"));
+        assert!(is_vite_hashed_asset("assets/en-US-DNWpP-0k.js"));
+        assert!(is_vite_hashed_asset("assets/vue-vendor-CQq8P3gb.js"));
+        assert!(is_vite_hashed_asset("assets/pdf.worker.min-CIqJB0yW.mjs"));
+        assert!(!is_vite_hashed_asset("assets/my-very-long-asset.js"));
+        assert!(!is_vite_hashed_asset("assets/my-component.js"));
+        assert!(!is_vite_hashed_asset("assets/apple-touch-icon.png"));
+        assert!(!is_vite_hashed_asset("assets/custom-stylesheet.css"));
+        assert!(!is_vite_hashed_asset("assets/plain.js"));
+        assert!(!is_vite_hashed_asset("assets/foo-bar.js"));
+        assert!(!is_vite_hashed_asset("index.html"));
+    }
 
     #[tokio::test]
     async fn external_index_prefers_tool_html_then_falls_back_to_index_html() {
