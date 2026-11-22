@@ -11,6 +11,9 @@ importers:
       epubjs:
         specifier: ^0.3.93
         version: 0.3.93
+      hls.js:
+        specifier: ^1.7.4
+        version: 1.7.4
       pdfjs-dist:
         specifier: ^6.5.438
         version: 6.5.438
@@ -617,6 +620,9 @@ packages:
 
   graceful-fs@4.2.12:
     resolution: {integrity: sha512-iuyGF2E4oafQfPsRrG2wtY2ILupMhvtdrhzrxB+0VcjsPpSPttpfYdjnGFGsTi5MaJFjI1jOKHPQ6UTbTj9TAw==}
+
+  hls.js@1.7.4:
+    resolution: {integrity: sha512-3GlxGdPvT2YHvQYOt+yOzT/DEior/qJVNIylHA77kgeoBTdQQqi70GwefNEUmHQeNGyjC8U62+bruqW/Tpm+tg==}
 
   hookable@5.5.3:
     resolution: {integrity: sha512-Yc+BQe8SvoXH1643Qez1zqLRmbA5rCL+sSmk6TVos0LWVfNIB7PGncdlId77WzLGSIB5KaWgTaNTs2lNVEI6VQ==}
@@ -1530,6 +1536,8 @@ snapshots:
     optional: true
 
   graceful-fs@4.2.12: {}
+
+  hls.js@1.7.4: {}
 
   hookable@5.5.3: {}
 

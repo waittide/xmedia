@@ -277,7 +277,7 @@ export default {
     domainProtocolEmptyTitle: '当前领域暂未配置协议',
     domainProtocolEmptyHint: '后续将支持更多远程媒体协议拓展',
     domainDataSourceEmptyTitle: '当前领域暂未接入数据源',
-    domainDataSourceEmptyHint: '在线媒体数据源目前支持书籍，其余领域后续拓展',
+    domainDataSourceEmptyHint: '当前领域暂未接入在线数据源，请前往支持在线源的领域配置',
     dataSourcesAdminOnly: '仅管理员可管理在线数据源',
     domainMediaSourcesListTitle: '已配置媒体源',
     bookPrefsTitle: '书籍阅读',

@@ -35,6 +35,9 @@ export default defineConfig({
           if (id.includes('/node_modules/epubjs/') || id.includes('/node_modules/jszip/')) {
             return 'epub-vendor'
           }
+          if (id.includes('/node_modules/hls.js/')) {
+            return 'hls-vendor'
+          }
           return undefined
         },
       },

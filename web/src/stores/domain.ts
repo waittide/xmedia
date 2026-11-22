@@ -49,7 +49,11 @@ export const useDomainStore = defineStore('domain', () => {
       }
     } else if (cleanPath === '/comic' || cleanPath.startsWith('/comic/')) {
       setActiveDomain('comic')
-      if (!cleanPath.startsWith('/comic/read/')) {
+      if (
+        !cleanPath.startsWith('/comic/read/') &&
+        cleanPath !== '/comic/online/read' &&
+        !cleanPath.startsWith('/comic/online/read/')
+      ) {
         lastDomainRoute.value.comic = fullPath
       }
     } else if (cleanPath === '/music' || cleanPath.startsWith('/music/')) {
@@ -57,7 +61,11 @@ export const useDomainStore = defineStore('domain', () => {
       lastDomainRoute.value.music = fullPath
     } else if (cleanPath === '/video' || cleanPath.startsWith('/video/')) {
       setActiveDomain('video')
-      if (!cleanPath.startsWith('/video/watch/')) {
+      if (
+        !cleanPath.startsWith('/video/watch/') &&
+        cleanPath !== '/video/online/watch' &&
+        !cleanPath.startsWith('/video/online/watch/')
+      ) {
         lastDomainRoute.value.video = fullPath
       }
     }

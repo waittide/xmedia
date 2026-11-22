@@ -277,7 +277,7 @@ export default {
     domainProtocolEmptyTitle: 'No protocols for this domain yet',
     domainProtocolEmptyHint: 'More remote media protocols will be added here in the future',
     domainDataSourceEmptyTitle: 'No online data sources yet',
-    domainDataSourceEmptyHint: 'Online sources are currently available for Books; other domains coming soon',
+    domainDataSourceEmptyHint: 'Online data sources are not configured for this domain yet',
     dataSourcesAdminOnly: 'Administrator access required to manage online data sources',
     domainMediaSourcesListTitle: 'Configured Media Sources',
     bookPrefsTitle: 'Book Reader',
@@ -514,7 +514,7 @@ export default {
     },
     panel: {
       emptyTitle: 'No {domain} configured yet',
-      emptyHint: 'Click "Import JSON" above or upload a JSON file to add one',
+      emptyHint: 'Click "Import JSON" above or upload a JSON file to add a {domain}',
       emptyHintWithSeeds: 'Click "Import JSON" above to paste config, or "Load Default Seeds" for built-in sources',
       noMatchTitle: 'No matching {domain} found',
       clearFiltersBtn: 'Clear Filters',

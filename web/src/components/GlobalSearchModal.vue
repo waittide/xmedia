@@ -204,6 +204,7 @@ watch(
       searchSeq += 1
       query.value = ''
       domainSections.value = []
+      searchError.value = null
       loading.value = false
       activeIndex.value = 0
       await nextTick()

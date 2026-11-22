@@ -202,7 +202,7 @@ watch(
     } else if (videoSearchQuery.value) {
       videoSearchQuery.value = ''
     }
-    if (name === 'music-search') {
+    if (name === 'music-search' || name === 'music-songs') {
       musicStore.globalSearchQuery = str
     } else if (musicStore.globalSearchQuery) {
       musicStore.globalSearchQuery = ''
@@ -312,14 +312,42 @@ async function submitGlobalSearch(): Promise<void> {
   } else if (d === 'comic') {
     const q = comicSearchQuery.value.trim()
     searchInputRef.value?.blur()
-    await router.push(q ? { path: '/comic/series', query: { q } } : '/comic/series')
+    const nextQuery: Record<string, string> = {}
+    if (route.name === 'comic-series-list' && route.query.scope === 'online') {
+      nextQuery.scope = 'online'
+      if (typeof route.query.source === 'string' && route.query.source) {
+        nextQuery.source = route.query.source
+      }
+    }
+    if (q) nextQuery.q = q
+    await router.push({ path: '/comic/series', query: nextQuery })
   } else if (d === 'music') {
     const q = musicStore.globalSearchQuery.trim()
+    const isOnlineMusic =
+      (route.name === 'music-search' || route.name === 'music-songs') &&
+      route.query.scope === 'online'
+    if (isOnlineMusic) {
+      const nextQuery: Record<string, string> = { scope: 'online' }
+      if (typeof route.query.source === 'string' && route.query.source) {
+        nextQuery.source = route.query.source
+      }
+      if (q) nextQuery.q = q
+      await router.push({ path: route.path, query: nextQuery })
+      return
+    }
     if (!q) return
     await router.push({ path: '/music/search', query: { q } })
   } else {
     const q = videoSearchQuery.value.trim()
-    await router.push(q ? { path: '/video/catalog', query: { q } } : '/video/catalog')
+    const nextQuery: Record<string, string> = {}
+    if (route.name === 'video-catalog' && route.query.scope === 'online') {
+      nextQuery.scope = 'online'
+      if (typeof route.query.source === 'string' && route.query.source) {
+        nextQuery.source = route.query.source
+      }
+    }
+    if (q) nextQuery.q = q
+    await router.push({ path: '/video/catalog', query: nextQuery })
   }
 }
 
@@ -336,22 +364,34 @@ function clearGlobalSearch(): void {
     }
   } else if (d === 'comic') {
     comicSearchQuery.value = ''
-    if (route.name === 'comic-series-list' && route.query.q) {
+    if (route.name === 'comic-series-list' && route.query.q !== undefined) {
       const nextQuery = { ...route.query }
       delete nextQuery.q
-      void router.replace({ path: '/comic/series', query: nextQuery })
+      delete nextQuery.page
+      void router.replace({ path: route.path, query: nextQuery })
     }
   } else if (d === 'music') {
     musicStore.globalSearchQuery = ''
-    if (route.name === 'music-search') {
+    if (
+      (route.name === 'music-search' || route.name === 'music-songs') &&
+      route.query.scope === 'online'
+    ) {
+      if (route.query.q !== undefined) {
+        const nextQuery = { ...route.query }
+        delete nextQuery.q
+        delete nextQuery.page
+        void router.replace({ path: route.path, query: nextQuery })
+      }
+    } else if (route.name === 'music-search') {
       void router.push('/music/songs')
     }
   } else {
     videoSearchQuery.value = ''
-    if (route.name === 'video-catalog' && route.query.q) {
+    if (route.name === 'video-catalog' && route.query.q !== undefined) {
       const nextQuery = { ...route.query }
       delete nextQuery.q
-      void router.replace({ path: '/video/catalog', query: nextQuery })
+      delete nextQuery.page
+      void router.replace({ path: route.path, query: nextQuery })
     }
   }
 }

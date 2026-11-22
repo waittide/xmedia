@@ -59,6 +59,7 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
   const isAllComicSeriesActive = computed(() => {
     if (route.name === 'comic-series-detail') return true
     if (route.name !== 'comic-series-list') return false
+    if (route.query.scope === 'online') return false
     return (
       !route.query.library_id &&
       !route.query.shelf_id &&
@@ -71,6 +72,7 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
 
   const isAllMusicActive = computed(() => {
     if (route.name !== 'music-songs') return false
+    if (route.query.scope === 'online') return false
     if (route.query.tab === 'albums' || route.query.tab === 'artists') return false
     return !route.query.library && !route.query.genre && !route.query.tag
   })
@@ -98,6 +100,7 @@ export function usePrimaryNavItems(onNavigate?: () => void) {
 
   const isAllVideoActive = computed(() => {
     if (route.name !== 'video-catalog') return false
+    if (route.query.scope === 'online') return false
     if (route.query.tab === 'shows') return false
     return !route.query.library && !route.query.genre && !route.query.tag
   })

@@ -12,9 +12,19 @@ import { usePreferencesStore } from '@/stores/preferences'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 
+const ONLINE_SESSION_CTX_KEYS = [
+  'xmedia_online_reader_ctx',
+  'xmedia_online_comic_ctx',
+  'xmedia_online_comic_reader_ctx',
+  'xmedia_online_video_ctx',
+  'xmedia_online_video_player_ctx',
+] as const
+
 function clearScopedBrowserCaches(): void {
   try {
-    sessionStorage.removeItem('xmedia_online_reader_ctx')
+    for (const key of ONLINE_SESSION_CTX_KEYS) {
+      sessionStorage.removeItem(key)
+    }
   } catch {
     // ignore
   }
