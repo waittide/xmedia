@@ -1,8 +1,50 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
+use regex::Regex;
 use serde::Deserialize;
+use url::Url;
 use xmedia_source::http::{LegadoHttpClient, resolve_relative_url};
 use xmedia_source::rule::cached_regex;
+
+static RE_SCRIPT_STYLE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<(?:script|style)\b[^>]*>[\s\S]*?</(?:script|style)>").expect("valid regex")
+});
+static RE_HTML_BREAKS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<\s*(?:br\s*/?|/\s*(?:p|div|li|tr|h[1-6]|blockquote)\s*)>")
+        .expect("valid regex")
+});
+static RE_HTML_TAGS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)<[^>]+>").expect("valid regex"));
+
+fn strip_html_intro(raw: &str) -> Option<String> {
+    let s = RE_SCRIPT_STYLE.replace_all(raw, "");
+    let s = RE_HTML_BREAKS.replace_all(&s, "\n");
+    let s = RE_HTML_TAGS.replace_all(&s, "");
+    let decoded = s
+        .replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&");
+    let cleaned = decoded
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+fn is_obvious_share_page_url(raw_url: &str) -> bool {
+    if let Ok(parsed) = Url::parse(raw_url.trim()) {
+        return parsed.path().to_ascii_lowercase().contains("/share/");
+    }
+    raw_url.to_ascii_lowercase().contains("/share/")
+}
 
 use crate::source::model::{
     OnlineVideoCategory, OnlineVideoDetail, OnlineVideoEpisode, OnlineVideoPlayGroup,
@@ -309,7 +351,9 @@ pub fn fetch_detail(
     let title = vod.vod_name.trim().to_string();
     let cover_url =
         non_empty_opt(vod.vod_pic).map(|u| resolve_relative_url(&u, &fetched.final_url));
-    let intro = non_empty_opt(vod.vod_content).or_else(|| non_empty_opt(vod.vod_blurb));
+    let intro = non_empty_opt(vod.vod_content)
+        .and_then(|s| strip_html_intro(&s))
+        .or_else(|| non_empty_opt(vod.vod_blurb).and_then(|s| strip_html_intro(&s)));
     let play_groups = parse_vod_play_groups(
         vod.vod_play_from.as_deref(),
         vod.vod_play_url.as_deref(),
@@ -435,26 +479,30 @@ pub fn parse_vod_play_groups(
     }
 
     // Apply playUrlFilterRegex if valid and at least 1 episode matches across all groups.
+    // On regex-miss fallback, still exclude obvious HTML share pages (e.g. `/share/`).
     if let Some(re) = cached_regex(play_filter_regex) {
         let any_match = raw_groups
             .iter()
             .any(|(_, _, eps)| eps.iter().any(|ep| re.is_match(&ep.play_url)));
-        if any_match {
-            let mut filtered = Vec::with_capacity(raw_groups.len());
-            for (orig_idx, name, eps) in raw_groups {
-                let mut kept: Vec<OnlineVideoEpisode> = eps
-                    .into_iter()
+        let mut filtered = Vec::with_capacity(raw_groups.len());
+        for (orig_idx, name, eps) in raw_groups {
+            let mut kept: Vec<OnlineVideoEpisode> = if any_match {
+                eps.into_iter()
                     .filter(|ep| re.is_match(&ep.play_url))
-                    .collect();
-                if !kept.is_empty() {
-                    for (i, ep) in kept.iter_mut().enumerate() {
-                        ep.index = i;
-                    }
-                    filtered.push((orig_idx, name, kept));
+                    .collect()
+            } else {
+                eps.into_iter()
+                    .filter(|ep| !is_obvious_share_page_url(&ep.play_url))
+                    .collect()
+            };
+            if !kept.is_empty() {
+                for (i, ep) in kept.iter_mut().enumerate() {
+                    ep.index = i;
                 }
+                filtered.push((orig_idx, name, kept));
             }
-            raw_groups = filtered;
         }
+        raw_groups = filtered;
     }
 
     // Order by preferred_play_from (case-insensitive exact match priority, preserving original order).

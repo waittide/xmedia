@@ -111,6 +111,86 @@ fn applecms_falls_back_to_all_http_episodes_when_filter_regex_matches_none() {
         groups[0].episodes[0].play_url,
         "https://cdn.example.com/live/channel1"
     );
+
+    let share_only = parse_vod_play_groups(
+        Some("shareonly"),
+        Some("正片$http://127.0.0.1:9/share/2001"),
+        &[],
+        VideoSourceSpec::DEFAULT_PLAY_FILTER_REGEX,
+    );
+    assert!(
+        share_only.is_empty(),
+        "obvious /share/ HTML page must be excluded"
+    );
+}
+
+#[tokio::test]
+async fn applecms_detail_strips_html_tags_and_decodes_entities_in_intro() {
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::StatusCode;
+    use axum::response::Response;
+    use axum::routing::get;
+
+    let origin_app = Router::new().route(
+        "/api.php/provide/vod/",
+        get(|| async {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "code": 1,
+                        "list": [{
+                            "vod_id": 42,
+                            "vod_name": "Test Video",
+                            "vod_content": "<p>Sci-Fi &amp; Action</p><br/><p>Line&nbsp;2 &lt;HD&gt;</p>",
+                            "vod_play_from": "ikm3u8",
+                            "vod_play_url": "正片$https://cdn.example.com/42/index.m3u8"
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+    let origin = format!("http://{addr}");
+
+    let spec: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "IntroHtmlStrip",
+        "sourceUrl": format!("{origin}/api.php/provide/vod/"),
+        "sourceFormat": "applecms_v10",
+        "apiUrl": format!("{origin}/api.php/provide/vod/")
+    }))
+    .unwrap();
+    let detail = tokio::task::spawn_blocking(move || {
+        let cookies = Arc::new(Mutex::new(HashMap::new()));
+        let http = LegadoHttpClient::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            cookies,
+            None,
+            false,
+        )
+        .unwrap();
+        crate::source::applecms::fetch_detail(&spec, &http, Some("42"), None)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(
+        detail.intro.as_deref(),
+        Some("Sci-Fi & Action\nLine 2 <HD>")
+    );
+    srv.abort();
 }
 
 #[test]

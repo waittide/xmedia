@@ -2486,3 +2486,37 @@ async fn rule_play_subtitles_jsonpath_and_js_e2e() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn hls_proxy_rejects_malformed_playlist_missing_extm3u_header() {
+    let (_tmp, app, _admin_tok, member_tok) = setup_test_app(true).await;
+    let origin_app = Router::new().route(
+        "/bad.m3u8",
+        get(|| async {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/vnd.apple.mpegurl")
+                .body(Body::from("not an m3u8 playlist"))
+                .unwrap()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let origin = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let encoded_url: String =
+        form_urlencoded::byte_serialize(format!("{origin}/bad.m3u8").as_bytes()).collect();
+    let (st, _, _) = get_bytes_with_auth(
+        &app,
+        &format!("/api/v1/video/online/hls-proxy?url={encoded_url}"),
+        Some(&member_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+
+    srv.abort();
+}
