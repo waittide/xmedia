@@ -136,6 +136,38 @@ export interface OnlineVideoPlayResponseDto extends OnlineVideoPlayResult {
   diagnostics: ExecutionDiagnostics
 }
 
+export const ONLINE_VIDEO_CTX_KEY = 'xmedia_online_video_ctx'
+export const ONLINE_VIDEO_PLAYER_CTX_KEY = 'xmedia_online_video_player_ctx'
+
+export interface OnlineVideoContextStorage {
+  sourceId: string
+  sourceName?: string
+  videoId?: string
+  detailUrl?: string
+  title?: string
+  coverUrl?: string | null
+  proxyCoverUrl?: string | null
+  remarks?: string | null
+  year?: string | null
+  area?: string | null
+  typeName?: string | null
+}
+
+export interface OnlineVideoPlayerContextStorage {
+  sourceId: string
+  sourceName?: string
+  videoId?: string
+  detailUrl?: string
+  title?: string
+  coverUrl?: string | null
+  proxyCoverUrl?: string | null
+  groupName?: string
+  episodeIndex?: number
+  episodeName?: string
+  playUrl: string
+  playGroups?: OnlineVideoPlayGroup[]
+}
+
 export function buildOnlineVideoPosterUrl(
   rawUrl: string | null | undefined,
   sourceId?: string | null,
@@ -151,16 +183,80 @@ export function buildOnlineVideoPosterUrl(
   return withAuthToken(`/api/v1/video/online/poster-proxy?${qs.toString()}`)
 }
 
+export function resolveOnlineVideoPosterUrl(
+  proxyCoverUrl?: string | null,
+  rawCoverUrl?: string | null,
+  sourceId?: string | null,
+): string {
+  const proxy = proxyCoverUrl?.trim()
+  if (proxy) {
+    if (proxy.toLowerCase().startsWith('data:')) {
+      return isSafeDataImageUrl(proxy) ? proxy : ''
+    }
+    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
+      try {
+        const parsed = new URL(proxy, 'http://localhost')
+        if (parsed.pathname.endsWith('/poster-proxy')) {
+          const innerUrl = parsed.searchParams.get('url')?.trim()
+          if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+        }
+        return withAuthToken(proxy)
+      } catch {
+        return ''
+      }
+    }
+    if (isSafeHttpUrl(proxy)) {
+      return withAuthToken(proxy)
+    }
+    return ''
+  }
+  return buildOnlineVideoPosterUrl(rawCoverUrl, sourceId)
+}
+
 export function buildOnlineVideoStreamUrl(
   rawUrl: string | null | undefined,
   streamType: 'hls' | 'mp4' | 'auto' | string = 'auto',
   sourceId?: string | null,
 ): string {
   if (!rawUrl || !rawUrl.trim() || !isSafeHttpUrl(rawUrl)) return ''
-  const qs = new URLSearchParams({ url: rawUrl.trim() })
+  const trimmed = rawUrl.trim()
+  const qs = new URLSearchParams({ url: trimmed })
   if (sourceId) qs.set('source_id', sourceId)
-  const endpoint = streamType === 'hls' ? 'hls-proxy' : 'stream-proxy'
+  const isHls =
+    streamType === 'hls' || (streamType === 'auto' && /\.m3u8(\?|$)/i.test(trimmed))
+  const endpoint = isHls ? 'hls-proxy' : 'stream-proxy'
   return withAuthToken(`/api/v1/video/online/${endpoint}?${qs.toString()}`)
+}
+
+export function resolveOnlineVideoStreamUrl(
+  proxyStreamUrl?: string | null,
+  rawStreamUrl?: string | null,
+  streamType: 'hls' | 'mp4' | 'auto' | string = 'auto',
+  sourceId?: string | null,
+): string {
+  const proxy = proxyStreamUrl?.trim()
+  if (proxy) {
+    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
+      try {
+        const parsed = new URL(proxy, 'http://localhost')
+        if (
+          parsed.pathname.endsWith('/hls-proxy') ||
+          parsed.pathname.endsWith('/stream-proxy')
+        ) {
+          const innerUrl = parsed.searchParams.get('url')?.trim()
+          if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+        }
+        return withAuthToken(proxy)
+      } catch {
+        return ''
+      }
+    }
+    if (isSafeHttpUrl(proxy)) {
+      return withAuthToken(proxy)
+    }
+    return ''
+  }
+  return buildOnlineVideoStreamUrl(rawStreamUrl, streamType, sourceId)
 }
 
 const baseCrud = createDomainSourceApi<VideoSourceSummaryDto>('video', { hasSeeds: true })
