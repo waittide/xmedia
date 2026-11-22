@@ -672,3 +672,77 @@ fn eval_json_options_template_prevents_duplicate_keys_and_handles_unquoted_place
         .is_err()
     );
 }
+
+#[test]
+fn legado_http_client_fetch_with_timeout_reports_body_timeout_on_chunked_stall() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+
+    let server_handle = std::thread::spawn(move || {
+        // First connection: send 200 OK headers + first chunk immediately, then stall > op_timeout.
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let head_and_chunk1 = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n13\r\n{\"url\":\"https://cdn\r\n";
+            let _ = stream.write_all(head_and_chunk1);
+            let _ = stream.flush();
+            let _ = done_rx.recv_timeout(Duration::from_millis(1200));
+        }
+        // Second connection: send incomplete chunked body and close immediately (non-timeout failure).
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf);
+            let broken = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n7\r\n{\"a\":1}\r\n";
+            let _ = stream.write_all(broken);
+            let _ = stream.flush();
+        }
+    });
+
+    let client = LegadoHttpClient::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            timeout_secs: 5,
+            ..Default::default()
+        },
+        Arc::new(Mutex::new(HashMap::new())),
+        None,
+        false,
+    )
+    .unwrap();
+
+    let t0 = std::time::Instant::now();
+    let err = client
+        .fetch_with_timeout(
+            &format!("http://{addr}/slow-body"),
+            "",
+            Some(Duration::from_millis(200)),
+        )
+        .unwrap_err();
+    let elapsed = t0.elapsed();
+    let _ = done_tx.send(());
+
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "expected fast abort under 500ms, took {:?}",
+        elapsed
+    );
+    assert!(
+        err.contains("读取响应体超时"),
+        "expected body-read timeout message containing '读取响应体超时', got: {err}"
+    );
+
+    let eof_err = client
+        .fetch_with_timeout(
+            &format!("http://{addr}/broken-body"),
+            "",
+            Some(Duration::from_millis(500)),
+        )
+        .unwrap_err();
+    assert!(
+        eof_err.contains("读取响应体失败"),
+        "expected non-timeout EOF error containing '读取响应体失败', got: {eof_err}"
+    );
+
+    let _ = server_handle.join();
+}

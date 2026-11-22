@@ -17,6 +17,43 @@ use super::{
     MAX_RESPONSE_BODY_BYTES,
 };
 
+fn is_timeout_error_chain(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::TimedOut {
+        return true;
+    }
+    let mut stack: Vec<&(dyn std::error::Error + 'static)> = Vec::new();
+    if let Some(inner) = err.get_ref() {
+        stack.push(inner);
+    }
+    if let Some(src) = std::error::Error::source(err) {
+        stack.push(src);
+    }
+    let mut visited = 0usize;
+    while let Some(cur) = stack.pop() {
+        visited += 1;
+        if visited > 32 {
+            break;
+        }
+        if let Some(req_err) = cur.downcast_ref::<reqwest::Error>()
+            && req_err.is_timeout()
+        {
+            return true;
+        }
+        if let Some(io_err) = cur.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::TimedOut {
+                return true;
+            }
+            if let Some(inner) = io_err.get_ref() {
+                stack.push(inner);
+            }
+        }
+        if let Some(src) = cur.source() {
+            stack.push(src);
+        }
+    }
+    false
+}
+
 pub fn is_forbidden_custom_header(name: &str) -> bool {
     matches!(
         name.to_ascii_lowercase().as_str(),
@@ -521,7 +558,7 @@ impl LegadoHttpClient {
             .take((MAX_RESPONSE_BODY_BYTES as u64) + 1)
             .read_to_end(&mut raw_bytes)
             .map_err(|e| {
-                if e.kind() == std::io::ErrorKind::TimedOut {
+                if is_timeout_error_chain(&e) {
                     format!("读取响应体超时 '{resolved_url}': {e}")
                 } else {
                     format!("读取响应体失败 '{resolved_url}': {e}")
