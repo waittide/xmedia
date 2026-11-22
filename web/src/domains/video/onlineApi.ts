@@ -196,7 +196,9 @@ export function resolveOnlineVideoPosterUrl(
     if (proxy.startsWith('/') && !proxy.startsWith('//')) {
       try {
         const parsed = new URL(proxy, 'http://localhost')
-        if (parsed.pathname.endsWith('/poster-proxy')) {
+        if (parsed.origin !== 'http://localhost') return ''
+        if (parsed.pathname.endsWith('-proxy')) {
+          if (!parsed.pathname.endsWith('/poster-proxy')) return ''
           const innerUrl = parsed.searchParams.get('url')?.trim()
           if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
         }
@@ -239,10 +241,14 @@ export function resolveOnlineVideoStreamUrl(
     if (proxy.startsWith('/') && !proxy.startsWith('//')) {
       try {
         const parsed = new URL(proxy, 'http://localhost')
-        if (
-          parsed.pathname.endsWith('/hls-proxy') ||
-          parsed.pathname.endsWith('/stream-proxy')
-        ) {
+        if (parsed.origin !== 'http://localhost') return ''
+        if (parsed.pathname.endsWith('-proxy')) {
+          if (
+            !parsed.pathname.endsWith('/hls-proxy') &&
+            !parsed.pathname.endsWith('/stream-proxy')
+          ) {
+            return ''
+          }
           const innerUrl = parsed.searchParams.get('url')?.trim()
           if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
         }

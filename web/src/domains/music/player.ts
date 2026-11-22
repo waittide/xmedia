@@ -1,14 +1,13 @@
 import { computed, ref, watch } from 'vue'
 import { defineStore } from 'pinia'
-import { withAuthToken } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
 import { api, buildCoverUrl, buildStreamUrl, canPlayFormatNatively } from './api'
 import {
-  buildOnlineMusicAudioUrl,
-  buildOnlineMusicCoverUrl,
   onlineMusicApi,
+  resolveOnlineMusicAudioUrl,
+  resolveOnlineMusicCoverUrl,
   type OnlineMusicResolvedTrackDto,
   type OnlineMusicTrackDto,
 } from './onlineApi'
@@ -59,18 +58,20 @@ export function buildOnlineTrackKey(track: OnlineMusicTrackDto): string {
 }
 
 export function resolveOnlineItemCoverUrl(item: OnlineQueueItem): string | null {
-  const proxy = (item.resolved?.proxy_cover_url || item.track.proxy_cover_url || '').trim()
-  if (proxy) return withAuthToken(proxy)
-  const raw = (item.resolved?.cover_url || item.track.cover_url || '').trim()
-  if (!raw) return null
-  const built = buildOnlineMusicCoverUrl(raw, item.source_id)
-  return built || null
+  const resolved = resolveOnlineMusicCoverUrl(
+    item.resolved?.proxy_cover_url || item.track.proxy_cover_url,
+    item.resolved?.cover_url || item.track.cover_url,
+    item.source_id,
+  )
+  return resolved || null
 }
 
 export function resolveOnlineItemStreamUrl(item: OnlineQueueItem): string {
-  const proxy = (item.resolved?.proxy_stream_url || '').trim()
-  if (proxy) return withAuthToken(proxy)
-  return buildOnlineMusicAudioUrl(item.resolved?.stream_url, item.source_id)
+  return resolveOnlineMusicAudioUrl(
+    item.resolved?.proxy_stream_url,
+    item.resolved?.stream_url,
+    item.source_id,
+  )
 }
 
 function makeLocalQueueItem(track: TrackDto): LocalQueueItem {

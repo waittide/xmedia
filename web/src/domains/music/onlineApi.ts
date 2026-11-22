@@ -147,6 +147,67 @@ export function buildOnlineMusicAudioUrl(
   return withAuthToken(`/api/v1/music/online/audio-proxy?${qs.toString()}`)
 }
 
+export function resolveOnlineMusicCoverUrl(
+  proxyCoverUrl?: string | null,
+  rawCoverUrl?: string | null,
+  sourceId?: string | null,
+): string {
+  const proxy = proxyCoverUrl?.trim()
+  if (proxy) {
+    if (proxy.toLowerCase().startsWith('data:')) {
+      return isSafeDataImageUrl(proxy) ? proxy : ''
+    }
+    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
+      try {
+        const parsed = new URL(proxy, 'http://localhost')
+        if (parsed.origin !== 'http://localhost') return ''
+        if (parsed.pathname.endsWith('-proxy')) {
+          if (!parsed.pathname.endsWith('/cover-proxy')) return ''
+          const innerUrl = parsed.searchParams.get('url')?.trim()
+          if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+        }
+        return withAuthToken(proxy)
+      } catch {
+        return ''
+      }
+    }
+    if (isSafeHttpUrl(proxy)) {
+      return withAuthToken(proxy)
+    }
+    return ''
+  }
+  return buildOnlineMusicCoverUrl(rawCoverUrl, sourceId)
+}
+
+export function resolveOnlineMusicAudioUrl(
+  proxyStreamUrl?: string | null,
+  rawStreamUrl?: string | null,
+  sourceId?: string | null,
+): string {
+  const proxy = proxyStreamUrl?.trim()
+  if (proxy) {
+    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
+      try {
+        const parsed = new URL(proxy, 'http://localhost')
+        if (parsed.origin !== 'http://localhost') return ''
+        if (parsed.pathname.endsWith('-proxy')) {
+          if (!parsed.pathname.endsWith('/audio-proxy')) return ''
+          const innerUrl = parsed.searchParams.get('url')?.trim()
+          if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+        }
+        return withAuthToken(proxy)
+      } catch {
+        return ''
+      }
+    }
+    if (isSafeHttpUrl(proxy)) {
+      return withAuthToken(proxy)
+    }
+    return ''
+  }
+  return buildOnlineMusicAudioUrl(rawStreamUrl, sourceId)
+}
+
 const baseCrud = createDomainSourceApi<MusicSourceSummaryDto>('music', { hasSeeds: true })
 
 export const onlineMusicApi = {

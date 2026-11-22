@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { LuCheck, LuListPlus, LuMoreHorizontal, LuPause, LuPlay, LuVolume2 } from 'vue-icons-plus/lu'
-import { withAuthToken } from '@/api/client'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { formatTime as formatDuration } from '@/utils/format'
 import { useMusicI18n as useI18n } from '../i18n'
-import { buildOnlineMusicCoverUrl, type OnlineMusicTrackDto } from '../onlineApi'
+import { resolveOnlineMusicCoverUrl, type OnlineMusicTrackDto } from '../onlineApi'
 import { buildOnlineTrackKey, usePlayerStore } from '../player'
 import CoverImage from './CoverImage.vue'
 
@@ -43,10 +42,8 @@ function isCurrentTrack(tr: OnlineMusicTrackDto): boolean {
 }
 
 function resolveCoverSrc(tr: OnlineMusicTrackDto): string | null {
-  const proxy = (tr.proxy_cover_url || '').trim()
-  if (proxy) return withAuthToken(proxy)
-  const built = buildOnlineMusicCoverUrl(tr.cover_url, tr.source_id)
-  return built || null
+  const resolved = resolveOnlineMusicCoverUrl(tr.proxy_cover_url, tr.cover_url, tr.source_id)
+  return resolved || null
 }
 
 function formatOnlineQuality(tr: OnlineMusicTrackDto): string {

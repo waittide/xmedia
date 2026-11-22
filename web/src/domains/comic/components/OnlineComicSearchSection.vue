@@ -348,6 +348,8 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
     mode === 'replace' && page === 1 ? [...selectedSourceIds.value] : [...lastSearchSourceIds.value]
 
   const seq = ++searchSeq
+  lastSearchKeyword.value = kw
+  lastSearchSourceIds.value = srcIds
   if (mode === 'append') {
     loadingMore.value = true
   } else {
@@ -361,8 +363,6 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
   try {
     const res = await onlineComicApi.search(kw, srcIds, page)
     if (unmounted || seq !== searchSeq) return
-    lastSearchKeyword.value = kw
-    lastSearchSourceIds.value = srcIds
     searchPage.value = res.page || page
 
     if (mode === 'append') {

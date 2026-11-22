@@ -196,10 +196,12 @@ export function resolveOnlineComicCoverUrl(
     if (proxy.toLowerCase().startsWith('data:')) {
       return isSafeDataImageUrl(proxy) ? proxy : ''
     }
-    if (proxy.startsWith('/')) {
+    if (proxy.startsWith('/') && !proxy.startsWith('//')) {
       try {
         const parsed = new URL(proxy, 'http://localhost')
-        if (parsed.pathname.endsWith('/image-proxy')) {
+        if (parsed.origin !== 'http://localhost') return ''
+        if (parsed.pathname.endsWith('-proxy')) {
+          if (!parsed.pathname.endsWith('/image-proxy')) return ''
           const innerUrl = parsed.searchParams.get('url')?.trim()
           if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
         }
@@ -211,6 +213,7 @@ export function resolveOnlineComicCoverUrl(
     if (isSafeHttpUrl(proxy)) {
       return withAuthToken(proxy)
     }
+    return ''
   }
   return buildOnlineComicImageUrl(rawCoverUrl, sourceId)
 }
