@@ -297,43 +297,55 @@ watch(currentPage, (p) => {
 })
 
 watch(
-  () => [props.chapterKey, props.loading, props.hasContent] as const,
-  async ([newKey, isLoading, ready], oldVal) => {
-    const oldKey = oldVal?.[0]
-    if (newKey !== oldKey) {
+  () => [props.readerMode, props.chapterKey, props.loading, props.hasContent] as const,
+  async ([mode, newKey, isLoading, ready], oldVal) => {
+    const oldMode = oldVal?.[0]
+    const oldKey = oldVal?.[1]
+    const oldLoading = oldVal?.[2]
+    const oldReady = oldVal?.[3]
+
+    const keyChanged = newKey !== oldKey
+    const contentJustReady =
+      keyChanged || oldVal === undefined || Boolean(oldLoading) || !oldReady
+
+    if (keyChanged) {
       resetStageState()
-    }
-    if (isLoading || !ready) {
+    } else {
       teardownWebtoonObserver()
+    }
+
+    if (isLoading || !ready) {
       return
     }
-    const targetInitial = Math.min(
-      Math.max(1, props.initialPage || 1),
-      Math.max(1, props.totalPages),
-    )
-    currentPage.value = targetInitial
-    preloadAround(targetInitial)
-    suppressWebtoonObserverUntil = Date.now() + 600
-    if (props.readerMode === 'webtoon') {
+
+    if (contentJustReady) {
+      const targetInitial = Math.min(
+        Math.max(1, props.initialPage || 1),
+        Math.max(1, props.totalPages),
+      )
+      currentPage.value = targetInitial
+      preloadAround(targetInitial)
+      suppressWebtoonObserverUntil = Date.now() + 600
+    } else if (mode !== oldMode && mode === 'webtoon') {
+      suppressWebtoonObserverUntil = Date.now() + 600
+    }
+
+    if (mode === 'webtoon' && newKey) {
       await nextTick()
-      if (unmounted || props.chapterKey !== newKey) return
+      if (
+        unmounted ||
+        props.chapterKey !== newKey ||
+        props.readerMode !== 'webtoon' ||
+        props.loading ||
+        !props.hasContent
+      ) {
+        return
+      }
       scrollToWebtoonPage(currentPage.value)
       setupWebtoonObserver()
     }
   },
   { immediate: true },
-)
-
-watch(
-  () => [props.readerMode, props.chapterKey, props.loading, props.hasContent] as const,
-  async ([mode, key, isLoading, ready]) => {
-    teardownWebtoonObserver()
-    if (mode !== 'webtoon' || !key || isLoading || !ready) return
-    await nextTick()
-    if (unmounted || props.chapterKey !== key) return
-    scrollToWebtoonPage(currentPage.value)
-    setupWebtoonObserver()
-  },
 )
 
 function advanceForward(): void {

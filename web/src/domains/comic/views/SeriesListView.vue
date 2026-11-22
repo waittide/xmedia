@@ -41,6 +41,7 @@ const onlineSourceId = computed(() =>
 )
 let syncingRouteQuery = false
 let syncRouteSeq = 0
+let pendingRouteQuery: Record<string, string | string[]> | null = null
 
 const searchScopeOptions = computed<SegmentedOption<ComicSearchScope>[]>(() => [
   { value: 'local', label: t('online.scopeLocal'), icon: LuLayers },
@@ -179,7 +180,7 @@ function syncOnlineScopeToRoute(
     }
   }
 
-  const cur = route.query
+  const cur = syncingRouteQuery && pendingRouteQuery ? pendingRouteQuery : route.query
   const same =
     Object.keys(nextQuery).length === Object.keys(cur).length &&
     Object.entries(nextQuery).every(([k, v]) => queryValuesEqual(cur[k], v))
@@ -187,9 +188,11 @@ function syncOnlineScopeToRoute(
 
   const seq = ++syncRouteSeq
   syncingRouteQuery = true
+  pendingRouteQuery = nextQuery
   void router.replace({ path: route.path, query: nextQuery }).finally(() => {
     if (seq === syncRouteSeq) {
       syncingRouteQuery = false
+      pendingRouteQuery = null
     }
   })
 }

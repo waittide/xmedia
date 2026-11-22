@@ -70,6 +70,7 @@ let initSeq = 0
 let searchSeq = 0
 let exploreSeq = 0
 let unmounted = false
+let pendingEmittedSourceId: string | null | undefined = undefined
 
 const enabledSources = computed(() => sources.value.filter((s) => s.enabled))
 
@@ -107,17 +108,43 @@ const activeLoadingMore = computed(() =>
   hasSearched.value ? loadingMore.value : loadingMoreExplore.value,
 )
 
+function emitSourceIdUpdate(nextId: string | null): void {
+  const currentProp = props.initialSourceId ?? null
+  pendingEmittedSourceId = nextId !== currentProp ? nextId : undefined
+  emit('update:sourceId', nextId)
+}
+
 watch(
   () => props.initialSourceId,
   (nextId) => {
-    if (nextId && enabledSources.value.some((s) => s.id === nextId)) {
-      selectedSourceIds.value = [nextId]
+    const normalizedNext = nextId ?? null
+    if (pendingEmittedSourceId !== undefined) {
+      const expected = pendingEmittedSourceId
+      pendingEmittedSourceId = undefined
+      if (normalizedNext === expected) {
+        return
+      }
+    }
+    if (normalizedNext && enabledSources.value.some((s) => s.id === normalizedNext)) {
+      selectedSourceIds.value = [normalizedNext]
       if (searchKeyword.value.trim() === '' && !hasSearched.value) {
         activeExploreUrl.value = null
-        void runExplore(nextId, null, 1, 'replace')
+        void runExplore(normalizedNext, null, 1, 'replace')
       }
-    } else if (!nextId && selectedSourceIds.value.length > 0) {
+    } else if (!normalizedNext && selectedSourceIds.value.length > 0) {
       selectedSourceIds.value = []
+      if (searchKeyword.value.trim() === '' && !hasSearched.value) {
+        activeExploreUrl.value = null
+        if (activeExploreSourceId.value) {
+          void runExplore(activeExploreSourceId.value, null, 1, 'replace')
+        } else {
+          exploreSeq += 1
+          exploreCategories.value = []
+          exploreItems.value = []
+          exploreError.value = null
+          hasMoreExplore.value = false
+        }
+      }
     }
   },
 )
@@ -195,7 +222,7 @@ function toggleSourceFilter(id: string): void {
     ? selectedSourceIds.value.filter((s) => s !== id)
     : [...selectedSourceIds.value, id]
   selectedSourceIds.value = next
-  emit('update:sourceId', next.length === 1 ? (next[0] ?? null) : null)
+  emitSourceIdUpdate(next.length === 1 ? (next[0] ?? null) : null)
 
   if (searchKeyword.value.trim()) {
     if (hasSearched.value) {
@@ -220,7 +247,7 @@ function toggleSourceFilter(id: string): void {
 
 function clearSourceFilter(): void {
   selectedSourceIds.value = []
-  emit('update:sourceId', null)
+  emitSourceIdUpdate(null)
 
   if (searchKeyword.value.trim()) {
     if (hasSearched.value) {

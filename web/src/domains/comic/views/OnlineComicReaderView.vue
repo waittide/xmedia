@@ -2,14 +2,13 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
-import { withAuthToken } from '@/api/client'
 import ComicReaderShell, {
   type ComicReaderChapterItem,
 } from '@/domains/comic/components/ComicReaderShell.vue'
 import {
   ONLINE_COMIC_READER_CTX_KEY,
-  buildOnlineComicImageUrl,
   onlineComicApi,
+  resolveOnlineComicCoverUrl,
   type ComicReadingDirection,
   type OnlineComicChapter,
   type OnlineComicPageDto,
@@ -48,6 +47,7 @@ let detailSeq = 0
 let unmounted = false
 let userOverrodeMode = false
 let syncingUrl = false
+let syncUrlSeq = 0
 
 function readQueryParam(keys: string[]): string {
   for (const k of keys) {
@@ -226,23 +226,7 @@ const headerSubtitle = computed(() => {
 function getPageSrc(pageNum: number): string {
   const page = pages.value[pageNum - 1]
   if (!page) return ''
-  const proxy = page.proxy_url?.trim()
-  if (proxy) {
-    if (proxy.startsWith('/')) {
-      try {
-        const parsed = new URL(proxy, 'http://localhost')
-        if (parsed.pathname.endsWith('/image-proxy')) {
-          const inner = parsed.searchParams.get('url')?.trim()
-          if (!inner) return ''
-        }
-        return withAuthToken(proxy)
-      } catch {
-        return ''
-      }
-    }
-    return withAuthToken(proxy)
-  }
-  return buildOnlineComicImageUrl(page.image_url, ctx.value?.sourceId)
+  return resolveOnlineComicCoverUrl(page.proxy_url, page.image_url, ctx.value?.sourceId)
 }
 
 async function hydrateChaptersInBackground(
@@ -487,9 +471,12 @@ function switchChapterByIndex(targetIdx: number): void {
   if (activeSourceName.value) nextQuery.sourceName = activeSourceName.value
   if (activeDirection.value) nextQuery.readingDirection = activeDirection.value
 
+  const seq = ++syncUrlSeq
   syncingUrl = true
   void router.replace({ path: '/comic/online/read', query: nextQuery }).finally(() => {
-    syncingUrl = false
+    if (seq === syncUrlSeq) {
+      syncingUrl = false
+    }
   })
   void openChapter(target.url, targetIdx, true)
 }
