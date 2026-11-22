@@ -1,578 +1,1251 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { LuFilm, LuGlobe, LuSearch, LuX } from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
-import RefreshButton from '@/components/ui/RefreshButton.vue'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
+import { useI18n as useGlobalI18n } from 'vue-i18n'
+import {
+  LuArrowLeft,
+  LuCheck,
+  LuFilm,
+  LuFolderHeart,
+  LuMoreVertical,
+  LuPencil,
+  LuPlay,
+  LuPlus,
+  LuRefreshCw,
+  LuSparkles,
+  LuTag,
+  LuTrash2,
+  LuX,
+} from 'vue-icons-plus/lu'
+import { DomainLibraryTemplate, MediaItemCard } from '@/components/domain'
+import {
+  MdButton,
+  MdCard,
+  MdChip,
+  MdIconButton,
+  MdMenu,
+  MdMenuItem,
+  MdSelect,
+  MdTextField,
+  MediaCoverImage,
+  type MdTabItem,
+  type SelectOption,
+} from '@/components/ui'
+import {
+  onlineItemsApi,
+  seedOnlineItemStateCache,
+  useMergedShelf,
+  useSourceFilter,
+  type LibraryTab,
+  type MediaItemVM,
+  type SourceScope,
+} from '@/sources'
+import { useDialogStore } from '@/stores/dialog'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
-import { api } from '../api'
+import { api, buildPosterUrl } from '../api'
 import OnlineVideoSearchSection from '../components/OnlineVideoSearchSection.vue'
 import ShowCard from '../components/ShowCard.vue'
 import VideoCard from '../components/VideoCard.vue'
 import VideoMetadataModal from '../components/VideoMetadataModal.vue'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
-import type { ShowSummaryDto, VideoKindFilter, VideoSortBy, VideoSummaryDto } from '../types'
+import type {
+  ShowSummaryDto,
+  VideoKindFilter,
+  VideoShelfDetailDto,
+  VideoSortBy,
+  VideoSummaryDto,
+} from '../types'
 
-type CatalogTab = 'videos' | 'shows'
-type VideoSearchScope = 'local' | 'online'
+type VideoLibraryView = 'items' | 'shows' | 'movies' | 'genres' | 'tags'
+
+const VALID_TABS = new Set<LibraryTab>(['all', 'continue', 'favorites', 'collections'])
+const VALID_VIEWS = new Set<VideoLibraryView>(['items', 'shows', 'movies', 'genres', 'tags'])
 
 const { t } = useI18n()
+const { locale } = useGlobalI18n()
 const route = useRoute()
 const router = useRouter()
 const videoStore = useVideoStore()
 const uploadStore = useUploadStore()
-const snackbarStore = useSnackbarStore()
-let fetchSeq = 0
-let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
-let syncingRouteQuery = false
-let syncRouteSeq = 0
-let pendingRouteQuery: Record<string, string | string[]> | null = null
+const dialogStore = useDialogStore()
+const snackbar = useSnackbarStore()
 
-const searchScope = ref<VideoSearchScope>(route.query.scope === 'online' ? 'online' : 'local')
-const onlineKeyword = ref<string>(typeof route.query.q === 'string' ? route.query.q : '')
-const onlineSourceId = computed(() =>
-  typeof route.query.source === 'string' && route.query.source.trim()
-    ? route.query.source.trim()
-    : null,
-)
+const isZh = computed(() => locale.value.startsWith('zh'))
+const sourceFilter = useSourceFilter('video')
 
-const searchScopeOptions = computed<SegmentedOption<VideoSearchScope>[]>(() => [
-  { value: 'local', label: t('online.scopeLocal'), icon: LuFilm },
-  { value: 'online', label: t('online.scopeOnline'), icon: LuGlobe },
-])
+const onlineSearchRef = ref<InstanceType<typeof OnlineVideoSearchSection> | null>(null)
+const filterSheetOpen = ref(false)
+const editingVideo = ref<VideoSummaryDto | null>(null)
+const newShelfName = ref('')
+const creatingShelf = ref(false)
 
-function resolveTabFromQuery(): CatalogTab {
-  return route.query.tab === 'shows' ? 'shows' : 'videos'
-}
-
-function resolveKindFromQuery(): VideoKindFilter {
-  const q = route.query.kind
-  if (q === 'standalone' || q === 'episodes') return q
-  return 'all'
-}
-
-const activeTab = ref<CatalogTab>(resolveTabFromQuery())
-const selectedLibrary = ref(typeof route.query.library === 'string' ? route.query.library : '')
-const selectedGenre = ref(typeof route.query.genre === 'string' ? route.query.genre : '')
-const selectedTag = ref(typeof route.query.tag === 'string' ? route.query.tag : '')
-const search = ref(typeof route.query.q === 'string' ? route.query.q : '')
-const kindFilter = ref<VideoKindFilter>(resolveKindFromQuery())
-const sortKey = ref('created_at:desc')
-
+// Local data states
 const videos = ref<VideoSummaryDto[]>([])
 const shows = ref<ShowSummaryDto[]>([])
-const loading = ref(false)
-const editingVideo = ref<VideoSummaryDto | null>(null)
+const shelfDetail = ref<VideoShelfDetailDto | null>(null)
+const localLoading = ref(false)
+const localError = ref<string | null>(null)
 
-const activeLibraryName = computed(() => {
-  if (!selectedLibrary.value) return ''
-  return videoStore.libraries.find((l) => l.id === selectedLibrary.value)?.name ?? ''
-})
+let fetchSeq = 0
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null
 
-const pageTitle = computed(() => {
-  if (searchScope.value === 'online') return t('online.scopeOnline')
-  if (activeLibraryName.value) return activeLibraryName.value
-  if (selectedGenre.value) return selectedGenre.value
-  if (selectedTag.value) return `#${selectedTag.value}`
-  if (activeTab.value === 'videos' && kindFilter.value === 'standalone') {
-    return t('catalog.kindStandalone')
+function readQueryStr(key: string): string {
+  const raw = route.query[key]
+  if (typeof raw === 'string') return raw.trim()
+  if (Array.isArray(raw)) {
+    const first = raw.find((v): v is string => typeof v === 'string' && v.trim().length > 0)
+    return first?.trim() ?? ''
   }
-  return t('nav.all')
-})
+  return ''
+}
 
-const pageSubtitle = computed(() =>
-  activeTab.value === 'shows'
-    ? t('common.showsCount', { count: shows.value.length })
-    : t('common.videosCount', { count: videos.value.length }),
+const activeScope = computed<SourceScope>(() =>
+  sourceFilter.filter.value.scope === 'online' ? 'online' : 'local',
+)
+const onlineSourceId = computed<string | null>(() => sourceFilter.filter.value.sourceId)
+
+const activeCollectionId = computed(() =>
+  activeScope.value === 'local' ? readQueryStr('collection') : '',
 )
 
-const libraryOptions = computed(() => [
+const activeTab = computed<LibraryTab>(() => {
+  const raw = readQueryStr('tab') as LibraryTab
+  if (VALID_TABS.has(raw)) {
+    if (activeScope.value === 'online' && raw === 'collections') return 'all'
+    return raw
+  }
+  return 'all'
+})
+
+const activeView = computed<VideoLibraryView>(() => {
+  const raw = readQueryStr('view') as VideoLibraryView
+  if (VALID_VIEWS.has(raw)) return raw
+  return 'items'
+})
+
+const selectedLibrary = computed(() => readQueryStr('library'))
+const selectedGenre = computed(() => readQueryStr('genre'))
+const selectedTag = computed(() => readQueryStr('tag'))
+const kindFilter = computed<VideoKindFilter>(() => {
+  if (activeView.value === 'movies') return 'standalone'
+  const raw = readQueryStr('kind')
+  if (raw === 'standalone' || raw === 'episodes') return raw
+  return 'all'
+})
+
+const sortBy = computed<VideoSortBy>(() => {
+  const raw = readQueryStr('sort')
+  if (raw === 'title' || raw === 'year' || raw === 'duration' || raw === 'created_at') return raw
+  return 'created_at'
+})
+const sortOrder = computed<'asc' | 'desc'>(() => {
+  const raw = readQueryStr('order')
+  if (raw === 'asc' || raw === 'desc') return raw
+  return sortBy.value === 'title' ? 'asc' : 'desc'
+})
+const sortKey = computed(() => `${sortBy.value}:${sortOrder.value}`)
+
+const routeQueryQ = computed(() => readQueryStr('q'))
+const searchInput = ref(routeQueryQ.value)
+
+watch(routeQueryQ, (next) => {
+  if (next !== searchInput.value) {
+    searchInput.value = next
+  }
+})
+
+// Cross-source Continue & Favorites via useMergedShelf
+const isShelfTab = computed(
+  () => !activeCollectionId.value && (activeTab.value === 'continue' || activeTab.value === 'favorites'),
+)
+const mergedShelfView = computed<'continue' | 'favorites'>(() =>
+  activeTab.value === 'favorites' ? 'favorites' : 'continue',
+)
+const mergedShelfScope = computed<'all' | 'online'>(() =>
+  activeScope.value === 'online' ? 'online' : 'all',
+)
+
+const mergedShelf = useMergedShelf('video', mergedShelfView, {
+  scope: mergedShelfScope,
+  sourceId: onlineSourceId,
+  query: routeQueryQ,
+  limit: 100,
+  autoLoad: false,
+})
+
+function normalizeMergedItem(item: MediaItemVM): MediaItemVM {
+  if (item.ref.scope !== 'local') return item
+  const target = item.to
+  if (typeof target === 'object' && target && 'path' in target && typeof target.path === 'string') {
+    if (target.path.startsWith('/video/play/')) {
+      return {
+        ...item,
+        to: { path: `/video/item/${encodeURIComponent(item.ref.id)}`, query: { kind: 'movie' } },
+      }
+    }
+  }
+  return item
+}
+
+const mergedShelfItems = computed<MediaItemVM[]>(() =>
+  mergedShelf.items.value.map(normalizeMergedItem),
+)
+
+// Query mutation helper (always canonical `/video/library`)
+function updateLibraryQuery(patch: Record<string, string | null | undefined>): void {
+  const next: LocationQueryRaw = {}
+  for (const [k, v] of Object.entries(route.query)) {
+    if (v !== undefined && v !== null) {
+      next[k] = v
+    }
+  }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined || v === null || v === '') {
+      delete next[k]
+    } else {
+      next[k] = v
+    }
+  }
+  // Drop redundant defaults
+  if (next.scope === 'local') delete next.scope
+  if (next.tab === 'all') delete next.tab
+  if (next.view === 'items') delete next.view
+  if (next.kind === 'all') delete next.kind
+  if (next.sort === 'created_at' && (!next.order || next.order === 'desc')) {
+    delete next.sort
+    delete next.order
+  }
+  void router.replace({ path: '/video/library', query: next })
+}
+
+async function handleScopeChange(nextScope: SourceScope): Promise<void> {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  await sourceFilter.setScope(nextScope)
+}
+
+function handleTabChange(nextTab: string): void {
+  const tab = (VALID_TABS.has(nextTab as LibraryTab) ? nextTab : 'all') as LibraryTab
+  updateLibraryQuery({
+    tab: tab === 'all' ? null : tab,
+    collection: null,
+    view: tab === 'all' ? (activeView.value === 'items' ? null : activeView.value) : null,
+  })
+}
+
+function handleViewChange(nextView: VideoLibraryView): void {
+  updateLibraryQuery({
+    tab: null,
+    collection: null,
+    view: nextView === 'items' ? null : nextView,
+    kind: nextView === 'movies' ? null : kindFilter.value === 'all' ? null : kindFilter.value,
+  })
+}
+
+function handleSortChange(val: string): void {
+  const [nextSort, nextOrder] = val.split(':') as [VideoSortBy, 'asc' | 'desc']
+  updateLibraryQuery({
+    sort: nextSort === 'created_at' && nextOrder === 'desc' ? null : nextSort,
+    order: nextSort === 'created_at' && nextOrder === 'desc' ? null : nextOrder,
+  })
+}
+
+function handleResetFilters(): void {
+  updateLibraryQuery({
+    library: null,
+    genre: null,
+    tag: null,
+    kind: null,
+    sort: null,
+    order: null,
+  })
+}
+
+function handleSearchUpdate(val: string): void {
+  searchInput.value = val
+  if (activeScope.value === 'online' && activeTab.value === 'all') {
+    return
+  }
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
+  searchDebounceTimer = setTimeout(() => {
+    searchDebounceTimer = null
+    updateLibraryQuery({ q: searchInput.value.trim() || null })
+  }, 220)
+}
+
+function handleSearchSubmit(val: string): void {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  const trimmed = val.trim()
+  updateLibraryQuery({ q: trimmed || null })
+  if (activeScope.value === 'online' && activeTab.value === 'all') {
+    onlineSearchRef.value?.submitKeyword(trimmed)
+  }
+}
+
+function handleSearchClear(): void {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer)
+    searchDebounceTimer = null
+  }
+  searchInput.value = ''
+  updateLibraryQuery({ q: null })
+  if (activeScope.value === 'online' && activeTab.value === 'all') {
+    onlineSearchRef.value?.clearKeyword()
+  }
+}
+
+function handleOnlineKeywordSync(nextKw: string): void {
+  const trimmed = nextKw.trim()
+  if (trimmed !== routeQueryQ.value) {
+    updateLibraryQuery({ q: trimmed || null })
+  }
+}
+
+function handleOnlineSourceSync(nextSourceId: string | null): void {
+  void sourceFilter.setSource(nextSourceId)
+}
+
+// Tabs & options
+const primaryTabs = computed<MdTabItem<string>[]>(() => {
+  if (activeCollectionId.value) return []
+  const base: MdTabItem<string>[] = [
+    { value: 'all', label: t('nav.all') },
+    { value: 'continue', label: t('nav.continueWatching') },
+    { value: 'favorites', label: t('nav.favorites') },
+  ]
+  if (activeScope.value === 'local') {
+    base.push({ value: 'collections', label: t('nav.collections') })
+  }
+  return base
+})
+
+const viewChipOptions = computed<Array<{ value: VideoLibraryView; label: string }>>(() => [
+  { value: 'items', label: t('catalog.allViews') },
+  { value: 'movies', label: t('catalog.moviesView') },
+  { value: 'shows', label: t('catalog.showsView') },
+  { value: 'genres', label: t('catalog.genresView') },
+  { value: 'tags', label: t('catalog.tagsView') },
+])
+
+const libraryOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('catalog.allLibraries') },
-  ...videoStore.libraries.map((l) => ({
-    value: l.id,
-    label: l.name,
-    badge: l.video_count,
-  })),
+  ...videoStore.libraries.map((l) => ({ value: l.id, label: l.name, badge: l.video_count })),
 ])
 
-const genreOptions = computed(() => [
+const genreOptions = computed<SelectOption[]>(() => [
   { value: '', label: t('catalog.allGenres') },
-  ...videoStore.genres.map((g) => ({
-    value: g.name,
-    label: g.name,
-    badge: g.count,
-  })),
+  ...videoStore.genres.map((g) => ({ value: g.name, label: g.name, badge: g.count })),
 ])
 
-const tagOptions = computed(() => [
-  { value: '', label: t('collections.tagsTitle') },
-  ...videoStore.tags.map((tg) => ({
-    value: tg.name,
-    label: `#${tg.name}`,
-    badge: tg.count,
-  })),
+const tagOptions = computed<SelectOption[]>(() => [
+  { value: '', label: t('catalog.allTags') },
+  ...videoStore.tags.map((tg) => ({ value: tg.name, label: `#${tg.name}`, badge: tg.count })),
 ])
 
-const kindOptions = computed(() => [
+const kindOptions = computed<SelectOption[]>(() => [
   { value: 'all', label: t('catalog.kindAll') },
   { value: 'standalone', label: t('catalog.kindStandalone') },
   { value: 'episodes', label: t('catalog.kindEpisodes') },
 ])
 
-const tabOptions = computed(() => [
-  { value: 'videos' as const, label: t('nav.moviesAndClips') },
-  { value: 'shows' as const, label: t('nav.shows') },
-])
-
-const sortOptions = computed(() => [
+const sortOptions = computed<SelectOption[]>(() => [
   { value: 'created_at:desc', label: t('catalog.sortCreatedDesc') },
   { value: 'title:asc', label: t('catalog.sortTitleAsc') },
   { value: 'year:desc', label: t('catalog.sortYearDesc') },
   { value: 'duration:desc', label: t('catalog.sortDurationDesc') },
 ])
 
-function queryValuesEqual(a: unknown, b: unknown): boolean {
-  if (Array.isArray(a) || Array.isArray(b)) {
-    const la = Array.isArray(a) ? a : a ? [a] : []
-    const lb = Array.isArray(b) ? b : b ? [b] : []
-    return la.length === lb.length && la.every((v, i) => v === lb[i])
+const activeLibraryName = computed(
+  () => videoStore.libraries.find((l) => l.id === selectedLibrary.value)?.name ?? '',
+)
+
+const activeFilterCount = computed(() => {
+  if (activeScope.value !== 'local' || activeTab.value !== 'all' || activeCollectionId.value) {
+    return 0
   }
-  return a === b
-}
+  let count = 0
+  if (selectedLibrary.value) count += 1
+  if (selectedGenre.value) count += 1
+  if (selectedTag.value) count += 1
+  if (activeView.value === 'items' && kindFilter.value !== 'all') count += 1
+  return count
+})
 
-function buildLocalRouteQuery(nextKw?: string): Record<string, string> {
-  const nextQuery: Record<string, string> = {}
-  if (activeTab.value !== 'videos') nextQuery.tab = activeTab.value
-  if (selectedLibrary.value) nextQuery.library = selectedLibrary.value
-  if (selectedGenre.value) nextQuery.genre = selectedGenre.value
-  if (selectedTag.value) nextQuery.tag = selectedTag.value
-  if (activeTab.value === 'videos' && kindFilter.value !== 'all') nextQuery.kind = kindFilter.value
-  const kw = (nextKw ?? search.value).trim()
-  if (kw) nextQuery.q = kw
-  return nextQuery
-}
+const showLocalFilterControls = computed(
+  () =>
+    activeScope.value === 'local' &&
+    activeTab.value === 'all' &&
+    !activeCollectionId.value &&
+    activeView.value !== 'genres' &&
+    activeView.value !== 'tags',
+)
 
-function commitRouteQuery(nextQuery: Record<string, string | string[]>): void {
-  const cur = syncingRouteQuery && pendingRouteQuery ? pendingRouteQuery : route.query
-  const same =
-    Object.keys(nextQuery).length === Object.keys(cur).length &&
-    Object.entries(nextQuery).every(([k, v]) => queryValuesEqual(cur[k], v))
-  if (same) return
+const showVideoSort = computed(
+  () => showLocalFilterControls.value && (activeView.value === 'items' || activeView.value === 'movies'),
+)
 
-  const seq = ++syncRouteSeq
-  syncingRouteQuery = true
-  pendingRouteQuery = nextQuery
-  void router.replace({ path: '/video/catalog', query: nextQuery }).finally(() => {
-    if (seq === syncRouteSeq) {
-      syncingRouteQuery = false
-      pendingRouteQuery = null
-    }
-  })
-}
+// Filtered dimensions & collections
+const filteredGenres = computed(() => {
+  const q = routeQueryQ.value.toLowerCase()
+  const list = [...videoStore.genres].sort((a, b) => b.count - a.count)
+  return q ? list.filter((g) => g.name.toLowerCase().includes(q)) : list
+})
 
-function syncOnlineScopeToRoute(
-  nextScope: VideoSearchScope,
-  nextKw: string,
-  nextSourceId?: string | null,
-): void {
-  if (nextScope === 'online') {
-    const nextQuery: Record<string, string> = { scope: 'online' }
-    if (nextSourceId) {
-      nextQuery.source = nextSourceId
-    }
-    if (nextKw.trim()) {
-      nextQuery.q = nextKw.trim()
-    }
-    commitRouteQuery(nextQuery)
+const filteredTags = computed(() => {
+  const q = routeQueryQ.value.toLowerCase()
+  const list = [...videoStore.tags].sort((a, b) => b.count - a.count)
+  return q ? list.filter((tg) => tg.name.toLowerCase().includes(q)) : list
+})
+
+const filteredShelves = computed(() => {
+  const q = routeQueryQ.value.toLowerCase()
+  const list = videoStore.shelves
+  return q
+    ? list.filter(
+        (sh) =>
+          sh.name.toLowerCase().includes(q) || sh.description.toLowerCase().includes(q),
+      )
+    : list
+})
+
+const filteredShelfVideos = computed(() => {
+  const list = shelfDetail.value?.videos ?? []
+  const q = routeQueryQ.value.toLowerCase()
+  return q ? list.filter((v) => v.title.toLowerCase().includes(q)) : list
+})
+
+const firstPlayableShelfVideo = computed<VideoSummaryDto | null>(() => {
+  const list = shelfDetail.value?.videos ?? []
+  if (list.length === 0) return null
+  return list.find((v) => !v.progress?.completed) ?? list[0] ?? null
+})
+
+// Page title & count
+const pageTitle = computed(() => {
+  if (activeCollectionId.value) {
+    return shelfDetail.value?.shelf.name || t('nav.collections')
+  }
+  if (activeScope.value === 'online') return t('online.scopeOnline')
+  if (activeTab.value === 'continue') return t('continueView.title')
+  if (activeTab.value === 'favorites') return t('favorites.title')
+  if (activeTab.value === 'collections') return t('collections.shelvesTitle')
+  if (activeLibraryName.value) return activeLibraryName.value
+  if (selectedGenre.value) return selectedGenre.value
+  if (selectedTag.value) return `#${selectedTag.value}`
+  if (activeView.value === 'shows') return t('catalog.showsView')
+  if (activeView.value === 'movies') return t('catalog.moviesView')
+  if (activeView.value === 'genres') return t('catalog.genresView')
+  if (activeView.value === 'tags') return t('catalog.tagsView')
+  return t('nav.library')
+})
+
+const pageCount = computed<number | null>(() => {
+  if (activeScope.value === 'online' && activeTab.value === 'all') return null
+  if (isShelfTab.value) return mergedShelfItems.value.length
+  if (activeCollectionId.value) return filteredShelfVideos.value.length
+  if (activeTab.value === 'collections') return filteredShelves.value.length
+  if (activeView.value === 'genres') return filteredGenres.value.length
+  if (activeView.value === 'tags') return filteredTags.value.length
+  if (activeView.value === 'shows') return shows.value.length
+  return videos.value.length
+})
+
+const isOnlineSearchMode = computed(
+  () => activeScope.value === 'online' && activeTab.value === 'all',
+)
+
+const templateLoading = computed(() => {
+  if (isOnlineSearchMode.value) return false
+  if (isShelfTab.value) return mergedShelf.loading.value
+  return localLoading.value
+})
+
+const templateError = computed<string | null>(() => {
+  if (isOnlineSearchMode.value) return null
+  if (isShelfTab.value) return mergedShelf.error.value
+  return localError.value
+})
+
+const templateEmpty = computed(() => {
+  if (isOnlineSearchMode.value || templateLoading.value || templateError.value) return false
+  if (isShelfTab.value) return mergedShelfItems.value.length === 0
+  if (activeCollectionId.value) return filteredShelfVideos.value.length === 0
+  if (activeTab.value === 'collections') return filteredShelves.value.length === 0
+  if (activeView.value === 'genres') return filteredGenres.value.length === 0
+  if (activeView.value === 'tags') return filteredTags.value.length === 0
+  if (activeView.value === 'shows') return shows.value.length === 0
+  return videos.value.length === 0
+})
+
+const emptyTitle = computed(() => {
+  if (activeTab.value === 'continue') return t('continueView.emptyTitle')
+  if (activeTab.value === 'favorites') return t('favorites.empty')
+  if (activeCollectionId.value) return t('shelf.emptyVideos')
+  if (activeTab.value === 'collections') return t('shelf.emptyShelves')
+  return t('common.noResults')
+})
+
+const emptyDescription = computed(() => {
+  if (activeTab.value === 'continue') return t('continueView.emptyDesc')
+  if (activeTab.value === 'collections' && !activeCollectionId.value) return t('shelf.emptyShelvesDesc')
+  return ''
+})
+
+const skeletonAspect = computed<'video' | 'poster'>(() =>
+  activeView.value === 'shows' ? 'poster' : 'video',
+)
+
+// Data fetching
+async function fetchActiveData(): Promise<void> {
+  if (isOnlineSearchMode.value) {
+    localLoading.value = false
+    localError.value = null
     return
   }
-  commitRouteQuery(buildLocalRouteQuery(nextKw))
-}
 
-function syncRouteQuery(): void {
-  if (searchScope.value === 'online') {
-    syncOnlineScopeToRoute('online', onlineKeyword.value, onlineSourceId.value)
+  if (isShelfTab.value) {
+    localLoading.value = false
+    localError.value = null
+    await mergedShelf.refresh()
     return
   }
-  commitRouteQuery(buildLocalRouteQuery())
-}
 
-function switchSearchScope(next: VideoSearchScope): void {
-  searchScope.value = next
-  if (next === 'online') {
-    if (searchDebounceTimer) {
-      clearTimeout(searchDebounceTimer)
-      searchDebounceTimer = null
-    }
-    fetchSeq += 1
-    loading.value = false
-    onlineKeyword.value = typeof route.query.q === 'string' ? route.query.q : ''
-    syncOnlineScopeToRoute('online', onlineKeyword.value, onlineSourceId.value)
-    return
-  }
-  syncOnlineScopeToRoute('local', search.value, null)
-  void fetchActive()
-}
-
-function handleOnlineKeywordUpdate(nextKw: string): void {
-  onlineKeyword.value = nextKw
-  syncOnlineScopeToRoute('online', nextKw, onlineSourceId.value)
-}
-
-function handleOnlineSourceUpdate(nextSourceId: string | null): void {
-  syncOnlineScopeToRoute('online', onlineKeyword.value, nextSourceId)
-}
-
-function applyScopeFromRoute(): void {
-  searchScope.value = route.query.scope === 'online' ? 'online' : 'local'
-  onlineKeyword.value = typeof route.query.q === 'string' ? route.query.q : ''
-}
-
-function selectTab(tab: CatalogTab): void {
-  if (activeTab.value === tab) return
-  activeTab.value = tab
-  syncRouteQuery()
-  void fetchActive()
-}
-
-function clearScopeFilters(): void {
-  selectedLibrary.value = ''
-  selectedGenre.value = ''
-  selectedTag.value = ''
-  kindFilter.value = 'all'
-  search.value = ''
-  syncRouteQuery()
-  void fetchActive()
-}
-
-async function fetchVideos(): Promise<void> {
-  if (searchScope.value === 'online') {
-    loading.value = false
-    return
-  }
   const seq = ++fetchSeq
-  loading.value = true
+  localLoading.value = true
+  localError.value = null
+
   try {
-    const [sortBy, order] = sortKey.value.split(':') as [VideoSortBy, string]
+    if (activeCollectionId.value) {
+      const detail = await api.getShelf(activeCollectionId.value)
+      if (seq !== fetchSeq) return
+      shelfDetail.value = detail
+      return
+    }
+
+    shelfDetail.value = null
+
+    if (activeTab.value === 'collections' || activeView.value === 'genres' || activeView.value === 'tags') {
+      await videoStore.refreshSidebar(false)
+      return
+    }
+
+    if (activeView.value === 'shows') {
+      const list = await api.listShows({
+        library_id: selectedLibrary.value || undefined,
+        genre: selectedGenre.value || undefined,
+        tag: selectedTag.value || undefined,
+        search: routeQueryQ.value || undefined,
+      })
+      if (seq !== fetchSeq) return
+      shows.value = list
+      return
+    }
+
     const list = await api.listVideos({
       library_id: selectedLibrary.value || undefined,
       kind: kindFilter.value,
       genre: selectedGenre.value || undefined,
       tag: selectedTag.value || undefined,
-      search: search.value.trim() || undefined,
-      sort_by: sortBy,
-      sort_desc: order === 'desc',
+      search: routeQueryQ.value || undefined,
+      sort_by: sortBy.value,
+      sort_desc: sortOrder.value === 'desc',
     })
     if (seq !== fetchSeq) return
     videos.value = list
   } catch (err) {
     if (seq !== fetchSeq) return
-    snackbarStore.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
+    localError.value = err instanceof Error ? err.message : String(err)
   } finally {
     if (seq === fetchSeq) {
-      loading.value = false
+      localLoading.value = false
     }
   }
 }
 
-async function fetchShows(): Promise<void> {
-  if (searchScope.value === 'online') {
-    loading.value = false
+async function handleRefresh(): Promise<void> {
+  if (isOnlineSearchMode.value) {
+    await onlineSearchRef.value?.refresh()
     return
   }
-  const seq = ++fetchSeq
-  loading.value = true
+  await Promise.allSettled([videoStore.refreshSidebar(true), fetchActiveData()])
+}
+
+// Collection (Shelf) actions
+async function handleCreateShelf(): Promise<void> {
+  const trimmed = newShelfName.value.trim()
+  if (!trimmed || creatingShelf.value) return
+  creatingShelf.value = true
   try {
-    const list = await api.listShows({
-      library_id: selectedLibrary.value || undefined,
-      genre: selectedGenre.value || undefined,
-      tag: selectedTag.value || undefined,
-      search: search.value.trim() || undefined,
-    })
-    if (seq !== fetchSeq) return
-    shows.value = list
+    await api.createShelf({ name: trimmed })
+    newShelfName.value = ''
+    await videoStore.refreshSidebar(true)
   } catch (err) {
-    if (seq !== fetchSeq) return
-    snackbarStore.show({
+    snackbar.show({
       message: err instanceof Error ? err.message : String(err),
       tone: 'error',
     })
   } finally {
-    if (seq === fetchSeq) {
-      loading.value = false
+    creatingShelf.value = false
+  }
+}
+
+async function handleRenameShelf(shelfId: string, currentName: string): Promise<void> {
+  const next = await dialogStore.prompt({
+    title: t('shelf.renameTitle'),
+    message: t('shelf.renamePrompt'),
+    initialValue: currentName,
+  })
+  if (!next || !next.trim() || next.trim() === currentName) return
+  try {
+    const detail =
+      shelfDetail.value && shelfDetail.value.shelf.id === shelfId
+        ? shelfDetail.value
+        : await api.getShelf(shelfId)
+    const updated = await api.updateShelf(shelfId, {
+      name: next.trim(),
+      description: detail.shelf.description,
+      video_ids: detail.videos.map((v) => v.id),
+    })
+    if (shelfDetail.value?.shelf.id === shelfId) {
+      shelfDetail.value = updated
     }
+    await videoStore.refreshSidebar(true)
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
 }
 
-async function fetchActive(): Promise<void> {
-  if (searchScope.value === 'online') {
-    loading.value = false
-    return
-  }
-  if (activeTab.value === 'shows') {
-    await fetchShows()
-  } else {
-    await fetchVideos()
+async function handleDeleteShelf(shelfId: string, name: string): Promise<void> {
+  const ok = await dialogStore.confirm({
+    title: t('shelf.deleteTitle'),
+    message: t('shelf.confirmDelete', { name }),
+    danger: true,
+  })
+  if (!ok) return
+  try {
+    await api.deleteShelf(shelfId)
+    await videoStore.refreshSidebar(true)
+    if (activeCollectionId.value === shelfId) {
+      updateLibraryQuery({ collection: null, tab: 'collections' })
+    }
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   }
 }
 
-function handleSearchInput(): void {
-  if (searchScope.value === 'online') return
-  if (searchDebounceTimer) clearTimeout(searchDebounceTimer)
-  searchDebounceTimer = setTimeout(() => {
-    searchDebounceTimer = null
-    if (searchScope.value === 'online') return
-    syncRouteQuery()
-    void fetchActive()
-  }, 220)
+async function handleRemoveVideoFromShelf(videoId: string): Promise<void> {
+  if (!shelfDetail.value) return
+  try {
+    const remaining = shelfDetail.value.videos.filter((v) => v.id !== videoId).map((v) => v.id)
+    shelfDetail.value = await api.updateShelf(shelfDetail.value.shelf.id, {
+      name: shelfDetail.value.shelf.name,
+      description: shelfDetail.value.shelf.description,
+      video_ids: remaining,
+    })
+    await videoStore.refreshSidebar(true)
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
-function handleFilterChange(): void {
-  if (searchScope.value === 'online') return
-  syncRouteQuery()
-  void fetchActive()
+// Merged continue/favorites item quick actions
+async function handleMergedRemoveFavorite(item: MediaItemVM): Promise<void> {
+  try {
+    if (item.ref.scope === 'local') {
+      const isShow =
+        typeof item.to === 'object' &&
+        item.to &&
+        'path' in item.to &&
+        typeof item.to.path === 'string' &&
+        item.to.path.startsWith('/video/item/') &&
+        !('query' in item.to && (item.to.query as Record<string, unknown>)?.kind === 'movie')
+      await api.setFavorite(isShow ? 'show' : 'video', item.ref.id, false)
+    } else {
+      const saved = await onlineItemsApi.upsert('video', {
+        source_kind: item.ref.scope,
+        source_id: item.ref.sourceId,
+        item_key: item.ref.ref,
+        title: item.title,
+        favorite: false,
+      })
+      seedOnlineItemStateCache([saved])
+    }
+    await mergedShelf.refresh()
+    snackbar.show({
+      message: isZh.value ? '已移除收藏' : 'Removed from favorites',
+    })
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
+async function handleMergedClearContinue(item: MediaItemVM, close: () => void): Promise<void> {
+  close()
+  try {
+    if (item.ref.scope === 'local') {
+      await api.setWatched(item.ref.id, true)
+    } else {
+      const lookup = await onlineItemsApi.lookup('video', [
+        { source_kind: item.ref.scope, source_id: item.ref.sourceId, item_key: item.ref.ref },
+      ])
+      const existing = lookup.items[0]
+      if (existing) {
+        const updated = await onlineItemsApi.clearProgress('video', existing.id)
+        seedOnlineItemStateCache([updated])
+      }
+    }
+    await mergedShelf.refresh()
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 watch(
-  () =>
-    [
-      route.query.scope,
-      route.query.tab,
-      route.query.library,
-      route.query.genre,
-      route.query.tag,
-      route.query.kind,
-      route.query.q,
-    ] as const,
-  ([qScope, qTab, qLib, qGenre, qTag, qKind, qSearch]) => {
-    if (syncingRouteQuery) return
-    const prevScope = searchScope.value
-    const nextScope: VideoSearchScope = qScope === 'online' ? 'online' : 'local'
-    searchScope.value = nextScope
+  () => [
+    activeScope.value,
+    onlineSourceId.value,
+    activeTab.value,
+    activeCollectionId.value,
+    activeView.value,
+    selectedLibrary.value,
+    selectedGenre.value,
+    selectedTag.value,
+    kindFilter.value,
+    sortBy.value,
+    sortOrder.value,
+    routeQueryQ.value,
+  ],
+  () => {
+    void fetchActiveData()
+  },
+)
 
-    if (nextScope === 'online') {
-      if (searchDebounceTimer) {
-        clearTimeout(searchDebounceTimer)
-        searchDebounceTimer = null
-      }
-      fetchSeq += 1
-      loading.value = false
-      onlineKeyword.value = typeof qSearch === 'string' ? qSearch : ''
-      return
-    }
-
-    const nextTab: CatalogTab = qTab === 'shows' ? 'shows' : 'videos'
-    const nextLib = typeof qLib === 'string' ? qLib : ''
-    const nextGenre = typeof qGenre === 'string' ? qGenre : ''
-    const nextTag = typeof qTag === 'string' ? qTag : ''
-    const nextKind: VideoKindFilter =
-      qKind === 'standalone' || qKind === 'episodes' ? qKind : 'all'
-    const nextSearch = typeof qSearch === 'string' ? qSearch : ''
-    const changed =
-      prevScope !== 'local' ||
-      nextTab !== activeTab.value ||
-      nextLib !== selectedLibrary.value ||
-      nextGenre !== selectedGenre.value ||
-      nextTag !== selectedTag.value ||
-      nextKind !== kindFilter.value ||
-      nextSearch !== search.value
-    activeTab.value = nextTab
-    selectedLibrary.value = nextLib
-    selectedGenre.value = nextGenre
-    selectedTag.value = nextTag
-    kindFilter.value = nextKind
-    search.value = nextSearch
-    if (changed) {
-      void fetchActive()
+watch(
+  () => [videoStore.catalogVersion, uploadStore.versionCounter],
+  () => {
+    if (!isOnlineSearchMode.value) {
+      void fetchActiveData()
     }
   },
 )
 
-async function refreshPage(): Promise<void> {
-  if (searchScope.value === 'online') return
-  await Promise.all([videoStore.refreshSidebar(), fetchActive()])
-}
-
 onMounted(() => {
-  applyScopeFromRoute()
-  if (searchScope.value !== 'online') {
-    void fetchActive()
-  } else {
-    loading.value = false
-  }
+  void videoStore.refreshSidebar(false)
+  void fetchActiveData()
 })
+
 onBeforeUnmount(() => {
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer)
     searchDebounceTimer = null
   }
 })
-watch(
-  () => [videoStore.catalogVersion, uploadStore.versionCounter],
-  () => {
-    if (searchScope.value !== 'online') {
-      void fetchActive()
-    }
-  },
-)
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-5 px-6 py-7 sm:px-8">
-    <!-- Header -->
-    <div class="flex flex-wrap items-center justify-between gap-4">
-      <div>
-        <div class="flex items-center gap-2">
-          <h1 class="text-2xl font-extrabold tracking-tight text-[var(--md-sys-color-on-surface)]">
-            {{ pageTitle }}
-          </h1>
-          <button
-            v-if="
-              searchScope === 'local' &&
-              (selectedLibrary || selectedGenre || selectedTag || kindFilter !== 'all')
-            "
-            type="button"
-            class="md-chip md-state"
-            @click="clearScopeFilters"
-          >
-            <span>{{ t('nav.all') }}</span>
-            <LuX class="h-3 w-3" />
-          </button>
-        </div>
-        <p
-          v-if="searchScope === 'local'"
-          class="mt-0.5 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ pageSubtitle }}
-        </p>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-3">
-        <MdSegmentedButton
-          :model-value="searchScope"
-          :options="searchScopeOptions"
+  <div class="px-4 py-6 sm:px-6 lg:px-8">
+    <DomainLibraryTemplate
+      domain="video"
+      :title="pageTitle"
+      :count="pageCount"
+      :scope="activeScope"
+      :sync-scope-url="false"
+      :show-scope-bar="true"
+      :search-query="searchInput"
+      :search-placeholder="
+        activeScope === 'online' ? t('online.searchPlaceholder') : t('common.filterPlaceholder')
+      "
+      :tabs="primaryTabs"
+      :active-tab="activeTab"
+      :loading="templateLoading"
+      :skeleton-aspect="skeletonAspect"
+      :error="templateError"
+      :empty="templateEmpty"
+      :empty-title="emptyTitle"
+      :empty-description="emptyDescription"
+      :filter-sheet-open="filterSheetOpen"
+      :active-filter-count="activeFilterCount"
+      @scope-change="handleScopeChange"
+      @update:active-tab="handleTabChange"
+      @update:search-query="handleSearchUpdate"
+      @search-submit="handleSearchSubmit"
+      @search-clear="handleSearchClear"
+      @retry="fetchActiveData"
+      @update:filter-sheet-open="filterSheetOpen = $event"
+      @reset-filters="handleResetFilters"
+    >
+      <template #header-trailing>
+        <MdIconButton
+          variant="standard"
           size="sm"
-          :show-check="false"
-          @update:model-value="switchSearchScope($event)"
+          :icon="LuRefreshCw"
+          :loading="templateLoading"
+          :aria-label="t('common.refresh')"
+          :tooltip="t('common.refresh')"
+          @click="handleRefresh"
         />
-        <RefreshButton v-if="searchScope === 'local'" size="md" :action="refreshPage" />
-      </div>
-    </div>
+      </template>
 
-    <OnlineVideoSearchSection
-      v-if="searchScope === 'online'"
-      :keyword="onlineKeyword"
-      :initial-source-id="onlineSourceId"
-      @update:keyword="handleOnlineKeywordUpdate"
-      @update:source-id="handleOnlineSourceUpdate"
-    />
-
-    <template v-else>
-      <!-- Videos / Shows Tabs -->
-      <MdSegmentedButton
-        :model-value="activeTab"
-        :options="tabOptions"
-        size="md"
-        @update:model-value="selectTab($event)"
-      />
-
-      <!-- Filters Row -->
-      <div
-        class="grid grid-cols-1 gap-2.5 sm:grid-cols-2"
-        :class="activeTab === 'videos' ? 'lg:grid-cols-5' : 'lg:grid-cols-3'"
+      <!-- Single compact row of View chips + removable active filter chips -->
+      <template
+        v-if="activeScope === 'local' && activeTab === 'all' && !activeCollectionId"
+        #toolbar-chips
       >
-        <div class="relative">
-          <LuSearch
-            class="pointer-events-none absolute top-1/2 left-3 h-3.5 w-3.5 -translate-y-1/2 text-[var(--md-sys-color-on-surface-variant)]"
-          />
-          <input
-            v-model="search"
-            type="text"
-            :placeholder="t('common.filterPlaceholder')"
-            class="md-input h-9 w-full pl-8.5 pr-3 text-xs"
-            @input="handleSearchInput"
+        <MdChip
+          v-for="opt in viewChipOptions"
+          :key="opt.value"
+          variant="filter"
+          :label="opt.label"
+          :selected="activeView === opt.value"
+          hide-check
+          @click="handleViewChange(opt.value)"
+        />
+
+        <MdChip
+          v-if="activeLibraryName"
+          variant="input"
+          :label="activeLibraryName"
+          removable
+          @remove="updateLibraryQuery({ library: null })"
+        />
+        <MdChip
+          v-if="selectedGenre"
+          variant="input"
+          :label="selectedGenre"
+          removable
+          @remove="updateLibraryQuery({ genre: null })"
+        />
+        <MdChip
+          v-if="selectedTag"
+          variant="input"
+          :label="`#${selectedTag}`"
+          removable
+          @remove="updateLibraryQuery({ tag: null })"
+        />
+      </template>
+
+      <template v-if="showVideoSort" #toolbar-trailing>
+        <div class="w-40">
+          <MdSelect
+            :model-value="sortKey"
+            :options="sortOptions"
+            variant="compact"
+            :aria-label="t('catalog.sortLabel')"
+            @change="handleSortChange"
           />
         </div>
+      </template>
 
-        <AppSelect
-          v-model="selectedLibrary"
-          :options="libraryOptions"
-          @change="handleFilterChange"
-        />
+      <!-- Responsive Filter Sheet (only registered when local browsing) -->
+      <template v-if="showLocalFilterControls" #filter-sheet>
+        <div class="space-y-4">
+          <div class="space-y-1.5">
+            <span class="text-label-medium block text-on-surface-variant">
+              {{ t('catalog.libraryLabel') }}
+            </span>
+            <MdSelect
+              :model-value="selectedLibrary"
+              :options="libraryOptions"
+              size="sm"
+              @change="updateLibraryQuery({ library: $event || null })"
+            />
+          </div>
 
-        <AppSelect
-          v-model="selectedGenre"
-          :options="genreOptions"
-          searchable
-          @change="handleFilterChange"
-        />
+          <div class="space-y-1.5">
+            <span class="text-label-medium block text-on-surface-variant">
+              {{ t('catalog.genreLabel') }}
+            </span>
+            <MdSelect
+              :model-value="selectedGenre"
+              :options="genreOptions"
+              size="sm"
+              searchable
+              @change="updateLibraryQuery({ genre: $event || null })"
+            />
+          </div>
 
-        <AppSelect
-          v-if="videoStore.tags.length > 0 || selectedTag"
-          v-model="selectedTag"
-          :options="tagOptions"
-          searchable
-          @change="handleFilterChange"
-        />
+          <div v-if="videoStore.tags.length > 0 || selectedTag" class="space-y-1.5">
+            <span class="text-label-medium block text-on-surface-variant">
+              {{ t('catalog.tagLabel') }}
+            </span>
+            <MdSelect
+              :model-value="selectedTag"
+              :options="tagOptions"
+              size="sm"
+              searchable
+              @change="updateLibraryQuery({ tag: $event || null })"
+            />
+          </div>
 
-        <template v-if="activeTab === 'videos'">
-          <AppSelect
-            v-model="kindFilter"
-            :options="kindOptions"
-            @change="handleFilterChange"
-          />
+          <div v-if="activeView === 'items'" class="space-y-1.5">
+            <span class="text-label-medium block text-on-surface-variant">
+              {{ t('catalog.kindLabel') }}
+            </span>
+            <MdSelect
+              :model-value="kindFilter"
+              :options="kindOptions"
+              size="sm"
+              @change="updateLibraryQuery({ kind: $event === 'all' ? null : $event })"
+            />
+          </div>
 
-          <AppSelect
-            v-model="sortKey"
-            :options="sortOptions"
-            @change="fetchVideos"
-          />
-        </template>
+          <div v-if="showVideoSort" class="space-y-1.5">
+            <span class="text-label-medium block text-on-surface-variant">
+              {{ t('catalog.sortLabel') }}
+            </span>
+            <MdSelect
+              :model-value="sortKey"
+              :options="sortOptions"
+              size="sm"
+              @change="handleSortChange"
+            />
+          </div>
+        </div>
+      </template>
+
+      <!-- Collection Detail Subheader OR New Watchlist Subheader -->
+      <template #subheader>
+        <!-- Viewing a specific Watchlist (?collection=<id>) -->
+        <section
+          v-if="activeCollectionId && shelfDetail"
+          class="space-y-4 rounded-corner-lg bg-surface-container-low p-4 sm:p-5"
+        >
+          <div class="flex items-center">
+            <MdButton
+              variant="text"
+              size="sm"
+              :icon="LuArrowLeft"
+              @click="updateLibraryQuery({ collection: null, tab: 'collections' })"
+            >
+              {{ t('shelf.backToCollections') }}
+            </MdButton>
+          </div>
+
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-center">
+            <div class="w-40 shrink-0 overflow-hidden rounded-corner-md bg-surface-container-high">
+              <MediaCoverImage
+                :src="buildPosterUrl(shelfDetail.shelf.poster_key, 400)"
+                :alt="shelfDetail.shelf.name"
+                aspect-class="aspect-video"
+                rounded="rounded-corner-md"
+                :fallback-icon="LuFolderHeart"
+                fallback-icon-class="h-8 w-8 text-on-surface-variant/60"
+              />
+            </div>
+
+            <div class="min-w-0 flex-1 space-y-2">
+              <div class="space-y-0.5">
+                <h2 class="text-title-large truncate text-on-surface">
+                  {{ shelfDetail.shelf.name }}
+                </h2>
+                <p class="text-body-small text-on-surface-variant">
+                  {{ t('common.videosCount', { count: shelfDetail.shelf.video_count }) }}
+                </p>
+                <p
+                  v-if="shelfDetail.shelf.description"
+                  class="text-body-medium line-clamp-2 text-on-surface-variant"
+                >
+                  {{ shelfDetail.shelf.description }}
+                </p>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-2 pt-1">
+                <MdButton
+                  v-if="firstPlayableShelfVideo"
+                  variant="filled"
+                  size="sm"
+                  :icon="LuPlay"
+                  :to="{
+                    path: `/video/play/${encodeURIComponent(firstPlayableShelfVideo.id)}`,
+                    query: { shelf: shelfDetail.shelf.id },
+                  }"
+                >
+                  {{ t('common.play') }}
+                </MdButton>
+
+                <MdButton
+                  variant="tonal"
+                  size="sm"
+                  :icon="LuPencil"
+                  @click="handleRenameShelf(shelfDetail.shelf.id, shelfDetail.shelf.name)"
+                >
+                  {{ t('common.edit') }}
+                </MdButton>
+
+                <MdMenu placement="bottom-end" :aria-label="t('common.moreActions')">
+                  <template #trigger="{ toggle, triggerAttrs }">
+                    <MdIconButton
+                      v-bind="triggerAttrs"
+                      variant="standard"
+                      size="sm"
+                      :icon="LuMoreVertical"
+                      :aria-label="t('common.moreActions')"
+                      @click="toggle"
+                    />
+                  </template>
+                  <template #default="{ close }">
+                    <MdMenuItem
+                      :icon="LuTrash2"
+                      :label="t('common.delete')"
+                      destructive
+                      @select="
+                        close();
+                        handleDeleteShelf(shelfDetail.shelf.id, shelfDetail.shelf.name)
+                      "
+                    />
+                  </template>
+                </MdMenu>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Collections Overview Inline Create Bar -->
+        <form
+          v-else-if="activeScope === 'local' && activeTab === 'collections' && !activeCollectionId"
+          class="flex flex-wrap items-center gap-2"
+          @submit.prevent="handleCreateShelf"
+        >
+          <div class="min-w-52 flex-1 sm:max-w-xs">
+            <MdTextField
+              v-model="newShelfName"
+              size="sm"
+              :placeholder="t('nav.shelfNamePlaceholder')"
+            />
+          </div>
+          <MdButton
+            type="submit"
+            variant="tonal"
+            size="sm"
+            :icon="LuPlus"
+            :loading="creatingShelf"
+            :disabled="!newShelfName.trim()"
+          >
+            {{ t('nav.newShelf') }}
+          </MdButton>
+        </form>
+      </template>
+
+      <!-- Mode 1: Online Search & Explore Shell (single search bar lives in DomainLibraryTemplate) -->
+      <OnlineVideoSearchSection
+        v-if="isOnlineSearchMode"
+        ref="onlineSearchRef"
+        :keyword="routeQueryQ"
+        :initial-source-id="onlineSourceId"
+        :show-search-input="false"
+        @update:keyword="handleOnlineKeywordSync"
+        @update:source-id="handleOnlineSourceSync"
+      />
+
+      <!-- Mode 2: Merged Continue / Favorites (Cross-Source Local + Online) -->
+      <div
+        v-else-if="isShelfTab"
+        class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+      >
+        <MediaItemCard
+          v-for="(item, idx) in mergedShelfItems"
+          :key="
+            item.ref.scope === 'local'
+              ? `shelf-local-${item.ref.id}-${idx}`
+              : `shelf-online-${item.ref.sourceId}-${item.ref.ref}-${idx}`
+          "
+          :item="item"
+          aspect="video"
+          cover-style="plain"
+          :prefer-play-route="activeTab === 'continue'"
+          :show-favorite="activeTab === 'favorites'"
+          :favorite="activeTab === 'favorites' ? true : undefined"
+          @toggle-favorite="handleMergedRemoveFavorite"
+        >
+          <template v-if="activeTab === 'continue'" #menu="{ close }">
+            <MdMenuItem
+              :icon="LuCheck"
+              :label="t('detail.clearProgress')"
+              @select="handleMergedClearContinue(item, close)"
+            />
+          </template>
+        </MediaItemCard>
       </div>
 
-      <!-- Results -->
-      <template v-if="activeTab === 'videos'">
-        <div
-          v-if="videos.length === 0 && !loading"
-          class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
+      <!-- Mode 3: Watchlist Detail Grid (?collection=<id>) -->
+      <div
+        v-else-if="activeCollectionId"
+        class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+      >
+        <VideoCard
+          v-for="v in filteredShelfVideos"
+          :key="v.id"
+          :video="v"
+          removable-from-shelf
+          @remove-from-shelf="handleRemoveVideoFromShelf"
+          @edit="editingVideo = $event"
+          @deleted="fetchActiveData"
+        />
+      </div>
+
+      <!-- Mode 4: Watchlists Overview Grid (tab=collections) -->
+      <div
+        v-else-if="activeTab === 'collections'"
+        class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
+      >
+        <MdCard
+          v-for="sh in filteredShelves"
+          :key="sh.id"
+          variant="filled"
+          padding="sm"
+          clickable
+          class="flex items-center gap-3.5"
+          @click="updateLibraryQuery({ collection: sh.id, tab: null })"
         >
-          {{ t('common.noResults') }}
-        </div>
-        <div v-else class="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-          <VideoCard
-            v-for="v in videos"
-            :key="v.id"
-            :video="v"
-            @edit="editingVideo = $event"
-            @deleted="fetchVideos"
-          />
-        </div>
+          <div class="h-12 w-20 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
+            <MediaCoverImage
+              :src="buildPosterUrl(sh.poster_key, 240)"
+              :alt="sh.name"
+              aspect-class="aspect-video"
+              rounded="rounded-corner-sm"
+              :fallback-icon="LuFolderHeart"
+              fallback-icon-class="h-5 w-5 text-on-surface-variant/60"
+            />
+          </div>
+
+          <div class="min-w-0 flex-1">
+            <h3 class="text-title-small truncate text-on-surface">
+              {{ sh.name }}
+            </h3>
+            <p class="text-body-small mt-0.5 truncate text-on-surface-variant">
+              {{ t('common.videosCount', { count: sh.video_count }) }}
+            </p>
+          </div>
+
+          <div class="shrink-0" @click.stop>
+            <MdMenu placement="bottom-end" :aria-label="t('common.moreActions')">
+              <template #trigger="{ toggle, triggerAttrs }">
+                <MdIconButton
+                  v-bind="triggerAttrs"
+                  variant="standard"
+                  size="sm"
+                  :icon="LuMoreVertical"
+                  :aria-label="t('common.moreActions')"
+                  @click="toggle"
+                />
+              </template>
+              <template #default="{ close }">
+                <MdMenuItem
+                  :icon="LuPencil"
+                  :label="t('common.edit')"
+                  @select="
+                    close();
+                    handleRenameShelf(sh.id, sh.name)
+                  "
+                />
+                <div class="my-1 border-t border-outline-variant pt-1" role="separator">
+                  <MdMenuItem
+                    :icon="LuTrash2"
+                    :label="t('common.delete')"
+                    destructive
+                    @select="
+                      close();
+                      handleDeleteShelf(sh.id, sh.name)
+                    "
+                  />
+                </div>
+              </template>
+            </MdMenu>
+          </div>
+        </MdCard>
+      </div>
+
+      <!-- Mode 5: Genres / Tags Dimension Browser (view=genres | view=tags) -->
+      <div
+        v-else-if="activeView === 'genres' || activeView === 'tags'"
+        class="flex flex-wrap gap-2"
+      >
+        <MdChip
+          v-for="item in activeView === 'genres' ? filteredGenres : filteredTags"
+          :key="item.name"
+          variant="assist"
+          :icon="activeView === 'genres' ? LuSparkles : LuTag"
+          :label="`${activeView === 'tags' ? '#' : ''}${item.name} (${item.count})`"
+          @click="
+            updateLibraryQuery(
+              activeView === 'genres'
+                ? { genre: item.name, view: null }
+                : { tag: item.name, view: null },
+            )
+          "
+        />
+      </div>
+
+      <!-- Mode 6: TV & Anime Shows Grid (view=shows) -->
+      <div
+        v-else-if="activeView === 'shows'"
+        class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+      >
+        <ShowCard v-for="sh in shows" :key="sh.id" :show="sh" />
+      </div>
+
+      <!-- Mode 7: Videos / Movies Grid (view=items | view=movies) -->
+      <div
+        v-else
+        class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+      >
+        <VideoCard
+          v-for="v in videos"
+          :key="v.id"
+          :video="v"
+          @edit="editingVideo = $event"
+          @deleted="fetchActiveData"
+          @updated="fetchActiveData"
+        />
+      </div>
+
+      <template v-if="activeFilterCount > 0 || routeQueryQ" #empty-actions>
+        <MdButton
+          variant="tonal"
+          :icon="LuX"
+          @click="
+            handleSearchClear();
+            handleResetFilters()
+          "
+        >
+          {{ isZh ? '清除筛选条件' : 'Clear filters' }}
+        </MdButton>
       </template>
 
-      <template v-else>
-        <div
-          v-if="shows.length === 0 && !loading"
-          class="py-16 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ t('common.noResults') }}
-        </div>
-        <div v-else class="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-          <ShowCard v-for="sh in shows" :key="sh.id" :show="sh" />
-        </div>
+      <template v-else-if="activeTab === 'continue'" #empty-actions>
+        <MdButton variant="tonal" :icon="LuFilm" @click="handleTabChange('all')">
+          {{ t('continueView.browseCatalog') }}
+        </MdButton>
       </template>
+    </DomainLibraryTemplate>
 
-      <VideoMetadataModal
-        :open="editingVideo !== null"
-        :video="editingVideo"
-        @close="editingVideo = null"
-        @saved="fetchVideos"
-      />
-    </template>
+    <VideoMetadataModal
+      :open="editingVideo !== null"
+      :video="editingVideo"
+      @close="editingVideo = null"
+      @saved="fetchActiveData"
+    />
   </div>
 </template>

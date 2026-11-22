@@ -330,16 +330,21 @@ export const onlineVideoApi = {
     })
   },
 
-  categories: (sourceId: string): Promise<OnlineVideoCategoriesResponseDto> =>
+  categories: (
+    sourceId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<OnlineVideoCategoriesResponseDto> =>
     requestJson('/video/online/categories', {
       method: 'POST',
       body: JSON.stringify({ source_id: sourceId }),
+      signal: options?.signal,
     }),
 
   search: (
     keyword: string,
     sourceIds?: string[],
     page = 1,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineVideoSearchResponseDto> =>
     requestJson('/video/online/search', {
       method: 'POST',
@@ -348,12 +353,14 @@ export const onlineVideoApi = {
         source_ids: sourceIds && sourceIds.length > 0 ? sourceIds : null,
         page,
       }),
+      signal: options?.signal,
     }),
 
   browse: (
     sourceId: string,
     categoryId?: string | null,
     page = 1,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineVideoBrowseResponseDto> =>
     requestJson('/video/online/browse', {
       method: 'POST',
@@ -362,11 +369,13 @@ export const onlineVideoApi = {
         category_id: categoryId ?? null,
         page,
       }),
+      signal: options?.signal,
     }),
 
   detail: (
     sourceId: string,
     params: { video_id?: string | null; detail_url?: string | null },
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineVideoDetailResponseDto> =>
     requestJson('/video/online/detail', {
       method: 'POST',
@@ -375,12 +384,14 @@ export const onlineVideoApi = {
         video_id: params.video_id ?? null,
         detail_url: params.detail_url ?? null,
       }),
+      signal: options?.signal,
     }),
 
   play: (
     sourceId: string,
     playUrl: string,
     groupName?: string | null,
+    options?: { signal?: AbortSignal },
   ): Promise<OnlineVideoPlayResponseDto> =>
     requestJson('/video/online/play', {
       method: 'POST',
@@ -389,13 +400,14 @@ export const onlineVideoApi = {
         play_url: playUrl,
         group_name: groupName ?? null,
       }),
+      signal: options?.signal,
     }),
 }
 
 export const videoSourceAdapter: OnlineSourceManagerAdapter<VideoSourceSummaryDto> = {
   domain: 'video',
   exportFilePrefix: 'xmedia-video-sources',
-  searchRoutePath: '/video/catalog',
+  searchRoutePath: '/video/library',
   listSources: onlineVideoApi.listSources,
   importSources: onlineVideoApi.importSources,
   importSeeds: onlineVideoApi.importSeeds,

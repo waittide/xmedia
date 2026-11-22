@@ -1,74 +1,85 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
-import { LuHeart, LuTv } from 'vue-icons-plus/lu'
+import { computed, ref } from 'vue'
+import { LuTv } from 'vue-icons-plus/lu'
+import { MediaItemCard } from '@/components/domain'
+import type { MediaItemVM } from '@/sources'
+import { useSnackbarStore } from '@/stores/snackbar'
+import { buildPosterUrl } from '../api'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
 import type { ShowSummaryDto } from '../types'
-import PosterImage from './PosterImage.vue'
 
-defineProps<{
+const props = defineProps<{
   show: ShowSummaryDto
 }>()
 
 const { t } = useI18n()
-const router = useRouter()
 const videoStore = useVideoStore()
+const snackbar = useSnackbarStore()
+const favoriteBusy = ref(false)
+
+const progressPercent = computed<number | undefined>(() => {
+  if (props.show.episode_count <= 0 || props.show.watched_episode_count <= 0) return undefined
+  return Math.min(100, Math.round((props.show.watched_episode_count / props.show.episode_count) * 100))
+})
+
+const subtitleText = computed(() => {
+  const parts: string[] = [
+    t('common.seasonsCount', { count: props.show.season_count }),
+    t('common.episodesCount', { count: props.show.episode_count }),
+  ]
+  if (props.show.year) {
+    parts.push(String(props.show.year))
+  }
+  return parts.join(' · ')
+})
+
+const statusText = computed(() => {
+  if (props.show.watched_episode_count <= 0) return undefined
+  return t('common.watchedProgress', {
+    watched: props.show.watched_episode_count,
+    total: props.show.episode_count,
+  })
+})
+
+const cardVM = computed<MediaItemVM>(() => ({
+  ref: { scope: 'local', domain: 'video', id: props.show.id },
+  title: props.show.title,
+  subtitle: subtitleText.value,
+  cover: buildPosterUrl(props.show.poster_key, 480) ?? undefined,
+  badge: {
+    sourceKind: 'local',
+    progressPercent: progressPercent.value,
+    status: statusText.value,
+  },
+  to: { path: `/video/item/${encodeURIComponent(props.show.id)}` },
+}))
+
+async function handleToggleFavorite(): Promise<void> {
+  if (favoriteBusy.value) return
+  favoriteBusy.value = true
+  try {
+    await videoStore.toggleShowFavorite(props.show)
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    favoriteBusy.value = false
+  }
+}
 </script>
 
 <template>
-  <div
-    role="link"
-    tabindex="0"
-    :aria-label="show.title"
-    class="group flex cursor-pointer flex-col rounded-2xl p-2.5 transition hover:bg-[var(--md-sys-color-surface-container-high)] focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
-    @click="router.push(`/video/shows/${show.id}`)"
-    @keydown.enter.self="router.push(`/video/shows/${show.id}`)"
-    @keydown.space.self.prevent="router.push(`/video/shows/${show.id}`)"
-  >
-    <div class="relative mb-2.5">
-      <PosterImage
-        :poster-key="show.poster_key"
-        :size="480"
-        :alt="show.title"
-        aspect="poster"
-        rounded="rounded-2xl"
-        class="book-shadow"
-      >
-        <div class="pointer-events-none absolute top-2 left-2 flex items-center gap-1">
-          <span
-            class="inline-flex items-center gap-1 rounded-md bg-black/65 px-2 py-0.5 text-[10px] font-bold text-white backdrop-blur-xs"
-          >
-            <LuTv class="h-3 w-3" />
-            {{ t('common.watchedProgress', { watched: show.watched_episode_count, total: show.episode_count }) }}
-          </span>
-        </div>
-
-        <button
-          type="button"
-          class="absolute top-2 right-2 flex h-7 w-7 items-center justify-center rounded-full bg-black/50 text-white opacity-0 backdrop-blur-xs transition group-hover:opacity-100 focus-visible:opacity-100 hover:scale-105"
-          :aria-label="show.is_favorite ? t('common.unfavorite') : t('common.favorite')"
-          :aria-pressed="show.is_favorite"
-          @click.stop="videoStore.toggleShowFavorite(show)"
-        >
-          <LuHeart
-            class="h-3.5 w-3.5"
-            :class="show.is_favorite ? 'fill-[var(--md-sys-color-error)] text-[var(--md-sys-color-error)]' : ''"
-          />
-        </button>
-      </PosterImage>
-    </div>
-
-    <h3 class="truncate text-xs font-bold text-[var(--md-sys-color-on-surface)]">
-      {{ show.title }}
-    </h3>
-    <div
-      class="mt-0.5 flex items-center justify-between gap-1 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-    >
-      <span>
-        {{ t('common.seasonsCount', { count: show.season_count }) }} ·
-        {{ t('common.episodesCount', { count: show.episode_count }) }}
-      </span>
-      <span v-if="show.year" class="shrink-0">{{ show.year }}</span>
-    </div>
-  </div>
+  <MediaItemCard
+    :item="cardVM"
+    aspect="poster"
+    cover-style="plain"
+    :fallback-icon="LuTv"
+    :show-favorite="true"
+    :favorite="show.is_favorite"
+    :favorite-loading="favoriteBusy"
+    @toggle-favorite="handleToggleFavorite"
+  />
 </template>

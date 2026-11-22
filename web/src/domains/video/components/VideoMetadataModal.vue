@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import { LuFilm, LuUpload } from 'vue-icons-plus/lu'
-import MdDialog from '@/components/ui/MdDialog.vue'
-import { api } from '../api'
+import { MdButton, MdDialog, MdTextField, MediaCoverImage } from '@/components/ui'
+import { useSnackbarStore } from '@/stores/snackbar'
+import { api, buildPosterUrl } from '../api'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
 import type { VideoSummaryDto } from '../types'
@@ -19,6 +20,8 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const videoStore = useVideoStore()
+const snackbar = useSnackbarStore()
+const summaryFieldId = useId()
 
 const title = ref('')
 const summary = ref('')
@@ -28,11 +31,22 @@ const episodeInput = ref('')
 const genresInput = ref('')
 const tagsInput = ref('')
 const saving = ref(false)
+const pendingPosterFile = ref<File | null>(null)
+const pendingPosterPreviewUrl = ref<string | null>(null)
 const posterInputRef = ref<HTMLInputElement | null>(null)
+
+function clearPendingPoster(): void {
+  if (pendingPosterPreviewUrl.value) {
+    URL.revokeObjectURL(pendingPosterPreviewUrl.value)
+    pendingPosterPreviewUrl.value = null
+  }
+  pendingPosterFile.value = null
+}
 
 watch(
   () => [props.open, props.video] as const,
   ([isOpen, v]) => {
+    clearPendingPoster()
     if (isOpen && v) {
       title.value = v.title
       summary.value = v.summary
@@ -46,11 +60,27 @@ watch(
   { immediate: true },
 )
 
+onBeforeUnmount(clearPendingPoster)
+
+const previewPosterUrl = computed(
+  () => pendingPosterPreviewUrl.value || buildPosterUrl(props.video?.poster_key, 320),
+)
+
 function parseCsv(raw: string): string[] {
   return raw
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
+}
+
+function onPosterFileChange(ev: Event): void {
+  const input = ev.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  clearPendingPoster()
+  pendingPosterFile.value = file
+  pendingPosterPreviewUrl.value = URL.createObjectURL(file)
 }
 
 async function handleSave(): Promise<void> {
@@ -61,7 +91,7 @@ async function handleSave(): Promise<void> {
     const seasonNum = seasonInput.value.trim() ? Number.parseInt(seasonInput.value.trim(), 10) : null
     const epNum = episodeInput.value.trim() ? Number.parseInt(episodeInput.value.trim(), 10) : null
 
-    const updated = await api.updateVideo(props.video.id, {
+    let updated = await api.updateVideo(props.video.id, {
       title: title.value.trim(),
       summary: summary.value.trim(),
       year: Number.isFinite(yearNum) ? yearNum : null,
@@ -70,27 +100,23 @@ async function handleSave(): Promise<void> {
       genres: parseCsv(genresInput.value),
       tags: parseCsv(tagsInput.value),
     })
-    await videoStore.refreshSidebar()
+
+    if (pendingPosterFile.value) {
+      updated = await api.uploadVideoPoster(props.video.id, pendingPosterFile.value)
+    }
+
+    clearPendingPoster()
+    await videoStore.refreshSidebar(true)
     videoStore.bumpCatalogVersion()
     emit('saved', updated)
     emit('close')
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
   } finally {
     saving.value = false
-  }
-}
-
-async function onPosterFileChange(ev: Event): Promise<void> {
-  const input = ev.target as HTMLInputElement
-  const file = input.files?.[0]
-  if (!file || !props.video) return
-  saving.value = true
-  try {
-    const updated = await api.uploadVideoPoster(props.video.id, file)
-    videoStore.bumpCatalogVersion()
-    emit('saved', updated)
-  } finally {
-    saving.value = false
-    input.value = ''
   }
 }
 </script>
@@ -99,110 +125,112 @@ async function onPosterFileChange(ev: Event): Promise<void> {
   <MdDialog
     :open="open"
     :title="t('metadata.editVideoTitle')"
-    max-width="max-w-xl"
+    size="md"
     @close="emit('close')"
   >
     <template #icon>
-      <LuFilm class="h-5 w-5" />
+      <LuFilm class="h-5 w-5" aria-hidden="true" />
     </template>
 
-    <form class="space-y-4 py-1 text-xs" @submit.prevent="handleSave">
-      <div>
-        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('metadata.fieldTitle') }}
-        </label>
-        <input v-model="title" type="text" required class="md-input h-9 w-full text-xs" />
+    <form class="space-y-4 py-1" @submit.prevent="handleSave">
+      <div class="flex items-center gap-4">
+        <div class="w-28 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
+          <MediaCoverImage
+            :src="previewPosterUrl"
+            :alt="title || video?.title || ''"
+            aspect-class="aspect-video"
+            rounded="rounded-corner-sm"
+            :fallback-icon="LuFilm"
+            fallback-icon-class="h-6 w-6 text-on-surface-variant/50"
+          />
+        </div>
+        <div class="space-y-1.5">
+          <input
+            ref="posterInputRef"
+            type="file"
+            accept="image/*"
+            class="hidden"
+            @change="onPosterFileChange"
+          />
+          <MdButton
+            variant="tonal"
+            size="sm"
+            :icon="LuUpload"
+            @click="posterInputRef?.click()"
+          >
+            {{ t('common.uploadPoster') }}
+          </MdButton>
+          <p v-if="pendingPosterFile" class="text-body-small truncate text-on-surface-variant">
+            {{ pendingPosterFile.name }}
+          </p>
+        </div>
       </div>
+
+      <MdTextField
+        v-model="title"
+        size="sm"
+        required
+        :label="t('metadata.fieldTitle')"
+      />
 
       <div class="grid grid-cols-3 gap-3">
-        <div>
-          <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('metadata.fieldYear') }}
-          </label>
-          <input v-model="yearInput" type="number" class="md-input h-9 w-full text-xs" />
-        </div>
-        <div>
-          <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('metadata.fieldSeason') }}
-          </label>
-          <input
-            v-model="seasonInput"
-            type="number"
-            min="0"
-            class="md-input h-9 w-full text-xs"
-          />
-        </div>
-        <div>
-          <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('metadata.fieldEpisode') }}
-          </label>
-          <input
-            v-model="episodeInput"
-            type="number"
-            min="0"
-            class="md-input h-9 w-full text-xs"
-          />
-        </div>
+        <MdTextField
+          v-model="yearInput"
+          type="number"
+          size="sm"
+          :label="t('metadata.fieldYear')"
+        />
+        <MdTextField
+          v-model="seasonInput"
+          type="number"
+          size="sm"
+          :label="t('metadata.fieldSeason')"
+        />
+        <MdTextField
+          v-model="episodeInput"
+          type="number"
+          size="sm"
+          :label="t('metadata.fieldEpisode')"
+        />
       </div>
 
-      <div>
-        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('metadata.fieldGenres') }}
-        </label>
-        <input v-model="genresInput" type="text" class="md-input h-9 w-full text-xs" />
-      </div>
+      <MdTextField
+        v-model="genresInput"
+        size="sm"
+        :label="t('metadata.fieldGenres')"
+      />
 
-      <div>
-        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-          {{ t('metadata.fieldTags') }}
-        </label>
-        <input v-model="tagsInput" type="text" class="md-input h-9 w-full text-xs" />
-      </div>
+      <MdTextField
+        v-model="tagsInput"
+        size="sm"
+        :label="t('metadata.fieldTags')"
+      />
 
-      <div>
-        <label class="mb-1.5 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
+      <div class="space-y-1.5">
+        <label :for="summaryFieldId" class="text-label-medium block text-on-surface-variant">
           {{ t('metadata.fieldSummary') }}
         </label>
-        <textarea v-model="summary" rows="3" class="md-input w-full py-2.5 text-xs" />
-      </div>
-
-      <div>
-        <input
-          ref="posterInputRef"
-          type="file"
-          accept="image/*"
-          class="hidden"
-          @change="onPosterFileChange"
+        <textarea
+          :id="summaryFieldId"
+          v-model="summary"
+          rows="3"
+          class="text-body-medium w-full rounded-corner-md border border-outline-variant bg-surface-container-lowest px-3 py-2 text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
         />
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
-          @click="posterInputRef?.click()"
-        >
-          <LuUpload class="h-3.5 w-3.5" />
-          <span>{{ t('common.uploadPoster') }}</span>
-        </button>
       </div>
     </form>
 
     <template #footer>
-      <div class="ml-auto flex items-center gap-2">
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          @click="emit('close')"
-        >
-          {{ t('common.cancel') }}
-        </button>
-        <button
-          type="button"
-          :disabled="saving || !title.trim()"
-          class="md-btn md-btn-sm md-btn-filled md-state"
-          @click="handleSave"
-        >
-          {{ t('common.save') }}
-        </button>
-      </div>
+      <MdButton variant="text" :disabled="saving" @click="emit('close')">
+        {{ t('common.cancel') }}
+      </MdButton>
+      <MdButton
+        variant="filled"
+        :loading="saving"
+        :disabled="!title.trim()"
+        @click="handleSave"
+      >
+        {{ t('common.save') }}
+      </MdButton>
     </template>
   </MdDialog>
 </template>

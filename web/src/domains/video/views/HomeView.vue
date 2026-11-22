@@ -1,292 +1,312 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, watch } from 'vue'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
-import {
-  LuArrowRight,
-  LuClapperboard,
-  LuClock,
-  LuCompass,
-  LuFilm,
-  LuFolderHeart,
-  LuHeart,
-  LuLibrary,
-  LuPlay,
-  LuSparkles,
-  LuTag,
-  LuTv,
-} from 'vue-icons-plus/lu'
+import { LuChevronRight } from 'vue-icons-plus/lu'
+import { DomainHomeTemplate, MediaItemCard } from '@/components/domain'
+import { MdButton } from '@/components/ui'
 import { useHomeOverview } from '@/composables/useHomeOverview'
-import { usePreferencesStore } from '@/stores/preferences'
-import { useUploadStore } from '@/stores/uploads'
-import { formatTime } from '@/utils/format'
-import HomeSkeleton from '@/components/HomeSkeleton.vue'
-import HomeStatCards, { type StatCardItem } from '@/components/domain/HomeStatCards.vue'
-import PosterImage from '../components/PosterImage.vue'
+import { libraryRoute, useMergedShelf, useSourceFilter, type MediaItemVM } from '@/sources'
+import { useAuthStore } from '@/stores/auth'
+import { UPLOAD_EXTENSIONS_BY_KIND, useUploadStore } from '@/stores/uploads'
+import { buildPosterUrl } from '../api'
 import ShowCard from '../components/ShowCard.vue'
 import VideoCard from '../components/VideoCard.vue'
 import VideoMetadataModal from '../components/VideoMetadataModal.vue'
 import { useVideoI18n as useI18n } from '../i18n'
 import { useVideoStore } from '../store'
-import type { VideoSummaryDto } from '../types'
+import type { ShowSummaryDto, VideoSummaryDto } from '../types'
 
 defineOptions({ name: 'VideoHomeView' })
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
-const router = useRouter()
-const prefsStore = usePreferencesStore()
+const authStore = useAuthStore()
 const videoStore = useVideoStore()
 const uploadStore = useUploadStore()
 
 const editingVideo = ref<VideoSummaryDto | null>(null)
+const refreshing = ref(false)
+const uploadInputRef = ref<HTMLInputElement | null>(null)
 
-const { overview, loading, loadHome, refreshPage } = useHomeOverview('video', {
-  refreshSidebar: () => videoStore.refreshSidebar(true),
-  watchSources: () => [videoStore.catalogVersion, uploadStore.versionCounter],
-})
-
-const statCards = computed<StatCardItem[]>(() => {
-  const ov = overview.value
-  return prefsStore.workspaceLayout.video.home_cards.map((key) => {
-    switch (key) {
-      case 'movies':
-        return {
-          key,
-          value: ov?.movies_count ?? 0,
-          icon: LuFilm,
-          onClick: () =>
-            void router.push({ path: '/video/catalog', query: { kind: 'standalone' } }),
-        }
-      case 'shows':
-        return {
-          key,
-          value: ov?.total_shows ?? 0,
-          icon: LuTv,
-          onClick: () => void router.push({ path: '/video/catalog', query: { tab: 'shows' } }),
-        }
-      case 'favorites':
-        return {
-          key,
-          value: ov?.favorites_count ?? 0,
-          icon: LuHeart,
-          tone: 'rose',
-          onClick: () => void router.push('/video/favorites'),
-        }
-      case 'watching':
-        return {
-          key,
-          value: ov?.watching_count ?? 0,
-          icon: LuClock,
-          onClick: () => void router.push('/video/continue'),
-        }
-      case 'shelves':
-        return {
-          key,
-          value: ov?.shelves_count ?? videoStore.shelves.length,
-          icon: LuFolderHeart,
-          onClick: () => void router.push('/video/shelves'),
-        }
-      case 'genres':
-        return {
-          key,
-          value: ov?.genres_count ?? videoStore.genres.length,
-          icon: LuSparkles,
-          onClick: () => void router.push('/video/genres'),
-        }
-      case 'tags':
-        return {
-          key,
-          value: ov?.tags_count ?? videoStore.tags.length,
-          icon: LuTag,
-          onClick: () => void router.push('/video/tags'),
-        }
-      case 'libraries':
-        return {
-          key,
-          value: ov?.libraries_count ?? videoStore.libraries.length,
-          icon: LuLibrary,
-          onClick: () => void router.push('/video/libraries'),
-        }
-      case 'all':
-      default:
-        return {
-          key: 'all',
-          value: ov?.total_videos ?? 0,
-          icon: LuClapperboard,
-          onClick: () => void router.push('/video/catalog'),
-        }
-    }
+const { overview, loading: overviewLoading, error: overviewError, loadHome, refreshPage } =
+  useHomeOverview('video', {
+    refreshSidebar: () => videoStore.refreshSidebar(true),
+    watchSources: () => [videoStore.catalogVersion, uploadStore.versionCounter],
   })
+
+const mergedContinue = useMergedShelf('video', 'continue', { limit: 12 })
+const mergedFavorites = useMergedShelf('video', 'favorites', { limit: 12 })
+const sourceFilter = useSourceFilter('video')
+
+const videoUploadAccept = UPLOAD_EXTENSIONS_BY_KIND.video.map((ext) => `.${ext}`).join(',')
+
+const recentVideos = computed<VideoSummaryDto[]>(() => overview.value?.recent_videos ?? [])
+const recentShows = computed<ShowSummaryDto[]>(() => overview.value?.recent_shows ?? [])
+
+const recentVideoById = computed(() => {
+  const map = new Map<string, VideoSummaryDto>()
+  for (const v of recentVideos.value) {
+    map.set(v.id, v)
+  }
+  return map
 })
 
-function progressPercent(v: VideoSummaryDto): number {
-  const pos = v.progress?.position_secs ?? 0
-  const dur = v.progress?.duration_secs || v.duration_secs || 0
-  if (dur <= 0) return 0
-  return Math.max(3, Math.min(100, Math.round((pos / dur) * 100)))
+const recentShowById = computed(() => {
+  const map = new Map<string, ShowSummaryDto>()
+  for (const sh of recentShows.value) {
+    map.set(sh.id, sh)
+  }
+  return map
+})
+
+function mapVideoToVM(video: VideoSummaryDto): MediaItemVM {
+  const encodedId = encodeURIComponent(video.id)
+  const playTarget = { path: `/video/play/${encodedId}` }
+  const detailTarget = !video.show_id
+    ? { path: `/video/item/${encodedId}`, query: { kind: 'movie' } }
+    : playTarget
+  return {
+    ref: { scope: 'local', domain: 'video', id: video.id },
+    title: video.title,
+    subtitle: video.year ? String(video.year) : undefined,
+    cover: buildPosterUrl(video.poster_key, 560) ?? undefined,
+    badge: { sourceKind: 'local' },
+    to: detailTarget,
+    playTo: playTarget,
+  }
 }
 
-function formatResumeSubtitle(v: VideoSummaryDto): string {
-  const pos = v.progress?.position_secs ?? 0
-  const dur = v.progress?.duration_secs || v.duration_secs || 0
-  const prefix =
-    v.show_title && v.episode_number != null
-      ? `${v.show_title} S${String(v.season_number ?? 1).padStart(2, '0')}E${String(v.episode_number).padStart(2, '0')} · `
-      : ''
-  return `${prefix}${formatTime(pos)} / ${formatTime(dur)}`
+function mapShowToVM(show: ShowSummaryDto): MediaItemVM {
+  return {
+    ref: { scope: 'local', domain: 'video', id: show.id },
+    title: show.title,
+    subtitle: show.year ? String(show.year) : undefined,
+    cover: buildPosterUrl(show.poster_key, 480) ?? undefined,
+    badge: { sourceKind: 'local' },
+    to: { path: `/video/item/${encodeURIComponent(show.id)}` },
+  }
 }
+
+function normalizeShelfItemRoute(item: MediaItemVM): MediaItemVM {
+  if (item.ref.scope !== 'local') return item
+  const target = item.to
+  if (typeof target === 'object' && target && 'path' in target && typeof target.path === 'string') {
+    if (target.path.startsWith('/video/play/')) {
+      return {
+        ...item,
+        to: { path: `/video/item/${encodeURIComponent(item.ref.id)}`, query: { kind: 'movie' } },
+      }
+    }
+  }
+  return item
+}
+
+const normalizedFavorites = computed<MediaItemVM[]>(() =>
+  mergedFavorites.items.value.map(normalizeShelfItemRoute),
+)
+
+const primaryRecentMode = computed<'videos' | 'shows' | 'favorites'>(() => {
+  if (recentVideos.value.length > 0) return 'videos'
+  if (recentShows.value.length > 0) return 'shows'
+  return 'favorites'
+})
+
+const primaryRecentItems = computed<MediaItemVM[]>(() => {
+  if (primaryRecentMode.value === 'videos') {
+    return recentVideos.value.map(mapVideoToVM)
+  }
+  if (primaryRecentMode.value === 'shows') {
+    return recentShows.value.map(mapShowToVM)
+  }
+  return normalizedFavorites.value
+})
+
+const primaryRecentTitle = computed(() => {
+  if (primaryRecentMode.value === 'shows') return t('home.recentShows')
+  if (primaryRecentMode.value === 'favorites') return t('home.favoritesSection')
+  return t('home.recentVideos')
+})
+
+const primaryRecentSeeAllTo = computed(() => {
+  if (primaryRecentMode.value === 'shows') return libraryRoute('video', { view: 'shows' })
+  if (primaryRecentMode.value === 'favorites') return libraryRoute('video', { tab: 'favorites' })
+  return libraryRoute('video')
+})
+
+const primaryAspect = computed<'video' | 'poster'>(() =>
+  primaryRecentMode.value === 'shows' ? 'poster' : 'video',
+)
+
+const showExtraShows = computed(
+  () => primaryRecentMode.value === 'videos' && recentShows.value.length > 0,
+)
+
+const showExtraFavorites = computed(
+  () => primaryRecentMode.value !== 'favorites' && normalizedFavorites.value.length > 0,
+)
+
+const summaryText = computed(() => {
+  const ov = overview.value
+  if (!ov || (ov.total_videos === 0 && ov.total_shows === 0)) return ''
+  const parts: string[] = []
+  if (ov.total_videos > 0) parts.push(t('common.videosCount', { count: ov.total_videos }))
+  if (ov.total_shows > 0) parts.push(t('common.showsCount', { count: ov.total_shows }))
+  return parts.join(' · ')
+})
+
+const combinedLoading = computed(
+  () =>
+    (overviewLoading.value && !overview.value) ||
+    (mergedContinue.loading.value &&
+      mergedContinue.items.value.length === 0 &&
+      !overview.value),
+)
+
+const combinedError = computed(() => overviewError.value ?? mergedContinue.error.value)
+
+async function handleRefresh(): Promise<void> {
+  refreshing.value = true
+  try {
+    await Promise.allSettled([
+      refreshPage(),
+      mergedContinue.refresh(),
+      mergedFavorites.refresh(),
+      sourceFilter.refresh(true),
+    ])
+  } finally {
+    refreshing.value = false
+  }
+}
+
+function handleOpenUpload(): void {
+  uploadInputRef.value?.click()
+}
+
+function handleUploadFilesChange(ev: Event): void {
+  const input = ev.target as HTMLInputElement
+  if (input.files && input.files.length > 0) {
+    uploadStore.enqueueFiles(input.files)
+  }
+  input.value = ''
+}
+
+watch(
+  () => [videoStore.catalogVersion, uploadStore.versionCounter],
+  () => {
+    void mergedContinue.refresh()
+    void mergedFavorites.refresh()
+  },
+)
 </script>
 
 <template>
-  <div class="mx-auto max-w-7xl space-y-10 px-6 py-7 sm:px-8">
-    <HomeStatCards
-      v-if="overview && overview.total_videos > 0"
-      domain="video"
-      :cards="statCards"
-      :on-refresh="refreshPage"
+  <div class="px-4 py-6 sm:px-6 lg:px-8">
+    <input
+      ref="uploadInputRef"
+      type="file"
+      multiple
+      :accept="videoUploadAccept"
+      class="hidden"
+      @change="handleUploadFilesChange"
     />
 
-    <!-- Cold-Load Skeleton -->
-    <HomeSkeleton v-if="loading && !overview" />
-
-    <!-- Empty Library Onboarding -->
-    <section
-      v-else-if="!loading && overview && overview.total_videos === 0"
-      class="md-card-filled flex flex-col items-center justify-center rounded-3xl px-6 py-16 text-center"
+    <DomainHomeTemplate
+      domain="video"
+      :summary="summaryText"
+      :continue-items="mergedContinue.items.value"
+      :recent-items="primaryRecentItems"
+      :continue-title="t('home.continueWatching')"
+      :recent-title="primaryRecentTitle"
+      :continue-see-all-to="libraryRoute('video', { tab: 'continue' })"
+      :recent-see-all-to="primaryRecentSeeAllTo"
+      :aspect="primaryAspect"
+      cover-style="plain"
+      :loading="combinedLoading"
+      :refreshing="refreshing"
+      :error="combinedError"
+      :is-admin="authStore.isAdmin"
+      :can-upload="authStore.isAdmin"
+      :has-online-sources="true"
+      :empty-title="t('home.emptyLibraryTitle')"
+      :empty-description="t('home.emptyLibraryDesc')"
+      @refresh="handleRefresh"
+      @retry="handleRefresh"
+      @upload="handleOpenUpload"
     >
-      <div
-        class="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]"
-      >
-        <LuFilm class="h-7 w-7" />
-      </div>
-      <h2 class="text-lg font-bold text-[var(--md-sys-color-on-surface)]">
-        {{ t('home.emptyLibraryTitle') }}
-      </h2>
-      <p class="mt-1.5 max-w-md text-xs leading-relaxed text-[var(--md-sys-color-on-surface-variant)]">
-        {{ t('home.emptyLibraryDesc') }}
-      </p>
-      <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
-        <RouterLink
-          :to="{ path: '/video/catalog', query: { scope: 'online' } }"
-          class="md-btn md-btn-tonal md-state"
-        >
-          <LuCompass class="h-4 w-4" />
-          <span>{{ globalT('nav.browseOnlineSources') }}</span>
-        </RouterLink>
-      </div>
-    </section>
+      <template #recent-card="{ item }">
+        <VideoCard
+          v-if="item.ref.scope === 'local' && recentVideoById.has(item.ref.id)"
+          :video="recentVideoById.get(item.ref.id)!"
+          @edit="editingVideo = $event"
+          @deleted="() => loadHome(true)"
+          @updated="() => mergedFavorites.refresh()"
+        />
+        <ShowCard
+          v-else-if="item.ref.scope === 'local' && recentShowById.has(item.ref.id)"
+          :show="recentShowById.get(item.ref.id)!"
+        />
+        <MediaItemCard
+          v-else
+          :item="item"
+          :aspect="item.ref.scope === 'local' ? 'video' : 'poster'"
+          cover-style="plain"
+        />
+      </template>
 
-    <template v-else-if="overview">
-      <!-- Continue Watching (Unified Horizontal Cards) -->
-      <section v-if="overview.continue_watching.length > 0">
-        <div class="mb-5 flex items-end justify-between">
-          <div>
-            <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
-              {{ t('home.continueWatching') }}
+      <template #extra-sections>
+        <!-- TV & Anime Shows -->
+        <section v-if="showExtraShows" class="space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-title-large text-on-surface">
+              {{ t('home.recentShows') }}
             </h2>
+            <MdButton
+              variant="text"
+              size="sm"
+              :to="libraryRoute('video', { view: 'shows' })"
+            >
+              <span>{{ globalT('common.viewAll') }}</span>
+              <template #trailing>
+                <LuChevronRight class="h-4 w-4" aria-hidden="true" />
+              </template>
+            </MdButton>
           </div>
-          <RouterLink
-            to="/video/continue"
-            class="md-btn md-btn-sm md-btn-text md-state"
-          >
-            <span>{{ t('collections.seeAll') }}</span>
-            <LuArrowRight class="h-3.5 w-3.5" />
-          </RouterLink>
-        </div>
 
-        <div class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          <RouterLink
-            v-for="v in overview.continue_watching.slice(0, 6)"
-            :key="`cont-${v.id}`"
-            :to="`/video/watch/${v.id}`"
-            class="md-card-filled md-state group flex items-center gap-4 p-3.5 transition duration-200 hover:-translate-y-0.5 hover:bg-[var(--md-sys-color-surface-container-high)] hover:shadow-[var(--md-sys-elevation-1)]"
-          >
-            <PosterImage
-              :poster-key="v.poster_key"
-              :alt="v.title"
-              :size="320"
+          <div class="grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+            <ShowCard v-for="sh in recentShows" :key="sh.id" :show="sh" />
+          </div>
+        </section>
+
+        <!-- Cross-Source Favorites (Local + Online) -->
+        <section v-if="showExtraFavorites" class="space-y-3">
+          <div class="flex items-center justify-between gap-2">
+            <h2 class="text-title-large text-on-surface">
+              {{ t('home.favoritesSection') }}
+            </h2>
+            <MdButton
+              variant="text"
+              size="sm"
+              :to="libraryRoute('video', { tab: 'favorites' })"
+            >
+              <span>{{ globalT('common.viewAll') }}</span>
+              <template #trailing>
+                <LuChevronRight class="h-4 w-4" aria-hidden="true" />
+              </template>
+            </MdButton>
+          </div>
+
+          <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <MediaItemCard
+              v-for="(fav, idx) in normalizedFavorites.slice(0, 8)"
+              :key="fav.ref.scope === 'local' ? `fav-local-${fav.ref.id}-${idx}` : `fav-online-${fav.ref.sourceId}-${fav.ref.ref}-${idx}`"
+              :item="fav"
               aspect="video"
-              rounded="rounded-xl"
-              class="h-24 w-36 shrink-0 shadow-[var(--md-sys-elevation-1)]"
+              cover-style="plain"
             />
-
-            <div class="flex min-w-0 flex-1 flex-col justify-center">
-              <h3
-                class="truncate text-sm font-bold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
-              >
-                {{ v.title }}
-              </h3>
-              <p class="mt-1.5 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ formatResumeSubtitle(v) }}
-              </p>
-
-              <div class="mt-4 flex items-center gap-3">
-                <div
-                  class="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--md-sys-color-surface-container-highest)]"
-                >
-                  <div
-                    class="h-full rounded-full bg-[var(--md-sys-color-primary)] transition-all duration-300"
-                    :style="{ width: `${progressPercent(v)}%` }"
-                  />
-                </div>
-                <span
-                  class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-1)] transition group-hover:scale-105"
-                >
-                  <LuPlay class="ml-0.5 h-3.5 w-3.5 fill-current" />
-                </span>
-              </div>
-            </div>
-          </RouterLink>
-        </div>
-      </section>
-
-      <!-- TV & Anime Series -->
-      <section v-if="overview.recent_shows.length > 0">
-        <div class="mb-5 flex items-end justify-between">
-          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
-            {{ t('home.recentShows') }}
-          </h2>
-          <RouterLink
-            :to="{ path: '/video/catalog', query: { tab: 'shows' } }"
-            class="md-btn md-btn-sm md-btn-text md-state"
-          >
-            <span>{{ t('collections.seeAll') }}</span>
-            <LuArrowRight class="h-3.5 w-3.5" />
-          </RouterLink>
-        </div>
-
-        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-          <ShowCard v-for="sh in overview.recent_shows" :key="sh.id" :show="sh" />
-        </div>
-      </section>
-
-      <!-- Recently Added Videos -->
-      <section v-if="overview.recent_videos.length > 0">
-        <div class="mb-5 flex items-end justify-between">
-          <h2 class="text-lg font-bold tracking-tight text-[var(--md-sys-color-on-surface)]">
-            {{ t('home.recentVideos') }}
-          </h2>
-          <RouterLink
-            to="/video/catalog"
-            class="md-btn md-btn-sm md-btn-text md-state"
-          >
-            <span>{{ t('collections.seeAll') }}</span>
-            <LuArrowRight class="h-3.5 w-3.5" />
-          </RouterLink>
-        </div>
-
-        <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-          <VideoCard
-            v-for="v in overview.recent_videos"
-            :key="v.id"
-            :video="v"
-            @edit="editingVideo = $event"
-            @deleted="() => loadHome(true)"
-          />
-        </div>
-      </section>
-    </template>
+          </div>
+        </section>
+      </template>
+    </DomainHomeTemplate>
 
     <VideoMetadataModal
       :open="editingVideo !== null"
