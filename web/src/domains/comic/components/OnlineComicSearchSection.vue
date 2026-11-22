@@ -362,6 +362,8 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
     searching.value = true
     loadingMore.value = false
     hasSearched.value = true
+    searchResults.value = []
+    hasMoreResults.value = false
     searchErrors.value = []
     searchToasts.value = []
   }
@@ -387,8 +389,20 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
     searchToasts.value = res.toasts ?? []
   } catch (err) {
     if (unmounted || seq !== searchSeq) return
+    const msg = err instanceof Error ? err.message : String(err)
+    if (mode === 'replace') {
+      searchResults.value = []
+      hasMoreResults.value = false
+      searchErrors.value = [
+        {
+          source_id: 'search',
+          source_name: t('online.title'),
+          error: msg,
+        },
+      ]
+    }
     snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
+      message: msg,
       tone: 'error',
     })
   } finally {
@@ -592,6 +606,7 @@ function goManageDataSources(): void {
 
       <p
         v-if="exploreError"
+        role="alert"
         class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
       >
         {{ t('online.exploreError', { error: exploreError }) }}
@@ -610,6 +625,7 @@ function goManageDataSources(): void {
       <div
         v-for="e in searchErrors"
         :key="e.source_id"
+        role="alert"
         class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2 text-[var(--md-sys-color-on-error-container)]"
       >
         {{ t('online.sourceErrorPrefix', { name: e.source_name, error: e.error }) }}
@@ -627,7 +643,7 @@ function goManageDataSources(): void {
 
     <!-- Empty Search Results -->
     <div
-      v-else-if="hasSearched && !searching && searchResults.length === 0"
+      v-else-if="hasSearched && !searching && searchResults.length === 0 && searchErrors.length === 0"
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('online.noResultsFor', { keyword: lastSearchKeyword || searchKeyword }) }}

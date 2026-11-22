@@ -250,6 +250,8 @@ async function runSearch(
     loadingMore.value = true
   } else {
     searching.value = true
+    searchResults.value = []
+    hasMoreResults.value = false
     searchErrors.value = []
     searchToasts.value = []
   }
@@ -291,6 +293,10 @@ async function runSearch(
   } catch (err) {
     if (unmounted || seq !== searchSeq || exploreMode.value) return
     hasSearched.value = true
+    if (mode === 'replace') {
+      searchResults.value = []
+      hasMoreResults.value = false
+    }
     searchErrors.value = [
       {
         source_id: 'search',
@@ -518,6 +524,7 @@ onBeforeUnmount(() => {
     <!-- Explore Error -->
     <div
       v-if="exploreError"
+      role="alert"
       class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
     >
       {{ exploreError }}
@@ -538,6 +545,7 @@ onBeforeUnmount(() => {
       <div
         v-for="e in searchErrors"
         :key="e.source_id"
+        role="alert"
         class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2 text-[var(--md-sys-color-on-error-container)]"
       >
         {{ t('online.sourceSearchError', { source: e.source_name, message: e.message }) }}
@@ -554,7 +562,9 @@ onBeforeUnmount(() => {
 
     <!-- Empty Results -->
     <div
-      v-else-if="hasSearched && !searching && !exploring && searchResults.length === 0"
+      v-else-if="
+        hasSearched && !searching && !exploring && searchResults.length === 0 && searchErrors.length === 0
+      "
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{

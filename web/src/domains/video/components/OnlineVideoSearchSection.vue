@@ -330,17 +330,10 @@ async function runBrowse(
 
   try {
     if (fetchCategories) {
-      const catRes = await onlineVideoApi
-        .categories(sourceId)
-        .catch(() => ({ categories: [] as OnlineVideoCategory[] }))
+      browseCategories.value = []
+      const catRes = await onlineVideoApi.categories(sourceId)
       if (unmounted || seq !== browseSeq) return
       browseCategories.value = catRes.categories ?? []
-      if (browseCategories.value.length === 0 && categoryId === null) {
-        browseItems.value = []
-        hasMoreBrowse.value = false
-        browsePage.value = 1
-        return
-      }
     }
 
     const res = await onlineVideoApi.browse(sourceId, categoryId, page)
@@ -375,10 +368,22 @@ async function runBrowse(
     }
   } catch (err) {
     if (unmounted || seq !== browseSeq) return
-    browseError.value = err instanceof Error ? err.message : String(err)
-    if (mode === 'replace') {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (
+      mode === 'replace' &&
+      browseCategories.value.length === 0 &&
+      categoryId === null &&
+      msg.includes('未配置 exploreUrl')
+    ) {
       browseItems.value = []
       hasMoreBrowse.value = false
+      browseError.value = null
+    } else {
+      browseError.value = msg
+      if (mode === 'replace') {
+        browseItems.value = []
+        hasMoreBrowse.value = false
+      }
     }
   } finally {
     if (!unmounted && seq === browseSeq) {
@@ -386,6 +391,11 @@ async function runBrowse(
       loadingMoreBrowse.value = false
     }
   }
+}
+
+function retryBrowse(): void {
+  if (!activeBrowseSourceId.value) return
+  void runBrowse(activeBrowseSourceId.value, activeCategoryId.value, 1, 'replace', true)
 }
 
 async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void> {
@@ -419,6 +429,8 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
     searching.value = true
     loadingMore.value = false
     hasSearched.value = true
+    searchResults.value = []
+    hasMoreResults.value = false
     searchErrors.value = []
     searchToasts.value = []
   }
@@ -444,8 +456,20 @@ async function runSearch(page: number, mode: 'replace' | 'append'): Promise<void
     searchToasts.value = res.toasts ?? []
   } catch (err) {
     if (unmounted || seq !== searchSeq) return
+    const msg = err instanceof Error ? err.message : String(err)
+    if (mode === 'replace') {
+      searchResults.value = []
+      hasMoreResults.value = false
+      searchErrors.value = [
+        {
+          source_id: 'search',
+          source_name: t('online.title'),
+          error: msg,
+        },
+      ]
+    }
     snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
+      message: msg,
       tone: 'error',
     })
   } finally {
@@ -678,12 +702,20 @@ function goManageDataSources(): void {
         </button>
       </div>
 
-      <p
+      <div
         v-if="browseError"
-        class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
       >
-        {{ t('online.browseError', { error: browseError }) }}
-      </p>
+        <span>{{ t('online.browseError', { error: browseError }) }}</span>
+        <button
+          type="button"
+          class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
+          @click="retryBrowse"
+        >
+          <span>{{ t('online.retry') }}</span>
+        </button>
+      </div>
     </div>
 
     <!-- Toasts / Per-Source Search Errors -->
@@ -698,6 +730,7 @@ function goManageDataSources(): void {
       <div
         v-for="e in searchErrors"
         :key="e.source_id"
+        role="alert"
         class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3.5 py-2 text-[var(--md-sys-color-on-error-container)]"
       >
         {{ t('online.sourceErrorPrefix', { name: e.source_name, error: e.error }) }}
@@ -715,7 +748,7 @@ function goManageDataSources(): void {
 
     <!-- Empty Search Results -->
     <div
-      v-else-if="hasSearched && !searching && searchResults.length === 0"
+      v-else-if="hasSearched && !searching && searchResults.length === 0 && searchErrors.length === 0"
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('online.noResultsFor', { keyword: lastSearchKeyword || searchKeyword }) }}
@@ -723,7 +756,13 @@ function goManageDataSources(): void {
 
     <!-- Idle Hint when no Search & no Browse items -->
     <div
-      v-else-if="!hasSearched && displayItems.length === 0 && enabledSources.length > 0 && !loadingInit"
+      v-else-if="
+        !hasSearched &&
+        !browseError &&
+        displayItems.length === 0 &&
+        enabledSources.length > 0 &&
+        !loadingInit
+      "
       class="rounded-[24px] bg-[var(--md-sys-color-surface-container-low)] py-14 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
     >
       {{ t('online.browseEmpty') }}

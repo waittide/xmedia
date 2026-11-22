@@ -11,6 +11,7 @@ import {
   LuRepeat1,
   LuShuffle,
   LuHeart,
+  LuLoader2,
   LuMic2,
 } from 'vue-icons-plus/lu'
 import AppSelect from '@/components/ui/AppSelect.vue'
@@ -267,6 +268,24 @@ function navigateAndClose(path: string): void {
                 </div>
               </div>
 
+              <!-- Playback Error Banner -->
+              <div
+                v-if="playerStore.playbackError"
+                role="alert"
+                class="mt-3 flex items-center justify-between gap-2 rounded-xl border border-[var(--md-sys-color-error)]/35 bg-[var(--md-sys-color-error-container)] px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
+              >
+                <span class="min-w-0 flex-1 truncate" :title="playerStore.playbackError">
+                  {{ playerStore.playbackError }}
+                </span>
+                <button
+                  type="button"
+                  class="md-state shrink-0 rounded-md px-2 py-0.5 font-medium underline hover:no-underline"
+                  @click="playerStore.retryCurrentPlayback()"
+                >
+                  {{ t('player.retryPlayback') }}
+                </button>
+              </div>
+
               <!-- Transport Controls -->
               <div class="mt-4 flex items-center justify-center gap-4">
                 <button
@@ -295,11 +314,20 @@ function navigateAndClose(path: string): void {
 
                 <button
                   type="button"
-                  class="md-state flex h-14 w-14 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105"
-                  :title="playerStore.isPlaying ? t('player.pause') : t('player.play')"
+                  :disabled="!playerStore.currentTrack || playerStore.onlineResolving"
+                  :aria-busy="playerStore.onlineResolving || undefined"
+                  class="md-state flex h-14 w-14 items-center justify-center rounded-full bg-[var(--md-sys-color-primary)] text-[var(--md-sys-color-on-primary)] shadow-[var(--md-sys-elevation-2)] transition hover:scale-105 disabled:cursor-not-allowed disabled:opacity-60"
+                  :title="
+                    playerStore.onlineResolving
+                      ? t('player.resolvingStream')
+                      : playerStore.isPlaying
+                        ? t('player.pause')
+                        : t('player.play')
+                  "
                   @click="playerStore.togglePlay()"
                 >
-                  <LuPause v-if="playerStore.isPlaying" class="h-6 w-6 fill-current" />
+                  <LuLoader2 v-if="playerStore.onlineResolving" class="h-6 w-6 animate-spin" />
+                  <LuPause v-else-if="playerStore.isPlaying" class="h-6 w-6 fill-current" />
                   <LuPlay v-else class="ml-0.5 h-6 w-6 fill-current" />
                 </button>
 
