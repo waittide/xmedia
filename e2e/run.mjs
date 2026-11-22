@@ -21,6 +21,7 @@ Usage:
 Options:
   --self-test           Run harness & Mock Origin Server self-tests (ST-01..ST-10 + CDP smoke)
   --live                Run opt-in live public-source verification (requires internet)
+  --live-report <dir>   Output directory for --live JSON/Markdown reports
   --tier <1|2|3|4>      Run specific test tier(s); repeatable or comma-separated (default: 1,2,3,4)
   --domain <name>       Scope to domain: core | comic | music | video | ui | nonreg
   --base-url <url>      Target an already-running xmedia server instead of spawning one
@@ -36,6 +37,7 @@ export function parseArgs(argv) {
   const opts = {
     selfTest: false,
     live: false,
+    liveReport: null,
     tiers: [],
     domain: null,
     baseUrl: null,
@@ -60,6 +62,11 @@ export function parseArgs(argv) {
       opts.selfTest = true;
     } else if (arg === '--live') {
       opts.live = true;
+    } else if (arg === '--live-report' || arg.startsWith('--live-report=')) {
+      opts.liveReport = (arg.includes('=') ? arg.split('=')[1] : nextVal()).trim();
+      if (!opts.liveReport) {
+        throw new Error('Missing non-empty value for --live-report');
+      }
     } else if (arg === '--keep-tmp') {
       opts.keepTmp = true;
     } else if (arg === '--json') {
@@ -114,8 +121,9 @@ function summarizeResults(results, startTimeMs) {
   const total = results.reduce((acc, r) => acc + (r.total || 0), 0);
   const passed = results.reduce((acc, r) => acc + (r.passed || 0), 0);
   const failed = results.reduce((acc, r) => acc + (r.failed || 0), 0);
+  const warned = results.reduce((acc, r) => acc + (r.warned || 0), 0);
   const durationMs = Math.round(performance.now() - startTimeMs);
-  return { total, passed, failed, durationMs, suites: results };
+  return { total, passed, failed, warned, durationMs, suites: results };
 }
 
 async function main() {
@@ -157,6 +165,7 @@ async function main() {
     baseUrl: opts.baseUrl,
     xmediaBin: opts.xmediaBin,
     webDir: opts.webDir,
+    liveReport: opts.liveReport,
     keepTmp: opts.keepTmp,
     domain: opts.domain,
     silent: opts.json,
@@ -185,6 +194,7 @@ async function main() {
         total: 1,
         passed: 0,
         failed: 1,
+        warned: 0,
         cases: [
           {
             id: 'LIVE-RUNNER',
@@ -205,7 +215,7 @@ async function main() {
       console.log(JSON.stringify(summary, null, 2));
     } else {
       console.log(
-        `\nLive verification complete: ${summary.passed}/${summary.total} passed, ${summary.failed} failed (${summary.durationMs}ms)`,
+        `\nLive verification complete: ${summary.passed}/${summary.total} passed, ${summary.failed} failed, ${summary.warned} warned (${summary.durationMs}ms)`,
       );
     }
     process.exitCode = summary.failed > 0 || summary.total === 0 ? 1 : 0;
