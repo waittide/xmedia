@@ -1,0 +1,377 @@
+<script setup lang="ts">
+import { computed, type Component } from 'vue'
+import { useI18n } from 'vue-i18n'
+import type { RouteLocationRaw } from 'vue-router'
+import {
+  LuBookOpen,
+  LuChevronRight,
+  LuCompass,
+  LuFilm,
+  LuFolderPlus,
+  LuImage,
+  LuMusic,
+  LuRefreshCw,
+  LuUpload,
+} from 'vue-icons-plus/lu'
+import { MdButton, MdEmptyState, MdIconButton, MdSkeleton } from '@/components/ui'
+import { libraryRoute, type MediaItemVM } from '@/sources'
+import { useAuthStore } from '@/stores/auth'
+import type { MediaKind } from '@/types/api'
+import MediaErrorState from './MediaErrorState.vue'
+import MediaItemCard, {
+  type MediaItemCardAspect,
+  type MediaItemCoverStyle,
+} from './MediaItemCard.vue'
+
+const props = withDefaults(
+  defineProps<{
+    domain: MediaKind
+    title?: string
+    /** Compact single-line text summary (e.g. "128 本书 · 3 本在读"). Zero stat cards. */
+    summary?: string
+    continueItems?: readonly MediaItemVM[]
+    recentItems?: readonly MediaItemVM[]
+    continueTitle?: string
+    recentTitle?: string
+    continueSeeAllTo?: RouteLocationRaw
+    recentSeeAllTo?: RouteLocationRaw
+    aspect?: MediaItemCardAspect
+    coverStyle?: MediaItemCoverStyle
+    loading?: boolean
+    refreshing?: boolean
+    showRefresh?: boolean
+    error?: string | null
+    /** Defaults to `useAuthStore().isAdmin`. */
+    isAdmin?: boolean
+    canUpload?: boolean
+    hasOnlineSources?: boolean
+    emptyTitle?: string
+    emptyDescription?: string
+    addLibraryTo?: RouteLocationRaw
+    exploreOnlineTo?: RouteLocationRaw
+    maxWidthClass?: string
+  }>(),
+  {
+    title: '',
+    summary: '',
+    continueItems: () => [],
+    recentItems: () => [],
+    continueTitle: '',
+    recentTitle: '',
+    continueSeeAllTo: undefined,
+    recentSeeAllTo: undefined,
+    aspect: undefined,
+    coverStyle: undefined,
+    loading: false,
+    refreshing: false,
+    showRefresh: true,
+    error: null,
+    isAdmin: undefined,
+    canUpload: true,
+    hasOnlineSources: true,
+    emptyTitle: '',
+    emptyDescription: '',
+    addLibraryTo: undefined,
+    exploreOnlineTo: undefined,
+    maxWidthClass: 'max-w-7xl',
+  },
+)
+
+const emit = defineEmits<{
+  refresh: []
+  retry: []
+  upload: []
+  'select-item': [item: MediaItemVM]
+}>()
+
+const { t, locale } = useI18n()
+const authStore = useAuthStore()
+const isZh = computed(() => locale.value.startsWith('zh'))
+
+const resolvedIsAdmin = computed(() =>
+  props.isAdmin !== undefined ? props.isAdmin : authStore.isAdmin,
+)
+
+const resolvedAspect = computed<MediaItemCardAspect>(() => {
+  if (props.aspect) return props.aspect
+  if (props.domain === 'music') return 'square'
+  if (props.domain === 'video') return 'video'
+  return 'poster'
+})
+
+const resolvedCoverStyle = computed<MediaItemCoverStyle>(() => {
+  if (props.coverStyle) return props.coverStyle
+  if (props.domain === 'book' || props.domain === 'comic') return 'book'
+  if (props.domain === 'music') return 'album'
+  return 'plain'
+})
+
+const domainIcon = computed<Component>(() => {
+  switch (props.domain) {
+    case 'comic':
+      return LuImage
+    case 'music':
+      return LuMusic
+    case 'video':
+      return LuFilm
+    case 'book':
+    default:
+      return LuBookOpen
+  }
+})
+
+const domainLabel = computed(() => t(`app.domains.${props.domain}`))
+const resolvedTitle = computed(() => props.title || domainLabel.value)
+
+const resolvedContinueTitle = computed(() => {
+  if (props.continueTitle) return props.continueTitle
+  if (props.domain === 'music') return isZh.value ? '继续聆听' : 'Continue listening'
+  if (props.domain === 'video') return isZh.value ? '继续观看' : 'Continue watching'
+  return isZh.value ? '继续阅读' : 'Continue reading'
+})
+
+const resolvedRecentTitle = computed(() => {
+  if (props.recentTitle) return props.recentTitle
+  return isZh.value ? '最近添加' : 'Recently added'
+})
+
+const resolvedContinueSeeAll = computed<RouteLocationRaw>(
+  () => props.continueSeeAllTo ?? libraryRoute(props.domain, { tab: 'continue' }),
+)
+
+const resolvedRecentSeeAll = computed<RouteLocationRaw>(
+  () => props.recentSeeAllTo ?? libraryRoute(props.domain),
+)
+
+const resolvedAddLibraryTo = computed<RouteLocationRaw>(
+  () => props.addLibraryTo ?? { path: '/settings/libraries', query: { domain: props.domain } },
+)
+
+const resolvedExploreOnlineTo = computed<RouteLocationRaw>(
+  () => props.exploreOnlineTo ?? libraryRoute(props.domain, { scope: 'online' }),
+)
+
+const gridClass = computed(() =>
+  resolvedAspect.value === 'video'
+    ? 'grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+    : 'grid grid-cols-2 gap-5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6',
+)
+
+const skeletonCount = computed(() => (resolvedAspect.value === 'video' ? 8 : 12))
+
+const hasAnyContent = computed(
+  () => props.continueItems.length > 0 || props.recentItems.length > 0,
+)
+
+const resolvedEmptyTitle = computed(() => {
+  if (props.emptyTitle) return props.emptyTitle
+  return isZh.value ? `还没有${domainLabel.value}` : `No ${domainLabel.value.toLowerCase()} yet`
+})
+
+const resolvedEmptyDescription = computed(() => {
+  if (props.emptyDescription) return props.emptyDescription
+  if (resolvedIsAdmin.value) {
+    return isZh.value
+      ? '挂载本地媒体库或上传文件即可开始浏览，也可以探索在线来源。'
+      : 'Mount a local media library or upload files to get started, or explore online sources.'
+  }
+  return isZh.value
+    ? '当前媒体库暂无内容，你可以浏览在线来源获取更多内容。'
+    : 'Your library is currently empty. Explore online sources to discover content.'
+})
+
+const addLibraryLabel = computed(() => (isZh.value ? '添加本地库' : 'Add library'))
+const exploreOnlineLabel = computed(() => (isZh.value ? '探索在线源' : 'Explore online'))
+const uploadLabel = computed(() => t('common.uploadMedia'))
+
+function itemKey(item: MediaItemVM, idx: number): string {
+  if (item.ref.scope === 'local') {
+    return `local:${item.ref.domain}:${item.ref.id}:${idx}`
+  }
+  return `${item.ref.scope}:${item.ref.domain}:${item.ref.sourceId}:${item.ref.ref}:${idx}`
+}
+</script>
+
+<template>
+  <div class="mx-auto w-full space-y-8" :class="maxWidthClass">
+    <!-- Minimal single-line header (zero stat cards) -->
+    <header class="flex items-center justify-between gap-3">
+      <div class="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <h1 class="text-headline-small truncate text-on-surface">
+          {{ resolvedTitle }}
+        </h1>
+        <p v-if="summary" class="text-body-small truncate text-on-surface-variant">
+          {{ summary }}
+        </p>
+      </div>
+
+      <div class="flex shrink-0 items-center gap-1">
+        <slot name="header-actions" />
+        <MdIconButton
+          v-if="showRefresh"
+          variant="standard"
+          size="sm"
+          :icon="LuRefreshCw"
+          :loading="refreshing"
+          :aria-label="t('common.refresh')"
+          :tooltip="t('common.refresh')"
+          @click="emit('refresh')"
+        />
+      </div>
+    </header>
+
+    <!-- Error state (replaces empty state) -->
+    <MediaErrorState
+      v-if="error && !hasAnyContent"
+      :message="error"
+      :retrying="loading || refreshing"
+      @retry="emit('retry')"
+    />
+
+    <!-- Initial loading skeleton -->
+    <div v-else-if="loading && !hasAnyContent" class="space-y-8" aria-busy="true">
+      <section class="space-y-3">
+        <MdSkeleton variant="text" width="10rem" height="1.5rem" />
+        <div class="flex gap-4 overflow-hidden">
+          <MdSkeleton
+            v-for="idx in 3"
+            :key="`cont-sk-${idx}`"
+            variant="rect"
+            width="18rem"
+            height="5.5rem"
+            class="shrink-0"
+          />
+        </div>
+      </section>
+
+      <section class="space-y-3">
+        <MdSkeleton variant="text" width="8rem" height="1.5rem" />
+        <div :class="gridClass">
+          <MdSkeleton
+            v-for="idx in skeletonCount"
+            :key="`rec-sk-${idx}`"
+            variant="card"
+            :aspect="resolvedAspect"
+          />
+        </div>
+      </section>
+    </div>
+
+    <!-- Unified empty library onboarding -->
+    <MdEmptyState
+      v-else-if="!loading && !error && !hasAnyContent"
+      :icon="domainIcon"
+      :title="resolvedEmptyTitle"
+      :description="resolvedEmptyDescription"
+    >
+      <template #action>
+        <slot name="empty-actions">
+          <template v-if="resolvedIsAdmin">
+            <MdButton variant="filled" :icon="LuFolderPlus" :to="resolvedAddLibraryTo">
+              {{ addLibraryLabel }}
+            </MdButton>
+            <MdButton
+              v-if="canUpload"
+              variant="tonal"
+              :icon="LuUpload"
+              @click="emit('upload')"
+            >
+              {{ uploadLabel }}
+            </MdButton>
+            <MdButton
+              v-if="hasOnlineSources"
+              variant="text"
+              :icon="LuCompass"
+              :to="resolvedExploreOnlineTo"
+            >
+              {{ exploreOnlineLabel }}
+            </MdButton>
+          </template>
+          <MdButton
+            v-else-if="hasOnlineSources"
+            variant="tonal"
+            :icon="LuCompass"
+            :to="resolvedExploreOnlineTo"
+          >
+            {{ exploreOnlineLabel }}
+          </MdButton>
+        </slot>
+      </template>
+    </MdEmptyState>
+
+    <!-- Primary Home Content (max 3 sections) -->
+    <template v-else>
+      <MediaErrorState
+        v-if="error"
+        compact
+        :message="error"
+        :retrying="refreshing"
+        @retry="emit('retry')"
+      />
+
+      <!-- Section 1: Cross-Source Continue Rail -->
+      <section v-if="continueItems.length > 0" class="space-y-3">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="text-title-large text-on-surface">
+            {{ resolvedContinueTitle }}
+          </h2>
+          <MdButton variant="text" size="sm" :to="resolvedContinueSeeAll">
+            <span>{{ t('common.viewAll') }}</span>
+            <template #trailing>
+              <LuChevronRight class="h-4 w-4" aria-hidden="true" />
+            </template>
+          </MdButton>
+        </div>
+
+        <div class="no-scrollbar -mx-1 flex snap-x snap-mandatory gap-4 overflow-x-auto px-1 pb-2">
+          <div
+            v-for="(item, idx) in continueItems"
+            :key="itemKey(item, idx)"
+            class="w-72 shrink-0 snap-start sm:w-80"
+          >
+            <slot name="continue-card" :item="item">
+              <MediaItemCard
+                :item="item"
+                :aspect="resolvedAspect"
+                layout="horizontal"
+                prefer-play-route
+                @select="emit('select-item', $event)"
+              />
+            </slot>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section 2: Recently Added Borderless Grid -->
+      <section v-if="recentItems.length > 0" class="space-y-3">
+        <div class="flex items-center justify-between gap-2">
+          <h2 class="text-title-large text-on-surface">
+            {{ resolvedRecentTitle }}
+          </h2>
+          <MdButton variant="text" size="sm" :to="resolvedRecentSeeAll">
+            <span>{{ t('common.viewAll') }}</span>
+            <template #trailing>
+              <LuChevronRight class="h-4 w-4" aria-hidden="true" />
+            </template>
+          </MdButton>
+        </div>
+
+        <div :class="gridClass">
+          <template v-for="(item, idx) in recentItems" :key="itemKey(item, idx)">
+            <slot name="recent-card" :item="item">
+              <MediaItemCard
+                :item="item"
+                :aspect="resolvedAspect"
+                :cover-style="resolvedCoverStyle"
+                @select="emit('select-item', $event)"
+              />
+            </slot>
+          </template>
+        </div>
+      </section>
+
+      <!-- Optional 3rd section (e.g. Recommendations / Random) -->
+      <slot name="extra-sections" />
+    </template>
+  </div>
+</template>
