@@ -13,7 +13,15 @@ import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
 import { useOnlineSourceDebug } from '@/components/online-sources/useOnlineSourceDebug'
-import type { SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
+import {
+  MdButton,
+  MdCard,
+  MdChip,
+  MdTextField,
+  MediaCoverImage,
+  type SegmentedOption,
+} from '@/components/ui'
+import { useComicI18n } from '@/domains/comic/i18n'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
   buildOnlineComicImageUrl,
@@ -38,6 +46,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { t: comicT } = useComicI18n()
 const snackbar = useSnackbarStore()
 
 type ResultTab = 'timeline' | 'search' | 'detail' | 'chapters' | 'pages'
@@ -50,6 +59,8 @@ const modeOptions = computed<readonly SegmentedOption<ComicSourceTestMode>[]>(()
   { value: 'chapters', label: t('onlineSources.debug.modeChapters') },
   { value: 'pages', label: t('onlineSources.debug.modePages') },
 ])
+
+const defaultKeyword = computed(() => comicT('online.defaultDebugKeyword'))
 
 const chaptersFilter = ref('')
 const lastComicUrl = ref('')
@@ -78,7 +89,7 @@ const {
   source: toRef(props, 'source'),
   defaultMode: 'full',
   defaultTab: 'timeline',
-  defaultKeyword: '海贼王',
+  defaultKeyword: defaultKeyword.value,
   runTest: async (sourceId, signal) => {
     const val = queryInput.value.trim()
     const payload: ComicSourceTestInput = pendingPayload.value ?? { mode: mode.value }
@@ -198,7 +209,7 @@ function handleModeChange(nextMode: ComicSourceTestMode): void {
     queryInput.value.trim().startsWith('http') &&
     props.source
   ) {
-    queryInput.value = props.source.check_keyword?.trim() || '海贼王'
+    queryInput.value = props.source.check_keyword?.trim() || defaultKeyword.value
   }
 }
 
@@ -212,7 +223,7 @@ const hasQuickHint = computed(() => {
 })
 
 const inputPlaceholder = computed(() => {
-  const kw = props.source?.check_keyword?.trim() || '海贼王'
+  const kw = props.source?.check_keyword?.trim() || defaultKeyword.value
   if (mode.value === 'full' || mode.value === 'search') {
     return t('onlineSources.debug.keywordPlaceholder', { keyword: kw })
   }
@@ -350,6 +361,7 @@ async function copyDebugReport(): Promise<void> {
 <template>
   <OnlineSourceDebugShell
     :open="open"
+    :fullscreen="true"
     :title="t('onlineSources.debug.title', { name: source?.name ?? '' })"
     :subtitle="source?.source_url"
     :domain-label="domainLabel"
@@ -374,59 +386,49 @@ async function copyDebugReport(): Promise<void> {
     @copy-report="copyDebugReport"
   >
     <template #quick-hints>
-      <button
+      <MdChip
         v-if="source?.check_keyword && (mode === 'full' || mode === 'search')"
-        type="button"
-        class="md-state rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword })"
         @click="queryInput = source.check_keyword!"
-      >
-        {{ t('onlineSources.debug.checkKeywordHint', { keyword: source.check_keyword }) }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastExploreUrl && mode === 'explore'"
-        type="button"
-        class="md-state max-w-xs truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastExploreHint')"
         @click="queryInput = lastExploreUrl"
-      >
-        {{ t('onlineSources.debug.lastExploreHint') }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastComicUrl && mode === 'detail'"
-        type="button"
-        class="md-state max-w-xs truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastDetailHint')"
         @click="queryInput = lastComicUrl"
-      >
-        {{ t('onlineSources.debug.lastDetailHint') }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastTocUrl && mode === 'chapters'"
-        type="button"
-        class="md-state max-w-xs truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastTocHint')"
         @click="queryInput = lastTocUrl"
-      >
-        {{ t('onlineSources.debug.lastTocHint') }}
-      </button>
-      <button
+      />
+      <MdChip
         v-if="lastChapterUrl && mode === 'pages'"
-        type="button"
-        class="md-state max-w-xs truncate rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2.5 py-0.5 font-mono text-[var(--md-sys-color-on-surface)]"
+        variant="suggestion"
+        :label="t('onlineSources.debug.lastChapterHint')"
         @click="queryInput = lastChapterUrl"
-      >
-        {{ t('onlineSources.debug.lastChapterHint') }}
-      </button>
+      />
     </template>
 
     <template #tab-content>
       <!-- Search Results -->
-      <div v-if="activeTab === 'search' && report" class="flex flex-col gap-2.5">
-        <div
-          v-if="report.search_items.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ t('onlineSources.debug.emptySearch') }}
-        </div>
+      <div v-if="activeTab === 'search' && report" class="flex flex-col gap-3">
+        <MdCard v-if="report.search_items.length === 0" variant="filled" padding="lg">
+          <p class="text-body-small text-center text-on-surface-variant">
+            {{ t('onlineSources.debug.emptySearch') }}
+          </p>
+        </MdCard>
+
         <template v-else>
-          <p class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+          <p class="text-body-small text-on-surface-variant">
             {{
               t('onlineSources.debug.searchSummary', {
                 total: report.result_count,
@@ -434,100 +436,102 @@ async function copyDebugReport(): Promise<void> {
               })
             }}
           </p>
-          <div
+          <MdCard
             v-for="(item, idx) in report.search_items"
             :key="`${item.comic_url}-${idx}`"
-            class="flex items-start gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3.5"
+            variant="filled"
+            padding="md"
           >
-            <div class="h-20 w-14 shrink-0 overflow-hidden rounded-lg bg-[var(--md-sys-color-surface-container-high)]">
-              <img
-                v-if="item.cover_url"
-                :src="buildOnlineComicImageUrl(item.cover_url, source?.id)"
-                :alt="item.title"
-                class="h-full w-full object-cover"
-                loading="lazy"
-              />
-              <div
-                v-else
-                class="flex h-full w-full items-center justify-center text-[10px] text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                {{ t('onlineSources.debug.noCover') }}
+            <div class="flex items-start gap-3">
+              <div class="h-20 w-14 shrink-0 overflow-hidden rounded-corner-sm bg-surface-container-high">
+                <MediaCoverImage
+                  :src="item.cover_url ? buildOnlineComicImageUrl(item.cover_url, source?.id) : null"
+                  :alt="item.title"
+                  aspect-class="aspect-[2/3]"
+                  rounded="rounded-corner-sm"
+                  :fallback-icon="LuBookOpen"
+                  fallback-icon-class="h-5 w-5 text-on-surface-variant/50"
+                />
               </div>
-            </div>
 
-            <div class="min-w-0 flex-1 space-y-1">
-              <div class="flex flex-wrap items-start justify-between gap-2">
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                    #{{ idx + 1 }}
-                  </span>
-                  <span class="text-sm font-semibold text-[var(--md-sys-color-on-surface)]">
-                    {{ item.title }}
-                  </span>
-                  <span v-if="item.author" class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                    · {{ item.author }}
-                  </span>
+              <div class="min-w-0 flex-1 space-y-1">
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="text-label-small font-mono tabular-nums text-on-surface-variant">
+                      #{{ idx + 1 }}
+                    </span>
+                    <span class="text-title-small text-on-surface">
+                      {{ item.title }}
+                    </span>
+                    <span v-if="item.author" class="text-body-small text-on-surface-variant">
+                      · {{ item.author }}
+                    </span>
+                  </div>
+                  <MdButton
+                    variant="tonal"
+                    size="sm"
+                    :disabled="running"
+                    class="shrink-0"
+                    @click="handleDebugComicItem(item)"
+                  >
+                    <span>{{ t('onlineSources.debug.debugDetailBtn') }}</span>
+                    <template #trailing>
+                      <LuArrowRight class="h-3.5 w-3.5" aria-hidden="true" />
+                    </template>
+                  </MdButton>
                 </div>
-                <button
-                  type="button"
-                  :disabled="running"
-                  class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
-                  @click="handleDebugComicItem(item)"
-                >
-                  <span>{{ t('onlineSources.debug.debugDetailBtn') }}</span>
-                  <LuArrowRight class="h-3.5 w-3.5" />
-                </button>
+                <p v-if="item.intro" class="text-body-small line-clamp-2 text-on-surface-variant">
+                  {{ item.intro }}
+                </p>
+                <p class="text-label-small break-all font-mono text-on-surface-variant/85">
+                  {{ item.comic_url }}
+                </p>
               </div>
-              <p v-if="item.intro" class="line-clamp-2 text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ item.intro }}
-              </p>
-              <p class="break-all font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]/85">
-                {{ item.comic_url }}
-              </p>
             </div>
-          </div>
+          </MdCard>
         </template>
       </div>
 
       <!-- Detail -->
       <div v-else-if="activeTab === 'detail' && report" class="flex flex-col gap-3">
-        <div
-          v-if="!report.comic_detail"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ t('onlineSources.debug.emptyDetail') }}
-        </div>
+        <MdCard v-if="!report.comic_detail" variant="filled" padding="lg">
+          <p class="text-body-small text-center text-on-surface-variant">
+            {{ t('onlineSources.debug.emptyDetail') }}
+          </p>
+        </MdCard>
+
         <template v-else>
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
+            <span class="text-title-small text-on-surface">
               {{ report.comic_detail.title }}
             </span>
-            <button
-              type="button"
+            <MdButton
+              variant="tonal"
+              size="sm"
               :disabled="running || !report.comic_detail.toc_url"
-              class="md-btn md-btn-sm md-btn-tonal md-state"
               @click="handleDebugChaptersFromDetail"
             >
               <span>{{ t('onlineSources.debug.debugChaptersBtn') }}</span>
-              <LuArrowRight class="h-3.5 w-3.5" />
-            </button>
+              <template #trailing>
+                <LuArrowRight class="h-3.5 w-3.5" aria-hidden="true" />
+              </template>
+            </MdButton>
           </div>
-          <div class="overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)]">
+
+          <MdCard variant="filled" padding="none" class="overflow-hidden">
             <div
               v-for="(field, fIdx) in detailFields"
               :key="field.label"
               class="grid grid-cols-1 gap-1 px-4 py-3 sm:grid-cols-[11rem_1fr] sm:gap-3"
-              :class="fIdx > 0 ? 'border-t border-[var(--md-sys-color-outline-variant)]/40' : ''"
+              :class="fIdx > 0 ? 'border-t border-outline-variant/50' : ''"
             >
-              <div class="text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]">
+              <div class="text-label-medium text-on-surface-variant">
                 {{ field.label }}
               </div>
               <div
-                class="min-w-0 text-xs"
+                class="text-body-small min-w-0"
                 :class="[
-                  field.value
-                    ? 'text-[var(--md-sys-color-on-surface)]'
-                    : 'italic text-[var(--md-sys-color-on-surface-variant)]/60',
+                  field.value ? 'text-on-surface' : 'italic text-on-surface-variant/60',
                   field.mono ? 'break-all font-mono' : '',
                   field.multiline ? 'leading-relaxed whitespace-pre-wrap' : 'break-words',
                 ]"
@@ -535,103 +539,116 @@ async function copyDebugReport(): Promise<void> {
                 {{ field.value || t('onlineSources.debug.emptyValue') }}
               </div>
             </div>
-          </div>
+          </MdCard>
         </template>
       </div>
 
       <!-- Chapters -->
       <div v-else-if="activeTab === 'chapters' && report" class="flex flex-col gap-3">
-        <div
-          v-if="report.chapters.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ t('onlineSources.debug.emptyChapters') }}
-        </div>
+        <MdCard v-if="report.chapters.length === 0" variant="filled" padding="lg">
+          <p class="text-body-small text-center text-on-surface-variant">
+            {{ t('onlineSources.debug.emptyChapters') }}
+          </p>
+        </MdCard>
+
         <template v-else>
           <div class="flex flex-wrap items-center justify-between gap-2">
-            <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
+            <span class="text-body-small tabular-nums text-on-surface-variant">
               {{ report.chapters_total_count }}
             </span>
-            <input
-              v-model="chaptersFilter"
-              type="text"
-              :placeholder="t('onlineSources.debug.filterChaptersPlaceholder')"
-              class="md-input w-56 py-1.5 text-xs"
-            />
-          </div>
-          <div class="divide-y divide-[var(--md-sys-color-outline-variant)]/40 overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)]">
-            <div
-              v-for="ch in filteredChapters"
-              :key="`${ch.index}-${ch.url}`"
-              class="flex items-center justify-between gap-3 px-4 py-2.5"
-            >
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="w-10 shrink-0 font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                    #{{ ch.index + 1 }}
-                  </span>
-                  <span
-                    v-if="ch.is_volume"
-                    class="rounded-full bg-[var(--md-sys-color-tertiary-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-tertiary-container)]"
-                  >
-                    {{ t('onlineSources.debug.volumeBadge') }}
-                  </span>
-                  <span class="truncate text-xs font-medium text-[var(--md-sys-color-on-surface)]">
-                    {{ ch.title }}
-                  </span>
-                </div>
-                <p class="mt-0.5 truncate pl-12 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
-                  {{ ch.url || t('onlineSources.debug.noUrl') }}
-                </p>
-              </div>
-              <button
-                v-if="ch.url && !ch.is_volume"
-                type="button"
-                :disabled="running"
-                class="md-btn md-btn-sm md-btn-outlined md-state shrink-0"
-                @click="handleDebugChapterPages(ch)"
-              >
-                <span>{{ t('onlineSources.debug.debugPagesBtn') }}</span>
-              </button>
+            <div class="w-56">
+              <MdTextField
+                v-model="chaptersFilter"
+                type="search"
+                size="sm"
+                clearable
+                :placeholder="t('onlineSources.debug.filterChaptersPlaceholder')"
+              />
             </div>
           </div>
+
+          <MdCard variant="filled" padding="none" class="overflow-hidden">
+            <div class="divide-y divide-outline-variant/50">
+              <div
+                v-for="ch in filteredChapters"
+                :key="`${ch.index}-${ch.url}`"
+                class="flex items-center justify-between gap-3 px-4 py-2.5"
+              >
+                <div class="min-w-0 flex-1">
+                  <div class="flex items-center gap-2">
+                    <span class="text-label-small w-10 shrink-0 font-mono tabular-nums text-on-surface-variant">
+                      #{{ ch.index + 1 }}
+                    </span>
+                    <span
+                      v-if="ch.is_volume"
+                      class="text-label-small rounded-corner-full bg-tertiary-container px-2 py-0.5 text-on-tertiary-container"
+                    >
+                      {{ t('onlineSources.debug.volumeBadge') }}
+                    </span>
+                    <span class="text-body-medium truncate text-on-surface">
+                      {{ ch.title }}
+                    </span>
+                  </div>
+                  <p class="text-label-small mt-0.5 truncate pl-12 font-mono text-on-surface-variant">
+                    {{ ch.url || t('onlineSources.debug.noUrl') }}
+                  </p>
+                </div>
+
+                <MdButton
+                  v-if="ch.url && !ch.is_volume"
+                  variant="outlined"
+                  size="sm"
+                  :disabled="running"
+                  class="shrink-0"
+                  @click="handleDebugChapterPages(ch)"
+                >
+                  {{ t('onlineSources.debug.debugPagesBtn') }}
+                </MdButton>
+              </div>
+            </div>
+          </MdCard>
         </template>
       </div>
 
       <!-- Pages Preview -->
       <div v-else-if="activeTab === 'pages' && report" class="flex flex-col gap-3">
-        <div
-          v-if="report.pages.length === 0"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] py-10 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ t('onlineSources.debug.emptyPages') }}
-        </div>
+        <MdCard v-if="report.pages.length === 0" variant="filled" padding="lg">
+          <p class="text-body-small text-center text-on-surface-variant">
+            {{ t('onlineSources.debug.emptyPages') }}
+          </p>
+        </MdCard>
+
         <template v-else>
-          <div class="flex flex-wrap items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-4 py-3 text-xs">
-            <span class="font-semibold text-[var(--md-sys-color-on-surface)]">
-              {{ report.chapter_title || `#${(report.chapter_index ?? 0) + 1}` }}
-            </span>
-            <span class="text-[var(--md-sys-color-on-surface-variant)]">
-              {{ report.page_count }}
-            </span>
-          </div>
+          <MdCard variant="filled" padding="sm">
+            <div class="flex flex-wrap items-center justify-between gap-2 px-1">
+              <span class="text-title-small text-on-surface">
+                {{ report.chapter_title || `#${(report.chapter_index ?? 0) + 1}` }}
+              </span>
+              <span class="text-body-small tabular-nums text-on-surface-variant">
+                {{ report.page_count }}
+              </span>
+            </div>
+          </MdCard>
+
           <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <div
+            <MdCard
               v-for="page in report.pages"
               :key="page.index"
-              class="overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)] p-2"
+              variant="filled"
+              padding="sm"
+              class="overflow-hidden"
             >
               <img
                 v-if="pagePreviewSrc(page.proxy_url, page.image_url)"
                 :src="pagePreviewSrc(page.proxy_url, page.image_url)"
                 :alt="`Page ${page.index + 1}`"
-                class="aspect-[3/4] w-full rounded-xl bg-[var(--md-sys-color-surface-container-high)] object-contain"
+                class="aspect-[3/4] w-full rounded-corner-sm bg-surface-container-high object-contain"
                 loading="lazy"
               />
-              <p class="mt-1.5 truncate font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)]">
+              <p class="text-label-small mt-1.5 truncate font-mono text-on-surface-variant">
                 #{{ page.index + 1 }} · {{ page.image_url }}
               </p>
-            </div>
+            </MdCard>
           </div>
         </template>
       </div>

@@ -1,22 +1,25 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
-import { useComicI18n as useI18n } from '@/domains/comic/i18n'
+import { useRoute, useRouter } from 'vue-router'
 import { LuBookmark } from 'vue-icons-plus/lu'
+import { MdIconButton } from '@/components/ui'
 import { api, chapterPageUrl } from '@/domains/comic/api'
 import ComicReaderShell, {
+  type ComicReaderBookmarkItem,
   type ComicReaderChapterItem,
 } from '@/domains/comic/components/ComicReaderShell.vue'
+import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import { useSidebarStore } from '@/domains/comic/store'
-import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
 import type {
   ComicBookmark,
   ReaderContextDto,
   ReaderFitMode,
   ReaderMode,
 } from '@/domains/comic/types'
+import { itemRoute, libraryRoute, playRoute } from '@/sources'
+import { useSnackbarStore } from '@/stores/snackbar'
+import { useThemeStore } from '@/stores/theme'
 
 const { t } = useI18n()
 const { t: globalT } = useGlobalI18n()
@@ -44,6 +47,14 @@ let pendingProgress: { chapterId: string; page: number; completed?: boolean } | 
 let chapterLoadSeq = 0
 let bookmarkBusy = false
 
+const routeChapterId = computed(() => {
+  const ch = route.params.chapterId
+  if (typeof ch === 'string' && ch.trim()) return ch.trim()
+  const id = route.params.id
+  if (typeof id === 'string' && id.trim()) return id.trim()
+  return ''
+})
+
 const totalPages = computed(() => ctx.value?.chapter.page_count || 1)
 
 const chapterItems = computed<ComicReaderChapterItem[]>(() =>
@@ -51,6 +62,15 @@ const chapterItems = computed<ComicReaderChapterItem[]>(() =>
     key: ch.id,
     label: `#${ch.number_label} ${ch.title}`,
     metaLabel: `${ch.page_count}P`,
+  })),
+)
+
+const bookmarkItems = computed<ComicReaderBookmarkItem[]>(() =>
+  chapterBookmarks.value.map((bm) => ({
+    id: bm.id,
+    page: bm.page_number,
+    title: bm.title,
+    note: bm.note,
   })),
 )
 
@@ -69,6 +89,11 @@ async function loadChapter(
   queryPage?: number,
   seamlessToast = false,
 ): Promise<void> {
+  if (!chapterId) {
+    loadError.value = t('online.invalidReaderContext')
+    loading.value = false
+    return
+  }
   const seq = ++chapterLoadSeq
   flushPendingProgress()
   loading.value = true
@@ -89,12 +114,19 @@ async function loadChapter(
     dimImages.value = data.effective_pref.dim_images_in_dark
     webtoonWidth.value = data.effective_pref.webtoon_width
 
-    const targetInitial = queryPage || data.chapter.current_page || 1
+    const resumePage =
+      data.chapter.current_page > 0 && !data.chapter.is_completed
+        ? data.chapter.current_page
+        : 1
+    const targetInitial = queryPage && queryPage > 0 ? queryPage : resumePage
     const clamped = Math.min(Math.max(1, targetInitial), Math.max(1, data.chapter.page_count))
     initialPage.value = clamped
     currentPage.value = clamped
 
-    scheduleSaveProgress(clamped, clamped >= Math.max(1, data.chapter.page_count) ? true : undefined)
+    scheduleSaveProgress(
+      clamped,
+      clamped >= Math.max(1, data.chapter.page_count) ? true : undefined,
+    )
 
     if (seamlessToast) {
       snackbar.show(
@@ -118,7 +150,7 @@ function handleComicPageHide(): void {
 
 onMounted(() => {
   const qPage = route.query.page ? Number(route.query.page) : undefined
-  void loadChapter(String(route.params.chapterId), qPage, false)
+  void loadChapter(routeChapterId.value, qPage, false)
   window.addEventListener('pagehide', handleComicPageHide)
 })
 
@@ -128,15 +160,12 @@ onBeforeUnmount(() => {
   flushPendingProgress()
 })
 
-watch(
-  () => route.params.chapterId,
-  (newId, oldId) => {
-    if (newId && newId !== oldId) {
-      const qPage = route.query.page ? Number(route.query.page) : 1
-      void loadChapter(String(newId), qPage, true)
-    }
-  },
-)
+watch(routeChapterId, (newId, oldId) => {
+  if (newId && newId !== oldId) {
+    const qPage = route.query.page ? Number(route.query.page) : undefined
+    void loadChapter(newId, qPage, true)
+  }
+})
 
 function flushPendingProgress(useKeepalive = false): void {
   if (progressTimer) {
@@ -154,7 +183,7 @@ function flushPendingProgress(useKeepalive = false): void {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           current_page: payload.page,
-          completed: payload.completed,
+          is_completed: payload.completed,
         }),
         keepalive: true,
       })
@@ -190,12 +219,19 @@ function handlePageChange(payload: {
 
 async function persistSeriesReaderPref(): Promise<void> {
   if (!ctx.value) return
-  await api.saveSeriesReaderPref(ctx.value.series_id, {
-    reader_mode: readerMode.value,
-    fit_mode: fitMode.value,
-    offset_cover_page: offsetCoverPage.value,
-    webtoon_width: webtoonWidth.value,
-  })
+  try {
+    await api.saveSeriesReaderPref(ctx.value.series_id, {
+      reader_mode: readerMode.value,
+      fit_mode: fitMode.value,
+      offset_cover_page: offsetCoverPage.value,
+      webtoon_width: webtoonWidth.value,
+    })
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
 }
 
 function changeMode(mode: ReaderMode): void {
@@ -224,14 +260,14 @@ function handleWebtoonWidthCommit(val: number): void {
 }
 
 function goToChapter(chapterId: string): void {
-  void router.replace('/comic/read/' + chapterId + '?page=1')
+  void router.replace(playRoute({ scope: 'local', domain: 'comic', id: chapterId }))
 }
 
 function handleBack(): void {
   if (ctx.value) {
-    void router.push('/comic/series/' + ctx.value.series_id)
+    void router.push(itemRoute({ scope: 'local', domain: 'comic', id: ctx.value.series_id }))
   } else {
-    void router.push('/comic')
+    void router.push(libraryRoute('comic'))
   }
 }
 
@@ -267,6 +303,22 @@ async function togglePageBookmark(): Promise<void> {
     bookmarkBusy = false
   }
 }
+
+async function deleteBookmarkById(id: string): Promise<void> {
+  const target = chapterBookmarks.value.find((b) => b.id === id)
+  if (!target) return
+  try {
+    await api.deleteBookmark(id)
+    chapterBookmarks.value = chapterBookmarks.value.filter((b) => b.id !== id)
+    snackbar.show(globalT('bookmarksPage.removedBookmark', { page: target.page_number }))
+    void sidebarStore.refresh()
+  } catch (err) {
+    snackbar.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
 </script>
 
 <template>
@@ -274,11 +326,13 @@ async function togglePageBookmark(): Promise<void> {
     :title="ctx?.series_title ?? ''"
     :subtitle="ctx ? `#${ctx.chapter.number_label} ${ctx.chapter.title}` : ''"
     :back-label="t('reader.backToSeries')"
-    :chapter-key="ctx?.chapter.id ?? String(route.params.chapterId)"
+    :chapter-key="ctx?.chapter.id ?? routeChapterId"
     :total-pages="totalPages"
     :initial-page="initialPage"
     :get-page-src="getPageSrc"
     :chapters="chapterItems"
+    :bookmarks="bookmarkItems"
+    :show-bookmarks-tab="Boolean(ctx)"
     :has-prev-chapter="Boolean(ctx?.prev_chapter)"
     :has-next-chapter="Boolean(ctx?.next_chapter)"
     :next-chapter-toast-label="nextChapterToastLabel"
@@ -301,25 +355,22 @@ async function togglePageBookmark(): Promise<void> {
     @prev-chapter="ctx?.prev_chapter && goToChapter(ctx.prev_chapter.id)"
     @next-chapter="ctx?.next_chapter && goToChapter(ctx.next_chapter.id)"
     @select-chapter="goToChapter($event)"
+    @delete-bookmark="deleteBookmarkById"
     @back="handleBack"
-    @retry="loadChapter(String(route.params.chapterId), undefined, false)"
+    @retry="loadChapter(routeChapterId, undefined, false)"
   >
     <template #toolbar-actions>
-      <button
+      <MdIconButton
         v-if="ctx"
-        type="button"
-        :title="globalT('bookmarksPage.bookmarkPage')"
+        size="sm"
+        :variant="currentPageBookmark ? 'tonal' : 'standard'"
+        :selected="Boolean(currentPageBookmark)"
         :aria-label="globalT('bookmarksPage.bookmarkPage')"
-        class="md-icon-btn md-icon-btn-sm md-state"
-        :class="
-          currentPageBookmark
-            ? '!bg-[var(--md-sys-color-primary-container)] !text-[var(--md-sys-color-on-primary-container)]'
-            : ''
-        "
+        :tooltip="globalT('bookmarksPage.bookmarkPage')"
         @click="togglePageBookmark"
       >
         <LuBookmark class="h-4 w-4" :class="currentPageBookmark ? 'fill-current' : ''" />
-      </button>
+      </MdIconButton>
     </template>
   </ComicReaderShell>
 </template>

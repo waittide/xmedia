@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import ComicReaderShell, {
   type ComicReaderChapterItem,
 } from '@/domains/comic/components/ComicReaderShell.vue'
+import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
   ONLINE_COMIC_READER_CTX_KEY,
   onlineComicApi,
@@ -14,9 +14,18 @@ import {
   type OnlineComicPageDto,
   type OnlineComicReaderContextStorage,
 } from '@/domains/comic/onlineApi'
+import type { ReaderFitMode, ReaderMode } from '@/domains/comic/types'
+import {
+  itemRoute,
+  libraryRoute,
+  parseItemRef,
+  playRoute,
+  useOnlineItemState,
+  type OnlineItemMetadataInput,
+  type TrackedItemRef,
+} from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
-import type { ReaderFitMode, ReaderMode } from '@/domains/comic/types'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -31,6 +40,7 @@ const activeChapterIndex = ref(0)
 const activeChapterUrl = ref('')
 const activeSourceName = ref('')
 const activeDirection = ref<ComicReadingDirection | null>(null)
+const initialPage = ref(1)
 
 const loading = ref(true)
 const loadError = ref<string | null>(null)
@@ -58,7 +68,7 @@ function isAbortError(err: unknown): boolean {
     : err instanceof Error && err.name === 'AbortError'
 }
 
-function readQueryParam(keys: string[]): string {
+function readQueryParam(keys: readonly string[]): string {
   for (const k of keys) {
     const val = route.query[k]
     if (typeof val === 'string' && val.trim()) {
@@ -107,16 +117,30 @@ function hydratePreferencesFromTheme(dir?: ComicReadingDirection | null): void {
   }
 }
 
+function parseExplicitPageQuery(): number | null {
+  const raw = readQueryParam(['page'])
+  if (!raw) return null
+  const num = Number.parseInt(raw, 10)
+  return Number.isFinite(num) && num >= 1 ? num : null
+}
+
 function hydrateContextFromRoute(): OnlineComicReaderContextStorage | null {
-  const qSourceId = readQueryParam(['sourceId', 'source_id'])
-  const qComicUrl = readQueryParam(['comicUrl', 'comic_url'])
-  const qChapterUrl = readQueryParam(['chapterUrl', 'chapter_url'])
-  const qTocUrl = readQueryParam(['tocUrl', 'toc_url'])
-  const qChapterIdxRaw = readQueryParam(['chapterIndex', 'chapter_index', 'chapter'])
-  const qTitle = readQueryParam(['title', 'name'])
+  const parsed = parseItemRef(route, 'comic')
+  const parsedSourceId = parsed && parsed.scope !== 'local' ? parsed.sourceId : ''
+  const parsedHints = parsed && parsed.scope !== 'local' ? parsed.hints : undefined
+
+  const qSourceId = parsedSourceId || readQueryParam(['source', 'sourceId', 'source_id'])
+  const qChapterUrl =
+    parsedHints?.extra?.chapter || readQueryParam(['chapter', 'chapterUrl', 'chapter_url'])
+  const rawRef = readQueryParam(['ref', 'comicUrl', 'comic_url'])
+  // parseItemRef may fall back to chapterUrl when only chapter_url is provided (deep-link test)
+  const qComicUrl = rawRef || (parsed && parsed.scope !== 'local' && parsed.ref !== qChapterUrl ? parsed.ref : '')
+  const qTocUrl = parsedHints?.extra?.toc || readQueryParam(['toc', 'tocUrl', 'toc_url'])
+  const qChapterIdxRaw = readQueryParam(['chapterIndex', 'chapter_index'])
+  const qTitle = parsedHints?.title || readQueryParam(['title', 'name'])
   const qSourceName = readQueryParam(['sourceName', 'source_name'])
-  const qAuthor = readQueryParam(['author'])
-  const qCoverUrl = readQueryParam(['coverUrl', 'cover_url'])
+  const qAuthor = parsedHints?.author || readQueryParam(['author'])
+  const qCoverUrl = parsedHints?.cover || readQueryParam(['cover', 'coverUrl', 'cover_url'])
   const qDirRaw = readQueryParam(['readingDirection', 'reading_direction'])
   const qDir: ComicReadingDirection | null =
     qDirRaw === 'rtl' || qDirRaw === 'ltr' || qDirRaw === 'webtoon' ? qDirRaw : null
@@ -124,28 +148,37 @@ function hydrateContextFromRoute(): OnlineComicReaderContextStorage | null {
   const stored = readStoredReaderCtx()
   const matchesStored = Boolean(
     stored &&
-      ((!qSourceId && !qComicUrl && !qChapterUrl && stored.sourceId && (stored.chapterUrl || stored.comicUrl)) ||
+      ((!qSourceId &&
+        !qComicUrl &&
+        !qChapterUrl &&
+        stored.sourceId &&
+        (stored.chapterUrl || stored.comicUrl)) ||
         (qSourceId &&
           stored.sourceId === qSourceId &&
           (!qComicUrl || !stored.comicUrl || stored.comicUrl === qComicUrl))),
   )
 
-  const sourceId = qSourceId || (matchesStored ? stored!.sourceId : '')
-  const comicUrl = qComicUrl || (matchesStored ? stored!.comicUrl : '')
-  const chapterUrl = qChapterUrl || (matchesStored ? stored!.chapterUrl : '')
+  const sourceId = qSourceId || (matchesStored && stored ? stored.sourceId : '')
+  const comicUrl = qComicUrl || (matchesStored && stored ? stored.comicUrl : '')
+  const chapterUrl = qChapterUrl || (matchesStored && stored ? stored.chapterUrl : '')
   if (!sourceId || (!chapterUrl && !comicUrl)) {
     return null
   }
 
-  const parsedIdx = qChapterIdxRaw ? Number.parseInt(qChapterIdxRaw, 10) : NaN
+  const parsedIdx = qChapterIdxRaw ? Number.parseInt(qChapterIdxRaw, 10) : Number.NaN
   const storedChapters = matchesStored && Array.isArray(stored?.chapters) ? stored!.chapters : []
-  let chapterIndex = Number.isFinite(parsedIdx) && parsedIdx >= 0 ? parsedIdx : matchesStored ? stored!.chapterIndex : 0
+  let chapterIndex =
+    Number.isFinite(parsedIdx) && parsedIdx >= 0
+      ? parsedIdx
+      : matchesStored && stored
+        ? stored.chapterIndex
+        : 0
   if (chapterUrl && storedChapters.length > 0) {
     const matchedIdx = storedChapters.findIndex((c) => c.url === chapterUrl)
     if (matchedIdx >= 0) chapterIndex = matchedIdx
   }
 
-  const merged: OnlineComicReaderContextStorage = {
+  return {
     sourceId,
     sourceName: qSourceName || (matchesStored ? stored?.sourceName : undefined),
     comicUrl,
@@ -161,8 +194,43 @@ function hydrateContextFromRoute(): OnlineComicReaderContextStorage | null {
       (matchesStored && stored?.chapterUrl === chapterUrl ? stored?.chapterTitle : undefined),
     chapters: storedChapters,
   }
-  return merged
 }
+
+// Persistent online reading progress via `/api/v1/comic/online/items`
+const trackedRef = computed<TrackedItemRef | null>(() => {
+  const c = ctx.value
+  if (!c?.sourceId || !c.comicUrl) return null
+  return {
+    scope: 'online',
+    domain: 'comic',
+    sourceId: c.sourceId,
+    ref: c.comicUrl,
+    hints: {
+      title: c.title,
+      cover: c.coverUrl ?? undefined,
+      author: c.author,
+    },
+  }
+})
+
+const onlineMeta = computed<OnlineItemMetadataInput>(() => {
+  const c = ctx.value
+  return {
+    title: c?.title || activeSourceName.value || c?.comicUrl || 'Comic',
+    subtitle: c?.author || null,
+    coverUrl: c?.coverUrl ?? null,
+    extra: {
+      toc_url: c?.tocUrl || undefined,
+      reading_direction: activeDirection.value || c?.readingDirection || undefined,
+      source_name: activeSourceName.value || c?.sourceName || undefined,
+    },
+  }
+})
+
+const onlineState = useOnlineItemState(trackedRef, onlineMeta, {
+  autoLoad: false,
+  progressDebounceMs: 2500,
+})
 
 const readableChapterIndices = computed<number[]>(() => {
   const result: number[] = []
@@ -236,6 +304,30 @@ function getPageSrc(pageNum: number): string {
   const page = pages.value[pageNum - 1]
   if (!page) return ''
   return resolveOnlineComicCoverUrl(page.proxy_url, page.image_url, ctx.value?.sourceId)
+}
+
+function handlePageChange(payload: {
+  page: number
+  highestInSpread: number
+  reachedEnd: boolean
+}): void {
+  if (!trackedRef.value || !activeChapterUrl.value || pages.value.length === 0) return
+  const unitTitle =
+    currentChapterObj.value?.title ||
+    ctx.value?.chapterTitle ||
+    `#${activeChapterIndex.value + 1}`
+  const isFinalChapter =
+    chapters.value.length > 0 && nextChapterIndex.value === null
+
+  onlineState.saveProgress({
+    unitIndex: activeChapterIndex.value,
+    unitKey: activeChapterUrl.value,
+    unitTitle,
+    position: payload.page,
+    duration: pages.value.length,
+    totalUnits: chapters.value.length > 0 ? chapters.value.length : undefined,
+    completed: payload.reachedEnd && isFinalChapter,
+  })
 }
 
 async function hydrateChaptersInBackground(
@@ -314,6 +406,7 @@ async function hydrateChaptersInBackground(
 async function openChapter(
   targetChapterUrl: string,
   targetIndex: number,
+  targetInitialPage = 1,
   seamlessToast = false,
 ): Promise<void> {
   if (!ctx.value) return
@@ -326,6 +419,7 @@ async function openChapter(
   hasContent.value = false
   activeChapterUrl.value = targetChapterUrl
   activeChapterIndex.value = targetIndex
+  initialPage.value = Math.max(1, Math.floor(targetInitialPage))
 
   const chapterObj = chapters.value[targetIndex] ?? null
   const updatedCtx: OnlineComicReaderContextStorage = {
@@ -378,6 +472,7 @@ async function openChapter(
       return
     }
 
+    initialPage.value = Math.min(Math.max(1, initialPage.value), pages.value.length)
     hasContent.value = true
     loading.value = false
 
@@ -427,6 +522,15 @@ async function initReader(): Promise<void> {
   activeChapterUrl.value = hydrated.chapterUrl
   hydratePreferencesFromTheme(activeDirection.value)
 
+  // Hydrate persisted online progress (chapter + page) so reload/resume restores position
+  const savedSnap = hydrated.comicUrl
+    ? await onlineState.refresh(false).catch(() => null)
+    : null
+  if (unmounted || runInitSeq !== initSeq) return
+
+  const savedProg = savedSnap?.progress ?? null
+  const explicitPage = parseExplicitPageQuery()
+
   if (!hydrated.chapterUrl && hydrated.comicUrl) {
     const controller = new AbortController()
     detailAbortController = controller
@@ -457,12 +561,37 @@ async function initReader(): Promise<void> {
       activeSourceName.value = detailRes.source_name || activeSourceName.value
       activeDirection.value = detailRes.detail.reading_direction || activeDirection.value
 
-      const targetChapter =
-        (loadedChapters[hydrated.chapterIndex] &&
-        !loadedChapters[hydrated.chapterIndex]!.is_volume &&
-        loadedChapters[hydrated.chapterIndex]!.url
-          ? loadedChapters[hydrated.chapterIndex]!
-          : loadedChapters.find((c) => !c.is_volume && Boolean(c.url?.trim()))) ?? null
+      let targetChapter: OnlineComicChapter | null = null
+      let resumePage = explicitPage ?? 1
+
+      if (savedProg?.unitKey) {
+        const bySavedUrl = loadedChapters.find(
+          (c) => !c.is_volume && c.url === savedProg.unitKey,
+        )
+        if (bySavedUrl) {
+          targetChapter = bySavedUrl
+          if (!explicitPage && savedProg.position >= 1) {
+            resumePage = Math.floor(savedProg.position)
+          }
+        }
+      }
+      if (!targetChapter && savedProg?.unitIndex !== undefined) {
+        const bySavedIdx = loadedChapters[savedProg.unitIndex]
+        if (bySavedIdx && !bySavedIdx.is_volume && bySavedIdx.url) {
+          targetChapter = bySavedIdx
+          if (!explicitPage && savedProg.position >= 1) {
+            resumePage = Math.floor(savedProg.position)
+          }
+        }
+      }
+      if (!targetChapter) {
+        targetChapter =
+          (loadedChapters[hydrated.chapterIndex] &&
+          !loadedChapters[hydrated.chapterIndex]!.is_volume &&
+          loadedChapters[hydrated.chapterIndex]!.url
+            ? loadedChapters[hydrated.chapterIndex]!
+            : loadedChapters.find((c) => !c.is_volume && Boolean(c.url?.trim()))) ?? null
+      }
 
       if (!targetChapter) {
         loading.value = false
@@ -470,7 +599,7 @@ async function initReader(): Promise<void> {
         return
       }
 
-      const resolvedIdx = loadedChapters.findIndex((c) => c.url === targetChapter.url)
+      const resolvedIdx = loadedChapters.findIndex((c) => c.url === targetChapter!.url)
       ctx.value = {
         ...hydrated,
         sourceName: activeSourceName.value,
@@ -484,7 +613,7 @@ async function initReader(): Promise<void> {
         chapterTitle: targetChapter.title,
         chapters: loadedChapters,
       }
-      await openChapter(targetChapter.url, resolvedIdx >= 0 ? resolvedIdx : 0, false)
+      await openChapter(targetChapter.url, resolvedIdx >= 0 ? resolvedIdx : 0, resumePage, false)
     } catch (err) {
       if (controller.signal.aborted || isAbortError(err) || unmounted || seq !== loadSeq) return
       loading.value = false
@@ -497,7 +626,18 @@ async function initReader(): Promise<void> {
     return
   }
 
-  await openChapter(hydrated.chapterUrl, hydrated.chapterIndex, false)
+  let resolvedInitialPage = explicitPage ?? 1
+  if (
+    !explicitPage &&
+    savedProg &&
+    savedProg.position >= 1 &&
+    (savedProg.unitKey === hydrated.chapterUrl ||
+      (savedProg.unitKey === undefined && savedProg.unitIndex === hydrated.chapterIndex))
+  ) {
+    resolvedInitialPage = Math.floor(savedProg.position)
+  }
+
+  await openChapter(hydrated.chapterUrl, hydrated.chapterIndex, resolvedInitialPage, false)
   if (!unmounted && runInitSeq === initSeq && chapters.value.length === 0 && hydrated.comicUrl) {
     void hydrateChaptersInBackground(hydrated.sourceId, hydrated.comicUrl, hydrated.tocUrl)
   }
@@ -507,25 +647,41 @@ function switchChapterByIndex(targetIdx: number): void {
   const target = chapters.value[targetIdx]
   if (!target || target.is_volume || !target.url?.trim() || !ctx.value) return
 
-  const nextQuery: Record<string, string> = {
+  void onlineState.flushPendingProgress()
+
+  const refObj: TrackedItemRef = {
+    scope: 'online',
+    domain: 'comic',
     sourceId: ctx.value.sourceId,
-    chapterUrl: target.url,
-    chapterIndex: String(targetIdx),
+    ref: ctx.value.comicUrl || target.url,
+    hints: {
+      title: ctx.value.title,
+      cover: ctx.value.coverUrl ?? undefined,
+      author: ctx.value.author,
+      extra: {
+        chapter: target.url,
+        ...(ctx.value.tocUrl ? { toc: ctx.value.tocUrl } : {}),
+      },
+    },
   }
-  if (ctx.value.comicUrl) nextQuery.comicUrl = ctx.value.comicUrl
-  if (ctx.value.tocUrl) nextQuery.tocUrl = ctx.value.tocUrl
-  if (ctx.value.title) nextQuery.title = ctx.value.title
-  if (activeSourceName.value) nextQuery.sourceName = activeSourceName.value
-  if (activeDirection.value) nextQuery.readingDirection = activeDirection.value
 
   const seq = ++syncUrlSeq
   syncingUrl = true
-  void router.replace({ path: '/comic/online/read', query: nextQuery }).finally(() => {
-    if (seq === syncUrlSeq) {
-      syncingUrl = false
-    }
-  })
-  void openChapter(target.url, targetIdx, true)
+  void router
+    .replace(
+      playRoute(refObj, {
+        unitKey: target.url,
+        unitIndex: targetIdx,
+        unitTitle: target.title,
+        position: 1,
+      }),
+    )
+    .finally(() => {
+      if (seq === syncUrlSeq) {
+        syncingUrl = false
+      }
+    })
+  void openChapter(target.url, targetIdx, 1, true)
 }
 
 function handleSelectChapterKey(key: string): void {
@@ -534,52 +690,55 @@ function handleSelectChapterKey(key: string): void {
   switchChapterByIndex(idx)
 }
 
+// Keep online reader settings session-scoped so one webtoon never overwrites global local manga defaults
 function handleModeChange(mode: ReaderMode): void {
   userOverrodeMode = true
   readerMode.value = mode
-  theme.updateComicPreferences({ default_reader_mode: mode })
 }
 
 function handleFitChange(fit: ReaderFitMode): void {
   fitMode.value = fit
-  theme.updateComicPreferences({ default_fit_mode: fit })
 }
 
 function handleOffsetCoverChange(val: boolean): void {
   offsetCoverPage.value = val
-  theme.updateComicPreferences({ offset_cover_page: val })
 }
 
 function handleDimImagesChange(val: boolean): void {
   dimImages.value = val
-  theme.updateComicPreferences({ dim_images_in_dark: val })
 }
 
 function handleWebtoonWidthCommit(val: number): void {
   webtoonWidth.value = val
-  theme.updateComicPreferences({ webtoon_width: val })
 }
 
 function handleRetry(): void {
   if (ctx.value && activeChapterUrl.value) {
-    void openChapter(activeChapterUrl.value, activeChapterIndex.value, false)
+    void openChapter(activeChapterUrl.value, activeChapterIndex.value, initialPage.value, false)
   } else {
     void initReader()
   }
 }
 
 function handleBack(): void {
+  void onlineState.flushPendingProgress()
   if (ctx.value?.sourceId && ctx.value?.comicUrl) {
-    const query: Record<string, string> = {
-      sourceId: ctx.value.sourceId,
-      comicUrl: ctx.value.comicUrl,
-    }
-    if (ctx.value.title) query.title = ctx.value.title
-    if (activeSourceName.value) query.sourceName = activeSourceName.value
-    void router.push({ path: '/comic/online/detail', query })
+    void router.push(
+      itemRoute({
+        scope: 'online',
+        domain: 'comic',
+        sourceId: ctx.value.sourceId,
+        ref: ctx.value.comicUrl,
+        hints: {
+          title: ctx.value.title,
+          cover: ctx.value.coverUrl ?? undefined,
+          author: ctx.value.author,
+        },
+      }),
+    )
     return
   }
-  void router.push({ path: '/comic/series', query: { scope: 'online' } })
+  void router.push(libraryRoute('comic', { scope: 'online' }))
 }
 
 onMounted(() => {
@@ -596,16 +755,20 @@ onBeforeUnmount(() => {
   pageAbortController = null
   detailAbortController?.abort()
   detailAbortController = null
+  void onlineState.flushPendingProgress()
 })
 
 watch(
   () => [
+    route.query.source,
     route.query.sourceId,
     route.query.source_id,
-    route.query.chapterUrl,
-    route.query.chapter_url,
+    route.query.ref,
     route.query.comicUrl,
     route.query.comic_url,
+    route.query.chapter,
+    route.query.chapterUrl,
+    route.query.chapter_url,
   ],
   () => {
     if (syncingUrl) return
@@ -622,7 +785,7 @@ watch(
     :back-label="ctx?.comicUrl ? t('online.backToDetail') : t('online.backToOnlineList')"
     :chapter-key="activeChapterKey"
     :total-pages="pages.length"
-    :initial-page="1"
+    :initial-page="initialPage"
     :get-page-src="getPageSrc"
     :chapters="chapterItems"
     :has-prev-chapter="prevChapterIndex !== null"
@@ -643,6 +806,7 @@ watch(
     @update:dim-images="handleDimImagesChange"
     @update:webtoon-width="webtoonWidth = $event"
     @commit-webtoon-width="handleWebtoonWidthCommit"
+    @page-change="handlePageChange"
     @prev-chapter="prevChapterIndex !== null && switchChapterByIndex(prevChapterIndex)"
     @next-chapter="nextChapterIndex !== null && switchChapterByIndex(nextChapterIndex)"
     @select-chapter="handleSelectChapterKey($event)"
@@ -652,7 +816,7 @@ watch(
     <template #header-meta>
       <span
         v-if="activeSourceName"
-        class="hidden shrink-0 rounded-full bg-[var(--md-sys-color-primary-container)] px-2 py-0.5 text-[10px] font-semibold text-[var(--md-sys-color-on-primary-container)] sm:inline-flex"
+        class="text-label-small hidden shrink-0 rounded-corner-full bg-primary-container px-2 py-0.5 text-on-primary-container sm:inline-flex"
       >
         {{ activeSourceName }}
       </span>
