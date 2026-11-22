@@ -523,9 +523,9 @@ export class CdpClient {
 
   async pressKey(key, { modifiers = 0 } = {}) {
     const keyMap = {
-      Enter: { code: 'Enter', keyCode: 13 },
+      Enter: { code: 'Enter', keyCode: 13, text: '\r' },
       Escape: { code: 'Escape', keyCode: 27 },
-      Space: { key: ' ', code: 'Space', keyCode: 32 },
+      Space: { key: ' ', code: 'Space', keyCode: 32, text: ' ' },
       ArrowLeft: { code: 'ArrowLeft', keyCode: 37 },
       ArrowRight: { code: 'ArrowRight', keyCode: 39 },
       ArrowUp: { code: 'ArrowUp', keyCode: 38 },
@@ -541,6 +541,7 @@ export class CdpClient {
       key: info.key || key,
       code: info.code,
       windowsVirtualKeyCode: info.keyCode,
+      ...(info.text ? { text: info.text, unmodifiedText: info.text } : {}),
       modifiers,
     });
     await this.send('Input.dispatchKeyEvent', {

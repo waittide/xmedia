@@ -381,7 +381,12 @@ export class ApiClient {
 
     let reqBody;
     if (body !== undefined) {
-      if (typeof body === 'string' || Buffer.isBuffer(body) || body instanceof Uint8Array) {
+      if (
+        typeof body === 'string' ||
+        Buffer.isBuffer(body) ||
+        body instanceof Uint8Array ||
+        (typeof FormData !== 'undefined' && body instanceof FormData)
+      ) {
         reqBody = body;
       } else {
         reqBody = JSON.stringify(body);

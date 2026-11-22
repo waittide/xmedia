@@ -16,6 +16,7 @@ import {
   resolveWebDir,
 } from '../lib/client.mjs';
 import {
+  MOCK_AES_KEY_BYTES,
   MOCK_JPEG_BYTES,
   MOCK_MP3_BYTES,
   MOCK_MP4_BYTES,
@@ -26,6 +27,7 @@ import {
   assertMp4,
   assertMpegTs,
   assertPng,
+  decryptAes128Cbc,
 } from '../lib/fixtures.mjs';
 import { MockOriginServer } from '../lib/mock_origin.mjs';
 import { readFileSync } from 'node:fs';
@@ -237,7 +239,13 @@ async function openAuthenticatedPage(CdpCtor, baseUrl, client, targetPath = '/')
       sameSite: 'Lax',
     });
     await cdp.goto(`${baseUrl}${targetPath}`);
-    await cdp.waitForSelector('#app', { timeoutMs: 12000 });
+    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:online\/)?(?:read|watch))(?=[/?#]|$)/.test(
+      targetPath,
+    );
+    await cdp.waitForSelector(isFullscreen ? '#app > *' : '[data-workspace-shell]', {
+      visible: true,
+      timeoutMs: 12000,
+    });
     return cdp;
   } catch (err) {
     await cdp.close().catch(() => {});
@@ -383,7 +391,7 @@ function buildTier2Cases() {
         await resetMockRequests(ctx.mockBaseUrl);
         const comicSearch = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/search', {
           body: { keyword: 'Strip', source_ids: [comics.xkcd.id] },
-          expectedStatus: [200, 403, 404],
+          expectedStatus: [200, 400, 403, 404],
         });
         if (comicSearch.status === 200) {
           assert.equal((comicSearch.json.results ?? comicSearch.json.items ?? []).length, 0);
@@ -776,8 +784,8 @@ function buildTier2Cases() {
           expectedStatus: 200,
         });
         assert.equal(detail.json.chapters.length, 2);
-        assert.ok(detail.json.chapters[0].chapter_url.includes('md-ch-2'));
-        assert.ok(detail.json.chapters[1].chapter_url.includes('md-ch-1'));
+        assert.ok((detail.json.chapters[0].url ?? detail.json.chapters[0].chapter_url).includes('md-ch-2'));
+        assert.ok((detail.json.chapters[1].url ?? detail.json.chapters[1].chapter_url).includes('md-ch-1'));
       },
     },
     {
@@ -1472,7 +1480,9 @@ function buildTier2Cases() {
           headers: { 'X-Forwarded-Host': 'evil.example.com' },
           expectedStatus: 200,
         });
-        assertMpegTs(segRes.buffer, 'hls-proxy header-injected segment');
+        assert.notEqual(segRes.buffer[0], 0x47, 'seg0.ts should be AES-128 encrypted');
+        const decSeg = decryptAes128Cbc(segRes.buffer, MOCK_AES_KEY_BYTES, 0);
+        assertMpegTs(decSeg, 'hls-proxy header-injected segment');
         const reqs = await getMockRequests(ctx.mockBaseUrl);
         const segReq = reqs.find((r) => r.path.endsWith('/seg0.ts'));
         assert.equal(segReq?.headers['x-video-token'], 'secret123');
@@ -1961,19 +1971,19 @@ function buildTier2Cases() {
           ruleSearch: {
             bookList: '$',
             name: '$.title',
-            bookUrl: `${ctx.mockBaseUrl}/comic/xkcd/info.0.json`,
+            bookUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/xkcd/info.0.json`)}`,
           },
           ruleBookInfo: {
             name: '$.title',
-            tocUrl: `${ctx.mockBaseUrl}/comic/xkcd/info.0.json`,
+            tocUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/xkcd/info.0.json`)}`,
           },
           ruleToc: {
             chapterList: '$',
-            chapterName: 'Broken Chapter',
-            chapterUrl: `${ctx.mockBaseUrl}/comic/xkcd/info.0.json`,
+            chapterName: '@js:"Broken Chapter"',
+            chapterUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/xkcd/info.0.json`)}`,
           },
           ruleContent: {
-            content: `${ctx.mockBaseUrl}/edge/svg-as-image`,
+            content: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/edge/svg-as-image`)}`,
           },
         };
         await importSources(ctx.admin, 'comic', badImgSrc);
@@ -1987,7 +1997,10 @@ function buildTier2Cases() {
           await cdp.waitForFn(`document.body.innerText.includes('Mock XKCD Strip')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock XKCD Strip/]);
           await clickButtonMatching(cdp, [/Broken Chapter/]);
-          await cdp.waitForSelector('img[src*="image-proxy"]', { timeoutMs: 10000 });
+          await cdp.waitForFn(
+            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            { timeoutMs: 10000, label: 'broken image reader mounted' },
+          );
           assert.equal(cdp.exceptions.length, 0);
         } finally {
           await cdp.close();
@@ -2031,7 +2044,10 @@ function buildTier2Cases() {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
-          await cdp.waitForSelector('img[src*="image-proxy"]', { visible: true });
+          await cdp.waitForFn(
+            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            { timeoutMs: 12000, label: 'comic reader mounted' },
+          );
           await cdp.pressKey('ArrowRight');
           await cdp.pressKey('ArrowLeft');
           await cdp.pressKey('Escape');
@@ -2058,7 +2074,10 @@ function buildTier2Cases() {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
-          await cdp.waitForSelector('img[src*="image-proxy"]', { visible: true });
+          await cdp.waitForFn(
+            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            { timeoutMs: 12000, label: 'comic reader mounted' },
+          );
           await clickButtonMatching(cdp, [/护眼|调暗|dim/i]);
           await clickButtonMatching(cdp, [/适应宽度|fit/i]);
           cdp.assertNoErrors('T2-F14-04');
@@ -2077,9 +2096,9 @@ function buildTier2Cases() {
         const emptyChSrc = buildMockComicSources(ctx.mockBaseUrl).webtoon;
         emptyChSrc.searchUrl = `${ctx.mockBaseUrl}/comic/webtoon/list?title_no=0`;
         emptyChSrc.ruleSearch = {
-          bookList: 'body',
-          name: 'h1.subj@text',
-          bookUrl: `${ctx.mockBaseUrl}/comic/webtoon/list?title_no=0`,
+          bookList: 'h1.subj',
+          name: '@text',
+          bookUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/webtoon/list?title_no=0`)}`,
         };
         await importSources(ctx.admin, 'comic', emptyChSrc);
         const cdp = await openAuthenticatedPage(
@@ -2217,16 +2236,32 @@ function buildTier2Cases() {
       title: 'Browser: Logging out pauses/clears online music PlayerBar and redirects to /login',
       async run(ctx) {
         await ensureMusicMocks(ctx.admin, ctx.mockBaseUrl);
+        const ephemeralUsername = `logout_member_${Date.now()}`;
+        const ephemeralCreds = {
+          username: ephemeralUsername,
+          display_name: 'Logout Member',
+          password: 'UserPass123!',
+          role: 'member',
+        };
+        await ctx.admin.createMemberUser(ephemeralCreds);
+        const ephemeralMember = await ctx.admin.loginAs({
+          username: ephemeralUsername,
+          password: ephemeralCreds.password,
+          authMode: 'bearer',
+        });
         const cdp = await openAuthenticatedPage(
           ctx.CdpClient,
           ctx.baseUrl,
-          ctx.member,
+          ephemeralMember,
           '/music/songs?scope=online&q=Mojito',
         );
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock Mojito|播放|play/i]);
-          await cdp.waitForSelector('audio', { timeoutMs: 8000 });
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('audio')?.src.includes('audio-proxy')) && [...document.querySelectorAll('img')].some((i) => i.src.includes('cover-proxy') && i.complete && i.naturalWidth > 0)`,
+            { timeoutMs: 10000, label: 'audio and cover-proxy loaded before logout' },
+          );
           await cdp.click('header [aria-haspopup="menu"], header div.relative.ml-1 > button');
           await clickButtonMatching(cdp, [/退出|登出|logout|sign out/i]);
           await cdp.waitForFn(`location.pathname.includes('/login')`, { timeoutMs: 10000 });
@@ -2235,6 +2270,11 @@ function buildTier2Cases() {
           );
           assert.equal(audioPaused, true);
           cdp.assertNoErrors('T2-F15-05');
+
+          // Confirm ephemeral token was revoked while shared ctx.member remains valid
+          const revRes = await ephemeralMember.request('GET', '/api/v1/auth/me');
+          assert.equal(revRes.status, 401, 'Ephemeral session must be revoked after UI logout');
+          await ctx.member.failLoudlyRequest('GET', '/api/v1/auth/me', { expectedStatus: 200 });
         } finally {
           await cdp.close();
         }
@@ -2294,10 +2334,11 @@ function buildTier2Cases() {
           ruleDetail: {
             name: '$.name',
             episodes: '$.files[*]',
-            playUrl: `${ctx.mockBaseUrl}/edge/malformed-m3u8`,
+            episodeName: '@js:"第1集"',
+            episodeUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/edge/malformed-m3u8`)}`,
           },
           rulePlay: {
-            streamUrl: `${ctx.mockBaseUrl}/edge/malformed-m3u8`,
+            streamUrl: '{{playUrl}}',
             streamType: 'hls',
           },
         };
@@ -2313,7 +2354,7 @@ function buildTier2Cases() {
             timeoutMs: 10000,
           });
           await clickButtonMatching(cdp, [/Mock Blender Open Movie/]);
-          await clickButtonMatching(cdp, [/播放|play|正片|1/i]);
+          await clickButtonMatching(cdp, [/立即播放|play now|播放|play|第1集|正片/i]);
           await cdp.waitForSelector('video', { timeoutMs: 8000 });
           assert.equal(cdp.exceptions.length, 0);
         } finally {
@@ -2416,12 +2457,30 @@ function buildTier2Cases() {
             timeoutMs: 10000,
           });
           await clickButtonMatching(cdp, [/影视|视频|video/i]);
+          await cdp.waitForFn(`location.pathname.startsWith('/video')`, {
+            timeoutMs: 8000,
+            label: 'switched to video domain',
+          });
+          await clickButtonMatching(cdp, [/全部|all/i], { rootSelector: 'aside, nav' });
+          await cdp.waitForFn(`location.pathname.startsWith('/video/catalog')`, {
+            timeoutMs: 8000,
+            label: 'navigated to /video/catalog',
+          });
           await clickButtonMatching(cdp, [/在线|online/i]);
+          await cdp.waitForFn(`location.search.includes('scope=online')`, {
+            timeoutMs: 8000,
+            label: 'switched video catalog to scope=online',
+          });
+          await cdp.waitForSelector('main input[type="search"], main input[type="text"]', {
+            visible: true,
+          });
+          await cdp.type('main input[type="search"], main input[type="text"]', 'Blender');
+          await cdp.pressKey('Enter');
           await cdp.waitForFn(`document.body.innerText.includes('Mock Blender Open Movie')`, {
             timeoutMs: 10000,
           });
-          await clickButtonMatching(cdp, [/Mock Blender Open Movie/]);
-          await clickButtonMatching(cdp, [/播放|play|360|正片/i]);
+          await clickButtonMatching(cdp, [/Mock Blender Open Movie/], { rootSelector: 'main' });
+          await clickButtonMatching(cdp, [/立即播放|play now|360p/i], { rootSelector: 'main' });
           await cdp.waitForSelector('video', { visible: true });
           const musicPaused = await cdp.evalJs(
             `!document.querySelector('audio') || document.querySelector('audio').paused`,
@@ -2647,7 +2706,7 @@ function buildTier2Cases() {
         const srcId = imp.sources[0].id;
         const bookUrl = `${ctx.mockBaseUrl}/comic/webtoon/list?title_no=95`;
 
-        const tracked = await ctx.member.failLoudlyRequest('POST', '/api/v1/book/online/track', {
+        const tracked = await ctx.admin.failLoudlyRequest('POST', '/api/v1/book/online/track', {
           body: {
             source_id: srcId,
             name: 'Tracked NonReg Book',

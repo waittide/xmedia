@@ -18,6 +18,7 @@ import {
   resolveWebDir,
 } from '../lib/client.mjs';
 import {
+  MOCK_AES_KEY_BYTES,
   MOCK_JPEG_BYTES,
   MOCK_MP3_BYTES,
   MOCK_MP4_BYTES,
@@ -26,6 +27,7 @@ import {
   assertMp3,
   assertMp4,
   assertMpegTs,
+  decryptAes128Cbc,
 } from '../lib/fixtures.mjs';
 import { MockOriginServer } from '../lib/mock_origin.mjs';
 
@@ -164,6 +166,20 @@ function toRelativeApiPath(urlOrPath) {
 async function browserLogin(cdp, baseUrl, creds) {
   await cdp.goto(`${baseUrl}/login`);
   await cdp.waitForSelector('input[autocomplete="username"]', { visible: true });
+  assert.equal(
+    cdp.exceptions.length,
+    0,
+    `Unexpected JS exceptions before login: ${JSON.stringify(cdp.exceptions)}`,
+  );
+  const unexpectedPreHttp = cdp.httpErrors.filter(
+    (e) => !(e.status === 401 && String(e.url || '').includes('/api/v1/auth/me')),
+  );
+  assert.equal(
+    unexpectedPreHttp.length,
+    0,
+    `Unexpected HTTP errors before login: ${JSON.stringify(unexpectedPreHttp)}`,
+  );
+  cdp.clearErrors();
   await cdp.type('input[autocomplete="username"]', creds.username);
   await cdp.type('input[autocomplete="current-password"]', creds.password);
   await cdp.click('button[type="submit"]');
@@ -171,6 +187,7 @@ async function browserLogin(cdp, baseUrl, creds) {
     timeoutMs: 10000,
     label: 'browser redirect after login',
   });
+  await cdp.waitForSelector('[data-workspace-shell]', { visible: true, timeoutMs: 12000 });
 }
 
 async function clickButtonByText(cdp, texts, { timeoutMs = 8000 } = {}) {
@@ -451,7 +468,8 @@ export async function runTier4(context = {}) {
 
             await cdp.waitForFn(
               `(() => {
-                const imgs = [...document.querySelectorAll('img')].filter(i => (i.src || '').includes('image-proxy'));
+                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 2 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,
               { timeoutMs: 12000, label: 'WEBTOON reader images decoded' },
@@ -461,7 +479,8 @@ export async function runTier4(context = {}) {
             await clickButtonByText(cdp, ['下一章', 'Next'], { timeoutMs: 8000 });
             await cdp.waitForFn(
               `(() => {
-                const imgs = [...document.querySelectorAll('img')].filter(i => (i.src || '').includes('image-proxy'));
+                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 2 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,
               { timeoutMs: 10000, label: 'WEBTOON Ep.2 images decoded' },
@@ -481,7 +500,8 @@ export async function runTier4(context = {}) {
             await clickButtonByText(cdp, ['Arrival', '开始阅读', 'Read'], { timeoutMs: 8000 });
             await cdp.waitForFn(
               `(() => {
-                const imgs = [...document.querySelectorAll('img')].filter(i => (i.src || '').includes('image-proxy'));
+                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 1 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,
               { timeoutMs: 12000, label: 'MangaDex reader images decoded' },
@@ -536,8 +556,10 @@ export async function runTier4(context = {}) {
             await clickButtonByText(cdp, ['在线', 'Online'], { timeoutMs: 8000 });
 
             // Search "Mock"
-            await cdp.waitForSelector('input[type="text"], input[type="search"]', { visible: true });
-            await cdp.type('input[type="text"], input[type="search"]', 'Mock');
+            await cdp.waitForSelector('main input[type="search"], main input[type="text"]', {
+              visible: true,
+            });
+            await cdp.type('main input[type="search"], main input[type="text"]', 'Mock');
 
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock Mojito') && document.body.textContent.includes('Fragments Mock')`,
@@ -572,12 +594,12 @@ export async function runTier4(context = {}) {
             await clickButtonByText(cdp, ['Second synced line'], { timeoutMs: 8000 });
             await cdp.pressKey('Escape');
 
-            // Navigate across workspace routes while music persists
-            await cdp.goto(`${baseUrl}/comic/series`);
+            // Navigate via SPA sidebar across workspace routes while music persists
+            await clickButtonByText(cdp, ['漫画', 'Comic'], { timeoutMs: 8000 });
             await cdp.waitForFn(
               `(() => {
                 const a = document.querySelector('audio');
-                return Boolean(a && a.src && a.src.includes('audio-proxy'));
+                return window.location.pathname.startsWith('/comic') && Boolean(a && a.src && a.src.includes('audio-proxy'));
               })()`,
               { timeoutMs: 8000, label: 'PlayerBar audio persists across route navigation' },
             );
@@ -639,7 +661,9 @@ export async function runTier4(context = {}) {
             toRelativeApiPath(subParsed.segments[0]),
             { expectedStatus: 200 },
           );
-          assertMpegTs(tsRes.buffer, 'T4-04 AppleCMS TS segment');
+          assert.notEqual(tsRes.buffer[0], 0x47, 'seg0.ts should be AES-128 encrypted');
+          const decTs = decryptAes128Cbc(tsRes.buffer, MOCK_AES_KEY_BYTES, 0);
+          assertMpegTs(decTs, 'T4-04 AppleCMS TS segment');
 
           // Chromium UI journey
           await withCdpBrowser(async (cdp) => {
@@ -647,8 +671,10 @@ export async function runTier4(context = {}) {
             await cdp.goto(`${baseUrl}/video/catalog`);
             await clickButtonByText(cdp, ['在线', 'Online'], { timeoutMs: 8000 });
 
-            await cdp.waitForSelector('input[type="text"], input[type="search"]', { visible: true });
-            await cdp.type('input[type="text"], input[type="search"]', 'Earth');
+            await cdp.waitForSelector('main input[type="search"], main input[type="text"]', {
+              visible: true,
+            });
+            await cdp.type('main input[type="search"], main input[type="text"]', 'Earth');
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock Wandering Earth')`,
               { timeoutMs: 12000, label: 'AppleCMS search card rendered' },

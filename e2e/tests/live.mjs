@@ -119,6 +119,20 @@ function findMatchingSources(sources, namePatterns) {
 async function browserLogin(cdp, baseUrl, creds) {
   await cdp.goto(`${baseUrl}/login`);
   await cdp.waitForSelector('input[autocomplete="username"]', { visible: true });
+  assert.equal(
+    cdp.exceptions.length,
+    0,
+    `Unexpected JS exceptions before login: ${JSON.stringify(cdp.exceptions)}`,
+  );
+  const unexpectedPreHttp = cdp.httpErrors.filter(
+    (e) => !(e.status === 401 && String(e.url || '').includes('/api/v1/auth/me')),
+  );
+  assert.equal(
+    unexpectedPreHttp.length,
+    0,
+    `Unexpected HTTP errors before login: ${JSON.stringify(unexpectedPreHttp)}`,
+  );
+  cdp.clearErrors();
   await cdp.type('input[autocomplete="username"]', creds.username);
   await cdp.type('input[autocomplete="current-password"]', creds.password);
   await cdp.click('button[type="submit"]');
@@ -126,6 +140,7 @@ async function browserLogin(cdp, baseUrl, creds) {
     timeoutMs: 10000,
     label: 'browser redirect after login',
   });
+  await cdp.waitForSelector('[data-workspace-shell]', { visible: true, timeoutMs: 12000 });
 }
 
 async function clickButtonByText(cdp, texts, { timeoutMs = 10000 } = {}) {

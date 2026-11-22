@@ -34,7 +34,7 @@ export function buildMockComicSources(mockBaseUrl, { strictUa = false } = {}) {
     },
     ruleContent: {
       content: `<js>
-const d = JSON.parse(result);
+const d = typeof result === 'string' ? JSON.parse(result) : result;
 const base = d.baseUrl;
 const h = d.chapter.hash;
 const list = (d.chapter.dataSaver && d.chapter.dataSaver.length) ? d.chapter.dataSaver : (d.chapter.data || []);
@@ -92,14 +92,14 @@ list.map(f => base + '/data-saver/' + h + '/' + f).join('\\n');
     ruleSearch: {
       bookList: '$',
       name: '$.title',
-      bookUrl: `${mockBaseUrl}/comic/xkcd/info.0.json`,
+      bookUrl: `@js:${JSON.stringify(`${mockBaseUrl}/comic/xkcd/info.0.json`)}`,
       coverUrl: '$.img',
       intro: '$.alt',
     },
     ruleExplore: {
       bookList: '$',
       name: '$.title',
-      bookUrl: `${mockBaseUrl}/comic/xkcd/info.0.json`,
+      bookUrl: `@js:${JSON.stringify(`${mockBaseUrl}/comic/xkcd/info.0.json`)}`,
       coverUrl: '$.img',
       intro: '$.alt',
     },
@@ -107,13 +107,13 @@ list.map(f => base + '/data-saver/' + h + '/' + f).join('\\n');
       name: '$.title',
       coverUrl: '$.img',
       intro: '$.alt',
-      tocUrl: `${mockBaseUrl}/comic/xkcd/info.0.json`,
+      tocUrl: `@js:${JSON.stringify(`${mockBaseUrl}/comic/xkcd/info.0.json`)}`,
       readingDirection: 'ltr',
     },
     ruleToc: {
       chapterList: '$',
       chapterName: '$.title',
-      chapterUrl: `${mockBaseUrl}/comic/xkcd/info.0.json`,
+      chapterUrl: `@js:${JSON.stringify(`${mockBaseUrl}/comic/xkcd/info.0.json`)}`,
     },
     ruleContent: {
       content: '$.img',
@@ -247,7 +247,8 @@ export function buildMockVideoSources(mockBaseUrl) {
       name: '$.name',
       intro: '$.description',
       episodes: '$.files[*]',
-      playUrl: '$.fileUrl',
+      episodeName: '{{$.resolution.id}}p',
+      episodeUrl: '$.fileUrl',
     },
     rulePlay: {
       streamUrl: '{{playUrl}}',
@@ -332,7 +333,11 @@ export function buildEdgeMockSources(mockBaseUrl) {
       sourceType: 2,
       enabled: true,
       searchUrl: `${mockBaseUrl}/edge/malformed-html`,
-      ruleSearch: { bookList: '.item', name: '@text', bookUrl: `${mockBaseUrl}/comic/xkcd/info.0.json` },
+      ruleSearch: {
+        bookList: '.item',
+        name: '@text',
+        bookUrl: `@js:${JSON.stringify(`${mockBaseUrl}/comic/xkcd/info.0.json`)}`,
+      },
     },
     gbkHtml: {
       sourceName: 'Edge GBK HTML',
@@ -341,7 +346,11 @@ export function buildEdgeMockSources(mockBaseUrl) {
       sourceType: 2,
       enabled: true,
       searchUrl: `${mockBaseUrl}/edge/gbk-html`,
-      ruleSearch: { bookList: 'h1.title', name: '@text', bookUrl: `${mockBaseUrl}/comic/xkcd/info.0.json` },
+      ruleSearch: {
+        bookList: 'h1.title',
+        name: '@text',
+        bookUrl: `@js:${JSON.stringify(`${mockBaseUrl}/comic/xkcd/info.0.json`)}`,
+      },
     },
     postEcho: {
       sourceName: 'Edge POST Echo',
@@ -367,7 +376,12 @@ export function buildEdgeMockSources(mockBaseUrl) {
       sourceGroup: 'Edge',
       sourceType: 2,
       enabled: true,
-      loginUrl: `${mockBaseUrl}/edge/auth/login`,
+      loginUrl: `@js:function login() {
+const info = source.getLoginInfoMap();
+const payload = JSON.stringify({ username: info.username || '', password: info.password || '' });
+java.post('${mockBaseUrl}/edge/auth/login', payload, { 'Content-Type': 'application/json' });
+}
+login();`,
       loginUi: JSON.stringify([
         { name: 'username', type: 'text' },
         { name: 'password', type: 'password' },
@@ -380,16 +394,16 @@ java.post('${mockBaseUrl}/edge/auth/login', payload, { 'Content-Type': 'applicat
       ruleSearch: {
         bookList: '$',
         name: '$.title',
-        bookUrl: `${mockBaseUrl}/edge/gated/comic-pages`,
+        bookUrl: `@js:${JSON.stringify(`${mockBaseUrl}/edge/gated/comic-pages`)}`,
       },
       ruleBookInfo: {
-        name: 'Gated Comic',
-        tocUrl: `${mockBaseUrl}/edge/gated/comic-pages`,
+        name: '@js:"Gated Comic"',
+        tocUrl: `@js:${JSON.stringify(`${mockBaseUrl}/edge/gated/comic-pages`)}`,
       },
       ruleToc: {
         chapterList: '$',
-        chapterName: 'Gated Chapter 1',
-        chapterUrl: `${mockBaseUrl}/edge/gated/comic-pages`,
+        chapterName: '@js:"Gated Chapter 1"',
+        chapterUrl: `@js:${JSON.stringify(`${mockBaseUrl}/edge/gated/comic-pages`)}`,
       },
       ruleContent: {
         content: '$.pages[*]',

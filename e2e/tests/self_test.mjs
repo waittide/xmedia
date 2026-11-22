@@ -18,6 +18,7 @@ import {
   assertPng,
   assertRasterImage,
   assertSecurityHeaders,
+  decryptAes128Cbc,
   MOCK_AES_KEY_BYTES,
   MOCK_FMP4_INIT,
   MOCK_FMP4_SEG,
@@ -246,10 +247,14 @@ export async function runSelfTests({ silent = false } = {}) {
 
       const tsOk = await fetch(
         `${baseUrl}/video/applecms/hls/5000kb/hls/seg0.ts?require_header=X-Video-Token:secret123`,
-        { headers: { 'X-Video-Token': 'secret123', Range: 'bytes=0-375' } },
+        { headers: { 'X-Video-Token': 'secret123', Range: 'bytes=0-383' } },
       );
       assert.equal(tsOk.status, 206);
-      assertMpegTs(Buffer.from(await tsOk.arrayBuffer()), 'AppleCMS TS partial');
+      const encPartial = Buffer.from(await tsOk.arrayBuffer());
+      assert.equal(encPartial.length, 384);
+      assert.notEqual(encPartial[0], 0x47, 'seg0.ts should be AES-128 encrypted');
+      const decPartial = decryptAes128Cbc(encPartial, keyBuf, 0, { partialPrefixBytes: 376 });
+      assertMpegTs(decPartial, 'AppleCMS TS partial');
     });
 
     // ST-07: PeerTube mock + Range MP4

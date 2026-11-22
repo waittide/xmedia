@@ -26,6 +26,7 @@ import {
   assertMpegTs,
   assertPng,
   assertSecurityHeaders,
+  decryptAes128Cbc,
 } from '../lib/fixtures.mjs';
 import { MockOriginServer } from '../lib/mock_origin.mjs';
 
@@ -175,6 +176,20 @@ function toRelativeApiPath(urlOrPath) {
 async function browserLogin(cdp, baseUrl, creds) {
   await cdp.goto(`${baseUrl}/login`);
   await cdp.waitForSelector('input[autocomplete="username"]', { visible: true });
+  assert.equal(
+    cdp.exceptions.length,
+    0,
+    `Unexpected JS exceptions before login: ${JSON.stringify(cdp.exceptions)}`,
+  );
+  const unexpectedPreHttp = cdp.httpErrors.filter(
+    (e) => !(e.status === 401 && String(e.url || '').includes('/api/v1/auth/me')),
+  );
+  assert.equal(
+    unexpectedPreHttp.length,
+    0,
+    `Unexpected HTTP errors before login: ${JSON.stringify(unexpectedPreHttp)}`,
+  );
+  cdp.clearErrors();
   await cdp.type('input[autocomplete="username"]', creds.username);
   await cdp.type('input[autocomplete="current-password"]', creds.password);
   await cdp.click('button[type="submit"]');
@@ -182,6 +197,7 @@ async function browserLogin(cdp, baseUrl, creds) {
     timeoutMs: 10000,
     label: 'browser redirect after login',
   });
+  await cdp.waitForSelector('[data-workspace-shell]', { visible: true, timeoutMs: 12000 });
 }
 
 async function clickButtonByText(cdp, texts, { timeoutMs = 8000 } = {}) {
@@ -497,7 +513,9 @@ export async function runTier3(context = {}) {
 
           const segRel = toRelativeApiPath(subParsed.segments[0]);
           const segRes = await userQuery.failLoudlyRequest('GET', segRel, { expectedStatus: 200 });
-          assertMpegTs(segRes.buffer, 'T3-06 rewritten TS segment');
+          assert.notEqual(segRes.buffer[0], 0x47, 'seg0.ts should be AES-128 encrypted');
+          const decSeg = decryptAes128Cbc(segRes.buffer, MOCK_AES_KEY_BYTES, 0);
+          assertMpegTs(decSeg, 'T3-06 rewritten TS segment');
         } finally {
           await deleteSourceSafe(admin, 'video', src.id);
         }
@@ -748,17 +766,21 @@ export async function runTier3(context = {}) {
           const seg0Res = await member.failLoudlyRequest(
             'GET',
             toRelativeApiPath(subParsed.segments[0]),
-            { headers: { Range: 'bytes=0-375' }, expectedStatus: 206 },
+            { headers: { Range: 'bytes=0-383' }, expectedStatus: 206 },
           );
-          assert.equal(seg0Res.buffer.length, 376);
-          assertMpegTs(seg0Res.buffer, 'AppleCMS TS seg0');
+          assert.equal(seg0Res.buffer.length, 384);
+          assert.notEqual(seg0Res.buffer[0], 0x47, 'seg0.ts should be AES-128 encrypted');
+          const decSeg0 = decryptAes128Cbc(seg0Res.buffer, keyRes.buffer, 0, { partialPrefixBytes: 376 });
+          assertMpegTs(decSeg0, 'AppleCMS TS seg0');
 
           const seg1Res = await member.failLoudlyRequest(
             'GET',
             toRelativeApiPath(subParsed.segments[1]),
             { expectedStatus: 200 },
           );
-          assertMpegTs(seg1Res.buffer, 'AppleCMS TS seg1');
+          assert.notEqual(seg1Res.buffer[0], 0x47, 'seg1.ts should be AES-128 encrypted');
+          const decSeg1 = decryptAes128Cbc(seg1Res.buffer, keyRes.buffer, 1);
+          assertMpegTs(decSeg1, 'AppleCMS TS seg1');
 
           const reqs = await getMockRequests(mockUrl);
           const segHit = reqs.find((r) => r.path.endsWith('/seg0.ts'));
@@ -878,7 +900,7 @@ export async function runTier3(context = {}) {
           ruleSearch: {
             bookList: 'h1.title',
             name: '@text##测试##',
-            bookUrl: `${mockUrl}/comic/xkcd/info.0.json`,
+            bookUrl: `@js:${JSON.stringify(`${mockUrl}/comic/xkcd/info.0.json`)}`,
           },
         };
         const src = await importSource(admin, 'comic', gbkComic);
@@ -1196,6 +1218,10 @@ export async function runTier3(context = {}) {
                 `window.location.pathname.startsWith(${JSON.stringify(expectedPath)}) && window.location.search.includes('scope=online')`,
                 { timeoutMs: 8000, label: `Navigated to ${expectedPath} scope=online` },
               );
+              await cdp.waitForFn(`!document.querySelector('[role="dialog"]')`, {
+                timeoutMs: 5000,
+                label: 'GlobalSearchModal closed',
+              });
             }
             cdp.assertNoErrors('T3-21 GlobalSearchModal cross-domain');
           });
@@ -1234,14 +1260,34 @@ export async function runTier3(context = {}) {
               { timeoutMs: 10000, label: 'Audio element bound to audio-proxy' },
             );
 
-            // Navigate to online video and open player
-            await cdp.goto(`${baseUrl}/video/catalog?scope=online&q=Blender`);
+            // Navigate via SPA sidebar to online video so Pinia playerStore & <audio> stay alive
+            await clickButtonByText(cdp, ['影视', '视频', 'Video'], { timeoutMs: 8000 });
+            await cdp.waitForFn(`window.location.pathname.startsWith('/video')`, {
+              timeoutMs: 8000,
+              label: 'Navigated to /video domain',
+            });
+            await clickButtonByText(cdp, ['全部', 'All'], { timeoutMs: 8000 });
+            await cdp.waitForFn(`window.location.pathname.startsWith('/video/catalog')`, {
+              timeoutMs: 8000,
+              label: 'Navigated to /video/catalog',
+            });
+            await clickButtonByText(cdp, ['在线', 'Online'], { timeoutMs: 8000 });
+            await cdp.waitForSelector('main input[type="search"], main input[type="text"]', {
+              visible: true,
+              timeoutMs: 8000,
+            });
+            await cdp.type('main input[type="search"], main input[type="text"]', 'Blender');
+            await cdp.pressKey('Enter');
             await cdp.waitForFn(
               `document.body.textContent.includes('Mock Blender Open Movie')`,
               { timeoutMs: 12000, label: 'Online video card rendered' },
             );
+            const stillPlayingBeforeVideo = await cdp.evalJs(
+              `(() => { const a = document.querySelector('audio'); return Boolean(a && a.src.includes('audio-proxy') && !a.paused); })()`,
+            );
+            assert.equal(stillPlayingBeforeVideo, true, 'Music audio must still be playing before video starts');
             await clickButtonByText(cdp, ['Mock Blender Open Movie'], { timeoutMs: 8000 });
-            await clickButtonByText(cdp, ['播放', 'Play', '第1集', '360'], { timeoutMs: 8000 });
+            await clickButtonByText(cdp, ['立即播放', 'Play Now', '360'], { timeoutMs: 8000 });
 
             await cdp.waitForFn(
               `(() => {
@@ -1284,7 +1330,8 @@ export async function runTier3(context = {}) {
 
             await cdp.waitForFn(
               `(() => {
-                const imgs = [...document.querySelectorAll('img')].filter(i => (i.src || '').includes('image-proxy'));
+                if (!window.location.pathname.includes('/comic/online/read')) return false;
+                const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
                 return imgs.length >= 2 && imgs.every(i => i.complete && i.naturalWidth > 0);
               })()`,
               { timeoutMs: 12000, label: 'WEBTOON reader images loaded via image-proxy' },

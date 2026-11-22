@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createCipheriv, createDecipheriv } from 'node:crypto';
 import { deflateSync } from 'node:zlib';
 
 // ---------------------------------------------------------------------------
@@ -113,6 +114,34 @@ export const MOCK_AES_KEY_BYTES = Buffer.from([
   0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
   0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
 ]);
+
+export function hlsSequenceIv(seq = 0) {
+  const iv = Buffer.alloc(16, 0);
+  iv.writeUInt32BE(seq >>> 0, 12);
+  return iv;
+}
+
+export function encryptAes128Cbc(plainBuf, keyBytes = MOCK_AES_KEY_BYTES, seq = 0) {
+  const cipher = createCipheriv('aes-128-cbc', keyBytes, hlsSequenceIv(seq));
+  return Buffer.concat([cipher.update(toBuffer(plainBuf)), cipher.final()]);
+}
+
+export function decryptAes128Cbc(
+  cipherBuf,
+  keyBytes = MOCK_AES_KEY_BYTES,
+  seq = 0,
+  { partialPrefixBytes = null } = {},
+) {
+  const buf = toBuffer(cipherBuf);
+  const decipher = createDecipheriv('aes-128-cbc', keyBytes, hlsSequenceIv(seq));
+  if (partialPrefixBytes !== null) {
+    decipher.setAutoPadding(false);
+    const blockAligned = buf.subarray(0, Math.floor(buf.length / 16) * 16);
+    const dec = Buffer.concat([decipher.update(blockAligned), decipher.final()]);
+    return dec.subarray(0, partialPrefixBytes);
+  }
+  return Buffer.concat([decipher.update(buf), decipher.final()]);
+}
 
 // Valid GBK-encoded HTML containing "中文测试漫画" (GBK bytes: d6 d0 ce c4 b2 e2 ca d4 c2 fe bb ad)
 export const MOCK_GBK_HTML_BYTES = Buffer.concat([

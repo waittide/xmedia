@@ -1,5 +1,6 @@
 import http from 'node:http';
 import {
+  encryptAes128Cbc,
   MOCK_AES_KEY_BYTES,
   MOCK_FMP4_INIT,
   MOCK_GBK_HTML_BYTES,
@@ -11,6 +12,9 @@ import {
   MOCK_TS_SEGMENT_2,
   parseByteRange,
 } from './fixtures.mjs';
+
+const MOCK_ENC_TS_SEGMENT_1 = encryptAes128Cbc(MOCK_TS_SEGMENT_1, MOCK_AES_KEY_BYTES, 0);
+const MOCK_ENC_TS_SEGMENT_2 = encryptAes128Cbc(MOCK_TS_SEGMENT_2, MOCK_AES_KEY_BYTES, 1);
 
 function sendJson(res, status, data, extraHeaders = {}) {
   const body = JSON.stringify(data);
@@ -673,8 +677,8 @@ export class MockOriginServer {
         '#EXT-X-VERSION:6',
         '#EXT-X-TARGETDURATION:2',
         '#EXT-X-MEDIA-SEQUENCE:0',
-        `#EXT-X-KEY:METHOD=AES-128,URI="${keyUri}"`,
         `#EXT-X-MAP:URI="${initUri}"`,
+        `#EXT-X-KEY:METHOD=AES-128,URI="${keyUri}"`,
         '#EXTINF:1.0,',
         seg0Uri,
         '#EXTINF:1.0,',
@@ -713,8 +717,14 @@ export class MockOriginServer {
       return sendRangeBuffer(req, res, MOCK_FMP4_INIT, 'video/mp4');
     }
 
+    if (pathname === '/video/applecms/hls/5000kb/hls/seg0.ts') {
+      if (!checkRequiredHeaderParam(req, urlObj)) {
+        return sendText(res, 403, 'Forbidden: missing required header');
+      }
+      return sendRangeBuffer(req, res, MOCK_ENC_TS_SEGMENT_1, 'video/mp2t');
+    }
+
     if (
-      pathname === '/video/applecms/hls/5000kb/hls/seg0.ts' ||
       pathname === '/video/applecms/hls/ep2/seg0.ts' ||
       pathname === '/video/applecms/hls/alt/seg0.ts'
     ) {
@@ -728,7 +738,7 @@ export class MockOriginServer {
       if (!checkRequiredHeaderParam(req, urlObj)) {
         return sendText(res, 403, 'Forbidden: missing required header');
       }
-      return sendRangeBuffer(req, res, MOCK_TS_SEGMENT_2, 'video/mp2t');
+      return sendRangeBuffer(req, res, MOCK_ENC_TS_SEGMENT_2, 'video/mp2t');
     }
 
     // PeerTube JSON Mock

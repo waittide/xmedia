@@ -32,6 +32,7 @@ import {
   assertPng,
   assertRasterImage,
   assertSecurityHeaders,
+  decryptAes128Cbc,
 } from '../lib/fixtures.mjs';
 import { MockOriginServer } from '../lib/mock_origin.mjs';
 
@@ -272,7 +273,13 @@ async function openAuthenticatedPage(CdpCtor, baseUrl, client, targetPath = '/')
       sameSite: 'Lax',
     });
     await cdp.goto(`${baseUrl}${targetPath}`);
-    await cdp.waitForSelector('#app', { timeoutMs: 12000 });
+    const isFullscreen = /^\/(?:login|setup|(?:comic|book|video)\/(?:online\/)?(?:read|watch))(?=[/?#]|$)/.test(
+      targetPath,
+    );
+    await cdp.waitForSelector(isFullscreen ? '#app > *' : '[data-workspace-shell]', {
+      visible: true,
+      timeoutMs: 12000,
+    });
     return cdp;
   } catch (err) {
     await cdp.close().catch(() => {});
@@ -840,8 +847,8 @@ function buildTier1Cases() {
           searchUrl: `${ctx.mockBaseUrl}/comic/xkcd/info.0.json`,
           ruleSearch: {
             bookList: '$',
-            name: '<js>tagPrefix(source.getVariable(), JSON.parse(result).title)</js>',
-            bookUrl: `${ctx.mockBaseUrl}/comic/xkcd/info.0.json`,
+            name: '<js>const d = typeof result === "string" ? JSON.parse(result) : result; tagPrefix(source.getVariable(), d.title)</js>',
+            bookUrl: `@js:${JSON.stringify(`${ctx.mockBaseUrl}/comic/xkcd/info.0.json`)}`,
           },
         };
         const imp = await importSources(ctx.admin, 'comic', jsSource);
@@ -900,8 +907,8 @@ function buildTier1Cases() {
         assert.equal(res.json.detail.title ?? res.json.detail.name, 'Mock Naruto');
         assert.ok((res.json.detail.intro || '').includes('Mock MangaDex synopsis'));
         assert.ok(Array.isArray(res.json.chapters) && res.json.chapters.length === 2);
-        assert.ok(res.json.chapters[0].chapter_url.includes('md-ch-1'));
-        assert.ok(res.json.chapters[1].chapter_url.includes('md-ch-2'));
+        assert.ok((res.json.chapters[0].url ?? res.json.chapters[0].chapter_url).includes('md-ch-1'));
+        assert.ok((res.json.chapters[1].url ?? res.json.chapters[1].chapter_url).includes('md-ch-2'));
       },
     },
     {
@@ -949,7 +956,7 @@ function buildTier1Cases() {
           expectedStatus: 200,
         });
         assert.ok(detailRes.json.chapters.length >= 2);
-        const ep1Url = detailRes.json.chapters[0].chapter_url;
+        const ep1Url = detailRes.json.chapters[0].url ?? detailRes.json.chapters[0].chapter_url;
 
         const pagesRes = await ctx.member.failLoudlyRequest('POST', '/api/v1/comic/online/pages', {
           body: { source_id: mocks.webtoon.id, chapter_url: ep1Url },
@@ -1559,11 +1566,13 @@ function buildTier1Cases() {
         assert.ok(keyRes.buffer.equals(MOCK_AES_KEY_BYTES));
 
         const segRes = await ctx.member.failLoudlyRequest('GET', parsed.segments[0], {
-          headers: { Range: 'bytes=0-375' },
+          headers: { Range: 'bytes=0-383' },
           expectedStatus: 206,
         });
-        assert.equal(segRes.buffer.length, 376);
-        assertMpegTs(segRes.buffer, 'rewritten TS segment');
+        assert.equal(segRes.buffer.length, 384);
+        assert.notEqual(segRes.buffer[0], 0x47, 'seg0.ts should be AES-128 encrypted');
+        const decSeg = decryptAes128Cbc(segRes.buffer, keyRes.buffer, 0, { partialPrefixBytes: 376 });
+        assertMpegTs(decSeg, 'rewritten TS segment');
 
         const reqs = await getMockRequests(ctx.mockBaseUrl);
         const segReq = reqs.find((r) => r.path.endsWith('/seg0.ts'));
@@ -1790,7 +1799,7 @@ function buildTier1Cases() {
             `document.body.innerText.includes('Mock GDStudio')`,
             { timeoutMs: 10000, label: 'music source card rendered' },
           );
-          await cdp.waitForSelector('input[type="text"], input[type="search"]', { visible: true });
+          await cdp.waitForSelector('main input[type="text"], main input[type="search"]', { visible: true });
           await cdp.goto(`${ctx.baseUrl}/settings?tab=domain-datasources&domain=video`);
           await cdp.waitForFn(
             `document.body.innerText.includes('Mock AppleCMS')`,
@@ -1926,7 +1935,7 @@ function buildTier1Cases() {
         try {
           await clickButtonMatching(cdp, [/在线|online/i]);
           await cdp.waitForFn(`location.search.includes('scope=online')`, { timeoutMs: 8000 });
-          await cdp.type('input[type="text"], input[type="search"]', 'Naruto');
+          await cdp.type('main input[type="text"], main input[type="search"]', 'Naruto');
           await cdp.pressKey('Enter');
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, {
             timeoutMs: 10000,
@@ -1953,8 +1962,8 @@ function buildTier1Cases() {
         );
         try {
           await clickButtonMatching(cdp, [/在线|online/i]);
-          await cdp.waitForSelector('input[type="text"], input[type="search"]', { visible: true });
-          await cdp.type('input[type="text"], input[type="search"]', 'Mojito');
+          await cdp.waitForSelector('main input[type="text"], main input[type="search"]', { visible: true });
+          await cdp.type('main input[type="text"], main input[type="search"]', 'Mojito');
           await cdp.pressKey('Enter');
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, {
             timeoutMs: 10000,
@@ -2098,7 +2107,8 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
           await cdp.waitForFn(
             `(() => {
-              const imgs = [...document.querySelectorAll('img')].filter((i) => i.src.includes('image-proxy'));
+              if (!location.pathname.includes('/comic/online/read')) return false;
+              const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
               return imgs.length >= 1 && imgs.every((i) => i.complete && i.naturalWidth > 0);
             })()`,
             { timeoutMs: 12000, label: 'comic reader proxied pages decoded' },
@@ -2126,12 +2136,15 @@ function buildTier1Cases() {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
-          await cdp.waitForSelector('img[src*="image-proxy"]', { visible: true });
+          await cdp.waitForFn(
+            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            { timeoutMs: 12000, label: 'comic reader mounted' },
+          );
           for (const pat of [/条漫|webtoon/i, /双页|double/i, /单页|single/i]) {
             await clickButtonMatching(cdp, [pat]);
           }
           const ok = await cdp.evalJs(
-            `[...document.querySelectorAll('img[src*="image-proxy"]')].every((i) => i.complete && i.naturalWidth > 0)`,
+            `[...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')].every((i) => i.complete && i.naturalWidth > 0)`,
           );
           assert.equal(ok, true);
           cdp.assertNoErrors('T1-F14-03');
@@ -2157,10 +2170,13 @@ function buildTier1Cases() {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Naruto')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock Naruto/]);
           await clickButtonMatching(cdp, [/Arrival|Ch\.1/]);
-          await cdp.waitForSelector('img[src*="image-proxy"]', { visible: true });
+          await cdp.waitForFn(
+            `location.pathname.includes('/comic/online/read') && Boolean(document.querySelector('img[alt^="Page "][src*="image-proxy"]'))`,
+            { timeoutMs: 12000, label: 'comic reader chapter 1 mounted' },
+          );
           await clickButtonMatching(cdp, [/下一话|下一章|next/i]);
           await cdp.waitForFn(
-            `document.body.innerText.includes('Departure') || [...document.querySelectorAll('img[src*="image-proxy"]')].some((i) => i.src.includes('hash456') && i.naturalWidth > 0)`,
+            `document.body.innerText.includes('Departure') || [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')].some((i) => i.src.includes('hash456') && i.naturalWidth > 0)`,
             { timeoutMs: 10000, label: 'chapter 2 loaded' },
           );
           cdp.assertNoErrors('T1-F14-04');
@@ -2188,7 +2204,8 @@ function buildTier1Cases() {
           await clickButtonMatching(cdp, [/Ep\.1 Prologue/]);
           await cdp.waitForFn(
             `(() => {
-              const imgs = [...document.querySelectorAll('img[src*="image-proxy"]')];
+              if (!location.pathname.includes('/comic/online/read')) return false;
+              const imgs = [...document.querySelectorAll('img[alt^="Page "][src*="image-proxy"]')];
               return imgs.length >= 2 && imgs.every((i) => i.complete && i.naturalWidth > 0);
             })()`,
             { timeoutMs: 12000, label: 'WEBTOON 2 pages loaded via image-proxy' },
@@ -2309,7 +2326,7 @@ function buildTier1Cases() {
         try {
           await cdp.waitForFn(`document.body.innerText.includes('Mock Mojito')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/Mock Mojito|播放|play/i]);
-          await cdp.type('input[type="text"], input[type="search"]', 'Fragments');
+          await cdp.type('main input[type="text"], main input[type="search"]', 'Fragments');
           await cdp.pressKey('Enter');
           await cdp.waitForFn(`document.body.innerText.includes('Fragments Mock')`, { timeoutMs: 10000 });
           await clickButtonMatching(cdp, [/加入队列|队列|enqueue|queue/i]);
@@ -2751,10 +2768,11 @@ function buildTier1Cases() {
         assert.ok(tocRes.json.chapters.length >= 2);
 
         const contentRes = await ctx.member.failLoudlyRequest('POST', '/api/v1/book/online/content', {
-          body: { source_id: srcId, chapter_url: tocRes.json.chapters[0].chapter_url },
+          body: { source_id: srcId, chapter_url: tocRes.json.chapters[0].url ?? tocRes.json.chapters[0].chapter_url },
           expectedStatus: 200,
         });
-        assert.ok(typeof contentRes.json.content.text === 'string');
+        const contentText = contentRes.json.content.content ?? contentRes.json.content.text;
+        assert.equal(typeof contentText, 'string');
 
         const coverRes = await ctx.member.failLoudlyRequest('GET', '/api/v1/book/online/cover-proxy', {
           query: { url: `${ctx.mockBaseUrl}/comic/xkcd/strip.png` },
@@ -2841,10 +2859,15 @@ function buildTier1Cases() {
         });
         assert.ok(spaDeep.text.includes('<div id="app">'));
 
-        for (const missingPath of ['/_app/health', '/api/nonexistent', '/opds/nonexistent', '/rest/nonexistent']) {
+        for (const missingPath of ['/_app/health', '/api/nonexistent', '/opds/nonexistent', '/rest/nonexistent/deep']) {
           const miss = await ctx.admin.request('GET', missingPath, { authMode: 'none' });
           assert.equal(miss.status, 404, `${missingPath} must return 404, not SPA HTML`);
         }
+        const restMiss = await ctx.admin.request('GET', '/rest/nonexistent', { authMode: 'none' });
+        assert.ok(
+          !restMiss.text.includes('<div id="app">'),
+          '/rest/nonexistent must return OpenSubsonic error response, not SPA HTML',
+        );
 
         if (process.env.XMEDIA_E2E_RUN_BUILD_GATES === '1') {
           await execFileAsync('pnpm', ['--dir', 'web', 'run', 'typecheck'], {
