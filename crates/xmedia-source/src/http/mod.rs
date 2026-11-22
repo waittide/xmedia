@@ -21,11 +21,12 @@ pub use ssrf::{
     validate_target_url, validate_target_url_static,
 };
 pub use template::{
-    JsonSigToken, eval_json_options_template, json_escape_str_inner, json_raw_structure_signature,
-    json_structure_signature, resolve_literal_http_url, resolve_relative_url_preserving_options,
+    JsonSigToken, count_comma_open_brace, eval_json_options_template, has_suspicious_option_chars,
+    json_escape_str_inner, json_raw_structure_signature, json_structure_signature,
+    resolve_literal_http_url, resolve_relative_url_preserving_options,
     split_legado_url_and_raw_options, split_legado_url_template_and_options,
     substitute_legado_options_vars, substitute_legado_url_template_vars, substitute_url_part_vars,
-    url_encode_component,
+    url_encode_component, verify_js_pipeline_url_options,
 };
 pub use url_cookie::{
     HttpClientConfig, HttpFetchResult, LegadoUrlOptions, ParsedLegadoUrl, merge_cookie_string,

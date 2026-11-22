@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -8,10 +7,11 @@ use regex::Regex;
 
 use super::session::{ReusableSourceContext, ReusableWorkerSession};
 use crate::source::http::{
-    HttpClientConfig, LegadoHttpClient, eval_json_options_template, resolve_relative_url,
-    resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
-    split_legado_url_template_and_options, substitute_legado_options_vars,
-    substitute_legado_url_template_vars, substitute_url_part_vars,
+    HttpClientConfig, LegadoHttpClient, eval_json_options_template, has_suspicious_option_chars,
+    resolve_relative_url, resolve_relative_url_preserving_options,
+    split_legado_url_and_raw_options, split_legado_url_template_and_options,
+    substitute_legado_options_vars, substitute_legado_url_template_vars, substitute_url_part_vars,
+    verify_js_pipeline_url_options,
 };
 use crate::source::model::{
     BookJsContext, ChapterJsContext, ExecutionDiagnostics, LegadoBookSource, OnlineBookDetail,
@@ -153,6 +153,32 @@ impl BookSourceEngine {
         ))
     }
 
+    fn eval_js_pipeline_url_guarded(
+        session: &mut ReusableWorkerSession,
+        tpl: &str,
+        base_url: &str,
+        keyword: &str,
+        page: u32,
+    ) -> Result<String, String> {
+        let input = RuleValue::Text(String::new());
+        let out = session.eval_string(&input, tpl, base_url)?;
+        if has_suspicious_option_chars(&[keyword])
+            && split_legado_url_and_raw_options(out.trim()).1.is_some()
+        {
+            let probe_keyword = if keyword.is_empty() {
+                ""
+            } else {
+                "__xmedia_probe__"
+            };
+            session.set_search_vars(probe_keyword, page)?;
+            let probe_res = session.eval_string(&input, tpl, base_url);
+            let _ = session.set_search_vars(keyword, page);
+            let probe_out = probe_res?;
+            verify_js_pipeline_url_options(&out, &probe_out, "searchUrl")?;
+        }
+        Ok(out)
+    }
+
     fn build_search_url_lazy(
         &self,
         source: &LegadoBookSource,
@@ -174,18 +200,24 @@ impl BookSourceEngine {
             if let Some(raw_opts) = opt_tpl {
                 let rendered_url = if search_url_needs_js(url_tpl) {
                     session.set_search_vars(keyword, page)?;
-                    let has_js_pipeline = split_js_pipeline(url_tpl).is_some();
-                    let pre_url = if has_js_pipeline {
-                        Cow::Borrowed(url_tpl)
+                    if split_js_pipeline(url_tpl).is_some() {
+                        Self::eval_js_pipeline_url_guarded(
+                            session,
+                            url_tpl,
+                            &source.book_source_url,
+                            keyword,
+                            page,
+                        )?
                     } else {
-                        Cow::Owned(substitute_url_part_vars(url_tpl, &vars, None))
-                    };
-                    let input = RuleValue::Text(String::new());
-                    let out_url = session.eval_string(&input, &pre_url, &source.book_source_url)?;
-                    if !has_js_pipeline && split_legado_url_and_raw_options(&out_url).1.is_some() {
-                        return Err("searchUrl 不允许通过模板变量注入请求配置".into());
+                        let pre_url = substitute_url_part_vars(url_tpl, &vars, None);
+                        let input = RuleValue::Text(String::new());
+                        let out_url =
+                            session.eval_string(&input, &pre_url, &source.book_source_url)?;
+                        if split_legado_url_and_raw_options(&out_url).1.is_some() {
+                            return Err("searchUrl 不允许通过模板变量注入请求配置".into());
+                        }
+                        out_url
                     }
-                    out_url
                 } else {
                     substitute_url_part_vars(url_tpl, &vars, None)
                 };
@@ -206,19 +238,24 @@ impl BookSourceEngine {
                 format!("{rendered_url},{rendered_opts}")
             } else {
                 session.set_search_vars(keyword, page)?;
-                let has_js_pipeline = split_js_pipeline(raw_tpl).is_some();
-                let eval_tpl = if has_js_pipeline {
-                    Cow::Borrowed(raw_tpl)
+                if split_js_pipeline(raw_tpl).is_some() {
+                    Self::eval_js_pipeline_url_guarded(
+                        session,
+                        raw_tpl,
+                        &source.book_source_url,
+                        keyword,
+                        page,
+                    )?
                 } else {
-                    Cow::Owned(substitute_url_part_vars(raw_tpl, &vars, None))
-                };
-                let input = RuleValue::Text(String::new());
-                let out = session.eval_string(&input, &eval_tpl, &source.book_source_url)?;
-                let (_, post_opts) = split_legado_url_and_raw_options(&out);
-                if post_opts.is_some() && !has_js_pipeline {
-                    return Err("searchUrl 不允许通过模板变量注入请求配置".into());
+                    let eval_tpl = substitute_url_part_vars(raw_tpl, &vars, None);
+                    let input = RuleValue::Text(String::new());
+                    let out = session.eval_string(&input, &eval_tpl, &source.book_source_url)?;
+                    let (_, post_opts) = split_legado_url_and_raw_options(&out);
+                    if post_opts.is_some() {
+                        return Err("searchUrl 不允许通过模板变量注入请求配置".into());
+                    }
+                    out
                 }
-                out
             }
         } else {
             substitute_simple_search_url(raw_tpl, keyword, page)?

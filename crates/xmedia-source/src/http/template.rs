@@ -710,3 +710,59 @@ pub fn json_structure_signature(val: &Value) -> String {
         }
     }
 }
+
+/// Returns `true` when any non-empty caller-controlled template variable contains characters
+/// capable of injecting or mutating a Legado `,{"method":...}` JSON options block.
+pub fn has_suspicious_option_chars(values: &[&str]) -> bool {
+    values.iter().any(|s| {
+        !s.is_empty()
+            && s.chars().any(|c| {
+                matches!(c, ',' | '{' | '}' | '[' | ']' | '"' | '\'' | '\\' | ';') || c.is_control()
+            })
+    })
+}
+
+/// Counts occurrences of `,` followed by optional whitespace and `{` in `s`.
+pub fn count_comma_open_brace(s: &str) -> usize {
+    s.bytes()
+        .enumerate()
+        .filter(|&(i, b)| b == b',' && s[i + 1..].trim_start().starts_with('{'))
+        .count()
+}
+
+/// Compares the Legado `,{"method":...}` options structure produced by a `@js:`/`<js>` URL
+/// pipeline against a baseline `probe_out` evaluated with benign probe variables.
+/// Rejects both newly injected option blocks and structural mutations to existing option JSON.
+pub fn verify_js_pipeline_url_options(
+    eval_out: &str,
+    probe_out: &str,
+    label: &str,
+) -> Result<(), String> {
+    let (eval_url_part, Some(eval_opt_json)) = split_legado_url_and_raw_options(eval_out.trim())
+    else {
+        return Ok(());
+    };
+    let (probe_url_part, Some(probe_opt_json)) = split_legado_url_and_raw_options(probe_out.trim())
+    else {
+        return Err(format!("{label} 模板参数不允许附加请求选项"));
+    };
+    if (split_legado_url_and_raw_options(probe_url_part.trim())
+        .1
+        .is_none()
+        && split_legado_url_and_raw_options(eval_url_part.trim())
+            .1
+            .is_some())
+        || count_comma_open_brace(eval_url_part) != count_comma_open_brace(probe_url_part)
+    {
+        return Err(format!("{label} 模板参数不允许附加请求选项"));
+    }
+    let expected_sig = json_raw_structure_signature(probe_opt_json);
+    let actual_sig = json_raw_structure_signature(eval_opt_json);
+    if expected_sig.is_none()
+        || actual_sig != expected_sig
+        || serde_json::from_str::<LegadoUrlOptions>(eval_opt_json).is_err()
+    {
+        return Err(format!("{label} 模板参数不允许修改请求选项结构"));
+    }
+    Ok(())
+}

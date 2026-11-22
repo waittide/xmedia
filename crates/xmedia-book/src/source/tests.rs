@@ -931,3 +931,138 @@ fn search_url_js_options_block_duplicate_key_and_support_unquoted_and_mixed_js_u
     assert_eq!(cap.targets[3], "/ci");
     assert_eq!(cap.bodies[3], "ok");
 }
+
+#[tokio::test]
+async fn book_js_pipeline_search_url_blocks_option_injection_and_mutation_while_restoring_key() {
+    use axum::Router;
+    use axum::body::{Body, to_bytes};
+    use axum::http::StatusCode;
+    use axum::response::Response;
+    use axum::routing::any;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let pwned_hits = Arc::new(AtomicUsize::new(0));
+    let pwned_hits_c = pwned_hits.clone();
+    let app = Router::new().route(
+        "/{*rest}",
+        any(move |req: axum::extract::Request| {
+            let hits = pwned_hits_c.clone();
+            async move {
+                if req.headers().get("x-pwned").is_some() {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                }
+                let _body = to_bytes(req.into_body(), 16 * 1024)
+                    .await
+                    .unwrap_or_default();
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"items":[{"name":"Book1","url":"/book/1"}]}"#,
+                    ))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = BookSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(5),
+    );
+    let base_rule = crate::source::model::LegadoSearchRule {
+        book_list: Some("$.items[*]".into()),
+        name: Some("@js:key".into()),
+        book_url: Some("$.url".into()),
+        ..Default::default()
+    };
+
+    let src_tag_js = LegadoBookSource {
+        book_source_name: "TagJsInjectBook".into(),
+        book_source_url: base.clone(),
+        search_url: Some("<js>'/book-search?q=' + key</js>".into()),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    let src_at_js = LegadoBookSource {
+        book_source_name: "AtJsInjectBook".into(),
+        book_source_url: base.clone(),
+        search_url: Some("@js:'/book-search?q=' + key".into()),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    let src_mut_js = LegadoBookSource {
+        book_source_name: "MutateJsBook".into(),
+        book_source_url: base.clone(),
+        search_url: Some(
+            "<js>'/search-opt?q=' + encodeURIComponent(key) + ',{\"method\":\"POST\",\"body\":\"q=' + key + '\"}'</js>"
+                .into(),
+        ),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    let src_split_js = LegadoBookSource {
+        book_source_name: "SplitJsBook".into(),
+        book_source_url: base.clone(),
+        search_url: Some("@js:'/book-search?q=' + key,{\"method\":\"POST\"}".into()),
+        rule_search: Some(base_rule.clone()),
+        ..Default::default()
+    };
+    let src_safe_restore = LegadoBookSource {
+        book_source_name: "SafeRestoreBook".into(),
+        book_source_url: base,
+        search_url: Some(
+            "<js>'/search-safe?q=' + encodeURIComponent(key) + ',' + JSON.stringify({method:'POST',body:JSON.stringify({q:key})})</js>"
+                .into(),
+        ),
+        rule_search: Some(base_rule),
+        ..Default::default()
+    };
+
+    let evil = r#"test,{"method":"POST","headers":{"X-Pwned":"1"},"body":"evil=1"}"#;
+    let mut_key = r#"1","headers":{"X-Pwned":"1"},"z":""#;
+    let safe_kw = "book\"title;1\n2";
+
+    tokio::task::spawn_blocking(move || {
+        assert!(
+            engine
+                .search_sync(&src_tag_js, SourceRuntimeState::default(), evil, 1)
+                .is_err()
+        );
+        assert!(
+            engine
+                .search_sync(&src_at_js, SourceRuntimeState::default(), evil, 1)
+                .is_err()
+        );
+        assert!(
+            engine
+                .search_sync(&src_mut_js, SourceRuntimeState::default(), mut_key, 1)
+                .is_err()
+        );
+        assert!(
+            engine
+                .search_sync(&src_split_js, SourceRuntimeState::default(), evil, 1)
+                .is_err()
+        );
+
+        let ok = engine
+            .search_sync(&src_safe_restore, SourceRuntimeState::default(), safe_kw, 1)
+            .unwrap();
+        assert_eq!(ok.data.len(), 1);
+        assert_eq!(ok.data[0].name, safe_kw);
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(pwned_hits.load(Ordering::SeqCst), 0);
+    srv.abort();
+}

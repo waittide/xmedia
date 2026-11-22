@@ -1,14 +1,14 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use xmedia_source::http::{
-    HttpClientConfig, LegadoHttpClient, eval_json_options_template, resolve_relative_url,
-    resolve_relative_url_preserving_options, split_legado_url_and_raw_options,
-    split_legado_url_template_and_options, substitute_legado_options_vars,
-    substitute_legado_url_template_vars, substitute_url_part_vars,
+    HttpClientConfig, LegadoHttpClient, eval_json_options_template, has_suspicious_option_chars,
+    resolve_relative_url, resolve_relative_url_preserving_options,
+    split_legado_url_and_raw_options, split_legado_url_template_and_options,
+    substitute_legado_options_vars, substitute_legado_url_template_vars, substitute_url_part_vars,
+    verify_js_pipeline_url_options,
 };
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline};
@@ -166,29 +166,100 @@ impl VideoSourceEngine {
         Ok(())
     }
 
+    fn eval_js_pipeline_url_guarded(
+        session: &mut ReusableSourceSession,
+        tpl: &str,
+        base_url: &str,
+        js_ctx: &VideoJsContext,
+        cat_id: Option<&str>,
+        keyword: &str,
+        page: u32,
+    ) -> Result<String, String> {
+        let input = RuleValue::Text(String::new());
+        let out = session.eval_string(&input, tpl, base_url)?;
+        let caller_vals = [
+            keyword,
+            cat_id.unwrap_or(""),
+            js_ctx.vod_id.as_str(),
+            js_ctx.detail_url.as_str(),
+            js_ctx.play_url.as_str(),
+            js_ctx.group_name.as_str(),
+        ];
+        if has_suspicious_option_chars(&caller_vals)
+            && split_legado_url_and_raw_options(out.trim()).1.is_some()
+        {
+            let probe_keyword = if keyword.is_empty() {
+                ""
+            } else {
+                "__xmedia_probe__"
+            };
+            let probe_cat_id = cat_id.map(|c| if c.is_empty() { "" } else { "__xmedia_probe__" });
+            let probe_ctx = VideoJsContext {
+                vod_id: if js_ctx.vod_id.is_empty() {
+                    String::new()
+                } else {
+                    "__xmedia_probe__".into()
+                },
+                title: js_ctx.title.clone(),
+                detail_url: if js_ctx.detail_url.is_empty() {
+                    String::new()
+                } else {
+                    "__xmedia_probe__".into()
+                },
+                play_url: if js_ctx.play_url.is_empty() {
+                    String::new()
+                } else {
+                    "__xmedia_probe__".into()
+                },
+                group_name: if js_ctx.group_name.is_empty() {
+                    String::new()
+                } else {
+                    "__xmedia_probe__".into()
+                },
+            };
+            session.set_search_vars(probe_keyword, page)?;
+            Self::set_video_globals(session, &probe_ctx, probe_cat_id)?;
+            let probe_res = session.eval_string(&input, tpl, base_url);
+
+            // Always restore caller globals before checking probe result.
+            let _ = session.set_search_vars(keyword, page);
+            let _ = Self::set_video_globals(session, js_ctx, cat_id);
+
+            let probe_out = probe_res?;
+            verify_js_pipeline_url_options(&out, &probe_out, "请求 URL")?;
+        }
+        Ok(out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn eval_url_template(
         session: &mut ReusableSourceSession,
         raw_tpl: &str,
         base_url: &str,
         vars: &[(&str, &str)],
+        js_ctx: &VideoJsContext,
+        cat_id: Option<&str>,
+        keyword: &str,
+        page: u32,
     ) -> Result<String, String> {
         let evaluated = if template_needs_js(raw_tpl) {
             let (url_tpl, opt_tpl) = split_legado_url_template_and_options(raw_tpl);
             if let Some(raw_opts) = opt_tpl {
                 let rendered_url = if template_needs_js(url_tpl) {
-                    let has_js_pipeline = split_js_pipeline(url_tpl).is_some();
-                    let passthrough = detect_passthrough_url_var(url_tpl, vars);
-                    let pre_url = if has_js_pipeline {
-                        Cow::Borrowed(url_tpl)
+                    if split_js_pipeline(url_tpl).is_some() {
+                        Self::eval_js_pipeline_url_guarded(
+                            session, url_tpl, base_url, js_ctx, cat_id, keyword, page,
+                        )?
                     } else {
-                        Cow::Owned(substitute_url_part_vars(url_tpl, vars, passthrough))
-                    };
-                    let input = RuleValue::Text(String::new());
-                    let out_url = session.eval_string(&input, &pre_url, base_url)?;
-                    if !has_js_pipeline && split_legado_url_and_raw_options(&out_url).1.is_some() {
-                        return Err("请求 URL 模板不允许通过变量注入请求配置".into());
+                        let passthrough = detect_passthrough_url_var(url_tpl, vars);
+                        let pre_url = substitute_url_part_vars(url_tpl, vars, passthrough);
+                        let input = RuleValue::Text(String::new());
+                        let out_url = session.eval_string(&input, &pre_url, base_url)?;
+                        if split_legado_url_and_raw_options(&out_url).1.is_some() {
+                            return Err("请求 URL 模板不允许通过变量注入请求配置".into());
+                        }
+                        out_url
                     }
-                    out_url
                 } else {
                     let passthrough = detect_passthrough_url_var(url_tpl, vars);
                     substitute_url_part_vars(url_tpl, vars, passthrough)
@@ -207,18 +278,17 @@ impl VideoSourceEngine {
                     substitute_legado_options_vars(raw_opts, vars).map_err(|e| e.to_string())?
                 };
                 format!("{rendered_url},{rendered_opts}")
+            } else if split_js_pipeline(raw_tpl).is_some() {
+                Self::eval_js_pipeline_url_guarded(
+                    session, raw_tpl, base_url, js_ctx, cat_id, keyword, page,
+                )?
             } else {
-                let has_js_pipeline = split_js_pipeline(raw_tpl).is_some();
                 let passthrough = detect_passthrough_url_var(raw_tpl, vars);
-                let pre_tpl = if has_js_pipeline {
-                    Cow::Borrowed(raw_tpl)
-                } else {
-                    Cow::Owned(substitute_url_part_vars(raw_tpl, vars, passthrough))
-                };
+                let pre_tpl = substitute_url_part_vars(raw_tpl, vars, passthrough);
                 let input = RuleValue::Text(String::new());
                 let out = session.eval_string(&input, &pre_tpl, base_url)?;
                 let (_, post_opts) = split_legado_url_and_raw_options(&out);
-                if post_opts.is_some() && !has_js_pipeline {
+                if post_opts.is_some() {
                     return Err("请求 URL 模板不允许通过变量注入请求配置".into());
                 }
                 out
@@ -262,7 +332,16 @@ impl VideoSourceEngine {
                 let ctx = VideoJsContext::default();
                 Self::set_video_globals(&mut session, &ctx, None)?;
                 session.set_search_vars("", 1)?;
-                let url = Self::eval_url_template(&mut session, cat_url_tpl, base_url, &[])?;
+                let url = Self::eval_url_template(
+                    &mut session,
+                    cat_url_tpl,
+                    base_url,
+                    &[],
+                    &ctx,
+                    None,
+                    "",
+                    1,
+                )?;
                 session.check_active()?;
                 let fetched = session.http().fetch(&url, base_url)?;
                 let raw_input = RuleValue::from_raw(fetched.body);
@@ -348,6 +427,10 @@ impl VideoSourceEngine {
                     search_tpl,
                     base_url,
                     &[("key", keyword), ("page", &page_str)],
+                    &ctx,
+                    None,
+                    keyword,
+                    page_num,
                 )?;
                 session.check_active()?;
                 let fetched = session.http().fetch(&url, base_url)?;
@@ -422,6 +505,10 @@ impl VideoSourceEngine {
                     explore_tpl,
                     base_url,
                     &[("catId", clean_cat), ("page", &page_str)],
+                    &ctx,
+                    Some(clean_cat),
+                    "",
+                    page_num,
                 )?;
                 session.check_active()?;
                 let fetched = session.http().fetch(&url, base_url)?;
@@ -492,6 +579,10 @@ impl VideoSourceEngine {
                         req_tpl,
                         base_url,
                         &[("vodId", clean_vid)],
+                        &ctx,
+                        None,
+                        "",
+                        1,
                     )?
                 } else {
                     return Err("缺少 detail_url 且 ruleDetail 未配置 requestUrl".into());
@@ -712,6 +803,10 @@ impl VideoSourceEngine {
                     req_tpl,
                     base_url,
                     &[("playUrl", &resolved_input_play), ("groupName", g_name)],
+                    &ctx,
+                    None,
+                    "",
+                    1,
                 )?;
                 session.check_active()?;
                 let fetched = session.http().fetch(&req_url, base_url)?;

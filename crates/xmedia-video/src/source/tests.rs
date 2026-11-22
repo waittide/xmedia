@@ -986,3 +986,234 @@ fn subtitle_proxy_normalizer_passes_vtt_converts_srt_and_rejects_xss_or_oversize
     let oversized = vec![b'a'; MAX_SUBTITLE_BYTES + 1];
     assert!(validate_and_normalize_subtitle_to_vtt(&oversized, None).is_err());
 }
+
+#[tokio::test]
+async fn video_js_pipeline_url_blocks_option_injection_and_mutation_while_restoring_globals() {
+    use axum::Router;
+    use axum::body::{Body, to_bytes};
+    use axum::http::StatusCode;
+    use axum::response::Response;
+    use axum::routing::any;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    use crate::source::VideoSourceEngine;
+    use crate::source::model::SourceRuntimeState;
+
+    let pwned_hits = Arc::new(AtomicUsize::new(0));
+    let pwned_hits_c = pwned_hits.clone();
+    let app = Router::new().route(
+        "/{*rest}",
+        any(move |req: axum::extract::Request| {
+            let hits = pwned_hits_c.clone();
+            async move {
+                if req.headers().get("x-pwned").is_some() {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                }
+                let uri = req.uri().to_string();
+                let _body = to_bytes(req.into_body(), 16 * 1024)
+                    .await
+                    .unwrap_or_default();
+                let json = if uri.contains("/detail") {
+                    serde_json::json!({ "title": "DetailOk", "play": "/stream.mp4" })
+                } else if uri.contains("/play") {
+                    serde_json::json!({ "stream": "https://cdn.example.test/ok.mp4" })
+                } else {
+                    serde_json::json!({ "items": [{ "id": "v1", "title": "SearchOk" }] })
+                };
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(json.to_string()))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let engine = VideoSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(5),
+    );
+    let evil = r#"test,{"method":"POST","headers":{"X-Pwned":"1"},"body":"evil=1"}"#;
+    let mut_key = r#"1","headers":{"X-Pwned":"1"},"z":""#;
+
+    let search_src: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "JsSearchInject",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "searchUrl": "<js>'/search?q=' + key</js>",
+        "ruleSearch": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+    }))
+    .unwrap();
+
+    let search_mut_src: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "JsSearchMutate",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "searchUrl": "<js>'/search-opt?q=' + encodeURIComponent(key) + ',{\"method\":\"POST\",\"body\":\"q=' + key + '\"}'</js>",
+        "ruleSearch": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+    }))
+    .unwrap();
+
+    let browse_src: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "JsBrowseInject",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "exploreUrl": "@js:'/browse?cat=' + catId",
+        "ruleExplore": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+    }))
+    .unwrap();
+
+    let detail_src: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "JsDetailInject",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "ruleDetail": {
+            "requestUrl": "<js>'/detail?id=' + vodId</js>",
+            "name": "$.title",
+            "playUrl": "$.play"
+        }
+    }))
+    .unwrap();
+
+    let play_src: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "JsPlayInject",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "rulePlay": {
+            "requestUrl": "@js:'/play?g=' + groupName",
+            "streamUrl": "$.stream"
+        }
+    }))
+    .unwrap();
+
+    let split_js_src: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SplitJsInject",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "searchUrl": "<js>'/search?q=' + key</js>,{\"method\":\"POST\"}",
+        "ruleSearch": { "list": "$.items[*]", "title": "$.title", "videoId": "$.id" }
+    }))
+    .unwrap();
+
+    let safe_restore_src: VideoSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SafeJsonStringifyAndRestore",
+        "sourceUrl": base,
+        "sourceFormat": "rule",
+        "rulePlay": {
+            "requestUrl": "<js>'/play?u=' + encodeURIComponent(playUrl) + ',' + JSON.stringify({method:'POST',body:JSON.stringify({g:groupName})})</js>",
+            "streamUrl": "@js:'https://cdn.example.test/' + encodeURIComponent(video.groupName) + '?p=' + encodeURIComponent(video.playUrl)"
+        }
+    }))
+    .unwrap();
+
+    tokio::task::spawn_blocking(move || {
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let t = Duration::from_secs(5);
+
+        assert!(
+            engine
+                .search_sync_with_control(
+                    &search_src,
+                    SourceRuntimeState::default(),
+                    evil,
+                    1,
+                    t,
+                    cancel.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            engine
+                .search_sync_with_control(
+                    &search_mut_src,
+                    SourceRuntimeState::default(),
+                    mut_key,
+                    1,
+                    t,
+                    cancel.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            engine
+                .browse_sync_with_control(
+                    &browse_src,
+                    SourceRuntimeState::default(),
+                    Some(evil),
+                    1,
+                    t,
+                    cancel.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            engine
+                .fetch_detail_sync_with_control(
+                    &detail_src,
+                    SourceRuntimeState::default(),
+                    Some(evil),
+                    None,
+                    t,
+                    cancel.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            engine
+                .resolve_play_sync_with_control(
+                    &play_src,
+                    SourceRuntimeState::default(),
+                    "https://cdn.example.test/ep1.mp4",
+                    Some(evil),
+                    t,
+                    cancel.clone()
+                )
+                .is_err()
+        );
+        assert!(
+            engine
+                .search_sync_with_control(
+                    &split_js_src,
+                    SourceRuntimeState::default(),
+                    evil,
+                    1,
+                    t,
+                    cancel.clone()
+                )
+                .is_err()
+        );
+
+        let safe_group = "line\"A;test\nline";
+        let ok = engine
+            .resolve_play_sync_with_control(
+                &safe_restore_src,
+                SourceRuntimeState::default(),
+                "/ep1.mp4",
+                Some(safe_group),
+                t,
+                cancel,
+            )
+            .unwrap();
+        assert!(
+            ok.data.stream_url.contains("line%22A%3Btest%0Aline"),
+            "video.groupName must be restored after probe, got: {}",
+            ok.data.stream_url
+        );
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(pwned_hits.load(Ordering::SeqCst), 0);
+    srv.abort();
+}
