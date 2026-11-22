@@ -126,7 +126,9 @@ impl BookOnlineService {
                 match res {
                     Ok(out) => {
                         if out.state != prev_state
-                            && let Err(err) = self.persist_runtime_state(sid, out.state).await
+                            && let Err(err) = self
+                                .persist_runtime_state_with_base(sid, &prev_state, out.state, false)
+                                .await
                         {
                             tracing::warn!(source_id = %sid, error = %err, "failed to persist source runtime state after search");
                         }
@@ -183,7 +185,9 @@ impl BookOnlineService {
         .map_err(DomainError::Validation)?;
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_book_info");
         }
@@ -235,7 +239,9 @@ impl BookOnlineService {
         .map_err(DomainError::Validation)?;
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_toc");
         }
@@ -314,7 +320,9 @@ impl BookOnlineService {
         .map_err(DomainError::Validation)?;
 
         if out.state != prev_state_cmp
-            && let Err(err) = self.persist_runtime_state(source_id, out.state).await
+            && let Err(err) = self
+                .persist_runtime_state_with_base(source_id, &prev_state_cmp, out.state, false)
+                .await
         {
             tracing::warn!(source_id = %source_id, error = %err, "failed to persist runtime state after fetch_chapter_content");
         }

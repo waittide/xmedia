@@ -573,7 +573,15 @@ impl BookOnlineService {
                         uncached_since_persist = 0;
                         let snap = reusable_ctx.snapshot_state();
                         if snap != last_persisted_state
-                            && self.persist_runtime_state(input.source_id, snap.clone()).await.is_ok()
+                            && self
+                                .persist_runtime_state_with_base(
+                                    input.source_id,
+                                    &last_persisted_state,
+                                    snap.clone(),
+                                    false,
+                                )
+                                .await
+                                .is_ok()
                         {
                             last_persisted_state = snap;
                         }
@@ -591,7 +599,12 @@ impl BookOnlineService {
         let final_snap = reusable_ctx.snapshot_state();
         if final_snap != last_persisted_state
             && let Err(err) = self
-                .persist_runtime_state(input.source_id, final_snap)
+                .persist_runtime_state_with_base(
+                    input.source_id,
+                    &last_persisted_state,
+                    final_snap,
+                    false,
+                )
                 .await
         {
             tracing::warn!(source_id = %input.source_id, error = %err, "failed to persist final download runtime state");

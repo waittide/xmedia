@@ -21,6 +21,19 @@ pub struct BookSourceRecord {
     pub updated_at: Timestamp,
 }
 
+#[derive(Debug, Clone)]
+pub struct BookSourceMetadataUpdate {
+    pub name: String,
+    pub source_url: String,
+    pub group_name: String,
+    pub enabled: bool,
+    pub weight: i64,
+    pub source_type: i64,
+    pub raw_json: String,
+    pub variable: Option<String>,
+    pub updated_at: Timestamp,
+}
+
 impl BookSourceRecord {
     /// Synchronizes mutable top-level metadata (`enabled`, `weight`, `bookSourceGroup`)
     /// into a Legado `raw_json` string so exported JSON stays consistent with DB state.

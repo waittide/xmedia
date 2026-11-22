@@ -1891,3 +1891,119 @@ async fn sync_tracked_epub_preserves_dirty_flag_when_chapter_arrives_concurrentl
 
     server_handle.abort();
 }
+
+#[tokio::test]
+async fn login_action_supports_clearing_variable_cache_cookie_and_concurrent_same_host_cookies() {
+    let (_tmp, admin, online_svc) = setup_test_online_service().await;
+    let raw_src = serde_json::json!({
+        "bookSourceName": "状态清理与Cookie并发源",
+        "bookSourceUrl": "https://book-probe.test",
+        "ruleSearch": { "bookList": "$.list", "name": "$.name", "bookUrl": "$.url" }
+    })
+    .to_string();
+    let sid = online_svc
+        .import_sources(&admin, &raw_src)
+        .await
+        .unwrap()
+        .sources[0]
+        .id;
+
+    // 1. Set non-empty variable, cache entry, and host cookies
+    online_svc
+        .run_login_action(
+            &admin,
+            sid,
+            HashMap::new(),
+            Some(
+                "source.setVariable('BOOK_NONEMPTY');\
+                 cache.put('k1', 'v1');\
+                 cookie.setCookie('https://book-probe.test', 'a=1; b=2');\
+                 'ok'"
+                    .into(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        online_svc.get_source_variable(&admin, sid).await.unwrap(),
+        "BOOK_NONEMPTY"
+    );
+
+    // 2. Clear variable, cache key, and host cookies via JS
+    online_svc
+        .run_login_action(
+            &admin,
+            sid,
+            HashMap::new(),
+            Some(
+                "source.setVariable('');\
+                 cache.delete('k1');\
+                 cookie.removeCookie('https://book-probe.test');\
+                 'cleared'"
+                    .into(),
+            ),
+        )
+        .await
+        .unwrap();
+    let check_res = online_svc
+        .run_login_action(
+            &admin,
+            sid,
+            HashMap::new(),
+            Some(
+                "JSON.stringify({\
+                    v: source.getVariable(),\
+                    k1: cache.get('k1'),\
+                    ck: cookie.getCookie('https://book-probe.test')\
+                })"
+                .into(),
+            ),
+        )
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&check_res.result).unwrap();
+    assert_eq!(parsed["v"], "");
+    assert!(parsed["k1"].is_null());
+    assert_eq!(parsed["ck"], "");
+    assert_eq!(
+        online_svc.get_source_variable(&admin, sid).await.unwrap(),
+        ""
+    );
+
+    // 3. Concurrent writes to distinct cookie keys on the same host preserve both
+    let (r1, r2) = tokio::join!(
+        online_svc.run_login_action(
+            &admin,
+            sid,
+            HashMap::new(),
+            Some("cookie.setCookie('https://same-host.test', 'kA=valA'); 'a'".into()),
+        ),
+        online_svc.run_login_action(
+            &admin,
+            sid,
+            HashMap::new(),
+            Some("cookie.setCookie('https://same-host.test', 'kB=valB'); 'b'".into()),
+        ),
+    );
+    r1.unwrap();
+    r2.unwrap();
+    let cookie_check = online_svc
+        .run_login_action(
+            &admin,
+            sid,
+            HashMap::new(),
+            Some("cookie.getCookie('https://same-host.test')".into()),
+        )
+        .await
+        .unwrap();
+    assert!(
+        cookie_check.result.contains("kA=valA"),
+        "expected kA=valA to survive, got: {}",
+        cookie_check.result
+    );
+    assert!(
+        cookie_check.result.contains("kB=valB"),
+        "expected kB=valB to survive, got: {}",
+        cookie_check.result
+    );
+}

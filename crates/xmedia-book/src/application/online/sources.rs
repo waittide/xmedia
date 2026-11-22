@@ -8,10 +8,10 @@ use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
     ParsedSourceSummaryMeta, SourceRecordSnapshot, build_source_summary, compute_reorder_targets,
     dedup_preserve_order_uuids, format_export_batch_json, merge_login_info_preserving_masked,
-    merge_runtime_state,
+    merge_runtime_state_with_base,
 };
 
-use crate::domain::online::BookSourceRecord;
+use crate::domain::online::{BookSourceMetadataUpdate, BookSourceRecord};
 use crate::source::model::{LegadoBookSource, SourceRuntimeState};
 
 use super::BookOnlineService;
@@ -92,19 +92,26 @@ impl BookOnlineService {
         Ok(rec.runtime_state.variable)
     }
 
-    fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+    pub(super) fn source_state_lock_for(&self, id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
         get_or_insert_weak_lock(&self.source_state_locks, id)
     }
 
-    pub(super) async fn persist_runtime_state(
+    pub(super) async fn persist_runtime_state_with_base(
         &self,
         id: Uuid,
+        base_state: &SourceRuntimeState,
         new_state: SourceRuntimeState,
+        allow_login_info_override: bool,
     ) -> DomainResult<()> {
         let lock = self.source_state_lock_for(id);
         let _guard = lock.lock().await;
         let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
-        let merged = merge_runtime_state(current, new_state);
+        let merged = merge_runtime_state_with_base(
+            base_state,
+            current,
+            new_state,
+            allow_login_info_override,
+        );
         self.sources
             .update_runtime_state(id, merged, Timestamp::now())
             .await
@@ -135,6 +142,8 @@ impl BookOnlineService {
         let now = Timestamp::now();
         let mut persisted = Vec::with_capacity(targets.len());
         for (rec, target_weight) in targets {
+            let lock = self.source_state_lock_for(rec.id);
+            let _guard = lock.lock().await;
             if rec.weight != target_weight {
                 if let Some(updated) = self
                     .sources
@@ -143,8 +152,8 @@ impl BookOnlineService {
                 {
                     persisted.push(updated);
                 }
-            } else {
-                persisted.push(rec);
+            } else if let Some(fresh) = self.sources.find_by_id(rec.id).await? {
+                persisted.push(fresh);
             }
         }
 
@@ -163,6 +172,7 @@ impl BookOnlineService {
         let parsed_batch =
             LegadoBookSource::parse_json_batch(raw_json).map_err(DomainError::Validation)?;
 
+        let _seed_guard = self.seed_import_lock.lock().await;
         let existing_all = self.sources.list_all().await?;
         let mut existing_by_key: HashMap<(String, String), BookSourceRecord> = existing_all
             .into_iter()
@@ -179,48 +189,58 @@ impl BookOnlineService {
             let group_name = src.book_source_group.clone().unwrap_or_default();
             let key = (src.book_source_url.clone(), src.book_source_name.clone());
 
-            if let Some(mut rec) = existing_by_key.remove(&key) {
-                rec.group_name = group_name;
-                rec.enabled = src.enabled;
-                rec.weight = src.weight;
-                rec.source_type = src.book_source_type;
-                rec.raw_json = item_raw;
-                rec.updated_at = now;
-                self.sources.save(&rec).await?;
-                let summary = Self::record_to_summary(&rec, true);
-                if let Some(&pos) = out_by_id.get(&rec.id) {
-                    out[pos] = summary;
-                } else {
-                    updated_count += 1;
-                    out_by_id.insert(rec.id, out.len());
-                    out.push(summary);
-                }
-                // Re-insert so duplicate keys within the same batch update this record
-                existing_by_key.insert(key, rec);
-            } else {
-                let mut rt = SourceRuntimeState::default();
-                rt.ensure_android_id(&src.book_source_url);
-                let rec = BookSourceRecord {
-                    id: Uuid::now_v7(),
-                    name: src.book_source_name.clone(),
-                    source_url: src.book_source_url.clone(),
-                    group_name,
+            if let Some(existing_rec) = existing_by_key.remove(&key) {
+                let id = existing_rec.id;
+                let lock = self.source_state_lock_for(id);
+                let _guard = lock.lock().await;
+                let patch = BookSourceMetadataUpdate {
+                    name: existing_rec.name.clone(),
+                    source_url: existing_rec.source_url.clone(),
+                    group_name: group_name.clone(),
                     enabled: src.enabled,
                     weight: src.weight,
                     source_type: src.book_source_type,
-                    raw_json: item_raw,
-                    runtime_state: rt,
-                    last_test_ok: None,
-                    last_test_msg: None,
-                    created_at: now,
+                    raw_json: item_raw.clone(),
+                    variable: None,
                     updated_at: now,
                 };
-                self.sources.save(&rec).await?;
-                imported_count += 1;
-                out_by_id.insert(rec.id, out.len());
-                out.push(Self::record_to_summary(&rec, true));
-                existing_by_key.insert(key, rec);
+                if let Some(rec) = self.sources.update_metadata_if_exists(id, patch).await? {
+                    let summary = Self::record_to_summary(&rec, true);
+                    if let Some(&pos) = out_by_id.get(&rec.id) {
+                        out[pos] = summary;
+                    } else {
+                        updated_count += 1;
+                        out_by_id.insert(rec.id, out.len());
+                        out.push(summary);
+                    }
+                    // Re-insert so duplicate keys within the same batch update this record
+                    existing_by_key.insert(key, rec);
+                    continue;
+                }
             }
+
+            let mut rt = SourceRuntimeState::default();
+            rt.ensure_android_id(&src.book_source_url);
+            let rec = BookSourceRecord {
+                id: Uuid::now_v7(),
+                name: src.book_source_name.clone(),
+                source_url: src.book_source_url.clone(),
+                group_name,
+                enabled: src.enabled,
+                weight: src.weight,
+                source_type: src.book_source_type,
+                raw_json: item_raw,
+                runtime_state: rt,
+                last_test_ok: None,
+                last_test_msg: None,
+                created_at: now,
+                updated_at: now,
+            };
+            self.sources.save(&rec).await?;
+            imported_count += 1;
+            out_by_id.insert(rec.id, out.len());
+            out.push(Self::record_to_summary(&rec, true));
+            existing_by_key.insert(key, rec);
         }
 
         Ok(ImportBookSourcesReportDto {
@@ -237,10 +257,7 @@ impl BookOnlineService {
         input: UpdateBookSourceInput,
     ) -> DomainResult<BookSourceSummaryDto> {
         require_admin(actor)?;
-        let mut rec = self.load_source(id).await?;
-        let now = Timestamp::now();
-
-        if let Some(raw) = input.raw_json {
+        let parsed_raw = if let Some(raw) = input.raw_json {
             let mut batch =
                 LegadoBookSource::parse_json_batch(&raw).map_err(DomainError::Validation)?;
             if batch.len() != 1 {
@@ -248,7 +265,17 @@ impl BookOnlineService {
                     "编辑单条书源时仅支持提交 1 条书源 JSON".into(),
                 ));
             }
-            let (parsed, clean_raw) = batch.remove(0);
+            Some(batch.remove(0))
+        } else {
+            None
+        };
+
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
+        let mut rec = self.load_source(id).await?;
+        let now = Timestamp::now();
+
+        if let Some((parsed, clean_raw)) = parsed_raw {
             rec.name = parsed.book_source_name;
             rec.source_url = parsed.book_source_url;
             rec.group_name = parsed.book_source_group.unwrap_or_default();
@@ -274,19 +301,30 @@ impl BookOnlineService {
                 input.group_name.as_deref(),
             );
         }
-        if let Some(v) = input.variable {
-            rec.runtime_state.variable = v;
-        }
-        rec.updated_at = now;
 
-        if !self.sources.update_existing(&rec).await? {
-            return Err(DomainError::NotFound(format!("未找到书源 {id}")));
-        }
-        Ok(Self::record_to_summary(&rec, true))
+        let patch = BookSourceMetadataUpdate {
+            name: rec.name,
+            source_url: rec.source_url,
+            group_name: rec.group_name,
+            enabled: rec.enabled,
+            weight: rec.weight,
+            source_type: rec.source_type,
+            raw_json: rec.raw_json,
+            variable: input.variable,
+            updated_at: now,
+        };
+        let updated = self
+            .sources
+            .update_metadata_if_exists(id, patch)
+            .await?
+            .ok_or_else(|| DomainError::NotFound(format!("未找到书源 {id}")))?;
+        Ok(Self::record_to_summary(&updated, true))
     }
 
     pub async fn delete_source(&self, actor: &User, id: Uuid) -> DomainResult<()> {
         require_admin(actor)?;
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
         let _ = self.load_source(id).await?;
         self.sources.delete(id).await?;
         let src_cache = self.cache_dir.join(id.to_string());
@@ -340,6 +378,8 @@ impl BookOnlineService {
         let mut affected_count = 0usize;
 
         for id in unique_ids {
+            let lock = self.source_state_lock_for(id);
+            let _guard = lock.lock().await;
             match &input.action {
                 BatchBookSourceAction::Enable => {
                     if self
@@ -403,6 +443,7 @@ impl BookOnlineService {
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
+        let base_state = prev_state.clone();
         let action_clone = action.clone();
 
         let out = tokio::task::spawn_blocking(move || {
@@ -412,7 +453,8 @@ impl BookOnlineService {
         .map_err(|e| DomainError::Storage(format!("执行登录脚本线程失败: {e}")))?
         .map_err(DomainError::Validation)?;
 
-        self.persist_runtime_state(id, out.state).await?;
+        self.persist_runtime_state_with_base(id, &base_state, out.state, true)
+            .await?;
         let refreshed = self.load_source(id).await?;
 
         Ok(LoginActionResponseDto {

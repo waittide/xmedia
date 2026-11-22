@@ -7,7 +7,8 @@ use uuid::Uuid;
 use xmedia_core::domain::error::{DomainError, DomainResult};
 use xmedia_core::domain::user::{User, require_admin};
 use xmedia_source::crud::{
-    format_test_failure_summary, format_timeout_step, merge_diagnostics, summarize_steps_outcome,
+    format_test_failure_summary, format_timeout_step, merge_diagnostics,
+    merge_runtime_state_with_base, summarize_steps_outcome,
 };
 
 use crate::source::model::{
@@ -125,6 +126,7 @@ impl BookOnlineService {
             .map(ToString::to_string);
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
+        let base_state = prev_state.clone();
         let kw_clone = effective_keyword.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
         let cancel_worker = cancel_flag.clone();
@@ -566,8 +568,8 @@ impl BookOnlineService {
         )
         .await;
 
-        let (final_state, report) = match timed_res {
-            Ok(Ok(pair)) => pair,
+        let (maybe_final_state, report) = match timed_res {
+            Ok(Ok((final_state, report))) => (Some(final_state), report),
             Ok(Err(e)) => {
                 return Err(DomainError::Storage(format!("测试书源线程失败: {e}")));
             }
@@ -600,7 +602,7 @@ impl BookOnlineService {
                     content_text: None,
                     content_char_count: 0,
                 };
-                (rec.runtime_state, report)
+                (None, report)
             }
         };
 
@@ -630,9 +632,19 @@ impl BookOnlineService {
             format_test_failure_summary(&report.steps)
         };
 
+        let lock = self.source_state_lock_for(id);
+        let _guard = lock.lock().await;
+        let current = self.sources.find_by_id(id).await?.map(|r| r.runtime_state);
+        let merged_state = match maybe_final_state {
+            Some(final_state) => {
+                merge_runtime_state_with_base(&base_state, current, final_state, false)
+            }
+            None => current.unwrap_or(base_state),
+        };
+
         let _ = self
             .sources
-            .update_test_result(id, final_state, report.ok, Some(last_msg), now)
+            .update_test_result(id, merged_state, report.ok, Some(last_msg), now)
             .await?;
 
         Ok(report)

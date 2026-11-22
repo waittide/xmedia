@@ -6,7 +6,7 @@ use xmedia_core::domain::library::LibraryId;
 use xmedia_core::domain::user::UserId;
 
 use crate::domain::book::{Book, BookId, BookQuery, FacetCount, PagedResult};
-use crate::domain::online::{BookSourceRecord, OnlineShelfBook};
+use crate::domain::online::{BookSourceMetadataUpdate, BookSourceRecord, OnlineShelfBook};
 use crate::domain::reading::{Bookmark, BookmarkId, ReadingProgress, Shelf, ShelfId};
 use crate::source::model::SourceRuntimeState;
 
@@ -80,6 +80,13 @@ pub trait BookSourceRepository: Send + Sync {
     async fn save(&self, source: &BookSourceRecord) -> DomainResult<()>;
     /// Updates an existing source row without resurrecting a deleted record.
     async fn update_existing(&self, source: &BookSourceRecord) -> DomainResult<bool>;
+    /// Updates mutable metadata columns (and optionally `runtime_state.variable`) without
+    /// overwriting `login_info`, `cookies`, `cache`, or test status columns.
+    async fn update_metadata_if_exists(
+        &self,
+        id: Uuid,
+        patch: BookSourceMetadataUpdate,
+    ) -> DomainResult<Option<BookSourceRecord>>;
     async fn update_runtime_state(
         &self,
         id: Uuid,

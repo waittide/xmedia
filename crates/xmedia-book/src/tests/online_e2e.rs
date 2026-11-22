@@ -125,7 +125,7 @@ async fn online_book_source_shelf_cache_download_epub_and_import_roundtrip() {
         Arc::new(crate::infra::persistence::repositories::ToastyOnlineShelfRepository::new(db));
     let online_svc = Arc::new(
         BookOnlineService::with_engine(
-            sources_repo,
+            sources_repo.clone(),
             shelves_repo,
             tmp.path(),
             book_services.catalog.clone(),
@@ -698,4 +698,281 @@ async fn http_variable_endpoint_sync_epub_authz_svg_cover_reject_and_library_del
         !tracked_dir.exists(),
         "on_library_deleted must remove online_tracked/<id> directory"
     );
+}
+
+#[tokio::test]
+async fn book_import_patch_and_test_concurrent_with_login_action_preserve_runtime_state_e2e() {
+    let mock_app = Router::new().route(
+        "/search",
+        get(|| async {
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            r#"{"list":[{"name":"测试书","url":"/book/1"}]}"#
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server_handle = tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("book_conc_e2e.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+
+    let mut model_set = ModelSet::new();
+    register_core_models(&mut model_set);
+    register_book_models(&mut model_set);
+    let mut db = Db::builder()
+        .models(model_set)
+        .connect(&db_url)
+        .await
+        .unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+    let users_repo = Arc::new(ToastyUserRepository::new(db.clone()));
+    let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let security = Arc::new(SecurityManager::new("book-conc-secret"));
+    let tokens = Arc::new(JwtTokenService::new("book-conc-secret", 3600));
+    let events = Arc::new(BroadcastEventHub::default());
+    let auth_svc = Arc::new(AuthService::new(
+        users_repo,
+        security,
+        tokens,
+        lifecycles.clone(),
+    ));
+    let admin_session = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "password123".into(),
+        })
+        .await
+        .unwrap();
+    let lib_svc = Arc::new(LibraryService::new(
+        libs_repo.clone(),
+        events.clone(),
+        lifecycles,
+    ));
+    let book_services = crate::init_book_module_with_allow_private_ips(
+        db.clone(),
+        tmp.path(),
+        libs_repo,
+        &lib_svc,
+        events,
+        true,
+    )
+    .unwrap();
+    let sources_repo =
+        Arc::new(crate::infra::persistence::repositories::ToastyBookSourceRepository::new(db));
+
+    let state = BookHttpState::new(auth_svc, lib_svc, book_services);
+    let app = Router::new().nest("/api/v1/book", rest_router(state));
+
+    // Import target source + 80 filler sources so import_sources upsert spans multiple DB calls
+    let target_url = format!("http://{addr}");
+    let target_src = serde_json::json!({
+        "bookSourceName": "TargetBook",
+        "bookSourceUrl": target_url,
+        "bookSourceGroup": "G1",
+        "weight": 10,
+        "searchUrl": "/search?q={{key}}",
+        "ruleSearch": { "bookList": "$.list", "name": "$.name", "bookUrl": "$.url" }
+    });
+    let mut batch: Vec<serde_json::Value> = (0..80)
+        .map(|i| {
+            serde_json::json!({
+                "bookSourceName": format!("Filler-{i}"),
+                "bookSourceUrl": format!("https://filler-{i}.test"),
+                "searchUrl": "/search?q={{key}}",
+                "ruleSearch": { "bookList": "$.list", "name": "$.name", "bookUrl": "$.url" }
+            })
+        })
+        .collect();
+    batch.push(target_src.clone());
+
+    let imp_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/sources/import")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin_session.token))
+                .body(Body::from(
+                    serde_json::json!({ "raw_json": serde_json::to_string(&batch).unwrap() })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(imp_res.status(), StatusCode::OK);
+    let imp_json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(imp_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let sid = imp_json["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "TargetBook")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // 1. Concurrent POST /sources/import (81-item upsert) + login-action setting variable/login_info/cookie/cache
+    let mut upsert_batch = batch.clone();
+    upsert_batch[80]["weight"] = serde_json::json!(25);
+    let import_req = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/book/sources/import")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", admin_session.token))
+            .body(Body::from(
+                serde_json::json!({ "raw_json": serde_json::to_string(&upsert_batch).unwrap() })
+                    .to_string(),
+            ))
+            .unwrap(),
+    );
+    let login_req = async {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/book/sources/{sid}/login-action"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", admin_session.token))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "login_info": { "username": "alice" },
+                            "action": "source.setVariable('MUST_NOT_LOSE_VAR');\
+                                       cache.put('c1', 'v1');\
+                                       cookie.setCookie('https://book-conc.test', 'sid=s1');\
+                                       'ok'"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    };
+    let (r_imp, r_login) = tokio::join!(import_req, login_req);
+    assert_eq!(r_imp.unwrap().status(), StatusCode::OK);
+    assert_eq!(r_login.status(), StatusCode::OK);
+
+    // 2. Concurrent PATCH /sources/{id} (updating weight & group_name) + login-action updating variable & cookie
+    let patch_req = app.clone().oneshot(
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/book/sources/{sid}"))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", admin_session.token))
+            .body(Body::from(
+                serde_json::json!({ "weight": 77, "group_name": "精选" }).to_string(),
+            ))
+            .unwrap(),
+    );
+    let login_req2 = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/book/sources/{sid}/login-action"))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", admin_session.token))
+            .body(Body::from(
+                serde_json::json!({
+                    "login_info": { "username": "alice" },
+                    "action": "source.setVariable('AFTER_PATCH_VAR');\
+                               cookie.setCookie('https://book-conc.test', 'k2=v2');\
+                               'ok'"
+                })
+                .to_string(),
+            ))
+            .unwrap(),
+    );
+    let (r_patch, r_login2) = tokio::join!(patch_req, login_req2);
+    assert_eq!(r_patch.unwrap().status(), StatusCode::OK);
+    assert_eq!(r_login2.unwrap().status(), StatusCode::OK);
+
+    // 3. Concurrent slow POST /sources/{id}/test + login-action updating variable/cache/cookie
+    let test_req = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/book/sources/{sid}/test"))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {}", admin_session.token))
+            .body(Body::from(
+                serde_json::json!({ "mode": "search", "keyword": "test" }).to_string(),
+            ))
+            .unwrap(),
+    );
+    let login_req3 = async {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/v1/book/sources/{sid}/login-action"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", admin_session.token))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "login_info": { "username": "bob" },
+                            "action": "source.setVariable('FINAL_VAR');\
+                                       cache.put('c2', 'v2');\
+                                       cookie.setCookie('https://book-conc.test', 'k3=v3');\
+                                       'ok'"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    };
+    let (r_test, r_login3) = tokio::join!(test_req, login_req3);
+    assert_eq!(r_test.unwrap().status(), StatusCode::OK);
+    assert_eq!(r_login3.status(), StatusCode::OK);
+
+    // Assert zero lost variable, login_info, cookies, cache, weight, or group_name via HTTP & repository
+    let sid_uuid = uuid::Uuid::parse_str(&sid).unwrap();
+    let rec = crate::domain::repository::BookSourceRepository::find_by_id(
+        sources_repo.as_ref(),
+        sid_uuid,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(rec.weight, 77);
+    assert_eq!(rec.group_name, "精选");
+    assert_eq!(rec.runtime_state.variable, "FINAL_VAR");
+    assert_eq!(
+        rec.runtime_state
+            .login_info
+            .get("username")
+            .map(String::as_str),
+        Some("bob")
+    );
+    assert_eq!(
+        rec.runtime_state.cache.get("c1").map(String::as_str),
+        Some("v1")
+    );
+    assert_eq!(
+        rec.runtime_state.cache.get("c2").map(String::as_str),
+        Some("v2")
+    );
+    let ck = rec
+        .runtime_state
+        .cookies
+        .get("book-conc.test")
+        .map(String::as_str)
+        .unwrap_or("");
+    assert!(ck.contains("sid=s1"), "missing sid=s1 in {ck}");
+    assert!(ck.contains("k2=v2"), "missing k2=v2 in {ck}");
+    assert!(ck.contains("k3=v3"), "missing k3=v3 in {ck}");
+
+    server_handle.abort();
 }

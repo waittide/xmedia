@@ -53,6 +53,7 @@ pub struct BookOnlineService {
     pending_sync_gens: Arc<Mutex<HashMap<BookId, (u64, u32)>>>,
     track_locks: AsyncLockMap<(Uuid, String)>,
     source_state_locks: AsyncLockMap<Uuid>,
+    seed_import_lock: tokio::sync::Mutex<()>,
     downloads: Arc<RwLock<HashMap<Uuid, StoredDownloadJob>>>,
     allow_private_ips: bool,
 }
@@ -147,6 +148,7 @@ impl BookOnlineService {
             pending_sync_gens,
             track_locks: Arc::new(Mutex::new(HashMap::new())),
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            seed_import_lock: tokio::sync::Mutex::new(()),
             downloads: Arc::new(RwLock::new(HashMap::new())),
             allow_private_ips,
         })
