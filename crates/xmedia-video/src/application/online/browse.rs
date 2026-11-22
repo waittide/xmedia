@@ -65,6 +65,16 @@ impl VideoOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: VideoSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("影视源 JSON 无效: {e}")))?;
+        let has_explore = match parsed.effective_format() {
+            crate::source::model::VideoSourceFormat::ApplecmsV10 => true,
+            crate::source::model::VideoSourceFormat::Rule => {
+                parsed.enabled_explore
+                    && parsed
+                        .explore_url
+                        .as_deref()
+                        .is_some_and(|s| !s.trim().is_empty())
+            }
+        };
 
         let engine = self.engine.clone();
         let prev_state = rec.runtime_state.clone();
@@ -98,6 +108,7 @@ impl VideoOnlineService {
             source_id,
             source_name: rec.name,
             categories: out.data,
+            has_explore,
             diagnostics: out.diagnostics,
         })
     }

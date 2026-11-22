@@ -60,6 +60,8 @@ pub struct OnlineVideoCategoriesResponseDto {
     pub source_id: Uuid,
     pub source_name: String,
     pub categories: Vec<OnlineVideoCategory>,
+    #[serde(default)]
+    pub has_explore: bool,
     pub diagnostics: ExecutionDiagnostics,
 }
 
