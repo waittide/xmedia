@@ -54,6 +54,8 @@ struct MusicTemplateVars<'a> {
     title: &'a str,
     artist: &'a str,
     album: &'a str,
+    duration_secs: Option<u32>,
+    cover_url: Option<&'a str>,
 }
 
 impl<'a> MusicTemplateVars<'a> {
@@ -87,6 +89,8 @@ impl<'a> MusicTemplateVars<'a> {
             title: ctx.title.as_str(),
             artist: ctx.artist.as_str(),
             album: ctx.album.as_deref().unwrap_or(""),
+            duration_secs: ctx.duration_secs,
+            cover_url: ctx.cover_url.as_deref(),
         }
     }
 }
@@ -344,13 +348,14 @@ fn eval_js_pipeline_guarded(
             title: vars.title.to_string(),
             artist: vars.artist.to_string(),
             album: (!vars.album.is_empty()).then(|| vars.album.to_string()),
+            duration_secs: vars.duration_secs,
+            cover_url: vars.cover_url.filter(|s| !s.is_empty()).map(str::to_string),
             cover_id: (!vars.cover_id.is_empty()).then(|| vars.cover_id.to_string()),
             url_id: (!vars.url_id.is_empty()).then(|| vars.url_id.to_string()),
             lyric_id: (!vars.lyric_id.is_empty()).then(|| vars.lyric_id.to_string()),
             play_url: (!vars.play_url.is_empty()).then(|| vars.play_url.to_string()),
             detail_url: (!vars.detail_url.is_empty()).then(|| vars.detail_url.to_string()),
             quality: (!vars.quality.is_empty()).then(|| vars.quality.to_string()),
-            ..Default::default()
         };
         let _ = session.set_search_vars(vars.key, vars.page, vars.limit);
         let _ = session.set_track_context(&restore_ctx);
@@ -2232,6 +2237,72 @@ mod tests {
         assert_eq!(reqs[4].0, "GET /api/lyric?id=1%26extra%3D1");
 
         let _ = HeaderMap::new();
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn music_eval_js_pipeline_probe_preserves_track_cover_url_and_duration() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::StatusCode;
+        use axum::response::Response;
+        use axum::routing::get;
+
+        let app = Router::new().route(
+            "/api/stream",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ok":true}"#))
+                    .unwrap()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+
+        let spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "ProbeRestoreMusic",
+            "sourceUrl": base,
+            "ruleStream": {
+                "requestUrl": "@js:'/api/stream?t=' + encodeURIComponent(track.title) + ',{\"method\":\"GET\"}'",
+                "streamUrl": "@js:'https://cdn.example.com/audio.mp3?dur=' + track.duration + '&cover=' + encodeURIComponent(track.coverUrl)"
+            }
+        }))
+        .unwrap();
+
+        let engine = super::MusicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        );
+        let ctx = MusicTrackContext {
+            track_id: "t1".into(),
+            title: "Song \"Remix\"".into(),
+            artist: "Artist".into(),
+            duration_secs: Some(245),
+            cover_url: Some("https://cdn.example.com/cover.jpg".into()),
+            ..Default::default()
+        };
+
+        let out = tokio::task::spawn_blocking(move || {
+            engine
+                .resolve_stream_sync(&spec, SourceRuntimeState::default(), &ctx, None)
+                .unwrap()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            out.data.stream_url,
+            "https://cdn.example.com/audio.mp3?dur=245&cover=https%3A%2F%2Fcdn.example.com%2Fcover.jpg"
+        );
         srv.abort();
     }
 }
