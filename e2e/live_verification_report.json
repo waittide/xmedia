@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-22T14:38:19.094Z",
+  "generated_at": "2026-11-22T15:49:38.752Z",
   "mode": "hardened (allow_private_ips=false)",
   "report_dir": "/data/code/github/waittide/xmedia/e2e",
   "domains": {
@@ -11,7 +11,7 @@
           "domain": "comic",
           "title": "Comic — MangaDex live search -> pages -> image-proxy",
           "status": "pass",
-          "durationMs": 7230,
+          "durationMs": 27685,
           "detail": {
             "source": "MangaDex (EN)",
             "keyword": "Yotsuba",
@@ -25,7 +25,7 @@
           "domain": "comic",
           "title": "Comic — WEBTOON live search -> pages -> Referer image-proxy",
           "status": "pass",
-          "durationMs": 14996,
+          "durationMs": 17563,
           "detail": {
             "source": "WEBTOON (EN)",
             "keyword": "Tower of God",
@@ -39,7 +39,7 @@
           "domain": "comic",
           "title": "Comic — XKCD live explore -> image-proxy PNG",
           "status": "pass",
-          "durationMs": 5899,
+          "durationMs": 4446,
           "detail": {
             "source": "XKCD",
             "mime": "image/png",
@@ -57,7 +57,7 @@
           "domain": "music",
           "title": "Music — GDStudio live track-info + 206 audio-proxy + cover-proxy + lyrics",
           "status": "pass",
-          "durationMs": 8514,
+          "durationMs": 7655,
           "detail": {
             "source": "GDStudio Music API (网易云)",
             "status": 206,
@@ -71,7 +71,7 @@
           "domain": "music",
           "title": "Music — Audius trending -> audio-proxy stream chunk",
           "status": "pass",
-          "durationMs": 5886,
+          "durationMs": 20171,
           "detail": {
             "source": "Audius Public API",
             "status": 200,
@@ -84,13 +84,13 @@
           "domain": "music",
           "title": "Music — Internet Archive Audio & iTunes+LRCLIB live stream & lyrics",
           "status": "pass",
-          "durationMs": 13232,
+          "durationMs": 20987,
           "detail": {
             "archive": {
               "source": "Internet Archive Audio",
               "status": 200,
               "bytesRead": 4096,
-              "title": "Maula"
+              "title": "Klasika U Pokretu"
             },
             "itunes": {
               "source": "iTunes Search + LRCLIB",
@@ -112,10 +112,10 @@
           "domain": "video",
           "title": "Video — AppleCMS v10 multi-node HLS -> hls-proxy segments",
           "status": "pass",
-          "durationMs": 6944,
+          "durationMs": 14669,
           "detail": {
             "source": "爱坤资源 (ikunzy)",
-            "title": "女巫农场",
+            "title": "拜托了冰箱2",
             "tsBytes": 1880,
             "encrypted": false,
             "nodeWarnings": []
@@ -126,7 +126,7 @@
           "domain": "video",
           "title": "Video — PeerTube framatube.org live HLS/MP4 proxy Range",
           "status": "pass",
-          "durationMs": 5938,
+          "durationMs": 9972,
           "detail": {
             "source": "PeerTube (Framatube)",
             "title": "Fondation Blender - Le jeu Yo Frankie",
@@ -140,7 +140,7 @@
           "domain": "video",
           "title": "Video — Internet Archive live MP4 stream-proxy Range",
           "status": "pass",
-          "durationMs": 3216,
+          "durationMs": 1923,
           "detail": {
             "source": "Internet Archive Video",
             "title": "Big Buck Bunny",
@@ -155,9 +155,9 @@
   "browser_smoke": {
     "comic": "Yotsuba&!",
     "music": "Mojito (Live)",
-    "video": "女巫农场",
+    "video": "拜托了冰箱2",
     "externalThumbnailWarnings": [
-      "http://127.0.0.1:34999/api/v1/music/online/cover-proxy?url=https%3A%2F%2Fcn4.mainnet.audiusindex.org%2Fcontent%2F01JCNGMZFE08Q9FH83DW1M3ANE%2F480x480.jpg&source_id=01a203b1-97bc-72f6-9799-bba2b9d048d7"
+      "http://127.0.0.1:45841/api/v1/music/online/cover-proxy?url=https%3A%2F%2Fcn2.mainnet.audiusindex.org%2Fcontent%2FQmd5zV99L86gqhJe6uXDMtJ6vs4orV948RjtjywR34WLUt%2F480x480.jpg&source_id=01a203f2-e544-756d-b847-89e4d848cb31"
     ]
   },
   "gate": {
@@ -177,7 +177,7 @@
       "domain": "comic",
       "title": "Comic — MangaDex live search -> pages -> image-proxy",
       "status": "pass",
-      "durationMs": 7230,
+      "durationMs": 27685,
       "detail": {
         "source": "MangaDex (EN)",
         "keyword": "Yotsuba",
@@ -191,7 +191,7 @@
       "domain": "comic",
       "title": "Comic — WEBTOON live search -> pages -> Referer image-proxy",
       "status": "pass",
-      "durationMs": 14996,
+      "durationMs": 17563,
       "detail": {
         "source": "WEBTOON (EN)",
         "keyword": "Tower of God",
@@ -205,7 +205,7 @@
       "domain": "comic",
       "title": "Comic — XKCD live explore -> image-proxy PNG",
       "status": "pass",
-      "durationMs": 5899,
+      "durationMs": 4446,
       "detail": {
         "source": "XKCD",
         "mime": "image/png",
@@ -218,7 +218,7 @@
       "domain": "music",
       "title": "Music — GDStudio live track-info + 206 audio-proxy + cover-proxy + lyrics",
       "status": "pass",
-      "durationMs": 8514,
+      "durationMs": 7655,
       "detail": {
         "source": "GDStudio Music API (网易云)",
         "status": 206,
@@ -232,7 +232,7 @@
       "domain": "music",
       "title": "Music — Audius trending -> audio-proxy stream chunk",
       "status": "pass",
-      "durationMs": 5886,
+      "durationMs": 20171,
       "detail": {
         "source": "Audius Public API",
         "status": 200,
@@ -245,13 +245,13 @@
       "domain": "music",
       "title": "Music — Internet Archive Audio & iTunes+LRCLIB live stream & lyrics",
       "status": "pass",
-      "durationMs": 13232,
+      "durationMs": 20987,
       "detail": {
         "archive": {
           "source": "Internet Archive Audio",
           "status": 200,
           "bytesRead": 4096,
-          "title": "Maula"
+          "title": "Klasika U Pokretu"
         },
         "itunes": {
           "source": "iTunes Search + LRCLIB",
@@ -268,10 +268,10 @@
       "domain": "video",
       "title": "Video — AppleCMS v10 multi-node HLS -> hls-proxy segments",
       "status": "pass",
-      "durationMs": 6944,
+      "durationMs": 14669,
       "detail": {
         "source": "爱坤资源 (ikunzy)",
-        "title": "女巫农场",
+        "title": "拜托了冰箱2",
         "tsBytes": 1880,
         "encrypted": false,
         "nodeWarnings": []
@@ -282,7 +282,7 @@
       "domain": "video",
       "title": "Video — PeerTube framatube.org live HLS/MP4 proxy Range",
       "status": "pass",
-      "durationMs": 5938,
+      "durationMs": 9972,
       "detail": {
         "source": "PeerTube (Framatube)",
         "title": "Fondation Blender - Le jeu Yo Frankie",
@@ -296,7 +296,7 @@
       "domain": "video",
       "title": "Video — Internet Archive live MP4 stream-proxy Range",
       "status": "pass",
-      "durationMs": 3216,
+      "durationMs": 1923,
       "detail": {
         "source": "Internet Archive Video",
         "title": "Big Buck Bunny",
@@ -310,13 +310,13 @@
       "domain": "ui",
       "title": "Live Browser Smoke (Chromium comic/music/video online UI)",
       "status": "pass",
-      "durationMs": 27781,
+      "durationMs": 60791,
       "detail": {
         "comic": "Yotsuba&!",
         "music": "Mojito (Live)",
-        "video": "女巫农场",
+        "video": "拜托了冰箱2",
         "externalThumbnailWarnings": [
-          "http://127.0.0.1:34999/api/v1/music/online/cover-proxy?url=https%3A%2F%2Fcn4.mainnet.audiusindex.org%2Fcontent%2F01JCNGMZFE08Q9FH83DW1M3ANE%2F480x480.jpg&source_id=01a203b1-97bc-72f6-9799-bba2b9d048d7"
+          "http://127.0.0.1:45841/api/v1/music/online/cover-proxy?url=https%3A%2F%2Fcn2.mainnet.audiusindex.org%2Fcontent%2FQmd5zV99L86gqhJe6uXDMtJ6vs4orV948RjtjywR34WLUt%2F480x480.jpg&source_id=01a203f2-e544-756d-b847-89e4d848cb31"
         ]
       }
     },
