@@ -1800,6 +1800,98 @@ function buildTier2Cases() {
       },
     },
     {
+      id: 'T2-F12-07',
+      feature: 'F12',
+      domain: 'ui',
+      title: 'Browser (Admin): Closing and switching OnlineSourceEditShell during in-flight PATCH keeps Source B sheet open',
+      async run(ctx) {
+        await clearDomainSources(ctx.admin, 'comic');
+        const comics = buildMockComicSources(ctx.mockBaseUrl);
+        await importSources(ctx.admin, 'comic', [
+          { ...comics.xkcd, sourceName: 'Alpha Edit Source', sourceUrl: `${ctx.mockBaseUrl}/comic/xkcd#alpha` },
+          { ...comics.xkcd, sourceName: 'Beta Edit Source', sourceUrl: `${ctx.mockBaseUrl}/comic/xkcd#beta` },
+        ]);
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.admin,
+          '/settings?tab=domain-datasources&domain=comic',
+        );
+        try {
+          await cdp.waitForFn(
+            `document.body.innerText.includes('Alpha Edit Source') && document.body.innerText.includes('Beta Edit Source')`,
+            { timeoutMs: 10000 },
+          );
+
+          const pendingPatchRequests = [];
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/comic/sources/*', requestStage: 'Request' }],
+          });
+          cdp.on('Fetch.requestPaused', async (params) => {
+            try {
+              if (params.request.method === 'PATCH') {
+                pendingPatchRequests.push(params.requestId);
+                return;
+              }
+              await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+            } catch {
+              // ignore if closed
+            }
+          });
+
+          // Open Source A edit sheet and click Save (PATCH held in-flight)
+          await cdp.evalJs(`(() => {
+            const rows = [...document.querySelectorAll('main tr, main [data-source-row], main li, main div')];
+            const btn = [...document.querySelectorAll('main button')].find((b) => /编辑|edit/i.test(b.getAttribute('aria-label') || b.title || b.innerText || ''));
+            if (!btn) throw new Error('missing Edit button for Alpha source');
+            btn.click();
+          })()`);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('[role="dialog"] textarea')) && (document.querySelector('[role="dialog"]')?.innerText || '').includes('Alpha Edit Source')`,
+            { timeoutMs: 8000, label: 'Alpha Edit sheet loaded' },
+          );
+          await clickButtonMatching(cdp, [/^保存$|^save$/i], { rootSelector: '[role="dialog"]' });
+          await cdp.waitForFn(
+            `[...document.querySelectorAll('[role="dialog"] button')].some((b) => /保存中|saving/i.test(b.innerText || '') && b.disabled)`,
+            { timeoutMs: 5000, label: 'Alpha PATCH in flight' },
+          );
+
+          // Dismiss Source A sheet via Escape while PATCH is still pending, then open Source B
+          await cdp.pressKey('Escape');
+          await cdp.waitForFn(`!document.querySelector('[role="dialog"]')`, {
+            timeoutMs: 5000,
+            label: 'Alpha Edit sheet dismissed via Escape during in-flight PATCH',
+          });
+
+          await cdp.evalJs(`(() => {
+            const btns = [...document.querySelectorAll('main button')].filter((b) => /编辑|edit/i.test(b.getAttribute('aria-label') || b.title || b.innerText || ''));
+            if (btns.length < 2) throw new Error('missing Edit button for Beta source');
+            btns[1].click();
+          })()`);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('[role="dialog"] textarea')) && (document.querySelector('[role="dialog"]')?.innerText || '').includes('Beta Edit Source')`,
+            { timeoutMs: 8000, label: 'Beta Edit sheet loaded' },
+          );
+
+          // Now release Alpha's pending PATCH and verify Beta's sheet stays open and uncorrupted
+          assert.equal(pendingPatchRequests.length, 1, 'Expected exactly 1 in-flight PATCH request');
+          await cdp.send('Fetch.continueRequest', { requestId: pendingPatchRequests[0] });
+          await new Promise((r) => setTimeout(r, 350));
+
+          const betaStillOpen = await cdp.evalJs(`(() => {
+            const dlg = document.querySelector('[role="dialog"]');
+            if (!dlg) return false;
+            return (dlg.innerText || '').includes('Beta Edit Source');
+          })()`);
+          assert.equal(betaStillOpen, true, 'Stale Alpha PATCH completion must NOT close or overwrite Beta Edit sheet');
+          await cdp.send('Fetch.disable');
+          cdp.assertNoErrors('T2-F12-07');
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
       id: 'T2-F12-04',
       feature: 'F12',
       domain: 'ui',
@@ -2968,11 +3060,13 @@ function buildTier2Cases() {
                 const alert = main?.querySelector('[role="alert"]');
                 return Boolean(alert)
                   && !text.includes(${JSON.stringify(sc.expectedItem)})
+                  && !text.includes('online.title')
+                  && !(alert?.innerText || '').includes('online.title')
                   && !/未找到与|No results for/i.test(text);
               })()`,
               {
                 timeoutMs: 10000,
-                label: `${sc.domain} /online/search 500 clears stale results, shows [role="alert"], hides false empty state`,
+                label: `${sc.domain} /online/search 500 clears stale results, shows [role="alert"], hides false empty state and raw online.title`,
               },
             );
 
@@ -2980,6 +3074,180 @@ function buildTier2Cases() {
             await cdp.send('Fetch.disable');
           }
           assert.equal(cdp.exceptions.length, 0);
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F16-08',
+      feature: 'F16',
+      domain: 'ui',
+      title: 'Browser: OnlineVideoPlayerView renders <track> subtitles via /api/v1/video/online/subtitle-proxy (wildcard ACAO VTT + Referer SRT)',
+      async run(ctx) {
+        await clearDomainSources(ctx.admin, 'video');
+        const subVideoSrc = {
+          sourceName: 'Subtitled Rule Video',
+          sourceUrl: `${ctx.mockBaseUrl}/video/subtitled`,
+          sourceFormat: 'rule',
+          enabled: true,
+          mediaHeader: { Referer: 'https://sub.mock.test/' },
+          ruleSearch: {
+            list: '$.items[*]',
+            vodId: '$.id',
+            name: '$.title',
+            detailUrl: '$.detailUrl',
+          },
+          ruleDetail: {
+            name: '$.title',
+            episodes: '$.episodes[*]',
+            episodeName: '$.name',
+            episodeUrl: '$.playUrl',
+          },
+          rulePlay: {
+            requestUrl: '{{playUrl}}',
+            streamUrl: '$.stream',
+            subtitles: '$.subs',
+          },
+        };
+        const imp = await importSources(ctx.admin, 'video', subVideoSrc);
+        const sid = imp.sources[0].id;
+        const playUrl = `${ctx.mockBaseUrl}/video/subtitled/play`;
+
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          `/video/online/watch?sourceId=${encodeURIComponent(sid)}&playUrl=${encodeURIComponent(playUrl)}&title=${encodeURIComponent('Subtitled Movie')}`,
+        );
+        try {
+          await cdp.waitForFn(
+            `(document.querySelector('video')?.readyState || 0) >= 1 && Boolean(document.querySelector('header'))`,
+            { timeoutMs: 12000, label: 'OnlineVideoPlayerView loaded stream with subtitle options' },
+          );
+
+          // Select Wildcard VTT subtitle via AppSelect in header
+          await cdp.evalJs(`(() => {
+            const btns = [...document.querySelectorAll('header button[role="combobox"], header button')];
+            const subBtn = btns.find((b) => /字幕|关闭|subtitle|off/i.test(b.innerText || b.getAttribute('aria-label') || ''));
+            if (!subBtn) throw new Error('missing subtitle AppSelect trigger');
+            subBtn.click();
+          })()`);
+          await cdp.waitForSelector('[role="listbox"]', { visible: true, timeoutMs: 5000 });
+          await cdp.evalJs(`(() => {
+            const opt = [...document.querySelectorAll('[role="option"]')].find((o) => (o.innerText || '').includes('Wildcard VTT'));
+            if (!opt) throw new Error('missing Wildcard VTT option');
+            opt.click();
+          })()`);
+
+          await cdp.waitForFn(
+            `(() => {
+              const v = document.querySelector('video');
+              const tr = v?.querySelector('track');
+              const src = tr?.getAttribute('src') || '';
+              return src.startsWith('/api/v1/video/online/subtitle-proxy')
+                && [...(v?.textTracks || [])].some((t) =>
+                  [...(t.cues || [])].some((c) => (c.text || '').includes('Mock Wildcard CORS Cue'))
+                );
+            })()`,
+            { timeoutMs: 10000, label: 'Wildcard ACAO VTT track loaded cues via subtitle-proxy' },
+          );
+
+          // Switch to Referer-gated SRT subtitle -> converted to WebVTT by subtitle-proxy
+          await cdp.evalJs(`(() => {
+            const btns = [...document.querySelectorAll('header button[role="combobox"], header button')];
+            const subBtn = btns.find((b) => (b.innerText || '').includes('Wildcard VTT'));
+            if (!subBtn) throw new Error('missing active subtitle selector');
+            subBtn.click();
+          })()`);
+          await cdp.waitForSelector('[role="listbox"]', { visible: true, timeoutMs: 5000 });
+          await cdp.evalJs(`(() => {
+            const opt = [...document.querySelectorAll('[role="option"]')].find((o) => (o.innerText || '').includes('Referer SRT'));
+            if (!opt) throw new Error('missing Referer SRT option');
+            opt.click();
+          })()`);
+
+          await cdp.waitForFn(
+            `(() => {
+              const v = document.querySelector('video');
+              return [...(v?.textTracks || [])].some((t) =>
+                [...(t.cues || [])].some((c) => (c.text || '').includes('Mock Referer SRT Cue'))
+              );
+            })()`,
+            { timeoutMs: 10000, label: 'Referer-gated SRT subtitle converted and loaded via subtitle-proxy' },
+          );
+
+          cdp.assertNoErrors('T2-F16-08');
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
+    {
+      id: 'T2-F16-09',
+      feature: 'F16',
+      domain: 'ui',
+      title: 'Browser: Rapid episode switching Ep1 -> Ep2 in OnlineVideoPlayerView with delayed Ep1 /online/play stays on Ep2',
+      async run(ctx) {
+        await ensureVideoMocks(ctx.admin, ctx.mockBaseUrl);
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/video/catalog?scope=online&q=Earth',
+        );
+        try {
+          await cdp.waitForFn(`document.body.innerText.includes('Mock Wandering Earth')`, {
+            timeoutMs: 10000,
+          });
+          await clickButtonMatching(cdp, [/Mock Wandering Earth/], { rootSelector: 'main' });
+          await cdp.waitForFn(`location.pathname.includes('/video/online/detail')`, { timeoutMs: 8000 });
+          await clickButtonMatching(cdp, [/ikm3u8/i]);
+          await clickButtonMatching(cdp, [/第2集/]);
+          await cdp.waitForFn(
+            `location.pathname.includes('/video/online/watch') && (document.querySelector('video')?.readyState || 0) >= 1`,
+            { timeoutMs: 12000, label: 'player mounted initially on 第2集' },
+          );
+
+          // Delay Ep1 (/master.m3u8) /online/play by 500ms while allowing Ep2 (/ep2/index.m3u8) immediately
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/video/online/play', requestStage: 'Request' }],
+          });
+          cdp.on('Fetch.requestPaused', async (params) => {
+            const postData = params.request.postData || '';
+            if (postData.includes('master.m3u8')) {
+              await new Promise((r) => setTimeout(r, 500));
+            }
+            try {
+              await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+            } catch {
+              // ignore if closed
+            }
+          });
+
+          cdp.clearErrors();
+          // Rapidly click 第1集 then immediately click 第2集
+          await cdp.evalJs(`(() => {
+            const footerBtns = [...document.querySelectorAll('footer button')];
+            const ep1 = footerBtns.find((b) => (b.innerText || '').trim() === '第1集');
+            const ep2 = footerBtns.find((b) => (b.innerText || '').trim() === '第2集');
+            if (!ep1 || !ep2) throw new Error('missing episode strip buttons');
+            ep1.click();
+            ep2.click();
+          })()`);
+
+          // Wait well past the 500ms Ep1 delay so any stale router.replace/loadPlay race would surface
+          await new Promise((r) => setTimeout(r, 900));
+          await cdp.waitForFn(
+            `location.search.includes('episodeIndex=1') && (document.querySelector('header')?.innerText || '').includes('第2集')`,
+            { timeoutMs: 8000, label: 'final active episode remains 第2集 (episodeIndex=1)' },
+          );
+          const ep2HlsSeen = cdp.networkRequests.some(
+            (r) => r.url.includes('/api/v1/video/online/hls-proxy') && r.url.includes('ep2'),
+          );
+          assert.equal(ep2HlsSeen, true, 'Expected Ep2 HLS stream to load and remain active');
+          await cdp.send('Fetch.disable');
+          cdp.assertNoErrors('T2-F16-09');
         } finally {
           await cdp.close();
         }

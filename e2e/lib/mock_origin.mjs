@@ -782,6 +782,46 @@ export class MockOriginServer {
       return sendRangeBuffer(req, res, MOCK_MP4_BYTES, 'video/mp4');
     }
 
+    if (pathname === '/video/subs/wildcard-cors.vtt') {
+      res.writeHead(200, {
+        'Content-Type': 'text/vtt; charset=utf-8',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end('WEBVTT\n\n00:00:00.000 --> 00:00:10.000\nMock Wildcard CORS Cue\n');
+      return;
+    }
+
+    if (pathname === '/video/subs/referer-gated.srt') {
+      const referer = normalizedHeaders.referer || '';
+      if (!referer.startsWith('https://sub.mock.test/')) {
+        return sendText(res, 403, 'Forbidden: missing subtitle Referer');
+      }
+      return sendText(
+        res,
+        200,
+        '1\n00:00:00,000 --> 00:00:10,000\nMock Referer SRT Cue\n',
+        'text/plain; charset=utf-8',
+      );
+    }
+
+    if (pathname === '/video/subtitled/play') {
+      return sendJson(res, 200, {
+        stream: `${this.baseUrl}/video/peertube/media/pt-vid-1.mp4`,
+        subs: [
+          {
+            label: 'Wildcard VTT',
+            lang: 'en',
+            url: `${this.baseUrl}/video/subs/wildcard-cors.vtt`,
+          },
+          {
+            label: 'Referer SRT',
+            lang: 'zh',
+            url: `${this.baseUrl}/video/subs/referer-gated.srt`,
+          },
+        ],
+      });
+    }
+
     // -----------------------------------------------------------------------
     // D. Security, Error, Encoding & Edge Mocks (/edge/...)
     // -----------------------------------------------------------------------
