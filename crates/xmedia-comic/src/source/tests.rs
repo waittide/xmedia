@@ -4011,3 +4011,69 @@ fn comic_run_login_action_strips_case_insensitive_js_wrappers_and_preserves_http
         assert_eq!(out.data, expected);
     }
 }
+
+#[tokio::test]
+async fn comic_search_allows_non_json_braces_and_blocks_json_options_smuggling() {
+    use axum::{Router, routing::get};
+
+    let app = Router::new().route(
+        "/search",
+        get(
+            |axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>| async move {
+                let kw = q.get("q").cloned().unwrap_or_default();
+                serde_json::json!({
+                    "items": [{ "title": format!("Hit:{kw}"), "url": "/comic/1" }]
+                })
+                .to_string()
+            },
+        ),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let base_c = base.clone();
+    tokio::task::spawn_blocking(move || {
+        let engine = ComicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        );
+        let spec: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "NonJsonBracesComic",
+            "sourceUrl": base_c,
+            "searchUrl": format!("{base_c}/search?q={{{{key}}}}"),
+            "ruleSearch": {
+                "bookList": "$.items[*]",
+                "name": "$.title",
+                "bookUrl": "$.url"
+            }
+        }))
+        .unwrap();
+
+        let ok = engine
+            .search_sync(&spec, SourceRuntimeState::default(), "foo,{bar}", 1)
+            .expect("non-JSON ,{bar} search keyword must succeed");
+        assert_eq!(ok.data.len(), 1);
+        assert_eq!(ok.data[0].title, "Hit:foo,{bar}");
+
+        let err = engine
+            .search_sync(
+                &spec,
+                SourceRuntimeState::default(),
+                r#"foo,{"method":"POST"}"#,
+                1,
+            )
+            .expect_err("valid JSON option smuggling must still be rejected");
+        assert!(err.contains("请求选项"), "unexpected error: {err}");
+    })
+    .await
+    .unwrap();
+
+    srv.abort();
+}

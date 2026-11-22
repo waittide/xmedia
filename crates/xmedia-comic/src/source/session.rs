@@ -6,12 +6,12 @@ use std::time::{Duration, Instant};
 use scraper::{Html, Selector};
 use xmedia_source::http::{
     HttpFetchResult, LegadoHttpClient, LegadoUrlOptions, is_forbidden_custom_header,
-    parse_legado_url, resolve_relative_url,
+    parse_legado_url, resolve_relative_url, split_legado_url_and_raw_options,
 };
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
 use xmedia_source::rule::{RuleValue, cached_regex};
 
-use super::engine::{resolve_relative_url_preserving_options, split_legado_url_and_raw_options};
+use super::engine::resolve_relative_url_preserving_options;
 use crate::source::model::{
     ComicChapterJsContext, ComicJsContext, ComicSourceSpec, ExecutionDiagnostics,
     OnlineComicChapter, SourceMetadata, SourceRuntimeState,
@@ -1060,7 +1060,7 @@ fn is_placeholder_or_fragment_url(raw_url: &str, final_url: &str) -> bool {
     if t.is_empty() {
         return true;
     }
-    let (url_part, has_valid_opts) = if let Some((part, opt_json)) =
+    let (url_part, has_valid_opts) = if let (part, Some(opt_json)) =
         split_legado_url_and_raw_options(t)
         && serde_json::from_str::<LegadoUrlOptions>(opt_json).is_ok()
     {

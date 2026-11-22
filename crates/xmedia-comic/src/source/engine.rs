@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use xmedia_source::http::{
     HttpClientConfig, LegadoHttpClient, LegadoUrlOptions, eval_json_options_template,
-    has_suspicious_option_chars, resolve_relative_url, split_legado_url_template_and_options,
-    substitute_url_part_vars, verify_js_pipeline_url_options,
+    has_suspicious_option_chars, resolve_relative_url, split_legado_url_and_raw_options,
+    split_legado_url_template_and_options, substitute_url_part_vars,
+    verify_js_pipeline_url_options,
 };
 pub use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, split_js_pipeline, strip_js_wrapper};
@@ -143,7 +144,7 @@ fn resolve_literal_http_url(raw: &str, base_url: &str, label: &str) -> Result<St
     if split_js_pipeline(trimmed).is_some() {
         return Err(format!("{label} 不允许包含 JS 脚本"));
     }
-    if split_legado_url_and_raw_options(trimmed).is_some() {
+    if split_legado_url_and_raw_options(trimmed).1.is_some() {
         return Err(format!("{label} 不允许附加请求选项"));
     }
     let resolved = resolve_relative_url(trimmed, base_url);
@@ -170,47 +171,6 @@ fn pick_rule_field<'a>(
         })
 }
 
-pub(super) fn split_legado_url_and_raw_options(input: &str) -> Option<(&str, &str)> {
-    let trimmed = input.trim();
-    if !trimmed.ends_with('}') {
-        return None;
-    }
-    let bytes = trimmed.as_bytes();
-    let mut depth = 0i32;
-    let mut in_string = false;
-
-    for idx in (0..bytes.len()).rev() {
-        let b = bytes[idx];
-        if b == b'"' {
-            let mut backslashes = 0usize;
-            let mut k = idx;
-            while k > 0 && bytes[k - 1] == b'\\' {
-                backslashes += 1;
-                k -= 1;
-            }
-            if backslashes.is_multiple_of(2) {
-                in_string = !in_string;
-            }
-            continue;
-        }
-        if in_string {
-            continue;
-        }
-        match b {
-            b'}' => depth += 1,
-            b'{' => {
-                depth -= 1;
-                if depth == 0 {
-                    let url_part = trimmed[..idx].trim_end().strip_suffix(',')?;
-                    return Some((url_part.trim(), &trimmed[idx..]));
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 fn normalize_explore_url(raw_url: &str, base_url: &str) -> String {
     let trimmed = raw_url.trim();
     if trimmed.is_empty() {
@@ -219,7 +179,7 @@ fn normalize_explore_url(raw_url: &str, base_url: &str) -> String {
     if trimmed.contains("{{")
         || trimmed.contains("}}")
         || split_js_pipeline(trimmed).is_some()
-        || split_legado_url_and_raw_options(trimmed).is_some()
+        || split_legado_url_and_raw_options(trimmed).1.is_some()
     {
         return trimmed.to_string();
     }
@@ -228,7 +188,7 @@ fn normalize_explore_url(raw_url: &str, base_url: &str) -> String {
 
 pub(super) fn resolve_relative_url_preserving_options(raw_url: &str, base_url: &str) -> String {
     let trimmed = raw_url.trim();
-    if let Some((url_part, opt_json)) = split_legado_url_and_raw_options(trimmed)
+    if let (url_part, Some(opt_json)) = split_legado_url_and_raw_options(trimmed)
         && serde_json::from_str::<LegadoUrlOptions>(opt_json).is_ok()
     {
         let resolved_part = if url_part.trim().is_empty() {
@@ -408,9 +368,7 @@ impl ComicSourceEngine {
         let out = session.eval_string(&input, tpl, base_url)?;
         if !keyword.is_empty()
             && has_suspicious_option_chars(&[keyword])
-            && xmedia_source::http::split_legado_url_and_raw_options(out.trim())
-                .1
-                .is_some()
+            && split_legado_url_and_raw_options(out.trim()).1.is_some()
         {
             let probe_res = match session.set_search_vars("__xmedia_kw_probe__", page) {
                 Ok(()) => session.eval_string(&input, tpl, base_url),
@@ -453,17 +411,17 @@ impl ComicSourceEngine {
                     let pre_url = substitute_url_part_vars(raw_url_part, &vars, None);
                     let input = RuleValue::Text(String::new());
                     let out = session.eval_string(&input, &pre_url, &source.source_url)?;
-                    if xmedia_source::http::split_legado_url_and_raw_options(out.trim())
-                        .1
-                        .is_some()
-                    {
+                    if split_legado_url_and_raw_options(out.trim()).1.is_some() {
                         return Err(format!("{label} 模板参数不允许附加请求选项"));
                     }
                     out
                 }
             } else {
                 let unencoded = substitute_simple_template(raw_url_part, keyword, page, false);
-                if split_legado_url_and_raw_options(unencoded.trim()).is_some() {
+                if split_legado_url_and_raw_options(unencoded.trim())
+                    .1
+                    .is_some()
+                {
                     return Err(format!("{label} 模板参数不允许附加请求选项"));
                 }
                 substitute_simple_template(raw_url_part, keyword, page, true)
@@ -506,12 +464,15 @@ impl ComicSourceEngine {
                 session.eval_string(&input, &pre_tpl, &source.source_url)?
             } else {
                 let unencoded = substitute_simple_template(raw_tpl, keyword, page, false);
-                if split_legado_url_and_raw_options(unencoded.trim()).is_some() {
+                if split_legado_url_and_raw_options(unencoded.trim())
+                    .1
+                    .is_some()
+                {
                     return Err(format!("{label} 模板参数不允许附加请求选项"));
                 }
                 substitute_simple_template(raw_tpl, keyword, page, true)
             };
-            if split_legado_url_and_raw_options(sub.trim()).is_some() {
+            if split_legado_url_and_raw_options(sub.trim()).1.is_some() {
                 return Err(format!("{label} 模板参数不允许附加请求选项"));
             }
             sub
@@ -821,7 +782,7 @@ impl ComicSourceEngine {
                 if has_non_page_mustache(tpl) {
                     return Err("自定义 exploreUrl 不允许包含动态模板表达式".to_string());
                 }
-                if split_legado_url_and_raw_options(tpl).is_some() {
+                if split_legado_url_and_raw_options(tpl).1.is_some() {
                     return Err("自定义 exploreUrl 不允许附加请求选项".to_string());
                 }
                 let substituted = substitute_static_explore_page(tpl, page);
