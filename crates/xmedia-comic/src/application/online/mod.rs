@@ -14,7 +14,8 @@ use crate::domain::repository::ComicSourceRepository;
 use crate::source::ComicSourceEngine;
 
 pub use dto::*;
-use helpers::AsyncLockMap;
+use helpers::{AsyncLockMap, RateLimiterMap, get_or_insert_rate_limiter};
+use xmedia_source::model::ConcurrentRateSpec;
 
 const SEARCH_MAX_CONCURRENCY: usize = 16;
 const SEARCH_PER_SOURCE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -26,6 +27,7 @@ pub struct ComicOnlineService {
     sources: Arc<dyn ComicSourceRepository>,
     engine: ComicSourceEngine,
     source_state_locks: AsyncLockMap<Uuid>,
+    rate_limiters: RateLimiterMap,
     seed_import_lock: tokio::sync::Mutex<()>,
     allow_private_ips: bool,
 }
@@ -44,8 +46,22 @@ impl ComicOnlineService {
             sources,
             engine,
             source_state_locks: Arc::new(Mutex::new(HashMap::new())),
+            rate_limiters: Arc::new(Mutex::new(HashMap::new())),
             seed_import_lock: tokio::sync::Mutex::new(()),
             allow_private_ips,
         }
+    }
+
+    pub(super) async fn acquire_rate_slot(
+        &self,
+        source_id: Uuid,
+        spec: Option<ConcurrentRateSpec>,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let Some(rate) = spec else {
+            return Ok(());
+        };
+        let limiter = get_or_insert_rate_limiter(&self.rate_limiters, source_id);
+        limiter.acquire(rate, timeout).await
     }
 }

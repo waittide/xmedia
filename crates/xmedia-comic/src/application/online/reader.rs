@@ -21,7 +21,7 @@ use super::dto::{
     OnlineComicDetailResponseDto, OnlineComicExploreResponseDto, OnlineComicPageDto,
     OnlineComicPagesResponseDto, OnlineComicSearchResponseDto, SourceSearchErrorDto,
 };
-use super::helpers::{CancelOnDrop, build_image_proxy_url};
+use super::helpers::{CancelOnDrop, build_image_proxy_url, get_or_insert_rate_limiter};
 use super::{
     COMIC_IMAGE_PROXY_MAX_BYTES, ComicOnlineService, READER_OP_TIMEOUT, SEARCH_MAX_CONCURRENCY,
     SEARCH_PER_SOURCE_TIMEOUT,
@@ -91,6 +91,7 @@ impl ComicOnlineService {
             let state = rec.runtime_state.clone();
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
+            let rate_limiter = get_or_insert_rate_limiter(&self.rate_limiters, sid);
 
             handles.push(tokio::spawn(async move {
                 let parsed = match parsed_res {
@@ -104,6 +105,11 @@ impl ComicOnlineService {
                         );
                     }
                 };
+                if let Some(rate) = parsed.parse_concurrent_rate()
+                    && let Err(e) = rate_limiter.acquire(rate, SEARCH_PER_SOURCE_TIMEOUT).await
+                {
+                    return (sid, sname, prev_state_cmp, Err(e));
+                }
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (sid, sname, prev_state_cmp, Err("搜索并发调度已关闭".into()));
                 };
@@ -206,6 +212,13 @@ impl ComicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let page_num = page.max(1);
         let engine = self.engine.clone();
@@ -327,6 +340,13 @@ impl ComicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let url_owned = comic_url.to_string();
@@ -489,6 +509,13 @@ impl ComicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
         let url_owned = toc_url.to_string();
@@ -568,6 +595,13 @@ impl ComicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        self.acquire_rate_slot(
+            source_id,
+            parsed.parse_concurrent_rate(),
+            SEARCH_PER_SOURCE_TIMEOUT,
+        )
+        .await
+        .map_err(DomainError::Validation)?;
 
         let reading_direction = comic_ctx
             .reading_direction

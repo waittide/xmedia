@@ -2482,3 +2482,82 @@ async fn online_search_blocks_keyword_smuggling_and_detail_preserves_same_host_c
 
     server.abort();
 }
+
+#[tokio::test]
+async fn online_search_enforces_source_concurrent_rate_throttling() {
+    let h = setup_test_harness(true).await;
+
+    let origin_app = Router::new().route(
+        "/search",
+        get(|| async {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"items":[{"title":"Throttled","url":"/c/1"}]}"#,
+                ))
+                .unwrap()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let src = serde_json::json!({
+        "sourceName": "ThrottledComic",
+        "sourceUrl": base,
+        "concurrentRate": "1/350",
+        "searchUrl": format!("{base}/search?q={{{{key}}}}"),
+        "ruleSearch": {
+            "bookList": "$.items[*]",
+            "name": "$.title",
+            "bookUrl": "@js:'https://example.test/c/1'"
+        }
+    });
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    let t0 = std::time::Instant::now();
+    let (st1, b1) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/search",
+        &h.member_token,
+        Some(serde_json::json!({ "keyword": "a", "source_ids": [sid] })),
+    )
+    .await;
+    let (st2, b2) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/online/search",
+        &h.member_token,
+        Some(serde_json::json!({ "keyword": "b", "source_ids": [sid] })),
+    )
+    .await;
+    let elapsed = t0.elapsed();
+
+    assert_eq!(st1, StatusCode::OK);
+    assert_eq!(st2, StatusCode::OK);
+    let v1: serde_json::Value = serde_json::from_slice(&b1).unwrap();
+    let v2: serde_json::Value = serde_json::from_slice(&b2).unwrap();
+    assert_eq!(v1["results"].as_array().unwrap().len(), 1);
+    assert_eq!(v2["results"].as_array().unwrap().len(), 1);
+    assert!(
+        elapsed >= std::time::Duration::from_millis(300),
+        "expected concurrentRate 1/350 throttling, elapsed={elapsed:?}"
+    );
+
+    server.abort();
+}

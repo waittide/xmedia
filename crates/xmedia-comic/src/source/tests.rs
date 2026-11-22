@@ -3256,3 +3256,226 @@ async fn extract_page_urls_self_closing_svg_and_math_do_not_swallow_trailing_url
 
     server.abort();
 }
+
+#[tokio::test]
+async fn search_url_percent_encodes_key_without_corrupting_post_json_options() {
+    use axum::extract::Query;
+    use axum::routing::post;
+    use serde::Deserialize;
+    use std::sync::Mutex;
+
+    #[derive(Deserialize)]
+    struct Q {
+        q: String,
+    }
+
+    let seen_get = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen_post = Arc::new(Mutex::new(Vec::<String>::new()));
+    let sg = seen_get.clone();
+    let sp = seen_post.clone();
+
+    let app = Router::new()
+        .route(
+            "/search-get",
+            get(move |Query(q): Query<Q>| {
+                let sg = sg.clone();
+                async move {
+                    sg.lock().unwrap().push(q.q);
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"Hit","u":"/c/1"}]}"#))
+                        .unwrap()
+                }
+            }),
+        )
+        .route(
+            "/search-post",
+            post(move |body: axum::body::Bytes| {
+                let sp = sp.clone();
+                async move {
+                    sp.lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&body).into_owned());
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(r#"{"items":[{"t":"HitPost","u":"/c/2"}]}"#))
+                        .unwrap()
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let get_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "EncodeGet",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search-get?q={{{{key}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+    let post_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "JsonPost",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/search-post,{{\"method\":\"POST\",\"body\":{{\"kw\":\"{{{{key}}}}\"}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+    let (r_get, r_post) = tokio::task::spawn_blocking(move || {
+        let a = engine
+            .search_sync(&get_src, SourceRuntimeState::default(), "神之塔 & 100%", 1)
+            .unwrap()
+            .data;
+        let b = engine
+            .search_sync(&post_src, SourceRuntimeState::default(), "神之塔 & 100%", 1)
+            .unwrap()
+            .data;
+        (a, b)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(r_get[0].title, "Hit");
+    assert_eq!(r_post[0].title, "HitPost");
+    assert_eq!(seen_get.lock().unwrap().as_slice(), &["神之塔 & 100%"]);
+    let post_body: serde_json::Value = serde_json::from_str(&seen_post.lock().unwrap()[0]).unwrap();
+    assert_eq!(post_body["kw"], "神之塔 & 100%");
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fallback() {
+    use crate::domain::series::ReadingDirection;
+    use axum::routing::post;
+
+    let app = Router::new()
+        .route(
+            "/detail",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"title":"Webtoon Title"}"#))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/bad-json",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{ "broken": [1, 2,"#))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/auth/login",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("set-cookie", "sess=ok42; Path=/")
+                    .body(Body::from("ok"))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let detail_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "DirOverride",
+        "sourceUrl": base,
+        "readingDirection": "ltr",
+        "ruleDetail": { "name": "$.title", "readingDirection": "webtoon" }
+    }))
+    .unwrap();
+    let bad_json_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "BadJson",
+        "sourceUrl": base,
+        "searchUrl": format!("{base}/bad-json?q={{{{key}}}}"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+    let login_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "HttpLoginUrl",
+        "sourceUrl": base,
+        "loginUrl": format!("{base}/auth/login"),
+        "loginCheckJs": format!("<js>java.post('{base}/auth/login', '{{}}', {{}}); 'checked';</js>"),
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+    let base_c = base.clone();
+    let (detail_out, bad_err, login_out) = tokio::task::spawn_blocking(move || {
+        let d = engine
+            .fetch_detail_sync(
+                &detail_src,
+                SourceRuntimeState::default(),
+                &format!("{base_c}/detail"),
+                None,
+            )
+            .unwrap()
+            .data;
+        let b = engine
+            .search_sync(&bad_json_src, SourceRuntimeState::default(), "x", 1)
+            .unwrap_err();
+        let l = engine
+            .run_login_action_sync(
+                &login_src,
+                SourceRuntimeState::default(),
+                HashMap::new(),
+                None,
+            )
+            .unwrap();
+        (d, b, l)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        detail_out.reading_direction,
+        Some(ReadingDirection::Webtoon)
+    );
+    assert!(
+        bad_err.contains("JSON"),
+        "expected JSON error, got: {bad_err}"
+    );
+    assert_eq!(login_out.data, "checked");
+    assert!(
+        login_out
+            .state
+            .cookies
+            .values()
+            .any(|v| v.contains("sess=ok42")),
+        "expected loginCheckJs cookie to be persisted: {:?}",
+        login_out.state.cookies
+    );
+
+    server.abort();
+}

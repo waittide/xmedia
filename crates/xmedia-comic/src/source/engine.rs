@@ -318,9 +318,29 @@ fn eval_json_options_template(
     Ok(eval_opt)
 }
 
-fn substitute_simple_template(raw_tpl: &str, keyword: &str, page: u32) -> String {
+fn url_encode_component(raw: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(raw.len() * 3);
+    for &b in raw.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0F) as usize] as char);
+        }
+    }
+    out
+}
+
+fn substitute_simple_template(raw_tpl: &str, keyword: &str, page: u32, encode_key: bool) -> String {
     let page_str = page.to_string();
-    let mut out = String::with_capacity(raw_tpl.len() + keyword.len());
+    let encoded_kw = if encode_key {
+        std::borrow::Cow::Owned(url_encode_component(keyword))
+    } else {
+        std::borrow::Cow::Borrowed(keyword)
+    };
+    let mut out = String::with_capacity(raw_tpl.len() + encoded_kw.len());
     let mut rest = raw_tpl;
     while let Some(open) = rest.find("{{") {
         out.push_str(&rest[..open]);
@@ -330,7 +350,7 @@ fn substitute_simple_template(raw_tpl: &str, keyword: &str, page: u32) -> String
             return out;
         };
         match after_open[..close].trim() {
-            "key" => out.push_str(keyword),
+            "key" => out.push_str(&encoded_kw),
             "page" => out.push_str(&page_str),
             other => {
                 out.push_str("{{");
@@ -766,7 +786,11 @@ impl ComicSourceEngine {
                 let input = RuleValue::Text(String::new());
                 session.eval_string(&input, raw_url_part, &source.source_url)?
             } else {
-                substitute_simple_template(raw_url_part, keyword, page)
+                let unencoded = substitute_simple_template(raw_url_part, keyword, page, false);
+                if split_legado_url_and_raw_options(unencoded.trim()).is_some() {
+                    return Err(format!("{label} 模板参数不允许附加请求选项"));
+                }
+                substitute_simple_template(raw_url_part, keyword, page, true)
             };
             let eval_opt_json = eval_json_options_template(
                 session,
@@ -783,7 +807,11 @@ impl ComicSourceEngine {
                 let input = RuleValue::Text(String::new());
                 session.eval_string(&input, raw_tpl, &source.source_url)?
             } else {
-                substitute_simple_template(raw_tpl, keyword, page)
+                let unencoded = substitute_simple_template(raw_tpl, keyword, page, false);
+                if split_legado_url_and_raw_options(unencoded.trim()).is_some() {
+                    return Err(format!("{label} 模板参数不允许附加请求选项"));
+                }
+                substitute_simple_template(raw_tpl, keyword, page, true)
             };
             if split_legado_url_and_raw_options(sub.trim()).is_some() {
                 return Err(format!("{label} 模板参数不允许附加请求选项"));
@@ -811,11 +839,29 @@ impl ComicSourceEngine {
     ) -> Result<Vec<ComicSearchResult>, String> {
         session.check_active()?;
         let fetched = session.http_fetch(request_url)?;
-        let raw_input = RuleValue::from_raw(fetched.body);
+        let is_json_ct = fetched
+            .headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+            .map(|(_, v)| v.to_ascii_lowercase())
+            .is_some_and(|ct| ct.contains("application/json") || ct.contains("+json"));
 
         let book_list_rule =
             pick_rule_field(primary_rule, fallback_rule, |r| r.book_list.as_deref())
                 .ok_or_else(|| format!("{rule_label} 缺少 bookList 规则"))?;
+        let is_jsonpath_rule = {
+            let trimmed = book_list_rule.trim().trim_start_matches(['-', '+']).trim();
+            trimmed.starts_with("@Json:")
+                || trimmed.starts_with("@json:")
+                || trimmed.starts_with("$.")
+                || trimmed.starts_with("$[")
+                || trimmed == "$"
+        };
+        let non_empty_body = !fetched.body.trim().is_empty();
+        let raw_input = RuleValue::from_raw(fetched.body);
+        if non_empty_body && (is_json_ct || is_jsonpath_rule) && raw_input.as_json().is_none() {
+            return Err("上游返回无效 JSON".into());
+        }
         let name_rule = pick_rule_field(primary_rule, fallback_rule, |r| r.name.as_deref());
         let book_url_rule = pick_rule_field(primary_rule, fallback_rule, |r| r.book_url.as_deref());
         let author_rule = pick_rule_field(primary_rule, fallback_rule, |r| r.author.as_deref());
@@ -1196,11 +1242,19 @@ impl ComicSourceEngine {
                 rule_detail.word_count.as_deref(),
                 &fetched.final_url,
             );
-            let dir_extracted = session.eval_opt(
-                &info_input,
-                rule_detail.reading_direction.as_deref(),
-                &fetched.final_url,
-            );
+            let reading_direction = rule_detail
+                .reading_direction
+                .as_deref()
+                .and_then(parse_reading_direction_opt)
+                .or_else(|| {
+                    let dir_extracted = session.eval_opt(
+                        &info_input,
+                        rule_detail.reading_direction.as_deref(),
+                        &fetched.final_url,
+                    );
+                    parse_reading_direction_opt(&dir_extracted)
+                })
+                .or_else(|| Some(source.effective_reading_direction()));
             let toc_raw = session.eval_opt(
                 &info_input,
                 rule_detail.toc_url.as_deref(),
@@ -1213,9 +1267,6 @@ impl ComicSourceEngine {
             } else {
                 resolve_relative_url_preserving_options(toc_trimmed, &fetched.final_url)
             };
-
-            let reading_direction = parse_reading_direction_opt(&dir_extracted)
-                .or_else(|| Some(source.effective_reading_direction()));
 
             Ok(OnlineComicDetail {
                 title: if !name_extracted.is_empty() {
@@ -1370,6 +1421,8 @@ impl ComicSourceEngine {
             Arc::new(AtomicBool::new(false)),
         )?;
         let raw_login = source.login_url.as_deref().unwrap_or("").trim();
+        let is_plain_http_login_url =
+            raw_login.starts_with("http://") || raw_login.starts_with("https://");
         let login_url_js = if let Some(stripped) = raw_login.strip_prefix("@js:") {
             stripped
         } else if let Some(inner) = raw_login
@@ -1377,12 +1430,35 @@ impl ComicSourceEngine {
             .and_then(|s| s.strip_suffix("</js>"))
         {
             inner
+        } else if is_plain_http_login_url {
+            ""
         } else {
             raw_login
         };
+        let login_check_stripped = source
+            .login_check_js
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                if let Some(stripped) = s.strip_prefix("@js:") {
+                    stripped.trim()
+                } else if let Some(inner) = s
+                    .strip_prefix("<js>")
+                    .and_then(|rest| rest.strip_suffix("</js>"))
+                {
+                    inner.trim()
+                } else {
+                    s
+                }
+            });
+        let effective_action = match action_js.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(act) => Some(act),
+            None => login_check_stripped,
+        };
         let out = session
             .inner
-            .eval_login_script(login_url_js, action_js, &merged_login)?;
+            .eval_login_script(login_url_js, effective_action, &merged_login)?;
         let (final_state, diagnostics) = session.finalize_state();
         Ok(SourceCallOutput {
             data: out,
