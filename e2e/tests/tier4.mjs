@@ -692,9 +692,24 @@ export async function runTier4(context = {}) {
             await cdp.waitForFn(
               `(() => {
                 const v = document.querySelector('video');
-                return Boolean(v && v.error === null);
+                return Boolean(v && v.error === null && v.readyState >= 1 && v.currentTime > 0);
               })()`,
-              { timeoutMs: 8000, label: 'Video element error === null' },
+              { timeoutMs: 12000, label: 'AppleCMS HLS playing (readyState >= 1 && currentTime > 0)' },
+            );
+            const hlsProxyUrls = cdp.networkResponses
+              .filter((r) => r.url.includes('/api/v1/video/online/hls-proxy') && r.status === 200)
+              .map((r) => decodeURIComponent(r.url));
+            assert.ok(
+              hlsProxyUrls.some((u) => u.includes('enc.key')),
+              `Expected hls-proxy 200 for enc.key, got: ${JSON.stringify(hlsProxyUrls)}`,
+            );
+            assert.ok(
+              hlsProxyUrls.some((u) => u.includes('init.mp4')),
+              `Expected hls-proxy 200 for init.mp4, got: ${JSON.stringify(hlsProxyUrls)}`,
+            );
+            assert.ok(
+              hlsProxyUrls.some((u) => u.includes('seg0.ts')),
+              `Expected hls-proxy 200 for seg0.ts, got: ${JSON.stringify(hlsProxyUrls)}`,
             );
 
             // Play PeerTube MP4

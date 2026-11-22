@@ -2481,11 +2481,26 @@ function buildTier2Cases() {
           });
           await clickButtonMatching(cdp, [/Mock Blender Open Movie/], { rootSelector: 'main' });
           await clickButtonMatching(cdp, [/立即播放|play now|360p/i], { rootSelector: 'main' });
-          await cdp.waitForSelector('video', { visible: true });
-          const musicPaused = await cdp.evalJs(
-            `!document.querySelector('audio') || document.querySelector('audio').paused`,
+          await cdp.waitForFn(
+            `(() => {
+              const v = document.querySelector('video');
+              return Boolean(v && v.error === null && v.readyState >= 1);
+            })()`,
+            { timeoutMs: 12000, label: 'Online video playing (readyState >= 1)' },
           );
-          assert.equal(musicPaused, true, 'Music PlayerBar must pause when video plays');
+          // Navigate back to /video/online/detail so <PlayerBar> re-attaches <audio>
+          await clickButtonMatching(cdp, [/返回|back/i], { rootSelector: 'header' });
+          await cdp.waitForFn(`location.pathname.startsWith('/video/online/detail')`, {
+            timeoutMs: 8000,
+            label: 'navigated back to /video/online/detail',
+          });
+          await cdp.waitForFn(
+            `(() => {
+              const a = document.querySelector('audio');
+              return Boolean(a && a.src.includes('audio-proxy') && a.paused === true);
+            })()`,
+            { timeoutMs: 8000, label: 'Re-attached <audio> exists and is paused' },
+          );
           cdp.assertNoErrors('T2-F16-05');
         } finally {
           await cdp.close();

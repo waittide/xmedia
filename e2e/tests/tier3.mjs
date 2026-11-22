@@ -1186,6 +1186,40 @@ export async function runTier3(context = {}) {
           await withCdpBrowser(async (cdp) => {
             await browserLogin(cdp, baseUrl, MEMBER_CREDS);
 
+            // Rapid Ctrl+K reopen immediately after Escape (<= 30ms, without waiting for unmount)
+            await cdp.pressKey('k', { modifiers: 2 });
+            await cdp.waitForSelector('div[role="dialog"][aria-modal="true"] input', {
+              visible: true,
+              timeoutMs: 8000,
+            });
+            await new Promise((r) => setTimeout(r, 250));
+            await cdp.pressKey('Escape');
+            await new Promise((r) => setTimeout(r, 15));
+            const modalAttrDuringLeave = await cdp.evalJs(
+              `Boolean(document.querySelector('[aria-modal="true"]'))`,
+            );
+            assert.equal(
+              modalAttrDuringLeave,
+              false,
+              'aria-modal="true" must be removed immediately when leave transition starts',
+            );
+            await cdp.pressKey('k', { modifiers: 2 });
+            await cdp.waitForFn(
+              `(() => {
+                const dlg = document.querySelector('div[role="dialog"][aria-modal="true"]');
+                const inp = dlg?.querySelector('input');
+                if (!dlg || !inp) return false;
+                const rect = inp.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0 && document.activeElement === inp;
+              })()`,
+              { timeoutMs: 5000, label: 'GlobalSearchModal rapidly reopens and focuses input' },
+            );
+            await cdp.pressKey('Escape');
+            await cdp.waitForFn(`!document.querySelector('[role="dialog"]')`, {
+              timeoutMs: 5000,
+              label: 'GlobalSearchModal closed after rapid reopen test',
+            });
+
             for (const { labelHints, expectedPath } of [
               { labelHints: ['comic', '漫画'], expectedPath: '/comic' },
               { labelHints: ['music', '音乐'], expectedPath: '/music' },
@@ -1292,10 +1326,23 @@ export async function runTier3(context = {}) {
             await cdp.waitForFn(
               `(() => {
                 const v = document.querySelector('video');
-                const a = document.querySelector('audio');
-                return Boolean(v && (!a || a.paused));
+                return Boolean(v && v.error === null && v.readyState >= 1);
               })()`,
-              { timeoutMs: 12000, label: 'Video active and Music audio paused' },
+              { timeoutMs: 12000, label: 'Online video playing (readyState >= 1)' },
+            );
+
+            // Navigate back to /video/online/detail so <PlayerBar> re-attaches <audio>
+            await clickButtonByText(cdp, ['返回', 'Back'], { timeoutMs: 8000 });
+            await cdp.waitForFn(`window.location.pathname.startsWith('/video/online/detail')`, {
+              timeoutMs: 8000,
+              label: 'Returned to /video/online/detail',
+            });
+            await cdp.waitForFn(
+              `(() => {
+                const a = document.querySelector('audio');
+                return Boolean(a && a.src.includes('audio-proxy') && a.paused === true);
+              })()`,
+              { timeoutMs: 8000, label: 'Re-attached <audio> exists and is paused' },
             );
             cdp.assertNoErrors('T3-22 Music->Video handoff');
           });
