@@ -2,8 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  LuChevronLeft,
-  LuChevronRight,
   LuCompass,
   LuLoader2,
   LuPlay,
@@ -316,56 +314,70 @@ async function runExplore(
   sourceId: string,
   exploreUrl: string | null = null,
   page = 1,
+  mode: 'replace' | 'append' = 'replace',
 ): Promise<void> {
+  if (mode === 'append' && (exploring.value || loadingMore.value)) return
   const seq = ++exploreSeq
   searchSeq += 1
   clearDebounce()
   searching.value = false
-  loadingMore.value = false
   exploreMode.value = true
-  exploring.value = true
-  exploreError.value = null
-  searchErrors.value = []
-  searchToasts.value = []
-  activeExploreUrl.value = exploreUrl
+  if (mode === 'append') {
+    loadingMore.value = true
+  } else {
+    exploring.value = true
+    loadingMore.value = false
+    exploreError.value = null
+    searchErrors.value = []
+    searchToasts.value = []
+    activeExploreUrl.value = exploreUrl
+  }
 
   try {
     const res = await onlineMusicApi.explore(sourceId, exploreUrl, page, pageLimit)
     if (unmounted || seq !== exploreSeq || !exploreMode.value) return
     searchPage.value = page
     hasSearched.value = true
-    exploreCategories.value = res.categories ?? []
-    searchResults.value = res.results ?? []
-    hasMoreResults.value = (res.results?.length ?? 0) >= pageLimit
+    if (res.categories?.length || mode === 'replace') {
+      exploreCategories.value = res.categories ?? []
+    }
+    const incoming = res.results ?? []
+    if (mode === 'append') {
+      const seen = new Set(searchResults.value.map(trackDedupeKey))
+      const appended = incoming.filter((item) => !seen.has(trackDedupeKey(item)))
+      searchResults.value = [...searchResults.value, ...appended]
+      hasMoreResults.value = appended.length > 0 && incoming.length >= pageLimit
+    } else {
+      searchResults.value = incoming
+      hasMoreResults.value = incoming.length >= pageLimit
+    }
   } catch (err) {
     if (unmounted || seq !== exploreSeq || !exploreMode.value) return
     exploreError.value = err instanceof Error ? err.message : String(err)
-    searchResults.value = []
-    hasMoreResults.value = false
+    if (mode === 'replace') {
+      searchResults.value = []
+      hasMoreResults.value = false
+    }
   } finally {
     if (!unmounted && seq === exploreSeq) {
       exploring.value = false
+      loadingMore.value = false
     }
   }
 }
 
 function retryExplore(): void {
   if (selectedSourceIds.value.length !== 1) return
-  void runExplore(selectedSourceIds.value[0]!, activeExploreUrl.value, 1)
-}
-
-function handleSwitchPage(nextPage: number): void {
-  if (nextPage < 1 || searching.value || loadingMore.value || exploring.value) return
-  if (exploreMode.value && selectedSourceIds.value.length === 1) {
-    void runExplore(selectedSourceIds.value[0]!, activeExploreUrl.value, nextPage)
-  } else {
-    void runSearch(nextPage, 'replace', true)
-  }
+  void runExplore(selectedSourceIds.value[0]!, activeExploreUrl.value, 1, 'replace')
 }
 
 function handleLoadMore(): void {
-  if (!hasMoreResults.value || searching.value || loadingMore.value) return
-  void runSearch(searchPage.value + 1, 'append', true)
+  if (!hasMoreResults.value || searching.value || loadingMore.value || exploring.value) return
+  if (exploreMode.value && selectedSourceIds.value.length === 1) {
+    void runExplore(selectedSourceIds.value[0]!, activeExploreUrl.value, searchPage.value + 1, 'append')
+  } else {
+    void runSearch(searchPage.value + 1, 'append', true)
+  }
 }
 
 function goManageDataSources(): void {
@@ -411,8 +423,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="md-card-filled space-y-3 p-4">
+  <div class="space-y-5">
+    <!-- Unboxed Search & Source Filter Area -->
+    <div class="space-y-3 border-b border-[var(--md-sys-color-outline-variant)]/40 pb-4">
       <form class="flex flex-wrap items-center gap-2" @submit.prevent="handleSearchSubmit">
         <div class="relative min-w-0 flex-1">
           <LuSearch
@@ -601,37 +614,11 @@ onBeforeUnmount(() => {
       }}
     </div>
 
-    <!-- Results Table & Footer -->
+    <!-- Results Table & Minimal Action Row -->
     <template v-else-if="searchResults.length > 0">
       <OnlineTrackTable :tracks="searchResults" />
 
-      <div
-        class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3 text-xs"
-      >
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            :disabled="searchPage <= 1 || searching || loadingMore || exploring"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(searchPage - 1)"
-          >
-            <LuChevronLeft class="h-3.5 w-3.5" />
-            <span>{{ t('online.prevPage') }}</span>
-          </button>
-          <span class="px-2 font-mono text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('online.pageSummary', { page: searchPage, count: searchResults.length }) }}
-          </span>
-          <button
-            type="button"
-            :disabled="!hasMoreResults || searching || loadingMore || exploring"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(searchPage + 1)"
-          >
-            <span>{{ t('online.nextPage') }}</span>
-            <LuChevronRight class="h-3.5 w-3.5" />
-          </button>
-        </div>
-
+      <div class="flex flex-wrap items-center justify-between gap-3 pt-1">
         <div class="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -643,32 +630,27 @@ onBeforeUnmount(() => {
           </button>
           <button
             type="button"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
+            class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
             @click="playerStore.shuffleAndPlayOnline(searchResults)"
           >
             <LuShuffle class="h-3.5 w-3.5" />
             <span>{{ t('common.shufflePlay') }}</span>
           </button>
-          <button
-            v-if="!exploreMode"
-            type="button"
-            :disabled="!hasMoreResults || searching || loadingMore"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            @click="handleLoadMore"
-          >
-            <LuLoader2 v-if="loadingMore" class="h-3.5 w-3.5 animate-spin" />
-            <LuPlus v-else class="h-3.5 w-3.5" />
-            <span>
-              {{
-                loadingMore
-                  ? t('online.loadingMore')
-                  : hasMoreResults
-                    ? t('online.loadMore')
-                    : t('online.noMoreResults')
-              }}
-            </span>
-          </button>
         </div>
+
+        <button
+          v-if="hasMoreResults || loadingMore"
+          type="button"
+          :disabled="!hasMoreResults || searching || loadingMore || exploring"
+          class="md-btn md-btn-sm md-btn-tonal md-state px-5"
+          @click="handleLoadMore"
+        >
+          <LuLoader2 v-if="loadingMore" class="h-3.5 w-3.5 animate-spin" />
+          <LuPlus v-else class="h-3.5 w-3.5" />
+          <span>
+            {{ loadingMore ? t('online.loadingMore') : t('online.loadMore') }}
+          </span>
+        </button>
       </div>
     </template>
   </div>

@@ -2,8 +2,6 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  LuChevronLeft,
-  LuChevronRight,
   LuCompass,
   LuFilm,
   LuLoader2,
@@ -125,7 +123,6 @@ const isPaginationBusy = computed(
   () => searching.value || loadingMore.value || browsing.value || loadingMoreBrowse.value,
 )
 
-const activePage = computed(() => (hasSearched.value ? searchPage.value : browsePage.value))
 const activeHasMore = computed(() =>
   hasSearched.value ? hasMoreResults.value : hasMoreBrowse.value,
 )
@@ -546,15 +543,6 @@ async function handleLoadMore(): Promise<void> {
   }
 }
 
-async function handleSwitchPage(nextPage: number): Promise<void> {
-  if (nextPage < 1) return
-  if (hasSearched.value) {
-    await runSearch(nextPage, 'replace')
-  } else if (activeBrowseSourceId.value) {
-    await runBrowse(activeBrowseSourceId.value, activeCategoryId.value, nextPage, 'replace')
-  }
-}
-
 function selectBrowseCategory(catId: string | null): void {
   if (!activeBrowseSourceId.value) return
   void runBrowse(activeBrowseSourceId.value, catId, 1, 'replace')
@@ -610,8 +598,9 @@ function goManageDataSources(): void {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="md-card-filled space-y-3 p-4">
+  <div class="space-y-6">
+    <!-- Unboxed Search & Source/Category Filter Area -->
+    <div class="space-y-3 border-b border-[var(--md-sys-color-outline-variant)]/40 pb-4">
       <form class="flex flex-wrap items-center gap-2" @submit.prevent="handleSearchSubmit">
         <div class="relative min-w-0 flex-1">
           <LuSearch
@@ -693,74 +682,72 @@ function goManageDataSources(): void {
           <span>{{ t('online.goSettings') }}</span>
         </button>
       </div>
-    </div>
-
-    <!-- Categories Bar (when not searching) -->
-    <div
-      v-if="showBrowseView && (browseCategories.length > 0 || browsing || browseError)"
-      class="md-card-filled space-y-2.5 p-4"
-    >
-      <div class="flex items-center gap-2 text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-        <LuCompass class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
-        <span>{{ t('online.categoriesTitle') }}</span>
-        <LuLoader2 v-if="browsing" class="h-3.5 w-3.5 animate-spin text-[var(--md-sys-color-primary)]" />
-      </div>
-
+      <!-- Categories Bar (when not searching) -->
       <div
-        v-if="browseCategories.length > 0"
-        role="tablist"
-        :aria-label="t('online.categoriesTitle')"
-        class="flex flex-wrap items-center gap-1.5"
+        v-if="showBrowseView && (browseCategories.length > 0 || browsing || browseError)"
+        class="space-y-2 pt-1"
       >
-        <button
-          type="button"
-          role="tab"
-          :aria-selected="activeCategoryId === null"
-          class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-          :class="activeCategoryId === null ? 'md-chip-selected' : ''"
-          @click="selectBrowseCategory(null)"
+        <div
+          v-if="browseCategories.length > 0"
+          role="tablist"
+          :aria-label="t('online.categoriesTitle')"
+          class="flex flex-wrap items-center gap-1.5"
         >
-          {{ t('online.allCategories') }}
-        </button>
-        <button
-          v-for="cat in visibleBrowseCategories"
-          :key="cat.id"
-          type="button"
-          role="tab"
-          :aria-selected="activeCategoryId === cat.id"
-          class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-          :class="activeCategoryId === cat.id ? 'md-chip-selected' : ''"
-          @click="selectBrowseCategory(cat.id)"
-        >
-          {{ cat.name }}
-        </button>
-        <button
-          v-if="canCollapseCategories"
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-          @click="categoriesExpanded = !categoriesExpanded"
-        >
-          {{
-            categoriesExpanded
-              ? t('online.collapseCategories')
-              : t('online.expandCategories', { count: browseCategories.length })
-          }}
-        </button>
-      </div>
+          <span class="inline-flex items-center gap-1 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+            <LuCompass class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+            <span>{{ t('online.categoriesTitle') }}</span>
+            <LuLoader2 v-if="browsing" class="h-3 w-3 animate-spin text-[var(--md-sys-color-primary)]" />
+          </span>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="activeCategoryId === null"
+            class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+            :class="activeCategoryId === null ? 'md-chip-selected' : ''"
+            @click="selectBrowseCategory(null)"
+          >
+            {{ t('online.allCategories') }}
+          </button>
+          <button
+            v-for="cat in visibleBrowseCategories"
+            :key="cat.id"
+            type="button"
+            role="tab"
+            :aria-selected="activeCategoryId === cat.id"
+            class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+            :class="activeCategoryId === cat.id ? 'md-chip-selected' : ''"
+            @click="selectBrowseCategory(cat.id)"
+          >
+            {{ cat.name }}
+          </button>
+          <button
+            v-if="canCollapseCategories"
+            type="button"
+            class="md-btn md-btn-sm md-btn-text md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+            @click="categoriesExpanded = !categoriesExpanded"
+          >
+            {{
+              categoriesExpanded
+                ? t('online.collapseCategories')
+                : t('online.expandCategories', { count: browseCategories.length })
+            }}
+          </button>
+        </div>
 
-      <div
-        v-if="browseError"
-        role="alert"
-        class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
-      >
-        <span>{{ t('online.browseError', { error: browseError }) }}</span>
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
-          @click="retryBrowse"
+        <div
+          v-if="browseError"
+          role="alert"
+          class="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
         >
-          <span>{{ t('online.retry') }}</span>
-        </button>
+          <span>{{ t('online.browseError', { error: browseError }) }}</span>
+          <button
+            type="button"
+            class="md-btn md-btn-sm md-btn-tonal md-state shrink-0"
+            @click="retryBrowse"
+          >
+            <span>{{ t('online.retry') }}</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -814,103 +801,62 @@ function goManageDataSources(): void {
       {{ t('online.browseEmpty') }}
     </div>
 
-    <!-- Results Grid (Search or Browse) -->
+    <!-- Borderless Poster-First Gallery (Search or Browse) -->
     <template v-else-if="displayItems.length > 0">
-      <div class="grid grid-cols-1 gap-3.5 md:grid-cols-2 lg:grid-cols-3">
+      <div
+        class="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+      >
         <button
           v-for="(item, idx) in displayItems"
           :key="`${item.source_id}-${idx}-${item.detail_url || item.vod_id}`"
           type="button"
-          class="md-card-filled md-state group flex w-full cursor-pointer gap-3.5 p-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--md-sys-color-outline)]/40 hover:shadow-[var(--md-sys-elevation-1)]"
+          :title="item.remarks ? `${item.title} · ${item.remarks}` : item.title"
+          class="group flex w-full cursor-pointer flex-col gap-2.5 rounded-2xl text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--md-sys-color-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--md-sys-color-surface)]"
           @click="openOnlineVideoDetail(item)"
         >
           <MediaCoverImage
             :src="resolveOnlineVideoPosterUrl(item.proxy_cover_url, item.cover_url, item.source_id)"
             :alt="item.title"
             aspect-class="aspect-[2/3]"
-            rounded="rounded-xl"
-            class="w-20 shrink-0"
+            rounded="rounded-2xl"
+            class="book-shadow w-full transition duration-300 group-hover:-translate-y-0.5"
+            img-class="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
             :fallback-icon="LuFilm"
-            fallback-icon-class="h-6 w-6 text-[var(--md-sys-color-on-surface-variant)]/50"
-          />
-
-          <div class="flex min-w-0 flex-1 flex-col justify-between py-0.5">
-            <div class="space-y-1.5">
-              <div class="flex items-start justify-between gap-2">
-                <h3
-                  class="line-clamp-2 text-sm font-semibold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
-                >
-                  {{ item.title }}
-                </h3>
-                <span
-                  class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  {{ item.source_name }}
-                </span>
-              </div>
-
-              <p
-                v-if="item.remarks"
-                class="inline-block max-w-full truncate rounded-md bg-[var(--md-sys-color-secondary-container)]/80 px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-secondary-container)]"
-              >
-                {{ item.remarks }}
-              </p>
-            </div>
-
-            <p
-              v-if="formatMetaLine(item)"
-              class="mt-2 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]"
+            fallback-icon-class="h-8 w-8 text-[var(--md-sys-color-on-surface-variant)]/45"
+          >
+            <span
+              v-if="item.remarks"
+              class="pointer-events-none absolute right-2 bottom-2 z-[2] max-w-[calc(100%-1rem)] truncate rounded-md bg-black/68 px-1.5 py-0.5 text-[10px] font-medium text-white backdrop-blur-xs"
             >
-              {{ formatMetaLine(item) }}
+              {{ item.remarks }}
+            </span>
+          </MediaCoverImage>
+
+          <div class="min-w-0 px-0.5">
+            <h3
+              class="line-clamp-2 text-[13px] leading-snug font-semibold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
+            >
+              {{ item.title }}
+            </h3>
+            <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              <template v-if="formatMetaLine(item)">{{ formatMetaLine(item) }} · </template>{{ item.source_name }}
             </p>
           </div>
         </button>
       </div>
 
-      <!-- Pagination & Load More -->
-      <div
-        class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3 text-xs"
-      >
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            :disabled="activePage <= 1 || isPaginationBusy"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(activePage - 1)"
-          >
-            <LuChevronLeft class="h-3.5 w-3.5" />
-            <span>{{ t('online.prevPage') }}</span>
-          </button>
-          <span class="px-2 font-mono text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('online.pageInfo', { page: activePage, count: displayItems.length }) }}
-          </span>
-          <button
-            type="button"
-            :disabled="!activeHasMore || isPaginationBusy"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(activePage + 1)"
-          >
-            <span>{{ t('online.nextPage') }}</span>
-            <LuChevronRight class="h-3.5 w-3.5" />
-          </button>
-        </div>
-
+      <!-- Single Centered Load More -->
+      <div v-if="activeHasMore || activeLoadingMore" class="flex justify-center pt-2">
         <button
           type="button"
           :disabled="!activeHasMore || isPaginationBusy"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
+          class="md-btn md-btn-sm md-btn-tonal md-state px-6"
           @click="handleLoadMore"
         >
           <LuLoader2 v-if="activeLoadingMore" class="h-3.5 w-3.5 animate-spin" />
           <LuPlus v-else class="h-3.5 w-3.5" />
           <span>
-            {{
-              activeLoadingMore
-                ? t('online.loadingMore')
-                : activeHasMore
-                  ? t('online.loadMore')
-                  : t('online.noMoreResults')
-            }}
+            {{ activeLoadingMore ? t('online.loadingMore') : t('online.loadMore') }}
           </span>
         </button>
       </div>

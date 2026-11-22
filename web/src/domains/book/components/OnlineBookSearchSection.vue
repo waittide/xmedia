@@ -3,8 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   LuBookOpen,
-  LuChevronLeft,
-  LuChevronRight,
   LuDownload,
   LuLoader2,
   LuPlus,
@@ -233,11 +231,6 @@ async function handleLoadMore(): Promise<void> {
   await runSearch(searchPage.value + 1, 'append')
 }
 
-async function handleSwitchPage(nextPage: number): Promise<void> {
-  if (nextPage < 1) return
-  await runSearch(nextPage, 'replace')
-}
-
 function formatKindTags(raw: string | null | undefined): string {
   if (!raw) return ''
   return raw
@@ -419,8 +412,9 @@ function goManageDataSources(): void {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="md-card-filled space-y-3 p-4">
+  <div class="space-y-5">
+    <!-- Unboxed Search & Source Filter Area -->
+    <div class="space-y-3 border-b border-[var(--md-sys-color-outline-variant)]/40 pb-4">
       <form class="flex flex-wrap items-center gap-2" @submit.prevent="handleSearchSubmit">
         <div class="relative min-w-0 flex-1">
           <LuSearch
@@ -430,7 +424,7 @@ function goManageDataSources(): void {
             v-model="searchKeyword"
             type="text"
             placeholder="输入书名或作者，聚合搜索已启用的书源…"
-            class="md-input h-10 w-full !pl-10 text-xs"
+            class="md-input h-10 w-full !rounded-full !pl-10 text-xs"
           />
         </div>
         <button
@@ -612,41 +606,17 @@ function goManageDataSources(): void {
         </div>
       </div>
 
-      <!-- Pagination & Load More -->
-      <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3 text-xs">
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            :disabled="searchPage <= 1 || searching || loadingMore"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(searchPage - 1)"
-          >
-            <LuChevronLeft class="h-3.5 w-3.5" />
-            <span>上一页</span>
-          </button>
-          <span class="px-2 font-mono text-[var(--md-sys-color-on-surface-variant)]">
-            第 {{ searchPage }} 页 · 共 {{ searchResults.length }} 条
-          </span>
-          <button
-            type="button"
-            :disabled="!hasMoreResults || searching || loadingMore"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(searchPage + 1)"
-          >
-            <span>下一页</span>
-            <LuChevronRight class="h-3.5 w-3.5" />
-          </button>
-        </div>
-
+      <!-- Single Centered Load More -->
+      <div v-if="hasMoreResults || loadingMore" class="flex justify-center pt-1">
         <button
           type="button"
           :disabled="!hasMoreResults || searching || loadingMore"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
+          class="md-btn md-btn-sm md-btn-tonal md-state px-6"
           @click="handleLoadMore"
         >
           <LuLoader2 v-if="loadingMore" class="h-3.5 w-3.5 animate-spin" />
           <LuPlus v-else class="h-3.5 w-3.5" />
-          <span>{{ loadingMore ? '加载中…' : hasMoreResults ? '加载更多' : '已无更多' }}</span>
+          <span>{{ loadingMore ? '加载中…' : '加载更多' }}</span>
         </button>
       </div>
     </template>

@@ -4,8 +4,6 @@ import { useRouter } from 'vue-router'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
 import {
   LuBookOpen,
-  LuChevronLeft,
-  LuChevronRight,
   LuCompass,
   LuLoader2,
   LuPlus,
@@ -109,7 +107,6 @@ const isPaginationBusy = computed(
   () => searching.value || loadingMore.value || exploring.value || loadingMoreExplore.value,
 )
 
-const activePage = computed(() => (hasSearched.value ? searchPage.value : explorePage.value))
 const activeHasMore = computed(() =>
   hasSearched.value ? hasMoreResults.value : hasMoreExplore.value,
 )
@@ -474,27 +471,9 @@ async function handleLoadMore(): Promise<void> {
   }
 }
 
-async function handleSwitchPage(nextPage: number): Promise<void> {
-  if (nextPage < 1) return
-  if (hasSearched.value) {
-    await runSearch(nextPage, 'replace')
-  } else if (activeExploreSourceId.value) {
-    await runExplore(activeExploreSourceId.value, activeExploreUrl.value, nextPage, 'replace')
-  }
-}
-
 function selectExploreCategory(url: string | null): void {
   if (!activeExploreSourceId.value) return
   void runExplore(activeExploreSourceId.value, url, 1, 'replace')
-}
-
-function formatKindTags(raw: string | null | undefined): string {
-  if (!raw) return ''
-  return raw
-    .split(/[,，|/]/)
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join(' · ')
 }
 
 function openOnlineComicDetail(item: ComicSearchResultItem): void {
@@ -535,8 +514,9 @@ function goManageDataSources(): void {
 </script>
 
 <template>
-  <div class="space-y-4">
-    <div class="md-card-filled space-y-3 p-4">
+  <div class="space-y-6">
+    <!-- Unboxed Search & Source/Explore Filter Area -->
+    <div class="space-y-3 border-b border-[var(--md-sys-color-outline-variant)]/40 pb-4">
       <form class="flex flex-wrap items-center gap-2" @submit.prevent="handleSearchSubmit">
         <div class="relative min-w-0 flex-1">
           <LuSearch
@@ -617,47 +597,48 @@ function goManageDataSources(): void {
           <span>{{ t('online.goSettings') }}</span>
         </button>
       </div>
-    </div>
-
-    <!-- Single-Source Explore Categories (when not searching) -->
-    <div
-      v-if="showExploreView && (exploreCategories.length > 0 || exploring || exploreError)"
-      class="md-card-filled space-y-2.5 p-4"
-    >
-      <div class="flex items-center gap-2 text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-        <LuCompass class="h-4 w-4 text-[var(--md-sys-color-primary)]" />
-        <span>{{ t('online.exploreTitle') }}</span>
-        <LuLoader2 v-if="exploring" class="h-3.5 w-3.5 animate-spin text-[var(--md-sys-color-primary)]" />
-      </div>
-
-      <div v-if="exploreCategories.length > 0" class="flex flex-wrap items-center gap-1.5">
-        <button
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-          :class="activeExploreUrl === null ? 'md-chip-selected' : ''"
-          @click="selectExploreCategory(null)"
-        >
-          {{ t('online.exploreAll') }}
-        </button>
-        <button
-          v-for="cat in exploreCategories"
-          :key="cat.url || cat.title"
-          type="button"
-          class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-          :class="activeExploreUrl === cat.url ? 'md-chip-selected' : ''"
-          @click="selectExploreCategory(cat.url)"
-        >
-          {{ cat.title }}
-        </button>
-      </div>
-
-      <p
-        v-if="exploreError"
-        role="alert"
-        class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
+      <!-- Single-Source Explore Categories (when not searching) -->
+      <div
+        v-if="showExploreView && (exploreCategories.length > 0 || exploring || exploreError)"
+        class="space-y-2 pt-1"
       >
-        {{ t('online.exploreError', { error: exploreError }) }}
-      </p>
+        <div
+          v-if="exploreCategories.length > 0"
+          class="flex flex-wrap items-center gap-1.5"
+        >
+          <span class="inline-flex items-center gap-1 text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+            <LuCompass class="h-3.5 w-3.5 text-[var(--md-sys-color-primary)]" />
+            <span>{{ t('online.exploreTitle') }}</span>
+            <LuLoader2 v-if="exploring" class="h-3 w-3 animate-spin text-[var(--md-sys-color-primary)]" />
+          </span>
+          <button
+            type="button"
+            class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+            :class="activeExploreUrl === null ? 'md-chip-selected' : ''"
+            @click="selectExploreCategory(null)"
+          >
+            {{ t('online.exploreAll') }}
+          </button>
+          <button
+            v-for="cat in exploreCategories"
+            :key="cat.url || cat.title"
+            type="button"
+            class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
+            :class="activeExploreUrl === cat.url ? 'md-chip-selected' : ''"
+            @click="selectExploreCategory(cat.url)"
+          >
+            {{ cat.title }}
+          </button>
+        </div>
+
+        <p
+          v-if="exploreError"
+          role="alert"
+          class="rounded-xl bg-[var(--md-sys-color-error-container)]/70 px-3 py-2 text-xs text-[var(--md-sys-color-on-error-container)]"
+        >
+          {{ t('online.exploreError', { error: exploreError }) }}
+        </p>
+      </div>
     </div>
 
     <!-- Toasts / Per-Source Search Errors -->
@@ -710,109 +691,55 @@ function goManageDataSources(): void {
       {{ t('online.exploreEmpty') }}
     </div>
 
-    <!-- Results Grid (Search or Explore) -->
+    <!-- Borderless Poster-First Gallery (Search or Explore) -->
     <template v-else-if="displayItems.length > 0">
-      <div class="grid grid-cols-1 gap-3.5 md:grid-cols-2">
+      <div
+        class="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6"
+      >
         <button
           v-for="(item, idx) in displayItems"
           :key="`${item.source_id}-${idx}-${item.comic_url}`"
           type="button"
-          class="md-card-filled md-state group flex w-full cursor-pointer gap-3.5 p-3.5 text-left transition hover:-translate-y-0.5 hover:border-[var(--md-sys-color-outline)]/40 hover:shadow-[var(--md-sys-elevation-1)]"
+          :title="item.last_chapter ? `${item.title} · ${item.last_chapter}` : item.title"
+          class="group flex w-full cursor-pointer flex-col gap-2.5 rounded-2xl text-left outline-none focus-visible:ring-2 focus-visible:ring-[var(--md-sys-color-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--md-sys-color-surface)]"
           @click="openOnlineComicDetail(item)"
         >
           <MediaCoverImage
             :src="resolveOnlineComicCoverUrl(item.proxy_cover_url, item.cover_url, item.source_id)"
             :alt="item.title"
             aspect-class="aspect-[2/3]"
-            rounded="rounded-xl"
-            class="w-20 shrink-0"
+            rounded="rounded-2xl"
+            class="book-shadow w-full transition duration-300 group-hover:-translate-y-0.5"
+            img-class="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
             :fallback-icon="LuBookOpen"
-            fallback-icon-class="h-6 w-6 text-[var(--md-sys-color-on-surface-variant)]/50"
+            fallback-icon-class="h-8 w-8 text-[var(--md-sys-color-on-surface-variant)]/45"
           />
 
-          <div class="flex min-w-0 flex-1 flex-col justify-between py-0.5">
-            <div>
-              <div class="flex items-start justify-between gap-2">
-                <h3
-                  class="truncate text-sm font-semibold text-[var(--md-sys-color-on-surface)] group-hover:text-[var(--md-sys-color-primary)]"
-                >
-                  {{ item.title }}
-                </h3>
-                <span
-                  class="shrink-0 rounded-full bg-[var(--md-sys-color-surface-container-high)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  {{ item.source_name }}
-                </span>
-              </div>
-
-              <p class="mt-1 truncate text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                {{ item.author || t('online.unknownAuthor') }}
-                <span v-if="item.word_count"> · {{ item.word_count }}</span>
-                <span v-if="formatKindTags(item.kind)"> · {{ formatKindTags(item.kind) }}</span>
-              </p>
-
-              <p
-                v-if="item.intro"
-                class="mt-1.5 line-clamp-2 text-[11px] leading-relaxed text-[var(--md-sys-color-on-surface-variant)]/90"
-              >
-                {{ item.intro }}
-              </p>
-            </div>
-
-            <p
-              v-if="item.last_chapter"
-              class="mt-2 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]/80"
+          <div class="min-w-0 px-0.5">
+            <h3
+              class="line-clamp-2 text-[13px] leading-snug font-semibold text-[var(--md-sys-color-on-surface)] transition-colors group-hover:text-[var(--md-sys-color-primary)]"
             >
-              {{ t('online.latestChapter', { chapter: item.last_chapter }) }}
+              {{ item.title }}
+            </h3>
+            <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
+              <template v-if="item.author">{{ item.author }} · </template>{{ item.source_name }}
             </p>
           </div>
         </button>
       </div>
 
-      <!-- Pagination & Load More -->
-      <div
-        class="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-[var(--md-sys-color-surface-container-low)] px-4 py-3 text-xs"
-      >
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            :disabled="activePage <= 1 || isPaginationBusy"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(activePage - 1)"
-          >
-            <LuChevronLeft class="h-3.5 w-3.5" />
-            <span>{{ t('online.prevPage') }}</span>
-          </button>
-          <span class="px-2 font-mono text-[var(--md-sys-color-on-surface-variant)]">
-            {{ t('online.pageInfo', { page: activePage, count: displayItems.length }) }}
-          </span>
-          <button
-            type="button"
-            :disabled="!activeHasMore || isPaginationBusy"
-            class="md-btn md-btn-sm md-btn-outlined md-state"
-            @click="handleSwitchPage(activePage + 1)"
-          >
-            <span>{{ t('online.nextPage') }}</span>
-            <LuChevronRight class="h-3.5 w-3.5" />
-          </button>
-        </div>
-
+      <!-- Single Centered Load More -->
+      <div v-if="activeHasMore || activeLoadingMore" class="flex justify-center pt-2">
         <button
           type="button"
           :disabled="!activeHasMore || isPaginationBusy"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
+          class="md-btn md-btn-sm md-btn-tonal md-state px-6"
           @click="handleLoadMore"
         >
           <LuLoader2 v-if="activeLoadingMore" class="h-3.5 w-3.5 animate-spin" />
           <LuPlus v-else class="h-3.5 w-3.5" />
           <span>
-            {{
-              activeLoadingMore
-                ? t('online.loadingMore')
-                : activeHasMore
-                  ? t('online.loadMore')
-                  : t('online.noMoreResults')
-            }}
+            {{ activeLoadingMore ? t('online.loadingMore') : t('online.loadMore') }}
           </span>
         </button>
       </div>
