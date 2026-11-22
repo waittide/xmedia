@@ -1,23 +1,15 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '@/api/client'
-import {
-  DEFAULT_WORKSPACE_LAYOUT,
-  sanitizeDomainLayout,
-  sanitizeWorkspaceLayout,
-} from '@/config/workspaceLayout'
 import { useAuthStore } from '@/stores/auth'
 import { normalizeThemeMode, resolveSeedColor } from '@/theme/md3'
 import type {
   ComicReaderPreferences,
-  DomainLayoutConfig,
   LocaleCode,
-  MediaKind,
   PlaybackPreferences,
   ReaderPreferences,
   UserPreferences,
   VideoPlaybackPreferences,
-  WorkspaceLayoutPreferences,
 } from '@/types/api'
 
 export const PREFS_STORAGE_KEY = 'xmedia.preferences'
@@ -88,9 +80,6 @@ export const usePreferencesStore = defineStore('preferences', () => {
   const comic = ref<ComicReaderPreferences>({ ...DEFAULT_COMIC_PREFS, ...(stored.comic ?? {}) })
   const playback = ref<PlaybackPreferences>({ ...DEFAULT_MUSIC_PREFS, ...(stored.music ?? {}) })
   const video = ref<VideoPlaybackPreferences>({ ...DEFAULT_VIDEO_PREFS, ...(stored.video ?? {}) })
-  const workspaceLayout = ref<WorkspaceLayoutPreferences>(
-    sanitizeWorkspaceLayout(stored.workspace_layout ?? DEFAULT_WORKSPACE_LAYOUT),
-  )
 
   let visualProvider: (() => VisualPreferencesSnapshot) | null = null
   let syncTimer: ReturnType<typeof setTimeout> | null = null
@@ -109,7 +98,6 @@ export const usePreferencesStore = defineStore('preferences', () => {
       comic: { ...comic.value },
       music: { ...playback.value },
       video: { ...video.value },
-      workspace_layout: sanitizeWorkspaceLayout(workspaceLayout.value),
     }
   }
 
@@ -176,7 +164,6 @@ export const usePreferencesStore = defineStore('preferences', () => {
     if (prefs.comic) comic.value = { ...DEFAULT_COMIC_PREFS, ...prefs.comic }
     if (prefs.music) playback.value = { ...DEFAULT_MUSIC_PREFS, ...prefs.music }
     if (prefs.video) video.value = { ...DEFAULT_VIDEO_PREFS, ...prefs.video }
-    workspaceLayout.value = sanitizeWorkspaceLayout(prefs.workspace_layout)
   }
 
   function resetState(): void {
@@ -186,7 +173,6 @@ export const usePreferencesStore = defineStore('preferences', () => {
     comic.value = { ...DEFAULT_COMIC_PREFS }
     playback.value = { ...DEFAULT_MUSIC_PREFS }
     video.value = { ...DEFAULT_VIDEO_PREFS }
-    workspaceLayout.value = sanitizeWorkspaceLayout(DEFAULT_WORKSPACE_LAYOUT)
   }
 
   function updateReaderPreferences(patch: Partial<ReaderPreferences>): void {
@@ -209,34 +195,11 @@ export const usePreferencesStore = defineStore('preferences', () => {
     persistAndSync()
   }
 
-  function updateDomainLayout(domain: MediaKind, patch: Partial<DomainLayoutConfig>): void {
-    const current = workspaceLayout.value[domain]
-    const next = sanitizeDomainLayout(domain, {
-      home_cards: patch.home_cards ?? current.home_cards,
-      sidebar_groups:
-        patch.sidebar_groups !== undefined ? patch.sidebar_groups : current.sidebar_groups,
-    })
-    workspaceLayout.value = {
-      ...workspaceLayout.value,
-      [domain]: next,
-    }
-    persistAndSync()
-  }
-
-  function resetDomainLayout(domain: MediaKind): void {
-    workspaceLayout.value = {
-      ...workspaceLayout.value,
-      [domain]: sanitizeDomainLayout(domain, DEFAULT_WORKSPACE_LAYOUT[domain]),
-    }
-    persistAndSync()
-  }
-
   return {
     reader,
     comic,
     playback,
     video,
-    workspaceLayout,
     registerVisualProvider,
     toUserPreferences,
     persistLocal,
@@ -247,8 +210,6 @@ export const usePreferencesStore = defineStore('preferences', () => {
     updateComicPreferences,
     updatePlaybackPreferences,
     updateVideoPreferences,
-    updateDomainLayout,
-    resetDomainLayout,
     resetState,
   }
 })

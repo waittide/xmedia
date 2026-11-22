@@ -16,16 +16,3 @@ export { default as MediaDetailTemplate } from './MediaDetailTemplate.vue'
 export type { MediaDetailSpec, MediaDetailTag } from './MediaDetailTemplate.vue'
 export { default as ImmersiveMediaTemplate } from './ImmersiveMediaTemplate.vue'
 export type { ImmersiveTapMode } from './ImmersiveMediaTemplate.vue'
-
-// Existing legacy / shared domain shells (preserved for backwards compatibility)
-export { default as DomainCollectionsView } from './DomainCollectionsView.vue'
-export type {
-  CollectionChipItem,
-  CollectionGroupItem,
-  CollectionLibraryItem,
-  CollectionSortKey,
-  CollectionViewMode,
-} from './DomainCollectionsView.vue'
-export { default as DomainBookmarksView } from './DomainBookmarksView.vue'
-export { default as HomeStatCards } from './HomeStatCards.vue'
-export type { StatCardItem } from './HomeStatCards.vue'

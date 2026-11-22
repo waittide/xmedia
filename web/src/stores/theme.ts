@@ -128,7 +128,7 @@ export const useThemeStore = defineStore('theme', () => {
   setAppLocale(locale.value)
 
   // Lightweight compatibility pass-through proxies to usePreferencesStore()
-  const { reader, comic, playback, video, workspaceLayout } = storeToRefs(preferencesStore)
+  const { reader, comic, playback, video } = storeToRefs(preferencesStore)
 
   return {
     themeMode,
@@ -147,12 +147,9 @@ export const useThemeStore = defineStore('theme', () => {
     comic,
     playback,
     video,
-    workspaceLayout,
     updateReaderPreferences: preferencesStore.updateReaderPreferences,
     updateComicPreferences: preferencesStore.updateComicPreferences,
     updatePlaybackPreferences: preferencesStore.updatePlaybackPreferences,
     updateVideoPreferences: preferencesStore.updateVideoPreferences,
-    updateDomainLayout: preferencesStore.updateDomainLayout,
-    resetDomainLayout: preferencesStore.resetDomainLayout,
   }
 })

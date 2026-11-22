@@ -138,15 +138,7 @@ export function migrateQuery(
   return next
 }
 
-function looksLikeUrlOrPath(val: string): boolean {
-  return /^https?:\/\//i.test(val) || val.startsWith('/')
-}
-
-/**
- * Migrates `/book/online/read` query parameters to `/book/play/online` (§1.3).
- * Temporarily emits legacy keys (`sourceId`, `bookUrl`, `tocUrl`, `name`, `coverUrl`) alongside
- * canonical keys until Wave 4B migrates `useOnlineReader.ts` to `parseItemRef(route)`.
- */
+/** Migrates `/book/online/read` query parameters to `/book/play/online` (§1.3). */
 export function migrateBookOnlineReadQuery(query: LocationQuery): LocationQueryRaw {
   const next: LocationQueryRaw = {}
   const source = readSingle(query, ['source', 'sourceId', 'source_id'])
@@ -159,68 +151,19 @@ export function migrateBookOnlineReadQuery(query: LocationQuery): LocationQueryR
   const sourceName = readSingle(query, ['sourceName', 'source_name'])
   const shelfId = readSingle(query, ['shelfId', 'shelf_id'])
 
-  if (source) {
-    next.source = source
-    next.sourceId = source
-  }
-  if (ref) {
-    next.ref = ref
-    next.bookUrl = ref
-  }
-  if (toc) {
-    next.toc = toc
-    next.tocUrl = toc
-  }
+  if (source) next.source = source
+  if (ref) next.ref = ref
+  if (toc) next.toc = toc
   if (chapter) next.chapter = chapter
-  if (title) {
-    next.title = title
-    next.name = title
-  }
+  if (title) next.title = title
   if (author) next.author = author
-  if (cover) {
-    next.cover = cover
-    next.coverUrl = cover
-  }
+  if (cover) next.cover = cover
   if (sourceName) next.sourceName = sourceName
   if (shelfId) next.shelfId = shelfId
   return next
 }
 
-/**
- * One-shot `beforeEnter` bridge for canonical `/book/play/online` until Wave 4B migrates
- * `useOnlineReader.ts`. Returns merged query only when canonical keys exist without their
- * legacy aliases, otherwise returns `null` (zero redirect loop).
- */
-export function bridgeBookOnlinePlayQuery(query: LocationQuery): LocationQueryRaw | null {
-  const source = readSingle(query, ['source'])
-  const ref = readSingle(query, ['ref'])
-  const toc = readSingle(query, ['toc'])
-  const title = readSingle(query, ['title'])
-  const cover = readSingle(query, ['cover'])
-
-  const missingSourceId = Boolean(source && !readSingle(query, ['sourceId', 'source_id']))
-  const missingBookUrl = Boolean(ref && !readSingle(query, ['bookUrl', 'book_url']))
-  const missingTocUrl = Boolean(toc && !readSingle(query, ['tocUrl', 'toc_url']))
-  const missingName = Boolean(title && !readSingle(query, ['name']))
-  const missingCoverUrl = Boolean(cover && !readSingle(query, ['coverUrl', 'cover_url']))
-
-  if (!missingSourceId && !missingBookUrl && !missingTocUrl && !missingName && !missingCoverUrl) {
-    return null
-  }
-  return {
-    ...query,
-    ...(missingSourceId ? { sourceId: source } : {}),
-    ...(missingBookUrl ? { bookUrl: ref } : {}),
-    ...(missingTocUrl ? { tocUrl: toc } : {}),
-    ...(missingName ? { name: title } : {}),
-    ...(missingCoverUrl ? { coverUrl: cover } : {}),
-  }
-}
-
-/**
- * Migrates `/comic/online/detail` query parameters to `/comic/item/online` (§1.3).
- * Temporarily keeps legacy aliases for unmigrated `OnlineComicDetailView.vue` (Wave 4B).
- */
+/** Migrates `/comic/online/detail` query parameters to `/comic/item/online` (§1.3). */
 export function migrateComicOnlineDetailQuery(query: LocationQuery): LocationQueryRaw {
   const next: LocationQueryRaw = {}
   const source = readSingle(query, ['source', 'sourceId', 'source_id'])
@@ -229,62 +172,26 @@ export function migrateComicOnlineDetailQuery(query: LocationQuery): LocationQue
   const cover = readSingle(query, ['cover', 'coverUrl', 'cover_url'])
   const sourceName = readSingle(query, ['sourceName', 'source_name'])
   const author = readSingle(query, ['author'])
-  const tocUrl = readSingle(query, ['toc', 'tocUrl', 'toc_url'])
+  const toc = readSingle(query, ['toc', 'tocUrl', 'toc_url'])
 
-  if (source) {
-    next.source = source
-    next.sourceId = source
-  }
-  if (ref) {
-    next.ref = ref
-    next.comicUrl = ref
-  }
+  if (source) next.source = source
+  if (ref) next.ref = ref
   if (title) next.title = title
-  if (cover) {
-    next.cover = cover
-    next.coverUrl = cover
-  }
+  if (cover) next.cover = cover
   if (sourceName) next.sourceName = sourceName
   if (author) next.author = author
-  if (tocUrl) next.tocUrl = tocUrl
+  if (toc) next.toc = toc
   return next
 }
 
-/** One-shot `beforeEnter` bridge for canonical `/comic/item/online` (Wave 4B cleanup). */
-export function bridgeComicOnlineDetailQuery(query: LocationQuery): LocationQueryRaw | null {
-  const source = readSingle(query, ['source'])
-  const ref = readSingle(query, ['ref'])
-  const cover = readSingle(query, ['cover'])
-  const toc = readSingle(query, ['toc'])
-
-  const missingSourceId = Boolean(source && !readSingle(query, ['sourceId', 'source_id']))
-  const missingComicUrl = Boolean(ref && !readSingle(query, ['comicUrl', 'comic_url']))
-  const missingCoverUrl = Boolean(cover && !readSingle(query, ['coverUrl', 'cover_url']))
-  const missingTocUrl = Boolean(toc && !readSingle(query, ['tocUrl', 'toc_url']))
-
-  if (!missingSourceId && !missingComicUrl && !missingCoverUrl && !missingTocUrl) {
-    return null
-  }
-  return {
-    ...query,
-    ...(missingSourceId ? { sourceId: source } : {}),
-    ...(missingComicUrl ? { comicUrl: ref } : {}),
-    ...(missingCoverUrl ? { coverUrl: cover } : {}),
-    ...(missingTocUrl ? { tocUrl: toc } : {}),
-  }
-}
-
-/**
- * Migrates `/comic/online/read` query parameters to `/comic/play/online` (§1.3).
- * Temporarily keeps legacy aliases for unmigrated `OnlineComicReaderView.vue` (Wave 4B).
- */
+/** Migrates `/comic/online/read` query parameters to `/comic/play/online` (§1.3). */
 export function migrateComicOnlineReadQuery(query: LocationQuery): LocationQueryRaw {
   const next: LocationQueryRaw = {}
   const source = readSingle(query, ['source', 'sourceId', 'source_id'])
   const ref = readSingle(query, ['ref', 'comicUrl', 'comic_url'])
-  const chapter = readSingle(query, ['chapterUrl', 'chapter_url', 'chapter'])
+  const chapter = readSingle(query, ['chapter', 'chapterUrl', 'chapter_url'])
   const chapterIndex = readSingle(query, ['chapterIndex', 'chapter_index'])
-  const tocUrl = readSingle(query, ['toc', 'tocUrl', 'toc_url'])
+  const toc = readSingle(query, ['toc', 'tocUrl', 'toc_url'])
   const page = readSingle(query, ['page'])
   const title = readSingle(query, ['title', 'name'])
   const sourceName = readSingle(query, ['sourceName', 'source_name'])
@@ -292,71 +199,21 @@ export function migrateComicOnlineReadQuery(query: LocationQuery): LocationQuery
   const cover = readSingle(query, ['cover', 'coverUrl', 'cover_url'])
   const readingDirection = readSingle(query, ['readingDirection', 'reading_direction'])
 
-  if (source) {
-    next.source = source
-    next.sourceId = source
-  }
-  if (ref) {
-    next.ref = ref
-    next.comicUrl = ref
-  }
-  if (chapter) {
-    next.chapter = chapter
-    next.chapterUrl = chapter
-  }
+  if (source) next.source = source
+  if (ref) next.ref = ref
+  if (chapter) next.chapter = chapter
   if (chapterIndex) next.chapterIndex = chapterIndex
-  if (tocUrl) next.tocUrl = tocUrl
+  if (toc) next.toc = toc
   if (page) next.page = page
   if (title) next.title = title
   if (sourceName) next.sourceName = sourceName
   if (author) next.author = author
-  if (cover) {
-    next.cover = cover
-    next.coverUrl = cover
-  }
+  if (cover) next.cover = cover
   if (readingDirection) next.readingDirection = readingDirection
   return next
 }
 
-/** One-shot `beforeEnter` bridge for canonical `/comic/play/online` (Wave 4B cleanup). */
-export function bridgeComicOnlinePlayQuery(query: LocationQuery): LocationQueryRaw | null {
-  const source = readSingle(query, ['source'])
-  const ref = readSingle(query, ['ref'])
-  const chapter = readSingle(query, ['chapter'])
-  const cover = readSingle(query, ['cover'])
-  const toc = readSingle(query, ['toc'])
-
-  const missingSourceId = Boolean(source && !readSingle(query, ['sourceId', 'source_id']))
-  const missingComicUrl = Boolean(ref && !readSingle(query, ['comicUrl', 'comic_url']))
-  const missingChapterUrl = Boolean(
-    chapter && !/^\d+$/.test(chapter) && !readSingle(query, ['chapterUrl', 'chapter_url']),
-  )
-  const missingCoverUrl = Boolean(cover && !readSingle(query, ['coverUrl', 'cover_url']))
-  const missingTocUrl = Boolean(toc && !readSingle(query, ['tocUrl', 'toc_url']))
-
-  if (
-    !missingSourceId &&
-    !missingComicUrl &&
-    !missingChapterUrl &&
-    !missingCoverUrl &&
-    !missingTocUrl
-  ) {
-    return null
-  }
-  return {
-    ...query,
-    ...(missingSourceId ? { sourceId: source } : {}),
-    ...(missingComicUrl ? { comicUrl: ref } : {}),
-    ...(missingChapterUrl ? { chapterUrl: chapter } : {}),
-    ...(missingCoverUrl ? { coverUrl: cover } : {}),
-    ...(missingTocUrl ? { tocUrl: toc } : {}),
-  }
-}
-
-/**
- * Migrates `/video/online/detail` query parameters to `/video/item/online` (§1.3).
- * Temporarily keeps legacy aliases for unmigrated `OnlineVideoDetailView.vue` (Wave 4B).
- */
+/** Migrates `/video/online/detail` query parameters to `/video/item/online` (§1.3). */
 export function migrateVideoOnlineDetailQuery(query: LocationQuery): LocationQueryRaw {
   const next: LocationQueryRaw = {}
   const source = readSingle(query, ['source', 'sourceId', 'source_id'])
@@ -369,27 +226,11 @@ export function migrateVideoOnlineDetailQuery(query: LocationQuery): LocationQue
   const year = readSingle(query, ['year'])
   const area = readSingle(query, ['area'])
 
-  if (source) {
-    next.source = source
-    next.sourceId = source
-  }
-  if (ref) {
-    next.ref = ref
-    if (vid || looksLikeUrlOrPath(ref)) {
-      next.detailUrl = ref
-    } else {
-      next.videoId = ref
-    }
-  }
-  if (vid) {
-    next.vid = vid
-    next.videoId = vid
-  }
+  if (source) next.source = source
+  if (ref) next.ref = ref
+  if (vid) next.vid = vid
   if (title) next.title = title
-  if (cover) {
-    next.cover = cover
-    next.coverUrl = cover
-  }
+  if (cover) next.cover = cover
   if (sourceName) next.sourceName = sourceName
   if (remarks) next.remarks = remarks
   if (year) next.year = year
@@ -397,41 +238,9 @@ export function migrateVideoOnlineDetailQuery(query: LocationQuery): LocationQue
   return next
 }
 
-/** One-shot `beforeEnter` bridge for canonical `/video/item/online` (Wave 4B cleanup). */
-export function bridgeVideoOnlineDetailQuery(query: LocationQuery): LocationQueryRaw | null {
-  const source = readSingle(query, ['source'])
-  const ref = readSingle(query, ['ref'])
-  const vid = readSingle(query, ['vid'])
-  const cover = readSingle(query, ['cover'])
-
-  const hasDetailUrl = Boolean(readSingle(query, ['detailUrl', 'detail_url']))
-  const hasVideoId = Boolean(readSingle(query, ['videoId', 'video_id']))
-
-  const missingSourceId = Boolean(source && !readSingle(query, ['sourceId', 'source_id']))
-  const missingVideoId = Boolean(
-    (vid && !hasVideoId) || (!vid && ref && !looksLikeUrlOrPath(ref) && !hasVideoId && !hasDetailUrl),
-  )
-  const missingDetailUrl = Boolean(
-    ref && (Boolean(vid) || looksLikeUrlOrPath(ref)) && !hasDetailUrl,
-  )
-  const missingCoverUrl = Boolean(cover && !readSingle(query, ['coverUrl', 'cover_url']))
-
-  if (!missingSourceId && !missingVideoId && !missingDetailUrl && !missingCoverUrl) {
-    return null
-  }
-  return {
-    ...query,
-    ...(missingSourceId ? { sourceId: source } : {}),
-    ...(missingVideoId ? { videoId: vid || ref } : {}),
-    ...(missingDetailUrl ? { detailUrl: ref } : {}),
-    ...(missingCoverUrl ? { coverUrl: cover } : {}),
-  }
-}
-
 /**
  * Migrates `/video/online/watch` query parameters to `/video/play/online` (§1.3).
- * Preserves `episodeIndex` verbatim (required by E2E tier2:3369) and temporarily keeps
- * legacy aliases for unmigrated `OnlineVideoPlayerView.vue` (Wave 4B).
+ * Preserves `episodeIndex` verbatim (required by E2E tier2:3369).
  */
 export function migrateVideoOnlineWatchQuery(query: LocationQuery): LocationQueryRaw {
   const next: LocationQueryRaw = {}
@@ -445,82 +254,16 @@ export function migrateVideoOnlineWatchQuery(query: LocationQuery): LocationQuer
   const cover = readSingle(query, ['cover', 'coverUrl', 'cover_url', 'posterUrl'])
   const sourceName = readSingle(query, ['sourceName', 'source_name'])
 
-  if (source) {
-    next.source = source
-    next.sourceId = source
-  }
-  if (ref) {
-    next.ref = ref
-    if (vid || looksLikeUrlOrPath(ref)) {
-      next.detailUrl = ref
-    } else {
-      next.videoId = ref
-    }
-  }
-  if (vid) {
-    next.vid = vid
-    next.videoId = vid
-  }
-  if (play) {
-    next.play = play
-    next.playUrl = play
-  }
-  if (group) {
-    next.group = group
-    next.groupName = group
-  }
+  if (source) next.source = source
+  if (ref) next.ref = ref
+  if (vid) next.vid = vid
+  if (play) next.play = play
+  if (group) next.group = group
   if (episodeIndex) next.episodeIndex = episodeIndex
   if (title) next.title = title
-  if (cover) {
-    next.cover = cover
-    next.coverUrl = cover
-  }
+  if (cover) next.cover = cover
   if (sourceName) next.sourceName = sourceName
   return next
-}
-
-/** One-shot `beforeEnter` bridge for canonical `/video/play/online` (Wave 4B cleanup). */
-export function bridgeVideoOnlinePlayQuery(query: LocationQuery): LocationQueryRaw | null {
-  const source = readSingle(query, ['source'])
-  const ref = readSingle(query, ['ref'])
-  const vid = readSingle(query, ['vid'])
-  const play = readSingle(query, ['play'])
-  const group = readSingle(query, ['group'])
-  const cover = readSingle(query, ['cover'])
-
-  const hasDetailUrl = Boolean(readSingle(query, ['detailUrl', 'detail_url']))
-  const hasVideoId = Boolean(readSingle(query, ['videoId', 'video_id']))
-
-  const missingSourceId = Boolean(source && !readSingle(query, ['sourceId', 'source_id']))
-  const missingPlayUrl = Boolean(play && !readSingle(query, ['playUrl', 'play_url']))
-  const missingGroupName = Boolean(group && !readSingle(query, ['groupName', 'group_name']))
-  const missingVideoId = Boolean(
-    (vid && !hasVideoId) || (!vid && ref && !looksLikeUrlOrPath(ref) && !hasVideoId && !hasDetailUrl),
-  )
-  const missingDetailUrl = Boolean(
-    ref && (Boolean(vid) || looksLikeUrlOrPath(ref)) && !hasDetailUrl,
-  )
-  const missingCoverUrl = Boolean(cover && !readSingle(query, ['coverUrl', 'cover_url']))
-
-  if (
-    !missingSourceId &&
-    !missingPlayUrl &&
-    !missingGroupName &&
-    !missingVideoId &&
-    !missingDetailUrl &&
-    !missingCoverUrl
-  ) {
-    return null
-  }
-  return {
-    ...query,
-    ...(missingSourceId ? { sourceId: source } : {}),
-    ...(missingPlayUrl ? { playUrl: play } : {}),
-    ...(missingGroupName ? { groupName: group } : {}),
-    ...(missingVideoId ? { videoId: vid || ref } : {}),
-    ...(missingDetailUrl ? { detailUrl: ref } : {}),
-    ...(missingCoverUrl ? { coverUrl: cover } : {}),
-  }
 }
 
 function buildOnlineScopeRedirect(domain: MediaKind, query: LocationQuery): RouteLocationRaw {

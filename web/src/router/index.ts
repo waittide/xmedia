@@ -3,8 +3,6 @@ import {
   createWebHistory,
   type LocationQuery,
   type LocationQueryRaw,
-  type RouteLocationNormalized,
-  type RouteLocationRaw,
 } from 'vue-router'
 import { setUnauthorizedHandler } from '@/api/client'
 import { ensureBookLocale } from '@/domains/book/i18n'
@@ -12,11 +10,6 @@ import { ensureComicLocale } from '@/domains/comic/i18n'
 import { ensureMusicLocale } from '@/domains/music/i18n'
 import { ensureVideoLocale } from '@/domains/video/i18n'
 import {
-  bridgeBookOnlinePlayQuery,
-  bridgeComicOnlineDetailQuery,
-  bridgeComicOnlinePlayQuery,
-  bridgeVideoOnlineDetailQuery,
-  bridgeVideoOnlinePlayQuery,
   legacyRedirectRoutes,
   migrateBookOnlineReadQuery,
   resolveLegacySettingsRedirect,
@@ -47,16 +40,6 @@ function resolvePreferredDomain(
 ): MediaKind | null {
   if (enabled.includes(preferred)) return preferred
   return enabled[0] ?? null
-}
-
-function createOnlineQueryBridgeGuard(
-  bridge: (query: LocationQuery) => LocationQueryRaw | null,
-) {
-  return (to: RouteLocationNormalized): RouteLocationRaw | true => {
-    const bridged = bridge(to.query)
-    if (!bridged) return true
-    return { path: to.path, query: bridged, hash: to.hash, replace: true }
-  }
 }
 
 function firstQueryString(query: LocationQuery, keys: readonly string[]): string {
@@ -92,7 +75,6 @@ export const router = createRouter({
       path: '/book/play/online',
       name: 'book-online-reader',
       component: () => import('@/domains/book/views/OnlineReaderView.vue'),
-      beforeEnter: createOnlineQueryBridgeGuard(bridgeBookOnlinePlayQuery),
       meta: { domain: 'book' as MediaKind, fullscreen: true },
     },
     {
@@ -105,12 +87,10 @@ export const router = createRouter({
       path: '/comic/play/online',
       name: 'comic-online-reader',
       component: () => import('@/domains/comic/views/OnlineComicReaderView.vue'),
-      beforeEnter: createOnlineQueryBridgeGuard(bridgeComicOnlinePlayQuery),
       meta: { domain: 'comic' as MediaKind, fullscreen: true },
     },
     {
-      // Keep `:chapterId` param name until Wave 4B aligns `domains/comic/views/ReaderView.vue`
-      path: '/comic/play/:chapterId',
+      path: '/comic/play/:id',
       name: 'comic-reader',
       component: () => import('@/domains/comic/views/ReaderView.vue'),
       meta: { domain: 'comic' as MediaKind, fullscreen: true },
@@ -119,7 +99,6 @@ export const router = createRouter({
       path: '/video/play/online',
       name: 'video-online-player',
       component: () => import('@/domains/video/views/OnlineVideoPlayerView.vue'),
-      beforeEnter: createOnlineQueryBridgeGuard(bridgeVideoOnlinePlayQuery),
       meta: { domain: 'video' as MediaKind, fullscreen: true },
     },
     {
@@ -203,7 +182,6 @@ export const router = createRouter({
           path: 'comic/item/online',
           name: 'comic-online-detail',
           component: () => import('@/domains/comic/views/OnlineComicDetailView.vue'),
-          beforeEnter: createOnlineQueryBridgeGuard(bridgeComicOnlineDetailQuery),
           meta: { domain: 'comic' as MediaKind },
         },
         {
@@ -264,7 +242,6 @@ export const router = createRouter({
           path: 'video/item/online',
           name: 'video-online-detail',
           component: () => import('@/domains/video/views/OnlineVideoDetailView.vue'),
-          beforeEnter: createOnlineQueryBridgeGuard(bridgeVideoOnlineDetailQuery),
           meta: { domain: 'video' as MediaKind },
         },
         {
