@@ -1,25 +1,47 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import {
-  LuChevronLeft,
-  LuList,
   LuBookmark,
+  LuChevronLeft,
+  LuChevronRight,
+  LuList,
+  LuMaximize2,
+  LuMoveHorizontal,
+  LuPlus,
+  LuRepeat,
   LuSlidersHorizontal,
   LuTrash2,
-  LuPlus,
-  LuX,
+  LuZoomIn,
+  LuZoomOut,
 } from 'vue-icons-plus/lu'
+import {
+  ImmersiveMediaTemplate,
+  MediaErrorState,
+  type ImmersiveTapMode,
+} from '@/components/domain'
+import ThemePopover from '@/components/ThemePopover.vue'
+import {
+  MdButton,
+  MdCircularProgress,
+  MdIconButton,
+  MdSegmentedButton,
+  MdTextField,
+  type SegmentedOption,
+} from '@/components/ui'
 import { api } from '@/domains/book/api'
-import { pushEscapeHandler } from '@/composables/useEscapeStack'
+import BookSourceSwitchDialog from '@/domains/book/components/BookSourceSwitchDialog.vue'
+import ReaderTypographyPanel from '@/domains/book/components/ReaderTypographyPanel.vue'
+import TocTree from '@/domains/book/components/TocTree.vue'
+import { useBookI18n as useI18n } from '@/domains/book/i18n'
+import { onlineBookApi, type AggregatedSearchItemDto } from '@/domains/book/onlineApi'
+import type { PdfFitMode, PdfReaderState } from '@/domains/book/readers/PdfReader.vue'
+import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
+import { itemRoute, libraryRoute } from '@/sources'
+import { useAuthStore } from '@/stores/auth'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useThemeStore } from '@/stores/theme'
-import type { Bookmark, BookSummaryDto, ReadingLocation, TocItem } from '@/domains/book/types'
-import ThemePopover from '@/components/ThemePopover.vue'
-import AppSlider from '@/components/ui/AppSlider.vue'
-import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
-import TocTree from '@/domains/book/components/TocTree.vue'
+
 const EpubReader = defineAsyncComponent(() => import('@/domains/book/readers/EpubReader.vue'))
 const TxtReader = defineAsyncComponent(() => import('@/domains/book/readers/TxtReader.vue'))
 const PdfReader = defineAsyncComponent(() => import('@/domains/book/readers/PdfReader.vue'))
@@ -27,13 +49,32 @@ const TrackedOnlineReader = defineAsyncComponent(
   () => import('@/domains/book/readers/TrackedOnlineReader.vue'),
 )
 
-interface ReaderHandle {
+interface BasicReaderHandle {
   navigateTo: (target: string, scrollRatio?: number) => Promise<void>
 }
+
+interface PagedReaderHandle extends BasicReaderHandle {
+  prevPage: () => Promise<void>
+  nextPage: () => Promise<void>
+}
+
+interface PdfReaderHandle extends PagedReaderHandle {
+  goToPage: (page: number) => Promise<void>
+  zoomIn: () => Promise<void>
+  zoomOut: () => Promise<void>
+  applyFitMode: (mode: 'width' | 'page') => Promise<void>
+}
+
+interface TrackedReaderHandle extends BasicReaderHandle {
+  reload: () => Promise<void>
+}
+
+type ReaderSheet = 'toc' | 'bookmarks' | 'typography' | null
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const authStore = useAuthStore()
 const themeStore = useThemeStore()
 const snackbarStore = useSnackbarStore()
 
@@ -46,23 +87,59 @@ const currentLocation = ref<ReadingLocation | null>(null)
 const loading = ref(true)
 const loadError = ref<string | null>(null)
 
-const activePanel = ref<'none' | 'toc' | 'bookmarks' | 'typography'>('none')
+const hudVisible = ref(true)
+const activeSheet = ref<ReaderSheet>(null)
 const bookmarkLabel = ref('')
+const switchSourceOpen = ref(false)
+const switchingSourceKey = ref<string | null>(null)
 
-const epubRef = ref<ReaderHandle | null>(null)
-const txtRef = ref<ReaderHandle | null>(null)
-const pdfRef = ref<ReaderHandle | null>(null)
-const trackedRef = ref<ReaderHandle | null>(null)
+const pdfState = ref<PdfReaderState>({
+  currentPage: 1,
+  totalPages: 1,
+  scale: 1,
+  fitMode: 'width',
+})
+const pdfPageInput = ref('1')
 
-const flowOptions = computed<SegmentedOption<'paginated' | 'scrolled'>[]>(() => [
-  { value: 'paginated', label: t('reader.paginated') },
-  { value: 'scrolled', label: t('reader.scrolled') },
-])
+const immersiveRef = ref<InstanceType<typeof ImmersiveMediaTemplate> | null>(null)
+const epubRef = ref<PagedReaderHandle | null>(null)
+const txtRef = ref<BasicReaderHandle | null>(null)
+const pdfRef = ref<PdfReaderHandle | null>(null)
+const trackedRef = ref<TrackedReaderHandle | null>(null)
 
-const fontOptions = computed<SegmentedOption<string>[]>(() => [
-  { value: 'system-ui', label: t('reader.fontSystem') },
-  { value: 'serif', label: t('reader.fontSerif') },
-  { value: 'mono', label: t('reader.fontMono') },
+const isPdf = computed(() => Boolean(book.value && !book.value.online_tracking && book.value.format === 'pdf'))
+const isPaginatedEpub = computed(
+  () =>
+    Boolean(book.value && !book.value.online_tracking && book.value.format === 'epub') &&
+    themeStore.reader.flow === 'paginated',
+)
+
+const centerTapMode = computed<ImmersiveTapMode>(() =>
+  isPdf.value || isPaginatedEpub.value ? 'center-zone' : 'full-stage',
+)
+
+const progressSubtitle = computed(() => {
+  if (!currentLocation.value) return ''
+  if (isPdf.value && pdfState.value.totalPages > 0) {
+    return `${pdfState.value.currentPage} / ${pdfState.value.totalPages} · ${Math.round(currentLocation.value.progress_percent)}%`
+  }
+  return `${Math.round(currentLocation.value.progress_percent)}%`
+})
+
+const sheetTitle = computed(() => {
+  if (activeSheet.value === 'toc') return `${t('reader.toc')} (${toc.value.length})`
+  if (activeSheet.value === 'bookmarks') return `${t('reader.bookmarks')} (${bookmarks.value.length})`
+  if (activeSheet.value === 'typography') return t('reader.typography')
+  return ''
+})
+
+const sheetSubtitle = computed(() =>
+  activeSheet.value === 'typography' ? t('reader.typographySubtitle') : '',
+)
+
+const pdfFitOptions = computed<SegmentedOption<'width' | 'page'>[]>(() => [
+  { value: 'width', label: t('reader.fitWidth'), icon: LuMoveHorizontal },
+  { value: 'page', label: t('reader.fitPage'), icon: LuMaximize2 },
 ])
 
 interface PendingProgressPayload {
@@ -136,7 +213,7 @@ async function loadBook(id: string): Promise<void> {
   bookmarks.value = []
   initialLocation.value = null
   currentLocation.value = null
-  activePanel.value = 'none'
+  activeSheet.value = null
 
   if (!id) {
     loadError.value = t('detail.notFound')
@@ -183,44 +260,9 @@ async function loadBook(id: string): Promise<void> {
   }
 }
 
-// Reader-level Escape is the bottom layer of the shared LIFO escape stack, so popovers/sheets
-// opened later (theme popover, panels) are dismissed first instead of exiting the reader.
-let removeReaderEscape: (() => void) | null = null
-
-function handleReaderEscape(): void {
-  if (activePanel.value !== 'none') {
-    activePanel.value = 'none'
-  } else {
-    void exitReader()
-  }
+function toggleSheet(sheet: Exclude<ReaderSheet, null>): void {
+  activeSheet.value = activeSheet.value === sheet ? null : sheet
 }
-
-onMounted(() => {
-  disposed = false
-  removeReaderEscape = pushEscapeHandler(handleReaderEscape)
-  window.addEventListener('keydown', handleReaderKeydown)
-  window.addEventListener('pagehide', handlePageHide)
-  void loadBook(bookId.value)
-})
-
-watch(bookId, (nextId, prevId) => {
-  if (nextId === prevId) return
-  void flushPendingProgress().finally(() => {
-    if (!disposed) {
-      void loadBook(nextId)
-    }
-  })
-})
-
-onBeforeUnmount(() => {
-  disposed = true
-  loadSeq += 1
-  removeReaderEscape?.()
-  removeReaderEscape = null
-  window.removeEventListener('keydown', handleReaderKeydown)
-  window.removeEventListener('pagehide', handlePageHide)
-  void flushPendingProgress()
-})
 
 function handleReaderKeydown(ev: KeyboardEvent): void {
   const target = ev.target
@@ -234,10 +276,10 @@ function handleReaderKeydown(ev: KeyboardEvent): void {
   if (isTyping || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key.toLowerCase() === 'b') {
     ev.preventDefault()
-    togglePanel('bookmarks')
+    toggleSheet('bookmarks')
   } else if (ev.key.toLowerCase() === 't') {
     ev.preventDefault()
-    togglePanel('toc')
+    toggleSheet('toc')
   }
 }
 
@@ -245,26 +287,55 @@ async function exitReader(): Promise<void> {
   await flushPendingProgress()
   const currentId = bookId.value
   const prev = (window.history.state as { back?: string | null } | null)?.back
-  if (typeof prev === 'string' && prev.startsWith(`/book/items/${currentId}`)) {
+  if (
+    typeof prev === 'string' &&
+    (prev.startsWith(`/book/item/${currentId}`) || prev.startsWith(`/book/items/${currentId}`))
+  ) {
     router.back()
   } else if (currentId) {
-    await router.replace(`/book/items/${currentId}`)
+    await router.replace(itemRoute({ scope: 'local', domain: 'book', id: currentId }))
   } else {
-    await router.replace('/book/catalog')
+    await router.replace(libraryRoute('book'))
   }
 }
 
-function togglePanel(panel: 'toc' | 'bookmarks' | 'typography'): void {
-  activePanel.value = activePanel.value === panel ? 'none' : panel
+function handleTapPrev(): void {
+  if (isPdf.value) {
+    void pdfRef.value?.prevPage()
+  } else if (isPaginatedEpub.value) {
+    void epubRef.value?.prevPage()
+  }
 }
 
-function handleProgressUpdate(payload: {
-  progress_percent: number
-  locator: string
-  chapter_index?: number | null
-  page_number?: number | null
-  scroll_ratio?: number | null
-}): void {
+function handleTapNext(): void {
+  if (isPdf.value) {
+    void pdfRef.value?.nextPage()
+  } else if (isPaginatedEpub.value) {
+    void epubRef.value?.nextPage()
+  }
+}
+
+function handlePdfStateChange(state: PdfReaderState): void {
+  pdfState.value = state
+  pdfPageInput.value = String(state.currentPage)
+}
+
+function handlePdfPageSubmit(): void {
+  const parsed = Number.parseInt(pdfPageInput.value, 10)
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    pdfPageInput.value = String(pdfState.value.currentPage)
+    return
+  }
+  void pdfRef.value?.goToPage(parsed)
+}
+
+function handlePdfFitChange(mode: PdfFitMode): void {
+  if (mode === 'width' || mode === 'page') {
+    void pdfRef.value?.applyFitMode(mode)
+  }
+}
+
+function handleProgressUpdate(payload: PendingProgressPayload): void {
   const currentId = bookId.value
   if (!currentId) return
   currentLocation.value = {
@@ -290,7 +361,7 @@ function handleProgressUpdate(payload: {
 }
 
 async function jumpToTarget(hrefOrLocator: string, scrollRatio = 0): Promise<void> {
-  activePanel.value = 'none'
+  activeSheet.value = null
   if (book.value?.online_tracking) {
     await trackedRef.value?.navigateTo(hrefOrLocator, scrollRatio)
   } else if (book.value?.format === 'epub') {
@@ -317,6 +388,7 @@ async function handleAddBookmark(): Promise<void> {
     })
     bookmarkLabel.value = ''
     bookmarks.value = [created, ...bookmarks.value]
+    snackbarStore.show(t('reader.bookmarkAdded'))
   } catch (err) {
     snackbarStore.show({
       message: err instanceof Error ? err.message : String(err),
@@ -336,306 +408,358 @@ async function handleRemoveBookmark(bmId: string): Promise<void> {
     })
   }
 }
+
+async function handleSwitchTrackedSource(
+  item: AggregatedSearchItemDto,
+  clearCache: boolean,
+): Promise<void> {
+  const targetBook = book.value
+  if (!targetBook?.online_tracking || switchingSourceKey.value !== null) return
+  const targetId = targetBook.id
+  const key = `${item.source_id}:${item.book.book_url}`
+  switchingSourceKey.value = key
+  try {
+    const detailRes = await onlineBookApi.fetchBookInfo(item.source_id, item.book.book_url, {
+      name: item.book.name,
+      author: item.book.author,
+      book_url: item.book.book_url,
+      toc_url: '',
+      cover_url: item.book.cover_url,
+      intro: item.book.intro,
+    })
+    const tocUrl = detailRes.detail.toc_url?.trim() || ''
+    if (!tocUrl) {
+      throw new Error(t('online.switchSourceNoToc'))
+    }
+    const res = await onlineBookApi.switchTrackedSource(targetId, {
+      source_id: item.source_id,
+      book_url: item.book.book_url,
+      toc_url: tocUrl,
+      cover_url: detailRes.detail.cover_url ?? item.book.cover_url,
+      intro: detailRes.detail.intro ?? item.book.intro,
+      last_chapter: detailRes.detail.last_chapter ?? item.book.last_chapter,
+      clear_cache: clearCache,
+    })
+    switchSourceOpen.value = false
+    activeSheet.value = null
+    snackbarStore.show(
+      t('online.trackedSwitchSuccess', {
+        source: res.source_name || item.source_name,
+        count: res.total_chapters,
+      }),
+    )
+    await trackedRef.value?.reload()
+  } catch (err) {
+    snackbarStore.show({
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    switchingSourceKey.value = null
+  }
+}
+
+onMounted(() => {
+  disposed = false
+  window.addEventListener('keydown', handleReaderKeydown)
+  window.addEventListener('pagehide', handlePageHide)
+  void loadBook(bookId.value)
+})
+
+watch(bookId, (nextId, prevId) => {
+  if (nextId === prevId) return
+  void flushPendingProgress().finally(() => {
+    if (!disposed) {
+      void loadBook(nextId)
+    }
+  })
+})
+
+onBeforeUnmount(() => {
+  disposed = true
+  loadSeq += 1
+  window.removeEventListener('keydown', handleReaderKeydown)
+  window.removeEventListener('pagehide', handlePageHide)
+  void flushPendingProgress()
+})
 </script>
 
 <template>
-  <div class="flex h-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface)]">
-    <!-- Distraction-free Top Reader Control Bar -->
-    <header class="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] px-4">
-      <div class="flex min-w-0 items-center gap-2.5">
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state !text-[var(--md-sys-color-on-surface-variant)] hover:!text-[var(--md-sys-color-on-surface)]"
-          @click="exitReader"
-        >
-          <LuChevronLeft class="h-4 w-4" />
-          <span class="hidden sm:inline">{{ t('reader.backToBook') }}</span>
-        </button>
+  <ImmersiveMediaTemplate
+    ref="immersiveRef"
+    v-model:hud-visible="hudVisible"
+    v-model:active-sheet="activeSheet"
+    :title="book?.metadata.title || ''"
+    :subtitle="progressSubtitle"
+    stage-bg-class="bg-surface text-on-surface"
+    :auto-hide="true"
+    :lock-hud="loading || Boolean(loadError) || switchSourceOpen"
+    :center-tap-mode="centerTapMode"
+    :back-label="t('reader.backToBook')"
+    :sheet-title="sheetTitle"
+    :sheet-subtitle="sheetSubtitle"
+    sheet-size="sm"
+    :escape-to-exit="true"
+    @back="exitReader"
+    @tap-prev="handleTapPrev"
+    @tap-next="handleTapNext"
+  >
+    <!-- Top HUD Right Controls (<= 4 controls + built-in Back = <= 5 total) -->
+    <template #header-controls>
+      <MdIconButton
+        size="sm"
+        variant="standard"
+        :selected="activeSheet === 'toc'"
+        :icon="LuList"
+        :aria-label="t('reader.toc')"
+        :tooltip="t('reader.toc')"
+        @click="toggleSheet('toc')"
+      />
 
-        <div class="h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
+      <MdIconButton
+        size="sm"
+        variant="standard"
+        :selected="activeSheet === 'bookmarks'"
+        :icon="LuBookmark"
+        :aria-label="t('reader.bookmarks')"
+        :tooltip="t('reader.bookmarks')"
+        @click="toggleSheet('bookmarks')"
+      />
 
-        <div class="min-w-0">
-          <h1 class="truncate text-sm font-bold">{{ book?.metadata.title }}</h1>
-        </div>
-      </div>
+      <MdIconButton
+        v-if="!isPdf"
+        size="sm"
+        variant="standard"
+        :selected="activeSheet === 'typography'"
+        :icon="LuSlidersHorizontal"
+        :aria-label="t('reader.typography')"
+        :tooltip="t('reader.typography')"
+        @click="toggleSheet('typography')"
+      />
 
-      <div class="flex items-center gap-1.5">
-        <span
-          v-if="currentLocation"
-          class="hidden rounded-full bg-[var(--md-sys-color-primary-container)] px-2.5 py-1 text-xs font-semibold text-[var(--md-sys-color-on-primary-container)] sm:inline-block"
-        >
-          {{ Math.round(currentLocation.progress_percent) }}%
-        </span>
+      <ThemePopover />
+    </template>
 
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state !h-9 !w-9"
-          :class="
-            activePanel === 'toc'
-              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
-              : ''
-          "
-          :title="t('reader.toc')"
-          @click="togglePanel('toc')"
-        >
-          <LuList class="h-4 w-4" />
-        </button>
+    <!-- Main Reader Stage -->
+    <div v-if="loading" class="flex h-full flex-col items-center justify-center gap-3 text-on-surface-variant">
+      <MdCircularProgress indeterminate :size="32" :stroke-width="3" />
+      <span class="text-body-small">{{ t('reader.loadingBook') }}</span>
+    </div>
 
-        <button
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state !h-9 !w-9"
-          :class="
-            activePanel === 'bookmarks'
-              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
-              : ''
-          "
-          :title="t('reader.bookmarks')"
-          @click="togglePanel('bookmarks')"
-        >
-          <LuBookmark class="h-4 w-4" />
-        </button>
-
-        <button
-          v-if="book?.format !== 'pdf'"
-          type="button"
-          class="md-icon-btn md-icon-btn-sm md-state !h-9 !w-9"
-          :class="
-            activePanel === 'typography'
-              ? '!bg-[var(--md-sys-color-secondary-container)] !text-[var(--md-sys-color-on-secondary-container)]'
-              : ''
-          "
-          :title="t('reader.typography')"
-          @click="togglePanel('typography')"
-        >
-          <LuSlidersHorizontal class="h-4 w-4" />
-        </button>
-
-        <ThemePopover />
-      </div>
-    </header>
-
-    <!-- Main Reader Area + Slide-Out Drawer -->
-    <div class="relative flex min-h-0 flex-1 overflow-hidden">
-      <div v-if="loading" class="flex flex-1 items-center justify-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
-        {{ t('reader.loadingBook') }}
-      </div>
-
-      <div
-        v-else-if="loadError"
-        class="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center"
+    <div v-else-if="loadError" class="flex h-full items-center justify-center px-6">
+      <MediaErrorState
+        :title="t('reader.loadFailedTitle')"
+        :message="loadError"
+        :retry-label="t('reader.retry')"
+        class="max-w-md"
+        @retry="loadBook(bookId)"
       >
-        <p class="max-w-md rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]">
-          {{ loadError }}
-        </p>
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            @click="exitReader"
-          >
+        <template #action>
+          <MdButton variant="tonal" size="sm" @click="exitReader">
             {{ t('reader.backToBook') }}
-          </button>
-          <button
-            type="button"
-            class="md-btn md-btn-sm md-btn-filled md-state"
-            @click="loadBook(bookId)"
-          >
-            重试
-          </button>
-        </div>
-      </div>
+          </MdButton>
+        </template>
+      </MediaErrorState>
+    </div>
 
-      <template v-else-if="book">
-        <TrackedOnlineReader
-          v-if="book.online_tracking"
-          :key="`tracked-${bookId}`"
-          ref="trackedRef"
-          :book-id="bookId"
-          :initial-location="initialLocation"
-          @progress="handleProgressUpdate"
-          @toc-loaded="toc = $event"
-        />
-        <EpubReader
-          v-else-if="book.format === 'epub'"
-          :key="`epub-${bookId}`"
-          ref="epubRef"
-          :book-id="bookId"
-          :initial-location="initialLocation"
-          @progress="handleProgressUpdate"
-        />
-        <TxtReader
-          v-else-if="book.format === 'txt'"
-          :key="`txt-${bookId}`"
-          ref="txtRef"
-          :book-id="bookId"
-          :initial-location="initialLocation"
-          @progress="handleProgressUpdate"
-        />
-        <PdfReader
-          v-else
-          :key="`pdf-${bookId}`"
-          ref="pdfRef"
-          :book-id="bookId"
-          :initial-location="initialLocation"
-          @progress="handleProgressUpdate"
-        />
-      </template>
+    <template v-else-if="book">
+      <TrackedOnlineReader
+        v-if="book.online_tracking"
+        :key="`tracked-${bookId}`"
+        ref="trackedRef"
+        :book-id="bookId"
+        :initial-location="initialLocation"
+        @progress="handleProgressUpdate"
+        @toc-loaded="toc = $event"
+        @switch-source="switchSourceOpen = true"
+      />
+      <EpubReader
+        v-else-if="book.format === 'epub'"
+        :key="`epub-${bookId}`"
+        ref="epubRef"
+        :book-id="bookId"
+        :initial-location="initialLocation"
+        :hud-visible="hudVisible"
+        @progress="handleProgressUpdate"
+        @toggle-hud="immersiveRef?.toggleHud()"
+      />
+      <TxtReader
+        v-else-if="book.format === 'txt'"
+        :key="`txt-${bookId}`"
+        ref="txtRef"
+        :book-id="bookId"
+        :initial-location="initialLocation"
+        @progress="handleProgressUpdate"
+      />
+      <PdfReader
+        v-else
+        :key="`pdf-${bookId}`"
+        ref="pdfRef"
+        :book-id="bookId"
+        :initial-location="initialLocation"
+        @progress="handleProgressUpdate"
+        @state-change="handlePdfStateChange"
+      />
+    </template>
 
-      <!-- Drawer for TOC / Bookmarks / Typography -->
-      <aside
-        v-if="activePanel !== 'none'"
-        class="absolute bottom-0 right-0 top-0 z-30 flex w-80 max-w-full flex-col border-l border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface-container-low)] shadow-[var(--md-sys-elevation-3)] sm:w-[336px]"
-      >
-        <div class="flex items-center justify-between border-b border-[var(--md-sys-color-outline-variant)]/55 px-4 py-3">
-          <h2 class="text-sm font-bold">
-            {{
-              activePanel === 'toc'
-                ? t('reader.toc')
-                : activePanel === 'bookmarks'
-                  ? t('reader.bookmarks')
-                  : t('reader.typography')
-            }}
-          </h2>
-          <button
-            type="button"
-            class="md-icon-btn md-icon-btn-sm md-state"
-            @click="activePanel = 'none'"
-          >
-            <LuX class="h-4 w-4" />
-          </button>
-        </div>
-
-        <!-- TOC Panel (Volume -> Chapter collapsible tree) -->
-        <div v-if="activePanel === 'toc'" class="flex-1 overflow-y-auto p-3">
-          <TocTree
-            :items="toc"
-            :active-href="currentLocation?.locator"
-            @select="jumpToTarget"
+    <!-- Floating Auto-Hide Bottom Control Bar (PDF only) -->
+    <template v-if="isPdf" #footer>
+      <div class="mx-auto flex max-w-3xl flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-1">
+          <MdIconButton
+            size="sm"
+            variant="standard"
+            :icon="LuChevronLeft"
+            :disabled="pdfState.currentPage <= 1"
+            :aria-label="t('reader.prevPage')"
+            @click="pdfRef?.prevPage()"
+          />
+          <form class="flex items-center gap-1.5" @submit.prevent="handlePdfPageSubmit">
+            <div class="w-16">
+              <MdTextField
+                v-model="pdfPageInput"
+                type="number"
+                size="sm"
+                min="1"
+                :max="pdfState.totalPages"
+                :aria-label="t('reader.page')"
+              />
+            </div>
+            <span class="text-label-medium tabular-nums text-on-surface-variant">
+              / {{ pdfState.totalPages }}
+            </span>
+          </form>
+          <MdIconButton
+            size="sm"
+            variant="standard"
+            :icon="LuChevronRight"
+            :disabled="pdfState.currentPage >= pdfState.totalPages"
+            :aria-label="t('reader.nextPage')"
+            @click="pdfRef?.nextPage()"
           />
         </div>
 
-        <!-- Bookmarks Panel -->
-        <div v-else-if="activePanel === 'bookmarks'" class="flex flex-1 flex-col overflow-hidden p-4">
-          <form class="mb-4 space-y-2" @submit.prevent="handleAddBookmark">
-            <input
-              v-model="bookmarkLabel"
-              type="text"
-              :placeholder="t('reader.bookmarkTitlePlaceholder')"
-              class="md-input h-9 w-full text-xs"
-            />
+        <div class="flex items-center gap-1">
+          <MdIconButton
+            size="sm"
+            variant="standard"
+            :icon="LuZoomOut"
+            :aria-label="t('reader.zoomOut')"
+            @click="pdfRef?.zoomOut()"
+          />
+          <span class="text-label-medium w-12 text-center font-mono tabular-nums text-on-surface">
+            {{ Math.round(pdfState.scale * 100) }}%
+          </span>
+          <MdIconButton
+            size="sm"
+            variant="standard"
+            :icon="LuZoomIn"
+            :aria-label="t('reader.zoomIn')"
+            @click="pdfRef?.zoomIn()"
+          />
+        </div>
+
+        <MdSegmentedButton
+          :model-value="pdfState.fitMode === 'page' ? 'page' : 'width'"
+          :options="pdfFitOptions"
+          size="sm"
+          :show-check="false"
+          @update:model-value="handlePdfFitChange"
+        />
+      </div>
+    </template>
+
+    <!-- Single Mutually-Exclusive Sheet (TOC / Bookmarks / Typography) -->
+    <template
+      v-if="activeSheet === 'toc' && book?.online_tracking && authStore.isAdmin"
+      #sheet-header-actions
+    >
+      <MdButton
+        variant="tonal"
+        size="sm"
+        :icon="LuRepeat"
+        @click="
+          activeSheet = null;
+          switchSourceOpen = true
+        "
+      >
+        {{ t('online.switchSource') }}
+      </MdButton>
+    </template>
+
+    <template #sheet>
+      <TocTree
+        v-if="activeSheet === 'toc'"
+        :items="toc"
+        :active-href="currentLocation?.locator"
+        searchable
+        @select="jumpToTarget"
+      />
+
+      <div v-else-if="activeSheet === 'bookmarks'" class="space-y-4">
+        <form class="space-y-2.5" @submit.prevent="handleAddBookmark">
+          <MdTextField
+            v-model="bookmarkLabel"
+            size="sm"
+            :placeholder="t('reader.bookmarkTitlePlaceholder')"
+          />
+          <MdButton type="submit" variant="filled" size="sm" :icon="LuPlus" block>
+            {{ t('reader.addBookmark') }}
+          </MdButton>
+        </form>
+
+        <p
+          v-if="bookmarks.length === 0"
+          class="text-body-small py-6 text-center text-on-surface-variant"
+        >
+          {{ t('reader.noBookmarks') }}
+        </p>
+
+        <div v-else class="space-y-1.5">
+          <div
+            v-for="bm in bookmarks"
+            :key="bm.id"
+            class="flex items-center justify-between gap-2 rounded-corner-md bg-surface-container px-3 py-2.5"
+          >
             <button
-              type="submit"
-              class="md-btn md-btn-sm md-btn-filled md-state w-full"
+              type="button"
+              class="md-state min-w-0 flex-1 cursor-pointer rounded-corner-sm text-left"
+              @click="jumpToTarget(bm.location.locator, bm.location.scroll_ratio ?? 0)"
             >
-              <LuPlus class="h-3.5 w-3.5" />
-              <span>{{ t('reader.addBookmark') }}</span>
+              <div class="text-title-small truncate text-on-surface">{{ bm.title }}</div>
+              <div class="text-label-small mt-0.5 tabular-nums text-primary">
+                {{ Math.round(bm.location.progress_percent) }}%
+              </div>
             </button>
-          </form>
-
-          <div class="flex-1 space-y-2 overflow-y-auto">
-            <p v-if="bookmarks.length === 0" class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('reader.noBookmarks') }}
-            </p>
-            <div
-              v-for="bm in bookmarks"
-              :key="bm.id"
-              class="group flex items-center justify-between gap-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] px-3 py-2.5 text-xs"
-            >
-              <button
-                type="button"
-                class="min-w-0 flex-1 text-left"
-                @click="jumpToTarget(bm.location.locator, bm.location.scroll_ratio ?? 0)"
-              >
-                <div class="truncate font-semibold text-[var(--md-sys-color-on-surface)]">{{ bm.title }}</div>
-                <div class="mt-0.5 text-[11px] text-[var(--md-sys-color-primary)]">
-                  {{ Math.round(bm.location.progress_percent) }}%
-                </div>
-              </button>
-              <button
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state hover:!text-[var(--md-sys-color-error)]"
-                @click="handleRemoveBookmark(bm.id)"
-              >
-                <LuTrash2 class="h-3.5 w-3.5" />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Typography & Flow Panel -->
-        <div v-else class="flex-1 space-y-5 overflow-x-hidden overflow-y-auto p-4 text-xs">
-          <div v-if="book?.format === 'epub' && !book.online_tracking">
-            <label class="mb-2 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('reader.flowMode') }}
-            </label>
-            <MdSegmentedButton
-              :model-value="themeStore.reader.flow"
-              :options="flowOptions"
+            <MdIconButton
               size="sm"
-              full-width
-              @update:model-value="(v) => themeStore.updateReaderPreferences({ flow: v })"
-            />
-          </div>
-
-          <div>
-            <label class="mb-2 block font-semibold text-[var(--md-sys-color-on-surface-variant)]">
-              {{ t('reader.fontFamily') }}
-            </label>
-            <MdSegmentedButton
-              :model-value="themeStore.reader.font_family"
-              :options="fontOptions"
-              size="sm"
-              full-width
-              @update:model-value="(v) => themeStore.updateReaderPreferences({ font_family: v })"
-            />
-          </div>
-
-          <div>
-            <div class="mb-1.5 flex justify-between">
-              <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.fontSize') }}</span>
-              <span class="font-mono tabular-nums">{{ themeStore.reader.font_size }} px</span>
-            </div>
-            <AppSlider
-              :model-value="themeStore.reader.font_size"
-              :min="14"
-              :max="30"
-              :step="1"
-              :aria-label="t('reader.fontSize')"
-              @update:model-value="(v) => themeStore.updateReaderPreferences({ font_size: v })"
-            />
-          </div>
-
-          <div>
-            <div class="mb-1.5 flex justify-between">
-              <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.lineHeight') }}</span>
-              <span class="font-mono tabular-nums">{{ themeStore.reader.line_height.toFixed(2) }}</span>
-            </div>
-            <AppSlider
-              :model-value="themeStore.reader.line_height"
-              :min="1.3"
-              :max="2.4"
-              :step="0.05"
-              :aria-label="t('reader.lineHeight')"
-              @update:model-value="(v) => themeStore.updateReaderPreferences({ line_height: v })"
-            />
-          </div>
-
-          <div>
-            <div class="mb-1.5 flex justify-between">
-              <span class="font-semibold text-[var(--md-sys-color-on-surface-variant)]">{{ t('reader.margin') }}</span>
-              <span class="font-mono tabular-nums">{{ themeStore.reader.margin_px }} px</span>
-            </div>
-            <AppSlider
-              :model-value="themeStore.reader.margin_px"
-              :min="16"
-              :max="120"
-              :step="8"
-              :aria-label="t('reader.margin')"
-              @update:model-value="(v) => themeStore.updateReaderPreferences({ margin_px: v })"
+              variant="standard"
+              :icon="LuTrash2"
+              :aria-label="t('common.delete')"
+              @click="handleRemoveBookmark(bm.id)"
             />
           </div>
         </div>
-      </aside>
-    </div>
-  </div>
+      </div>
+
+      <ReaderTypographyPanel
+        v-else-if="activeSheet === 'typography'"
+        :show-flow-mode="Boolean(book && book.format === 'epub' && !book.online_tracking)"
+      />
+    </template>
+
+    <template #overlay>
+      <BookSourceSwitchDialog
+        v-if="book?.online_tracking"
+        :open="switchSourceOpen"
+        :book-title="book.metadata.title"
+        :current-source-id="book.online_tracking.source_id"
+        :current-book-url="book.online_tracking.book_url"
+        :switching-key="switchingSourceKey"
+        show-clear-cache-option
+        @close="switchSourceOpen = false"
+        @select="handleSwitchTrackedSource"
+      />
+    </template>
+  </ImmersiveMediaTemplate>
 </template>

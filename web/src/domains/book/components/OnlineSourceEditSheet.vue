@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, toRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   LuBookOpen,
   LuCheckCircle2,
+  LuChevronDown,
   LuCode2,
   LuCompass,
   LuCopy,
@@ -10,17 +12,33 @@ import {
   LuFlaskConical,
   LuInfo,
   LuList,
-  LuLoader2,
   LuSave,
   LuSearch,
   LuXCircle,
 } from 'vue-icons-plus/lu'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import AppSwitch from '@/components/ui/AppSwitch.vue'
-import MdSideSheet from '@/components/ui/MdSideSheet.vue'
-import { useSnackbarStore } from '@/stores/snackbar'
-import { onlineBookApi, type BookSourceSummaryDto } from '../onlineApi'
 import RuleFieldsSection, { type RuleFieldDef } from '@/components/online-sources/RuleFieldsSection.vue'
+import {
+  boolVal,
+  hasAnyRule,
+  mergeOptionalField,
+  mergeRuleSection,
+  numVal,
+  readRuleMap,
+  strVal,
+  useOnlineSourceEdit,
+} from '@/components/online-sources/useOnlineSourceEdit'
+import {
+  MdButton,
+  MdCircularProgress,
+  MdDialog,
+  MdSelect,
+  MdSwitch,
+  MdTabs,
+  type MdTabItem,
+  type SelectOption,
+} from '@/components/ui'
+import { ensureBookLocale, useBookI18n } from '../i18n'
+import { bookSourceAdapter, type BookSourceSummaryDto } from '../onlineApi'
 
 const props = defineProps<{
   open: boolean
@@ -33,16 +51,25 @@ const emit = defineEmits<{
   savedAndDebug: [source: BookSourceSummaryDto]
 }>()
 
-const snackbar = useSnackbarStore()
+const { t } = useI18n()
+const { t: bt } = useBookI18n()
+
+void ensureBookLocale()
+watch(
+  () => props.open,
+  (isOpen) => {
+    if (isOpen) void ensureBookLocale()
+  },
+)
 
 type EditTab = 'basic' | 'search' | 'explore' | 'book_info' | 'toc' | 'content' | 'json'
 
-const sourceTypeOptions = [
-  { value: '0', label: '0 · 文本' },
-  { value: '1', label: '1 · 音频' },
-  { value: '2', label: '2 · 图片' },
-  { value: '3', label: '3 · 文件' },
-]
+const sourceTypeOptions = computed<SelectOption[]>(() => [
+  { value: '0', label: bt('sourceEditor.typeText') },
+  { value: '1', label: bt('sourceEditor.typeAudio') },
+  { value: '2', label: bt('sourceEditor.typeImage') },
+  { value: '3', label: bt('sourceEditor.typeFile') },
+])
 
 const searchRuleFields: RuleFieldDef[] = [
   { key: 'checkKeyWord', label: '校验关键词', hint: 'checkKeyWord', placeholder: '调试默认搜索词，例如：我的' },
@@ -102,19 +129,6 @@ const contentRuleFields: RuleFieldDef[] = [
   { key: 'webJs', label: 'WebView 注入 JS', hint: 'webJs', multiline: true, rows: 3, fullWidth: true },
 ]
 
-const activeTab = ref<EditTab>('basic')
-const loading = ref(false)
-const saving = ref(false)
-const loadError = ref<string | null>(null)
-
-// Preserves any unknown extra keys in the original Legado JSON losslessly
-const rawBaseObj = ref<Record<string, unknown>>({})
-const jsonText = ref('')
-const jsonDirty = ref(false)
-const variableText = ref('')
-const initialVariableText = ref('')
-let loadSeq = 0
-
 interface FormSnapshot {
   bookSourceGroup: string
   bookSourceComment: string
@@ -166,57 +180,11 @@ const form = reactive({
 })
 
 let initialSnapshot: FormSnapshot | null = null
-
-function strVal(v: unknown): string {
-  if (v === null || v === undefined) return ''
-  if (typeof v === 'string') return v
-  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-  try {
-    return JSON.stringify(v)
-  } catch {
-    return ''
-  }
-}
-
-function boolVal(v: unknown, fallback = true): boolean {
-  if (typeof v === 'boolean') return v
-  if (typeof v === 'number') return v !== 0
-  if (typeof v === 'string') {
-    const t = v.trim().toLowerCase()
-    if (t === 'false' || t === '0' || t === '') return false
-    return true
-  }
-  return fallback
-}
-
-function numVal(v: unknown, fallback = 0): number {
-  if (typeof v === 'number' && Number.isFinite(v)) return Math.trunc(v)
-  if (typeof v === 'string' && v.trim() !== '') {
-    const n = Number(v.trim())
-    if (Number.isFinite(n)) return Math.trunc(n)
-  }
-  return fallback
-}
-
-function readRuleMap(rawRule: unknown, fields: RuleFieldDef[]): Record<string, string> {
-  const out: Record<string, string> = {}
-  const srcObj =
-    rawRule && typeof rawRule === 'object' && !Array.isArray(rawRule)
-      ? (rawRule as Record<string, unknown>)
-      : {}
-  for (const f of fields) {
-    out[f.key] = strVal(srcObj[f.key])
-  }
-  return out
-}
+const advancedExpanded = ref(false)
 
 function clearFormState(): void {
-  rawBaseObj.value = {}
   initialSnapshot = null
-  jsonText.value = ''
-  jsonDirty.value = false
-  variableText.value = ''
-  initialVariableText.value = ''
+  advancedExpanded.value = false
   form.bookSourceName = ''
   form.bookSourceUrl = ''
   form.bookSourceGroup = ''
@@ -268,12 +236,16 @@ function captureSnapshot(): FormSnapshot {
   }
 }
 
-function hydrateFormFromObject(obj: Record<string, unknown>, srcSummary?: BookSourceSummaryDto): void {
-  rawBaseObj.value = { ...obj }
+function hydrateFormFromObject(
+  obj: Record<string, unknown>,
+  srcSummary?: BookSourceSummaryDto,
+): void {
   form.bookSourceName = strVal(obj.bookSourceName) || srcSummary?.name || ''
   form.bookSourceUrl = strVal(obj.bookSourceUrl) || srcSummary?.source_url || ''
   form.bookSourceGroup =
-    obj.bookSourceGroup !== undefined ? strVal(obj.bookSourceGroup) : (srcSummary?.group_name ?? '')
+    obj.bookSourceGroup !== undefined
+      ? strVal(obj.bookSourceGroup)
+      : (srcSummary?.group_name ?? '')
   form.bookSourceComment = strVal(obj.bookSourceComment)
   form.bookSourceType = String(numVal(obj.bookSourceType, srcSummary?.source_type ?? 0))
   form.enabled = srcSummary ? srcSummary.enabled : boolVal(obj.enabled, true)
@@ -297,748 +269,601 @@ function hydrateFormFromObject(obj: Record<string, unknown>, srcSummary?: BookSo
   initialSnapshot = captureSnapshot()
 }
 
-function coerceEditedValue(original: unknown, edited: string): unknown {
-  if (typeof original === 'boolean') {
-    const lower = edited.trim().toLowerCase()
-    if (lower === 'true') return true
-    if (lower === 'false') return false
-  } else if (typeof original === 'number') {
-    const n = Number(edited.trim())
-    if (edited.trim() !== '' && Number.isFinite(n)) return n
-  } else if (original !== null && typeof original === 'object') {
-    try {
-      const parsed = JSON.parse(edited)
-      if (parsed !== null && typeof parsed === 'object') {
-        return parsed
+const {
+  activeTab,
+  loading,
+  saving,
+  loadError,
+  rawBaseObj,
+  jsonText,
+  jsonDirty,
+  variableText,
+  jsonValidation,
+  switchTab,
+  formatJson,
+  copyJson,
+  saveSource,
+} = useOnlineSourceEdit<BookSourceSummaryDto, EditTab>({
+  open: toRef(props, 'open'),
+  source: toRef(props, 'source'),
+  adapter: bookSourceAdapter,
+  initialTab: 'basic',
+  jsonTabId: 'json',
+  clearFormState,
+  hydrateFormFromObject,
+  buildMergedObject: () => {
+    const base = rawBaseObj.value
+    const snap = initialSnapshot
+    const out: Record<string, unknown> = { ...base }
+    out.bookSourceName = form.bookSourceName.trim()
+    out.bookSourceUrl = form.bookSourceUrl.trim()
+    mergeOptionalField(base, out, 'bookSourceGroup', form.bookSourceGroup, snap?.bookSourceGroup, true)
+    mergeOptionalField(base, out, 'bookSourceComment', form.bookSourceComment, snap?.bookSourceComment)
+
+    if ('bookSourceType' in base || !snap || form.bookSourceType !== snap.bookSourceType) {
+      out.bookSourceType = numVal(form.bookSourceType, 0)
+    }
+    if ('enabled' in base || !snap || form.enabled !== snap.enabled) {
+      out.enabled = form.enabled
+    }
+    if ('enabledExplore' in base || !snap || form.enabledExplore !== snap.enabledExplore) {
+      out.enabledExplore = form.enabledExplore
+    }
+    if ('enabledCookieJar' in base || !snap || form.enabledCookieJar !== snap.enabledCookieJar) {
+      out.enabledCookieJar = form.enabledCookieJar
+    }
+    const normalizedWeight = numVal(form.weight, 0)
+    if ('weight' in base || !snap || normalizedWeight !== snap.weight) {
+      out.weight = normalizedWeight
+    }
+
+    mergeOptionalField(base, out, 'concurrentRate', form.concurrentRate, snap?.concurrentRate, true)
+    mergeOptionalField(base, out, 'header', form.header, snap?.header)
+    mergeOptionalField(base, out, 'bookUrlPattern', form.bookUrlPattern, snap?.bookUrlPattern, true)
+    mergeOptionalField(base, out, 'loginUrl', form.loginUrl, snap?.loginUrl)
+    mergeOptionalField(base, out, 'loginUi', form.loginUi, snap?.loginUi)
+    mergeOptionalField(base, out, 'loginCheckJs', form.loginCheckJs, snap?.loginCheckJs)
+    mergeOptionalField(base, out, 'jsLib', form.jsLib, snap?.jsLib)
+    mergeOptionalField(base, out, 'searchUrl', form.searchUrl, snap?.searchUrl)
+    mergeOptionalField(base, out, 'exploreUrl', form.exploreUrl, snap?.exploreUrl)
+
+    const sections: Array<
+      [string, Record<string, string>, Record<string, string> | undefined, RuleFieldDef[]]
+    > = [
+      ['ruleSearch', form.ruleSearch, snap?.ruleSearch, searchRuleFields],
+      ['ruleExplore', form.ruleExplore, snap?.ruleExplore, exploreRuleFields],
+      ['ruleBookInfo', form.ruleBookInfo, snap?.ruleBookInfo, bookInfoRuleFields],
+      ['ruleToc', form.ruleToc, snap?.ruleToc, tocRuleFields],
+      ['ruleContent', form.ruleContent, snap?.ruleContent, contentRuleFields],
+    ]
+    for (const [key, map, initMap, fields] of sections) {
+      const merged = mergeRuleSection(base[key], map, initMap, fields)
+      if (merged) {
+        out[key] = merged
+      } else {
+        delete out[key]
       }
-    } catch {
-      // fall back to string
     }
-  }
-  return edited
-}
-
-function mergeRuleSection(
-  baseRule: unknown,
-  editedMap: Record<string, string>,
-  initialMap: Record<string, string> | undefined,
-  fields: RuleFieldDef[],
-): Record<string, unknown> | undefined {
-  const baseObj =
-    baseRule && typeof baseRule === 'object' && !Array.isArray(baseRule)
-      ? (baseRule as Record<string, unknown>)
-      : null
-  const merged: Record<string, unknown> = baseObj ? { ...baseObj } : {}
-
-  for (const f of fields) {
-    const val = editedMap[f.key] ?? ''
-    const initVal = initialMap?.[f.key] ?? ''
-    if (val === initVal) {
-      // Unchanged from snapshot: preserve original value & type (or absence) losslessly
-      continue
-    }
-    if (val.trim().length > 0) {
-      merged[f.key] = coerceEditedValue(baseObj?.[f.key], val)
-    } else {
-      delete merged[f.key]
-    }
-  }
-  return Object.keys(merged).length > 0 ? merged : undefined
-}
-
-function mergeOptionalField(
-  target: Record<string, unknown>,
-  key: string,
-  edited: string,
-  initial: string | undefined,
-  trim = false,
-): void {
-  if (initial !== undefined && edited === initial) {
-    return
-  }
-  const next = trim ? edited.trim() : edited
-  if (next.trim().length > 0) {
-    target[key] = coerceEditedValue(rawBaseObj.value[key], next)
-  } else {
-    delete target[key]
-  }
-}
-
-function buildMergedObject(): Record<string, unknown> {
-  const base = rawBaseObj.value
-  const snap = initialSnapshot
-  const out: Record<string, unknown> = { ...base }
-  out.bookSourceName = form.bookSourceName.trim()
-  out.bookSourceUrl = form.bookSourceUrl.trim()
-  mergeOptionalField(out, 'bookSourceGroup', form.bookSourceGroup, snap?.bookSourceGroup, true)
-  mergeOptionalField(out, 'bookSourceComment', form.bookSourceComment, snap?.bookSourceComment)
-
-  if ('bookSourceType' in base || !snap || form.bookSourceType !== snap.bookSourceType) {
-    out.bookSourceType = numVal(form.bookSourceType, 0)
-  }
-  if ('enabled' in base || !snap || form.enabled !== snap.enabled) {
-    out.enabled = form.enabled
-  }
-  if ('enabledExplore' in base || !snap || form.enabledExplore !== snap.enabledExplore) {
-    out.enabledExplore = form.enabledExplore
-  }
-  if ('enabledCookieJar' in base || !snap || form.enabledCookieJar !== snap.enabledCookieJar) {
-    out.enabledCookieJar = form.enabledCookieJar
-  }
-  const normalizedWeight = numVal(form.weight, 0)
-  if ('weight' in base || !snap || normalizedWeight !== snap.weight) {
-    out.weight = normalizedWeight
-  }
-
-  mergeOptionalField(out, 'concurrentRate', form.concurrentRate, snap?.concurrentRate, true)
-  mergeOptionalField(out, 'header', form.header, snap?.header)
-  mergeOptionalField(out, 'bookUrlPattern', form.bookUrlPattern, snap?.bookUrlPattern, true)
-  mergeOptionalField(out, 'loginUrl', form.loginUrl, snap?.loginUrl)
-  mergeOptionalField(out, 'loginUi', form.loginUi, snap?.loginUi)
-  mergeOptionalField(out, 'loginCheckJs', form.loginCheckJs, snap?.loginCheckJs)
-  mergeOptionalField(out, 'jsLib', form.jsLib, snap?.jsLib)
-  mergeOptionalField(out, 'searchUrl', form.searchUrl, snap?.searchUrl)
-  mergeOptionalField(out, 'exploreUrl', form.exploreUrl, snap?.exploreUrl)
-
-  const sections: Array<[string, Record<string, string>, Record<string, string> | undefined, RuleFieldDef[]]> = [
-    ['ruleSearch', form.ruleSearch, snap?.ruleSearch, searchRuleFields],
-    ['ruleExplore', form.ruleExplore, snap?.ruleExplore, exploreRuleFields],
-    ['ruleBookInfo', form.ruleBookInfo, snap?.ruleBookInfo, bookInfoRuleFields],
-    ['ruleToc', form.ruleToc, snap?.ruleToc, tocRuleFields],
-    ['ruleContent', form.ruleContent, snap?.ruleContent, contentRuleFields],
-  ]
-  for (const [key, map, initMap, fields] of sections) {
-    const merged = mergeRuleSection(base[key], map, initMap, fields)
-    if (merged) {
-      out[key] = merged
-    } else {
-      delete out[key]
-    }
-  }
-  return out
-}
-
-const jsonValidation = computed<{ valid: boolean; error: string | null }>(() => {
-  if (activeTab.value !== 'json' && !jsonDirty.value) {
+    return out
+  },
+  validateForm: () => {
     if (!form.bookSourceName.trim() && !form.bookSourceUrl.trim()) {
-      return { valid: false, error: '书源名称与书源地址不能同时为空' }
+      return t('onlineSources.edit.nameAndUrlRequired')
     }
-    return { valid: true, error: null }
-  }
-  const txt = jsonText.value.trim()
-  if (!txt) return { valid: false, error: '书源 JSON 不能为空' }
-  try {
-    const parsed = JSON.parse(txt)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return { valid: false, error: '书源 JSON 必须是单个对象 {...}' }
-    }
-    const obj = parsed as Record<string, unknown>
+    return null
+  },
+  validateJsonObject: (obj) => {
     const name = strVal(obj.bookSourceName).trim()
     const url = strVal(obj.bookSourceUrl).trim()
     if (!name && !url) {
-      return { valid: false, error: 'bookSourceName 与 bookSourceUrl 不能同时为空' }
+      return t('onlineSources.edit.nameAndUrlRequired')
     }
-    return { valid: true, error: null }
-  } catch (err) {
-    return { valid: false, error: err instanceof Error ? err.message : 'JSON 语法错误' }
-  }
+    return null
+  },
+  getGroupName: () => form.bookSourceGroup,
+  getEnabled: () => form.enabled,
+  getWeight: () => numVal(form.weight, 0),
+  onSaved: (updated) => emit('saved', updated),
+  onSavedAndDebug: (updated) => emit('savedAndDebug', updated),
+  onClose: () => emit('close'),
 })
 
-function hasAnyRule(map: Record<string, string>): boolean {
-  return Object.values(map).some((v) => v.trim().length > 0)
-}
+const domainLabel = computed(() => t('onlineSources.domainLabel.book'))
 
-const tabItems = computed(() => [
-  { id: 'basic' as EditTab, label: '基本', icon: LuInfo, activeDot: false },
+const advancedFieldCount = computed(() => {
+  const fields = [
+    form.header,
+    form.bookUrlPattern,
+    form.loginUrl,
+    form.loginUi,
+    form.loginCheckJs,
+    form.jsLib,
+    variableText.value,
+  ]
+  return fields.filter((val) => val.trim().length > 0).length
+})
+
+const tabItems = computed<MdTabItem<EditTab>[]>(() => [
+  { value: 'basic', label: t('onlineSources.edit.tabBasic'), icon: LuInfo },
   {
-    id: 'search' as EditTab,
-    label: '搜索',
+    value: 'search',
+    label: t('onlineSources.edit.tabSearch'),
     icon: LuSearch,
-    activeDot: Boolean(form.searchUrl.trim() || hasAnyRule(form.ruleSearch)),
+    badge: form.searchUrl.trim() || hasAnyRule(form.ruleSearch) ? '•' : undefined,
   },
   {
-    id: 'explore' as EditTab,
-    label: '发现',
+    value: 'explore',
+    label: t('onlineSources.edit.tabExplore'),
     icon: LuCompass,
-    activeDot: Boolean(form.exploreUrl.trim() || hasAnyRule(form.ruleExplore)),
+    badge: form.exploreUrl.trim() || hasAnyRule(form.ruleExplore) ? '•' : undefined,
   },
   {
-    id: 'book_info' as EditTab,
-    label: '详情',
+    value: 'book_info',
+    label: t('onlineSources.edit.tabDetail'),
     icon: LuBookOpen,
-    activeDot: hasAnyRule(form.ruleBookInfo),
+    badge: hasAnyRule(form.ruleBookInfo) ? '•' : undefined,
   },
   {
-    id: 'toc' as EditTab,
-    label: '目录',
+    value: 'toc',
+    label: t('onlineSources.edit.tabToc'),
     icon: LuList,
-    activeDot: hasAnyRule(form.ruleToc),
+    badge: hasAnyRule(form.ruleToc) ? '•' : undefined,
   },
   {
-    id: 'content' as EditTab,
-    label: '正文',
+    value: 'content',
+    label: bt('sourceEditor.tabContent'),
     icon: LuFileText,
-    activeDot: hasAnyRule(form.ruleContent),
+    badge: hasAnyRule(form.ruleContent) ? '•' : undefined,
   },
-  { id: 'json' as EditTab, label: 'JSON', icon: LuCode2, activeDot: false },
+  { value: 'json', label: t('onlineSources.edit.tabJson'), icon: LuCode2 },
 ])
 
-function switchTab(next: EditTab): void {
-  if (next === activeTab.value) return
-  if (activeTab.value === 'json' && jsonDirty.value) {
-    try {
-      const parsed = JSON.parse(jsonText.value)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        snackbar.show({ message: 'JSON 必须是单个对象，请先修正语法', tone: 'error' })
-        return
-      }
-      hydrateFormFromObject(parsed as Record<string, unknown>)
-      jsonDirty.value = false
-    } catch (err) {
-      snackbar.show({
-        message: err instanceof Error ? `JSON 语法有误，无法切换：${err.message}` : 'JSON 语法有误',
-        tone: 'error',
-      })
-      return
-    }
-  }
-  if (next === 'json') {
-    jsonText.value = JSON.stringify(buildMergedObject(), null, 2)
-    jsonDirty.value = false
-  }
-  activeTab.value = next
-}
-
-async function loadSourceRaw(src: BookSourceSummaryDto): Promise<void> {
-  const seq = ++loadSeq
-  const targetId = src.id
-  loading.value = true
-  loadError.value = null
-  activeTab.value = 'basic'
-  clearFormState()
-  try {
-    const [obj, varRes] = await Promise.all([
-      onlineBookApi.fetchSourceJson(targetId),
-      onlineBookApi.getSourceVariable(targetId),
-    ])
-    if (seq !== loadSeq || !props.open || props.source?.id !== targetId) return
-    hydrateFormFromObject(obj, src)
-    const fullVar = varRes.variable ?? ''
-    variableText.value = fullVar
-    initialVariableText.value = fullVar
-    jsonText.value = JSON.stringify(buildMergedObject(), null, 2)
-  } catch (err) {
-    if (seq !== loadSeq || !props.open || props.source?.id !== targetId) return
-    clearFormState()
-    loadError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    if (seq === loadSeq) {
-      loading.value = false
-    }
-  }
-}
-
-watch(
-  () => [props.open, props.source?.id] as const,
-  ([isOpen]) => {
-    if (isOpen && props.source) {
-      void loadSourceRaw(props.source)
-    } else {
-      loadSeq += 1
-      loading.value = false
-      loadError.value = null
-      clearFormState()
-    }
-  },
-  { immediate: true },
+const canSave = computed(
+  () => !loading.value && !saving.value && !loadError.value && jsonValidation.value.valid,
 )
-
-function formatJson(): void {
-  try {
-    const parsed = JSON.parse(jsonText.value)
-    jsonText.value = JSON.stringify(parsed, null, 2)
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? `格式化失败：${err.message}` : 'JSON 语法无效',
-      tone: 'error',
-    })
-  }
-}
-
-async function copyJson(): Promise<void> {
-  const txt =
-    activeTab.value === 'json' ? jsonText.value : JSON.stringify(buildMergedObject(), null, 2)
-  try {
-    await navigator.clipboard.writeText(txt)
-    snackbar.show({ message: '已复制书源 JSON' })
-  } catch {
-    snackbar.show({ message: '复制失败', tone: 'error' })
-  }
-}
-
-async function saveSource(openDebugAfter = false): Promise<void> {
-  if (!props.source || loading.value || saving.value || Boolean(loadError.value) || !jsonValidation.value.valid) return
-
-  const targetId = props.source.id
-  let finalObj: Record<string, unknown>
-  if (activeTab.value === 'json' && jsonDirty.value) {
-    try {
-      finalObj = JSON.parse(jsonText.value) as Record<string, unknown>
-      hydrateFormFromObject(finalObj)
-    } catch (err) {
-      snackbar.show({
-        message: err instanceof Error ? err.message : 'JSON 语法错误',
-        tone: 'error',
-      })
-      return
-    }
-  } else {
-    finalObj = buildMergedObject()
-  }
-
-  saving.value = true
-  try {
-    const patch: {
-      enabled?: boolean
-      group_name?: string
-      weight?: number
-      variable?: string
-      raw_json?: string
-    } = {
-      enabled: form.enabled,
-      group_name: form.bookSourceGroup.trim(),
-      weight: numVal(form.weight, 0),
-      raw_json: JSON.stringify(finalObj),
-    }
-    if (variableText.value !== initialVariableText.value) {
-      patch.variable = variableText.value
-    }
-    const updated = await onlineBookApi.updateSource(targetId, patch)
-    snackbar.show({ message: `已保存书源「${updated.name}」` })
-    if (openDebugAfter) {
-      emit('savedAndDebug', updated)
-    } else {
-      emit('saved', updated)
-      emit('close')
-    }
-  } catch (err) {
-    snackbar.show({
-      message: err instanceof Error ? err.message : String(err),
-      tone: 'error',
-    })
-  } finally {
-    saving.value = false
-  }
-}
 </script>
 
 <template>
-  <MdSideSheet
+  <MdDialog
     :open="open"
-    :title="`编辑书源 · ${form.bookSourceName || source?.name || ''}`"
+    :title="
+      t('onlineSources.edit.title', {
+        domain: domainLabel,
+        name: form.bookSourceName || source?.name || '',
+      })
+    "
     :subtitle="form.bookSourceUrl || source?.source_url"
-    width-class="w-[min(54rem,100vw)]"
+    fullscreen
     @close="emit('close')"
   >
-    <template #subheader>
-      <!-- MD3 Pill Tab Strip (modeled after legado-with-MD3 BookSourceEditActivity) -->
-      <div class="flex flex-wrap items-center gap-1.5 border-b border-[var(--md-sys-color-outline-variant)]/55 pb-3">
-        <button
-          v-for="tab in tabItems"
-          :key="tab.id"
-          type="button"
-          class="md-state inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-medium transition"
-          :class="
-            activeTab === tab.id
-              ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-              : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)]'
-          "
-          @click="switchTab(tab.id)"
-        >
-          <component :is="tab.icon" class="h-3.5 w-3.5" />
-          <span>{{ tab.label }}</span>
-          <span
-            v-if="tab.activeDot"
-            class="h-1.5 w-1.5 rounded-full bg-[var(--md-sys-color-primary)]"
-          />
-        </button>
+    <div class="mx-auto flex w-full max-w-5xl flex-col gap-4">
+      <MdTabs
+        :model-value="activeTab"
+        :tabs="tabItems"
+        variant="primary"
+        @update:model-value="switchTab"
+      />
+
+      <!-- Loading -->
+      <div
+        v-if="loading"
+        class="flex items-center justify-center gap-3 py-20 text-body-medium text-on-surface-variant"
+      >
+        <MdCircularProgress indeterminate :size="24" :stroke-width="3" />
+        <span>{{ t('onlineSources.edit.loading', { domain: domainLabel }) }}</span>
       </div>
-    </template>
 
-    <div
-      v-if="loading"
-      class="flex items-center justify-center gap-2 py-20 text-sm text-[var(--md-sys-color-on-surface-variant)]"
-    >
-      <LuLoader2 class="h-4 w-4 animate-spin" />
-      <span>正在加载书源规则…</span>
-    </div>
+      <!-- Load Error -->
+      <div
+        v-else-if="loadError"
+        role="alert"
+        class="rounded-corner-md bg-error-container px-4 py-3 text-body-small text-on-error-container"
+      >
+        {{ loadError }}
+      </div>
 
-    <div
-      v-else-if="loadError"
-      class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-4 py-3 text-xs text-[var(--md-sys-color-on-error-container)]"
-    >
-      {{ loadError }}
-    </div>
+      <!-- Main Tab Panels -->
+      <div v-else class="flex flex-col gap-4">
+        <!-- TAB 1: Basic Info & Collapsible Advanced Network/Auth -->
+        <template v-if="activeTab === 'basic'">
+          <section class="flex flex-col gap-4 rounded-corner-lg bg-surface-container p-4 sm:p-5">
+            <h4 class="text-title-small text-on-surface">
+              {{ t('onlineSources.edit.basicSectionTitle') }}
+            </h4>
 
-    <div v-else class="space-y-4 pt-1">
-      <!-- TAB 1: Basic Info & Request / Auth -->
-      <template v-if="activeTab === 'basic'">
-        <!-- Core Identity -->
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">基础信息</h4>
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                书源名称 <span class="font-mono opacity-65">bookSourceName</span>
-              </span>
-              <input
-                v-model="form.bookSourceName"
-                type="text"
-                placeholder="必填"
-                class="md-input w-full py-2 text-sm"
-              />
-            </label>
-
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                书源分组 <span class="font-mono opacity-65">bookSourceGroup</span>
-              </span>
-              <input
-                v-model="form.bookSourceGroup"
-                type="text"
-                placeholder="例如：精品、轻小说"
-                class="md-input w-full py-2 text-sm"
-              />
-            </label>
-
-            <label class="block space-y-1 sm:col-span-2">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                书源地址 <span class="font-mono opacity-65">bookSourceUrl</span>
-              </span>
-              <input
-                v-model="form.bookSourceUrl"
-                type="text"
-                placeholder="https://example.com"
-                class="md-input w-full py-2 font-mono text-xs"
-              />
-            </label>
-
-            <div class="space-y-1">
-              <span class="block text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                书源类型 <span class="font-mono opacity-65">bookSourceType</span>
-              </span>
-              <AppSelect
-                v-model="form.bookSourceType"
-                :options="sourceTypeOptions"
-              />
-            </div>
-
-            <div class="grid grid-cols-2 gap-2.5">
-              <label class="block space-y-1">
-                <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">并发率</span>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.nameLabel') }}
+                  <span class="font-mono opacity-65">bookSourceName</span>
+                </span>
                 <input
-                  v-model="form.concurrentRate"
+                  v-model="form.bookSourceName"
                   type="text"
-                  placeholder="如 10/1000 或 200"
-                  class="md-input w-full py-2 font-mono text-xs"
+                  class="md-input w-full py-2 text-body-medium"
                 />
               </label>
 
-              <label class="block space-y-1">
-                <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">排序权重</span>
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.groupLabel') }}
+                  <span class="font-mono opacity-65">bookSourceGroup</span>
+                </span>
                 <input
-                  v-model.number="form.weight"
-                  type="number"
-                  class="md-input w-full py-2 font-mono text-xs"
+                  v-model="form.bookSourceGroup"
+                  type="text"
+                  :placeholder="t('onlineSources.edit.groupPlaceholder')"
+                  class="md-input w-full py-2 text-body-medium"
+                />
+              </label>
+
+              <label class="flex flex-col gap-1 sm:col-span-2">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.urlLabel') }}
+                  <span class="font-mono opacity-65">bookSourceUrl</span>
+                </span>
+                <input
+                  v-model="form.bookSourceUrl"
+                  type="text"
+                  :placeholder="t('onlineSources.edit.urlPlaceholder')"
+                  class="md-input w-full py-2 font-mono text-body-small"
+                />
+              </label>
+
+              <div class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.sourceTypeLabel') }}
+                  <span class="font-mono opacity-65">bookSourceType</span>
+                </span>
+                <MdSelect
+                  v-model="form.bookSourceType"
+                  :options="sourceTypeOptions"
+                  size="sm"
+                />
+              </div>
+
+              <div class="grid grid-cols-2 gap-2.5">
+                <label class="flex flex-col gap-1">
+                  <span class="text-label-medium text-on-surface-variant">
+                    {{ t('onlineSources.edit.concurrentRateLabel') }}
+                  </span>
+                  <input
+                    v-model="form.concurrentRate"
+                    type="text"
+                    :placeholder="t('onlineSources.edit.concurrentRatePlaceholder')"
+                    class="md-input w-full py-2 font-mono text-body-small"
+                  />
+                </label>
+
+                <label class="flex flex-col gap-1">
+                  <span class="text-label-medium text-on-surface-variant">
+                    {{ t('onlineSources.edit.weightLabel') }}
+                  </span>
+                  <input
+                    v-model.number="form.weight"
+                    type="number"
+                    class="md-input w-full py-2 font-mono text-body-small"
+                  />
+                </label>
+              </div>
+
+              <label class="flex flex-col gap-1 sm:col-span-2">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.commentLabel') }}
+                  <span class="font-mono opacity-65">bookSourceComment</span>
+                </span>
+                <textarea
+                  v-model="form.bookSourceComment"
+                  rows="2"
+                  :placeholder="t('onlineSources.edit.commentPlaceholder')"
+                  class="md-input w-full py-2 text-body-small leading-5"
                 />
               </label>
             </div>
 
-            <label class="block space-y-1 sm:col-span-2">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                书源注释 <span class="font-mono opacity-65">bookSourceComment</span>
-              </span>
-              <textarea
-                v-model="form.bookSourceComment"
-                rows="2"
-                placeholder="作者说明、使用注意或更新记录…"
-                class="md-input w-full py-2 text-xs leading-5"
+            <!-- Feature Switches -->
+            <div class="flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-outline-variant/50 pt-3">
+              <MdSwitch
+                v-model="form.enabled"
+                :label="t('onlineSources.edit.enabledSwitch')"
               />
-            </label>
-          </div>
-
-          <!-- Feature Switches -->
-          <div class="flex flex-wrap items-center gap-x-6 gap-y-2.5 border-t border-[var(--md-sys-color-outline-variant)]/40 pt-3">
-            <label class="inline-flex items-center gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
-              <AppSwitch v-model="form.enabled" />
-              <span>启用书源</span>
-            </label>
-            <label class="inline-flex items-center gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
-              <AppSwitch v-model="form.enabledExplore" />
-              <span>启用发现</span>
-            </label>
-            <label class="inline-flex items-center gap-2 text-xs text-[var(--md-sys-color-on-surface)]">
-              <AppSwitch v-model="form.enabledCookieJar" />
-              <span>启用 CookieJar</span>
-            </label>
-          </div>
-        </section>
-
-        <!-- Network & Auth -->
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            请求头、登录与脚本扩展
-          </h4>
-          <div class="grid grid-cols-1 gap-3">
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                请求头 <span class="font-mono opacity-65">header</span>
-              </span>
-              <textarea
-                v-model="form.header"
-                rows="2"
-                spellcheck="false"
-                placeholder='例如：{"User-Agent":"Mozilla/5.0 ..."}'
-                class="md-input w-full py-2 font-mono text-xs leading-5"
+              <MdSwitch
+                v-model="form.enabledExplore"
+                :label="t('onlineSources.edit.enabledExploreSwitch')"
               />
-            </label>
-
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                书籍 URL 正则 <span class="font-mono opacity-65">bookUrlPattern</span>
-              </span>
-              <input
-                v-model="form.bookUrlPattern"
-                type="text"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs"
+              <MdSwitch
+                v-model="form.enabledCookieJar"
+                :label="t('onlineSources.edit.enabledCookieJarSwitch')"
               />
-            </label>
+            </div>
+          </section>
 
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                登录地址 / 脚本 <span class="font-mono opacity-65">loginUrl</span>
-              </span>
-              <textarea
-                v-model="form.loginUrl"
-                rows="2"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
+          <!-- Collapsible Advanced: Network, Auth & Scripts -->
+          <section class="overflow-hidden rounded-corner-lg bg-surface-container">
+            <button
+              type="button"
+              class="md-state flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3.5 text-left sm:px-5"
+              :aria-expanded="advancedExpanded"
+              @click="advancedExpanded = !advancedExpanded"
+            >
+              <div class="flex min-w-0 items-center gap-2">
+                <span class="text-title-small text-on-surface">
+                  {{ bt('sourceEditor.advancedNetworkTitle') }}
+                </span>
+                <span
+                  v-if="advancedFieldCount > 0"
+                  class="text-label-small rounded-corner-full bg-secondary-container px-2 py-0.5 tabular-nums text-on-secondary-container"
+                >
+                  {{ advancedFieldCount }}
+                </span>
+              </div>
+              <LuChevronDown
+                class="h-4 w-4 shrink-0 text-on-surface-variant transition-transform duration-200 ease-standard"
+                :class="advancedExpanded ? 'rotate-180' : ''"
+                aria-hidden="true"
               />
-            </label>
+            </button>
 
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                登录界面定义 <span class="font-mono opacity-65">loginUi</span>
-              </span>
-              <textarea
-                v-model="form.loginUi"
-                rows="3"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-            </label>
+            <div
+              v-if="advancedExpanded"
+              class="flex flex-col gap-3 border-t border-outline-variant/50 px-4 pt-4 pb-5 sm:px-5"
+            >
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.headerLabel') }}
+                  <span class="font-mono opacity-65">header</span>
+                </span>
+                <textarea
+                  v-model="form.header"
+                  rows="2"
+                  spellcheck="false"
+                  :placeholder="t('onlineSources.edit.headerPlaceholder')"
+                  class="md-input w-full py-2 font-mono text-body-small leading-5"
+                />
+              </label>
 
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                登录检测 JS <span class="font-mono opacity-65">loginCheckJs</span>
-              </span>
-              <textarea
-                v-model="form.loginCheckJs"
-                rows="2"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-            </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ bt('sourceEditor.bookUrlPatternLabel') }}
+                  <span class="font-mono opacity-65">bookUrlPattern</span>
+                </span>
+                <input
+                  v-model="form.bookUrlPattern"
+                  type="text"
+                  spellcheck="false"
+                  class="md-input w-full py-2 font-mono text-body-small"
+                />
+              </label>
 
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                JS 扩展库 <span class="font-mono opacity-65">jsLib</span>
-              </span>
-              <textarea
-                v-model="form.jsLib"
-                rows="3"
-                spellcheck="false"
-                class="md-input w-full py-2 font-mono text-xs leading-5"
-              />
-            </label>
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.loginUrlLabel') }}
+                  <span class="font-mono opacity-65">loginUrl</span>
+                </span>
+                <textarea
+                  v-model="form.loginUrl"
+                  rows="2"
+                  spellcheck="false"
+                  class="md-input w-full py-2 font-mono text-body-small leading-5"
+                />
+              </label>
 
-            <label class="block space-y-1">
-              <span class="text-xs text-[var(--md-sys-color-on-surface-variant)]">
-                运行时变量 <span class="font-mono opacity-65">source.variable</span>
-              </span>
-              <input
-                v-model="variableText"
-                type="text"
-                spellcheck="false"
-                placeholder="可选运行时变量字符串"
-                class="md-input w-full py-2 font-mono text-xs"
-              />
-            </label>
-          </div>
-        </section>
-      </template>
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.loginUiLabel') }}
+                  <span class="font-mono opacity-65">loginUi</span>
+                </span>
+                <textarea
+                  v-model="form.loginUi"
+                  rows="3"
+                  spellcheck="false"
+                  class="md-input w-full py-2 font-mono text-body-small leading-5"
+                />
+              </label>
 
-      <!-- TAB 2: Search Rule -->
-      <template v-else-if="activeTab === 'search'">
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            搜索地址 (searchUrl)
-          </h4>
-          <textarea
-            v-model="form.searchUrl"
-            rows="3"
-            spellcheck="false"
-            placeholder="例如：/search?q={{key}}&page={{page}} 或 @js:..."
-            class="md-input w-full py-2 font-mono text-xs leading-5"
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.loginCheckJsLabel') }}
+                  <span class="font-mono opacity-65">loginCheckJs</span>
+                </span>
+                <textarea
+                  v-model="form.loginCheckJs"
+                  rows="2"
+                  spellcheck="false"
+                  class="md-input w-full py-2 font-mono text-body-small leading-5"
+                />
+              </label>
+
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.jsLibLabel') }}
+                  <span class="font-mono opacity-65">jsLib</span>
+                </span>
+                <textarea
+                  v-model="form.jsLib"
+                  rows="3"
+                  spellcheck="false"
+                  class="md-input w-full py-2 font-mono text-body-small leading-5"
+                />
+              </label>
+
+              <label class="flex flex-col gap-1">
+                <span class="text-label-medium text-on-surface-variant">
+                  {{ t('onlineSources.edit.variableLabel') }}
+                  <span class="font-mono opacity-65">source.variable</span>
+                </span>
+                <input
+                  v-model="variableText"
+                  type="text"
+                  spellcheck="false"
+                  :placeholder="t('onlineSources.edit.variablePlaceholder')"
+                  class="md-input w-full py-2 font-mono text-body-small"
+                />
+              </label>
+            </div>
+          </section>
+        </template>
+
+        <!-- TAB 2: Search Rule -->
+        <template v-else-if="activeTab === 'search'">
+          <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4 sm:p-5">
+            <h4 class="text-title-small text-on-surface">
+              {{ t('onlineSources.edit.searchUrlLabel') }}
+            </h4>
+            <textarea
+              v-model="form.searchUrl"
+              rows="3"
+              spellcheck="false"
+              :placeholder="bt('sourceEditor.searchUrlPlaceholder')"
+              class="md-input w-full py-2 font-mono text-body-small leading-5"
+            />
+          </section>
+
+          <RuleFieldsSection
+            v-model="form.ruleSearch"
+            :title="bt('sourceEditor.ruleSearchTitle')"
+            :fields="searchRuleFields"
           />
-        </section>
+        </template>
 
-        <RuleFieldsSection
-          v-model="form.ruleSearch"
-          title="搜索结果解析规则 (ruleSearch)"
-          :fields="searchRuleFields"
-        />
-      </template>
+        <!-- TAB 3: Explore Rule -->
+        <template v-else-if="activeTab === 'explore'">
+          <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4 sm:p-5">
+            <h4 class="text-title-small text-on-surface">
+              {{ t('onlineSources.edit.exploreUrlLabel') }}
+            </h4>
+            <textarea
+              v-model="form.exploreUrl"
+              rows="4"
+              spellcheck="false"
+              :placeholder="bt('sourceEditor.exploreUrlPlaceholder')"
+              class="md-input w-full py-2 font-mono text-body-small leading-5"
+            />
+          </section>
 
-      <!-- TAB 3: Explore Rule -->
-      <template v-else-if="activeTab === 'explore'">
-        <section class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <h4 class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-            发现地址 (exploreUrl)
-          </h4>
-          <textarea
-            v-model="form.exploreUrl"
-            rows="4"
-            spellcheck="false"
-            placeholder="分类名::/category/1/{{page}} 或 JSON 数组格式"
-            class="md-input w-full py-2 font-mono text-xs leading-5"
+          <RuleFieldsSection
+            v-model="form.ruleExplore"
+            :title="bt('sourceEditor.ruleExploreTitle')"
+            :fields="exploreRuleFields"
           />
-        </section>
+        </template>
 
-        <RuleFieldsSection
-          v-model="form.ruleExplore"
-          title="发现结果解析规则 (ruleExplore)"
-          :fields="exploreRuleFields"
-        />
-      </template>
+        <!-- TAB 4: Book Info Rule -->
+        <template v-else-if="activeTab === 'book_info'">
+          <RuleFieldsSection
+            v-model="form.ruleBookInfo"
+            :title="bt('sourceEditor.ruleBookInfoTitle')"
+            :fields="bookInfoRuleFields"
+          />
+        </template>
 
-      <!-- TAB 4: Book Info Rule -->
-      <template v-else-if="activeTab === 'book_info'">
-        <RuleFieldsSection
-          v-model="form.ruleBookInfo"
-          title="书籍详情解析规则 (ruleBookInfo)"
-          :fields="bookInfoRuleFields"
-        />
-      </template>
+        <!-- TAB 5: TOC Rule -->
+        <template v-else-if="activeTab === 'toc'">
+          <RuleFieldsSection
+            v-model="form.ruleToc"
+            :title="bt('sourceEditor.ruleTocTitle')"
+            :fields="tocRuleFields"
+          />
+        </template>
 
-      <!-- TAB 5: TOC Rule -->
-      <template v-else-if="activeTab === 'toc'">
-        <RuleFieldsSection
-          v-model="form.ruleToc"
-          title="目录列表解析规则 (ruleToc)"
-          :fields="tocRuleFields"
-        />
-      </template>
+        <!-- TAB 6: Content Rule -->
+        <template v-else-if="activeTab === 'content'">
+          <RuleFieldsSection
+            v-model="form.ruleContent"
+            :title="bt('sourceEditor.ruleContentTitle')"
+            :fields="contentRuleFields"
+          />
+        </template>
 
-      <!-- TAB 6: Content Rule -->
-      <template v-else-if="activeTab === 'content'">
-        <RuleFieldsSection
-          v-model="form.ruleContent"
-          title="正文内容解析规则 (ruleContent)"
-          :fields="contentRuleFields"
-        />
-      </template>
+        <!-- TAB 7: Raw JSON Source Mode -->
+        <template v-else-if="activeTab === 'json'">
+          <section class="flex flex-col gap-3 rounded-corner-lg bg-surface-container p-4 sm:p-5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-title-small text-on-surface">
+                  {{ t('onlineSources.edit.jsonTitle') }}
+                </span>
+                <span
+                  v-if="jsonValidation.valid"
+                  class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-success-container px-2.5 py-0.5 text-on-success-container"
+                >
+                  <LuCheckCircle2 class="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{{ t('onlineSources.edit.jsonValid') }}</span>
+                </span>
+                <span
+                  v-else
+                  class="text-label-small inline-flex items-center gap-1 rounded-corner-full bg-error-container px-2.5 py-0.5 text-on-error-container"
+                >
+                  <LuXCircle class="h-3.5 w-3.5" aria-hidden="true" />
+                  <span>{{ t('onlineSources.edit.jsonInvalid') }}</span>
+                </span>
+              </div>
 
-      <!-- TAB 7: Raw JSON Source Mode -->
-      <template v-else-if="activeTab === 'json'">
-        <section class="space-y-2.5 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <div class="flex items-center gap-2">
-              <span class="text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-                完整 Legado JSON（与表单双向同步）
-              </span>
-              <span
-                v-if="jsonValidation.valid"
-                class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-success-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-success-container)]"
-              >
-                <LuCheckCircle2 class="h-3 w-3" />
-                <span>JSON 合法</span>
-              </span>
-              <span
-                v-else
-                class="inline-flex items-center gap-1 rounded-full bg-[var(--md-sys-color-error-container)] px-2 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-error-container)]"
-              >
-                <LuXCircle class="h-3 w-3" />
-                <span>语法有误</span>
-              </span>
+              <div class="flex items-center gap-2">
+                <MdButton
+                  variant="tonal"
+                  size="sm"
+                  :icon="LuCode2"
+                  @click="formatJson"
+                >
+                  {{ t('onlineSources.edit.formatJsonBtn') }}
+                </MdButton>
+                <MdButton
+                  variant="outlined"
+                  size="sm"
+                  :icon="LuCopy"
+                  @click="copyJson"
+                >
+                  {{ t('onlineSources.edit.copyJsonBtn') }}
+                </MdButton>
+              </div>
             </div>
 
-            <div class="flex items-center gap-1.5">
-              <button
-                type="button"
-                class="md-btn md-btn-sm md-btn-tonal md-state"
-                @click="formatJson"
-              >
-                <LuCode2 class="h-3.5 w-3.5" />
-                <span>格式化</span>
-              </button>
-              <button
-                type="button"
-                class="md-btn md-btn-sm md-btn-outlined md-state"
-                @click="copyJson"
-              >
-                <LuCopy class="h-3.5 w-3.5" />
-                <span>复制</span>
-              </button>
-            </div>
-          </div>
+            <p
+              v-if="!jsonValidation.valid && jsonValidation.error"
+              role="alert"
+              class="text-body-small text-error"
+            >
+              {{ jsonValidation.error }}
+            </p>
 
-          <p
-            v-if="!jsonValidation.valid && jsonValidation.error"
-            class="text-[11px] text-[var(--md-sys-color-error)]"
-          >
-            {{ jsonValidation.error }}
-          </p>
-
-          <textarea
-            v-model="jsonText"
-            rows="22"
-            spellcheck="false"
-            class="md-input w-full py-2.5 font-mono text-xs leading-5"
-            @input="jsonDirty = true"
-          />
-        </section>
-      </template>
+            <textarea
+              v-model="jsonText"
+              rows="22"
+              spellcheck="false"
+              class="md-input w-full py-2.5 font-mono text-body-small leading-5"
+              @input="jsonDirty = true"
+            />
+          </section>
+        </template>
+      </div>
     </div>
 
     <template #footer>
-      <button
-        type="button"
-        class="md-btn md-btn-text md-state"
+      <MdButton
+        variant="text"
+        :disabled="saving"
         @click="emit('close')"
       >
-        取消
-      </button>
-      <button
-        type="button"
-        :disabled="loading || saving || Boolean(loadError) || !jsonValidation.valid"
-        class="md-btn md-btn-tonal md-state"
+        {{ t('common.cancel') }}
+      </MdButton>
+      <MdButton
+        variant="tonal"
+        :icon="LuFlaskConical"
+        :disabled="!canSave"
         @click="saveSource(true)"
       >
-        <LuFlaskConical class="h-4 w-4" />
-        <span>保存并调试</span>
-      </button>
-      <button
-        type="button"
-        :disabled="loading || saving || Boolean(loadError) || !jsonValidation.valid"
-        class="md-btn md-btn-filled md-state"
+        {{ t('onlineSources.edit.saveAndDebugBtn') }}
+      </MdButton>
+      <MdButton
+        variant="filled"
+        :icon="LuSave"
+        :loading="saving"
+        :disabled="!canSave"
         @click="saveSource(false)"
       >
-        <LuLoader2 v-if="saving" class="h-4 w-4 animate-spin" />
-        <LuSave v-else class="h-4 w-4" />
-        <span>{{ saving ? '保存中…' : '保存' }}</span>
-      </button>
+        {{ saving ? t('onlineSources.edit.savingBtn') : t('onlineSources.edit.saveBtn') }}
+      </MdButton>
     </template>
-  </MdSideSheet>
+  </MdDialog>
 </template>

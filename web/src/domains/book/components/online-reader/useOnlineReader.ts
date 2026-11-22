@@ -1,8 +1,13 @@
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useBookI18n as useI18n } from '@/domains/book/i18n'
+import {
+  parseTextParagraphs,
+  useContinuousChapterReader,
+  type ContinuousChapterSection,
+} from '@/domains/book/readers/useContinuousChapterReader'
+import { libraryRoute, parseItemRef, playRoute } from '@/sources'
 import { useSnackbarStore } from '@/stores/snackbar'
-import { useThemeStore } from '@/stores/theme'
-import { resolveFontStack } from '@/utils/format'
 import { api as bookApi } from '../../api'
 import { useCatalogStore } from '../../store'
 import type { OnlineDownloadTarget } from '../OnlineDownloadModal.vue'
@@ -15,100 +20,41 @@ import {
   buildBookJsCtxFrom,
   matchChapterIndexByTitle,
   resolveChapterPos,
-  type LoadedOnlineChapter,
   type ReaderContext,
 } from './chapterMatch'
 
-const AUTO_LOAD_THRESHOLD_PX = 400
+export type OnlineReaderOverlay = 'toc' | 'typography' | 'switch-source' | 'download' | null
 
 export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
+  const { t } = useI18n()
   const route = useRoute()
   const router = useRouter()
   const catalogStore = useCatalogStore()
-  const themeStore = useThemeStore()
   const snackbar = useSnackbarStore()
 
   const readerCtx = ref<ReaderContext | null>(null)
   const chapters = ref<OnlineChapterItem[]>([])
-  const activeIndex = ref(0)
-  const loadedChapters = ref<LoadedOnlineChapter[]>([])
   const loadingToc = ref(false)
-  const loadingContent = ref(false)
-  const appendingNext = ref(false)
-  const appendError = ref<string | null>(null)
-  const errorMsg = ref<string | null>(null)
+  const tocError = ref<string | null>(null)
   const savingShelf = ref(false)
 
-  const tocOpen = ref(false)
+  // Single mutually-exclusive overlay state (fixes overlapping drawers/dialogs)
+  const activeOverlay = ref<OnlineReaderOverlay>(null)
   const tocQuery = ref('')
-  const typographyOpen = ref(false)
-  const switchSourceOpen = ref(false)
-  const searchingAlts = ref(false)
-  const altCandidates = ref<AggregatedSearchItemDto[]>([])
   const switchingKey = ref<string | null>(null)
-  const downloadOpen = ref(false)
 
-  let loadSeq = 0
   let tocSeq = 0
   let unmounted = false
   let progressSyncTimer: ReturnType<typeof setTimeout> | null = null
   let lastPersistedPos = -1
 
-  const maxWidthPx = computed(() => Math.max(520, 920 - (themeStore.reader.margin_px || 48) * 2))
-
-  const fontSize = computed<number>({
-    get: () => themeStore.reader.font_size || 18,
-    set: (v) => {
-      const clamped = Math.min(30, Math.max(13, Math.round(v)))
-      themeStore.updateReaderPreferences({ font_size: clamped })
-    },
-  })
-
-  const lineHeight = computed<number>({
-    get: () => themeStore.reader.line_height || 1.85,
-    set: (v) => {
-      const clamped = Math.min(2.4, Math.max(1.3, Number(v.toFixed(2))))
-      themeStore.updateReaderPreferences({ line_height: clamped })
-    },
-  })
-
-  const fontFamily = computed<string>({
-    get: () => themeStore.reader.font_family,
-    set: (v) => {
-      themeStore.updateReaderPreferences({ font_family: v })
-    },
-  })
-
-  const fontFamilyStyle = computed(() => resolveFontStack(themeStore.reader.font_family))
-
-  const currentChapter = computed<OnlineChapterItem | null>(
-    () => chapters.value[activeIndex.value] ?? null,
-  )
-
-  const activeLoadedChapter = computed<LoadedOnlineChapter | null>(
-    () =>
-      loadedChapters.value.find((c) => c.pos === activeIndex.value) ??
-      loadedChapters.value[0] ??
-      null,
-  )
-
-  const chapterTitle = computed(
-    () => activeLoadedChapter.value?.title || currentChapter.value?.title || '',
-  )
-
-  const contentCached = computed(() => activeLoadedChapter.value?.cached ?? false)
-
-  const readableChapters = computed(() =>
-    chapters.value.filter((c) => !c.is_volume && Boolean(c.url)),
-  )
-
-  const prevReadableIndex = computed<number | null>(() => {
-    for (let i = activeIndex.value - 1; i >= 0; i -= 1) {
+  function findPrevReadablePos(fromPos: number): number | null {
+    for (let i = fromPos - 1; i >= 0; i -= 1) {
       const ch = chapters.value[i]
       if (ch && !ch.is_volume && ch.url) return i
     }
     return null
-  })
+  }
 
   function findNextReadablePos(fromPos: number): number | null {
     for (let i = fromPos + 1; i < chapters.value.length; i += 1) {
@@ -118,52 +64,33 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     return null
   }
 
-  const nextReadableIndex = computed<number | null>(() => findNextReadablePos(activeIndex.value))
-
-  const lastLoadedPos = computed<number | null>(() => {
-    const last = loadedChapters.value[loadedChapters.value.length - 1]
-    return last ? last.pos : null
-  })
-
-  const nextAppendableIndex = computed<number | null>(() =>
-    lastLoadedPos.value === null
-      ? nextReadableIndex.value
-      : findNextReadablePos(lastLoadedPos.value),
-  )
-
-  const downloadTarget = computed<OnlineDownloadTarget | null>(() => {
-    const c = readerCtx.value
-    if (!c) return null
-    return {
-      sourceId: c.sourceId,
-      sourceName: c.sourceName,
-      bookName: c.name,
-      author: c.author,
-      bookUrl: c.bookUrl,
-      tocUrl: c.tocUrl,
-      coverUrl: c.coverUrl,
-      intro: c.intro,
-      totalChapters: readableChapters.value.length,
+  function clearProgressSyncTimer(): void {
+    if (progressSyncTimer) {
+      clearTimeout(progressSyncTimer)
+      progressSyncTimer = null
     }
-  })
-
-  function readQueryStr(key: string): string {
-    const val = route.query[key]
-    return typeof val === 'string' ? val : ''
   }
 
-  function buildRouteQueryFromCtx(ctx: ReaderContext): Record<string, string> {
+  function readQueryStr(keys: readonly string[]): string {
+    for (const key of keys) {
+      const val = route.query[key]
+      if (typeof val === 'string' && val.trim()) return val.trim()
+    }
+    return ''
+  }
+
+  function buildCanonicalRouteQuery(ctx: ReaderContext): Record<string, string> {
     const q: Record<string, string> = {
-      sourceId: ctx.sourceId,
-      sourceName: ctx.sourceName,
-      bookUrl: ctx.bookUrl,
-      tocUrl: ctx.tocUrl,
-      name: ctx.name,
-      author: ctx.author,
+      source: ctx.sourceId,
+      ref: ctx.bookUrl,
+      toc: ctx.tocUrl,
       chapter: String(ctx.currentChapterIndex || 0),
     }
+    if (ctx.name) q.title = ctx.name
+    if (ctx.author) q.author = ctx.author
+    if (ctx.coverUrl) q.cover = ctx.coverUrl
+    if (ctx.sourceName) q.sourceName = ctx.sourceName
     if (ctx.shelfId) q.shelfId = ctx.shelfId
-    if (ctx.coverUrl) q.coverUrl = ctx.coverUrl
     return q
   }
 
@@ -173,19 +100,13 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
     } catch {
       // ignore storage errors
     }
-    const nextQuery = buildRouteQueryFromCtx(ctx)
+    const nextQuery = buildCanonicalRouteQuery(ctx)
     const same =
+      route.path === '/book/play/online' &&
       Object.keys(nextQuery).length === Object.keys(route.query).length &&
       Object.entries(nextQuery).every(([k, v]) => route.query[k] === v)
     if (!same) {
-      void router.replace({ path: route.path, query: nextQuery })
-    }
-  }
-
-  function clearProgressSyncTimer(): void {
-    if (progressSyncTimer) {
-      clearTimeout(progressSyncTimer)
-      progressSyncTimer = null
+      void router.replace({ path: '/book/play/online', query: nextQuery })
     }
   }
 
@@ -239,16 +160,163 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       .catch(() => {})
   }
 
+  const reader = useContinuousChapterReader({
+    scrollContainerRef: contentScrollRef,
+    isBlocked: () => loadingToc.value,
+    getPrevPos: findPrevReadablePos,
+    getNextPos: findNextReadablePos,
+    fetchChapter: async (pos, { forceRefresh }): Promise<ContinuousChapterSection | null> => {
+      const ctx = readerCtx.value
+      const ch = chapters.value[pos]
+      if (!ctx || !ch || ch.is_volume || !ch.url) return null
+      const sourceId = ctx.sourceId
+      const bookUrl = ctx.bookUrl
+      const res = await onlineBookApi.fetchContent(
+        sourceId,
+        ch.url,
+        buildBookJsCtxFrom(ctx, ch.index, ch.title),
+        { index: ch.index, title: ch.title, url: ch.url },
+        forceRefresh,
+      )
+      if (
+        unmounted ||
+        readerCtx.value?.sourceId !== sourceId ||
+        readerCtx.value?.bookUrl !== bookUrl
+      ) {
+        return null
+      }
+      return {
+        pos,
+        chapterIndex: ch.index,
+        title: res.content.title || ch.title,
+        paragraphs: parseTextParagraphs(res.content.content),
+        cached: res.cached,
+      }
+    },
+    onPrefetch: (pos) => {
+      if (readerCtx.value) {
+        prefetchReadableChapter(findNextReadablePos(pos), readerCtx.value.sourceId)
+      }
+    },
+    onProgress: ({ pos, chapter, immediate }) => {
+      persistReadingProgress(pos, chapter.title, immediate)
+    },
+    progressDebounceMs: 250,
+  })
+
+  const currentChapter = computed<OnlineChapterItem | null>(
+    () => chapters.value[reader.activePos.value] ?? null,
+  )
+
+  const chapterTitle = computed(
+    () => reader.activeChapter.value?.title || currentChapter.value?.title || '',
+  )
+
+  const contentCached = computed(() => Boolean(reader.activeChapter.value?.cached))
+
+  const readableChapters = computed(() =>
+    chapters.value.filter((c) => !c.is_volume && Boolean(c.url)),
+  )
+
+  const downloadTarget = computed<OnlineDownloadTarget | null>(() => {
+    const c = readerCtx.value
+    if (!c) return null
+    return {
+      sourceId: c.sourceId,
+      sourceName: c.sourceName || t('online.sourceLabel'),
+      bookName: c.name,
+      author: c.author,
+      bookUrl: c.bookUrl,
+      tocUrl: c.tocUrl,
+      coverUrl: c.coverUrl,
+      intro: c.intro,
+      totalChapters: readableChapters.value.length,
+    }
+  })
+
+  function openOverlay(next: OnlineReaderOverlay): void {
+    activeOverlay.value = activeOverlay.value === next ? null : next
+  }
+
+  function closeOverlay(): void {
+    activeOverlay.value = null
+  }
+
+  async function openChapter(pos: number, forceRefresh = false): Promise<void> {
+    const ch = chapters.value[pos]
+    if (!ch || ch.is_volume || !ch.url) return
+    if (activeOverlay.value === 'toc') {
+      activeOverlay.value = null
+    }
+    await reader.openChapter(pos, { forceRefresh })
+  }
+
+  async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<void> {
+    const ctx = readerCtx.value
+    if (!ctx) return
+    const seq = ++tocSeq
+    reader.resetState()
+    loadingToc.value = true
+    tocError.value = null
+    try {
+      const tocRes = await onlineBookApi.fetchToc(
+        ctx.sourceId,
+        ctx.tocUrl,
+        buildBookJsCtxFrom(ctx, targetIdx, matchTitle || ''),
+      )
+      if (unmounted || seq !== tocSeq) return
+      chapters.value = tocRes.chapters
+      if (tocRes.chapters.length === 0) {
+        tocError.value = t('reader.onlineEmptyToc')
+        return
+      }
+      const clampedFallback = resolveChapterPos(tocRes.chapters, targetIdx)
+      let idx = matchTitle
+        ? matchChapterIndexByTitle(matchTitle, tocRes.chapters, clampedFallback)
+        : clampedFallback
+
+      if (tocRes.chapters[idx]?.is_volume || !tocRes.chapters[idx]?.url) {
+        const firstReadable = tocRes.chapters.findIndex((c) => !c.is_volume && Boolean(c.url))
+        if (firstReadable >= 0) idx = firstReadable
+      }
+      loadingToc.value = false
+      await openChapter(idx, false)
+    } catch (err) {
+      if (unmounted || seq !== tocSeq) return
+      tocError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      if (!unmounted && seq === tocSeq) {
+        loadingToc.value = false
+      }
+    }
+  }
+
   async function initReader(): Promise<void> {
-    const shelfIdQuery = readQueryStr('shelfId')
-    const sourceIdQuery = readQueryStr('sourceId')
-    const sourceNameQuery = readQueryStr('sourceName')
-    const bookUrlQuery = readQueryStr('bookUrl')
-    const tocUrlQuery = readQueryStr('tocUrl')
-    const nameQuery = readQueryStr('name')
-    const authorQuery = readQueryStr('author')
-    const coverUrlQuery = readQueryStr('coverUrl')
-    const chapterQuery = readQueryStr('chapter')
+    const parsedRef = parseItemRef(route, 'book')
+    const shelfIdQuery = readQueryStr(['shelfId', 'shelf_id'])
+    const sourceNameQuery = readQueryStr(['sourceName', 'source_name'])
+    const sourceIdQuery =
+      parsedRef && parsedRef.scope !== 'local'
+        ? parsedRef.sourceId
+        : readQueryStr(['source', 'sourceId', 'source_id'])
+    const bookUrlQuery =
+      parsedRef && parsedRef.scope !== 'local'
+        ? parsedRef.ref
+        : readQueryStr(['ref', 'bookUrl', 'book_url'])
+    const tocUrlQuery =
+      parsedRef && parsedRef.scope !== 'local'
+        ? (parsedRef.hints?.extra?.toc ?? readQueryStr(['toc', 'tocUrl', 'toc_url']))
+        : readQueryStr(['toc', 'tocUrl', 'toc_url'])
+    const nameQuery =
+      (parsedRef && parsedRef.scope !== 'local' ? parsedRef.hints?.title : '') ||
+      readQueryStr(['title', 'name'])
+    const authorQuery =
+      (parsedRef && parsedRef.scope !== 'local' ? parsedRef.hints?.author : '') ||
+      readQueryStr(['author'])
+    const coverUrlQuery =
+      (parsedRef && parsedRef.scope !== 'local' ? parsedRef.hints?.cover : '') ||
+      readQueryStr(['cover', 'coverUrl', 'cover_url'])
+    const chapterQuery = readQueryStr(['chapter'])
     const parsedChapter = chapterQuery ? Number.parseInt(chapterQuery, 10) : NaN
 
     let storedCtx: ReaderContext | null = null
@@ -354,232 +422,12 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
 
     if (unmounted) return
     if (!readerCtx.value) {
-      void router.replace({ path: '/book/catalog', query: { scope: 'online' } })
+      void router.replace(libraryRoute('book', { scope: 'online' }))
       return
     }
 
     syncContextToUrlAndStorage(readerCtx.value)
     await loadTocAndOpen(readerCtx.value.currentChapterIndex || 0)
-  }
-
-  async function loadTocAndOpen(targetIdx: number, matchTitle?: string): Promise<void> {
-    const ctx = readerCtx.value
-    if (!ctx) return
-    const seq = ++tocSeq
-    loadingToc.value = true
-    errorMsg.value = null
-    try {
-      const tocRes = await onlineBookApi.fetchToc(
-        ctx.sourceId,
-        ctx.tocUrl,
-        buildBookJsCtxFrom(ctx, targetIdx, matchTitle || ''),
-      )
-      if (unmounted || seq !== tocSeq) return
-      chapters.value = tocRes.chapters
-      if (tocRes.chapters.length === 0) {
-        errorMsg.value = '目录为空，请检查书源状态或尝试换源'
-        return
-      }
-      const clampedFallback = resolveChapterPos(tocRes.chapters, targetIdx)
-      let idx = matchTitle
-        ? matchChapterIndexByTitle(matchTitle, tocRes.chapters, clampedFallback)
-        : clampedFallback
-
-      if (tocRes.chapters[idx]?.is_volume || !tocRes.chapters[idx]?.url) {
-        const firstReadable = tocRes.chapters.findIndex((c) => !c.is_volume && Boolean(c.url))
-        if (firstReadable >= 0) idx = firstReadable
-      }
-      loadingToc.value = false
-      await openChapter(idx, false)
-    } catch (err) {
-      if (unmounted || seq !== tocSeq) return
-      errorMsg.value = err instanceof Error ? err.message : String(err)
-    } finally {
-      if (!unmounted && seq === tocSeq) {
-        loadingToc.value = false
-      }
-    }
-  }
-
-  async function openChapter(pos: number, forceRefresh = false): Promise<void> {
-    const ctx = readerCtx.value
-    const ch = chapters.value[pos]
-    if (!ctx || !ch || ch.is_volume || !ch.url) return
-
-    clearProgressSyncTimer()
-    const seq = ++loadSeq
-    const sourceId = ctx.sourceId
-    const bookUrl = ctx.bookUrl
-
-    activeIndex.value = pos
-    loadedChapters.value = []
-    appendingNext.value = false
-    appendError.value = null
-    tocOpen.value = false
-    loadingContent.value = true
-    errorMsg.value = null
-
-    try {
-      const res = await onlineBookApi.fetchContent(
-        sourceId,
-        ch.url,
-        buildBookJsCtxFrom(ctx, ch.index, ch.title),
-        { index: ch.index, title: ch.title, url: ch.url },
-        forceRefresh,
-      )
-      if (
-        unmounted ||
-        seq !== loadSeq ||
-        readerCtx.value?.sourceId !== sourceId ||
-        readerCtx.value?.bookUrl !== bookUrl
-      ) {
-        return
-      }
-
-      const resolvedTitle = res.content.title || ch.title
-      const parsedParagraphs = res.content.content
-        .split(/\n+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-
-      loadedChapters.value = [
-        {
-          pos,
-          chapterIndex: ch.index,
-          title: resolvedTitle,
-          paragraphs: parsedParagraphs,
-          cached: res.cached,
-        },
-      ]
-      loadingContent.value = false
-
-      await nextTick()
-      if (unmounted || seq !== loadSeq) return
-      if (contentScrollRef.value) {
-        contentScrollRef.value.scrollTop = 0
-      }
-
-      persistReadingProgress(pos, resolvedTitle, true)
-
-      const nextPos = findNextReadablePos(pos)
-      prefetchReadableChapter(nextPos, sourceId)
-
-      if (
-        parsedParagraphs.length > 0 &&
-        nextPos !== null &&
-        contentScrollRef.value &&
-        contentScrollRef.value.scrollHeight <= contentScrollRef.value.clientHeight + 120
-      ) {
-        void appendNextChapter()
-      }
-    } catch (err) {
-      if (unmounted || seq !== loadSeq) return
-      errorMsg.value = err instanceof Error ? err.message : String(err)
-    } finally {
-      if (!unmounted && seq === loadSeq) {
-        loadingContent.value = false
-      }
-    }
-  }
-
-  async function appendNextChapter(): Promise<void> {
-    const ctx = readerCtx.value
-    const targetPos = nextAppendableIndex.value
-    if (!ctx || targetPos === null) return
-    if (loadingToc.value || loadingContent.value || appendingNext.value) return
-    if (loadedChapters.value.some((c) => c.pos === targetPos)) return
-
-    const ch = chapters.value[targetPos]
-    if (!ch || ch.is_volume || !ch.url) return
-
-    const seq = loadSeq
-    const sourceId = ctx.sourceId
-    const bookUrl = ctx.bookUrl
-    appendingNext.value = true
-    appendError.value = null
-
-    try {
-      const res = await onlineBookApi.fetchContent(
-        sourceId,
-        ch.url,
-        buildBookJsCtxFrom(ctx, ch.index, ch.title),
-        { index: ch.index, title: ch.title, url: ch.url },
-        false,
-      )
-      if (
-        unmounted ||
-        seq !== loadSeq ||
-        readerCtx.value?.sourceId !== sourceId ||
-        readerCtx.value?.bookUrl !== bookUrl
-      ) {
-        return
-      }
-      if (loadedChapters.value.some((c) => c.pos === targetPos)) return
-
-      const resolvedTitle = res.content.title || ch.title
-      const parsedParagraphs = res.content.content
-        .split(/\n+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-
-      loadedChapters.value.push({
-        pos: targetPos,
-        chapterIndex: ch.index,
-        title: resolvedTitle,
-        paragraphs: parsedParagraphs,
-        cached: res.cached,
-      })
-
-      prefetchReadableChapter(findNextReadablePos(targetPos), sourceId)
-    } catch (err) {
-      if (unmounted || seq !== loadSeq) return
-      appendError.value = err instanceof Error ? err.message : String(err)
-    } finally {
-      if (!unmounted && seq === loadSeq) {
-        appendingNext.value = false
-      }
-    }
-  }
-
-  function handleContentScroll(): void {
-    const el = contentScrollRef.value
-    if (!el || loadingContent.value || loadingToc.value || loadedChapters.value.length === 0) return
-
-    const containerRect = el.getBoundingClientRect()
-    const anchorY = containerRect.top + Math.min(200, containerRect.height * 0.35)
-    const sections = el.querySelectorAll<HTMLElement>('[data-chapter-pos]')
-    let visiblePos = loadedChapters.value[0]!.pos
-    for (const sec of sections) {
-      const rect = sec.getBoundingClientRect()
-      if (rect.top <= anchorY) {
-        const parsed = Number.parseInt(sec.dataset.chapterPos ?? '', 10)
-        if (Number.isFinite(parsed)) {
-          visiblePos = parsed
-        }
-      } else {
-        break
-      }
-    }
-
-    if (visiblePos !== activeIndex.value) {
-      activeIndex.value = visiblePos
-      const item = loadedChapters.value.find((c) => c.pos === visiblePos)
-      const title = item?.title || chapters.value[visiblePos]?.title || ''
-      persistReadingProgress(visiblePos, title, false)
-      if (readerCtx.value) {
-        prefetchReadableChapter(findNextReadablePos(visiblePos), readerCtx.value.sourceId)
-      }
-    }
-
-    const remaining = el.scrollHeight - el.scrollTop - el.clientHeight
-    if (
-      remaining <= AUTO_LOAD_THRESHOLD_PX &&
-      !appendingNext.value &&
-      !appendError.value &&
-      nextAppendableIndex.value !== null
-    ) {
-      void appendNextChapter()
-    }
   }
 
   async function handleSaveToShelf(): Promise<void> {
@@ -600,15 +448,15 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       const total = Math.max(1, chapters.value.length)
       await bookApi
         .saveProgress(created.id, {
-          progress_percent: Math.min(100, (activeIndex.value / total) * 100),
-          locator: `chapter:${activeIndex.value}`,
-          chapter_index: activeIndex.value,
+          progress_percent: Math.min(100, (reader.activePos.value / total) * 100),
+          locator: `chapter:${reader.activePos.value}`,
+          chapter_index: reader.activePos.value,
           scroll_ratio: 0,
         })
         .catch(() => {})
       void catalogStore.refreshSidebarData()
-      snackbar.show({ message: `已将《${created.metadata.title}》加入书库（标准 EPUB 3.0）` })
-      void router.replace(`/book/read/${created.id}`)
+      snackbar.show({ message: t('online.trackedSuccess', { title: created.metadata.title }) })
+      void router.replace(playRoute({ scope: 'local', domain: 'book', id: created.id }))
     } catch (err) {
       snackbar.show({
         message: err instanceof Error ? err.message : String(err),
@@ -616,25 +464,6 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       })
     } finally {
       savingShelf.value = false
-    }
-  }
-
-  async function openSwitchSource(): Promise<void> {
-    const ctx = readerCtx.value
-    if (!ctx) return
-    switchSourceOpen.value = true
-    searchingAlts.value = true
-    altCandidates.value = []
-    try {
-      const res = await onlineBookApi.search(ctx.name, undefined, 1)
-      altCandidates.value = res.items
-    } catch (err) {
-      snackbar.show({
-        message: err instanceof Error ? err.message : String(err),
-        tone: 'error',
-      })
-    } finally {
-      searchingAlts.value = false
     }
   }
 
@@ -656,7 +485,7 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       if (unmounted) return
       const nextTocUrl = detailRes.detail.toc_url?.trim()
       if (!nextTocUrl) {
-        throw new Error('目标书源未解析到目录地址，未切换')
+        throw new Error(t('online.switchSourceNoToc'))
       }
       const nextCtx: ReaderContext = {
         ...ctx,
@@ -671,20 +500,23 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       const tocRes = await onlineBookApi.fetchToc(
         nextCtx.sourceId,
         nextCtx.tocUrl,
-        buildBookJsCtxFrom(nextCtx, activeIndex.value, previousTitle),
+        buildBookJsCtxFrom(nextCtx, reader.activePos.value, previousTitle),
       )
       if (unmounted) return
       if (tocRes.chapters.length === 0) {
-        throw new Error('目标书源目录为空，未切换')
+        throw new Error(t('online.switchSourceEmptyToc'))
       }
-      const clampedFallback = Math.max(0, Math.min(activeIndex.value, tocRes.chapters.length - 1))
+      const clampedFallback = Math.max(
+        0,
+        Math.min(reader.activePos.value, tocRes.chapters.length - 1),
+      )
       let targetPos = previousTitle
         ? matchChapterIndexByTitle(previousTitle, tocRes.chapters, clampedFallback)
         : clampedFallback
       if (tocRes.chapters[targetPos]?.is_volume || !tocRes.chapters[targetPos]?.url) {
         const firstReadable = tocRes.chapters.findIndex((c) => !c.is_volume && Boolean(c.url))
         if (firstReadable < 0) {
-          throw new Error('目标书源无可读章节，未切换')
+          throw new Error(t('online.switchSourceNoReadable'))
         }
         targetPos = firstReadable
       }
@@ -703,12 +535,15 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       readerCtx.value = nextCtx
       chapters.value = tocRes.chapters
       syncContextToUrlAndStorage(nextCtx)
-      switchSourceOpen.value = false
+      activeOverlay.value = null
 
       await openChapter(targetPos, false)
-      if (errorMsg.value) {
+      if (reader.errorMsg.value) {
         snackbar.show({
-          message: `已切换至书源「${item.source_name}」，但正文拉取失败：${errorMsg.value}`,
+          message: t('online.switchSourcePartialErr', {
+            source: item.source_name,
+            error: reader.errorMsg.value,
+          }),
           tone: 'error',
         })
         return
@@ -716,8 +551,8 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
       const matchedTitle = currentChapter.value?.title || chapterTitle.value
       snackbar.show({
         message: matchedTitle
-          ? `已切换至书源「${item.source_name}」· 已定位至「${matchedTitle}」`
-          : `已切换至书源「${item.source_name}」`,
+          ? t('online.switchSourceMatched', { source: item.source_name, chapter: matchedTitle })
+          : t('online.switchSourceSuccess', { source: item.source_name }),
       })
     } catch (err) {
       snackbar.show({
@@ -730,81 +565,52 @@ export function useOnlineReader(contentScrollRef: Ref<HTMLElement | null>) {
   }
 
   function handleBackToCatalog(): void {
-    void router.push({ path: '/book/catalog', query: { scope: 'online' } })
-  }
-
-  function handleKeydown(ev: KeyboardEvent): void {
-    if (ev.metaKey || ev.ctrlKey || ev.altKey) return
-    if (loadingContent.value || loadingToc.value) return
-    const target = ev.target
-    if (
-      target instanceof HTMLElement &&
-      (target.tagName === 'INPUT' ||
-        target.tagName === 'TEXTAREA' ||
-        target.tagName === 'SELECT' ||
-        target.isContentEditable)
-    ) {
-      return
-    }
-    if (ev.key === 'ArrowLeft' && prevReadableIndex.value !== null) {
-      ev.preventDefault()
-      void openChapter(prevReadableIndex.value)
-    } else if (ev.key === 'ArrowRight' && nextReadableIndex.value !== null) {
-      ev.preventDefault()
-      void openChapter(nextReadableIndex.value)
+    const prev = (window.history.state as { back?: string | null } | null)?.back
+    if (typeof prev === 'string' && prev.startsWith('/book/library')) {
+      router.back()
+    } else {
+      void router.push(libraryRoute('book', { scope: 'online' }))
     }
   }
 
   onMounted(() => {
     unmounted = false
-    window.addEventListener('keydown', handleKeydown)
     void initReader()
   })
 
   onBeforeUnmount(() => {
     clearProgressSyncTimer()
     unmounted = true
-    loadSeq += 1
     tocSeq += 1
-    window.removeEventListener('keydown', handleKeydown)
   })
 
   return {
     readerCtx,
     chapters,
-    activeIndex,
-    loadedChapters,
+    activeIndex: reader.activePos,
+    loadedChapters: reader.loadedChapters,
     loadingToc,
-    loadingContent,
-    appendingNext,
-    appendError,
-    errorMsg,
+    loadingContent: reader.loadingChapter,
+    appendingNext: reader.appendingNext,
+    appendError: reader.appendError,
+    errorMsg: computed(() => tocError.value || reader.errorMsg.value),
     savingShelf,
-    tocOpen,
+    activeOverlay,
     tocQuery,
-    typographyOpen,
-    switchSourceOpen,
-    searchingAlts,
-    altCandidates,
     switchingKey,
-    downloadOpen,
-    maxWidthPx,
-    fontSize,
-    lineHeight,
-    fontFamily,
-    fontFamilyStyle,
     currentChapter,
     chapterTitle,
     contentCached,
-    prevReadableIndex,
-    nextAppendableIndex,
+    prevReadableIndex: reader.prevPos,
+    nextAppendableIndex: reader.nextAppendablePos,
     downloadTarget,
+    openOverlay,
+    closeOverlay,
     loadTocAndOpen,
     openChapter,
-    appendNextChapter,
-    handleContentScroll,
+    appendNextChapter: reader.appendNextChapter,
+    handleContentScroll: reader.handleScroll,
     handleSaveToShelf,
-    openSwitchSource,
     handleSelectAltSource,
     handleBackToCatalog,
   }

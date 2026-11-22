@@ -1,22 +1,25 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import * as pdfjsLib from 'pdfjs-dist'
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
-import {
-  LuChevronLeft,
-  LuChevronRight,
-  LuMaximize2,
-  LuMoveHorizontal,
-  LuZoomIn,
-  LuZoomOut,
-} from 'vue-icons-plus/lu'
+import { MediaErrorState } from '@/components/domain'
+import { MdCircularProgress } from '@/components/ui'
 import { api } from '@/domains/book/api'
+import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import type { ReadingLocation } from '@/domains/book/types'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
 
-type FitMode = 'manual' | 'width' | 'page'
+export type PdfFitMode = 'manual' | 'width' | 'page'
+
+export interface PdfReaderState {
+  currentPage: number
+  totalPages: number
+  scale: number
+  fitMode: PdfFitMode
+}
+
+const SWIPE_THRESHOLD_PX = 48
 
 const props = defineProps<{
   bookId: string
@@ -24,13 +27,16 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  progress: [payload: {
-    progress_percent: number
-    locator: string
-    chapter_index?: number | null
-    page_number?: number | null
-    scroll_ratio?: number | null
-  }]
+  progress: [
+    payload: {
+      progress_percent: number
+      locator: string
+      chapter_index?: number | null
+      page_number?: number | null
+      scroll_ratio?: number | null
+    },
+  ]
+  'state-change': [state: PdfReaderState]
 }>()
 
 const { t } = useI18n()
@@ -41,26 +47,40 @@ const loading = ref(true)
 const errorMsg = ref('')
 const currentPage = ref(1)
 const totalPages = ref(1)
-const scale = ref(1.35)
-const fitMode = ref<FitMode>('manual')
-const pageInput = ref<number | string>(1)
+const scale = ref(1.0)
+// Default to fit-width so mobile viewports never horizontally overflow on initial open
+const fitMode = ref<PdfFitMode>('width')
 
 let loadingTask: pdfjsLib.PDFDocumentLoadingTask | null = null
 let pdfDoc: pdfjsLib.PDFDocumentProxy | null = null
 let activeRenderTask: pdfjsLib.RenderTask | null = null
 let renderSeq = 0
 let unmounted = false
+let resizeTimer: ReturnType<typeof setTimeout> | null = null
+let touchStartX = 0
+let touchStartY = 0
+
+function emitState(): void {
+  emit('state-change', {
+    currentPage: currentPage.value,
+    totalPages: totalPages.value,
+    scale: scale.value,
+    fitMode: fitMode.value,
+  })
+}
 
 function clampScale(value: number): number {
   return Math.min(3.0, Math.max(0.5, Number(value.toFixed(2))))
 }
 
-async function computeFitScale(page: pdfjsLib.PDFPageProxy, mode: 'width' | 'page'): Promise<number> {
+function computeFitScale(page: pdfjsLib.PDFPageProxy, mode: 'width' | 'page'): number {
   const container = scrollAreaEl.value
   if (!container) return scale.value
   const baseViewport = page.getViewport({ scale: 1 })
-  const availWidth = Math.max(240, container.clientWidth - 48)
-  const availHeight = Math.max(240, container.clientHeight - 48)
+  const padX = container.clientWidth < 600 ? 24 : 48
+  const padY = 48
+  const availWidth = Math.max(220, container.clientWidth - padX)
+  const availHeight = Math.max(220, container.clientHeight - padY)
   const widthScale = availWidth / baseViewport.width
   if (mode === 'width') {
     return clampScale(widthScale)
@@ -71,13 +91,9 @@ async function computeFitScale(page: pdfjsLib.PDFPageProxy, mode: 'width' | 'pag
 
 async function renderPage(pageNum: number): Promise<void> {
   if (!pdfDoc || !canvasEl.value || unmounted) return
-  if (!Number.isFinite(pageNum)) {
-    pageInput.value = currentPage.value
-    return
-  }
+  if (!Number.isFinite(pageNum)) return
   const prevPage = currentPage.value
   const clamped = Math.min(totalPages.value, Math.max(1, Math.trunc(pageNum)))
-  pageInput.value = clamped
 
   const seq = ++renderSeq
 
@@ -99,9 +115,7 @@ async function renderPage(pageNum: number): Promise<void> {
     if (seq !== renderSeq || unmounted || !canvasEl.value) return
 
     if (fitMode.value === 'width' || fitMode.value === 'page') {
-      const computedScale = await computeFitScale(page, fitMode.value)
-      if (seq !== renderSeq || unmounted || !canvasEl.value) return
-      scale.value = computedScale
+      scale.value = computeFitScale(page, fitMode.value)
     }
 
     const dpr = window.devicePixelRatio || 1
@@ -135,7 +149,7 @@ async function renderPage(pageNum: number): Promise<void> {
     if (seq !== renderSeq || unmounted) return
     errorMsg.value = ''
     currentPage.value = clamped
-    pageInput.value = clamped
+    emitState()
 
     const pct = (clamped / Math.max(1, totalPages.value)) * 100
     emit('progress', {
@@ -148,8 +162,8 @@ async function renderPage(pageNum: number): Promise<void> {
     const name = err instanceof Error ? err.name : ''
     if (name === 'RenderingCancelledException') return
     currentPage.value = prevPage
-    pageInput.value = prevPage
     errorMsg.value = err instanceof Error ? err.message : String(err)
+    emitState()
   } finally {
     try {
       page?.cleanup()
@@ -159,19 +173,26 @@ async function renderPage(pageNum: number): Promise<void> {
   }
 }
 
-function handlePageSubmit(): void {
-  const parsed = Number(pageInput.value)
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    pageInput.value = currentPage.value
-    return
-  }
-  void renderPage(parsed)
-}
-
 async function navigateTo(target: string): Promise<void> {
   const match = /^page:(\d+)$/.exec(target)
   const page = match ? Number.parseInt(match[1] ?? '1', 10) : 1
   await renderPage(page)
+}
+
+async function goToPage(page: number): Promise<void> {
+  await renderPage(page)
+}
+
+async function prevPage(): Promise<void> {
+  if (currentPage.value > 1) {
+    await renderPage(currentPage.value - 1)
+  }
+}
+
+async function nextPage(): Promise<void> {
+  if (currentPage.value < totalPages.value) {
+    await renderPage(currentPage.value + 1)
+  }
 }
 
 async function changeScale(delta: number): Promise<void> {
@@ -180,9 +201,38 @@ async function changeScale(delta: number): Promise<void> {
   await renderPage(currentPage.value)
 }
 
+async function zoomIn(): Promise<void> {
+  await changeScale(0.2)
+}
+
+async function zoomOut(): Promise<void> {
+  await changeScale(-0.2)
+}
+
 async function applyFitMode(mode: 'width' | 'page'): Promise<void> {
   fitMode.value = mode
   await renderPage(currentPage.value)
+}
+
+function handleTouchStart(ev: TouchEvent): void {
+  const touch = ev.changedTouches[0]
+  if (!touch) return
+  touchStartX = touch.screenX
+  touchStartY = touch.screenY
+}
+
+function handleTouchEnd(ev: TouchEvent): void {
+  const touch = ev.changedTouches[0]
+  if (!touch) return
+  const dx = touch.screenX - touchStartX
+  const dy = touch.screenY - touchStartY
+  if (Math.abs(dx) >= SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy) * 1.4) {
+    if (dx > 0) {
+      void prevPage()
+    } else {
+      void nextPage()
+    }
+  }
 }
 
 function handleKeydown(ev: KeyboardEvent): void {
@@ -199,14 +249,13 @@ function handleKeydown(ev: KeyboardEvent): void {
   }
   if (ev.key === 'ArrowLeft') {
     ev.preventDefault()
-    void renderPage(currentPage.value - 1)
+    void prevPage()
   } else if (ev.key === 'ArrowRight') {
     ev.preventDefault()
-    void renderPage(currentPage.value + 1)
+    void nextPage()
   }
 }
 
-let resizeTimer: ReturnType<typeof setTimeout> | null = null
 function handleResize(): void {
   if (fitMode.value === 'manual' || !pdfDoc) return
   if (resizeTimer) clearTimeout(resizeTimer)
@@ -216,12 +265,9 @@ function handleResize(): void {
   }, 160)
 }
 
-defineExpose({ navigateTo })
-
-onMounted(async () => {
-  unmounted = false
-  window.addEventListener('keydown', handleKeydown)
-  window.addEventListener('resize', handleResize)
+async function loadPdf(): Promise<void> {
+  loading.value = true
+  errorMsg.value = ''
   try {
     const task = pdfjsLib.getDocument({
       url: api.fileUrl(props.bookId),
@@ -238,6 +284,7 @@ onMounted(async () => {
     pdfDoc = doc
     totalPages.value = doc.numPages
     loading.value = false
+    emitState()
 
     const startPage = props.initialLocation?.page_number ?? 1
     await renderPage(startPage)
@@ -246,6 +293,23 @@ onMounted(async () => {
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
   }
+}
+
+defineExpose({
+  navigateTo,
+  goToPage,
+  prevPage,
+  nextPage,
+  zoomIn,
+  zoomOut,
+  applyFitMode,
+})
+
+onMounted(() => {
+  unmounted = false
+  window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('resize', handleResize)
+  void loadPdf()
 })
 
 onBeforeUnmount(() => {
@@ -268,105 +332,33 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-full w-full flex-col overflow-hidden bg-[var(--md-sys-color-surface-container)]">
-    <!-- PDF Sub-Toolbar -->
-    <div class="flex min-h-11 shrink-0 flex-wrap items-center justify-center gap-2 border-b border-[var(--md-sys-color-outline-variant)]/55 bg-[var(--md-sys-color-surface)] px-4 py-1.5 text-xs">
-      <button
-        type="button"
-        :disabled="currentPage <= 1"
-        class="md-icon-btn md-icon-btn-sm md-state disabled:opacity-35"
-        :title="t('reader.prevPage')"
-        :aria-label="t('reader.prevPage')"
-        @click="renderPage(currentPage - 1)"
-      >
-        <LuChevronLeft class="h-4 w-4" />
-      </button>
-
-      <form class="flex items-center gap-1.5" @submit.prevent="handlePageSubmit">
-        <input
-          v-model.number="pageInput"
-          type="number"
-          min="1"
-          :max="totalPages"
-          :aria-label="t('reader.page')"
-          class="md-input h-8 w-16 !px-2 text-center text-xs"
-        />
-        <span class="text-[var(--md-sys-color-on-surface-variant)]">/ {{ totalPages }}</span>
-      </form>
-
-      <button
-        type="button"
-        :disabled="currentPage >= totalPages"
-        class="md-icon-btn md-icon-btn-sm md-state disabled:opacity-35"
-        :title="t('reader.nextPage')"
-        :aria-label="t('reader.nextPage')"
-        @click="renderPage(currentPage + 1)"
-      >
-        <LuChevronRight class="h-4 w-4" />
-      </button>
-
-      <div class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
-
-      <button
-        type="button"
-        class="md-icon-btn md-icon-btn-sm md-state"
-        :title="t('reader.zoomOut')"
-        :aria-label="t('reader.zoomOut')"
-        @click="changeScale(-0.2)"
-      >
-        <LuZoomOut class="h-4 w-4" />
-      </button>
-      <span class="w-12 text-center font-mono text-[var(--md-sys-color-on-surface)]">
-        {{ Math.round(scale * 100) }}%
-      </span>
-      <button
-        type="button"
-        class="md-icon-btn md-icon-btn-sm md-state"
-        :title="t('reader.zoomIn')"
-        :aria-label="t('reader.zoomIn')"
-        @click="changeScale(0.2)"
-      >
-        <LuZoomIn class="h-4 w-4" />
-      </button>
-
-      <div class="mx-1 h-4 w-px bg-[var(--md-sys-color-outline-variant)]" />
-
-      <button
-        type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-        :class="fitMode === 'width' ? 'md-chip-selected' : ''"
-        :title="t('reader.fitWidth')"
-        @click="applyFitMode('width')"
-      >
-        <LuMoveHorizontal class="h-3.5 w-3.5" />
-        <span>{{ t('reader.fitWidth') }}</span>
-      </button>
-
-      <button
-        type="button"
-        class="md-chip md-state !h-7 !rounded-full !px-2.5 !text-[11px]"
-        :class="fitMode === 'page' ? 'md-chip-selected' : ''"
-        :title="t('reader.fitPage')"
-        @click="applyFitMode('page')"
-      >
-        <LuMaximize2 class="h-3.5 w-3.5" />
-        <span>{{ t('reader.fitPage') }}</span>
-      </button>
+  <div
+    ref="scrollAreaEl"
+    class="flex h-full w-full justify-center overflow-auto bg-surface-container px-3 pt-16 pb-20 sm:px-6"
+    @touchstart.passive="handleTouchStart"
+    @touchend.passive="handleTouchEnd"
+  >
+    <div
+      v-if="loading"
+      class="flex flex-col items-center justify-center gap-3 self-center text-on-surface-variant"
+    >
+      <MdCircularProgress indeterminate :size="32" :stroke-width="3" />
+      <span class="text-body-small">{{ t('reader.loadingBook') }}</span>
     </div>
 
-    <!-- Canvas Scroll Area -->
-    <div ref="scrollAreaEl" class="flex flex-1 justify-center overflow-auto p-6">
-      <div v-if="loading" class="self-center text-sm text-[var(--md-sys-color-on-surface-variant)]">
-        {{ t('reader.loadingBook') }}
-      </div>
-      <div v-else-if="errorMsg" class="self-center text-sm text-[var(--md-sys-color-error)]">
-        {{ errorMsg }}
-      </div>
-      <canvas
-        v-show="!loading && !errorMsg"
-        ref="canvasEl"
-        class="rounded-xl border border-[var(--md-sys-color-outline-variant)]/45 bg-[var(--md-sys-color-surface-container-lowest)] shadow-[var(--md-sys-elevation-2)]"
-      />
-    </div>
+    <MediaErrorState
+      v-else-if="errorMsg"
+      :title="t('reader.loadFailedTitle')"
+      :message="errorMsg"
+      :retry-label="t('reader.retry')"
+      class="max-w-md self-center"
+      @retry="loadPdf"
+    />
+
+    <canvas
+      v-show="!loading && !errorMsg"
+      ref="canvasEl"
+      class="self-start rounded-corner-md border border-outline-variant/50 bg-surface-container-lowest shadow-elevation-2"
+    />
   </div>
 </template>

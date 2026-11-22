@@ -1,4 +1,6 @@
 import { requestJson, withAuthToken } from '@/api/client'
+import { createDomainSourceApi } from '@/components/online-sources/createDomainSourceApi'
+import type { OnlineSourceManagerAdapter } from '@/components/online-sources/types'
 import type { BookSummaryDto } from './types'
 
 export interface TrackedChapterMetaDto {
@@ -306,72 +308,17 @@ export function buildOnlineDownloadFileUrl(jobId: string): string {
   return withAuthToken(`/api/v1/book/online/downloads/${encodeURIComponent(jobId)}/file`)
 }
 
+const bookSourceCrud = createDomainSourceApi<BookSourceSummaryDto>('book')
+
+export const bookSourceAdapter: OnlineSourceManagerAdapter<BookSourceSummaryDto> = {
+  domain: 'book',
+  exportFilePrefix: 'xmedia-book-sources',
+  searchRoutePath: '/book/library',
+  ...bookSourceCrud,
+}
+
 export const onlineBookApi = {
-  listSources: (): Promise<BookSourceSummaryDto[]> =>
-    requestJson('/book/sources'),
-
-  importSources: (rawJson: string): Promise<ImportBookSourcesReportDto> =>
-    requestJson('/book/sources/import', {
-      method: 'POST',
-      body: JSON.stringify({ raw_json: rawJson }),
-    }),
-
-  reorderSources: (orderedIds: string[]): Promise<BookSourceSummaryDto[]> =>
-    requestJson('/book/sources/reorder', {
-      method: 'POST',
-      body: JSON.stringify({ ordered_ids: orderedIds }),
-    }),
-
-  batchSources: (payload: BatchBookSourcesPayload): Promise<BatchBookSourcesReportDto> =>
-    requestJson('/book/sources/batch', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }),
-
-  exportSourcesBatch: (ids: string[]): Promise<Record<string, unknown>[]> =>
-    requestJson('/book/sources/export-batch', {
-      method: 'POST',
-      body: JSON.stringify({ ids }),
-    }),
-
-  updateSource: (
-    id: string,
-    patch: {
-      enabled?: boolean
-      weight?: number
-      group_name?: string
-      raw_json?: string
-      variable?: string
-    },
-  ): Promise<BookSourceSummaryDto> =>
-    requestJson(`/book/sources/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    }),
-
-  deleteSource: (id: string): Promise<void> =>
-    requestJson(`/book/sources/${encodeURIComponent(id)}`, {
-      method: 'DELETE',
-    }),
-
-  exportSourceUrl: (id: string): string =>
-    withAuthToken(`/api/v1/book/sources/${encodeURIComponent(id)}/export`),
-
-  fetchSourceJson: (id: string): Promise<Record<string, unknown>> =>
-    requestJson(`/book/sources/${encodeURIComponent(id)}/export`),
-
-  getSourceVariable: (id: string): Promise<{ variable: string }> =>
-    requestJson(`/book/sources/${encodeURIComponent(id)}/variable`),
-
-  runLoginAction: (
-    id: string,
-    loginInfo: Record<string, string>,
-    action?: string,
-  ): Promise<LoginActionResponseDto> =>
-    requestJson(`/book/sources/${encodeURIComponent(id)}/login-action`, {
-      method: 'POST',
-      body: JSON.stringify({ login_info: loginInfo, action: action ?? null }),
-    }),
+  ...bookSourceCrud,
 
   testSource: (
     id: string,

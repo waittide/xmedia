@@ -1,30 +1,42 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import ePub, { type Book, type Rendition } from 'epubjs'
 import { LuChevronLeft, LuChevronRight } from 'vue-icons-plus/lu'
+import { MediaErrorState } from '@/components/domain'
+import { MdCircularProgress, MdIconButton } from '@/components/ui'
 import { api } from '@/domains/book/api'
+import { useBookI18n as useI18n } from '@/domains/book/i18n'
+import type { ReadingLocation } from '@/domains/book/types'
 import { useThemeStore } from '@/stores/theme'
 import { resolveFontStack } from '@/utils/format'
-import type { ReadingLocation } from '@/domains/book/types'
 
 const LOCATIONS_CACHE_PREFIX = 'xmedia.epub.locations:'
 const LOCATIONS_INDEX_KEY = 'xmedia.epub.locations.__index'
 const MAX_CACHED_BOOKS = 12
+const SWIPE_THRESHOLD_PX = 48
 
-const props = defineProps<{
-  bookId: string
-  initialLocation: ReadingLocation | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    bookId: string
+    initialLocation: ReadingLocation | null
+    hudVisible?: boolean
+  }>(),
+  {
+    hudVisible: true,
+  },
+)
 
 const emit = defineEmits<{
-  progress: [payload: {
-    progress_percent: number
-    locator: string
-    chapter_index?: number | null
-    page_number?: number | null
-    scroll_ratio?: number | null
-  }]
+  progress: [
+    payload: {
+      progress_percent: number
+      locator: string
+      chapter_index?: number | null
+      page_number?: number | null
+      scroll_ratio?: number | null
+    },
+  ]
+  'toggle-hud': []
 }>()
 
 const { t } = useI18n()
@@ -40,6 +52,8 @@ let locationsReady = false
 let lastKnownCfi = ''
 let unmounted = false
 let renderSeq = 0
+let touchStartX = 0
+let touchStartY = 0
 
 interface EpubLocationsWithCache {
   generate(chars?: number): Promise<string[]>
@@ -95,7 +109,6 @@ function writeCachedLocations(key: string, serialized: string): void {
       localStorage.setItem(key, serialized)
       localStorage.setItem(LOCATIONS_INDEX_KEY, JSON.stringify(nextIndex))
     } catch {
-      // On QuotaExceededError, evict older entries and retry once
       while (nextIndex.length > 1) {
         const evicted = nextIndex.pop()
         if (evicted) {
@@ -122,7 +135,7 @@ function applyRenditionTheme(): void {
   if (!rendition) return
   const scheme = themeStore.activeScheme
   const r = themeStore.reader
-  const verticalPad = r.flow === 'scrolled' ? 16 : 0
+  const verticalPad = r.flow === 'scrolled' ? 64 : 16
   rendition.themes.default({
     body: {
       background: `${scheme.surface} !important`,
@@ -138,11 +151,67 @@ function applyRenditionTheme(): void {
   })
 }
 
+function handleRenditionClick(...args: unknown[]): void {
+  const ev = args[0] as MouseEvent | undefined
+  if (!ev) return
+  const target = ev.target as HTMLElement | null
+  if (target?.closest('a, button, input, select, textarea')) return
+  const doc = target?.ownerDocument
+  const sel = doc?.getSelection?.()
+  if (sel && sel.toString().trim().length > 0) return
+
+  if (themeStore.reader.flow !== 'paginated') {
+    emit('toggle-hud')
+    return
+  }
+
+  const width = doc?.defaultView?.innerWidth || window.innerWidth
+  if (width <= 0) {
+    emit('toggle-hud')
+    return
+  }
+  const ratio = ev.clientX / width
+  if (ratio < 0.25) {
+    void prevPage()
+  } else if (ratio > 0.75) {
+    void nextPage()
+  } else {
+    emit('toggle-hud')
+  }
+}
+
+function handleRenditionTouchStart(...args: unknown[]): void {
+  const ev = args[0] as TouchEvent | undefined
+  const touch = ev?.changedTouches?.[0]
+  if (!touch) return
+  touchStartX = touch.screenX
+  touchStartY = touch.screenY
+}
+
+function handleRenditionTouchEnd(...args: unknown[]): void {
+  if (themeStore.reader.flow !== 'paginated') return
+  const ev = args[0] as TouchEvent | undefined
+  const touch = ev?.changedTouches?.[0]
+  if (!touch) return
+  const dx = touch.screenX - touchStartX
+  const dy = touch.screenY - touchStartY
+  if (Math.abs(dx) >= SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy) * 1.4) {
+    if (dx > 0) {
+      void prevPage()
+    } else {
+      void nextPage()
+    }
+  }
+}
+
 function destroyRendition(): void {
   const r = rendition as EpubRenditionWithOff | null
   if (r && typeof r.off === 'function') {
     r.off('keydown', handleRenditionKeydown)
     r.off('relocated', handleRelocated)
+    r.off('click', handleRenditionClick)
+    r.off('touchstart', handleRenditionTouchStart)
+    r.off('touchend', handleRenditionTouchEnd)
   }
   rendition?.destroy()
   rendition = null
@@ -164,8 +233,10 @@ async function mountRendition(target?: string): Promise<void> {
   })
   rendition = localRendition
 
-  // Ensure arrow-key paging still works after clicking inside the epub iframe
   localRendition.on('keydown', handleRenditionKeydown)
+  localRendition.on('click', handleRenditionClick)
+  localRendition.on('touchstart', handleRenditionTouchStart)
+  localRendition.on('touchend', handleRenditionTouchEnd)
   applyRenditionTheme()
 
   await localRendition.display(target || undefined)
@@ -176,6 +247,9 @@ async function mountRendition(target?: string): Promise<void> {
       const r = localRendition as EpubRenditionWithOff
       if (typeof r.off === 'function') {
         r.off('keydown', handleRenditionKeydown)
+        r.off('click', handleRenditionClick)
+        r.off('touchstart', handleRenditionTouchStart)
+        r.off('touchend', handleRenditionTouchEnd)
       }
       localRendition.destroy()
     }
@@ -246,11 +320,9 @@ function handleRelocated(...args: unknown[]): void {
   })
 }
 
-defineExpose({ navigateTo })
-
-onMounted(async () => {
-  unmounted = false
-  window.addEventListener('keydown', handleKeydown)
+async function loadEpub(): Promise<void> {
+  loading.value = true
+  errorMsg.value = ''
   try {
     const resp = await fetch(api.fileUrl(props.bookId), {
       credentials: 'include',
@@ -319,24 +391,24 @@ onMounted(async () => {
             }
           }
         })
-        .catch(() => {
-          // ignore background location indexing errors
-        })
+        .catch(() => {})
     }
   } catch (err) {
-    const r = rendition as EpubRenditionWithOff | null
-    if (r && typeof r.off === 'function') {
-      r.off('keydown', handleRenditionKeydown)
-      r.off('relocated', handleRelocated)
-    }
-    rendition?.destroy()
+    destroyRendition()
     book?.destroy()
-    rendition = null
     book = null
     if (unmounted) return
     errorMsg.value = err instanceof Error ? err.message : String(err)
     loading.value = false
   }
+}
+
+defineExpose({ navigateTo, prevPage, nextPage })
+
+onMounted(() => {
+  unmounted = false
+  window.addEventListener('keydown', handleKeydown)
+  void loadEpub()
 })
 
 watch(
@@ -357,9 +429,7 @@ watch(
   () => {
     if (!book || !mountEl.value || loading.value) return
     const resumeTarget = lastKnownCfi || props.initialLocation?.locator || undefined
-    void mountRendition(resumeTarget).catch(() => {
-      // ignore interrupted re-render when rapidly toggling flow mode
-    })
+    void mountRendition(resumeTarget).catch(() => {})
   },
 )
 
@@ -374,35 +444,55 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="relative flex h-full w-full items-center justify-center overflow-hidden bg-[var(--md-sys-color-surface)]">
-    <div v-if="loading" class="text-sm text-[var(--md-sys-color-on-surface-variant)]">
-      {{ t('reader.loadingBook') }}
+  <div class="relative flex h-full w-full items-center justify-center overflow-hidden bg-surface">
+    <div
+      v-if="loading"
+      class="flex flex-col items-center justify-center gap-3 text-on-surface-variant"
+    >
+      <MdCircularProgress indeterminate :size="32" :stroke-width="3" />
+      <span class="text-body-small">{{ t('reader.loadingBook') }}</span>
     </div>
-    <div v-else-if="errorMsg" class="text-sm text-[var(--md-sys-color-error)]">
-      {{ errorMsg }}
-    </div>
+
+    <MediaErrorState
+      v-else-if="errorMsg"
+      :title="t('reader.loadFailedTitle')"
+      :message="errorMsg"
+      :retry-label="t('reader.retry')"
+      class="max-w-md"
+      @retry="loadEpub"
+    />
 
     <div ref="mountEl" class="h-full w-full max-w-5xl" />
 
-    <!-- Paginated Prev / Next Floating Buttons -->
-    <template v-if="themeStore.reader.flow === 'paginated' && !loading">
-      <button
-        type="button"
-        class="md-icon-btn md-state absolute left-3 top-1/2 !h-11 !w-11 -translate-y-1/2 border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)]/90 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-sm hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
-        :title="t('reader.prevPage')"
-        @click="prevPage"
+    <!-- Subtle Desktop Edge Page-Turn Controls (hidden on mobile & when HUD is idle) -->
+    <template v-if="themeStore.reader.flow === 'paginated' && !loading && !errorMsg">
+      <div
+        class="pointer-events-none fixed inset-y-0 left-3 hidden items-center transition-opacity duration-200 ease-standard sm:flex"
+        :class="hudVisible ? 'opacity-100' : 'opacity-0'"
       >
-        <LuChevronLeft class="h-5 w-5" />
-      </button>
+        <MdIconButton
+          variant="tonal"
+          :icon="LuChevronLeft"
+          :aria-label="t('reader.prevPage')"
+          :tooltip="t('reader.prevPage')"
+          class="pointer-events-auto shadow-elevation-1"
+          @click.stop="prevPage"
+        />
+      </div>
 
-      <button
-        type="button"
-        class="md-icon-btn md-state absolute right-3 top-1/2 !h-11 !w-11 -translate-y-1/2 border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)]/90 text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-2)] backdrop-blur-sm hover:bg-[var(--md-sys-color-primary)] hover:text-[var(--md-sys-color-on-primary)]"
-        :title="t('reader.nextPage')"
-        @click="nextPage"
+      <div
+        class="pointer-events-none fixed inset-y-0 right-3 hidden items-center transition-opacity duration-200 ease-standard sm:flex"
+        :class="hudVisible ? 'opacity-100' : 'opacity-0'"
       >
-        <LuChevronRight class="h-5 w-5" />
-      </button>
+        <MdIconButton
+          variant="tonal"
+          :icon="LuChevronRight"
+          :aria-label="t('reader.nextPage')"
+          :tooltip="t('reader.nextPage')"
+          class="pointer-events-auto shadow-elevation-1"
+          @click.stop="nextPage"
+        />
+      </div>
     </template>
   </div>
 </template>
