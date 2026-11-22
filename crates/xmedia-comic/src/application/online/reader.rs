@@ -21,7 +21,9 @@ use super::dto::{
     OnlineComicDetailResponseDto, OnlineComicExploreResponseDto, OnlineComicPageDto,
     OnlineComicPagesResponseDto, OnlineComicSearchResponseDto, SourceSearchErrorDto,
 };
-use super::helpers::{CancelOnDrop, build_image_proxy_url, get_or_insert_rate_limiter};
+use super::helpers::{
+    CancelOnDrop, CancelTasksOnDrop, build_image_proxy_url, get_or_insert_rate_limiter,
+};
 use super::{
     COMIC_IMAGE_PROXY_MAX_BYTES, ComicOnlineService, READER_OP_TIMEOUT, SEARCH_MAX_CONCURRENCY,
     SEARCH_PER_SOURCE_TIMEOUT,
@@ -82,6 +84,7 @@ impl ComicOnlineService {
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
 
         let mut handles = Vec::with_capacity(sources.len());
+        let mut cancel_all_guard = CancelTasksOnDrop::new();
         for rec in sources {
             let engine = self.engine.clone();
             let kw_owned = kw.to_string();
@@ -92,8 +95,10 @@ impl ComicOnlineService {
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
             let rate_limiter = get_or_insert_rate_limiter(&self.rate_limiters, sid);
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            let cancel_for_task = cancel_flag.clone();
 
-            handles.push(tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let parsed = match parsed_res {
                     Ok(p) => p,
                     Err(e) => {
@@ -113,9 +118,8 @@ impl ComicOnlineService {
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (sid, sname, prev_state_cmp, Err("搜索并发调度已关闭".into()));
                 };
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                let cancel_worker = cancel_flag.clone();
-                let mut cancel_guard = CancelOnDrop::new(cancel_flag.clone());
+                let cancel_worker = cancel_for_task.clone();
+                let mut cancel_guard = CancelOnDrop::new(cancel_for_task.clone());
                 let timed = tokio::time::timeout(
                     SEARCH_PER_SOURCE_TIMEOUT,
                     tokio::task::spawn_blocking(move || {
@@ -147,7 +151,7 @@ impl ComicOnlineService {
                         )
                     }
                     Err(_) => {
-                        cancel_flag.store(true, Ordering::Relaxed);
+                        cancel_for_task.store(true, Ordering::Relaxed);
                         (
                             sid,
                             sname,
@@ -159,7 +163,9 @@ impl ComicOnlineService {
                         )
                     }
                 }
-            }));
+            });
+            cancel_all_guard.push(cancel_flag, handle.abort_handle());
+            handles.push(handle);
         }
 
         let mut results = Vec::new();
@@ -192,6 +198,7 @@ impl ComicOnlineService {
                 }
             }
         }
+        cancel_all_guard.disarm();
 
         Ok(OnlineComicSearchResponseDto {
             keyword: kw.to_string(),

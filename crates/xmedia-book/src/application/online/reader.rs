@@ -16,7 +16,10 @@ use super::dto::{
     AggregatedSearchItemDto, AggregatedSearchResponseDto, OnlineBookDetailResponseDto,
     OnlineContentResponseDto, OnlineTocResponseDto, SourceSearchErrorDto,
 };
-use super::helpers::{ChapterFetchOptions, read_cached_chapter_at, write_cached_chapter_at};
+use super::helpers::{
+    CancelOnDrop, CancelTasksOnDrop, ChapterFetchOptions, read_cached_chapter_at,
+    write_cached_chapter_at,
+};
 use super::{BookOnlineService, SEARCH_MAX_CONCURRENCY, SEARCH_PER_SOURCE_TIMEOUT};
 
 impl BookOnlineService {
@@ -50,6 +53,7 @@ impl BookOnlineService {
         let sem = Arc::new(Semaphore::new(SEARCH_MAX_CONCURRENCY));
 
         let mut handles = Vec::with_capacity(sources.len());
+        let mut cancel_all_guard = CancelTasksOnDrop::new();
         for rec in sources {
             let engine = self.engine.clone();
             let kw_owned = kw.to_string();
@@ -59,8 +63,10 @@ impl BookOnlineService {
             let state = rec.runtime_state.clone();
             let prev_state_cmp = state.clone();
             let sem_clone = Arc::clone(&sem);
+            let cancel_flag = Arc::new(AtomicBool::new(false));
+            let cancel_for_task = cancel_flag.clone();
 
-            handles.push(tokio::spawn(async move {
+            let handle = tokio::spawn(async move {
                 let parsed = match parsed_res {
                     Ok(p) => p,
                     Err(e) => {
@@ -75,8 +81,8 @@ impl BookOnlineService {
                 let Ok(_permit) = sem_clone.acquire_owned().await else {
                     return (sid, sname, prev_state_cmp, Err("搜索并发调度已关闭".into()));
                 };
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                let cancel_worker = cancel_flag.clone();
+                let cancel_worker = cancel_for_task.clone();
+                let mut cancel_guard = CancelOnDrop::new(cancel_for_task.clone());
                 let timed = tokio::time::timeout(
                     SEARCH_PER_SOURCE_TIMEOUT,
                     tokio::task::spawn_blocking(move || {
@@ -94,15 +100,21 @@ impl BookOnlineService {
                 )
                 .await;
                 match timed {
-                    Ok(Ok(res)) => (sid, sname, prev_state_cmp, res),
-                    Ok(Err(e)) => (
-                        sid,
-                        sname,
-                        prev_state_cmp,
-                        Err(format!("搜索任务异常: {e}")),
-                    ),
+                    Ok(Ok(res)) => {
+                        cancel_guard.disarm();
+                        (sid, sname, prev_state_cmp, res)
+                    }
+                    Ok(Err(e)) => {
+                        cancel_guard.disarm();
+                        (
+                            sid,
+                            sname,
+                            prev_state_cmp,
+                            Err(format!("搜索任务异常: {e}")),
+                        )
+                    }
                     Err(_) => {
-                        cancel_flag.store(true, Ordering::Relaxed);
+                        cancel_for_task.store(true, Ordering::Relaxed);
                         (
                             sid,
                             sname,
@@ -114,7 +126,9 @@ impl BookOnlineService {
                         )
                     }
                 }
-            }));
+            });
+            cancel_all_guard.push(cancel_flag, handle.abort_handle());
+            handles.push(handle);
         }
 
         let mut items = Vec::new();
@@ -151,6 +165,7 @@ impl BookOnlineService {
                 }
             }
         }
+        cancel_all_guard.disarm();
 
         Ok(AggregatedSearchResponseDto {
             keyword: kw.to_string(),

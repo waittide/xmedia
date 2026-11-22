@@ -28,6 +28,39 @@ impl Drop for CancelOnDrop {
     }
 }
 
+pub(super) struct CancelTasksOnDrop {
+    entries: Vec<(Arc<AtomicBool>, tokio::task::AbortHandle)>,
+    armed: bool,
+}
+
+impl CancelTasksOnDrop {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            armed: true,
+        }
+    }
+
+    pub(super) fn push(&mut self, flag: Arc<AtomicBool>, abort: tokio::task::AbortHandle) {
+        self.entries.push((flag, abort));
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelTasksOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            for (flag, abort) in &self.entries {
+                flag.store(true, Ordering::Relaxed);
+                abort.abort();
+            }
+        }
+    }
+}
+
 pub(super) type AsyncLockMap<K> = Arc<Mutex<HashMap<K, Weak<tokio::sync::Mutex<()>>>>>;
 
 pub(super) fn get_or_insert_weak_lock<K: Eq + std::hash::Hash>(

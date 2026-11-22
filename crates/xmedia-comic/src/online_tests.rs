@@ -2630,3 +2630,91 @@ async fn caller_supplied_comic_urls_reject_legado_options_and_data_urls_with_400
         }
     }
 }
+
+#[tokio::test]
+async fn comic_online_search_enforces_cancel_on_future_drop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let step1_entered = Arc::new(tokio::sync::Notify::new());
+    let step1_entered_c = step1_entered.clone();
+    let step2_hits = Arc::new(AtomicUsize::new(0));
+    let step2_hits_c = step2_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/step1",
+            get(move || {
+                let notify = step1_entered_c.clone();
+                async move {
+                    notify.notify_waiters();
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    r#"{"items":[{"name":"Comic","url":"/c/1"}]}"#
+                }
+            }),
+        )
+        .route(
+            "/step2",
+            get(move || {
+                let hits = step2_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"ok":true}"#
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let h = setup_test_harness(true).await;
+    let src_json = serde_json::json!([{
+        "bookSourceName": "DropComicSearchSource",
+        "bookSourceUrl": base,
+        "searchUrl": format!("{base}/step1?q={{{{key}}}}"),
+        "ruleSearch": {
+            "bookList": "$.items[*]",
+            "name": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Comic'",
+            "bookUrl": "$.url"
+        }
+    }]);
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    {
+        let search_fut = json_request(
+            &h.app,
+            "POST",
+            "/api/v1/comic/online/search",
+            &h.member_token,
+            Some(serde_json::json!({ "keyword": "drop", "source_ids": [sid] })),
+        );
+        tokio::pin!(search_fut);
+        tokio::select! {
+            _ = &mut search_fut => panic!("comic search completed before drop"),
+            _ = step1_entered.notified() => {}
+        }
+    }
+
+    tokio::time::sleep(Duration::from_millis(320)).await;
+    assert_eq!(
+        step2_hits.load(Ordering::SeqCst),
+        0,
+        "CancelTasksOnDrop must abort comic search tasks before step 2 java.ajax"
+    );
+
+    srv.abort();
+}

@@ -16,6 +16,62 @@ use crate::source::tracked_store::write_atomic;
 use super::dto::{DownloadJobStatus, OnlineDownloadJobDto};
 use super::{DEFAULT_DOWNLOAD_CONCURRENCY, DEFAULT_DOWNLOAD_MIN_INTERVAL_MS};
 
+pub(super) struct CancelOnDrop {
+    flag: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl CancelOnDrop {
+    pub(super) fn new(flag: Arc<AtomicBool>) -> Self {
+        Self { flag, armed: true }
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            self.flag.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
+pub(super) struct CancelTasksOnDrop {
+    entries: Vec<(Arc<AtomicBool>, tokio::task::AbortHandle)>,
+    armed: bool,
+}
+
+impl CancelTasksOnDrop {
+    pub(super) fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            armed: true,
+        }
+    }
+
+    pub(super) fn push(&mut self, flag: Arc<AtomicBool>, abort: tokio::task::AbortHandle) {
+        self.entries.push((flag, abort));
+    }
+
+    pub(super) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CancelTasksOnDrop {
+    fn drop(&mut self) {
+        if self.armed {
+            for (flag, abort) in &self.entries {
+                flag.store(true, Ordering::Relaxed);
+                abort.abort();
+            }
+        }
+    }
+}
+
 pub(super) struct StoredDownloadJob {
     pub(super) dto: OnlineDownloadJobDto,
     pub(super) output_path: Option<PathBuf>,

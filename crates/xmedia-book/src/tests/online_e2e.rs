@@ -1102,3 +1102,149 @@ async fn caller_supplied_book_urls_reject_legado_options_and_data_urls_with_400(
         }
     }
 }
+
+#[tokio::test]
+async fn book_online_search_enforces_cancel_on_future_drop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let step1_entered = Arc::new(tokio::sync::Notify::new());
+    let step1_entered_c = step1_entered.clone();
+    let step2_hits = Arc::new(AtomicUsize::new(0));
+    let step2_hits_c = step2_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/step1",
+            get(move || {
+                let notify = step1_entered_c.clone();
+                async move {
+                    notify.notify_waiters();
+                    tokio::time::sleep(Duration::from_millis(220)).await;
+                    r#"{"items":[{"name":"Book","url":"/b/1"}]}"#
+                }
+            }),
+        )
+        .route(
+            "/step2",
+            get(move || {
+                let hits = step2_hits_c.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    r#"{"ok":true}"#
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("book_drop_search.db");
+    let db_url = format!("sqlite:{}", db_path.display());
+
+    let mut models = ModelSet::new();
+    register_core_models(&mut models);
+    register_book_models(&mut models);
+    let mut db = Db::builder().models(models).connect(&db_url).await.unwrap();
+    ensure_core_schema(&mut db, &db_url).await.unwrap();
+    ensure_book_schema(&mut db, &db_url).await.unwrap();
+
+    let users = Arc::new(ToastyUserRepository::new(db.clone()));
+    let libs_repo = Arc::new(ToastyLibraryRepository::new(db.clone()));
+    let lifecycles = Arc::new(RwLock::new(HashMap::new()));
+    let security = Arc::new(SecurityManager::new("book-drop-search-secret"));
+    let tokens = Arc::new(JwtTokenService::new("book-drop-search-secret", 3600));
+    let events = Arc::new(BroadcastEventHub::default());
+    let auth_svc = Arc::new(AuthService::new(
+        users,
+        security,
+        tokens,
+        lifecycles.clone(),
+    ));
+    let lib_svc = Arc::new(LibraryService::new(
+        libs_repo.clone(),
+        events.clone(),
+        lifecycles,
+    ));
+    let book_services = crate::init_book_module_with_allow_private_ips(
+        db,
+        tmp.path(),
+        libs_repo,
+        &lib_svc,
+        events,
+        true,
+    )
+    .unwrap();
+    let admin = auth_svc
+        .setup_initial_admin(SetupAdminInput {
+            username: "admin".into(),
+            display_name: Some("Admin".into()),
+            password: "password123".into(),
+        })
+        .await
+        .unwrap();
+    let state = BookHttpState::new(auth_svc, lib_svc, book_services);
+    let app = Router::new().nest("/api/v1/book", rest_router(state));
+
+    let src_json = serde_json::json!([{
+        "bookSourceName": "DropBookSearchSource",
+        "bookSourceUrl": base,
+        "searchUrl": format!("{base}/step1?q={{{{key}}}}"),
+        "ruleSearch": {
+            "bookList": "$.items[*]",
+            "name": "@js:java.ajax(baseUrl.replace('/step1', '/step2')); 'Book'",
+            "bookUrl": "$.url"
+        }
+    }]);
+    let imp_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/sources/import")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({ "raw_json": src_json.to_string() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(imp_res.status(), StatusCode::OK);
+    let imp_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(imp_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let sid = imp_body["sources"][0]["id"].as_str().unwrap().to_string();
+
+    {
+        let search_fut = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/book/online/search")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", admin.token))
+                .body(Body::from(
+                    serde_json::json!({ "keyword": "drop", "source_ids": [sid] }).to_string(),
+                ))
+                .unwrap(),
+        );
+        tokio::pin!(search_fut);
+        tokio::select! {
+            _ = &mut search_fut => panic!("book search completed before drop"),
+            _ = step1_entered.notified() => {}
+        }
+    }
+
+    tokio::time::sleep(Duration::from_millis(320)).await;
+    assert_eq!(
+        step2_hits.load(Ordering::SeqCst),
+        0,
+        "CancelTasksOnDrop must abort book search tasks before step 2 java.ajax"
+    );
+
+    srv.abort();
+}
