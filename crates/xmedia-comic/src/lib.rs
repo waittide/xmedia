@@ -106,6 +106,7 @@ pub fn init_comic_module_with_allow_private_ips(
     ));
     let engine = ComicSourceEngine::new(
         source::http::HttpClientConfig {
+            timeout_secs: 20,
             allow_private_ips,
             ..Default::default()
         },

@@ -108,13 +108,15 @@ impl ReusableComicContext {
             cookies_arc,
             JsSandboxConfig::with_timeout(js_timeout),
             op_timeout,
-            cancel_flag,
+            cancel_flag.clone(),
         );
         inner.add_bootstrap_snippet(COMIC_JS_BOOTSTRAP);
         ReusableComicSession {
             source,
             inner,
+            op_timeout,
             op_deadline: Instant::now() + op_timeout,
+            cancel_flag,
         }
     }
 }
@@ -122,7 +124,9 @@ impl ReusableComicContext {
 pub struct ReusableComicSession {
     pub(super) source: Arc<ComicSourceSpec>,
     pub(super) inner: ReusableSourceSession,
+    pub(super) op_timeout: Duration,
     pub(super) op_deadline: Instant,
+    pub(super) cancel_flag: Arc<AtomicBool>,
 }
 
 impl ReusableComicSession {
@@ -136,9 +140,20 @@ impl ReusableComicSession {
         if remaining.is_zero() {
             return Err("执行超过单次操作总超时上限 (interrupted)".into());
         }
-        self.inner
-            .http()
-            .fetch_with_timeout(raw_url, &self.source.source_url, Some(remaining))
+        const MIN_RETRY_OP_BUDGET: Duration = Duration::from_secs(8);
+        if self.op_timeout >= MIN_RETRY_OP_BUDGET && remaining >= MIN_RETRY_OP_BUDGET {
+            self.inner.http().fetch_with_timeout_resilient(
+                raw_url,
+                &self.source.source_url,
+                Some(remaining),
+                1,
+                Some(&self.cancel_flag),
+            )
+        } else {
+            self.inner
+                .http()
+                .fetch_with_timeout(raw_url, &self.source.source_url, Some(remaining))
+        }
     }
 
     pub(super) fn snapshot_diagnostics(&self) -> ExecutionDiagnostics {
@@ -244,7 +259,25 @@ impl ReusableComicSession {
                 break;
             };
             pages_fetched += 1;
-            let fetched = self.http_fetch(&page_url)?;
+            let fetched = match self.http_fetch(&page_url) {
+                Ok(f) => f,
+                Err(err) => {
+                    let remaining = self.op_deadline.saturating_duration_since(Instant::now());
+                    if pages_fetched > 1
+                        && !chapters.is_empty()
+                        && self.op_timeout >= Duration::from_secs(8)
+                        && self.check_active().is_ok()
+                        && remaining > Duration::from_millis(500)
+                    {
+                        self.inner.push_diagnostic_log(format!(
+                            "fetch_chapters 在第 {pages_fetched} 页发生瞬时失败，保留已获取的 {} 个章节: {err}",
+                            chapters.len()
+                        ));
+                        break;
+                    }
+                    return Err(err);
+                }
+            };
             if !guard.record_fetched(&req_key, &fetched.final_url, &fetched.body) {
                 break;
             }

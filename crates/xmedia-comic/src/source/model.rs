@@ -283,6 +283,23 @@ fn overlay_header_json(target: &mut HashMap<String, String>, raw: Option<&str>) 
     }
 }
 
+const DEFAULT_IMAGE_ACCEPT: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
+
+fn has_header_case_insensitive(map: &HashMap<String, String>, target: &str) -> bool {
+    map.keys().any(|k| k.eq_ignore_ascii_case(target))
+}
+
+fn remove_header_case_insensitive(map: &mut HashMap<String, String>, target: &str) {
+    let matching: Vec<String> = map
+        .keys()
+        .filter(|k| k.eq_ignore_ascii_case(target))
+        .cloned()
+        .collect();
+    for k in matching {
+        map.remove(&k);
+    }
+}
+
 impl ComicSourceSpec {
     /// Parses either a single JSON object or a JSON array of comic sources.
     pub fn parse_json_batch(raw: &str) -> Result<Vec<(Self, String)>, String> {
@@ -312,12 +329,28 @@ impl ComicSourceSpec {
     }
 
     /// Merges `header`, `imageHeader`, and `rulePages.imageHeader`, stripping forbidden hop-by-hop headers.
+    /// When `header` sets `Accept` (e.g., `application/json`) and neither `imageHeader` nor
+    /// `rulePages.imageHeader` overrides `Accept`, `Accept` defaults to image MIME types.
     pub fn merged_image_headers(&self) -> HashMap<String, String> {
         let mut out = HashMap::new();
         overlay_header_json(&mut out, self.header.as_deref());
-        overlay_header_json(&mut out, self.image_header.as_deref());
+        let had_base_accept = has_header_case_insensitive(&out, "accept");
+
+        let mut img_override = HashMap::new();
+        overlay_header_json(&mut img_override, self.image_header.as_deref());
         if let Some(ref rp) = self.rule_pages {
-            overlay_header_json(&mut out, rp.image_header.as_deref());
+            overlay_header_json(&mut img_override, rp.image_header.as_deref());
+        }
+        let has_image_accept = has_header_case_insensitive(&img_override, "accept");
+
+        for (k, v) in img_override {
+            remove_header_case_insensitive(&mut out, &k);
+            out.insert(k, v);
+        }
+
+        if had_base_accept && !has_image_accept {
+            remove_header_case_insensitive(&mut out, "accept");
+            out.insert("Accept".to_string(), DEFAULT_IMAGE_ACCEPT.to_string());
         }
         out
     }

@@ -2810,3 +2810,115 @@ async fn comic_image_proxy_strips_static_range_from_source_headers() {
 
     srv.abort();
 }
+
+#[tokio::test]
+async fn image_proxy_retries_transient_503_and_does_not_retry_403() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let flaky_hits = Arc::new(AtomicUsize::new(0));
+    let forbidden_hits = Arc::new(AtomicUsize::new(0));
+    let fh = flaky_hits.clone();
+    let fbh = forbidden_hits.clone();
+
+    let origin_app = Router::new()
+        .route(
+            "/flaky.png",
+            get(move || {
+                let hits = fh.clone();
+                async move {
+                    let n = hits.fetch_add(1, Ordering::SeqCst) + 1;
+                    if n == 1 {
+                        Response::builder()
+                            .status(StatusCode::SERVICE_UNAVAILABLE)
+                            .body(Body::from("temporarily unavailable"))
+                            .unwrap()
+                    } else {
+                        Response::builder()
+                            .status(StatusCode::OK)
+                            .header("content-type", "image/png")
+                            .body(Body::from(valid_png_bytes()))
+                            .unwrap()
+                    }
+                }
+            }),
+        )
+        .route(
+            "/forbidden.png",
+            get(move || {
+                let hits = fbh.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    (StatusCode::FORBIDDEN, "forbidden")
+                }
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let base = format!("http://{addr}");
+    let srv = tokio::spawn(async move {
+        axum::serve(listener, origin_app).await.unwrap();
+    });
+
+    let h = setup_test_harness(true).await;
+
+    // 1. Transient 503 -> 200 succeeds with nosniff and sandbox CSP
+    let enc_flaky =
+        form_urlencoded::byte_serialize(format!("{base}/flaky.png").as_bytes()).collect::<String>();
+    let resp_ok = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/comic/online/image-proxy?url={enc_flaky}"))
+                .header(header::AUTHORIZATION, format!("Bearer {}", h.member_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp_ok.status(), StatusCode::OK);
+    assert_eq!(
+        resp_ok.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png"
+    );
+    assert_eq!(
+        resp_ok
+            .headers()
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .unwrap(),
+        "nosniff"
+    );
+    assert_eq!(
+        resp_ok
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .unwrap(),
+        xmedia_source::proxy::IMAGE_PROXY_CSP
+    );
+    let body_ok = to_bytes(resp_ok.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(body_ok.as_ref(), valid_png_bytes().as_slice());
+    assert_eq!(flaky_hits.load(Ordering::SeqCst), 2);
+
+    // 2. Upstream 403 returns 400 Bad Request in exactly 1 upstream hit (no retry)
+    let enc_403 = form_urlencoded::byte_serialize(format!("{base}/forbidden.png").as_bytes())
+        .collect::<String>();
+    let resp_403 = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/comic/online/image-proxy?url={enc_403}"))
+                .header(header::AUTHORIZATION, format!("Bearer {}", h.member_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp_403.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(forbidden_hits.load(Ordering::SeqCst), 1);
+
+    srv.abort();
+}

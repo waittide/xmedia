@@ -4077,3 +4077,50 @@ async fn comic_search_allows_non_json_braces_and_blocks_json_options_smuggling()
 
     srv.abort();
 }
+
+#[test]
+fn merged_image_headers_overrides_json_accept_unless_image_header_specifies_accept() {
+    let base_only: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "MdLike",
+        "sourceUrl": "https://api.mangadex.org",
+        "header": r#"{"User-Agent":"xmedia/0.1.0","accept":"application/json"}"#,
+        "imageHeader": r#"{"User-Agent":"xmedia/0.1.0"}"#
+    }))
+    .unwrap();
+    let h1 = base_only.merged_image_headers();
+    assert_eq!(
+        h1.get("Accept").map(String::as_str),
+        Some("image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+    );
+    assert!(!h1.contains_key("accept"));
+
+    let with_img_accept: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "ExplicitAccept",
+        "sourceUrl": "https://api.mangadex.org",
+        "header": r#"{"Accept":"application/json"}"#,
+        "imageHeader": r#"{"Accept":"image/webp"}"#
+    }))
+    .unwrap();
+    assert_eq!(
+        with_img_accept
+            .merged_image_headers()
+            .get("Accept")
+            .map(String::as_str),
+        Some("image/webp")
+    );
+
+    let with_pages_accept: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "PagesAccept",
+        "sourceUrl": "https://api.mangadex.org",
+        "header": r#"{"Accept":"application/json"}"#,
+        "ruleContent": { "imageHeader": r#"{"accept":"image/png"}"# }
+    }))
+    .unwrap();
+    assert_eq!(
+        with_pages_accept
+            .merged_image_headers()
+            .get("accept")
+            .map(String::as_str),
+        Some("image/png")
+    );
+}

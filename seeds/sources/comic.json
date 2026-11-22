@@ -12,7 +12,7 @@
     "readingDirection": "rtl",
     "concurrentRate": "5/1000",
     "header": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"application/json\"}",
-    "imageHeader": "{\"User-Agent\":\"xmedia/0.1.0\"}",
+    "imageHeader": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"image/avif,image/webp,image/apng,image/*,*/*;q=0.8\"}",
     "searchUrl": "https://api.mangadex.org/manga?title={{java.encodeURI(key)}}&limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[relevance]=desc",
     "exploreUrl": "Popular::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[followedCount]=desc\nLatest Updated::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[latestUploadedChapter]=desc\nTop Rated::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=en&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[rating]=desc",
     "ruleSearch": {
@@ -33,7 +33,7 @@
       "intro": "@js:(function(){var d=(result.attributes&&result.attributes.description)||{};if(d.en)return d.en;for(var k in d){if(d[k])return d[k];}return '';})()",
       "kind": "$.attributes.tags[0:6].attributes.name.en##\\n##, ",
       "status": "$.attributes.status",
-      "tocUrl": "https://api.mangadex.org/manga/{{$.id}}/feed?translatedLanguage[]=en&limit=100&offset=0&order[volume]=asc&order[chapter]=asc&includeExternalUrl=0"
+      "tocUrl": "https://api.mangadex.org/manga/{{$.id}}/feed?translatedLanguage[]=en&limit=500&offset=0&order[volume]=asc&order[chapter]=asc&includeExternalUrl=0"
     },
     "ruleToc": {
       "chapterList": "@js:(result.data||[]).filter(function(c){return c&&c.attributes&&!c.attributes.externalUrl&&Number(c.attributes.pages||0)>0;})",
@@ -59,7 +59,7 @@
     "readingDirection": "rtl",
     "concurrentRate": "5/1000",
     "header": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"application/json\"}",
-    "imageHeader": "{\"User-Agent\":\"xmedia/0.1.0\"}",
+    "imageHeader": "{\"User-Agent\":\"xmedia/0.1.0\",\"Accept\":\"image/avif,image/webp,image/apng,image/*,*/*;q=0.8\"}",
     "searchUrl": "https://api.mangadex.org/manga?title={{java.encodeURI(key)}}&limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=zh&availableTranslatedLanguage[]=zh-hk&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[relevance]=desc",
     "exploreUrl": "热门中文::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=zh&availableTranslatedLanguage[]=zh-hk&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[followedCount]=desc\n最新更新::https://api.mangadex.org/manga?limit=20&offset={{(page - 1) * 20}}&includes[]=cover_art&includes[]=author&availableTranslatedLanguage[]=zh&availableTranslatedLanguage[]=zh-hk&hasAvailableChapters=true&contentRating[]=safe&contentRating[]=suggestive&order[latestUploadedChapter]=desc",
     "ruleSearch": {
@@ -80,7 +80,7 @@
       "intro": "@js:(function(){var d=(result.attributes&&result.attributes.description)||{};return d['zh-hk']||d.zh||d.en||'';})()",
       "kind": "$.attributes.tags[0:6].attributes.name.en##\\n##, ",
       "status": "$.attributes.status",
-      "tocUrl": "https://api.mangadex.org/manga/{{$.id}}/feed?translatedLanguage[]=zh&translatedLanguage[]=zh-hk&limit=100&offset=0&order[volume]=asc&order[chapter]=asc&includeExternalUrl=0"
+      "tocUrl": "https://api.mangadex.org/manga/{{$.id}}/feed?translatedLanguage[]=zh&translatedLanguage[]=zh-hk&limit=500&offset=0&order[volume]=asc&order[chapter]=asc&includeExternalUrl=0"
     },
     "ruleToc": {
       "chapterList": "@js:(result.data||[]).filter(function(c){return c&&c.attributes&&!c.attributes.externalUrl&&Number(c.attributes.pages||0)>0;})",
