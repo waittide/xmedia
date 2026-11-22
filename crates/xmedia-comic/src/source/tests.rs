@@ -3961,3 +3961,53 @@ async fn comic_split_tag_js_url_and_options_evaluates_both_and_blocks_injection(
     assert_eq!(parsed_body["kw"], r#"a","method":"DELETE"#);
     server.abort();
 }
+
+#[test]
+fn comic_run_login_action_strips_case_insensitive_js_wrappers_and_preserves_http_login_url() {
+    let engine = ComicSourceEngine::default();
+    let cases = [
+        (
+            "@JS: function login() { return 'upper-at:' + (result.user || ''); }",
+            None,
+            Some("login()"),
+            "upper-at:alice",
+        ),
+        (
+            "<js>function check() { return 'lower-tag:' + (result.user || ''); }</js>",
+            Some("@JS: check()"),
+            None,
+            "lower-tag:alice",
+        ),
+        (
+            "<JS>function check() { return 'upper-tag:' + (result.user || ''); }</JS>",
+            Some("<JS>check()</JS>"),
+            None,
+            "upper-tag:alice",
+        ),
+        (
+            "https://comic.example.test/login",
+            Some("<JS>'http-check:' + (result.user || '')</JS>"),
+            None,
+            "http-check:alice",
+        ),
+    ];
+
+    for (login_url, login_check_js, action, expected) in cases {
+        let spec: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "LoginWrapperComic",
+            "sourceUrl": "https://comic.example.test",
+            "loginUrl": login_url,
+            "loginCheckJs": login_check_js,
+        }))
+        .unwrap();
+        let out = engine
+            .run_login_action_sync(
+                &spec,
+                SourceRuntimeState::default(),
+                HashMap::from([("user".to_string(), "alice".to_string())]),
+                action,
+            )
+            .unwrap();
+        assert_eq!(out.data, expected);
+    }
+}

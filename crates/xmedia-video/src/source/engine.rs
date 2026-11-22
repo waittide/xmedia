@@ -11,7 +11,7 @@ use xmedia_source::http::{
     verify_js_pipeline_url_options,
 };
 use xmedia_source::js_runtime::{JsSandboxConfig, ReusableSourceSession};
-use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline};
+use xmedia_source::rule::{RuleValue, rule_needs_js, split_js_pipeline, strip_js_wrapper};
 
 use crate::source::applecms;
 use crate::source::model::{
@@ -887,49 +887,23 @@ impl VideoSourceEngine {
         )?;
 
         let raw_login = source.login_url.as_deref().unwrap_or("").trim();
-        let is_plain_http_login_url =
-            raw_login.starts_with("http://") || raw_login.starts_with("https://");
-        let login_url_js = if raw_login
-            .get(..4)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@js:"))
-        {
-            raw_login[4..].trim()
-        } else if raw_login.len() >= 9
-            && raw_login
-                .get(..4)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<js>"))
-            && raw_login
-                .get(raw_login.len() - 5..)
-                .is_some_and(|suffix| suffix.eq_ignore_ascii_case("</js>"))
-        {
-            raw_login[4..raw_login.len() - 5].trim()
-        } else if is_plain_http_login_url {
+        let is_plain_http_login_url = raw_login
+            .get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+            || raw_login
+                .get(..8)
+                .is_some_and(|p| p.eq_ignore_ascii_case("https://"));
+        let login_url_js = if is_plain_http_login_url {
             ""
         } else {
-            raw_login
+            strip_js_wrapper(raw_login)
         };
         let login_check_stripped = source
             .login_check_js
             .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                if s.get(..4)
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@js:"))
-                {
-                    s[4..].trim()
-                } else if s.len() >= 9
-                    && s.get(..4)
-                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<js>"))
-                    && s.get(s.len() - 5..)
-                        .is_some_and(|suffix| suffix.eq_ignore_ascii_case("</js>"))
-                {
-                    s[4..s.len() - 5].trim()
-                } else {
-                    s
-                }
-            });
-        let effective_action = match action.map(str::trim).filter(|s| !s.is_empty()) {
+            .map(strip_js_wrapper)
+            .filter(|s| !s.is_empty());
+        let effective_action = match action.map(strip_js_wrapper).filter(|s| !s.is_empty()) {
             Some(act) => Some(act),
             None => login_check_stripped,
         };

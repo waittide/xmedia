@@ -1066,3 +1066,59 @@ async fn book_js_pipeline_search_url_blocks_option_injection_and_mutation_while_
     assert_eq!(pwned_hits.load(Ordering::SeqCst), 0);
     srv.abort();
 }
+
+#[test]
+fn book_run_login_action_strips_case_insensitive_js_wrappers_and_preserves_http_login_url() {
+    let engine = BookSourceEngine::default();
+    let cases = [
+        (
+            "@js: function login() { return 'lower-at:' + (source.getLoginInfoMap().user || ''); }",
+            None,
+            Some("login()"),
+            "lower-at:carol",
+        ),
+        (
+            "@JS: function login() { return 'upper-at:' + (source.getLoginInfoMap().user || ''); }",
+            None,
+            Some("@JS: login()"),
+            "upper-at:carol",
+        ),
+        (
+            "<js>function check() { return 'lower-tag:' + (source.getLoginInfoMap().user || ''); }</js>",
+            Some("@js: check()"),
+            None,
+            "lower-tag:carol",
+        ),
+        (
+            "<JS>function check() { return 'upper-tag:' + (source.getLoginInfoMap().user || ''); }</JS>",
+            Some("<JS>check()</JS>"),
+            None,
+            "upper-tag:carol",
+        ),
+        (
+            "https://book.example.test/login",
+            Some("<JS>'http-check:' + (source.getLoginInfoMap().user || '')</JS>"),
+            None,
+            "http-check:carol",
+        ),
+    ];
+
+    for (login_url, login_check_js, action, expected) in cases {
+        let src = LegadoBookSource {
+            book_source_name: "LoginWrapperBook".into(),
+            book_source_url: "https://book.example.test".into(),
+            login_url: Some(login_url.to_string()),
+            login_check_js: login_check_js.map(str::to_string),
+            ..Default::default()
+        };
+        let out = engine
+            .run_login_action_sync(
+                &src,
+                SourceRuntimeState::default(),
+                HashMap::from([("user".to_string(), "carol".to_string())]),
+                action,
+            )
+            .unwrap();
+        assert_eq!(out.data, expected);
+    }
+}

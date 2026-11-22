@@ -13,7 +13,7 @@ use xmedia_source::http::{
 use xmedia_source::model::{
     ExecutionDiagnostics, SourceCallError, SourceCallOutput, SourceRuntimeState,
 };
-use xmedia_source::rule::{RuleValue, split_js_pipeline};
+use xmedia_source::rule::{RuleValue, split_js_pipeline, strip_js_wrapper};
 
 use super::model::{
     MusicSearchRule, MusicSourceSpec, MusicTrackContext, OnlineMusicExploreCategory,
@@ -1982,23 +1982,35 @@ impl MusicSourceEngine {
             )
             .map_err(|e| SourceCallError::new(e, ExecutionDiagnostics::default()))?;
 
-        let login_url_trimmed = source.login_url.as_deref().unwrap_or("").trim();
-        let login_url = if login_url_trimmed
-            .get(..4)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@js:"))
-        {
-            login_url_trimmed[4..].trim()
+        let raw_login = source.login_url.as_deref().unwrap_or("").trim();
+        let is_plain_http_login_url = raw_login
+            .get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+            || raw_login
+                .get(..8)
+                .is_some_and(|p| p.eq_ignore_ascii_case("https://"));
+        let login_url_js = if is_plain_http_login_url {
+            ""
         } else {
-            login_url_trimmed
+            strip_js_wrapper(raw_login)
         };
-        if login_url.trim().is_empty() && action_js.is_none_or(|a| a.trim().is_empty()) {
+        let login_check_stripped = source
+            .login_check_js
+            .as_deref()
+            .map(strip_js_wrapper)
+            .filter(|s| !s.is_empty());
+        let effective_action = match action_js.map(strip_js_wrapper).filter(|s| !s.is_empty()) {
+            Some(act) => Some(act),
+            None => login_check_stripped,
+        };
+        if login_url_js.is_empty() && effective_action.is_none() {
             return Err(SourceCallError::new(
                 "当前音源未配置 loginUrl 或可执行的登录脚本",
                 ExecutionDiagnostics::default(),
             ));
         }
 
-        match session.eval_login_script(login_url, action_js, &merged_login) {
+        match session.eval_login_script(login_url_js, effective_action, &merged_login) {
             Ok(result) => {
                 let (state, diagnostics) = session.finalize_state();
                 Ok(SourceCallOutput {
@@ -2544,5 +2556,73 @@ mod tests {
         .unwrap();
 
         srv.abort();
+    }
+
+    #[test]
+    fn music_run_login_action_strips_case_insensitive_js_wrappers_and_preserves_http_login_url() {
+        let engine = super::MusicSourceEngine::default();
+        let cases = [
+            (
+                "@JS: function login() { return 'upper-at:' + (result.user || ''); }",
+                None,
+                Some("login()"),
+                "upper-at:bob",
+            ),
+            (
+                "<js>function check() { return 'lower-tag:' + (result.user || ''); }</js>",
+                Some("@JS: check()"),
+                None,
+                "lower-tag:bob",
+            ),
+            (
+                "<JS>function check() { return 'upper-tag:' + (result.user || ''); }</JS>",
+                Some("<JS>check()</JS>"),
+                None,
+                "upper-tag:bob",
+            ),
+            (
+                "https://music.example.test/login",
+                Some("<JS>'http-check:' + (result.user || '')</JS>"),
+                None,
+                "http-check:bob",
+            ),
+        ];
+
+        for (login_url, login_check_js, action, expected) in cases {
+            let spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+                "sourceName": "LoginWrapperMusic",
+                "sourceUrl": "https://music.example.test",
+                "loginUrl": login_url,
+                "loginCheckJs": login_check_js,
+            }))
+            .unwrap();
+            let out = engine
+                .run_login_action_sync(
+                    &spec,
+                    SourceRuntimeState::default(),
+                    HashMap::from([("user".to_string(), "bob".to_string())]),
+                    action,
+                )
+                .unwrap();
+            assert_eq!(out.data, expected);
+        }
+
+        // Plain HTTP loginUrl with no action or loginCheckJs still fails cleanly.
+        let empty_action_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "PlainHttpOnlyMusic",
+            "sourceUrl": "https://music.example.test",
+            "loginUrl": "https://music.example.test/login",
+        }))
+        .unwrap();
+        assert!(
+            engine
+                .run_login_action_sync(
+                    &empty_action_spec,
+                    SourceRuntimeState::default(),
+                    HashMap::new(),
+                    None,
+                )
+                .is_err()
+        );
     }
 }

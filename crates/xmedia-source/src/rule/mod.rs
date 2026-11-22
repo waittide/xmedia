@@ -493,6 +493,29 @@ pub fn split_js_pipeline(rule: &str) -> Option<(&str, &str, &str)> {
     None
 }
 
+/// Trims `raw` and strips a leading `@js:` prefix or outer `<js>...</js>` wrapper
+/// (case-insensitively), returning the trimmed inner JS code.
+pub fn strip_js_wrapper(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if trimmed
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("@js:"))
+    {
+        return trimmed[4..].trim();
+    }
+    if trimmed.len() >= 9
+        && trimmed
+            .get(..4)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("<js>"))
+        && trimmed
+            .get(trimmed.len() - 5..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case("</js>"))
+    {
+        return trimmed[4..trimmed.len() - 5].trim();
+    }
+    trimmed
+}
+
 fn is_benign_mustache_js_miss(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
     if err.contains("InternalError:")

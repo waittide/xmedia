@@ -636,3 +636,27 @@ fn mustache_combinators_route_through_rule_eval_and_js_detection() {
         assert_eq!(res.len(), 2, "failed for prefix {prefix}");
     }
 }
+
+#[test]
+fn strip_js_wrapper_handles_case_insensitive_at_js_and_tag_js_and_plain_urls() {
+    assert_eq!(strip_js_wrapper("  @js: return 1; "), "return 1;");
+    assert_eq!(
+        strip_js_wrapper("@JS: function login() {}"),
+        "function login() {}"
+    );
+    assert_eq!(strip_js_wrapper("@Js:   "), "");
+    assert_eq!(strip_js_wrapper("  <js> return 2; </js>  "), "return 2;");
+    assert_eq!(strip_js_wrapper("<JS>\nvar x = 1;\n</JS>"), "var x = 1;");
+    assert_eq!(strip_js_wrapper("<jS>  </Js>"), "");
+    assert_eq!(
+        strip_js_wrapper("  function plain() {}  "),
+        "function plain() {}"
+    );
+    assert_eq!(
+        strip_js_wrapper("https://example.com/login"),
+        "https://example.com/login"
+    );
+    // UTF-8 multi-byte trailing characters must never panic on index slicing.
+    assert_eq!(strip_js_wrapper("中文"), "中文");
+    assert_eq!(strip_js_wrapper("<js>中文"), "<js>中文");
+}

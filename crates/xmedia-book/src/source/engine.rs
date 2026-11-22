@@ -18,7 +18,7 @@ use crate::source::model::{
     OnlineChapterContent, OnlineChapterItem, SearchBookResult, SourceRuntimeState,
 };
 pub use crate::source::model::{SourceCallError, SourceCallOutput};
-use crate::source::rule::{RuleValue, cached_regex, split_js_pipeline};
+use crate::source::rule::{RuleValue, cached_regex, split_js_pipeline, strip_js_wrapper};
 
 static RE_COMMENT_IMG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -635,10 +635,30 @@ impl BookSourceEngine {
             self.js_timeout,
             Arc::new(AtomicBool::new(false)),
         )?;
-        let login_url_js = source.login_url.as_deref().unwrap_or("");
+        let raw_login = source.login_url.as_deref().unwrap_or("").trim();
+        let is_plain_http_login_url = raw_login
+            .get(..7)
+            .is_some_and(|p| p.eq_ignore_ascii_case("http://"))
+            || raw_login
+                .get(..8)
+                .is_some_and(|p| p.eq_ignore_ascii_case("https://"));
+        let login_url_js = if is_plain_http_login_url {
+            ""
+        } else {
+            strip_js_wrapper(raw_login)
+        };
+        let login_check_stripped = source
+            .login_check_js
+            .as_deref()
+            .map(strip_js_wrapper)
+            .filter(|s| !s.is_empty());
+        let effective_action = match action_js.map(strip_js_wrapper).filter(|s| !s.is_empty()) {
+            Some(act) => Some(act),
+            None => login_check_stripped,
+        };
         let out = session
             .inner
-            .eval_login_script(login_url_js, action_js, &merged_login)?;
+            .eval_login_script(login_url_js, effective_action, &merged_login)?;
         let (final_state, diagnostics) = session.finalize_state();
         Ok(SourceCallOutput {
             data: out,
