@@ -3503,3 +3503,110 @@ async fn detail_literal_reading_direction_malformed_json_and_http_login_url_fall
 
     server.abort();
 }
+
+#[tokio::test]
+async fn json_scalar_roots_return_empty_results_without_invalid_json_error() {
+    let app = Router::new()
+        .route(
+            "/scalar-str",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#""just-a-string""#))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/scalar-num",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from("123"))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/scalar-bool",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from("true"))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/scalar-null",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from("null"))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/broken",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{ "broken": [1, 2,"#))
+                    .unwrap()
+            }),
+        );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let make_src = |path: &str| -> ComicSourceSpec {
+        serde_json::from_value(serde_json::json!({
+            "sourceName": format!("Scalar-{path}"),
+            "sourceUrl": base,
+            "searchUrl": format!("{base}{path}?q={{{{key}}}}"),
+            "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+        }))
+        .unwrap()
+    };
+
+    let s_str = make_src("/scalar-str");
+    let s_num = make_src("/scalar-num");
+    let s_bool = make_src("/scalar-bool");
+    let s_null = make_src("/scalar-null");
+    let s_broken = make_src("/broken");
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    let (r_str, r_num, r_bool, r_null, r_broken) = tokio::task::spawn_blocking(move || {
+        (
+            engine.search_sync(&s_str, SourceRuntimeState::default(), "q", 1),
+            engine.search_sync(&s_num, SourceRuntimeState::default(), "q", 1),
+            engine.search_sync(&s_bool, SourceRuntimeState::default(), "q", 1),
+            engine.search_sync(&s_null, SourceRuntimeState::default(), "q", 1),
+            engine.search_sync(&s_broken, SourceRuntimeState::default(), "q", 1),
+        )
+    })
+    .await
+    .unwrap();
+
+    assert!(r_str.unwrap().data.is_empty());
+    assert!(r_num.unwrap().data.is_empty());
+    assert!(r_bool.unwrap().data.is_empty());
+    assert!(r_null.unwrap().data.is_empty());
+    let err = r_broken.unwrap_err();
+    assert!(err.contains("上游返回无效 JSON"), "got: {err}");
+
+    server.abort();
+}

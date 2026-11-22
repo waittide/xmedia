@@ -864,7 +864,11 @@ impl ComicSourceEngine {
                 || trimmed == "$"
         };
         let non_empty_body = !fetched.body.trim().is_empty();
-        let raw_input = RuleValue::from_raw(fetched.body);
+        let raw_input = if is_json_ct || is_jsonpath_rule {
+            RuleValue::from_json_or_raw(fetched.body)
+        } else {
+            RuleValue::from_raw(fetched.body)
+        };
         if non_empty_body && (is_json_ct || is_jsonpath_rule) && raw_input.as_json().is_none() {
             return Err("上游返回无效 JSON".into());
         }
