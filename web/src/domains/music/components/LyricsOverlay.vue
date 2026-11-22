@@ -126,7 +126,7 @@ function navigateAndClose(path: string): void {
         v-if="playerStore.lyricsOpen && playerStore.currentTrack"
         ref="overlayRef"
         role="dialog"
-        aria-modal="true"
+        :aria-modal="playerStore.lyricsOpen && playerStore.currentTrack ? 'true' : undefined"
         tabindex="-1"
         :aria-label="t('player.lyricsTitle')"
         class="fixed inset-0 z-[var(--z-fullscreen)] flex h-dvh w-screen flex-col overflow-hidden bg-[var(--md-sys-color-surface)] text-[var(--md-sys-color-on-surface)] outline-none"

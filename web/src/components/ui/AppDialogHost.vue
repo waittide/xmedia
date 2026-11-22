@@ -47,7 +47,7 @@ watch(
           <form
             ref="dialogRef"
             role="dialog"
-            aria-modal="true"
+            :aria-modal="dialogStore.active ? 'true' : undefined"
             tabindex="-1"
             :aria-labelledby="dialogStore.active.title ? titleId : undefined"
             :aria-describedby="dialogStore.active.message ? descId : undefined"

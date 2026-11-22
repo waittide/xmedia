@@ -50,7 +50,7 @@ escapeStack.register(
         <section
           ref="sheetRef"
           role="dialog"
-          aria-modal="true"
+          :aria-modal="open ? 'true' : undefined"
           tabindex="-1"
           :aria-labelledby="title ? titleId : undefined"
           :aria-describedby="subtitle ? subtitleId : undefined"

@@ -465,7 +465,7 @@ function handleKeydown(ev: KeyboardEvent): void {
           <div
             ref="dialogRef"
             role="dialog"
-            aria-modal="true"
+            :aria-modal="open ? 'true' : undefined"
             tabindex="-1"
             :aria-label="t('common.search')"
             class="flex h-dvh w-full max-w-xl flex-col overflow-hidden rounded-none bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] outline-none sm:h-auto sm:rounded-[28px]"
