@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, useId, useSlots } from 'vue'
+import { computed, ref, useId } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { LuSearch, LuX } from 'vue-icons-plus/lu'
 
@@ -64,7 +64,6 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const slots = useSlots()
 const inputId = useId()
 const helperId = useId()
 const inputRef = ref<HTMLInputElement | null>(null)
@@ -77,7 +76,6 @@ const helperText = computed(() => errorMessage.value || props.supportingText)
 const showClear = computed(
   () => props.clearable && !props.disabled && !props.readonly && stringValue.value.length > 0,
 )
-const hasLeading = computed(() => Boolean(slots.leading) || props.type === 'search')
 
 const containerClass = computed(() => {
   const height = props.size === 'sm' ? 'h-9' : 'h-11'
@@ -158,7 +156,7 @@ defineExpose({
       :class="containerClass"
     >
       <span
-        v-if="hasLeading"
+        v-if="$slots.leading || type === 'search'"
         class="flex shrink-0 items-center text-on-surface-variant"
         :class="disabled ? 'opacity-38' : ''"
       >

@@ -148,7 +148,7 @@ export interface UseOnlineSearchBrowseReturn<
   init: () => Promise<void>
   retryInit: () => Promise<void>
   setKeyword: (value: string, opts?: { debounce?: boolean }) => void
-  submitSearch: () => Promise<void>
+  submitSearch: (overrideKeyword?: string) => Promise<void>
   clearSearch: () => void
   retrySearch: () => Promise<void>
   toggleSource: (sourceId: string) => void
@@ -619,9 +619,13 @@ export function useOnlineSearchBrowse<
     }, debounceMs)
   }
 
-  async function submitSearch(): Promise<void> {
+  async function submitSearch(overrideKeyword?: string): Promise<void> {
     clearDebounce()
+    if (overrideKeyword !== undefined) {
+      keyword.value = overrideKeyword
+    }
     notifyKeywordChange(keyword.value)
+    if (loadingInit.value) return
     await runSearch(1, 'replace')
   }
 

@@ -204,7 +204,7 @@ async function handleToggleFavorite(vm: MediaItemVM): Promise<void> {
 }
 
 defineExpose({
-  submitSearch: () => browse.submitSearch(),
+  submitSearch: (kw?: string) => browse.submitSearch(kw),
   clearSearch: () => browse.clearSearch(),
   refresh: () => browse.retryInit(),
 })

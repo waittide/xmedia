@@ -292,8 +292,8 @@ function closeDownloadModal(): void {
   modalTrackedJobId.value = null
 }
 
-function submitSearch(): Promise<void> {
-  return searchState.submitSearch()
+function submitSearch(kw?: string): Promise<void> {
+  return searchState.submitSearch(kw)
 }
 
 function clearSearch(): void {

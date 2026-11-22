@@ -137,7 +137,11 @@ function mapOnlineItemToVM(
   blockedLabels: { disabled: string; missing: string },
 ): MediaItemVM {
   const domain = item.media_kind as OnlineItemDomain
-  const cover = resolveOnlineItemCover(domain, item.cover_url, item.source_id, item.source_kind)
+  const blocked = isAvailabilityBlocked(item.availability)
+  // Avoid issuing image/cover/poster-proxy requests against disabled or deleted sources (404)
+  const cover = blocked
+    ? undefined
+    : resolveOnlineItemCover(domain, item.cover_url, item.source_id, item.source_kind)
   const hintExtra = extractRouteHintExtra(item.extra)
   const hints: ItemHints = {
     title: item.title,
@@ -152,7 +156,6 @@ function mapOnlineItemToVM(
     ref: item.item_key,
     hints,
   }
-  const blocked = isAvailabilityBlocked(item.availability)
   const pos = item.progress ? onlineProgressToPlayPosition(item.progress) : undefined
   const progressPercent =
     item.progress_ratio !== null && Number.isFinite(item.progress_ratio)

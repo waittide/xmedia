@@ -569,7 +569,7 @@ function handleSearchSubmit(query: string): void {
   catalogStore.page = 1
   syncRouteQuery()
   if (isOnlineScope.value) {
-    void onlineSearchRef.value?.submitSearch()
+    void onlineSearchRef.value?.submitSearch(trimmed)
   } else if (isLocalScope.value) {
     void loadActiveLocalData()
   }

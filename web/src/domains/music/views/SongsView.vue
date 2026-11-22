@@ -449,10 +449,11 @@ function handleSearchInputUpdate(val: string): void {
 function handleSearchSubmit(val: string): void {
   clearDebounce()
   const trimmed = val.trim()
-  if (trimmed !== committedQuery.value) {
+  if (activeScope.value === 'online' && activeTab.value === 'all') {
     updateQuery({ q: trimmed || null }, true)
-  } else if (activeScope.value === 'online' && activeTab.value === 'all') {
-    void onlineSearchRef.value?.submitSearch()
+    void onlineSearchRef.value?.submitSearch(trimmed)
+  } else if (trimmed !== committedQuery.value) {
+    updateQuery({ q: trimmed || null }, true)
   } else if (activeScope.value === 'remote' && activeTab.value === 'all') {
     remoteSearchRef.value?.reload()
   } else if (isLocalCatalogMode.value) {

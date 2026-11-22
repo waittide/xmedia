@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, useSlots } from 'vue'
+import { computed } from 'vue'
 import { LuChevronRight, LuMoreVertical } from 'vue-icons-plus/lu'
 import { MdIconButton, MdLinearProgress, MdMenu } from '@/components/ui'
 
@@ -36,9 +36,6 @@ const emit = defineEmits<{
   open: []
 }>()
 
-const slots = useSlots()
-
-const hasMenu = computed(() => Boolean(slots.menu))
 const normalizedProgress = computed<number | null>(() => {
   if (props.progressPercent === null || props.progressPercent === undefined) return null
   if (!Number.isFinite(props.progressPercent) || props.progressPercent <= 0) return null
@@ -110,14 +107,14 @@ const normalizedProgress = computed<number | null>(() => {
 
       <slot name="trailing">
         <LuChevronRight
-          v-if="!disabled && !missing && !hasMenu"
+          v-if="!disabled && !missing && !$slots.menu"
           class="h-4 w-4 shrink-0 text-on-surface-variant/70 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:text-primary"
           aria-hidden="true"
         />
       </slot>
     </button>
 
-    <div v-if="hasMenu" class="shrink-0" @click.stop>
+    <div v-if="$slots.menu" class="shrink-0" @click.stop>
       <MdMenu placement="bottom-end" :aria-label="menuAriaLabel">
         <template #trigger="{ toggle, triggerAttrs }">
           <MdIconButton

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n as useGlobalI18n } from 'vue-i18n'
 import { RouterLink, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import {
@@ -503,9 +503,7 @@ function handleSearchSubmit(nextQuery: string): void {
   const trimmed = nextQuery.trim()
   updateQuery({ q: trimmed || null, page: null })
   if (isOnlineBrowseView.value) {
-    void nextTick(() => {
-      void onlineSearchRef.value?.submitSearch()
-    })
+    void onlineSearchRef.value?.submitSearch(trimmed)
   }
 }
 

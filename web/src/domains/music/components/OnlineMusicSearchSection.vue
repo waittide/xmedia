@@ -122,8 +122,8 @@ function handleTriggerExplore(): void {
   void browse.triggerExplore(target)
 }
 
-function submitSearch(): Promise<void> {
-  return browse.submitSearch()
+function submitSearch(kw?: string): Promise<void> {
+  return browse.submitSearch(kw)
 }
 
 function clearSearch(): void {
@@ -190,7 +190,7 @@ defineExpose({
 
     <template #summary-actions>
       <MdButton
-        v-if="!browse.showBrowseView.value && exploreTargetSourceId"
+        v-if="exploreTargetSourceId"
         variant="text"
         size="sm"
         :icon="LuCompass"

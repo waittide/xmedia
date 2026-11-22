@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, useSlots, type Component } from 'vue'
+import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import {
@@ -59,7 +59,6 @@ const emit = defineEmits<{
   'toggle-favorite': [item: MediaItemVM]
 }>()
 
-const slots = useSlots()
 const { locale } = useI18n()
 const isZh = computed(() => locale.value.startsWith('zh'))
 
@@ -145,10 +144,6 @@ const sourceBadgeText = computed(() => {
 })
 
 const shouldShowFavorite = computed(() => props.showFavorite || props.favorite !== undefined)
-const hasMenu = computed(() => Boolean(slots.menu))
-const hasTrailingControls = computed(
-  () => shouldShowFavorite.value || hasMenu.value || Boolean(slots.actions),
-)
 
 const favoriteAriaLabel = computed(() =>
   props.favorite
@@ -243,7 +238,7 @@ function onFavoriteClick(): void {
       </div>
     </div>
 
-    <div v-if="hasTrailingControls" class="relative z-10 flex shrink-0 items-center gap-0.5">
+    <div v-if="shouldShowFavorite || $slots.menu || $slots.actions" class="relative z-10 flex shrink-0 items-center gap-0.5">
       <slot name="actions" />
       <MdIconButton
         v-if="shouldShowFavorite"
@@ -257,7 +252,7 @@ function onFavoriteClick(): void {
       >
         <LuHeart class="h-4 w-4" :class="favorite ? 'fill-current text-tertiary' : ''" />
       </MdIconButton>
-      <MdMenu v-if="hasMenu" placement="bottom-end" :aria-label="moreAriaLabel">
+      <MdMenu v-if="$slots.menu" placement="bottom-end" :aria-label="moreAriaLabel">
         <template #trigger="{ toggle, triggerAttrs }">
           <MdIconButton
             v-bind="triggerAttrs"
@@ -362,7 +357,7 @@ function onFavoriteClick(): void {
         </div>
       </div>
 
-      <div v-if="hasTrailingControls" class="relative z-10 -mr-1.5 flex shrink-0 items-center">
+      <div v-if="shouldShowFavorite || $slots.menu || $slots.actions" class="relative z-10 -mr-1.5 flex shrink-0 items-center">
         <slot name="actions" />
         <MdIconButton
           v-if="shouldShowFavorite"
@@ -376,7 +371,7 @@ function onFavoriteClick(): void {
         >
           <LuHeart class="h-4 w-4" :class="favorite ? 'fill-current text-tertiary' : ''" />
         </MdIconButton>
-        <MdMenu v-if="hasMenu" placement="bottom-end" :aria-label="moreAriaLabel">
+        <MdMenu v-if="$slots.menu" placement="bottom-end" :aria-label="moreAriaLabel">
           <template #trigger="{ toggle, triggerAttrs }">
             <MdIconButton
               v-bind="triggerAttrs"

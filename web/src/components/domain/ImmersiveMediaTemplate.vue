@@ -5,7 +5,6 @@ import {
   onMounted,
   ref,
   shallowRef,
-  useSlots,
   watch,
   type Component,
 } from 'vue'
@@ -83,7 +82,6 @@ const emit = defineEmits<{
   'stage-tap': [ev: MouseEvent]
 }>()
 
-const slots = useSlots()
 const { locale } = useI18n()
 const escapeStack = useEscapeStack()
 const isZh = computed(() => locale.value.startsWith('zh'))
@@ -105,8 +103,6 @@ const isHudVisible = computed(() =>
   isControlledHud.value ? Boolean(props.hudVisible) : internalHudVisible.value,
 )
 const isSheetOpen = computed(() => Boolean(props.activeSheet))
-const hasFooter = computed(() => Boolean(slots.footer))
-const hasSheetSlot = computed(() => Boolean(slots.sheet))
 
 const resolvedBackLabel = computed(() => props.backLabel || (isZh.value ? '返回' : 'Back'))
 
@@ -398,7 +394,7 @@ defineExpose({
 
     <!-- Floating Bottom HUD Bar (budget <= 6 controls) -->
     <footer
-      v-if="hasFooter"
+      v-if="$slots.footer"
       ref="footerRef"
       :aria-hidden="!isHudVisible"
       class="safe-pb safe-px fixed right-0 bottom-0 left-0 z-[var(--z-base-overlay)] transition-[opacity,transform] duration-200 ease-standard"
@@ -436,7 +432,7 @@ defineExpose({
 
     <!-- Single Mutually-Exclusive Sheet (Side Sheet >=600px / Bottom Sheet <600px) -->
     <MdSheet
-      v-if="hasSheetSlot"
+      v-if="$slots.sheet"
       :open="isSheetOpen"
       :title="sheetTitle"
       :subtitle="sheetSubtitle"
