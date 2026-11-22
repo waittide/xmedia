@@ -1,52 +1,31 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch, type Component } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, watch, type Component } from 'vue'
+import { useRouter, type RouteLocationRaw } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
+  LuAlertCircle,
   LuArrowRight,
   LuBookOpen,
   LuClapperboard,
-  LuCornerDownLeft,
+  LuClock,
   LuDisc3,
   LuGlobe,
   LuLayers,
-  LuLoader2,
-  LuMusic,
   LuSearch,
   LuSettings,
-  LuX,
 } from 'vue-icons-plus/lu'
-import { requestJson } from '@/api/client'
-import { useEscapeStack } from '@/composables/useEscapeStack'
-import { useFocusTrap } from '@/composables/useFocusTrap'
-import { stripAriaModalOnLeave } from '@/utils/dom'
+import {
+  MdButton,
+  MdChip,
+  MdEmptyState,
+  MdListItem,
+  MdSearchView,
+  MdSkeleton,
+} from '@/components/ui'
+import { useUnifiedSearch, type MediaItemVM, type OnlineQuickAction, type SearchGroup } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
-import type { BookSummaryDto, PagedResult as BookPagedResult } from '@/domains/book/types'
-import type { SeriesSummaryDto } from '@/domains/comic/types'
-import type { SearchResultDto as MusicSearchResultDto } from '@/domains/music/types'
-import type { VideoSummaryDto } from '@/domains/video/types'
 import type { MediaKind } from '@/types/api'
-
-const PER_DOMAIN_LIMIT = 5
-
-interface QuickResultItem {
-  id: string
-  group: MediaKind | 'nav'
-  title: string
-  subtitle?: string
-  to: string
-  icon: Component
-  domain?: MediaKind
-}
-
-interface DomainResultSection {
-  domain: MediaKind
-  label: string
-  icon: Component
-  items: QuickResultItem[]
-  viewAllTo: { path: string; query: { q: string } }
-}
 
 const props = defineProps<{
   open: boolean
@@ -56,667 +35,353 @@ const emit = defineEmits<{
   close: []
 }>()
 
-const { t } = useI18n()
+const { t, te, locale } = useI18n()
 const router = useRouter()
 const authStore = useAuthStore()
 const domainStore = useDomainStore()
-const escapeStack = useEscapeStack()
 
-escapeStack.register(
-  () => props.open,
-  () => emit('close'),
-)
+const {
+  query,
+  groups,
+  onlineActions,
+  recent,
+  loading,
+  hasQuery,
+  error,
+  cancel,
+  addRecent,
+  removeRecent,
+  clearRecent,
+} = useUnifiedSearch({
+  preferDomain: () => domainStore.activeDomain,
+  limitPerGroup: 5,
+  debounceMs: 250,
+})
 
-const viewAllLabel = computed(() => t('common.viewAll'))
-const quickNavHeading = computed(() => t('globalSearch.quickNavigation'))
+const isZh = computed(() => String(locale.value).startsWith('zh'))
 
-const inputRef = ref<HTMLInputElement | null>(null)
-const listRef = ref<HTMLElement | null>(null)
-const query = ref('')
-const loading = ref(false)
-const domainSections = ref<DomainResultSection[]>([])
-const searchError = ref<string | null>(null)
-const activeIndex = ref(0)
-const dialogRef = ref<HTMLElement | null>(null)
-useFocusTrap(dialogRef, () => props.open, { initialFocusRef: inputRef })
-
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
-let activeController: AbortController | null = null
-let searchSeq = 0
-
-const DOMAIN_META: Record<MediaKind, { icon: Component; path: string }> = {
-  book: { icon: LuBookOpen, path: '/book' },
-  comic: { icon: LuLayers, path: '/comic' },
-  music: { icon: LuDisc3, path: '/music' },
-  video: { icon: LuClapperboard, path: '/video' },
+function tr(key: string, zh: string, en: string): string {
+  return te(key) ? t(key) : isZh.value ? zh : en
 }
 
-function buildDomainSearchRoute(kind: MediaKind, q: string): { path: string; query: { q: string } } {
-  if (kind === 'book') return { path: '/book/catalog', query: { q } }
-  if (kind === 'comic') return { path: '/comic/series', query: { q } }
-  if (kind === 'music') return { path: '/music/search', query: { q } }
-  return { path: '/video/catalog', query: { q } }
-}
-
-const quickNavItems = computed<QuickResultItem[]>(() => {
-  const items: QuickResultItem[] = authStore.enabledModules.map((kind) => ({
-    id: `nav:${kind}`,
-    group: 'nav',
-    title: t(`app.domains.${kind}`),
-    to: DOMAIN_META[kind].path,
-    icon: DOMAIN_META[kind].icon,
-    domain: kind,
-  }))
-  items.push({
-    id: 'nav:settings',
-    group: 'nav',
-    title: t('nav.settings'),
-    to: '/settings',
-    icon: LuSettings,
-  })
-  return items
-})
-
-const hasQuery = computed(() => query.value.trim().length > 0)
-
-const ONLINE_DOMAIN_SEARCH_META: Record<
-  MediaKind,
-  { path: string; titleKey: string; subtitleKey: string; icon: Component }
-> = {
-  book: {
-    path: '/book/catalog',
-    titleKey: 'globalSearch.onlineBookSearchTitle',
-    subtitleKey: 'globalSearch.onlineBookSearchSubtitle',
-    icon: LuGlobe,
-  },
-  comic: {
-    path: '/comic/series',
-    titleKey: 'globalSearch.onlineComicSearchTitle',
-    subtitleKey: 'globalSearch.onlineComicSearchSubtitle',
-    icon: LuLayers,
-  },
-  music: {
-    path: '/music/search',
-    titleKey: 'globalSearch.onlineMusicSearchTitle',
-    subtitleKey: 'globalSearch.onlineMusicSearchSubtitle',
-    icon: LuDisc3,
-  },
-  video: {
-    path: '/video/catalog',
-    titleKey: 'globalSearch.onlineVideoSearchTitle',
-    subtitleKey: 'globalSearch.onlineVideoSearchSubtitle',
-    icon: LuClapperboard,
-  },
-}
-
-const onlineSearchItems = computed<QuickResultItem[]>(() => {
-  const q = query.value.trim()
-  if (!q) return []
-  const order: MediaKind[] = ['book', 'comic', 'music', 'video']
-  const items: QuickResultItem[] = []
-  for (const kind of order) {
-    if (!authStore.hasModule(kind)) continue
-    const meta = ONLINE_DOMAIN_SEARCH_META[kind]
-    items.push({
-      id: `online-${kind}-search`,
-      group: kind,
-      title: t(meta.titleKey, { query: q }),
-      subtitle: t(meta.subtitleKey),
-      to: `${meta.path}?q=${encodeURIComponent(q)}&scope=online`,
-      icon: meta.icon,
-      domain: kind,
-    })
-  }
-  return items
-})
-
-const flatItems = computed<QuickResultItem[]>(() => {
-  if (!hasQuery.value) return quickNavItems.value
-  if (loading.value && domainSections.value.length === 0) return []
-  const items = domainSections.value.flatMap((sec) => sec.items)
-  if (onlineSearchItems.value.length > 0 && !loading.value) {
-    items.push(...onlineSearchItems.value)
-  }
-  return items
-})
-
-const itemIndexById = computed<Map<string, number>>(() => {
-  const map = new Map<string, number>()
-  flatItems.value.forEach((item, idx) => map.set(item.id, idx))
-  return map
-})
-
-function abortPendingSearch(): void {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer)
-    debounceTimer = null
-  }
-  if (activeController) {
-    activeController.abort()
-    activeController = null
-  }
+const DOMAIN_ICONS: Record<MediaKind, Component> = {
+  book: LuBookOpen,
+  comic: LuLayers,
+  music: LuDisc3,
+  video: LuClapperboard,
 }
 
 watch(
   () => props.open,
-  async (isOpen) => {
+  (isOpen) => {
     if (isOpen) {
-      abortPendingSearch()
-      searchSeq += 1
       query.value = ''
-      domainSections.value = []
-      searchError.value = null
-      loading.value = false
-      activeIndex.value = 0
-      await nextTick()
-      inputRef.value?.focus()
     } else {
-      abortPendingSearch()
-      searchSeq += 1
-      loading.value = false
+      cancel()
     }
   },
 )
 
-watch(query, (val) => {
-  abortPendingSearch()
-  const q = val.trim()
-  activeIndex.value = 0
-  if (!q) {
-    searchSeq += 1
-    domainSections.value = []
-    loading.value = false
+const placeholderText = computed(() => {
+  const names = authStore.enabledModules.map((m) => t(`app.domains.${m}`)).join(' / ')
+  return `${t('common.search')} ${names}…`
+})
+
+const visibleGroups = computed<SearchGroup[]>(() =>
+  groups.value.filter((g) => g.items.length > 0),
+)
+
+const allGroupsFailed = computed(
+  () =>
+    hasQuery.value &&
+    groups.value.length > 0 &&
+    groups.value.every((g) => g.status === 'error'),
+)
+
+const quickNavItems = computed(() => {
+  const out: Array<{ key: string; label: string; icon: Component; to: RouteLocationRaw; domain?: MediaKind }> = []
+  for (const kind of ['book', 'comic', 'music', 'video'] as const) {
+    if (!authStore.hasModule(kind)) continue
+    out.push({
+      key: kind,
+      label: t(`app.domains.${kind}`),
+      icon: DOMAIN_ICONS[kind],
+      to: `/${kind}`,
+      domain: kind,
+    })
+  }
+  out.push({
+    key: 'settings',
+    label: t('nav.settings'),
+    icon: LuSettings,
+    to: '/settings',
+  })
+  return out
+})
+
+/**
+ * Uses canonical Stage 3C/4 routes when registered in router; gracefully translates
+ * to current legacy routes before router switchover so navigation never hits catch-all.
+ */
+function resolveRoute(target: RouteLocationRaw): RouteLocationRaw {
+  const matched = router.resolve(target)
+  const isCatchAll =
+    matched.matched.length === 0 ||
+    matched.matched[matched.matched.length - 1]?.path === '/:pathMatch(.*)*'
+  if (!isCatchAll) return target
+
+  if (typeof target === 'string') return target
+  const path = 'path' in target && typeof target.path === 'string' ? target.path : ''
+  const queryObj = 'query' in target ? target.query : undefined
+
+  const libMatch = /^\/(book|comic|music|video)\/library$/.exec(path)
+  if (libMatch) {
+    const d = libMatch[1] as MediaKind
+    const legacyPath =
+      d === 'comic' ? '/comic/series' : d === 'music' ? '/music/songs' : `/${d}/catalog`
+    return { path: legacyPath, query: queryObj }
+  }
+
+  const itemMatch = /^\/(book|comic|music|video)\/item\/(.+)$/.exec(path)
+  if (itemMatch) {
+    const d = itemMatch[1] as MediaKind
+    const id = itemMatch[2]!
+    if (d === 'book') return { path: `/book/items/${id}`, query: queryObj }
+    if (d === 'comic') return { path: `/comic/series/${id}`, query: queryObj }
+    if (d === 'music') return { path: `/music/albums/${id}`, query: queryObj }
+    return { path: `/video/shows/${id}`, query: queryObj }
+  }
+
+  const playMatch = /^\/(book|comic|music|video)\/play\/(.+)$/.exec(path)
+  if (playMatch) {
+    const d = playMatch[1] as MediaKind
+    const id = playMatch[2]!
+    if (d === 'book') return { path: `/book/read/${id}`, query: queryObj }
+    if (d === 'comic') return { path: `/comic/read/${id}`, query: queryObj }
+    if (d === 'video') return { path: `/video/watch/${id}`, query: queryObj }
+  }
+
+  return target
+}
+
+function navigateTo(target: RouteLocationRaw, domain?: MediaKind): void {
+  if (query.value.trim()) {
+    addRecent(query.value)
+  }
+  if (domain) {
+    domainStore.setActiveDomain(domain)
+  }
+  emit('close')
+  void router.push(resolveRoute(target))
+}
+
+function onSelectItem(item: MediaItemVM): void {
+  navigateTo(item.to, item.ref.domain)
+}
+
+function onSelectSeeAll(group: SearchGroup): void {
+  navigateTo(group.seeAll, group.domain)
+}
+
+function onSelectOnlineAction(action: OnlineQuickAction): void {
+  navigateTo(action.to, action.domain)
+}
+
+function onSubmitSearch(): void {
+  const trimmed = query.value.trim()
+  if (!trimmed) return
+  addRecent(trimmed)
+
+  const preferredGroup = groups.value[0]
+  if (preferredGroup) {
+    navigateTo(preferredGroup.seeAll, preferredGroup.domain)
     return
   }
-  loading.value = true
-  debounceTimer = setTimeout(() => {
-    debounceTimer = null
-    void runCrossDomainSearch(q)
-  }, 180)
-})
 
-onBeforeUnmount(() => {
-  abortPendingSearch()
-})
-
-async function runCrossDomainSearch(q: string): Promise<void> {
-  const seq = ++searchSeq
-  const controller = new AbortController()
-  activeController = controller
-  const { signal } = controller
-  const enabled = authStore.enabledModules
-  searchError.value = null
-  let failedCount = 0
-  let lastErrorMsg = ''
-  const recordError = (err: unknown): null => {
-    if (signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
-      return null
-    }
-    failedCount += 1
-    if (!lastErrorMsg) {
-      lastErrorMsg = err instanceof Error ? err.message : String(err)
-    }
-    return null
+  const firstOnline = onlineActions.value[0]
+  if (firstOnline) {
+    navigateTo(firstOnline.to, firstOnline.domain)
   }
-  const tasks: Array<Promise<DomainResultSection | null>> = []
-
-  if (enabled.includes('book')) {
-    const sp = new URLSearchParams({
-      keyword: q,
-      page: '1',
-      page_size: String(PER_DOMAIN_LIMIT),
-    })
-    tasks.push(
-      requestJson<BookPagedResult<BookSummaryDto>>(`/book/books?${sp.toString()}`, { signal })
-        .then((res): DomainResultSection | null => {
-          const items: QuickResultItem[] = res.items.slice(0, PER_DOMAIN_LIMIT).map((b) => ({
-            id: `book:${b.id}`,
-            group: 'book',
-            title: b.metadata.title || b.id,
-            subtitle: b.metadata.authors.join(', ') || b.format.toUpperCase(),
-            to: `/book/items/${b.id}`,
-            icon: LuBookOpen,
-            domain: 'book',
-          }))
-          if (items.length === 0) return null
-          return {
-            domain: 'book',
-            label: t('app.domains.book'),
-            icon: LuBookOpen,
-            items,
-            viewAllTo: buildDomainSearchRoute('book', q),
-          }
-        })
-        .catch(recordError),
-    )
-  }
-
-  if (enabled.includes('comic')) {
-    const sp = new URLSearchParams({
-      search: q,
-      limit: String(PER_DOMAIN_LIMIT),
-    })
-    tasks.push(
-      requestJson<SeriesSummaryDto[]>(`/comic/series?${sp.toString()}`, { signal })
-        .then((res): DomainResultSection | null => {
-          const items: QuickResultItem[] = res.slice(0, PER_DOMAIN_LIMIT).map((s) => ({
-            id: `comic:${s.id}`,
-            group: 'comic',
-            title: s.title,
-            subtitle: s.writers?.join(', ') || `${s.chapter_count} ch`,
-            to: `/comic/series/${s.id}`,
-            icon: LuLayers,
-            domain: 'comic',
-          }))
-          if (items.length === 0) return null
-          return {
-            domain: 'comic',
-            label: t('app.domains.comic'),
-            icon: LuLayers,
-            items,
-            viewAllTo: buildDomainSearchRoute('comic', q),
-          }
-        })
-        .catch(recordError),
-    )
-  }
-
-  if (enabled.includes('music')) {
-    const sp = new URLSearchParams({
-      q,
-      limit: String(PER_DOMAIN_LIMIT),
-    })
-    tasks.push(
-      requestJson<MusicSearchResultDto>(`/music/search?${sp.toString()}`, { signal })
-        .then((res): DomainResultSection | null => {
-          const items: QuickResultItem[] = []
-          for (const alb of res.albums.slice(0, 2)) {
-            items.push({
-              id: `music:album:${alb.id}`,
-              group: 'music',
-              title: alb.title,
-              subtitle: alb.album_artist_name || t('app.domains.music'),
-              to: `/music/albums/${alb.id}`,
-              icon: LuDisc3,
-              domain: 'music',
-            })
-          }
-          for (const tr of res.tracks.slice(0, Math.max(1, PER_DOMAIN_LIMIT - items.length))) {
-            items.push({
-              id: `music:track:${tr.id}`,
-              group: 'music',
-              title: tr.title,
-              subtitle: [tr.artist_name, tr.album_title].filter(Boolean).join(' · '),
-              to: tr.album_id
-                ? `/music/albums/${tr.album_id}`
-                : `/music/search?q=${encodeURIComponent(q)}`,
-              icon: LuMusic,
-              domain: 'music',
-            })
-          }
-          if (items.length === 0) return null
-          return {
-            domain: 'music',
-            label: t('app.domains.music'),
-            icon: LuDisc3,
-            items,
-            viewAllTo: buildDomainSearchRoute('music', q),
-          }
-        })
-        .catch(recordError),
-    )
-  }
-
-  if (enabled.includes('video')) {
-    const sp = new URLSearchParams({
-      search: q,
-      limit: String(PER_DOMAIN_LIMIT),
-    })
-    tasks.push(
-      requestJson<VideoSummaryDto[]>(`/video/videos?${sp.toString()}`, { signal })
-        .then((res): DomainResultSection | null => {
-          const items: QuickResultItem[] = res.slice(0, PER_DOMAIN_LIMIT).map((v) => ({
-            id: `video:${v.id}`,
-            group: 'video',
-            title: v.title,
-            subtitle: v.year ? String(v.year) : t('app.domains.video'),
-            to: v.show_id ? `/video/shows/${v.show_id}` : `/video/watch/${v.id}`,
-            icon: LuClapperboard,
-            domain: 'video',
-          }))
-          if (items.length === 0) return null
-          return {
-            domain: 'video',
-            label: t('app.domains.video'),
-            icon: LuClapperboard,
-            items,
-            viewAllTo: buildDomainSearchRoute('video', q),
-          }
-        })
-        .catch(recordError),
-    )
-  }
-
-  const settled = await Promise.all(tasks)
-  if (signal.aborted || seq !== searchSeq) return
-  if (activeController === controller) {
-    activeController = null
-  }
-  domainSections.value = settled.filter((sec): sec is DomainResultSection => sec !== null)
-  searchError.value = failedCount > 0 ? lastErrorMsg || t('common.error') : null
-  activeIndex.value = 0
-  loading.value = false
 }
 
-function selectItem(item: QuickResultItem): void {
-  if (item.domain) {
-    domainStore.setActiveDomain(item.domain)
-  }
-  emit('close')
-  void router.push(item.to)
-}
-
-function openDomainViewAll(section: DomainResultSection): void {
-  domainStore.setActiveDomain(section.domain)
-  emit('close')
-  void router.push(section.viewAllTo)
-}
-
-function scrollActiveIntoView(): void {
-  void nextTick(() => {
-    const activeEl = listRef.value?.querySelector<HTMLElement>('[data-active="true"]')
-    activeEl?.scrollIntoView({ block: 'nearest' })
-  })
-}
-
-function handleKeydown(ev: KeyboardEvent): void {
-  if (ev.isComposing) return
-  const list = flatItems.value
-  if (ev.key === 'ArrowDown') {
-    ev.preventDefault()
-    if (list.length > 0) {
-      activeIndex.value = (activeIndex.value + 1) % list.length
-      scrollActiveIntoView()
-    }
-  } else if (ev.key === 'ArrowUp') {
-    ev.preventDefault()
-    if (list.length > 0) {
-      activeIndex.value = (activeIndex.value - 1 + list.length) % list.length
-      scrollActiveIntoView()
-    }
-  } else if (ev.key === 'Enter') {
-    const item = list[activeIndex.value]
-    if (item) {
-      ev.preventDefault()
-      selectItem(item)
-    }
-  }
+function applyRecentTerm(term: string): void {
+  query.value = term
 }
 </script>
 
 <template>
-  <Teleport to="body">
-    <Transition name="md-fade" @before-leave="stripAriaModalOnLeave">
-      <div
-        v-if="open"
-        class="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center bg-[var(--md-sys-color-scrim)]/32 px-0 pt-0 sm:px-4 sm:pt-[10vh]"
-        @mousedown.self="emit('close')"
-      >
-        <Transition name="md-dialog" appear @before-leave="stripAriaModalOnLeave">
-          <div
-            ref="dialogRef"
-            role="dialog"
-            :aria-modal="open ? 'true' : undefined"
-            tabindex="-1"
-            :aria-label="t('common.search')"
-            class="flex h-dvh w-full max-w-xl flex-col overflow-hidden rounded-none bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface)] shadow-[var(--md-sys-elevation-3)] outline-none sm:h-auto sm:rounded-[28px]"
-            @keydown="handleKeydown"
-          >
-            <!-- MD3 Search Dialog Header -->
-            <div
-              class="flex items-center gap-3 border-b border-[var(--md-sys-color-outline-variant)]/50 px-5 py-3.5"
+  <MdSearchView
+    :open="open"
+    :model-value="query"
+    :placeholder="placeholderText"
+    :loading="loading"
+    :aria-label="t('common.search')"
+    @update:model-value="query = $event"
+    @submit="onSubmitSearch"
+    @close="emit('close')"
+  >
+    <!-- Recent Searches & Quick Navigation (when query is empty) -->
+    <template #history>
+      <div class="space-y-5 px-1">
+        <section v-if="recent.length > 0" class="space-y-2">
+          <div class="flex items-center justify-between px-2">
+            <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+              <LuClock class="h-3.5 w-3.5" aria-hidden="true" />
+              <span>{{ tr('globalSearch.recentSearches', '最近搜索', 'Recent') }}</span>
+            </span>
+            <MdButton variant="text" size="sm" @click="clearRecent">
+              {{ t('common.clear') }}
+            </MdButton>
+          </div>
+          <div class="flex flex-wrap gap-2 px-2">
+            <MdChip
+              v-for="term in recent"
+              :key="term"
+              variant="input"
+              :label="term"
+              removable
+              @click="applyRecentTerm(term)"
+              @remove="removeRecent(term)"
+            />
+          </div>
+        </section>
+
+        <section class="space-y-1">
+          <div class="text-label-medium px-2 py-1 text-on-surface-variant">
+            {{ t('globalSearch.quickNavigation') }}
+          </div>
+          <div class="overflow-hidden rounded-corner-md">
+            <MdListItem
+              v-for="nav in quickNavItems"
+              :key="nav.key"
+              :headline="nav.label"
+              :lines="1"
+              clickable
+              @click="navigateTo(nav.to, nav.domain)"
             >
-              <LuLoader2
-                v-if="loading"
-                class="h-5 w-5 shrink-0 animate-spin text-[var(--md-sys-color-primary)]"
-              />
-              <LuSearch
-                v-else
-                class="h-5 w-5 shrink-0 text-[var(--md-sys-color-on-surface-variant)]"
-              />
+              <template #leading>
+                <component :is="nav.icon" class="h-5 w-5 text-on-surface-variant" aria-hidden="true" />
+              </template>
+              <template #trailing>
+                <LuArrowRight class="h-4 w-4 text-on-surface-variant" aria-hidden="true" />
+              </template>
+            </MdListItem>
+          </div>
+        </section>
+      </div>
+    </template>
 
-              <input
-                ref="inputRef"
-                v-model="query"
-                type="text"
-                :placeholder="
-                  t('common.search') +
-                  ' (' +
-                  authStore.enabledModules.map((m) => t('app.domains.' + m)).join(' / ') +
-                  ')…'
-                "
-                class="min-w-0 flex-1 bg-transparent text-sm text-[var(--md-sys-color-on-surface)] outline-none placeholder:text-[var(--md-sys-color-on-surface-variant)]"
-              />
-
-              <button
-                v-if="query"
-                type="button"
-                class="md-icon-btn md-icon-btn-sm md-state"
-                :aria-label="t('common.cancel')"
-                @click="query = ''"
-              >
-                <LuX class="h-4 w-4" />
-              </button>
-
-              <button
-                type="button"
-                class="md-state rounded-full bg-[var(--md-sys-color-surface-container)] px-2.5 py-0.5 font-mono text-[10px] text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-on-surface)]"
-                @click="emit('close')"
-              >
-                ESC
-              </button>
-            </div>
-
-            <!-- Results Body -->
-            <div ref="listRef" class="max-h-[60vh] overflow-y-auto p-3">
-              <!-- Initial loading state -->
-              <div
-                v-if="loading && hasQuery && domainSections.length === 0"
-                class="flex items-center justify-center gap-2 py-12 text-xs text-[var(--md-sys-color-on-surface-variant)]"
-              >
-                <LuLoader2 class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]" />
-                <span>{{ t('common.loading') }}</span>
-              </div>
-
-              <!-- Grouped cross-domain results -->
-              <div v-else-if="hasQuery" class="space-y-4">
-                <div
-                  v-if="searchError"
-                  role="alert"
-                  class="flex items-center justify-between gap-3 rounded-xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-xs text-[var(--md-sys-color-on-error-container)]"
-                >
-                  <span class="min-w-0 truncate">{{ searchError }}</span>
-                  <button
-                    type="button"
-                    class="md-btn md-btn-text md-btn-sm md-state shrink-0 !text-[var(--md-sys-color-on-error-container)]"
-                    @click="runCrossDomainSearch(query.trim())"
-                  >
-                    {{ t('common.refresh') }}
-                  </button>
-                </div>
-
-                <!-- Empty local search results state -->
-                <div
-                  v-if="!loading && !searchError && domainSections.length === 0"
-                  class="py-8 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]"
-                >
-                  {{ t('common.noResults') }}
-                </div>
-
-                <section
-                  v-for="section in domainSections"
-                  :key="section.domain"
-                  class="space-y-1"
-                >
-                  <div class="flex items-center justify-between px-2.5 py-1">
-                    <div class="flex items-center gap-1.5 text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase">
-                      <component :is="section.icon" class="h-3.5 w-3.5" />
-                      <span>{{ section.label }}</span>
-                    </div>
-
-                    <button
-                      type="button"
-                      class="md-state inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium text-[var(--md-sys-color-primary)]"
-                      @click="openDomainViewAll(section)"
-                    >
-                      <span>{{ viewAllLabel }}</span>
-                      <LuArrowRight class="h-3 w-3" />
-                    </button>
-                  </div>
-
-                  <div class="space-y-0.5">
-                    <button
-                      v-for="item in section.items"
-                      :key="item.id"
-                      type="button"
-                      :data-active="itemIndexById.get(item.id) === activeIndex"
-                      class="md-state flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors"
-                      :class="
-                        itemIndexById.get(item.id) === activeIndex
-                          ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                          : 'text-[var(--md-sys-color-on-surface)]'
-                      "
-                      @mouseenter="activeIndex = itemIndexById.get(item.id) ?? 0"
-                      @click="selectItem(item)"
-                    >
-                      <span
-                        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                        :class="
-                          itemIndexById.get(item.id) === activeIndex
-                            ? 'bg-[var(--md-sys-color-on-secondary-container)]/10'
-                            : 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
-                        "
-                      >
-                        <component :is="item.icon" class="h-4 w-4" />
-                      </span>
-                      <div class="min-w-0 flex-1">
-                        <p class="truncate text-[13px] font-medium">{{ item.title }}</p>
-                        <p
-                          v-if="item.subtitle"
-                          class="truncate text-[11px]"
-                          :class="
-                            itemIndexById.get(item.id) === activeIndex
-                              ? 'opacity-80'
-                              : 'text-[var(--md-sys-color-on-surface-variant)]'
-                          "
-                        >
-                          {{ item.subtitle }}
-                        </p>
-                      </div>
-                      <LuCornerDownLeft
-                        v-if="itemIndexById.get(item.id) === activeIndex"
-                        class="h-3.5 w-3.5 shrink-0 opacity-75"
-                      />
-                    </button>
-                  </div>
-                </section>
-
-                <!-- Online Source Search Quick Actions -->
-                <section v-if="onlineSearchItems.length > 0 && !loading" class="space-y-1">
-                  <div class="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase">
-                    <LuGlobe class="h-3.5 w-3.5" />
-                    <span>{{ t('globalSearch.onlineSources') }}</span>
-                  </div>
-                  <div class="space-y-0.5">
-                    <button
-                      v-for="item in onlineSearchItems"
-                      :key="item.id"
-                      type="button"
-                      :data-active="itemIndexById.get(item.id) === activeIndex"
-                      class="md-state flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors"
-                      :class="
-                        itemIndexById.get(item.id) === activeIndex
-                          ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                          : 'text-[var(--md-sys-color-on-surface)]'
-                      "
-                      @mouseenter="activeIndex = itemIndexById.get(item.id) ?? 0"
-                      @click="selectItem(item)"
-                    >
-                      <span
-                        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                        :class="
-                          itemIndexById.get(item.id) === activeIndex
-                            ? 'bg-[var(--md-sys-color-on-secondary-container)]/10'
-                            : 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
-                        "
-                      >
-                        <component :is="item.icon" class="h-4 w-4" />
-                      </span>
-                      <div class="min-w-0 flex-1">
-                        <p class="truncate text-[13px] font-medium">{{ item.title }}</p>
-                        <p
-                          v-if="item.subtitle"
-                          class="truncate text-[11px]"
-                          :class="
-                            itemIndexById.get(item.id) === activeIndex
-                              ? 'opacity-80'
-                              : 'text-[var(--md-sys-color-on-surface-variant)]'
-                          "
-                        >
-                          {{ item.subtitle }}
-                        </p>
-                      </div>
-                      <LuCornerDownLeft
-                        v-if="itemIndexById.get(item.id) === activeIndex"
-                        class="h-3.5 w-3.5 shrink-0 opacity-75"
-                      />
-                    </button>
-                  </div>
-                </section>
-              </div>
-
-              <!-- Empty query: Quick Navigation (no raw route path subtitles) -->
-              <div v-else class="space-y-1">
-                <div class="px-2.5 py-1 text-[11px] font-semibold tracking-wider text-[var(--md-sys-color-on-surface-variant)] uppercase">
-                  {{ quickNavHeading }}
-                </div>
-                <button
-                  v-for="(item, idx) in quickNavItems"
-                  :key="item.id"
-                  type="button"
-                  :data-active="idx === activeIndex"
-                  class="md-state flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors"
-                  :class="
-                    idx === activeIndex
-                      ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                      : 'text-[var(--md-sys-color-on-surface)]'
-                  "
-                  @mouseenter="activeIndex = idx"
-                  @click="selectItem(item)"
-                >
-                  <span
-                    class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg"
-                    :class="
-                      idx === activeIndex
-                        ? 'bg-[var(--md-sys-color-on-secondary-container)]/10'
-                        : 'bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
-                    "
-                  >
-                    <component :is="item.icon" class="h-4 w-4" />
-                  </span>
-                  <span class="min-w-0 flex-1 truncate text-[13px] font-medium">
-                    {{ item.title }}
-                  </span>
-                  <LuCornerDownLeft
-                    v-if="idx === activeIndex"
-                    class="h-3.5 w-3.5 shrink-0 opacity-75"
-                  />
-                </button>
-              </div>
+    <!-- Local Multi-Domain Search Results -->
+    <template #results>
+      <div v-if="hasQuery" class="space-y-4">
+        <!-- Loading skeletons when first fetching -->
+        <div v-if="loading && visibleGroups.length === 0" class="space-y-3 px-2 py-2">
+          <MdSkeleton variant="text" width="30%" />
+          <div v-for="n in 3" :key="`search-sk-${n}`" class="flex items-center gap-3">
+            <MdSkeleton variant="rect" width="40px" height="40px" />
+            <div class="flex-1 space-y-1.5">
+              <MdSkeleton variant="text" width="60%" />
+              <MdSkeleton variant="text" width="35%" />
             </div>
           </div>
-        </Transition>
+        </div>
+
+        <!-- Error alert if local search failed -->
+        <div
+          v-else-if="allGroupsFailed && error"
+          role="alert"
+          class="flex items-center gap-2.5 rounded-corner-md bg-error-container px-4 py-3 text-body-medium text-on-error-container"
+        >
+          <LuAlertCircle class="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span class="min-w-0 flex-1 truncate">{{ error }}</span>
+        </div>
+
+        <!-- Grouped local results -->
+        <template v-else-if="visibleGroups.length > 0">
+          <section v-for="group in visibleGroups" :key="group.key" class="space-y-1">
+            <div class="flex items-center justify-between px-2">
+              <span class="text-label-medium flex items-center gap-1.5 text-on-surface-variant">
+                <component :is="DOMAIN_ICONS[group.domain]" class="h-3.5 w-3.5" aria-hidden="true" />
+                <span>{{ group.title }}</span>
+              </span>
+              <MdButton variant="text" size="sm" @click="onSelectSeeAll(group)">
+                {{ t('common.viewAll') }}
+              </MdButton>
+            </div>
+
+            <div class="overflow-hidden rounded-corner-md">
+              <MdListItem
+                v-for="(item, idx) in group.items"
+                :key="`${group.key}-${idx}`"
+                :headline="item.title"
+                :supporting-text="item.subtitle"
+                :lines="item.subtitle ? 2 : 1"
+                clickable
+                @click="onSelectItem(item)"
+              >
+                <template #leading>
+                  <img
+                    v-if="item.cover"
+                    :src="item.cover"
+                    :alt="item.title"
+                    loading="lazy"
+                    class="h-10 w-10 rounded-corner-sm bg-surface-container-highest object-cover"
+                  />
+                  <div
+                    v-else
+                    class="flex h-10 w-10 items-center justify-center rounded-corner-sm bg-surface-container-highest text-on-surface-variant"
+                  >
+                    <component :is="DOMAIN_ICONS[group.domain]" class="h-5 w-5" aria-hidden="true" />
+                  </div>
+                </template>
+                <template #trailing>
+                  <LuArrowRight class="h-4 w-4 text-on-surface-variant" aria-hidden="true" />
+                </template>
+              </MdListItem>
+            </div>
+          </section>
+        </template>
+
+        <!-- Empty local state (online quick actions still render below) -->
+        <MdEmptyState
+          v-else-if="!loading"
+          :icon="LuSearch"
+          :title="t('common.noResults')"
+          compact
+        />
       </div>
-    </Transition>
-  </Teleport>
+    </template>
+
+    <!-- 4-Domain Online Quick Actions (rendered only when query.trim() is non-empty) -->
+    <template #online-actions>
+      <div v-if="onlineActions.length > 0" class="space-y-1">
+        <div class="text-label-medium flex items-center gap-1.5 px-2 py-1 text-on-surface-variant">
+          <LuGlobe class="h-3.5 w-3.5" aria-hidden="true" />
+          <span>{{ t('globalSearch.onlineSources') }}</span>
+        </div>
+        <div class="overflow-hidden rounded-corner-md">
+          <MdListItem
+            v-for="action in onlineActions"
+            :key="`online-${action.domain}`"
+            :headline="action.label"
+            :supporting-text="action.subtitle"
+            :lines="action.subtitle ? 2 : 1"
+            clickable
+            @click="onSelectOnlineAction(action)"
+          >
+            <template #leading>
+              <div
+                class="flex h-10 w-10 items-center justify-center rounded-corner-sm bg-secondary-container text-on-secondary-container"
+              >
+                <component :is="DOMAIN_ICONS[action.domain]" class="h-5 w-5" aria-hidden="true" />
+              </div>
+            </template>
+            <template #trailing>
+              <LuArrowRight class="h-4 w-4 text-on-surface-variant" aria-hidden="true" />
+            </template>
+          </MdListItem>
+        </div>
+      </div>
+    </template>
+  </MdSearchView>
 </template>

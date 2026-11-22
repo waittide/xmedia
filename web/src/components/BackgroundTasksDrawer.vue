@@ -8,6 +8,8 @@ import {
   LuBan,
   LuBookOpen,
   LuCheckCircle2,
+  LuChevronDown,
+  LuChevronRight,
   LuDownload,
   LuInbox,
   LuLoader2,
@@ -17,9 +19,14 @@ import {
   LuUpload,
   LuX,
 } from 'vue-icons-plus/lu'
-import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
-import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
-import MdSideSheet from '@/components/ui/MdSideSheet.vue'
+import {
+  MdButton,
+  MdCard,
+  MdEmptyState,
+  MdIconButton,
+  MdLinearProgress,
+  MdSheet,
+} from '@/components/ui'
 import { buildOnlineDownloadFileUrl } from '@/domains/book/onlineApi'
 import { useAuthStore } from '@/stores/auth'
 import { useEventsStore } from '@/stores/events'
@@ -40,7 +47,6 @@ const emit = defineEmits<{
   close: []
 }>()
 
-type TaskFilter = 'all' | 'active' | 'completed' | 'failed'
 type UnifiedTaskKind = 'scan' | 'upload' | 'download'
 type UnifiedTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
@@ -75,11 +81,10 @@ const eventsStore = useEventsStore()
 const uploadStore = useUploadStore()
 const onlineDownloadsStore = useOnlineDownloadsStore()
 
-const activeFilter = ref<TaskFilter>('all')
+const showCompleted = ref(false)
 const clearing = ref(false)
 const refreshing = ref(false)
 
-// Track per-upload task timestamps locally so uploads sort accurately alongside scans & downloads
 const uploadTimestamps = new Map<string, number>()
 
 watch(
@@ -120,7 +125,6 @@ function parseIsoTimestamp(iso?: string): number {
 const allTasks = computed<UnifiedTaskItem[]>(() => {
   const items: UnifiedTaskItem[] = []
 
-  // 1. Library scans
   for (const sc of eventsStore.scanTaskList) {
     const isActive = sc.status === 'running'
     let progress: number | null = null
@@ -166,7 +170,7 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
       metaText,
       errorText,
       progress,
-      targetRoute: `/${sc.media_kind}/libraries`,
+      targetRoute: `/settings?tab=domain-libraries&domain=${sc.media_kind}`,
       canCancel: false,
       canRetry: false,
       canDelete: false,
@@ -174,7 +178,6 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
     })
   }
 
-  // 2. File / folder uploads
   uploadStore.tasks.forEach((task, idx) => {
     const status: UnifiedTaskStatus = task.status === 'uploading' ? 'running' : task.status
     const isActive = status === 'queued' || status === 'running'
@@ -219,7 +222,6 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
     })
   })
 
-  // 3. Online book downloads & packaging
   for (const job of onlineDownloadsStore.jobs) {
     const isActive = isOnlineDownloadJobActive(job.status)
     const status: UnifiedTaskStatus = job.status === 'pending' ? 'queued' : job.status
@@ -285,55 +287,15 @@ const allTasks = computed<UnifiedTaskItem[]>(() => {
   })
 })
 
-const activeCount = computed(() => allTasks.value.filter((item) => item.isActive).length)
-const completedCount = computed(
-  () => allTasks.value.filter((item) => item.status === 'completed').length,
+/** Active + failed tasks are always visible by default. */
+const priorityTasks = computed(() =>
+  allTasks.value.filter((item) => item.isActive || item.status === 'failed'),
 )
-const failedCount = computed(() => allTasks.value.filter((item) => item.status === 'failed').length)
 
-const filterOptions = computed<SegmentedOption<TaskFilter>[]>(() => [
-  {
-    value: 'all',
-    label:
-      allTasks.value.length > 0
-        ? `${t('transfers.filterAll')} ${allTasks.value.length}`
-        : t('transfers.filterAll'),
-  },
-  {
-    value: 'active',
-    label:
-      activeCount.value > 0
-        ? `${t('transfers.filterActive')} ${activeCount.value}`
-        : t('transfers.filterActive'),
-  },
-  {
-    value: 'completed',
-    label:
-      completedCount.value > 0
-        ? `${t('transfers.filterCompleted')} ${completedCount.value}`
-        : t('transfers.filterCompleted'),
-  },
-  {
-    value: 'failed',
-    label:
-      failedCount.value > 0
-        ? `${t('transfers.filterFailed')} ${failedCount.value}`
-        : t('transfers.filterFailed'),
-  },
-])
-
-const filteredTasks = computed(() => {
-  if (activeFilter.value === 'active') {
-    return allTasks.value.filter((item) => item.isActive)
-  }
-  if (activeFilter.value === 'completed') {
-    return allTasks.value.filter((item) => item.status === 'completed')
-  }
-  if (activeFilter.value === 'failed') {
-    return allTasks.value.filter((item) => item.status === 'failed')
-  }
-  return allTasks.value
-})
+/** Completed + cancelled tasks are collapsed behind a disclosure toggle by default. */
+const finishedTasks = computed(() =>
+  allTasks.value.filter((item) => !item.isActive && item.status !== 'failed'),
+)
 
 const canClearFinished = computed(() => {
   const hasFinishedScan = eventsStore.scanTaskList.some((sc) => sc.status !== 'running')
@@ -415,253 +377,231 @@ async function handleClearFinished(): Promise<void> {
 </script>
 
 <template>
-  <MdSideSheet
+  <MdSheet
     :open="open"
     :title="t('transfers.drawerTitle')"
-    width-class="w-[min(28rem,100vw)]"
+    size="md"
     @close="emit('close')"
   >
-    <template #subheader>
-      <MdSegmentedButton
-        v-model="activeFilter"
-        :options="filterOptions"
+    <template #headerActions>
+      <MdIconButton
+        v-if="authStore.hasModule('book')"
         size="sm"
-        full-width
-        :show-check="false"
+        :icon="LuRefreshCw"
+        :loading="refreshing"
+        :tooltip="t('common.refresh')"
+        @click="handleRefresh"
       />
     </template>
 
-    <!-- Empty State -->
-    <div
-      v-if="filteredTasks.length === 0"
-      class="flex flex-col items-center justify-center py-16 text-center"
-    >
-      <div
-        class="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]"
-      >
-        <LuInbox class="h-5 w-5" />
-      </div>
-      <p class="md-body-medium text-[var(--md-sys-color-on-surface-variant)]">
-        {{ activeFilter === 'all' ? t('transfers.emptyAll') : t('transfers.emptyFiltered') }}
-      </p>
-    </div>
+    <!-- Overall Empty State -->
+    <MdEmptyState
+      v-if="allTasks.length === 0"
+      :icon="LuInbox"
+      :title="t('transfers.emptyAll')"
+      compact
+    />
 
-    <!-- Unified Task List -->
-    <div v-else class="space-y-2.5">
-      <article
-        v-for="item in filteredTasks"
-        :key="item.id"
-        :role="item.targetRoute ? 'button' : undefined"
-        :tabindex="item.targetRoute ? 0 : undefined"
-        class="md-card-outlined p-3.5 transition-colors focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-[var(--md-sys-color-secondary)]"
-        :class="
-          item.targetRoute
-            ? 'cursor-pointer hover:bg-[var(--md-sys-color-surface-container)]'
-            : ''
-        "
-        @click="item.targetRoute && handleNavigate(item.targetRoute)"
-        @keydown.enter.self="item.targetRoute && handleNavigate(item.targetRoute)"
-        @keydown.space.self.prevent="item.targetRoute && handleNavigate(item.targetRoute)"
-      >
-        <!-- Top Row: Icon + Title + Badges + Status / Quick Controls -->
-        <div class="flex items-start justify-between gap-2.5">
-          <div class="flex min-w-0 flex-1 items-start gap-2.5">
-            <div
-              class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full"
-              :class="
-                item.isActive
-                  ? 'bg-[var(--md-sys-color-primary-container)] text-[var(--md-sys-color-on-primary-container)]'
-                  : item.status === 'completed'
-                    ? 'bg-[var(--md-sys-color-success-container)] text-[var(--md-sys-color-on-success-container)]'
-                    : item.status === 'failed'
-                      ? 'bg-[var(--md-sys-color-error-container)] text-[var(--md-sys-color-on-error-container)]'
-                      : 'bg-[var(--md-sys-color-surface-container-highest)] text-[var(--md-sys-color-on-surface-variant)]'
-              "
-            >
-              <LuRefreshCw
-                v-if="item.kind === 'scan'"
-                class="h-4 w-4"
-                :class="item.isActive ? 'animate-spin' : ''"
-              />
-              <LuUpload v-else-if="item.kind === 'upload'" class="h-4 w-4" />
-              <LuDownload v-else class="h-4 w-4" />
-            </div>
-
-            <div class="min-w-0 flex-1">
-              <div class="flex items-center gap-1.5">
-                <h4 class="truncate text-xs font-semibold text-[var(--md-sys-color-on-surface)]">
-                  {{ item.title }}
-                </h4>
-                <span
-                  v-if="item.badge"
-                  class="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none"
-                  :class="
-                    item.kind === 'download'
-                      ? 'bg-[var(--md-sys-color-secondary-container)] text-[var(--md-sys-color-on-secondary-container)]'
-                      : 'bg-[var(--md-sys-color-surface-container-high)] text-[var(--md-sys-color-on-surface-variant)]'
-                  "
-                >
-                  {{ item.badge }}
-                </span>
+    <div v-else class="space-y-4">
+      <!-- Active & Failed Tasks (always shown) -->
+      <section v-if="priorityTasks.length > 0" class="space-y-2.5">
+        <MdCard
+          v-for="item in priorityTasks"
+          :key="item.id"
+          variant="outlined"
+          padding="md"
+          class="space-y-2.5"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 items-start gap-3">
+              <div
+                class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-corner-sm"
+                :class="
+                  item.status === 'failed'
+                    ? 'bg-error-container text-on-error-container'
+                    : 'bg-primary-container text-on-primary-container'
+                "
+              >
+                <LuAlertCircle v-if="item.status === 'failed'" class="h-4 w-4" aria-hidden="true" />
+                <LuLoader2 v-else-if="item.kind === 'scan'" class="h-4 w-4 animate-spin" aria-hidden="true" />
+                <LuUpload v-else-if="item.kind === 'upload'" class="h-4 w-4" aria-hidden="true" />
+                <LuDownload v-else class="h-4 w-4" aria-hidden="true" />
               </div>
 
-              <p class="mt-0.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                {{ kindLabel(item.kind) }} · {{ item.metaText }}
-              </p>
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <p class="text-title-small truncate text-on-surface">{{ item.title }}</p>
+                  <span
+                    class="text-label-small rounded-corner-xs bg-surface-container-highest px-1.5 py-0.5 text-on-surface-variant"
+                  >
+                    {{ kindLabel(item.kind) }}
+                  </span>
+                  <span
+                    v-if="item.badge"
+                    class="text-label-small rounded-corner-xs bg-secondary-container px-1.5 py-0.5 text-on-secondary-container"
+                  >
+                    {{ item.badge }}
+                  </span>
+                </div>
+                <p class="text-body-small mt-0.5 text-on-surface-variant tabular-nums">
+                  {{ item.metaText }}
+                </p>
+                <p v-if="item.secondaryText" class="text-body-small truncate text-on-surface-variant">
+                  {{ item.secondaryText }}
+                </p>
+                <p v-if="item.warningText" class="text-body-small text-warning">
+                  {{ item.warningText }}
+                </p>
+                <p v-if="item.errorText" class="text-body-small text-error break-words">
+                  {{ item.errorText }}
+                </p>
+              </div>
+            </div>
+
+            <div class="flex shrink-0 items-center gap-1">
+              <MdIconButton
+                v-if="item.canRetry"
+                size="sm"
+                :icon="LuRotateCw"
+                :disabled="item.busy"
+                :tooltip="t('transfers.retry')"
+                @click="handleRetry(item)"
+              />
+              <MdIconButton
+                v-if="item.canCancel"
+                size="sm"
+                :icon="LuX"
+                :disabled="item.busy"
+                :tooltip="t('common.cancel')"
+                @click="handleCancel(item)"
+              />
+              <MdIconButton
+                v-if="item.canDelete"
+                size="sm"
+                :icon="LuTrash2"
+                :disabled="item.busy"
+                :tooltip="t('common.delete')"
+                @click="handleDelete(item)"
+              />
             </div>
           </div>
 
-          <!-- Right Status / Icon Actions -->
-          <div class="flex shrink-0 items-center gap-1" @click.stop>
-            <span
-              v-if="item.isActive && item.progress !== null"
-              class="font-mono text-[11px] font-semibold text-[var(--md-sys-color-primary)]"
-            >
-              {{ item.progress }}%
-            </span>
-            <LuLoader2
-              v-else-if="item.isActive"
-              class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]"
-            />
-            <LuCheckCircle2
-              v-else-if="item.status === 'completed'"
-              class="h-4 w-4 text-[var(--md-sys-color-success)]"
-            />
-            <LuAlertCircle
-              v-else-if="item.status === 'failed'"
-              class="h-4 w-4 text-[var(--md-sys-color-error)]"
-            />
-            <LuBan
-              v-else-if="item.status === 'cancelled'"
-              class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]"
-            />
-
-            <button
-              v-if="item.canCancel"
-              type="button"
-              :disabled="item.busy"
-              class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-error)]"
-              :title="t('common.cancel')"
-              :aria-label="t('common.cancel')"
-              @click="handleCancel(item)"
-            >
-              <LuLoader2 v-if="item.busy" class="h-3.5 w-3.5 animate-spin" />
-              <LuX v-else class="h-3.5 w-3.5" />
-            </button>
-
-            <button
-              v-if="item.canRetry"
-              type="button"
-              class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7 text-[var(--md-sys-color-primary)]"
-              :title="t('transfers.retry')"
-              :aria-label="t('transfers.retry')"
-              @click="handleRetry(item)"
-            >
-              <LuRotateCw class="h-3.5 w-3.5" />
-            </button>
-
-            <button
-              v-if="item.canDelete"
-              type="button"
-              :disabled="item.busy"
-              class="md-icon-btn md-icon-btn-sm md-state !h-7 !w-7 text-[var(--md-sys-color-on-surface-variant)] hover:text-[var(--md-sys-color-error)]"
-              :title="t('common.delete')"
-              :aria-label="t('common.delete')"
-              @click="handleDelete(item)"
-            >
-              <LuLoader2 v-if="item.busy" class="h-3.5 w-3.5 animate-spin" />
-              <LuTrash2 v-else class="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-
-        <!-- Secondary / Warning / Error Notes -->
-        <p
-          v-if="item.secondaryText"
-          class="mt-1.5 truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
-        >
-          {{ item.secondaryText }}
-        </p>
-        <p v-if="item.warningText" class="mt-1 text-[11px] text-[var(--md-sys-color-warning)]">
-          {{ item.warningText }}
-        </p>
-        <p v-if="item.errorText" class="mt-1 break-words text-[11px] text-[var(--md-sys-color-error)]">
-          {{ item.errorText }}
-        </p>
-
-        <!-- Linear Progress Bar -->
-        <div v-if="item.isActive" class="mt-2.5">
           <MdLinearProgress
+            v-if="item.isActive"
             :value="item.progress"
             :indeterminate="item.progress === null"
-            :aria-label="item.title"
+            tone="primary"
           />
-        </div>
+        </MdCard>
+      </section>
 
-        <!-- Bottom Action Bar (Completed Download / Target Jump) -->
-        <div
-          v-if="item.downloadFileUrl || (item.status === 'completed' && item.targetRoute)"
-          class="mt-2.5 flex flex-wrap items-center gap-1.5"
-          @click.stop
+      <MdEmptyState
+        v-else
+        :icon="LuCheckCircle2"
+        :title="t('transfers.emptyFiltered')"
+        compact
+      />
+
+      <!-- Collapsible Completed / Cancelled Tasks -->
+      <section v-if="finishedTasks.length > 0" class="border-t border-outline-variant pt-3">
+        <button
+          type="button"
+          class="md-state text-label-large flex h-10 w-full cursor-pointer items-center justify-between rounded-corner-sm px-2 text-on-surface-variant hover:text-on-surface"
+          :aria-expanded="showCompleted"
+          @click="showCompleted = !showCompleted"
         >
-          <a
-            v-if="item.downloadFileUrl"
-            :href="item.downloadFileUrl"
-            :download="item.downloadFileName"
-            class="md-btn md-btn-sm md-btn-filled md-state !h-7 !px-3 text-[11px]"
-          >
-            <LuDownload class="h-3.5 w-3.5" />
-            <span>{{ t('transfers.downloadFile') }}</span>
-          </a>
+          <span class="flex items-center gap-2">
+            <LuChevronDown v-if="showCompleted" class="h-4 w-4" aria-hidden="true" />
+            <LuChevronRight v-else class="h-4 w-4" aria-hidden="true" />
+            <span>{{ t('transfers.filterCompleted') }}</span>
+          </span>
+          <span class="text-label-small rounded-corner-full bg-surface-container-highest px-2 py-0.5 tabular-nums">
+            {{ finishedTasks.length }}
+          </span>
+        </button>
 
-          <button
-            v-if="item.kind === 'download' && item.targetRoute"
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state !h-7 !px-3 text-[11px]"
-            @click="handleNavigate(item.targetRoute)"
+        <div v-if="showCompleted" class="mt-2 space-y-2">
+          <MdCard
+            v-for="item in finishedTasks"
+            :key="item.id"
+            variant="filled"
+            padding="sm"
+            class="space-y-2"
           >
-            <LuBookOpen class="h-3.5 w-3.5" />
-            <span>{{ t('transfers.openImportedBook') }}</span>
-          </button>
+            <div class="flex items-start justify-between gap-2">
+              <div class="flex min-w-0 items-start gap-2.5">
+                <div
+                  class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-corner-sm"
+                  :class="
+                    item.status === 'cancelled'
+                      ? 'bg-surface-container text-on-surface-variant'
+                      : 'bg-success-container text-on-success-container'
+                  "
+                >
+                  <LuBan v-if="item.status === 'cancelled'" class="h-4 w-4" aria-hidden="true" />
+                  <LuCheckCircle2 v-else class="h-4 w-4" aria-hidden="true" />
+                </div>
+                <div class="min-w-0">
+                  <p class="text-body-medium truncate text-on-surface">{{ item.title }}</p>
+                  <p class="text-body-small text-on-surface-variant tabular-nums">
+                    {{ item.metaText }}
+                  </p>
+                </div>
+              </div>
 
-          <button
-            v-else-if="item.kind !== 'download' && item.status === 'completed' && item.targetRoute"
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state !h-7 !px-3 text-[11px]"
-            @click="handleNavigate(item.targetRoute)"
-          >
-            <LuArrowUpRight class="h-3.5 w-3.5" />
-            <span>{{ t('transfers.openTarget') }}</span>
-          </button>
+              <div class="flex shrink-0 items-center gap-1">
+                <MdButton
+                  v-if="item.downloadFileUrl"
+                  variant="text"
+                  size="sm"
+                  :href="item.downloadFileUrl"
+                  :icon="LuDownload"
+                  :download="item.downloadFileName"
+                >
+                  {{ t('transfers.downloadFile') }}
+                </MdButton>
+                <MdButton
+                  v-if="item.targetRoute"
+                  variant="text"
+                  size="sm"
+                  :icon="item.kind === 'download' ? LuBookOpen : LuArrowUpRight"
+                  @click="handleNavigate(item.targetRoute)"
+                >
+                  {{ item.kind === 'download' ? t('transfers.openImportedBook') : t('transfers.openTarget') }}
+                </MdButton>
+                <MdIconButton
+                  v-if="item.canRetry"
+                  size="sm"
+                  :icon="LuRotateCw"
+                  :disabled="item.busy"
+                  :tooltip="t('transfers.retry')"
+                  @click="handleRetry(item)"
+                />
+                <MdIconButton
+                  v-if="item.canDelete"
+                  size="sm"
+                  :icon="LuTrash2"
+                  :disabled="item.busy"
+                  :tooltip="t('common.delete')"
+                  @click="handleDelete(item)"
+                />
+              </div>
+            </div>
+          </MdCard>
         </div>
-      </article>
+      </section>
     </div>
 
-    <template #footer>
-      <div class="flex w-full items-center justify-between gap-2">
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          :disabled="refreshing || onlineDownloadsStore.loading"
-          @click="handleRefresh"
-        >
-          <LuRefreshCw
-            class="h-3.5 w-3.5"
-            :class="refreshing || onlineDownloadsStore.loading ? 'animate-spin' : ''"
-          />
-          <span>{{ t('common.refresh') }}</span>
-        </button>
-
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-tonal md-state"
-          :disabled="!canClearFinished || clearing"
-          @click="handleClearFinished"
-        >
-          <LuLoader2 v-if="clearing" class="h-3.5 w-3.5 animate-spin" />
-          <span>{{ t('transfers.clearCompleted') }}</span>
-        </button>
-      </div>
+    <template v-if="canClearFinished" #footer>
+      <MdButton
+        variant="text"
+        size="sm"
+        :icon="LuTrash2"
+        :loading="clearing"
+        @click="handleClearFinished"
+      >
+        {{ t('transfers.clearCompleted') }}
+      </MdButton>
     </template>
-  </MdSideSheet>
+  </MdSheet>
 </template>
