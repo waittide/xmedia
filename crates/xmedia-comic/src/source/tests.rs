@@ -3734,3 +3734,112 @@ async fn mixed_js_search_url_encodes_static_key_and_form_body_and_blocks_option_
 
     server.abort();
 }
+
+#[tokio::test]
+async fn comic_js_pipeline_guard_blocks_comma_quote_semicolon_option_injection() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let post_hits = Arc::new(AtomicUsize::new(0));
+    let post_hits_c = post_hits.clone();
+
+    let app = Router::new().route(
+        "/search",
+        axum::routing::any(move |req: axum::extract::Request| {
+            let hits = post_hits_c.clone();
+            async move {
+                if req.method() == axum::http::Method::POST {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                }
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"items":[{"t":"Ok","u":"/c/1"}]}"#))
+                    .unwrap()
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base = format!("http://{addr}");
+
+    let at_js_comma_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "AtJsCommaInject",
+        "sourceUrl": base,
+        "searchUrl": format!("@js:'{base}/search?q=' + key + '{{\"method\":\"POST\",\"body\":\"pwn=1\"}}'"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+    let tag_js_comma_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "TagJsCommaInject",
+        "sourceUrl": base,
+        "searchUrl": format!("<js>'{base}/search?q=' + key + '{{\"method\":\"POST\",\"body\":\"pwn=1\"}}'</js>"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+    let at_js_quote_breakout_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "AtJsSingleQuoteInject",
+        "sourceUrl": base,
+        "searchUrl": format!("@js:JSON.stringify({{method:'POST',body:'q=' + key}}) === '' ? '' : '{base}/search,' + '{{\"method\":\"POST\",\"body\":\"' + key + '\"}}'"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+    let safe_benign_punct_src: ComicSourceSpec = serde_json::from_value(serde_json::json!({
+        "sourceName": "SafePunctuation",
+        "sourceUrl": base,
+        "searchUrl": format!("@js:'{base}/search?q=' + encodeURIComponent(key) + ',' + JSON.stringify({{method:'POST',body:JSON.stringify({{q:key}})}})"),
+        "ruleSearch": { "bookList": "$.items[*]", "name": "$.t", "bookUrl": "$.u" }
+    }))
+    .unwrap();
+
+    let engine = ComicSourceEngine::new(
+        HttpClientConfig {
+            allow_private_ips: true,
+            ..Default::default()
+        },
+        Duration::from_secs(10),
+    );
+
+    tokio::task::spawn_blocking(move || {
+        for src in [&at_js_comma_src, &tag_js_comma_src] {
+            let err = engine
+                .search_sync(src, SourceRuntimeState::default(), "hello,", 1)
+                .expect_err("comma-only option injection must be rejected");
+            assert!(
+                err.contains("选项") || err.contains("结构"),
+                "unexpected error: {err}"
+            );
+        }
+
+        // Single quote and semicolon in keyword trigger probe check without crashing
+        // and safe JSON.stringify construction succeeds.
+        for kw in ["hello,", "O'Reilly;part2"] {
+            let ok = engine
+                .search_sync(&safe_benign_punct_src, SourceRuntimeState::default(), kw, 1)
+                .unwrap()
+                .data;
+            assert_eq!(ok[0].title, "Ok");
+        }
+
+        // Unconditional restore check: even when key contains ' or ; and triggers probe,
+        // non-injecting quote breakout check still rejects structural mutation cleanly.
+        let mut_err = engine
+            .search_sync(
+                &at_js_quote_breakout_src,
+                SourceRuntimeState::default(),
+                r#"1","headers":{"X-Evil":"1"},"z":""#,
+                1,
+            )
+            .expect_err("structural mutation with quotes must be rejected");
+        assert!(mut_err.contains("结构"), "unexpected error: {mut_err}");
+    })
+    .await
+    .unwrap();
+
+    // Only the 2 safe_benign_punct_src POST requests should have hit the server.
+    assert_eq!(post_hits.load(Ordering::SeqCst), 2);
+    server.abort();
+}

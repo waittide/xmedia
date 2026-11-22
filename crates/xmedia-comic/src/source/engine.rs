@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use xmedia_source::http::{
     HttpClientConfig, LegadoHttpClient, LegadoUrlOptions, eval_json_options_template,
-    json_raw_structure_signature, resolve_relative_url, substitute_url_part_vars,
+    has_suspicious_option_chars, resolve_relative_url, substitute_url_part_vars,
+    verify_js_pipeline_url_options,
 };
 pub use xmedia_source::model::{SourceCallError, SourceCallOutput};
 use xmedia_source::rule::{RuleValue, split_js_pipeline};
@@ -50,19 +51,6 @@ fn template_needs_js(raw_tpl: &str) -> bool {
         rest = &after_open[close + 2..];
     }
     false
-}
-
-fn keyword_may_affect_options(keyword: &str) -> bool {
-    keyword
-        .chars()
-        .any(|c| matches!(c, '{' | '}' | '[' | ']' | '"' | '\\') || c.is_control())
-}
-
-fn count_comma_open_brace(s: &str) -> usize {
-    s.bytes()
-        .enumerate()
-        .filter(|&(i, b)| b == b',' && s[i + 1..].trim_start().starts_with('{'))
-        .count()
 }
 
 fn url_encode_component(raw: &str) -> String {
@@ -479,6 +467,33 @@ impl ComicSourceEngine {
         ))
     }
 
+    fn eval_js_pipeline_url_guarded(
+        session: &mut ReusableComicSession,
+        tpl: &str,
+        base_url: &str,
+        keyword: &str,
+        page: u32,
+        label: &str,
+    ) -> Result<String, String> {
+        let input = RuleValue::Text(String::new());
+        let out = session.eval_string(&input, tpl, base_url)?;
+        if !keyword.is_empty()
+            && has_suspicious_option_chars(&[keyword])
+            && xmedia_source::http::split_legado_url_and_raw_options(out.trim())
+                .1
+                .is_some()
+        {
+            let probe_res = match session.set_search_vars("__xmedia_kw_probe__", page) {
+                Ok(()) => session.eval_string(&input, tpl, base_url),
+                Err(e) => Err(e),
+            };
+            let _ = session.set_search_vars(keyword, page);
+            let probe_out = probe_res?;
+            verify_js_pipeline_url_options(&out, &probe_out, label)?;
+        }
+        Ok(out)
+    }
+
     fn eval_url_template(
         &self,
         source: &ComicSourceSpec,
@@ -490,39 +505,14 @@ impl ComicSourceEngine {
     ) -> Result<String, String> {
         let evaluated = if split_js_pipeline(raw_tpl).is_some() {
             session.set_search_vars(keyword, page)?;
-            let input = RuleValue::Text(String::new());
-            let out = session.eval_string(&input, raw_tpl, &source.source_url)?;
-            if !keyword.is_empty()
-                && keyword_may_affect_options(keyword)
-                && let Some((eval_url_part, eval_opt_json)) =
-                    split_legado_url_and_raw_options(out.trim())
-            {
-                session.set_search_vars("__xmedia_kw_probe__", page)?;
-                let probe_res = session.eval_string(&input, raw_tpl, &source.source_url);
-                let _ = session.set_search_vars(keyword, page);
-                let probe_out = probe_res?;
-                let Some((probe_url_part, probe_opt_json)) =
-                    split_legado_url_and_raw_options(probe_out.trim())
-                else {
-                    return Err(format!("{label} 模板参数不允许附加请求选项"));
-                };
-                if (split_legado_url_and_raw_options(probe_url_part.trim()).is_none()
-                    && split_legado_url_and_raw_options(eval_url_part.trim()).is_some())
-                    || count_comma_open_brace(eval_url_part)
-                        != count_comma_open_brace(probe_url_part)
-                {
-                    return Err(format!("{label} 模板参数不允许附加请求选项"));
-                }
-                let expected_sig = json_raw_structure_signature(probe_opt_json);
-                let actual_sig = json_raw_structure_signature(eval_opt_json);
-                if expected_sig.is_none()
-                    || actual_sig != expected_sig
-                    || serde_json::from_str::<LegadoUrlOptions>(eval_opt_json).is_err()
-                {
-                    return Err(format!("{label} 模板参数不允许修改请求选项结构"));
-                }
-            }
-            out
+            Self::eval_js_pipeline_url_guarded(
+                session,
+                raw_tpl,
+                &source.source_url,
+                keyword,
+                page,
+                label,
+            )?
         } else if let Some((raw_url_part, raw_opt_json)) =
             split_legado_url_template_and_options(raw_tpl)
         {
