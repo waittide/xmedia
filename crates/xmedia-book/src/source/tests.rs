@@ -601,7 +601,7 @@ async fn js_sandbox_caps_http_requests_per_operation() {
         },
         Duration::from_secs(10),
     );
-    let out = tokio::task::spawn_blocking(move || {
+    let err = tokio::task::spawn_blocking(move || {
         engine.run_login_action_sync(
             &src,
             SourceRuntimeState::default(),
@@ -611,15 +611,13 @@ async fn js_sandbox_caps_http_requests_per_operation() {
     })
     .await
     .unwrap()
-    .unwrap();
+    .expect_err("HTTP flood above MAX_JS_HTTP_REQUESTS must throw JS exception");
 
-    assert_eq!(out.data, MAX_JS_HTTP_REQUESTS.to_string());
-    assert_eq!(hits.load(Ordering::SeqCst), MAX_JS_HTTP_REQUESTS);
     assert!(
-        out.diagnostics.logs.iter().any(|l| l.contains("上限")),
-        "expected HTTP cap warning in logs: {:?}",
-        out.diagnostics.logs
+        err.contains("上限"),
+        "expected HTTP cap error message, got: {err}"
     );
+    assert_eq!(hits.load(Ordering::SeqCst), MAX_JS_HTTP_REQUESTS);
     server.abort();
 }
 

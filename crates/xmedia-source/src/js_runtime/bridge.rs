@@ -8,7 +8,7 @@ use base64::engine::general_purpose::{STANDARD as BASE64_STD, STANDARD_NO_PAD as
 use encoding_rs::Encoding;
 use jiff::Timestamp;
 use md5::{Digest, Md5};
-use rquickjs::{Ctx, Function};
+use rquickjs::{Ctx, Exception, Function};
 
 use crate::model::BrowserRedirectHint;
 use crate::rule::{RuleValue, eval_non_js_list, eval_non_js_single};
@@ -34,33 +34,37 @@ pub(super) fn install_native_bridges(
         let cancel = b.cancel_flag.clone();
         let req_cnt = b.http_req_count.clone();
         let max_http_requests = cfg.max_http_requests;
-        let f = Function::new(ctx.clone(), move |raw_url: String| -> String {
-            let now = now_mono_ms();
-            let deadline = op_dl
-                .load(Ordering::Relaxed)
-                .min(eval_dl.load(Ordering::Relaxed));
-            if cancel.load(Ordering::Relaxed) || now >= deadline {
-                push_diag_log(&diag, "java.ajax 已中断：超过操作超时或已取消");
-                return String::new();
-            }
-            let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
-            if count > max_http_requests {
-                push_diag_log(
-                    &diag,
-                    format!("java.ajax 请求被拒：超过单次操作 HTTP 请求上限 ({max_http_requests})"),
-                );
-                return String::new();
-            }
-            let remaining = Duration::from_millis(deadline.saturating_sub(now));
-            let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
-                Ok(res) => res.body,
-                Err(err) => {
-                    push_diag_log(&diag, format!("java.ajax 失败: {err}"));
-                    String::new()
+        let f = Function::new(
+            ctx.clone(),
+            move |ctx_js: Ctx<'_>, raw_url: String| -> rquickjs::Result<String> {
+                let now = now_mono_ms();
+                let deadline = op_dl
+                    .load(Ordering::Relaxed)
+                    .min(eval_dl.load(Ordering::Relaxed));
+                if cancel.load(Ordering::Relaxed) || now >= deadline {
+                    let msg = "java.ajax 已中断：超过操作超时或已取消";
+                    push_diag_log(&diag, msg);
+                    return Err(Exception::throw_message(&ctx_js, msg));
                 }
-            }
-        })
+                let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+                if count > max_http_requests {
+                    let msg = format!(
+                        "java.ajax 请求被拒：超过单次操作 HTTP 请求上限 ({max_http_requests})"
+                    );
+                    push_diag_log(&diag, msg.clone());
+                    return Err(Exception::throw_message(&ctx_js, &msg));
+                }
+                let remaining = Duration::from_millis(deadline.saturating_sub(now));
+                let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
+                    Ok(res) => Ok(res.body),
+                    Err(err) => {
+                        push_diag_log(&diag, format!("java.ajax 失败: {err}"));
+                        Ok(String::new())
+                    }
+                }
+            },
+        )
         .map_err(|e| e.to_string())?;
         globals.set("__x_ajax", f).map_err(|e| e.to_string())?;
     }
@@ -74,61 +78,50 @@ pub(super) fn install_native_bridges(
         let cancel = b.cancel_flag.clone();
         let req_cnt = b.http_req_count.clone();
         let max_http_requests = cfg.max_http_requests;
-        let f = Function::new(ctx.clone(), move |raw_url: String| -> String {
-            let now = now_mono_ms();
-            let deadline = op_dl
-                .load(Ordering::Relaxed)
-                .min(eval_dl.load(Ordering::Relaxed));
-            if cancel.load(Ordering::Relaxed) || now >= deadline {
-                let err = "java.connect 已中断：超过操作超时或已取消";
-                push_diag_log(&diag, err);
-                return serde_json::json!({
-                    "body": "",
-                    "code": 0,
-                    "url": raw_url,
-                    "headers": {},
-                    "error": err,
-                })
-                .to_string();
-            }
-            let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
-            if count > max_http_requests {
-                let err = format!(
-                    "java.connect 请求被拒：超过单次操作 HTTP 请求上限 ({max_http_requests})"
-                );
-                push_diag_log(&diag, err.clone());
-                return serde_json::json!({
-                    "body": "",
-                    "code": 0,
-                    "url": raw_url,
-                    "headers": {},
-                    "error": err,
-                })
-                .to_string();
-            }
-            let remaining = Duration::from_millis(deadline.saturating_sub(now));
-            let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
-                Ok(res) => serde_json::json!({
-                    "body": res.body,
-                    "code": res.status,
-                    "url": res.final_url,
-                    "headers": res.headers,
-                })
-                .to_string(),
-                Err(err) => {
-                    push_diag_log(&diag, format!("java.connect 失败: {err}"));
-                    serde_json::json!({
-                        "body": "",
-                        "code": 0,
-                        "url": raw_url,
-                        "headers": {},
-                        "error": err,
-                    })
-                    .to_string()
+        let f = Function::new(
+            ctx.clone(),
+            move |ctx_js: Ctx<'_>, raw_url: String| -> rquickjs::Result<String> {
+                let now = now_mono_ms();
+                let deadline = op_dl
+                    .load(Ordering::Relaxed)
+                    .min(eval_dl.load(Ordering::Relaxed));
+                if cancel.load(Ordering::Relaxed) || now >= deadline {
+                    let err = "java.connect 已中断：超过操作超时或已取消";
+                    push_diag_log(&diag, err);
+                    return Err(Exception::throw_message(&ctx_js, err));
                 }
-            }
-        })
+                let count = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+                if count > max_http_requests {
+                    let err = format!(
+                        "java.connect 请求被拒：超过单次操作 HTTP 请求上限 ({max_http_requests})"
+                    );
+                    push_diag_log(&diag, err.clone());
+                    return Err(Exception::throw_message(&ctx_js, &err));
+                }
+                let remaining = Duration::from_millis(deadline.saturating_sub(now));
+                let base = base_ref.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                match http.fetch_with_timeout(&raw_url, &base, Some(remaining)) {
+                    Ok(res) => Ok(serde_json::json!({
+                        "body": res.body,
+                        "code": res.status,
+                        "url": res.final_url,
+                        "headers": res.headers,
+                    })
+                    .to_string()),
+                    Err(err) => {
+                        push_diag_log(&diag, format!("java.connect 失败: {err}"));
+                        Ok(serde_json::json!({
+                            "body": "",
+                            "code": 0,
+                            "url": raw_url,
+                            "headers": {},
+                            "error": err,
+                        })
+                        .to_string())
+                    }
+                }
+            },
+        )
         .map_err(|e| e.to_string())?;
         globals.set("__x_connect", f).map_err(|e| e.to_string())?;
     }

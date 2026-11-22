@@ -295,3 +295,54 @@ fn css_attribute_selectors_with_colons_are_not_stripped_as_slice_filters() {
         "https://good.example/2.jpg"
     );
 }
+
+#[test]
+fn jsonpath_supports_filter_predicates() {
+    let doc = serde_json::json!({
+        "relationships": [
+            { "type": "cover_art", "attributes": { "name": "Cover" }, "active": false },
+            { "type": "author", "attributes": { "name": "Kishimoto Mock" }, "active": true },
+            { "type": "artist", "attributes": { "name": "Artist Mock" }, "count": 2 }
+        ]
+    });
+    let rv = RuleValue::Json(doc);
+
+    assert_eq!(
+        eval_rule_string(
+            &rv,
+            "$.relationships[?(@.type=='author')].attributes.name",
+            "",
+            None
+        )
+        .unwrap(),
+        "Kishimoto Mock"
+    );
+    assert_eq!(
+        eval_rule_string(
+            &rv,
+            r#"$.relationships[?(@.type!="cover_art")].type"#,
+            "",
+            None
+        )
+        .unwrap(),
+        "author\nartist"
+    );
+    assert_eq!(
+        eval_rule_string(&rv, "$.relationships[?(@.active)].type", "", None).unwrap(),
+        "author"
+    );
+    assert_eq!(
+        eval_rule_string(&rv, "$.relationships[?(!@.active)].type", "", None).unwrap(),
+        "cover_art\nartist"
+    );
+    assert_eq!(
+        eval_rule_string(
+            &rv,
+            "$.relationships[?(@.count==2)].attributes.name",
+            "",
+            None
+        )
+        .unwrap(),
+        "Artist Mock"
+    );
+}

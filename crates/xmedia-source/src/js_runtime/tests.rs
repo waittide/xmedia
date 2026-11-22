@@ -185,20 +185,83 @@ async fn sandbox_http_request_quota() {
             cfg,
         )
         .unwrap();
-        let code = format!(
+        let code_uncaught = format!(
             "var ok = 0; for (var i = 0; i < 6; i++) {{ if (java.ajax('http://{addr}/ping') === 'ok') ok++; }} String(ok);"
         );
-        let rv = ctx
-            .eval_rule_js(&code, &RuleValue::Text(String::new()), "")
-            .unwrap();
-        (rv.as_text(), diag.lock().unwrap().logs.clone())
+        let uncaught_err = ctx
+            .eval_rule_js(&code_uncaught, &RuleValue::Text(String::new()), "")
+            .unwrap_err();
+        let logs = diag.lock().unwrap().logs.clone();
+        (uncaught_err, logs)
     })
     .await
     .unwrap();
 
-    assert_eq!(out.0, "3");
+    assert!(
+        out.0.contains("上限"),
+        "expected uncaught exception to mention HTTP cap: {}",
+        out.0
+    );
     assert_eq!(hits.load(Ordering::SeqCst), 3);
     assert!(out.1.iter().any(|l| l.contains("上限")));
+
+    // Caught java.ajax/java.connect exception also preserves diagnostics and stops at cap
+    let hits2 = Arc::new(AtomicUsize::new(0));
+    let hits2_c = hits2.clone();
+    let app2 = Router::new().route(
+        "/ping",
+        get(move || {
+            let h = hits2_c.clone();
+            async move {
+                h.fetch_add(1, Ordering::SeqCst);
+                "ok"
+            }
+        }),
+    );
+    let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr2 = listener2.local_addr().unwrap();
+    let server2 = tokio::spawn(async move {
+        axum::serve(listener2, app2).await.unwrap();
+    });
+    let diag2 = Arc::new(Mutex::new(ExecutionDiagnostics::default()));
+    let meta2 = SourceMetadata {
+        source_name: "QuotaSourceCaught".into(),
+        source_url: format!("http://{addr2}"),
+        ..Default::default()
+    };
+    let cfg2 = JsSandboxConfig {
+        max_http_requests: 3,
+        eval_timeout: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let out2 = tokio::task::spawn_blocking(move || {
+        let (http, _) = make_test_http(true);
+        let mut ctx = JsExecutionContext::new(
+            &meta2,
+            http,
+            Arc::new(Mutex::new(SourceRuntimeState::default())),
+            diag2.clone(),
+            cfg2,
+        )
+        .unwrap();
+        let code_caught = format!(
+            "var ok = 0; var errMsg = ''; for (var i = 0; i < 6; i++) {{ try {{ if (java.connect('http://{addr2}/ping').body() === 'ok') ok++; }} catch (e) {{ errMsg = String(e); break; }} }} ok + '|' + errMsg;"
+        );
+        let rv = ctx
+            .eval_rule_js(&code_caught, &RuleValue::Text(String::new()), "")
+            .unwrap();
+        (rv.as_text(), diag2.lock().unwrap().logs.clone())
+    })
+    .await
+    .unwrap();
+    assert!(
+        out2.0.starts_with("3|") && out2.0.contains("上限"),
+        "{}",
+        out2.0
+    );
+    assert_eq!(hits2.load(Ordering::SeqCst), 3);
+    assert!(out2.1.iter().any(|l| l.contains("上限")));
+    server2.abort();
     server.abort();
 }
 
