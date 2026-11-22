@@ -557,3 +557,85 @@ fn legado_url_template_encodes_url_vars_and_isolates_json_options() {
         serde_json::from_str(json_opts.body.as_ref().and_then(|v| v.as_str()).unwrap()).unwrap();
     assert_eq!(inner_body["kw"].as_str(), Some(poison));
 }
+
+#[test]
+fn eval_json_options_template_prevents_duplicate_keys_and_handles_unquoted_placeholders() {
+    let poison = "x\",\"method\":\"DELETE\",\"charset\":\"";
+    let tpl = r#"{"method":"POST","headers":{"X-Sign":"{{sign(key)}}"},"body":"q={{key}}","charset":"UTF-8"}"#;
+    let rendered = eval_json_options_template(
+        tpl,
+        &[("key", poison), ("page", "1")],
+        |expr| match expr {
+            "{{sign(key)}}" => Ok("sig\"123".to_string()),
+            other => Err(format!("unexpected expr: {other}")),
+        },
+        "searchUrl",
+    )
+    .unwrap();
+
+    // Raw structure signature must have exact keys without duplicate "method" or "charset"
+    let sig = json_raw_structure_signature(&rendered).unwrap();
+    let method_count = sig
+        .iter()
+        .filter(|t| matches!(t, JsonSigToken::Key(k) if k == "method"))
+        .count();
+    assert_eq!(method_count, 1);
+    let parsed: LegadoUrlOptions = serde_json::from_str(&rendered).unwrap();
+    assert_eq!(parsed.method.as_deref(), Some("POST"));
+    assert_eq!(parsed.charset.as_deref(), Some("UTF-8"));
+    assert_eq!(
+        parsed.headers.as_ref().unwrap()["X-Sign"].as_str(),
+        Some("sig\"123")
+    );
+    assert_eq!(
+        parsed.body.as_ref().unwrap().as_str(),
+        Some("q=x\",\"method\":\"DELETE\",\"charset\":\"")
+    );
+
+    // Unquoted placeholders (`"webView":{{flag}}` and `"page":{{page}}`) still get a valid expected_sig
+    let unquoted_tpl =
+        r#"{"method":"POST","webView":{{flag}},"body":{"page":{{page}},"kw":"{{key}}"}}"#;
+    let rendered_unquoted = eval_json_options_template(
+        unquoted_tpl,
+        &[("key", poison), ("page", "3")],
+        |expr| match expr {
+            "{{flag}}" => Ok("true".to_string()),
+            other => Err(format!("unexpected expr: {other}")),
+        },
+        "searchUrl",
+    )
+    .unwrap();
+    let parsed_unquoted: LegadoUrlOptions = serde_json::from_str(&rendered_unquoted).unwrap();
+    assert_eq!(parsed_unquoted.method.as_deref(), Some("POST"));
+    assert_eq!(parsed_unquoted.web_view, Some(serde_json::json!(true)));
+    assert_eq!(parsed_unquoted.body.as_ref().unwrap()["page"], 3);
+    assert_eq!(
+        parsed_unquoted.body.as_ref().unwrap()["kw"].as_str(),
+        Some(poison)
+    );
+
+    // Unquoted JS returning an object or breakout string cannot alter JSON structure
+    let rendered_obj_as_str = eval_json_options_template(
+        r#"{"method":"POST","headers":{"X-A":{{dynVal}}},"body":"q={{key}}"}"#,
+        &[("key", "ok")],
+        |_| Ok(r#"{"evil":1}"#.to_string()),
+        "searchUrl",
+    )
+    .unwrap();
+    let parsed_obj: LegadoUrlOptions = serde_json::from_str(&rendered_obj_as_str).unwrap();
+    assert!(
+        parsed_obj.headers.as_ref().unwrap()["X-A"].is_string(),
+        "object value must be stringified, not injected as nested object"
+    );
+
+    // Malformed template JSON fails instead of falling back to expected_sig == None
+    assert!(
+        eval_json_options_template(
+            r#"{"method":"POST","webView":{{flag}},"#,
+            &[("key", "ok")],
+            |_| Ok("true".to_string()),
+            "searchUrl",
+        )
+        .is_err()
+    );
+}

@@ -629,4 +629,10 @@ fn mustache_combinators_route_through_rule_eval_and_js_detection() {
         .unwrap(),
         "x:Hello"
     );
+
+    let list_rv = RuleValue::Json(serde_json::json!({"items": [{"n": 1}, {"n": 2}]}));
+    for prefix in ["@json:", "@Json:", "@JSON:", "@jSoN:"] {
+        let res = eval_rule_list(&list_rv, &format!("{prefix}$.items[*]"), "", None).unwrap();
+        assert_eq!(res.len(), 2, "failed for prefix {prefix}");
+    }
 }

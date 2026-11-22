@@ -390,8 +390,10 @@ pub fn eval_non_js_list(input: &RuleValue, rule: &str) -> Vec<RuleValue> {
     };
 
     let mut items = if let Some(jp) = core
-        .strip_prefix("@Json:")
-        .or_else(|| core.strip_prefix("@json:"))
+        .as_bytes()
+        .get(..6)
+        .is_some_and(|b| b.eq_ignore_ascii_case(b"@json:"))
+        .then(|| &core[6..])
         .or_else(|| core.starts_with("$.").then_some(core))
         .or_else(|| core.starts_with("$[").then_some(core))
         .or_else(|| (core == "$").then_some(core))

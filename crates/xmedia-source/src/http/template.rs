@@ -214,8 +214,23 @@ pub fn substitute_legado_options_vars(
     raw_opts: &str,
     vars: &[(&str, &str)],
 ) -> DomainResult<String> {
-    let mut root: Value = serde_json::from_str(raw_opts)
-        .map_err(|e| DomainError::Validation(format!("URL 请求配置 JSON 格式无效: {e}")))?;
+    let mut root: Value = match serde_json::from_str(raw_opts) {
+        Ok(v) => v,
+        Err(err) => {
+            if looks_like_json_template(raw_opts) {
+                return eval_json_options_template(
+                    raw_opts,
+                    vars,
+                    |expr| Err(format!("URL 请求配置包含未支持的模板表达式: {expr}")),
+                    "URL 请求配置",
+                )
+                .map_err(DomainError::Validation);
+            }
+            return Err(DomainError::Validation(format!(
+                "URL 请求配置 JSON 格式无效: {err}"
+            )));
+        }
+    };
     let Some(obj) = root.as_object_mut() else {
         return Err(DomainError::Validation(
             "URL 请求配置必须是 JSON 对象".to_string(),
@@ -332,6 +347,258 @@ pub fn resolve_relative_url_preserving_options(raw_or_rel: &str, base_url: &str)
     } else {
         resolved
     }
+}
+
+/// Structural token produced by [`json_raw_structure_signature`] without collapsing duplicate keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonSigToken {
+    ObjectStart,
+    Key(String),
+    ObjectEnd,
+    ArrayStart,
+    ArrayEnd,
+    Scalar,
+}
+
+/// Parses raw JSON text into a structural token sequence preserving object key order and duplicates.
+/// Returns `None` if `raw` is not valid JSON or contains non-scalar values where scalars are expected.
+pub fn json_raw_structure_signature(raw: &str) -> Option<Vec<JsonSigToken>> {
+    struct Parser<'a> {
+        src: &'a str,
+        bytes: &'a [u8],
+        pos: usize,
+        tokens: Vec<JsonSigToken>,
+    }
+
+    impl<'a> Parser<'a> {
+        fn skip_ws(&mut self) {
+            while self.pos < self.bytes.len()
+                && matches!(self.bytes[self.pos], b' ' | b'\t' | b'\n' | b'\r')
+            {
+                self.pos += 1;
+            }
+        }
+
+        fn parse_string(&mut self) -> Option<String> {
+            if self.bytes.get(self.pos) != Some(&b'"') {
+                return None;
+            }
+            let start = self.pos;
+            self.pos += 1;
+            while self.pos < self.bytes.len() {
+                match self.bytes[self.pos] {
+                    b'\\' => {
+                        self.pos += 1;
+                        let ch = self.src[self.pos..].chars().next()?;
+                        self.pos += ch.len_utf8();
+                    }
+                    b'"' => {
+                        self.pos += 1;
+                        return serde_json::from_str::<String>(&self.src[start..self.pos]).ok();
+                    }
+                    _ => {
+                        self.pos += 1;
+                    }
+                }
+            }
+            None
+        }
+
+        fn parse_value(&mut self) -> Option<()> {
+            self.skip_ws();
+            let b = *self.bytes.get(self.pos)?;
+            match b {
+                b'{' => {
+                    self.pos += 1;
+                    self.tokens.push(JsonSigToken::ObjectStart);
+                    self.skip_ws();
+                    if self.bytes.get(self.pos) == Some(&b'}') {
+                        self.pos += 1;
+                        self.tokens.push(JsonSigToken::ObjectEnd);
+                        return Some(());
+                    }
+                    loop {
+                        self.skip_ws();
+                        let key = self.parse_string()?;
+                        self.tokens.push(JsonSigToken::Key(key));
+                        self.skip_ws();
+                        if self.bytes.get(self.pos) != Some(&b':') {
+                            return None;
+                        }
+                        self.pos += 1;
+                        self.parse_value()?;
+                        self.skip_ws();
+                        match self.bytes.get(self.pos)? {
+                            b',' => {
+                                self.pos += 1;
+                            }
+                            b'}' => {
+                                self.pos += 1;
+                                self.tokens.push(JsonSigToken::ObjectEnd);
+                                return Some(());
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                b'[' => {
+                    self.pos += 1;
+                    self.tokens.push(JsonSigToken::ArrayStart);
+                    self.skip_ws();
+                    if self.bytes.get(self.pos) == Some(&b']') {
+                        self.pos += 1;
+                        self.tokens.push(JsonSigToken::ArrayEnd);
+                        return Some(());
+                    }
+                    loop {
+                        self.parse_value()?;
+                        self.skip_ws();
+                        match self.bytes.get(self.pos)? {
+                            b',' => {
+                                self.pos += 1;
+                            }
+                            b']' => {
+                                self.pos += 1;
+                                self.tokens.push(JsonSigToken::ArrayEnd);
+                                return Some(());
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                b'"' => {
+                    self.parse_string()?;
+                    self.tokens.push(JsonSigToken::Scalar);
+                    Some(())
+                }
+                _ => {
+                    let start = self.pos;
+                    while self.pos < self.bytes.len()
+                        && !matches!(
+                            self.bytes[self.pos],
+                            b' ' | b'\t' | b'\n' | b'\r' | b',' | b'}' | b']'
+                        )
+                    {
+                        self.pos += 1;
+                    }
+                    let lit = &self.src[start..self.pos];
+                    let val = serde_json::from_str::<Value>(lit).ok()?;
+                    if val.is_object() || val.is_array() {
+                        return None;
+                    }
+                    self.tokens.push(JsonSigToken::Scalar);
+                    Some(())
+                }
+            }
+        }
+    }
+
+    let mut parser = Parser {
+        src: raw,
+        bytes: raw.as_bytes(),
+        pos: 0,
+        tokens: Vec::new(),
+    };
+    parser.parse_value()?;
+    parser.skip_ws();
+    (parser.pos == parser.bytes.len()).then_some(parser.tokens)
+}
+
+/// Evaluates a `LegadoUrlOptions` JSON template that may mix static `vars` and JS `{{...}}`
+/// expressions (both inside JSON string literals and as unquoted scalar slots like `"webView":{{flag}}`).
+///
+/// - String-literal interpolations are JSON-escaped via [`json_escape_str_inner`] so values cannot
+///   break out of quotes or emit duplicate `"method"` / `"headers"` / `"charset"` keys.
+/// - Unquoted interpolations are probed as JSON scalars (never objects/arrays) and verified against
+///   [`json_raw_structure_signature`] so `expected_sig` is never skipped and structural mutations
+///   are rejected.
+pub fn eval_json_options_template<F>(
+    raw_opt_json: &str,
+    vars: &[(&str, &str)],
+    mut eval_js: F,
+    label: &str,
+) -> Result<String, String>
+where
+    F: FnMut(&str) -> Result<String, String>,
+{
+    let bytes = raw_opt_json.as_bytes();
+    let mut eval_opt = String::with_capacity(raw_opt_json.len() + 32);
+    let mut baseline_opt = String::with_capacity(raw_opt_json.len() + 32);
+    let mut in_string = false;
+    let mut pos = 0usize;
+
+    while pos < bytes.len() {
+        if in_string && bytes[pos] == b'\\' {
+            eval_opt.push('\\');
+            baseline_opt.push('\\');
+            pos += 1;
+            if let Some(ch) = raw_opt_json[pos..].chars().next() {
+                eval_opt.push(ch);
+                baseline_opt.push(ch);
+                pos += ch.len_utf8();
+            }
+            continue;
+        }
+        if raw_opt_json[pos..].starts_with("{{") {
+            let after_open = &raw_opt_json[pos + 2..];
+            if let Some(close) = after_open.find("}}") {
+                let expr = after_open[..close].trim();
+                baseline_opt.push_str(if in_string {
+                    "_XMEDIA_PROBE_"
+                } else {
+                    "\"_XMEDIA_PROBE_\""
+                });
+
+                let raw_val = if let Some((_, static_val)) = vars.iter().find(|(k, _)| *k == expr) {
+                    (*static_val).to_string()
+                } else {
+                    eval_js(&format!("{{{{{expr}}}}}"))?
+                };
+
+                if in_string {
+                    eval_opt.push_str(&json_escape_str_inner(&raw_val));
+                } else {
+                    let trimmed_val = raw_val.trim();
+                    if let Ok(v) = serde_json::from_str::<Value>(trimmed_val)
+                        && !v.is_object()
+                        && !v.is_array()
+                    {
+                        eval_opt.push_str(trimmed_val);
+                    } else {
+                        let serialized =
+                            serde_json::to_string(&raw_val).unwrap_or_else(|_| "\"\"".to_string());
+                        eval_opt.push_str(&serialized);
+                    }
+                }
+                pos += 2 + close + 2;
+                continue;
+            }
+        }
+        if bytes[pos] == b'"' {
+            in_string = !in_string;
+            eval_opt.push('"');
+            baseline_opt.push('"');
+            pos += 1;
+            continue;
+        }
+        if let Some(ch) = raw_opt_json[pos..].chars().next() {
+            eval_opt.push(ch);
+            baseline_opt.push(ch);
+            pos += ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+
+    let expected_sig = json_raw_structure_signature(&baseline_opt);
+    let actual_sig = json_raw_structure_signature(&eval_opt);
+    if expected_sig.is_none()
+        || actual_sig != expected_sig
+        || serde_json::from_str::<LegadoUrlOptions>(&eval_opt).is_err()
+    {
+        return Err(format!("{label} 请求选项 JSON 结构无效或不允许被参数修改"));
+    }
+    Ok(eval_opt)
 }
 
 /// Computes a structural signature of a JSON value (preserving object keys, array lengths,
