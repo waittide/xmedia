@@ -3253,6 +3253,165 @@ function buildTier2Cases() {
         }
       },
     },
+    {
+      id: 'T2-F16-10',
+      feature: 'F16',
+      domain: 'ui',
+      title: 'Browser: OnlineVideoPlayerView clears stale stream-type badge and subtitle selector immediately when switching to a delayed/failing episode',
+      async run(ctx) {
+        await clearDomainSources(ctx.admin, 'video');
+        const multiSubVideoSrc = {
+          sourceName: 'Multi Ep Subtitled Rule Video',
+          sourceUrl: `${ctx.mockBaseUrl}/video/subtitled`,
+          sourceFormat: 'rule',
+          enabled: true,
+          searchUrl: `${ctx.mockBaseUrl}/video/subtitled/search?q={{key}}`,
+          ruleSearch: {
+            list: '$.items[*]',
+            vodId: '$.id',
+            name: '$.title',
+            detailUrl: '$.detailUrl',
+          },
+          ruleDetail: {
+            name: '$.title',
+            episodes: '$.episodes[*]',
+            episodeName: '$.name',
+            episodeUrl: '$.playUrl',
+          },
+          rulePlay: {
+            requestUrl: '{{playUrl}}',
+            streamUrl: '$.stream',
+            subtitles: '$.subs',
+          },
+        };
+        await importSources(ctx.admin, 'video', multiSubVideoSrc);
+
+        const cdp = await openAuthenticatedPage(
+          ctx.CdpClient,
+          ctx.baseUrl,
+          ctx.member,
+          '/video/catalog?scope=online&q=Subtitled',
+        );
+        try {
+          await cdp.waitForFn(
+            `document.body.innerText.includes('Multi Ep Subtitled Show')`,
+            { timeoutMs: 10000 },
+          );
+          await clickButtonMatching(cdp, [/Multi Ep Subtitled Show/], { rootSelector: 'main' });
+          await cdp.waitForFn(`location.pathname.includes('/video/online/detail')`, {
+            timeoutMs: 8000,
+          });
+          await clickButtonMatching(cdp, [/Ep 1 Subtitled/]);
+          await cdp.waitForFn(
+            `location.pathname.includes('/video/online/watch') && (document.querySelector('video')?.readyState || 0) >= 1`,
+            { timeoutMs: 12000, label: 'Ep 1 Subtitled loaded' },
+          );
+
+          // Select Wildcard VTT subtitle on Ep 1
+          await cdp.evalJs(`(() => {
+            const btns = [...document.querySelectorAll('header button[role="combobox"], header button')];
+            const subBtn = btns.find((b) => /字幕|关闭|subtitle|off/i.test(b.innerText || b.getAttribute('aria-label') || ''));
+            if (!subBtn) throw new Error('missing subtitle AppSelect trigger on Ep 1');
+            subBtn.click();
+          })()`);
+          await cdp.waitForSelector('[role="listbox"]', { visible: true, timeoutMs: 5000 });
+          await cdp.evalJs(`(() => {
+            const opt = [...document.querySelectorAll('[role="option"]')].find((o) => (o.innerText || '').includes('Wildcard VTT'));
+            if (!opt) throw new Error('missing Wildcard VTT option on Ep 1');
+            opt.click();
+          })()`);
+          await cdp.waitForFn(
+            `Boolean(document.querySelector('video track')) && /MP4|Direct/i.test(document.querySelector('header')?.innerText || '')`,
+            { timeoutMs: 10000, label: 'Ep 1 stream-type badge and <track> active' },
+          );
+
+          // Delay Ep 2 /online/play by 700ms and return HTTP 502
+          await cdp.send('Fetch.enable', {
+            patterns: [{ urlPattern: '*/api/v1/video/online/play', requestStage: 'Request' }],
+          });
+          cdp.on('Fetch.requestPaused', async (params) => {
+            const postData = params.request.postData || '';
+            try {
+              if (postData.includes('error-502')) {
+                await new Promise((r) => setTimeout(r, 700));
+                await cdp.send('Fetch.fulfillRequest', {
+                  requestId: params.requestId,
+                  responseCode: 502,
+                  responseHeaders: [{ name: 'content-type', value: 'application/json' }],
+                  body: Buffer.from(
+                    '{"error":{"code":"UPSTREAM_ERROR","message":"Ep 2 upstream 502"}}',
+                  ).toString('base64'),
+                });
+              } else {
+                await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+              }
+            } catch {
+              // ignore if closed
+            }
+          });
+
+          const subProxyCountBeforeSwitch = cdp.networkRequests.filter((r) =>
+            r.url.includes('/api/v1/video/online/subtitle-proxy'),
+          ).length;
+          cdp.clearErrors();
+
+          // Switch to Ep 2 Delayed Fail
+          await cdp.evalJs(`(() => {
+            const footerBtns = [...document.querySelectorAll('footer button')];
+            const ep2 = footerBtns.find((b) => (b.innerText || '').includes('Ep 2 Delayed Fail'));
+            if (!ep2) throw new Error('missing Ep 2 Delayed Fail button');
+            ep2.click();
+          })()`);
+
+          // Immediately during Ep 2 loading (before 700ms delay resolves):
+          // header must already have cleared stream-type badge and subtitle selector
+          await cdp.waitForFn(
+            `(() => {
+              const headerText = document.querySelector('header')?.innerText || '';
+              const hasBadge = /MP4|HLS/i.test(headerText);
+              const hasSub = /Wildcard VTT|Referer SRT|关闭字幕|Subtitles Off/i.test(headerText);
+              return headerText.includes('Ep 2 Delayed Fail') && !hasBadge && !hasSub && !document.querySelector('video track');
+            })()`,
+            {
+              timeoutMs: 3000,
+              label: 'stream-type badge and subtitle selector cleared immediately during Ep 2 load',
+            },
+          );
+
+          // After Ep 2 fails with 502: error overlay appears and header remains clean
+          await cdp.waitForFn(
+            `[...document.querySelectorAll('button')].some((b) => /重试|Retry/i.test(b.innerText || '')) && /502|加载|Failed/i.test(document.body.innerText)`,
+            { timeoutMs: 10000, label: 'Ep 2 502 error overlay rendered' },
+          );
+          const afterFail = await cdp.evalJs(`(() => {
+            const headerText = document.querySelector('header')?.innerText || '';
+            return {
+              headerText,
+              hasBadge: /MP4|HLS/i.test(headerText),
+              hasSub: /Wildcard VTT|Referer SRT|关闭字幕|Subtitles Off/i.test(headerText),
+              hasTrack: Boolean(document.querySelector('video track')),
+            };
+          })()`);
+          assert.equal(afterFail.hasBadge, false, `Stale stream badge remained after 502: ${afterFail.headerText}`);
+          assert.equal(afterFail.hasSub, false, `Stale subtitle selector remained after 502: ${afterFail.headerText}`);
+          assert.equal(afterFail.hasTrack, false, 'Stale <track> remained after 502');
+
+          const subProxyCountAfterSwitch = cdp.networkRequests.filter((r) =>
+            r.url.includes('/api/v1/video/online/subtitle-proxy'),
+          ).length;
+          assert.equal(
+            subProxyCountAfterSwitch,
+            subProxyCountBeforeSwitch,
+            'Expected zero /subtitle-proxy requests for previous episode after switching to Ep 2',
+          );
+
+          await cdp.send('Fetch.disable');
+          assert.equal(cdp.exceptions.length, 0);
+        } finally {
+          await cdp.close();
+        }
+      },
+    },
 
     // =======================================================================
     // F17: Resilience Boundary (core)

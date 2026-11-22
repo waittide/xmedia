@@ -804,6 +804,34 @@ export class MockOriginServer {
       );
     }
 
+    if (pathname === '/video/subtitled/search') {
+      return sendJson(res, 200, {
+        items: [
+          {
+            id: 'sub-show-1',
+            title: 'Multi Ep Subtitled Show',
+            detailUrl: `${this.baseUrl}/video/subtitled/detail`,
+          },
+        ],
+      });
+    }
+
+    if (pathname === '/video/subtitled/detail') {
+      return sendJson(res, 200, {
+        title: 'Multi Ep Subtitled Show',
+        episodes: [
+          {
+            name: 'Ep 1 Subtitled',
+            playUrl: `${this.baseUrl}/video/subtitled/play`,
+          },
+          {
+            name: 'Ep 2 Delayed Fail',
+            playUrl: `${this.baseUrl}/edge/error-502`,
+          },
+        ],
+      });
+    }
+
     if (pathname === '/video/subtitled/play') {
       return sendJson(res, 200, {
         stream: `${this.baseUrl}/video/peertube/media/pt-vid-1.mp4`,

@@ -475,6 +475,7 @@ function clearMediaSession(): void {
 async function loadPlay(): Promise<void> {
   const seq = ++playSeq
   stopAndClearVideoElement()
+  playResult.value = null
   musicPlayerStore.pause()
   isPlaying.value = false
   loadingStream.value = true
