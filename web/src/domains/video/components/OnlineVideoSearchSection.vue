@@ -334,6 +334,12 @@ async function runBrowse(
       const catRes = await onlineVideoApi.categories(sourceId)
       if (unmounted || seq !== browseSeq) return
       browseCategories.value = catRes.categories ?? []
+      if (browseCategories.value.length === 0 && catRes.has_explore === false && categoryId === null) {
+        browseItems.value = []
+        hasMoreBrowse.value = false
+        browsePage.value = 1
+        return
+      }
     }
 
     const res = await onlineVideoApi.browse(sourceId, categoryId, page)

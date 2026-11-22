@@ -96,6 +96,7 @@ export interface OnlineVideoCategoriesResponseDto {
   source_id: string
   source_name: string
   categories: OnlineVideoCategory[]
+  has_explore?: boolean
   diagnostics: ExecutionDiagnostics
 }
 
