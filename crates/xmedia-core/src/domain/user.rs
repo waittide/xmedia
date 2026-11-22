@@ -176,9 +176,37 @@ const DEFAULT_VOLUME: f32 = 0.85;
 const DEFAULT_PLAYBACK_RATE: f32 = 1.0;
 const MIN_PLAYBACK_RATE: f32 = 0.25;
 const MAX_PLAYBACK_RATE: f32 = 4.0;
-const DEFAULT_LIGHT_PRESET: &str = "catppuccin-latte";
-const DEFAULT_DARK_PRESET: &str = "catppuccin-mocha";
-const DEFAULT_ACCENT_MODE: &str = "catppuccin";
+pub const DEFAULT_LIGHT_PRESET: &str = "material-you-light";
+pub const DEFAULT_DARK_PRESET: &str = "material-you-dark";
+pub const DEFAULT_ACCENT_MODE: &str = "seed";
+const MATERIAL_YOU_PRESET_PREFIX: &str = "material-you";
+const LEGACY_CUSTOM_ACCENT_MODE: &str = "custom";
+
+/// Keeps `material-you*` presets and replaces every legacy palette preset
+/// (catppuccin-*, nord, tokyo-night, ...) with the Material You default.
+fn normalize_theme_preset(value: &mut String, fallback: &str) {
+    let trimmed = value.trim().to_ascii_lowercase();
+    let valid = trimmed.starts_with(MATERIAL_YOU_PRESET_PREFIX)
+        && trimmed.len() <= 64
+        && trimmed
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    *value = if valid { trimmed } else { fallback.to_string() };
+}
+
+/// Normalizes an MD3 seed color to lowercase `#rrggbb` (expanding `#rgb`).
+fn sanitize_seed_color(raw: &str) -> Option<String> {
+    let hex = raw.trim().strip_prefix('#')?;
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let expanded = match hex.len() {
+        3 => hex.chars().flat_map(|c| [c, c]).collect::<String>(),
+        6 => hex.to_string(),
+        _ => return None,
+    };
+    Some(format!("#{}", expanded.to_ascii_lowercase()))
+}
 
 fn clamp_finite(value: f32, min: f32, max: f32, fallback: f32) -> f32 {
     if value.is_finite() {
@@ -716,12 +744,19 @@ pub struct UserPreferences {
     pub dark_flavor: CatppuccinFlavor,
     #[serde(default = "default_accent_mode")]
     pub accent_mode: String,
+    /// Single MD3 seed color (`#rrggbb`); `None` means the client default seed.
+    #[serde(default)]
+    pub seed_color: Option<String>,
+    /// Deprecated: legacy Catppuccin accent, kept only for schema compatibility.
     #[serde(default)]
     pub accent: CatppuccinAccent,
+    /// Deprecated: legacy custom accent hex, migrated into `seed_color`.
     #[serde(default)]
     pub custom_accent: Option<String>,
+    /// Deprecated: legacy custom light palette, kept only for schema compatibility.
     #[serde(default)]
     pub custom_light: Option<CustomPaletteTokens>,
+    /// Deprecated: legacy custom dark palette, kept only for schema compatibility.
     #[serde(default)]
     pub custom_dark: Option<CustomPaletteTokens>,
     #[serde(default)]
@@ -741,10 +776,17 @@ pub struct UserPreferences {
 impl UserPreferences {
     /// Clamps and sanitizes all preference values into safe bounds while preserving JSON schema compatibility.
     pub fn normalize(&mut self) {
-        normalize_non_empty(&mut self.light_preset, DEFAULT_LIGHT_PRESET, 64);
-        normalize_non_empty(&mut self.dark_preset, DEFAULT_DARK_PRESET, 64);
-        normalize_non_empty(&mut self.accent_mode, DEFAULT_ACCENT_MODE, 32);
+        normalize_theme_preset(&mut self.light_preset, DEFAULT_LIGHT_PRESET);
+        normalize_theme_preset(&mut self.dark_preset, DEFAULT_DARK_PRESET);
         self.custom_accent = self.custom_accent.as_deref().and_then(sanitize_hex_color);
+        self.seed_color = self.seed_color.as_deref().and_then(sanitize_seed_color);
+        if self.seed_color.is_none()
+            && self.accent_mode.trim() == LEGACY_CUSTOM_ACCENT_MODE
+            && let Some(legacy) = self.custom_accent.as_deref()
+        {
+            self.seed_color = sanitize_seed_color(legacy);
+        }
+        self.accent_mode = DEFAULT_ACCENT_MODE.to_string();
         if let Some(ref mut light) = self.custom_light
             && !light.normalize()
         {
@@ -776,6 +818,7 @@ impl Default for UserPreferences {
             dark_preset: default_dark_preset(),
             dark_flavor: CatppuccinFlavor::default(),
             accent_mode: default_accent_mode(),
+            seed_color: None,
             accent: CatppuccinAccent::default(),
             custom_accent: None,
             custom_light: None,
@@ -993,5 +1036,68 @@ mod tests {
             prefs.workspace_layout.music.home_cards,
             vec!["all", "playlists", "listening", "favorites"]
         );
+    }
+
+    #[test]
+    fn default_preferences_use_material_you_seed_mode() {
+        let prefs = UserPreferences::default();
+        assert_eq!(prefs.light_preset, "material-you-light");
+        assert_eq!(prefs.dark_preset, "material-you-dark");
+        assert_eq!(prefs.accent_mode, "seed");
+        assert_eq!(prefs.seed_color, None);
+        assert_eq!(prefs.theme_mode, ThemeMode::System);
+    }
+
+    #[test]
+    fn legacy_catppuccin_preferences_deserialize_and_migrate_to_seed_mode() {
+        let raw = r##"{
+            "theme_mode": "dark",
+            "light_preset": "catppuccin-latte",
+            "dark_preset": "tokyo-night",
+            "dark_flavor": "macchiato",
+            "accent_mode": "custom",
+            "accent": "mauve",
+            "custom_accent": "#ABC",
+            "custom_light": {"canvas":"#fff","shell":"#eee","surface":"#ddd","text":"#000","subtext":"#111"}
+        }"##;
+        let prefs: UserPreferences = serde_json::from_str(raw).expect("legacy prefs parse");
+        let prefs = prefs.normalized();
+        assert_eq!(prefs.theme_mode, ThemeMode::Dark);
+        assert_eq!(prefs.light_preset, DEFAULT_LIGHT_PRESET);
+        assert_eq!(prefs.dark_preset, DEFAULT_DARK_PRESET);
+        assert_eq!(prefs.accent_mode, DEFAULT_ACCENT_MODE);
+        assert_eq!(prefs.seed_color.as_deref(), Some("#aabbcc"));
+    }
+
+    #[test]
+    fn legacy_catppuccin_accent_mode_does_not_become_seed_color() {
+        let mut prefs = UserPreferences {
+            accent_mode: "catppuccin".into(),
+            custom_accent: Some("#123456".into()),
+            ..Default::default()
+        };
+        prefs.normalize();
+        assert_eq!(prefs.accent_mode, "seed");
+        assert_eq!(prefs.seed_color, None);
+    }
+
+    #[test]
+    fn seed_color_is_sanitized_and_material_you_presets_are_kept() {
+        let mut prefs = UserPreferences {
+            light_preset: " Material-You-Light ".into(),
+            dark_preset: "material-you-dark-contrast".into(),
+            seed_color: Some(" #6750A4 ".into()),
+            ..Default::default()
+        };
+        prefs.normalize();
+        assert_eq!(prefs.light_preset, "material-you-light");
+        assert_eq!(prefs.dark_preset, "material-you-dark-contrast");
+        assert_eq!(prefs.seed_color.as_deref(), Some("#6750a4"));
+
+        for invalid in ["6750a4", "#6750a4ff", "#zzzzzz", ""] {
+            prefs.seed_color = Some(invalid.into());
+            prefs.normalize();
+            assert_eq!(prefs.seed_color, None, "{invalid} should be rejected");
+        }
     }
 }

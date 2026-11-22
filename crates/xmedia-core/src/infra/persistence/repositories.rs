@@ -29,7 +29,7 @@ impl ToastyUserRepository {
             api_key: m.api_key,
             role: UserRole::parse(&m.role)?,
             is_active: m.is_active,
-            preferences: m.preferences.0,
+            preferences: m.preferences.0.normalized(),
             created_at: m.created_at,
             updated_at: m.updated_at,
         })
