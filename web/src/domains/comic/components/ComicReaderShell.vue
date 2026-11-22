@@ -182,10 +182,10 @@ const modeOptions = computed(() => [
 ])
 
 const quickModeOptions = computed<SegmentedOption<ReaderMode>[]>(() => [
-  { value: 'rtl_double', label: 'RTL', icon: LuColumns2, title: t('reader.modeRtlDouble') },
-  { value: 'ltr_single', label: '1P', icon: LuFileText, title: t('reader.modeLtrSingle') },
-  { value: 'ltr_double', label: 'LTR 2P', icon: LuColumns2, title: t('reader.modeLtrDouble') },
-  { value: 'webtoon', label: 'Webtoon', icon: LuScrollText, title: t('reader.modeWebtoon') },
+  { value: 'rtl_double', label: t('reader.modeRtlDouble'), icon: LuColumns2, title: t('reader.modeRtlDouble') },
+  { value: 'ltr_single', label: t('reader.modeLtrSingle'), icon: LuFileText, title: t('reader.modeLtrSingle') },
+  { value: 'ltr_double', label: t('reader.modeLtrDouble'), icon: LuColumns2, title: t('reader.modeLtrDouble') },
+  { value: 'webtoon', label: t('reader.modeWebtoon'), icon: LuScrollText, title: t('reader.modeWebtoon') },
 ])
 
 const fitOptions = computed(() => [

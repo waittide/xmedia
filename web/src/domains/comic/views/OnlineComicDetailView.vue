@@ -462,7 +462,7 @@ function backToOnlineSearch(): void {
               <span
                 v-for="tag in kindTags"
                 :key="tag"
-                class="md-chip !h-7 !text-xs"
+                class="inline-flex h-7 items-center rounded-full border border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container-high)]/75 px-3 text-xs font-medium text-[var(--md-sys-color-on-surface-variant)]"
               >
                 {{ tag }}
               </span>

@@ -27,11 +27,13 @@ const props = withDefaults(
   },
 )
 
+const loaded = ref(false)
 const failed = ref(false)
 
 watch(
   () => props.src,
   () => {
+    loaded.value = false
     failed.value = false
   },
 )
@@ -42,18 +44,25 @@ watch(
     class="relative flex items-center justify-center overflow-hidden select-none"
     :class="[aspectClass, rounded, bgClass]"
   >
+    <div
+      v-if="!src || failed || !loaded"
+      class="pointer-events-none absolute inset-0 flex items-center justify-center"
+    >
+      <slot name="fallback">
+        <component :is="fallbackIcon" v-if="fallbackIcon" :class="fallbackIconClass" />
+      </slot>
+    </div>
     <img
       v-if="src && !failed"
       :src="src"
       :alt="alt"
       :loading="loading"
       decoding="async"
-      :class="imgClass"
+      class="relative z-[1] transition-opacity duration-200"
+      :class="[imgClass, loaded ? 'opacity-100' : 'opacity-0']"
+      @load="loaded = true"
       @error="failed = true"
     />
-    <slot v-else name="fallback">
-      <component :is="fallbackIcon" v-if="fallbackIcon" :class="fallbackIconClass" />
-    </slot>
     <slot />
   </div>
 </template>

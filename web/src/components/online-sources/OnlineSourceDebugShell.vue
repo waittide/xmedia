@@ -68,7 +68,7 @@ const totalDiagnosticsCount = computed(() => {
     :open="open"
     :title="title"
     :subtitle="subtitle"
-    width-class="w-[min(52rem,100vw)]"
+    width-class="w-[min(42rem,100vw)]"
     @close="emit('close')"
   >
     <template #subheader>

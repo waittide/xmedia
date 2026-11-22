@@ -128,8 +128,9 @@ function triggerFileImport(): void {
           <span>{{ t('onlineSources.toolbar.importJsonBtn') }}</span>
         </button>
 
-        <!-- Secondary File Picker (label/title intentionally avoids "导入"/"import") -->
+        <!-- Secondary File Picker (label/title intentionally avoids "导入"/"import"; hidden while inline import form shows its own picker) -->
         <button
+          v-if="!showImportBox"
           type="button"
           class="md-btn md-btn-sm md-btn-tonal md-state"
           :title="t('onlineSources.toolbar.uploadFileTitle', { domain: domainLabel })"
