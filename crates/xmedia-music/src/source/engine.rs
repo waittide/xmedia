@@ -54,8 +54,8 @@ struct MusicTemplateVars<'a> {
     title: &'a str,
     artist: &'a str,
     album: &'a str,
-    duration_secs: Option<u32>,
     cover_url: Option<&'a str>,
+    raw_ctx: Option<&'a MusicTrackContext>,
 }
 
 impl<'a> MusicTemplateVars<'a> {
@@ -89,8 +89,8 @@ impl<'a> MusicTemplateVars<'a> {
             title: ctx.title.as_str(),
             artist: ctx.artist.as_str(),
             album: ctx.album.as_deref().unwrap_or(""),
-            duration_secs: ctx.duration_secs,
             cover_url: ctx.cover_url.as_deref(),
+            raw_ctx: Some(ctx),
         }
     }
 }
@@ -301,6 +301,11 @@ fn normalize_quality_placeholder(tpl: &str) -> Cow<'_, str> {
     }
 }
 
+fn probe_non_empty_opt(opt: Option<&str>) -> Option<String> {
+    opt.filter(|s| !s.is_empty())
+        .map(|_| "__xmedia_probe__".to_string())
+}
+
 fn eval_js_pipeline_guarded(
     session: &mut MusicSourceSession,
     raw_tpl: &str,
@@ -312,43 +317,55 @@ fn eval_js_pipeline_guarded(
     if vars.has_suspicious_option_chars()
         && split_legado_url_and_raw_options(out.trim()).1.is_some()
     {
-        let probe_ctx = MusicTrackContext {
-            track_id: "__xmedia_probe__".into(),
-            title: "__xmedia_probe__".into(),
-            artist: "__xmedia_probe__".into(),
-            album: Some("__xmedia_probe__".into()),
-            cover_id: Some("__xmedia_probe__".into()),
-            url_id: Some("__xmedia_probe__".into()),
-            lyric_id: Some("__xmedia_probe__".into()),
-            play_url: Some("__xmedia_probe__".into()),
-            detail_url: Some("__xmedia_probe__".into()),
-            quality: Some("__xmedia_probe__".into()),
-            ..Default::default()
+        let probe_key = if vars.key.is_empty() {
+            ""
+        } else {
+            "__xmedia_probe__"
         };
-        let probe_res = match session.set_search_vars("__xmedia_probe__", vars.page, vars.limit) {
-            Ok(()) => session
-                .set_track_context(&probe_ctx)
-                .and_then(|()| session.eval_string(input, raw_tpl, base_url)),
+        let probe_ctx = vars.raw_ctx.map(|orig| MusicTrackContext {
+            track_id: if orig.track_id.is_empty() {
+                String::new()
+            } else {
+                "__xmedia_probe__".into()
+            },
+            title: if orig.title.is_empty() {
+                String::new()
+            } else {
+                "__xmedia_probe__".into()
+            },
+            artist: if orig.artist.is_empty() {
+                String::new()
+            } else {
+                "__xmedia_probe__".into()
+            },
+            album: probe_non_empty_opt(orig.album.as_deref()),
+            duration_secs: orig.duration_secs,
+            cover_url: probe_non_empty_opt(orig.cover_url.as_deref()),
+            cover_id: probe_non_empty_opt(orig.cover_id.as_deref()),
+            url_id: probe_non_empty_opt(orig.url_id.as_deref()),
+            lyric_id: probe_non_empty_opt(orig.lyric_id.as_deref()),
+            play_url: probe_non_empty_opt(orig.play_url.as_deref()),
+            detail_url: probe_non_empty_opt(orig.detail_url.as_deref()),
+            quality: (!vars.quality.is_empty()).then(|| "__xmedia_probe__".into()),
+        });
+        let probe_res = match session.set_search_vars(probe_key, vars.page, vars.limit) {
+            Ok(()) => {
+                if let Some(ref pctx) = probe_ctx {
+                    session
+                        .set_track_context(pctx)
+                        .and_then(|()| session.eval_string(input, raw_tpl, base_url))
+                } else {
+                    session.eval_string(input, raw_tpl, base_url)
+                }
+            }
             Err(e) => Err(e),
         };
 
-        // Restore caller vars/context before checking probe result.
-        let restore_ctx = MusicTrackContext {
-            track_id: vars.track_id.to_string(),
-            title: vars.title.to_string(),
-            artist: vars.artist.to_string(),
-            album: (!vars.album.is_empty()).then(|| vars.album.to_string()),
-            duration_secs: vars.duration_secs,
-            cover_url: vars.cover_url.filter(|s| !s.is_empty()).map(str::to_string),
-            cover_id: (!vars.cover_id.is_empty()).then(|| vars.cover_id.to_string()),
-            url_id: (!vars.url_id.is_empty()).then(|| vars.url_id.to_string()),
-            lyric_id: (!vars.lyric_id.is_empty()).then(|| vars.lyric_id.to_string()),
-            play_url: (!vars.play_url.is_empty()).then(|| vars.play_url.to_string()),
-            detail_url: (!vars.detail_url.is_empty()).then(|| vars.detail_url.to_string()),
-            quality: (!vars.quality.is_empty()).then(|| vars.quality.to_string()),
-        };
+        // Restore caller vars/context unconditionally before checking probe result.
         let _ = session.set_search_vars(vars.key, vars.page, vars.limit);
-        let _ = session.set_track_context(&restore_ctx);
+        if let Some(orig) = vars.raw_ctx {
+            let _ = session.set_track_context(orig);
+        }
 
         let probe_out = probe_res?;
         verify_js_pipeline_url_options(&out, &probe_out, "请求 URL")?;
@@ -2420,6 +2437,112 @@ mod tests {
         assert_eq!(reqs[0].1, "k=hello%20world");
         assert!(reqs[1].0.starts_with("POST /search?q=a%22"));
         assert!(reqs[1].1.starts_with("k=a%22%2C%22method%22%3A%22DELETE"));
+        srv.abort();
+    }
+
+    #[tokio::test]
+    async fn music_eval_js_pipeline_probe_preserves_empty_branching_and_blocks_injection() {
+        use axum::Router;
+        use axum::body::Body;
+        use axum::http::StatusCode;
+        use axum::response::Response;
+        use axum::routing::{get, post};
+
+        let app = Router::new()
+            .route(
+                "/api/resolve",
+                post(|| async {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"url":"https://cdn.example.com/resolved.mp3"}"#,
+                        ))
+                        .unwrap()
+                }),
+            )
+            .route(
+                "/api/direct-meta",
+                get(|| async {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            r#"{"url":"https://cdn.example.com/direct.mp3"}"#,
+                        ))
+                        .unwrap()
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+
+        let branching_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "BranchingStreamMusic",
+            "sourceUrl": base,
+            "ruleStream": {
+                "requestUrl": "@js: if (track.playUrl) { '/api/direct-meta?u=' + encodeURIComponent(track.playUrl); } else { '/api/resolve,' + JSON.stringify({ method: 'POST', body: JSON.stringify({ id: track.trackId, title: track.title }) }); }",
+                "streamUrl": "$.url"
+            }
+        }))
+        .unwrap();
+
+        let unsafe_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+            "sourceName": "UnsafeBranchingMusic",
+            "sourceUrl": base,
+            "ruleStream": {
+                "requestUrl": "@js: if (track.playUrl) { '/api/direct-meta'; } else { '/api/resolve?t=' + track.title + ',{\"method\":\"GET\"}'; }",
+                "streamUrl": "$.url"
+            }
+        }))
+        .unwrap();
+
+        let engine = super::MusicSourceEngine::new(
+            HttpClientConfig {
+                allow_private_ips: true,
+                ..Default::default()
+            },
+            Duration::from_secs(5),
+        );
+
+        tokio::task::spawn_blocking(move || {
+            for title in ["Hello, World", "Song [Remix]", "Track \"Quoted\""] {
+                let ctx = MusicTrackContext {
+                    track_id: "t1".into(),
+                    title: title.into(),
+                    artist: "Artist".into(),
+                    play_url: None,
+                    ..Default::default()
+                };
+                let res = engine
+                    .resolve_stream_sync(&branching_spec, SourceRuntimeState::default(), &ctx, None)
+                    .unwrap();
+                assert_eq!(res.data.stream_url, "https://cdn.example.com/resolved.mp3");
+            }
+
+            // Actual option injection via title when playUrl is empty must still be blocked.
+            let evil_ctx = MusicTrackContext {
+                track_id: "t1".into(),
+                title: r#"x,{"method":"DELETE","headers":{"X-Pwn":"1"}}"#.into(),
+                artist: "Artist".into(),
+                play_url: None,
+                ..Default::default()
+            };
+            let err = engine
+                .resolve_stream_sync(&unsafe_spec, SourceRuntimeState::default(), &evil_ctx, None)
+                .expect_err("actual option injection must still be rejected");
+            assert!(
+                err.message.contains("选项") || err.message.contains("结构"),
+                "unexpected error: {err}"
+            );
+        })
+        .await
+        .unwrap();
+
         srv.abort();
     }
 }
