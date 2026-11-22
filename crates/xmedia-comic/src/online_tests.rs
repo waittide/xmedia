@@ -2561,3 +2561,52 @@ async fn online_search_enforces_source_concurrent_rate_throttling() {
 
     server.abort();
 }
+
+#[tokio::test]
+async fn caller_supplied_comic_urls_reject_legado_options_and_data_urls_with_400() {
+    let h = setup_test_harness(true).await;
+    let src_json = serde_json::json!([{
+        "bookSourceName": "GuardComicSource",
+        "bookSourceUrl": "https://comic-guard.example",
+        "searchUrl": "/search?q={{key}}",
+        "ruleSearch": { "bookList": "$.items", "name": "$.name", "bookUrl": "$.url" }
+    }]);
+    let (st_imp, b_imp) = json_request(
+        &h.app,
+        "POST",
+        "/api/v1/comic/sources/import",
+        &h.admin_token,
+        Some(serde_json::json!({ "raw_json": src_json.to_string() })),
+    )
+    .await;
+    assert_eq!(st_imp, StatusCode::OK);
+    let imp_val: serde_json::Value = serde_json::from_slice(&b_imp).unwrap();
+    let sid = imp_val["sources"][0]["id"].as_str().unwrap().to_string();
+
+    for bad_url in [
+        "https://comic-guard.example/c/1,{\"method\":\"POST\",\"headers\":{\"X-Evil\":\"1\"}}",
+        "data:text/html,<h1>evil</h1>",
+    ] {
+        for (uri, payload) in [
+            (
+                "/api/v1/comic/online/detail",
+                serde_json::json!({ "source_id": sid, "comic_url": bad_url }),
+            ),
+            (
+                "/api/v1/comic/online/chapters",
+                serde_json::json!({ "source_id": sid, "toc_url": bad_url }),
+            ),
+            (
+                "/api/v1/comic/online/pages",
+                serde_json::json!({ "source_id": sid, "chapter_url": bad_url }),
+            ),
+        ] {
+            let (st, _) = json_request(&h.app, "POST", uri, &h.member_token, Some(payload)).await;
+            assert_eq!(
+                st,
+                StatusCode::BAD_REQUEST,
+                "expected 400 on {uri} for {bad_url}"
+            );
+        }
+    }
+}

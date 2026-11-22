@@ -340,6 +340,22 @@ impl ComicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        let clean_comic_url =
+            xmedia_source::http::resolve_literal_http_url(comic_url, Some(&parsed.source_url))?;
+        if let Some(ref hint) = fallback_hint {
+            if !hint.book_url.trim().is_empty() {
+                xmedia_source::http::resolve_literal_http_url(
+                    &hint.book_url,
+                    Some(&parsed.source_url),
+                )?;
+            }
+            if !hint.toc_url.trim().is_empty() {
+                xmedia_source::http::resolve_literal_http_url(
+                    &hint.toc_url,
+                    Some(&parsed.source_url),
+                )?;
+            }
+        }
         self.acquire_rate_slot(
             source_id,
             parsed.parse_concurrent_rate(),
@@ -349,7 +365,7 @@ impl ComicOnlineService {
         .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
-        let url_owned = comic_url.to_string();
+        let url_owned = clean_comic_url;
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let parsed_for_detail = parsed.clone();
@@ -509,6 +525,20 @@ impl ComicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        let clean_toc_url =
+            xmedia_source::http::resolve_literal_http_url(toc_url, Some(&parsed.source_url))?;
+        if !comic_ctx.book_url.trim().is_empty() {
+            xmedia_source::http::resolve_literal_http_url(
+                &comic_ctx.book_url,
+                Some(&parsed.source_url),
+            )?;
+        }
+        if !comic_ctx.toc_url.trim().is_empty() {
+            xmedia_source::http::resolve_literal_http_url(
+                &comic_ctx.toc_url,
+                Some(&parsed.source_url),
+            )?;
+        }
         self.acquire_rate_slot(
             source_id,
             parsed.parse_concurrent_rate(),
@@ -518,7 +548,7 @@ impl ComicOnlineService {
         .map_err(DomainError::Validation)?;
 
         let engine = self.engine.clone();
-        let url_owned = toc_url.to_string();
+        let url_owned = clean_toc_url;
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -595,6 +625,26 @@ impl ComicOnlineService {
         let rec = self.load_source_for_actor(actor, source_id).await?;
         let parsed: ComicSourceSpec = serde_json::from_str(&rec.raw_json)
             .map_err(|e| DomainError::Validation(format!("漫画源 JSON 无效: {e}")))?;
+        let clean_chapter_url =
+            xmedia_source::http::resolve_literal_http_url(chapter_url, Some(&parsed.source_url))?;
+        if !comic_ctx.book_url.trim().is_empty() {
+            xmedia_source::http::resolve_literal_http_url(
+                &comic_ctx.book_url,
+                Some(&parsed.source_url),
+            )?;
+        }
+        if !comic_ctx.toc_url.trim().is_empty() {
+            xmedia_source::http::resolve_literal_http_url(
+                &comic_ctx.toc_url,
+                Some(&parsed.source_url),
+            )?;
+        }
+        if !chapter_ctx.url.trim().is_empty() {
+            xmedia_source::http::resolve_literal_http_url(
+                &chapter_ctx.url,
+                Some(&parsed.source_url),
+            )?;
+        }
         self.acquire_rate_slot(
             source_id,
             parsed.parse_concurrent_rate(),
@@ -610,7 +660,7 @@ impl ComicOnlineService {
             .unwrap_or_else(|| parsed.effective_reading_direction());
 
         let engine = self.engine.clone();
-        let url_owned = chapter_url.to_string();
+        let url_owned = clean_chapter_url;
         let prev_state = rec.runtime_state.clone();
         let prev_state_cmp = prev_state.clone();
         let cancel_flag = Arc::new(AtomicBool::new(false));
