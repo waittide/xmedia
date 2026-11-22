@@ -384,18 +384,18 @@ fn eval_template_branch_single_pass(
     let (raw_url_part, opt_part) = split_legado_url_template_and_options(&normalized_branch);
 
     if opt_part.is_none() {
-        if split_js_pipeline(branch).is_some() {
-            return eval_js_pipeline_guarded(session, branch, vars, input, base_url);
+        if split_js_pipeline(&normalized_branch).is_some() {
+            return eval_js_pipeline_guarded(session, &normalized_branch, vars, input, base_url);
         }
-        if !branch.contains("{{") || !branch.contains("}}") {
-            if branch.starts_with("$.")
-                || branch.starts_with("$[")
-                || branch == "$"
-                || branch.starts_with('@')
+        if !normalized_branch.contains("{{") || !normalized_branch.contains("}}") {
+            if normalized_branch.starts_with("$.")
+                || normalized_branch.starts_with("$[")
+                || normalized_branch == "$"
+                || normalized_branch.starts_with('@')
             {
-                return Ok(session.eval_opt(input, Some(branch), base_url));
+                return Ok(session.eval_opt(input, Some(&normalized_branch), base_url));
             }
-            return Ok(branch.to_string());
+            return Ok(normalized_branch.into_owned());
         }
     }
 
@@ -626,17 +626,21 @@ fn split_top_level_or(input: &str) -> Vec<&str> {
             }
         }
         if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0 || depth_brace > 0)
-            && ch == b'\''
-            && !in_double
-            && (i == 0 || bytes[i - 1] != b'\\')
+            && ((ch == b'\'' && !in_double) || (ch == b'"' && !in_single))
         {
-            in_single = !in_single;
-        } else if (mustache_depth > 0 || depth_bracket > 0 || depth_paren > 0 || depth_brace > 0)
-            && ch == b'"'
-            && !in_single
-            && (i == 0 || bytes[i - 1] != b'\\')
-        {
-            in_double = !in_double;
+            let mut backslashes = 0usize;
+            let mut k = i;
+            while k > 0 && bytes[k - 1] == b'\\' {
+                backslashes += 1;
+                k -= 1;
+            }
+            if backslashes.is_multiple_of(2) {
+                if ch == b'\'' {
+                    in_single = !in_single;
+                } else {
+                    in_double = !in_double;
+                }
+            }
         }
         i += 1;
     }
@@ -1533,7 +1537,9 @@ impl MusicSourceEngine {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| "ruleStream 缺少 streamUrl 规则".to_string())?;
-                let stream_raw = session.eval_string(&input, stream_rule, &fetched.final_url)?;
+                let normalized_stream_rule = normalize_quality_placeholder(stream_rule);
+                let stream_raw =
+                    session.eval_string(&input, &normalized_stream_rule, &fetched.final_url)?;
                 let stream_trimmed = stream_raw.trim();
                 if stream_trimmed.is_empty() {
                     return Err("未能从 ruleStream 解析出有效音频流地址".into());
@@ -2624,5 +2630,161 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn split_top_level_or_handles_consecutive_backslashes_before_closing_quotes() {
+        assert_eq!(
+            split_top_level_or(r#"{{java.get("missing\\")}} || fallback"#),
+            vec![r#"{{java.get("missing\\")}}"#, "fallback"]
+        );
+        assert_eq!(
+            split_top_level_or(r#"{{java.get('missing\\')}} || fallback"#),
+            vec![r#"{{java.get('missing\\')}}"#, "fallback"]
+        );
+        assert_eq!(
+            split_top_level_or(r#"{{java.get("a\\\"b || c")}} || fallback"#),
+            vec![r#"{{java.get("a\\\"b || c")}}"#, "fallback"]
+        );
+        assert_eq!(
+            split_top_level_or(r#"{{java.get('a\\\'b || c')}} || fallback"#),
+            vec![r#"{{java.get('a\\\'b || c')}}"#, "fallback"]
+        );
+        assert_eq!(
+            split_top_level_or(r#"$.don't || $.fallback"#),
+            vec!["$.don't", "$.fallback"]
+        );
+    }
+
+    #[tokio::test]
+    async fn music_resolve_stream_handles_backslash_fallback_and_uppercase_quality_in_js_pipelines()
+    {
+        use axum::{Router, routing::get};
+
+        let app = Router::new()
+            .route("/meta", get(|| async { r#"{"url":"/cdn/meta.mp3"}"# }))
+            .route(
+                "/flac.mp3",
+                get(|axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>| async move {
+                    let v = q.get("v").cloned().unwrap_or_default();
+                    serde_json::json!({ "url": format!("https://cdn.example/req-flac.mp3?v={v}") })
+                        .to_string()
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base = format!("http://{addr}");
+        let srv = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let base_c = base.clone();
+        tokio::task::spawn_blocking(move || {
+            let engine = super::MusicSourceEngine::new(
+                HttpClientConfig {
+                    allow_private_ips: true,
+                    ..Default::default()
+                },
+                Duration::from_secs(5),
+            );
+            let ctx = MusicTrackContext {
+                track_id: "t1".into(),
+                title: "Song".into(),
+                artist: "Artist".into(),
+                ..Default::default()
+            };
+
+            // 1. Consecutive backslashes before closing quote must still trigger `||` fallback.
+            for req_tpl in [
+                format!(r#"{{{{java.get("missing\\")}}}} || {base_c}/meta"#),
+                format!(r#"{{{{java.get('missing\\')}}}} || {base_c}/meta"#),
+            ] {
+                let spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+                    "sourceName": "BackslashFallbackMusic",
+                    "sourceUrl": base_c,
+                    "ruleStream": {
+                        "requestUrl": req_tpl,
+                        "streamUrl": "$.url"
+                    }
+                }))
+                .unwrap();
+                let out = engine
+                    .resolve_stream_sync(&spec, SourceRuntimeState::default(), &ctx, Some("flac"))
+                    .unwrap();
+                assert_eq!(out.data.stream_url, format!("{base_c}/cdn/meta.mp3"));
+            }
+
+            // 2. {{QUALITY}} inside no-options JS pipeline requestUrl AND inside streamUrl
+            let req_js_spec: MusicSourceSpec = serde_json::from_value(serde_json::json!({
+                "sourceName": "QualityNoOptsReqJsMusic",
+                "sourceUrl": base_c,
+                "ruleStream": {
+                    "requestUrl": format!("{base_c}/{{{{QUALITY}}}}.mp3@js:result + '?v=1'"),
+                    "streamUrl": "$.url"
+                }
+            }))
+            .unwrap();
+            let req_out = engine
+                .resolve_stream_sync(
+                    &req_js_spec,
+                    SourceRuntimeState::default(),
+                    &ctx,
+                    Some("flac"),
+                )
+                .unwrap();
+            assert_eq!(
+                req_out.data.stream_url,
+                "https://cdn.example/req-flac.mp3?v=1"
+            );
+
+            let fetched_stream_js_spec: MusicSourceSpec =
+                serde_json::from_value(serde_json::json!({
+                    "sourceName": "QualityStreamJsFetchedMusic",
+                    "sourceUrl": base_c,
+                    "ruleStream": {
+                        "requestUrl": format!("{base_c}/meta"),
+                        "streamUrl": "https://cdn.example/{{QUALITY}}.mp3@js:result + '?v=1'"
+                    }
+                }))
+                .unwrap();
+            let fetched_out = engine
+                .resolve_stream_sync(
+                    &fetched_stream_js_spec,
+                    SourceRuntimeState::default(),
+                    &ctx,
+                    Some("flac"),
+                )
+                .unwrap();
+            assert_eq!(
+                fetched_out.data.stream_url,
+                "https://cdn.example/flac.mp3?v=1"
+            );
+
+            let direct_stream_js_spec: MusicSourceSpec =
+                serde_json::from_value(serde_json::json!({
+                    "sourceName": "QualityStreamJsDirectMusic",
+                    "sourceUrl": base_c,
+                    "ruleStream": {
+                        "streamUrl": "https://cdn.example/{{QUALITY}}.mp3@js:result + '?v=1'"
+                    }
+                }))
+                .unwrap();
+            let direct_out = engine
+                .resolve_stream_sync(
+                    &direct_stream_js_spec,
+                    SourceRuntimeState::default(),
+                    &ctx,
+                    Some("flac"),
+                )
+                .unwrap();
+            assert_eq!(
+                direct_out.data.stream_url,
+                "https://cdn.example/flac.mp3?v=1"
+            );
+        })
+        .await
+        .unwrap();
+
+        srv.abort();
     }
 }
