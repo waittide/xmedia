@@ -9,7 +9,6 @@ import {
   LuSearch,
   LuTerminal,
 } from 'vue-icons-plus/lu'
-import { withAuthToken } from '@/api/client'
 import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
@@ -17,8 +16,8 @@ import { useOnlineSourceDebug } from '@/components/online-sources/useOnlineSourc
 import type { SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import { useSnackbarStore } from '@/stores/snackbar'
 import {
-  buildOnlineVideoPosterUrl,
   onlineVideoApi,
+  resolveOnlineVideoPosterUrl,
   type OnlineVideoCategory,
   type OnlineVideoEpisode,
   type OnlineVideoSummary,
@@ -386,8 +385,8 @@ async function copyDebugReport(): Promise<void> {
           >
             <div class="h-20 w-14 shrink-0 overflow-hidden rounded-lg bg-[var(--md-sys-color-surface-container-high)]">
               <img
-                v-if="item.proxy_cover_url || item.cover_url"
-                :src="item.proxy_cover_url ? withAuthToken(item.proxy_cover_url) : buildOnlineVideoPosterUrl(item.cover_url, source?.id)"
+                v-if="resolveOnlineVideoPosterUrl(item.proxy_cover_url, item.cover_url, source?.id)"
+                :src="resolveOnlineVideoPosterUrl(item.proxy_cover_url, item.cover_url, source?.id)"
                 :alt="item.title"
                 class="h-full w-full object-cover"
                 loading="lazy"

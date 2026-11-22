@@ -9,7 +9,6 @@ import {
   LuSearch,
   LuTerminal,
 } from 'vue-icons-plus/lu'
-import { withAuthToken } from '@/api/client'
 import OnlineSourceDebugShell, {
   type DebugResultTabItem,
 } from '@/components/online-sources/OnlineSourceDebugShell.vue'
@@ -19,6 +18,7 @@ import { useSnackbarStore } from '@/stores/snackbar'
 import {
   buildOnlineComicImageUrl,
   onlineComicApi,
+  resolveOnlineComicCoverUrl,
   type ComicSearchResult,
   type ComicSourceSummaryDto,
   type ComicSourceTestInput,
@@ -324,8 +324,7 @@ async function handleDebugChapterPages(ch: OnlineComicChapter): Promise<void> {
 }
 
 function pagePreviewSrc(proxyUrl: string, rawUrl: string): string {
-  if (proxyUrl) return withAuthToken(proxyUrl)
-  return buildOnlineComicImageUrl(rawUrl, props.source?.id)
+  return resolveOnlineComicCoverUrl(proxyUrl, rawUrl, props.source?.id)
 }
 
 async function copyDebugReport(): Promise<void> {
@@ -623,6 +622,7 @@ async function copyDebugReport(): Promise<void> {
               class="overflow-hidden rounded-2xl bg-[var(--md-sys-color-surface-container)] p-2"
             >
               <img
+                v-if="pagePreviewSrc(page.proxy_url, page.image_url)"
                 :src="pagePreviewSrc(page.proxy_url, page.image_url)"
                 :alt="`Page ${page.index + 1}`"
                 class="aspect-[3/4] w-full rounded-xl bg-[var(--md-sys-color-surface-container-high)] object-contain"

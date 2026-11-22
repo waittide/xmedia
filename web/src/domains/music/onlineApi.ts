@@ -161,11 +161,9 @@ export function resolveOnlineMusicCoverUrl(
       try {
         const parsed = new URL(proxy, 'http://localhost')
         if (parsed.origin !== 'http://localhost') return ''
-        if (parsed.pathname.endsWith('-proxy')) {
-          if (!parsed.pathname.endsWith('/cover-proxy')) return ''
-          const innerUrl = parsed.searchParams.get('url')?.trim()
-          if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
-        }
+        if (parsed.pathname !== '/api/v1/music/online/cover-proxy') return ''
+        const innerUrl = parsed.searchParams.get('url')?.trim()
+        if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
         return withAuthToken(proxy)
       } catch {
         return ''
@@ -190,11 +188,9 @@ export function resolveOnlineMusicAudioUrl(
       try {
         const parsed = new URL(proxy, 'http://localhost')
         if (parsed.origin !== 'http://localhost') return ''
-        if (parsed.pathname.endsWith('-proxy')) {
-          if (!parsed.pathname.endsWith('/audio-proxy')) return ''
-          const innerUrl = parsed.searchParams.get('url')?.trim()
-          if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
-        }
+        if (parsed.pathname !== '/api/v1/music/online/audio-proxy') return ''
+        const innerUrl = parsed.searchParams.get('url')?.trim()
+        if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
         return withAuthToken(proxy)
       } catch {
         return ''
