@@ -973,13 +973,13 @@ export async function runLiveTests(context = {}) {
             );
             await clickButtonByText(cdp, [liveComicSample.title], { timeoutMs: 10000 });
             let detailState = await cdp.waitForFn(
-              `(() => {
+              () => {
                 if (!window.location.pathname.includes('/comic/online/detail')) return false;
                 const txt = document.body.textContent || '';
                 if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
                 if (txt.includes('重试') || txt.includes('Retry')) return 'error';
                 return false;
-              })()`,
+              },
               { timeoutMs: 45000, label: 'LIVE-09 comic detail loaded' },
             );
             if (detailState === 'error') {
@@ -987,13 +987,13 @@ export async function runLiveTests(context = {}) {
               const preRetryConsoleCount = cdp.consoleErrors.length;
               await clickButtonByText(cdp, ['重试', 'Retry'], { timeoutMs: 10000 });
               detailState = await cdp.waitForFn(
-                `(() => {
+                () => {
                   if (!window.location.pathname.includes('/comic/online/detail')) return false;
                   const txt = document.body.textContent || '';
                   if (txt.includes('开始阅读') || txt.includes('Start Reading')) return 'ready';
                   if (txt.includes('重试') || txt.includes('Retry')) return 'error';
                   return false;
-                })()`,
+                },
                 { timeoutMs: 45000, label: 'LIVE-09 comic detail retry loaded' },
               );
               assert.equal(
