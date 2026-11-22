@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { MdButton, MdTextField } from '@/components/ui'
 import { useBookI18n as useI18n } from '@/domains/book/i18n'
 import type { TocItem } from '@/domains/book/types'
 import TocTreeItem from './TocTreeItem.vue'
@@ -14,9 +15,11 @@ const props = withDefaults(
   defineProps<{
     items: TocItem[]
     activeHref?: string | null
+    searchable?: boolean
   }>(),
   {
     activeHref: null,
+    searchable: false,
   },
 )
 
@@ -27,6 +30,9 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const expandedKeys = ref<Set<string>>(new Set())
+const filterQuery = ref('')
+
+const normalizedFilter = computed(() => filterQuery.value.trim().toLowerCase())
 
 const treeRoots = computed<TocTreeNode[]>(() => {
   const roots: TocTreeNode[] = []
@@ -52,6 +58,25 @@ const treeRoots = computed<TocTreeNode[]>(() => {
   return roots
 })
 
+function filterTreeNodes(nodes: TocTreeNode[], query: string): TocTreeNode[] {
+  if (!query) return nodes
+  const out: TocTreeNode[] = []
+  for (const node of nodes) {
+    const titleMatch = node.item.title.toLowerCase().includes(query)
+    const filteredChildren = filterTreeNodes(node.children, query)
+    if (titleMatch) {
+      out.push(node)
+    } else if (filteredChildren.length > 0) {
+      out.push({ ...node, children: filteredChildren })
+    }
+  }
+  return out
+}
+
+const displayedRoots = computed<TocTreeNode[]>(() =>
+  filterTreeNodes(treeRoots.value, normalizedFilter.value),
+)
+
 const parentKeys = computed<string[]>(() => {
   const out: string[] = []
   const walk = (nodes: TocTreeNode[]) => {
@@ -62,7 +87,7 @@ const parentKeys = computed<string[]>(() => {
       }
     }
   }
-  walk(treeRoots.value)
+  walk(displayedRoots.value)
   return out
 })
 
@@ -73,6 +98,13 @@ const allExpanded = computed(
     parentKeys.value.length > 0 &&
     parentKeys.value.every((k) => expandedKeys.value.has(k)),
 )
+
+const effectiveExpandedKeys = computed<Set<string>>(() => {
+  if (normalizedFilter.value) {
+    return new Set(parentKeys.value)
+  }
+  return expandedKeys.value
+})
 
 function normalizeHrefPath(raw: string): string {
   const withoutHash = raw.split('#')[0] ?? raw
@@ -147,7 +179,7 @@ function toggleExpandAll(): void {
 }
 
 function onVolumeRowClick(node: TocTreeNode): void {
-  if (!expandedKeys.value.has(node.key)) {
+  if (!effectiveExpandedKeys.value.has(node.key)) {
     toggleExpand(node.key)
   } else if (node.item.href) {
     emit('select', node.item.href)
@@ -156,34 +188,48 @@ function onVolumeRowClick(node: TocTreeNode): void {
 </script>
 
 <template>
-  <div>
-    <p v-if="items.length === 0" class="py-6 text-center text-xs text-[var(--md-sys-color-on-surface-variant)]">
+  <div class="space-y-2.5">
+    <p v-if="items.length === 0" class="text-body-small py-6 text-center text-on-surface-variant">
       {{ t('reader.noToc') }}
     </p>
 
     <template v-else>
+      <MdTextField
+        v-if="searchable && items.length > 8"
+        v-model="filterQuery"
+        type="search"
+        size="sm"
+        clearable
+        :placeholder="t('reader.tocSearchPlaceholder')"
+      />
+
       <!-- Expand / Collapse All Controls when Volumes exist -->
       <div
-        v-if="hasHierarchy"
-        class="mb-2 flex items-center justify-between px-2 text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+        v-if="hasHierarchy && !normalizedFilter"
+        class="flex items-center justify-between px-2"
       >
-        <span>{{ t('reader.volumeStructureHint', { volumes: parentKeys.length }) }}</span>
-        <button
-          type="button"
-          class="font-medium text-[var(--md-sys-color-primary)] hover:underline"
-          @click="toggleExpandAll"
-        >
+        <span class="text-label-small text-on-surface-variant">
+          {{ t('reader.volumeStructureHint', { volumes: parentKeys.length }) }}
+        </span>
+        <MdButton variant="text" size="sm" @click="toggleExpandAll">
           {{ allExpanded ? t('reader.collapseAll') : t('reader.expandAll') }}
-        </button>
+        </MdButton>
       </div>
 
-      <div class="space-y-0.5">
+      <p
+        v-if="displayedRoots.length === 0"
+        class="text-body-small py-6 text-center text-on-surface-variant"
+      >
+        {{ t('collections.emptyResult') }}
+      </p>
+
+      <div v-else class="space-y-0.5">
         <TocTreeItem
-          v-for="root in treeRoots"
+          v-for="root in displayedRoots"
           :key="root.key"
           :node="root"
           :depth="0"
-          :expanded-keys="expandedKeys"
+          :expanded-keys="effectiveExpandedKeys"
           :active-href="activeHref"
           :is-href-match="isHrefMatch"
           :subtree-contains-active="subtreeContainsActive"

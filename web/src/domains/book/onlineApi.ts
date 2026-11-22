@@ -401,6 +401,7 @@ export const onlineBookApi = {
     keyword: string,
     sourceIds?: string[],
     page = 1,
+    options?: { signal?: AbortSignal },
   ): Promise<AggregatedSearchResponseDto> =>
     requestJson('/book/online/search', {
       method: 'POST',
@@ -409,6 +410,7 @@ export const onlineBookApi = {
         source_ids: sourceIds && sourceIds.length > 0 ? sourceIds : null,
         page,
       }),
+      signal: options?.signal,
     }),
 
   fetchBookInfo: (

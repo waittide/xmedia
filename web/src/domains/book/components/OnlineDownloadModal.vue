@@ -6,11 +6,18 @@ import {
   LuBookOpen,
   LuCheckCircle2,
   LuDownload,
-  LuLoader2,
 } from 'vue-icons-plus/lu'
-import AppCheckbox from '@/components/ui/AppCheckbox.vue'
-import MdDialog from '@/components/ui/MdDialog.vue'
-import MdLinearProgress from '@/components/ui/MdLinearProgress.vue'
+import {
+  AppCheckbox,
+  MdButton,
+  MdCircularProgress,
+  MdDialog,
+  MdLinearProgress,
+  MdRadio,
+  MdTextField,
+} from '@/components/ui'
+import { useBookI18n as useI18n } from '@/domains/book/i18n'
+import { itemRoute } from '@/sources'
 import { useAuthStore } from '@/stores/auth'
 import {
   formatDownloadSpeed,
@@ -48,14 +55,15 @@ const emit = defineEmits<{
   jobUpdated: [job: OnlineDownloadJobDto]
 }>()
 
+const { t } = useI18n()
 const authStore = useAuthStore()
 const onlineDownloadsStore = useOnlineDownloadsStore()
 const router = useRouter()
 
 const format = ref<OnlineDownloadFormat>('epub')
 const useRange = ref(false)
-const startChapter = ref<number | string>(1)
-const endChapter = ref<number | string>(100)
+const startChapter = ref('1')
+const endChapter = ref('100')
 const importToLibrary = ref(false)
 const starting = ref(false)
 const cancelling = ref(false)
@@ -119,16 +127,17 @@ watch(
     cancelling.value = false
     format.value = 'epub'
     useRange.value = false
-    startChapter.value = 1
-    endChapter.value = Math.max(1, props.target.totalChapters || 100)
+    startChapter.value = '1'
+    endChapter.value = String(Math.max(1, props.target.totalChapters || 100))
     importToLibrary.value = authStore.isAdmin
   },
   { immediate: true },
 )
 
-function parsePositiveInt(val: number | string): number | null {
-  if (typeof val === 'string' && val.trim() === '') return null
-  const num = typeof val === 'number' ? val : Number(val)
+function parsePositiveInt(val: string): number | null {
+  const trimmed = val.trim()
+  if (!trimmed) return null
+  const num = Number(trimmed)
   if (!Number.isFinite(num) || !Number.isInteger(num) || num < 1) return null
   return num
 }
@@ -141,6 +150,14 @@ const progressPct = computed(() => {
 
 const speedLabel = computed(() => formatDownloadSpeed(activeJob.value?.chapters_per_sec))
 
+const statusLabel = computed(() => {
+  const st = activeJob.value?.status
+  if (st === 'completed') return t('online.statusCompleted')
+  if (st === 'cancelled') return t('online.statusCancelled')
+  if (st === 'failed') return t('online.statusFailed')
+  return t('online.statusRunning')
+})
+
 async function handleStart(): Promise<void> {
   if (!props.target || starting.value) return
   errorMsg.value = null
@@ -151,11 +168,11 @@ async function handleStart(): Promise<void> {
     const parsedStart = parsePositiveInt(startChapter.value)
     const parsedEnd = parsePositiveInt(endChapter.value)
     if (parsedStart === null || parsedEnd === null) {
-      errorMsg.value = '请输入有效的起始章和结束章（必须为大于等于 1 的整数）'
+      errorMsg.value = t('online.rangeInvalidErr')
       return
     }
     if (parsedStart > parsedEnd) {
-      errorMsg.value = '起始章不能大于结束章'
+      errorMsg.value = t('online.rangeOrderErr')
       return
     }
     startIdx = parsedStart - 1
@@ -209,134 +226,145 @@ function openImportedBook(): void {
   const id = activeJob.value?.imported_book_id
   if (!id) return
   emit('close')
-  void router.push(`/book/items/${id}`)
+  void router.push(itemRoute({ scope: 'local', domain: 'book', id }))
 }
 </script>
 
 <template>
   <MdDialog
     :open="open && target !== null"
-    :title="target ? `下载与打包 · ${target.bookName}` : ''"
-    :subtitle="target ? `${target.author || '佚名'} · 来源：${target.sourceName}` : ''"
-    max-width="max-w-lg"
+    :title="target ? t('online.downloadTitle', { title: target.bookName }) : ''"
+    :subtitle="
+      target
+        ? t('online.downloadSubtitle', {
+            author: target.author || t('catalog.unknownAuthor'),
+            source: target.sourceName,
+          })
+        : ''
+    "
+    size="sm"
     @close="emit('close')"
   >
     <template #icon>
-      <LuDownload class="h-5 w-5" />
+      <LuDownload class="h-5 w-5" aria-hidden="true" />
     </template>
 
-    <div v-if="target" class="space-y-4 py-1 text-xs">
+    <div v-if="target" class="space-y-4 py-1">
       <div
         v-if="errorMsg"
-        class="rounded-2xl bg-[var(--md-sys-color-error-container)] px-3.5 py-2.5 text-[var(--md-sys-color-on-error-container)]"
+        role="alert"
+        class="text-body-small rounded-corner-md bg-error-container px-3.5 py-2.5 text-on-error-container"
       >
         {{ errorMsg }}
       </div>
 
       <template v-if="!activeJob">
-        <div>
-          <div class="mb-1.5 font-medium text-[var(--md-sys-color-on-surface-variant)]">
-            导出格式
+        <div class="space-y-2">
+          <div class="text-label-medium text-on-surface-variant">
+            {{ t('online.exportFormat') }}
           </div>
-          <div class="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              class="md-state rounded-2xl border px-3 py-2.5 text-left transition"
+          <div
+            role="radiogroup"
+            :aria-label="t('online.exportFormat')"
+            class="grid grid-cols-1 gap-2 sm:grid-cols-2"
+          >
+            <div
+              class="rounded-corner-md border px-3.5 py-3 transition-colors duration-150 ease-standard"
               :class="
                 format === 'epub'
-                  ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/50 text-[var(--md-sys-color-on-surface)]'
-                  : 'border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
+                  ? 'border-primary bg-primary-container/40'
+                  : 'border-outline-variant bg-surface-container'
               "
               @click="format = 'epub'"
             >
-              <div class="font-semibold">EPUB 3.0（推荐）</div>
-              <div class="mt-0.5 text-[10px] opacity-80">含封面、目录与标准排版</div>
-            </button>
-            <button
-              type="button"
-              class="md-state rounded-2xl border px-3 py-2.5 text-left transition"
+              <MdRadio
+                :checked="format === 'epub'"
+                :label="t('online.formatEpubTitle')"
+                @select="format = 'epub'"
+              />
+              <p class="text-body-small mt-1 pl-7 text-on-surface-variant">
+                {{ t('online.formatEpubDesc') }}
+              </p>
+            </div>
+
+            <div
+              class="rounded-corner-md border px-3.5 py-3 transition-colors duration-150 ease-standard"
               :class="
                 format === 'txt'
-                  ? 'border-[var(--md-sys-color-primary)] bg-[var(--md-sys-color-primary-container)]/50 text-[var(--md-sys-color-on-surface)]'
-                  : 'border-[var(--md-sys-color-outline-variant)]/70 bg-[var(--md-sys-color-surface-container)] text-[var(--md-sys-color-on-surface-variant)]'
+                  ? 'border-primary bg-primary-container/40'
+                  : 'border-outline-variant bg-surface-container'
               "
               @click="format = 'txt'"
             >
-              <div class="font-semibold">纯文本 TXT</div>
-              <div class="mt-0.5 text-[10px] opacity-80">UTF-8 编码，轻量通用</div>
-            </button>
+              <MdRadio
+                :checked="format === 'txt'"
+                :label="t('online.formatTxtTitle')"
+                @select="format = 'txt'"
+              />
+              <p class="text-body-small mt-1 pl-7 text-on-surface-variant">
+                {{ t('online.formatTxtDesc') }}
+              </p>
+            </div>
           </div>
         </div>
 
-        <div class="space-y-2 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3.5">
-          <AppCheckbox v-model="useRange" label="仅下载指定章节区间（默认下载全本）" />
-          <div v-if="useRange" class="grid grid-cols-2 gap-2.5 pt-1">
-            <label class="block">
-              <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                起始章（从 1 开始）
-              </span>
-              <input
-                v-model.number="startChapter"
-                type="number"
-                min="1"
-                class="md-input h-9 w-full text-xs"
-              />
-            </label>
-            <label class="block">
-              <span class="mb-1 block text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-                结束章
-              </span>
-              <input
-                v-model.number="endChapter"
-                type="number"
-                min="1"
-                class="md-input h-9 w-full text-xs"
-              />
-            </label>
+        <div class="space-y-3 rounded-corner-md bg-surface-container p-3.5">
+          <AppCheckbox v-model="useRange" :label="t('online.rangeToggle')" />
+          <div v-if="useRange" class="grid grid-cols-2 gap-3 pt-1">
+            <MdTextField
+              v-model="startChapter"
+              type="number"
+              size="sm"
+              min="1"
+              :label="t('online.startChapter')"
+            />
+            <MdTextField
+              v-model="endChapter"
+              type="number"
+              size="sm"
+              min="1"
+              :label="t('online.endChapter')"
+            />
           </div>
         </div>
 
         <div
           v-if="authStore.isAdmin"
-          class="rounded-2xl bg-[var(--md-sys-color-surface-container)] p-3.5"
+          class="rounded-corner-md bg-surface-container p-3.5"
         >
-          <AppCheckbox
-            v-model="importToLibrary"
-            label="打包后自动入库"
-          />
+          <AppCheckbox v-model="importToLibrary" :label="t('online.autoImportToggle')" />
         </div>
       </template>
 
       <!-- Live Job Progress -->
-      <div v-else class="space-y-3 rounded-2xl bg-[var(--md-sys-color-surface-container)] p-4">
+      <div v-else class="space-y-3 rounded-corner-md bg-surface-container p-4">
         <div class="flex items-center justify-between gap-2">
-          <span class="flex items-center gap-1.5 font-semibold text-[var(--md-sys-color-on-surface)]">
-            <LuLoader2
+          <span class="text-title-small flex items-center gap-2 text-on-surface">
+            <MdCircularProgress
               v-if="activeJob.status === 'pending' || activeJob.status === 'running'"
-              class="h-4 w-4 animate-spin text-[var(--md-sys-color-primary)]"
+              indeterminate
+              :size="18"
+              :stroke-width="2.5"
             />
             <LuCheckCircle2
               v-else-if="activeJob.status === 'completed'"
-              class="h-4 w-4 text-[var(--md-sys-color-success)]"
+              class="h-4 w-4 text-success"
+              aria-hidden="true"
             />
             <LuBan
               v-else-if="activeJob.status === 'cancelled'"
-              class="h-4 w-4 text-[var(--md-sys-color-on-surface-variant)]"
+              class="h-4 w-4 text-on-surface-variant"
+              aria-hidden="true"
             />
-            <span>
-              {{
-                activeJob.status === 'completed'
-                  ? '打包完成'
-                  : activeJob.status === 'cancelled'
-                    ? '已取消'
-                    : activeJob.status === 'failed'
-                      ? '打包失败'
-                      : '正在抓取章节…'
-              }}
-            </span>
+            <span>{{ statusLabel }}</span>
           </span>
-          <span class="font-mono text-[11px] text-[var(--md-sys-color-on-surface-variant)]">
-            {{ activeJob.processed_chapters }} / {{ activeJob.total_chapters || '?' }} 章
+          <span class="text-label-small font-mono tabular-nums text-on-surface-variant">
+            {{
+              t('online.chaptersProgress', {
+                processed: activeJob.processed_chapters,
+                total: activeJob.total_chapters || '?',
+              })
+            }}
             <template v-if="isJobActive(activeJob.status) && speedLabel">
               · {{ speedLabel }}
             </template>
@@ -344,7 +372,13 @@ function openImportedBook(): void {
         </div>
 
         <MdLinearProgress
-          :value="activeJob.status === 'completed' ? 100 : activeJob.total_chapters > 0 ? progressPct : null"
+          :value="
+            activeJob.status === 'completed'
+              ? 100
+              : activeJob.total_chapters > 0
+                ? progressPct
+                : null
+          "
           :indeterminate="isJobActive(activeJob.status) && activeJob.total_chapters <= 0"
           :tone="
             activeJob.status === 'cancelled'
@@ -360,80 +394,76 @@ function openImportedBook(): void {
 
         <p
           v-if="activeJob.current_chapter_title"
-          class="truncate text-[11px] text-[var(--md-sys-color-on-surface-variant)]"
+          class="text-body-small truncate text-on-surface-variant"
         >
           {{ activeJob.current_chapter_title }}
         </p>
-        <p v-if="activeJob.failed_chapters > 0" class="text-[11px] text-[var(--md-sys-color-warning)]">
-          其中 {{ activeJob.failed_chapters }} 章抓取失败（已以占位提示保留）
+        <p v-if="activeJob.failed_chapters > 0" class="text-body-small text-warning">
+          {{ t('online.failedChaptersHint', { count: activeJob.failed_chapters }) }}
         </p>
-        <p v-if="activeJob.error" class="text-[11px] text-[var(--md-sys-color-error)]">
+        <p v-if="activeJob.error" class="text-body-small text-error">
           {{ activeJob.error }}
         </p>
-
-        <div
-          v-if="activeJob.status === 'completed'"
-          class="flex flex-wrap items-center gap-2 pt-2"
-        >
-          <a
-            :href="buildOnlineDownloadFileUrl(activeJob.id)"
-            :download="activeJob.output_file_name || undefined"
-            class="md-btn md-btn-sm md-btn-filled md-state"
-          >
-            <LuDownload class="h-3.5 w-3.5" />
-            <span>下载 {{ activeJob.output_file_name }}</span>
-          </a>
-
-          <button
-            v-if="activeJob.imported_book_id"
-            type="button"
-            class="md-btn md-btn-sm md-btn-tonal md-state"
-            @click="openImportedBook"
-          >
-            <LuBookOpen class="h-3.5 w-3.5" />
-            <span>打开已入库书籍</span>
-          </button>
-        </div>
       </div>
     </div>
 
     <template #footer>
-      <div class="flex w-full items-center justify-end gap-2">
-        <button
+      <div class="flex w-full flex-wrap items-center justify-end gap-2">
+        <MdButton
           v-if="activeJob && isJobActive(activeJob.status)"
-          type="button"
-          :disabled="cancelling"
-          class="md-btn md-btn-sm md-btn-outlined md-state mr-auto !border-[var(--md-sys-color-error)] !text-[var(--md-sys-color-error)]"
+          variant="outlined"
+          tone="error"
+          size="sm"
+          :icon="LuBan"
+          :loading="cancelling"
+          class="mr-auto"
           @click="handleCancelJob"
         >
-          <LuLoader2 v-if="cancelling" class="h-3.5 w-3.5 animate-spin" />
-          <LuBan v-else class="h-3.5 w-3.5" />
-          <span>{{ cancelling ? '取消中…' : '取消任务' }}</span>
-        </button>
-        <button
-          type="button"
-          class="md-btn md-btn-sm md-btn-text md-state"
-          @click="emit('close')"
-        >
+          {{ cancelling ? t('online.cancellingJobBtn') : t('online.cancelJobBtn') }}
+        </MdButton>
+
+        <MdButton variant="text" size="sm" @click="emit('close')">
           {{
             activeJob && isJobActive(activeJob.status)
-              ? '后台运行 / 关闭'
+              ? t('online.closeBackgroundBtn')
               : activeJob
-                ? '关闭'
-                : '取消'
+                ? t('online.closeBtn')
+                : t('detail.cancel')
           }}
-        </button>
-        <button
-          v-if="!activeJob"
-          type="button"
-          :disabled="starting"
-          class="md-btn md-btn-sm md-btn-filled md-state"
+        </MdButton>
+
+        <template v-if="activeJob?.status === 'completed'">
+          <MdButton
+            v-if="activeJob.imported_book_id"
+            variant="tonal"
+            size="sm"
+            :icon="LuBookOpen"
+            @click="openImportedBook"
+          >
+            {{ t('online.openImportedBtn') }}
+          </MdButton>
+
+          <MdButton
+            variant="filled"
+            size="sm"
+            :icon="LuDownload"
+            :href="buildOnlineDownloadFileUrl(activeJob.id)"
+            :download="activeJob.output_file_name || undefined"
+          >
+            {{ t('online.downloadFileBtn', { name: activeJob.output_file_name || '' }) }}
+          </MdButton>
+        </template>
+
+        <MdButton
+          v-else-if="!activeJob"
+          variant="filled"
+          size="sm"
+          :icon="LuDownload"
+          :loading="starting"
           @click="handleStart"
         >
-          <LuLoader2 v-if="starting" class="h-3.5 w-3.5 animate-spin" />
-          <LuDownload v-else class="h-3.5 w-3.5" />
-          <span>开始抓取并打包</span>
-        </button>
+          {{ t('online.startDownloadBtn') }}
+        </MdButton>
       </div>
     </template>
   </MdDialog>

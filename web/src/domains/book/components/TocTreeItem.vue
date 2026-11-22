@@ -4,7 +4,7 @@ import type { TocTreeNode } from './TocTree.vue'
 
 defineOptions({ name: 'TocTreeItem' })
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     node: TocTreeNode
     depth?: number
@@ -31,41 +31,45 @@ const emit = defineEmits<{
     <!-- Group / Volume Node with Children -->
     <template v-if="node.children.length > 0">
       <div
-        class="group flex items-center justify-between gap-1.5 rounded-xl px-2 text-xs font-semibold transition"
+        class="group flex items-center justify-between gap-1.5 rounded-corner-md px-2 transition-colors duration-150 ease-standard"
         :class="[
           depth === 0 ? 'py-2' : 'py-1.5',
           subtreeContainsActive(node, activeHref)
-            ? 'bg-[var(--md-sys-color-secondary-container)]/75 text-[var(--md-sys-color-on-secondary-container)]'
-            : 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]',
+            ? 'bg-secondary-container/75 text-on-secondary-container'
+            : 'text-on-surface hover:bg-surface-container-high',
         ]"
       >
         <button
           type="button"
-          class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-highest)] hover:text-[var(--md-sys-color-on-surface)]"
+          :aria-expanded="expandedKeys.has(node.key)"
+          class="md-state md-touch-target flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-corner-sm text-on-surface-variant hover:text-on-surface"
           @click.stop="emit('toggleExpand', node.key)"
         >
           <LuChevronRight
-            class="h-3.5 w-3.5 transition-transform duration-150"
+            class="h-4 w-4 transition-transform duration-150 ease-standard"
             :class="expandedKeys.has(node.key) ? 'rotate-90' : ''"
+            aria-hidden="true"
           />
         </button>
 
         <button
           type="button"
-          class="min-w-0 flex-1 truncate text-left"
+          class="text-title-small min-w-0 flex-1 cursor-pointer truncate text-left"
           @click="emit('volumeClick', node)"
         >
           {{ node.item.title }}
         </button>
 
-        <span class="shrink-0 rounded-md bg-[var(--md-sys-color-surface-container-highest)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--md-sys-color-on-surface-variant)]">
+        <span
+          class="text-label-small shrink-0 rounded-corner-xs bg-surface-container-highest px-1.5 py-0.5 tabular-nums text-on-surface-variant"
+        >
           {{ node.children.length }}
         </span>
       </div>
 
       <div
         v-if="expandedKeys.has(node.key)"
-        class="ml-4 mt-0.5 space-y-0.5 border-l border-[var(--md-sys-color-outline-variant)]/70 pl-2"
+        class="mt-0.5 ml-4 space-y-0.5 border-l border-outline-variant/70 pl-2"
       >
         <TocTreeItem
           v-for="child in node.children"
@@ -87,14 +91,14 @@ const emit = defineEmits<{
     <button
       v-else
       type="button"
-      class="flex w-full items-center rounded-xl text-left text-xs transition"
+      class="md-state flex w-full cursor-pointer items-center rounded-corner-md text-left transition-colors duration-150 ease-standard"
       :class="[
-        depth === 0 ? 'px-3 py-2' : 'px-2.5 py-1.5',
+        depth === 0 ? 'px-3 py-2.5' : 'px-2.5 py-2',
         isHrefMatch(node.item.href, activeHref)
-          ? 'bg-[var(--md-sys-color-secondary-container)] font-semibold text-[var(--md-sys-color-on-secondary-container)]'
+          ? 'text-title-small bg-secondary-container text-on-secondary-container'
           : depth === 0
-            ? 'text-[var(--md-sys-color-on-surface)] hover:bg-[var(--md-sys-color-surface-container-high)]'
-            : 'text-[var(--md-sys-color-on-surface-variant)] hover:bg-[var(--md-sys-color-surface-container-high)] hover:text-[var(--md-sys-color-on-surface)]',
+            ? 'text-body-medium text-on-surface hover:bg-surface-container-high'
+            : 'text-body-small text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface',
       ]"
       @click="emit('select', node.item.href)"
     >
