@@ -17,6 +17,7 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import AppSlider from '@/components/ui/AppSlider.vue'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import { stripAriaModalOnLeave } from '@/utils/dom'
 import { formatTime } from '@/utils/format'
 import { buildCoverUrl } from '../api'
 import { useMusicI18n as useI18n } from '../i18n'
@@ -121,7 +122,7 @@ function navigateAndClose(path: string): void {
 
 <template>
   <Teleport to="body">
-    <Transition name="md-fade">
+    <Transition name="md-fade" @before-leave="stripAriaModalOnLeave">
       <div
         v-if="playerStore.lyricsOpen && playerStore.currentTrack"
         ref="overlayRef"

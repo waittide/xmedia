@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
 import { useDialogStore } from '@/stores/dialog'
+import { stripAriaModalOnLeave } from '@/utils/dom'
 
 const { t } = useI18n()
 const dialogStore = useDialogStore()
@@ -37,13 +38,13 @@ watch(
 
 <template>
   <Teleport to="body">
-    <Transition name="md-fade">
+    <Transition name="md-fade" @before-leave="stripAriaModalOnLeave">
       <div
         v-if="dialogStore.active"
         class="fixed inset-0 z-[var(--z-confirm)] flex items-center justify-center bg-[var(--md-sys-color-scrim)]/32 p-4"
         @mousedown.self="dialogStore.cancel()"
       >
-        <Transition name="md-dialog" appear>
+        <Transition name="md-dialog" appear @before-leave="stripAriaModalOnLeave">
           <form
             ref="dialogRef"
             role="dialog"

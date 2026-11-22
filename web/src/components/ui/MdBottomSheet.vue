@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { LuX } from 'vue-icons-plus/lu'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import { stripAriaModalOnLeave } from '@/utils/dom'
 
 const props = withDefaults(
   defineProps<{
@@ -41,7 +42,7 @@ escapeStack.register(
 
 <template>
   <Teleport to="body">
-    <Transition name="md-fade">
+    <Transition name="md-fade" @before-leave="stripAriaModalOnLeave">
       <div
         v-if="open"
         class="fixed inset-0 z-[var(--z-sheet)] flex items-end justify-center bg-[var(--md-sys-color-scrim)]/32"

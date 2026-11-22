@@ -19,6 +19,7 @@ import {
 import { requestJson } from '@/api/client'
 import { useEscapeStack } from '@/composables/useEscapeStack'
 import { useFocusTrap } from '@/composables/useFocusTrap'
+import { stripAriaModalOnLeave } from '@/utils/dom'
 import { useAuthStore } from '@/stores/auth'
 import { useDomainStore } from '@/stores/domain'
 import type { BookSummaryDto, PagedResult as BookPagedResult } from '@/domains/book/types'
@@ -455,13 +456,13 @@ function handleKeydown(ev: KeyboardEvent): void {
 
 <template>
   <Teleport to="body">
-    <Transition name="md-fade">
+    <Transition name="md-fade" @before-leave="stripAriaModalOnLeave">
       <div
         v-if="open"
         class="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center bg-[var(--md-sys-color-scrim)]/32 px-0 pt-0 sm:px-4 sm:pt-[10vh]"
         @mousedown.self="emit('close')"
       >
-        <Transition name="md-dialog" appear>
+        <Transition name="md-dialog" appear @before-leave="stripAriaModalOnLeave">
           <div
             ref="dialogRef"
             role="dialog"
