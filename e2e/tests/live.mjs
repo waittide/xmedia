@@ -967,10 +967,36 @@ export async function runLiveTests(context = {}) {
             await cdp.goto(
               `${baseUrl}/comic/series?scope=online&q=${encodeURIComponent(liveComicSample.keyword)}${sourceQuery}`,
             );
-            await cdp.waitForFn(
-              `document.body.textContent.includes(${JSON.stringify(liveComicSample.title)})`,
-              { timeoutMs: 25000, label: 'LIVE-09 comic search result' },
-            );
+            const waitForComicSearch = async (timeoutMs = 30000) => {
+              const deadline = Date.now() + timeoutMs;
+              while (Date.now() < deadline) {
+                const state = await cdp.evalJs(`(() => {
+                  const txt = document.body.textContent || '';
+                  if (txt.includes(${JSON.stringify(liveComicSample.title)})) return 'found';
+                  if (document.querySelector('[role="alert"]')) return 'alert';
+                  return 'pending';
+                })()`);
+                if (state === 'found' || state === 'alert') return state;
+                await new Promise((r) => setTimeout(r, 150));
+              }
+              throw new Error(`Timed out after ${timeoutMs}ms in LIVE-09 comic search result`);
+            };
+            const comicSearchState = await waitForComicSearch(30000);
+            if (comicSearchState === 'alert') {
+              summary.comicSearchRetried = true;
+              const hasRetryBtn = await cdp.evalJs(
+                `Boolean([...document.querySelectorAll('button')].find(b => ['重试', 'Retry'].includes((b.textContent || '').trim())))`,
+              );
+              if (hasRetryBtn) {
+                await clickButtonByText(cdp, ['重试', 'Retry'], { timeoutMs: 5000 });
+              } else {
+                await cdp.click('button[type="submit"]');
+              }
+              await cdp.waitForFn(
+                `document.body.textContent.includes(${JSON.stringify(liveComicSample.title)})`,
+                { timeoutMs: 30000, label: 'LIVE-09 comic search retry result' },
+              );
+            }
             await clickButtonByText(cdp, [liveComicSample.title], { timeoutMs: 10000 });
             let detailState = await cdp.waitForFn(
               () => {
