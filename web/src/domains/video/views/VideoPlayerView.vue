@@ -768,7 +768,7 @@ watch(
 <template>
   <div
     ref="stageRef"
-    class="relative flex h-dvh w-screen flex-col justify-between overflow-hidden bg-black text-white select-none"
+    class="md-scheme-dark relative flex h-dvh w-screen flex-col justify-between overflow-hidden bg-black text-white select-none"
     @mousemove="revealHud"
     @touchstart.passive="revealHud"
     @click.self="togglePlay"
