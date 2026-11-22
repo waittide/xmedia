@@ -141,6 +141,36 @@ export interface OnlineComicPagesResponseDto {
   diagnostics: ExecutionDiagnostics
 }
 
+export const ONLINE_COMIC_CTX_KEY = 'xmedia_online_comic_ctx'
+export const ONLINE_COMIC_READER_CTX_KEY = 'xmedia_online_comic_reader_ctx'
+
+export interface OnlineComicContextStorage {
+  sourceId: string
+  sourceName?: string
+  comicUrl: string
+  tocUrl?: string
+  title?: string
+  author?: string
+  coverUrl?: string | null
+  intro?: string | null
+  readingDirection?: ComicReadingDirection | null
+}
+
+export interface OnlineComicReaderContextStorage {
+  sourceId: string
+  sourceName?: string
+  comicUrl: string
+  tocUrl?: string
+  title?: string
+  author?: string
+  coverUrl?: string | null
+  readingDirection?: ComicReadingDirection | null
+  chapterUrl: string
+  chapterIndex: number
+  chapterTitle?: string
+  chapters?: OnlineComicChapter[]
+}
+
 export function buildOnlineComicImageUrl(
   rawUrl: string | null | undefined,
   sourceId?: string | null,
@@ -154,6 +184,35 @@ export function buildOnlineComicImageUrl(
   const qs = new URLSearchParams({ url: u })
   if (sourceId) qs.set('source_id', sourceId)
   return withAuthToken(`/api/v1/comic/online/image-proxy?${qs.toString()}`)
+}
+
+export function resolveOnlineComicCoverUrl(
+  proxyCoverUrl?: string | null,
+  rawCoverUrl?: string | null,
+  sourceId?: string | null,
+): string {
+  const proxy = proxyCoverUrl?.trim()
+  if (proxy) {
+    if (proxy.toLowerCase().startsWith('data:')) {
+      return isSafeDataImageUrl(proxy) ? proxy : ''
+    }
+    if (proxy.startsWith('/')) {
+      try {
+        const parsed = new URL(proxy, 'http://localhost')
+        if (parsed.pathname.endsWith('/image-proxy')) {
+          const innerUrl = parsed.searchParams.get('url')?.trim()
+          if (!innerUrl || !isSafeHttpUrl(innerUrl)) return ''
+        }
+        return withAuthToken(proxy)
+      } catch {
+        return ''
+      }
+    }
+    if (isSafeHttpUrl(proxy)) {
+      return withAuthToken(proxy)
+    }
+  }
+  return buildOnlineComicImageUrl(rawCoverUrl, sourceId)
 }
 
 const baseCrud = createDomainSourceApi<ComicSourceSummaryDto>('comic', { hasSeeds: true })

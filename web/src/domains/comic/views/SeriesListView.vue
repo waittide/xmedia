@@ -2,15 +2,19 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useComicI18n as useI18n } from '@/domains/comic/i18n'
-import { LuArrowUpDown, LuX } from 'vue-icons-plus/lu'
+import { LuArrowUpDown, LuGlobe, LuLayers, LuX } from 'vue-icons-plus/lu'
 import { api } from '@/domains/comic/api'
 import { resolveLibrarySeriesCount, useSidebarStore } from '@/domains/comic/store'
 import { useSnackbarStore } from '@/stores/snackbar'
 import { useUploadStore } from '@/stores/uploads'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import MdSegmentedButton, { type SegmentedOption } from '@/components/ui/MdSegmentedButton.vue'
 import RefreshButton from '@/components/ui/RefreshButton.vue'
+import OnlineComicSearchSection from '@/domains/comic/components/OnlineComicSearchSection.vue'
 import SeriesCard from '@/domains/comic/components/SeriesCard.vue'
 import type { SeriesStatus, SeriesSummaryDto } from '@/domains/comic/types'
+
+type ComicSearchScope = 'local' | 'online'
 
 const props = defineProps<{
   presetMode?: 'all' | 'continue' | 'favorites'
@@ -22,6 +26,26 @@ const router = useRouter()
 const upload = useUploadStore()
 const sidebarStore = useSidebarStore()
 const snackbarStore = useSnackbarStore()
+
+const canUseOnlineScope = computed(
+  () => props.presetMode !== 'continue' && props.presetMode !== 'favorites',
+)
+const searchScope = ref<ComicSearchScope>(
+  canUseOnlineScope.value && route.query.scope === 'online' ? 'online' : 'local',
+)
+const onlineKeyword = ref<string>(typeof route.query.q === 'string' ? route.query.q : '')
+const onlineSourceId = computed(() =>
+  typeof route.query.source === 'string' && route.query.source.trim()
+    ? route.query.source.trim()
+    : null,
+)
+let syncingRouteQuery = false
+let syncRouteSeq = 0
+
+const searchScopeOptions = computed<SegmentedOption<ComicSearchScope>[]>(() => [
+  { value: 'local', label: t('online.scopeLocal'), icon: LuLayers },
+  { value: 'online', label: t('online.scopeOnline'), icon: LuGlobe },
+])
 
 const seriesList = ref<SeriesSummaryDto[]>([])
 const loading = ref(true)
@@ -106,7 +130,98 @@ function onSelectLibrary(val: string | number): void {
   void router.replace({ query: next })
 }
 
+function applyScopeFromRoute(): void {
+  if (!canUseOnlineScope.value) {
+    searchScope.value = 'local'
+    return
+  }
+  searchScope.value = route.query.scope === 'online' ? 'online' : 'local'
+  onlineKeyword.value = typeof route.query.q === 'string' ? route.query.q : ''
+}
+
+function queryValuesEqual(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) {
+    const la = Array.isArray(a) ? a : a ? [a] : []
+    const lb = Array.isArray(b) ? b : b ? [b] : []
+    return la.length === lb.length && la.every((v, i) => v === lb[i])
+  }
+  return a === b
+}
+
+function syncOnlineScopeToRoute(
+  nextScope: ComicSearchScope,
+  nextKw: string,
+  nextSourceId?: string | null,
+): void {
+  const nextQuery: Record<string, string | string[]> = {}
+  if (nextScope === 'online') {
+    nextQuery.scope = 'online'
+    if (nextSourceId) {
+      nextQuery.source = nextSourceId
+    }
+    if (nextKw.trim()) {
+      nextQuery.q = nextKw.trim()
+    }
+  } else {
+    for (const [k, v] of Object.entries(route.query)) {
+      if (k === 'scope' || k === 'source') continue
+      if (typeof v === 'string') {
+        nextQuery[k] = v
+      } else if (Array.isArray(v)) {
+        const cleaned = v.filter((item): item is string => typeof item === 'string')
+        if (cleaned.length > 0) nextQuery[k] = cleaned
+      }
+    }
+    if (nextKw.trim()) {
+      nextQuery.q = nextKw.trim()
+    } else {
+      delete nextQuery.q
+    }
+  }
+
+  const cur = route.query
+  const same =
+    Object.keys(nextQuery).length === Object.keys(cur).length &&
+    Object.entries(nextQuery).every(([k, v]) => queryValuesEqual(cur[k], v))
+  if (same) return
+
+  const seq = ++syncRouteSeq
+  syncingRouteQuery = true
+  void router.replace({ path: route.path, query: nextQuery }).finally(() => {
+    if (seq === syncRouteSeq) {
+      syncingRouteQuery = false
+    }
+  })
+}
+
+function switchSearchScope(next: ComicSearchScope): void {
+  if (!canUseOnlineScope.value) return
+  searchScope.value = next
+  if (next === 'online') {
+    fetchSeq += 1
+    loading.value = false
+    onlineKeyword.value = typeof route.query.q === 'string' ? route.query.q : ''
+  }
+  syncOnlineScopeToRoute(next, onlineKeyword.value, next === 'online' ? onlineSourceId.value : null)
+  if (next === 'local') {
+    void fetchSeries()
+  }
+}
+
+function handleOnlineKeywordUpdate(nextKw: string): void {
+  onlineKeyword.value = nextKw
+  syncOnlineScopeToRoute('online', nextKw, onlineSourceId.value)
+}
+
+function handleOnlineSourceUpdate(nextSourceId: string | null): void {
+  syncOnlineScopeToRoute('online', onlineKeyword.value, nextSourceId)
+}
+
 async function fetchSeries(): Promise<void> {
+  if (searchScope.value === 'online') {
+    loading.value = false
+    return
+  }
   const seq = ++fetchSeq
   loading.value = true
   try {
@@ -160,29 +275,62 @@ async function refreshPage(): Promise<void> {
 }
 
 onMounted(async () => {
+  applyScopeFromRoute()
   if (sidebarStore.libraries.length === 0) {
     await sidebarStore.refresh()
   }
-  await fetchSeries()
+  if (searchScope.value !== 'online') {
+    await fetchSeries()
+  } else {
+    loading.value = false
+  }
 })
 
 watch(
-  [
-    statusFilter,
-    readStatusFilter,
-    sortBy,
-    sortDir,
-    () => route.query,
-    () => props.presetMode,
-    () => upload.catalogVersion,
-  ],
-  fetchSeries,
-  { deep: true }
+  [() => route.query, () => props.presetMode],
+  () => {
+    if (syncingRouteQuery) return
+    applyScopeFromRoute()
+    if (searchScope.value !== 'online') {
+      void fetchSeries()
+    } else {
+      loading.value = false
+    }
+  },
+  { deep: true },
 )
+
+watch([statusFilter, readStatusFilter, sortBy, sortDir, () => upload.catalogVersion], () => {
+  if (searchScope.value !== 'online') {
+    void fetchSeries()
+  }
+})
 </script>
 
 <template>
   <div class="mx-auto max-w-7xl space-y-6 px-6 py-7 sm:px-8">
+    <div
+      v-if="canUseOnlineScope"
+      class="flex flex-wrap items-center justify-between gap-3"
+    >
+      <MdSegmentedButton
+        :model-value="searchScope"
+        :options="searchScopeOptions"
+        size="sm"
+        :show-check="false"
+        @update:model-value="switchSearchScope($event)"
+      />
+    </div>
+
+    <OnlineComicSearchSection
+      v-if="searchScope === 'online' && canUseOnlineScope"
+      :keyword="onlineKeyword"
+      :initial-source-id="onlineSourceId"
+      @update:keyword="handleOnlineKeywordUpdate"
+      @update:source-id="handleOnlineSourceUpdate"
+    />
+
+    <template v-else>
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div class="flex flex-wrap items-center gap-2.5">
         <div class="w-44">
@@ -271,5 +419,6 @@ watch(
     >
       <SeriesCard v-for="s in seriesList" :key="s.id" :series="s" />
     </div>
+    </template>
   </div>
 </template>
